@@ -63,7 +63,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Context, w *testResponseWriter, ag
 	sink := svc.Output.NewSink(agentID, provider)
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    agentID,
-		Model:      "opus",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err)

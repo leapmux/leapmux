@@ -1,6 +1,7 @@
 import type { AgentTab, BaseTab, GitTabFields, Tab, TerminalTab } from './tab.types'
 import type { listTerminals } from '~/api/workerRpc'
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -78,17 +79,75 @@ export function protoToTerminalTab(workerId: string, term: ProtoTerminal): Termi
 }
 
 /**
+ * Derive the tab's current-selection fields from an agent's option-group catalog:
+ * every group's current value is collected into the ONE `optionValues` map keyed by
+ * group id (model/effort/permissionMode and provider options alike -- there are no
+ * special-cased per-axis fields), and the full `optionGroups` catalog is carried
+ * alongside. A group whose current value is empty is simply absent from the map,
+ * which the panel reads as "not reported" and falls back to the group's default.
+ * Shared by the hydration path (`protoToAgentTabFields`) and the live `statusChange`
+ * handler so both derive the tab's current selections the same way.
+ *
+ * Pure: the caller is responsible for priming `settingsLabelCache` from the same
+ * groups (via `updateSettingsLabelCache`) at the data-ingestion boundary -- see
+ * `protoToAgentTabFields` and the `statusChange` handler in useWorkspaceConnection.
+ */
+export function deriveOptionGroupTabFields(groups: AvailableOptionGroup[] | undefined): Partial<AgentTab> {
+  if (!groups || groups.length === 0)
+    return {}
+  const optionValues = optionValuesFromGroups(groups)
+  const fields: Partial<AgentTab> = { optionGroups: groups }
+  // Only attach optionValues when at least one group reports a current value.
+  // Returning `optionValues: undefined` would, when spread into the tab, clear
+  // the previously-derived selections on a push whose groups carry no currents.
+  if (Object.keys(optionValues).length > 0)
+    fields.optionValues = optionValues
+  return fields
+}
+
+/**
+ * Collect every group's confirmed `currentValue` into a flat id->value map (the
+ * non-empty ones). This is the generic, axis-agnostic counterpart to the catalog:
+ * model/effort/permission and provider extras all live in one map keyed by group id.
+ */
+export function optionValuesFromGroups(groups: AvailableOptionGroup[] | undefined): Record<string, string> {
+  const values: Record<string, string> = {}
+  for (const g of groups ?? []) {
+    if (g.currentValue)
+      values[g.id] = g.currentValue
+  }
+  return values
+}
+
+/**
+ * Write a single axis into an id->value option map, returning a fresh map. An empty
+ * value DELETES the key rather than storing '' . This enforces the invariant that
+ * `optionValues` never holds an empty string: `agentTabOptionGroups` treats a stored
+ * '' as a real override that blanks the group's selection (showing its default) instead
+ * of falling through to the catalog's confirmed currentValue. Routing every optimistic
+ * write through here makes that invariant mechanical rather than convention-only.
+ */
+export function setOptionValue(map: Record<string, string> | undefined, id: string, value: string): Record<string, string> {
+  const next = { ...(map ?? {}) }
+  if (value)
+    next[id] = value
+  else
+    delete next[id]
+  return next
+}
+
+/**
  * Worker-provided fields for an agent tab, ready to spread into a `Tab`
  * or pass to `updateTab`. Excludes layout-specific fields (`type`, `id`,
  * `tileId`, `position`) which the caller controls.
  *
- * Side effect: routes the agent's available models / option groups into
- * `settingsLabelCache` so settings-related notifications can render
- * display names without carrying the full catalogs on every tab read.
+ * Ingestion point: primes `settingsLabelCache` from the agent's option groups so
+ * settings-related notifications can render display names without carrying the full
+ * catalogs on every tab read. (The pure `deriveOptionGroupTabFields` no longer does
+ * this itself.)
  */
 export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Partial<AgentTab> {
-  if ((agent.availableModels && agent.availableModels.length > 0) || (agent.availableOptionGroups && agent.availableOptionGroups.length > 0))
-    updateSettingsLabelCache(agent.availableModels, agent.availableOptionGroups)
+  updateSettingsLabelCache(agent.agentProvider, agent.optionGroups)
   return {
     title: agent.title || undefined,
     workerId,
@@ -96,12 +155,7 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     agentProvider: agent.agentProvider,
     agentStatus: agent.status,
     agentSessionId: agent.agentSessionId || undefined,
-    model: agent.model || undefined,
-    effort: agent.effort || undefined,
-    permissionMode: agent.permissionMode || undefined,
-    extraSettings: agent.extraSettings && Object.keys(agent.extraSettings).length > 0 ? agent.extraSettings : undefined,
-    availableModels: agent.availableModels && agent.availableModels.length > 0 ? agent.availableModels : undefined,
-    availableOptionGroups: agent.availableOptionGroups && agent.availableOptionGroups.length > 0 ? agent.availableOptionGroups : undefined,
+    ...deriveOptionGroupTabFields(agent.optionGroups),
     agentGitStatus: agent.gitStatus,
     createdAt: agent.createdAt || undefined,
     startupError: agent.startupError || undefined,
@@ -123,15 +177,114 @@ export function protoToAgentTab(workerId: string, agent: AgentInfo): AgentTab {
 }
 
 /**
+ * Swap the model-dependent groups (effort, and Claude's extended-thinking group
+ * whose enabled label is "Adaptive" vs "On" per model) for the ones the selected
+ * model carries in its `subGroups`. This lets an optimistic model switch update
+ * those groups instantly, instead of waiting for the worker's relaunch
+ * round-trip (a model change resets effort to auto, which forces a relaunch).
+ *
+ * The dependent group ids are the union across every model's sub_groups, so a
+ * model that omits one (Haiku has no effort group) correctly drops it. Returns a
+ * new array sorted by display order; the sub_group objects themselves are stable
+ * references from the catalog, so `<For>` reconciliation doesn't churn the DOM.
+ */
+function withSelectedModelSubGroups(groups: AvailableOptionGroup[], selectedModelId: string): AvailableOptionGroup[] {
+  const modelOptions = optionGroup(groups, OPTION_ID_MODEL)?.options ?? []
+  const dependentIds = new Set(modelOptions.flatMap(o => o.subGroups.map(g => g.id)))
+  if (dependentIds.size === 0)
+    return groups
+  const selected = modelOptions.find(o => o.id === selectedModelId)
+  // If the optimistic model isn't a listed option (e.g. a hidden id that lingers
+  // in optionValues), keep the catalog's existing dependent groups rather than
+  // stripping them to nothing -- otherwise effort/thinking vanish until the next
+  // push.
+  if (!selected)
+    return groups
+  const kept = groups.filter(g => !dependentIds.has(g.id))
+  return [...kept, ...selected.subGroups].sort((a, b) => a.order - b.order)
+}
+
+// Cache the optimistic projection per (optionGroups, optionValues) reference pair. Both keys are
+// reference-stable until their CONTENT changes -- optionGroups via mergeStableOptionGroupRefs (it
+// reuses the prior array when a push is content-identical), optionValues because every edit
+// replaces it wholesale ({ ...prev, ...delta }). So repeated reads during an in-flight model switch
+// (whose inputs hold steady until the worker confirms) return the SAME projected array instead of
+// rebuilding the model-dependent groups on every render, while a real content change still flows
+// through (new reference -> cache miss -> recompute). A WeakMap keyed on the optionGroups array
+// auto-evicts when that array is replaced, so there is nothing to invalidate by hand.
+const optionGroupsProjectionCache = new WeakMap<
+  AvailableOptionGroup[],
+  { values: Record<string, string> | undefined, result: AvailableOptionGroup[] }
+>()
+
+/**
+ * Project the tab's option-group catalog with each group's `currentValue`
+ * overlaid by the tab's optimistically-updated selection from `optionValues`
+ * (one generic map keyed by group id -- model/effort/permission/extras alike).
+ * This keeps the read model (option groups) in lockstep with an in-flight
+ * settings change, so the panel and trigger label reflect a click immediately
+ * rather than waiting for the worker's status round-trip.
+ *
+ * Returns the SAME array reference when no group needs an override (the steady
+ * state, once the worker confirms the change) AND across repeated reads while an
+ * optimistic switch is in flight (via optionGroupsProjectionCache), so downstream
+ * `<For>` rendering doesn't churn its DOM and Playwright/users get a stable click target.
+ */
+function agentTabOptionGroups(tab: AgentTab): AvailableOptionGroup[] {
+  const base = tab.optionGroups ?? []
+  const values = tab.optionValues
+  const cached = optionGroupsProjectionCache.get(base)
+  if (cached && cached.values === values)
+    return cached.result
+  const result = projectOptionGroups(base, values)
+  optionGroupsProjectionCache.set(base, { values, result })
+  return result
+}
+
+function projectOptionGroups(base: AvailableOptionGroup[], values: Record<string, string> | undefined): AvailableOptionGroup[] {
+  // Optimistic model switch: while the user's model click is still in flight
+  // (the optimistic model differs from the catalog's confirmed model), rebuild the
+  // model-dependent groups from the newly-selected model's sub_groups so effort
+  // and thinking update immediately rather than after the relaunch round-trip.
+  // OPTION_ID_MODEL is a legitimate domain reference here (the model group is the
+  // one that carries sub_groups), not a stored-value special-case.
+  const optimisticModel = values?.[OPTION_ID_MODEL]
+  const modelGroup = optionGroup(base, OPTION_ID_MODEL)
+  const groups = optimisticModel && modelGroup && optimisticModel !== modelGroup.currentValue
+    ? withSelectedModelSubGroups(base, optimisticModel)
+    : base
+
+  let changed = groups !== base
+  const out = groups.map((g) => {
+    // Same optimistic-over-confirmed PRECEDENCE as the panel's currentForGroup (the shared
+    // effectiveCurrent helper). This projects the RAW optimistic value; the panel and trigger
+    // additionally CLAMP/validate an out-of-list value (currentValueOrDefault / effortValid),
+    // so during an in-flight model switch the effort group's projected currentValue may briefly
+    // be a tier the new model doesn't offer (e.g. xhigh left over from Opus after switching to
+    // Sonnet) -- every consumer that surfaces it guards against that itself. Reuse the existing
+    // reference when nothing changed (DOM stability).
+    const next = effectiveCurrent(values, g)
+    if (next === g.currentValue)
+      return g
+    changed = true
+    return { ...g, currentValue: next }
+  })
+  return changed ? out : base
+}
+
+/**
  * Adapter from a Tab back to an AgentInfo-shaped object. Used at the
  * shrinking number of boundary points where existing consumers (chat
  * plugins, `shouldShowThinkingIndicator`) take an AgentInfo wholesale.
  * Returns undefined when the tab isn't an AGENT or has no metadata
  * yet.
  *
- * The returned value is a structurally-compatible plain object cast
- * to AgentInfo; it omits the proto-runtime $typeName / message methods,
- * which the affected consumers do not call.
+ * The returned value is a structurally-compatible plain object cast to AgentInfo; it
+ * omits the proto-runtime $typeName / message methods, which the affected consumers do
+ * not call. We deliberately do NOT build this via the proto `create()`: create()
+ * normalizes the repeated `optionGroups` field into a fresh array, which would discard
+ * the reference identity agentTabOptionGroups carefully preserves (returning the SAME
+ * array when nothing changed) and churn the downstream `<For>` rows on every push.
  */
 export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
   if (!tab || tab.type !== TabType.AGENT)
@@ -145,13 +298,8 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     title: tab.title ?? '',
     agentProvider: tab.agentProvider!,
     status: tab.agentStatus ?? AgentStatus.UNSPECIFIED,
-    model: tab.model ?? '',
-    effort: tab.effort ?? '',
-    permissionMode: tab.permissionMode ?? '',
-    extraSettings: tab.extraSettings ?? {},
     agentSessionId: tab.agentSessionId ?? '',
-    availableModels: tab.availableModels ?? [],
-    availableOptionGroups: tab.availableOptionGroups ?? [],
+    optionGroups: agentTabOptionGroups(tab),
     gitStatus: tab.agentGitStatus,
     createdAt: tab.createdAt ?? '',
     closedAt: '',

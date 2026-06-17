@@ -300,7 +300,7 @@ The `tab` group is the generic open/close/list/rename surface across all three t
 | `--display-mode` | `0` | File-tab display mode |
 | `--file-view-mode` | `0` | File view mode |
 
-`tab open` emits `{tab_id, tab_type, workspace_id, worker_id, tile_id, position}` plus per-type extras such as `permission_mode_warning`, `initial_message_warning`, or `path`.
+`tab open` emits `{tab_id, tab_type, workspace_id, worker_id, tile_id, position}` plus per-type extras such as `initial_message_warning` or `path`. (The permission mode now rides in the open request and is applied at launch, so there is no longer a `permission_mode_warning`.)
 
 ```bash
 # Spin up a Claude Code agent in a worker's repo and send it a task
@@ -437,10 +437,10 @@ The `agent` group is the type-specific surface for agent tabs — use `tab open`
 | --- | --- | --- |
 | `agent send` | `--tab-id`, `--message "..."` or `--stdin` | `{agent_id}` |
 | `agent interrupt` | `--tab-id`, `--reason "..."` | `{agent_id}` |
-| `agent get` | `--tab-id` | Full agent state (model, status, provider, settings, available models, git status, ...) |
+| `agent get` | `--tab-id` | Full agent state (model, status, provider, option groups, git status, ...) |
 | `agent providers` | `--tab-id` / `--worker-id` | `[{name, aliases}]` for the Worker |
 | `agent messages` | `--tab-id`, `--after-seq`, `--before-seq`, `--limit`, `--follow` | A message page, or a stream with `--follow` |
-| `agent set` | `--tab-id`, `--model`, `--effort`, `--permission-mode`, `--extra-setting key=value` | `{agent_id, applied:{...}}` |
+| `agent set` | `--tab-id`, `--model`, `--effort`, `--permission-mode`, `--option key=value` | `{agent_id, applied:{...}}` |
 | `agent send-control-response` | `--tab-id`, `--content "..."` | `{agent_id}` |
 
 ```bash
@@ -453,7 +453,8 @@ Notes:
 
 - `agent send` requires one of `--message` or `--stdin`; passing neither is an `invalid_request` ("--message or --stdin is required"). If you pass both, `--message` wins and `--stdin` is ignored.
 - `agent messages --limit` defaults to 5 (the Hub caps it at 50). Without `--follow` you get one page as a JSON array; with `--follow` you get the first page followed by new messages as JSON-lines, reconnecting automatically on transient drops. `--follow` exists **only** on `agent messages`, not on `events watch`.
-- `agent set` applies model/effort/permission-mode and repeatable `--extra-setting key=value` provider options. Most settings (model, effort, permission-mode) apply live on providers that support it (e.g. Claude Code, Codex); changes a provider can't apply to the running process trigger a restart (e.g. switching effort back to auto). See [Coding Agents](/docs/using/coding-agents/) for the per-provider settings.
+- `agent set` applies model/effort/permission-mode and repeatable `--option key=value` provider options. Most settings (model, effort, permission-mode) apply live on providers that support it (e.g. Claude Code, Codex); changes a provider can't apply to the running process trigger a restart (e.g. switching effort back to auto). See [Coding Agents](/docs/using/coding-agents/) for the per-provider settings.
+- `agent get`/`agent list` report every provider setting as one unified `option_groups` array (each entry `{id, label, current_value, options:[...], ...}`); `model`/`effort`/`permission_mode` stay as top-level convenience keys. There is no separate `extra_settings`/`available_models`/`available_option_groups` field -- read a provider option from `option_groups`, e.g. `leapmux remote agent get --tab-id "$T" | jq '.data.option_groups[] | select(.id=="sandbox_policy") | .current_value'`.
 - `agent send-control-response` forwards a raw `control_response` JSON payload for Claude-Code-style agents — the scripting equivalent of clicking an approval button in the UI.
 
 ## Terminal commands

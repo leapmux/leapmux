@@ -15,7 +15,7 @@ import './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string
-  agent?: { permissionMode?: string, extraSettings?: Record<string, string>, agentProvider?: AgentProvider }
+  agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onSettingChange?: (change: ProviderSettingChange) => void
@@ -68,7 +68,7 @@ export function useControlResponseHandling(
     const decision = decidePlanModeToggle({ currentMode, planValue: pm.planValue, previousNonPlanMode })
     if (decision.updatePreviousNonPlanMode !== undefined)
       previousNonPlanMode = decision.updatePreviousNonPlanMode
-    pm.setMode(decision.nextMode, onChange)
+    onChange({ sets: { [pm.groupKey]: decision.nextMode } })
   }
 
   // The first pending control request (if any).

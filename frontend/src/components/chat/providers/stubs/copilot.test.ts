@@ -1,16 +1,9 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import * as styles from '../../ChatView.css'
 import { providerFor } from '../registry'
-import { input, model, option, optionGroup } from '../testUtils'
+import { describeACPStubBasics } from './stubBasics'
 
 import './copilot'
-
-vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: vi.fn(),
-}))
 
 const MODE_AGENT = 'https://agentclientprotocol.com/protocol/session-modes#agent'
 const MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-modes#plan'
@@ -19,174 +12,28 @@ const MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session-modes#a
 describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
-  it('exposes attachment capabilities', () => {
-    expect(plugin.attachments).toEqual({
-      text: true,
-      image: true,
-      pdf: true,
-      binary: true,
-    })
-  })
-
-  it('classifies agent_message_chunk as assistant_text', () => {
-    const parent = {
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: 'Hello' },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
-  })
-
-  it('hides config_option_update', () => {
-    const parent = {
-      sessionUpdate: 'config_option_update',
-      configOptions: [],
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
+  describeACPStubBasics(plugin, { text: true, image: true, pdf: true, binary: true })
 
   it('maps plan mode to the ACP URI value', () => {
-    expect(plugin.planMode?.currentMode({ permissionMode: MODE_PLAN })).toBe(MODE_PLAN)
-    expect(plugin.planMode?.currentMode({ permissionMode: '' })).toBe(MODE_AGENT)
-  })
-
-  it('builds an ACP cancel request for interrupt', () => {
-    expect(plugin.buildInterruptContent?.('session-1')).toBe(JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'session/cancel',
-      params: { sessionId: 'session-1' },
-    }))
+    expect(plugin.planMode?.currentMode({ optionValues: { permissionMode: MODE_PLAN } })).toBe(MODE_PLAN)
+    expect(plugin.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe(MODE_AGENT)
   })
 
   it('uses autopilot as bypass permission mode', () => {
     expect(plugin.bypassPermissionMode).toBe(MODE_AUTOPILOT)
   })
 
-  it('changes permission mode through UpdateAgentSettings', async () => {
-    await plugin.changePermissionMode?.('worker-1', 'agent-1', MODE_PLAN)
-    expect(workerRpc.updateAgentSettings).toHaveBeenCalledWith('worker-1', {
-      agentId: 'agent-1',
-      settings: { permissionMode: MODE_PLAN },
+  it('declares plan mode on the permissionMode group and defaults to agent', () => {
+    // The generic settings panel renders the permissionMode group Copilot reports;
+    // the provider only declares the plan-mode mapping and its default mode.
+    expect(plugin.planMode).toMatchObject({
+      groupKey: 'permissionMode',
+      planValue: MODE_PLAN,
+      defaultValue: MODE_AGENT,
     })
   })
-})
 
-describe('copilot settings panel', () => {
-  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
-
-  it('renders runtime modes and updates through the unified onChange dispatcher', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4-mini',
-      permissionMode: MODE_AGENT,
-      availableModels: [
-        model('gpt-5.4', 'GPT-5.4'),
-        model('gpt-5.4-mini', 'GPT-5.4 mini', { isDefault: true }),
-      ],
-      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
-        option(MODE_AGENT, 'Agent', { isDefault: true }),
-        option(MODE_PLAN, 'Plan'),
-        option(MODE_AUTOPILOT, 'Autopilot'),
-      ])],
-      onChange,
-    }))
-
-    expect(screen.getByText('Mode')).toBeInTheDocument()
-    expect(screen.getByTestId(`permission-mode-${MODE_PLAN}`)).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByDisplayValue(MODE_PLAN))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'permissionMode', value: MODE_PLAN })
-  })
-
-  it('includes the selected mode in the trigger label', () => {
-    render(() => plugin.settingsTriggerLabel!({
-      model: 'gpt-5.4-mini',
-      permissionMode: MODE_PLAN,
-      availableModels: [model('gpt-5.4-mini', 'GPT-5.4 mini', { isDefault: true })],
-      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
-        option(MODE_AGENT, 'Agent', { isDefault: true }),
-        option(MODE_PLAN, 'Plan'),
-      ])],
-    }))
-
-    expect(screen.getByText('GPT-5.4 mini \u00B7 Plan')).toBeInTheDocument()
-  })
-
-  it('renders an extra (generic) group read-only while the permission-mode group stays writable', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      permissionMode: MODE_AGENT,
-      extraSettings: { thoughtLevel: 'high' },
-      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
-      availableOptionGroups: [
-        optionGroup('permissionMode', 'Mode', [
-          option(MODE_AGENT, 'Agent', { isDefault: true }),
-          option(MODE_PLAN, 'Plan'),
-        ]),
-        optionGroup('thoughtLevel', 'Thought Level', [
-          option('low', 'Low'),
-          option('high', 'High', { isDefault: true }),
-        ]),
-      ],
-      onChange,
-    }))
-
-    // The extra group renders disabled with the current value checked.
-    const highInput = screen.getByTestId('extra-thoughtLevel-high').querySelector('input')!
-    expect(highInput).toBeDisabled()
-    expect(highInput).toBeChecked()
-    await fireEvent.click(screen.getByTestId('extra-thoughtLevel-low').querySelector('input')!)
-    expect(onChange).not.toHaveBeenCalled()
-
-    // The permission-mode group is not re-rendered as an extra group.
-    expect(screen.queryByTestId(`extra-permissionMode-${MODE_PLAN}`)).toBeNull()
-
-    // The mapped permission-mode group is still writable and dispatches.
-    await fireEvent.click(screen.getByDisplayValue(MODE_PLAN))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'permissionMode', value: MODE_PLAN })
-  })
-
-  it('renders no extra-* groups for a single-group provider (parity guard)', () => {
-    const { container } = render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      permissionMode: MODE_AGENT,
-      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
-      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
-        option(MODE_AGENT, 'Agent', { isDefault: true }),
-        option(MODE_PLAN, 'Plan'),
-      ])],
-    }))
-
-    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
-  })
-
-  it('wraps every group in a flex column so they get the inter-group gap', () => {
-    const { container } = render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      permissionMode: MODE_AGENT,
-      extraSettings: { thoughtLevel: 'high' },
-      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
-      availableOptionGroups: [
-        optionGroup('permissionMode', 'Mode', [
-          option(MODE_AGENT, 'Agent', { isDefault: true }),
-          option(MODE_PLAN, 'Plan'),
-        ]),
-        optionGroup('thoughtLevel', 'Thought Level', [
-          option('low', 'Low'),
-          option('high', 'High', { isDefault: true }),
-        ]),
-      ],
-    }))
-
-    // Regression guard (permissionMode-kind branch): the panel's groups must live
-    // inside the settingsPanelColumn flex container (gap: var(--space-4)). Without
-    // the wrapper the fieldsets stack flush as bare children of `.settingsMenu`,
-    // which has no flex/gap of its own (the original "no gap between groups" bug).
-    const column = container.querySelector(`.${styles.settingsPanelColumn}`)
-    expect(column).not.toBeNull()
-    // Mapped mode group, model selector, and the extra group are all in the column.
-    expect(column!.querySelectorAll('[role="group"]').length).toBe(3)
-    expect(column!.contains(screen.getByTestId(`permission-mode-${MODE_AGENT}`))).toBe(true)
-    expect(column!.contains(screen.getByTestId('extra-thoughtLevel-high'))).toBe(true)
+  it('renders the permissionMode group as the trigger mode segment', () => {
+    expect(plugin.triggerModeGroupKey).toBe('permissionMode')
   })
 })

@@ -916,9 +916,15 @@ func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
 	assert.Equal(t, int64(1000000), usage["context_window"], "should pick primary model's context_window")
 }
 
-func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
+func TestHandleOutput_ResultModelUsageLegacyOpusResolvesTo1M(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
+	// A legacy bare "opus" now collapses to "opus[1m]" (Opus is 1M-only), so it must
+	// resolve to the 1M window. Even if modelUsage carries BOTH a standard-context
+	// "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]" key -- a shape the current CLI
+	// does not emit -- both normalize to "opus[1m]", and findPrimaryContextWindow's
+	// max-among-matches tie-break deterministically picks the 1M window regardless of
+	// map iteration order.
 	agent.model = "opus"
 
 	agent.HandleOutput([]byte(`{
@@ -930,8 +936,6 @@ func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
 		}
 	}`))
 
-	// When primary model is "opus" (no [1m]), it should match "claude-opus-4-6"
-	// (no bracket suffix) and NOT "claude-opus-4-6[1m]".
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -945,7 +949,7 @@ func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
 	info := sink.LastSessionInfo()
 	usage, ok := info["context_usage"].(map[string]interface{})
 	require.True(t, ok, "expected context_usage in session info")
-	assert.Equal(t, int64(200000), usage["context_window"], "should pick non-1M opus context_window")
+	assert.Equal(t, int64(1000000), usage["context_window"], "legacy opus resolves to the 1M window")
 }
 
 func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) {
@@ -1336,13 +1340,18 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			expected: 1000000,
 		},
 		{
-			name:  "opus matches claude-opus-4-6 not claude-opus-4-6[1m]",
+			// Opus is 1M-only: a legacy bare "opus" collapses to "opus[1m]", so it
+			// matches BOTH a standard "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]"
+			// key. The max-among-matches tie-break returns the 1M window deterministically
+			// (map iteration order must not change the result). The current CLI does not
+			// emit both keys; this guards the collision path regardless.
+			name:  "legacy opus picks the max window across colliding keys",
 			model: "opus",
 			usage: map[string]json.RawMessage{
 				"claude-opus-4-6":     json.RawMessage(`{"contextWindow": 200000}`),
 				"claude-opus-4-6[1m]": json.RawMessage(`{"contextWindow": 1000000}`),
 			},
-			expected: 200000,
+			expected: 1000000,
 		},
 		{
 			name:  "sonnet[1m] matches claude-sonnet-4-6[1m]",

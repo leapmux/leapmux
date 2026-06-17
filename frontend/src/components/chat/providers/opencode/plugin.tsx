@@ -3,6 +3,5 @@ import { registerOpenCodeProtocolProvider } from '../registerOpenCodeProtocolPro
 
 registerOpenCodeProtocolProvider({
   provider: AgentProvider.OPENCODE,
-  defaultModel: import.meta.env.LEAPMUX_OPENCODE_DEFAULT_MODEL || '',
   defaultPrimaryAgent: 'build',
 })

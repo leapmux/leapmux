@@ -294,8 +294,8 @@ func osSymlink(target, link string) error { return os.Symlink(target, link) }
 func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	repoDir := initRepo(t)
@@ -331,8 +331,8 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	repoDir := initRepo(t)

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
+import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
@@ -20,7 +21,6 @@ interface NewAgentDialogProps {
   workspaceId: string
   defaultWorkerId?: string
   defaultWorkingDir?: string
-  defaultModel?: string
   defaultAgentProvider?: AgentProvider
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
@@ -65,11 +65,10 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     const resp = await workerRpc.openAgent(worker.workerId(), {
       workspaceId: props.workspaceId,
       agentProvider: provider,
-      model: props.defaultModel ?? '',
       // title omitted: worker picks "Agent <Name>" from the shared pool.
-      systemPrompt: '',
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
+      ...openAgentRequestOptions(provider),
       ...gitMode.toGitFields(),
       ...(sessionId.trimmed() ? { agentSessionId: sessionId.trimmed() } : {}),
     })

@@ -1,13 +1,12 @@
 import type { AskQuestionState, Question } from '../../controls/types'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
-import { input, model, option, optionGroup } from '../testUtils'
-import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './settings'
+import { input } from '../testUtils'
+import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
 
 // Side-effect import to register the Codex plugin.
 import './plugin'
@@ -15,8 +14,8 @@ import './plugin'
 describe('codex provider capabilities', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
-  it('seeds the default collaboration mode as extra settings on a new agent', () => {
-    expect(plugin.defaultExtraSettings).toEqual({ [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE })
+  it('seeds the default collaboration mode as a provider option on a new agent', () => {
+    expect(plugin.defaultProviderOptions).toEqual({ [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE })
   })
 
   it('preserves an option selection alongside the free-text note', () => {
@@ -62,10 +61,6 @@ describe('codex classify', () => {
       pdf: false,
       binary: false,
     })
-  })
-
-  it('defaults to the "auto" effort sentinel so Codex picks its own default', () => {
-    expect(plugin.defaultEffort).toBe('auto')
   })
 
   it('hides thread/started notifications', () => {
@@ -838,121 +833,44 @@ describe('sendCodexUserInputResponse', () => {
   })
 })
 
-describe('codex settings panel', () => {
+describe('codex settings config', () => {
+  // The provider-specific settings panel was replaced by the single
+  // AgentSettingsPanel; the provider now only declares the configuration the
+  // generic panel renders. These assertions cover the declarative shape that
+  // used to be exercised through the deleted panel/trigger-label renderers.
   const plugin = providerFor(AgentProvider.CODEX)!
 
-  const baseModels = [
-    model('gpt-5.4', 'GPT-5.4', {
-      isDefault: true,
-      supportedEfforts: [
-        { id: 'auto', name: 'Auto', description: '' },
-        { id: 'high', name: 'High', description: '' },
-      ],
-    }),
-  ]
-
-  const baseOptionGroups = [
-    optionGroup('service_tier', 'Fast Mode', [
-      option('default', 'Default', { isDefault: true }),
-      option('fast', 'Fast'),
-    ]),
-    optionGroup('collaboration_mode', 'Workflow', [
-      option('default', 'Suggest & Approve', { isDefault: true }),
-      option('plan', 'Plan Mode'),
-    ]),
-    optionGroup('permissionMode', 'Approval Policy', [
-      option('on-request', 'On Request', { isDefault: true }),
-      option('never', 'Never'),
-    ]),
-  ]
-
-  it('renders the Fast Mode group and toggles to Fast via the unified onChange dispatcher', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-      onChange,
-    }))
-
-    expect(screen.getByText('Fast Mode')).toBeInTheDocument()
-    expect(screen.getByTestId('codex-service-tier-default')).toBeInTheDocument()
-    expect(screen.getByTestId('codex-service-tier-fast')).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByDisplayValue('fast'))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'service_tier', value: 'fast' })
+  it('wires plan mode to the collaboration_mode group', () => {
+    expect(plugin.planMode).toMatchObject({
+      groupKey: 'collaboration_mode',
+      planValue: 'plan',
+      defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
+    })
   })
 
-  it('switches collaboration mode through onChange (sticky plan mode entry)', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-      onChange,
-    }))
-
-    expect(screen.getByText('Workflow')).toBeInTheDocument()
-    await fireEvent.click(screen.getByDisplayValue('plan'))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'collaboration_mode', value: 'plan' })
+  it('renders the collaboration_mode "Workflow" group as the trigger mode segment', () => {
+    // Not the approval-policy permissionMode -- Codex's mode axis is the Workflow group.
+    expect(plugin.triggerModeGroupKey).toBe(CODEX_OPTION_COLLABORATION_MODE)
   })
 
-  it('renders Fast Mode as the first fieldset in the left column', () => {
-    const { container } = render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-    }))
-
-    // The left column orders fieldsets Fast Mode → Reasoning Effort → Models,
-    // so the first group label rendered must be "Fast Mode".
-    const labels = container.querySelectorAll('div[role="group"] > div')
-    const firstLabel = labels[0]?.textContent
-    expect(firstLabel).toBe('Fast Mode')
+  it('reads the current collaboration mode from optionValues, defaulting when unset', () => {
+    expect(plugin.planMode!.currentMode({ optionValues: { [CODEX_OPTION_COLLABORATION_MODE]: 'plan' } })).toBe('plan')
+    expect(plugin.planMode!.currentMode({})).toBe(DEFAULT_CODEX_COLLABORATION_MODE)
   })
 
-  it('updates permissionMode through the unified onChange dispatcher', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'gpt-5.4',
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-      onChange,
-    }))
-
-    await fireEvent.click(screen.getByDisplayValue('never'))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'permissionMode', value: 'never' })
+  it('exposes "never" as the bypass permission mode', () => {
+    expect(plugin.bypassPermissionMode).toBe('never')
   })
 
-  it('trigger label includes the model display name', () => {
-    const { container } = render(() => plugin.settingsTriggerLabel!({
-      model: 'gpt-5.4',
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-    }))
-
-    expect(container.textContent).toContain('GPT-5.4')
-  })
-
-  it('falls back to the default model display name when no model prop is set', () => {
-    const { container } = render(() => plugin.settingsTriggerLabel!({
-      effort: 'auto',
-      permissionMode: 'on-request',
-      availableModels: baseModels,
-      availableOptionGroups: baseOptionGroups,
-    }))
-
-    // Default model is the one with isDefault=true.
-    expect(container.textContent).toContain('GPT-5.4')
+  it('declares a "Bypass permissions" settings action that sets network/sandbox/approval together', () => {
+    expect(plugin.settingsActions).toEqual([{
+      label: 'Bypass permissions',
+      testId: 'codex-bypass-permissions',
+      sets: {
+        network_access: 'enabled',
+        sandbox_policy: 'danger-full-access',
+        permissionMode: 'never',
+      },
+    }])
   })
 })

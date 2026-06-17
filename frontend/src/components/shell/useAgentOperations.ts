@@ -13,22 +13,18 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
-import { providerFor } from '~/components/chat/providers/registry'
-import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
+import { openAgentRequestOptions } from '~/components/chat/providers/registry'
+import { ACCOUNT_DEFAULT_MODEL, OPTION_ID_EFFORT, OPTION_ID_MODEL, OPTION_ID_PERMISSION_MODE, optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
-import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
-import { protoToAgentTabFields, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
-import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
 import '~/components/chat/providers'
-
-const logger = createLogger('useAgentOperations')
 
 export interface UseAgentOperationsProps {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -36,7 +32,10 @@ export interface UseAgentOperationsProps {
   controlStore: ReturnType<typeof createControlStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
-  settingsLoading: { start: () => void, stop: () => void }
+  settingsLoading: {
+    start: (key?: string, axes?: readonly string[]) => void
+    stop: (key?: string, axes?: readonly string[]) => void
+  }
   isActiveWorkspaceMutatable: () => boolean
   activeWorkspace: () => Workspace | null
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
@@ -96,27 +95,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return available[0] ?? null
   }
 
-  const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
-    return providerFor(provider)?.defaultPermissionMode ?? 'default'
-  }
-
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
-      // Per-provider seed settings for a fresh agent (e.g. Codex's collaboration
-      // mode); the plugin owns what, if anything, to send.
-      const extraSettings = providerFor(agentProvider)?.defaultExtraSettings
       // Title left empty: the worker picks "Agent <Name>" server-side
       // so CLI and UI paths share one pool (see worker/service/
       // tab_names.go). The response carries the resolved title back.
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
         agentProvider,
-        model: '',
-        systemPrompt: '',
         workerId,
         workingDir,
-        ...(extraSettings ? { extraSettings } : {}),
+        ...openAgentRequestOptions(agentProvider),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -207,34 +197,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change model or effort for the given agent (requires agent restart)
-  const handleModelOrEffortChange = async (agentId: string, field: 'model' | 'effort', value: string) => {
-    const agent = props.tabStore.getAgentTab(agentId)
-    if (!agent || !agent.workerId)
-      return
-    if (!agent.availableModels || agent.availableModels.length === 0)
-      return
-    const provider = agent.agentProvider ?? AgentProvider.CLAUDE_CODE
-    const previous = agent[field] || (field === 'model'
-      ? defaultModelForProvider(provider)
-      : defaultEffortForProvider(provider))
-    // Optimistic update
-    props.tabStore.updateTab(TabType.AGENT, agentId, { [field]: value })
-    props.settingsLoading.start()
-    try {
-      await workerRpc.updateAgentSettings(agent.workerId, {
-        agentId,
-        settings: { [field]: value },
-      })
-      props.settingsLoading.stop()
-    }
-    catch (err) {
-      props.tabStore.updateTab(TabType.AGENT, agentId, { [field]: previous })
-      props.settingsLoading.stop()
-      showWarnToast(`Failed to change ${field}`, err)
-    }
-  }
-
   // Interrupt the given agent's current turn. The worker dispatches
   // the provider-specific signal (Codex turn/cancel, Claude Code
   // interrupt control payload, etc.), so the frontend doesn't have
@@ -249,87 +211,178 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change permission mode for the given agent.
-  // Dispatches through the provider plugin — each provider handles this
-  // differently (Claude Code: control_request, Codex: UpdateAgentSettings).
-  const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
-    const agent = props.tabStore.getAgentTab(agentId)
-    if (!agent || !agent.workerId)
-      return
-    const provider = agent.agentProvider ?? AgentProvider.CLAUDE_CODE
-    const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(provider)) as PermissionMode
-    props.tabStore.updateTab(TabType.AGENT, agentId, { permissionMode: mode })
-    props.settingsLoading.start()
-    try {
-      const plugin = providerFor(provider)
-      if (plugin?.changePermissionMode) {
-        await plugin.changePermissionMode(agent.workerId, agentId, mode)
-      }
-      else {
-        logger.error('No changePermissionMode handler for provider', provider)
-      }
-      props.settingsLoading.stop()
-    }
-    catch (err) {
-      props.tabStore.updateTab(TabType.AGENT, agentId, { permissionMode: previousMode })
-      props.settingsLoading.stop()
-      showWarnToast('Failed to change permission mode', err)
-    }
-  }
-
-  // Change an option-group setting stored in extraSettings.
-  const handleOptionGroupSettingChange = async (
+  /**
+   * After a MODEL change settles, snap the optimistic model/effort onto what the
+   * session actually resolved to, read from the RPC reply's confirmed options. A
+   * model switch RELAUNCHES the agent, and the relaunch can land on different values
+   * than the optimistic click: the account-default sentinel ("default") resolves to a
+   * concrete model, and the relaunch resets effort to the new model's default. Reading
+   * the settled values from the reply (rather than a separately-broadcast catalog)
+   * removes the cross-channel ordering assumption -- the reply IS the confirmation.
+   * Without this, a switch to "default" would freeze the trigger on
+   * "Default (recommended)" until an unrelated status push arrived.
+   *
+   * Scoped to MODEL changes by its sole caller -- the model->effort dependency is
+   * legitimate domain knowledge, not a stored-value special-case.
+   *
+   * Each axis snaps ONLY when it still holds the value this change left it at
+   * (`curValues[axis] === expected`). A rapid re-click on the same axis -- or a
+   * concurrent effort edit while this model RPC was in flight -- writes a newer
+   * optimistic value with its own pending RPC; snapping this reply's (now stale)
+   * value over it would revert the user's newer selection out from under that
+   * request. This mirrors the per-axis guard the failure-rollback path applies.
+   */
+  const reconcileSettledModelChange = (
     agentId: string,
-    field: string,
     value: string,
-    defaultValue: string,
-    errorLabel: string,
+    confirmed: Record<string, string>,
+    expectedEffort: string | undefined,
   ) => {
-    const agent = props.tabStore.getAgentTab(agentId)
-    if (!agent || !agent.workerId)
+    const curValues = props.tabStore.getAgentTab(agentId)?.optionValues || {}
+    const settled: Record<string, string> = {}
+    // Snap the MODEL only when the optimistic click was the account-default sentinel:
+    // a relaunch resolves it to a concrete model. A concrete model the user explicitly
+    // picked KEEPS its optimistic value -- an ACP provider (Cursor) applies a model
+    // switch LIVE, and snapping it to the confirmed echo is unnecessary churn. The
+    // `=== value` guard skips the snap when a newer model re-click already overwrote it.
+    if (value === ACCOUNT_DEFAULT_MODEL && confirmed[OPTION_ID_MODEL] && curValues[OPTION_ID_MODEL] === value)
+      settled[OPTION_ID_MODEL] = confirmed[OPTION_ID_MODEL]
+    // Snap effort to the confirmed (relaunch-reset) value when the agent reports one.
+    // Absent for a provider with no effort axis (Cursor) or an effort-less model
+    // (Haiku), and the confirmed value already reflects any clamp the CLI applied. The
+    // `=== expectedEffort` guard skips the snap when a concurrent effort edit's
+    // in-flight RPC already wrote a newer value, which must win over this stale reply.
+    if (confirmed[OPTION_ID_EFFORT] && curValues[OPTION_ID_EFFORT] === expectedEffort)
+      settled[OPTION_ID_EFFORT] = confirmed[OPTION_ID_EFFORT]
+    if (Object.keys(settled).length === 0)
       return
-    const previous = agent.extraSettings?.[field] || defaultValue
-    props.tabStore.updateTab(TabType.AGENT, agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: value } })
-    props.settingsLoading.start()
-    try {
-      await workerRpc.updateAgentSettings(agent.workerId, {
-        agentId,
-        settings: { extraSettings: { [field]: value } },
-      })
-      props.settingsLoading.stop()
-    }
-    catch (err) {
-      const current = props.tabStore.getAgentTab(agentId)
-      props.tabStore.updateTab(TabType.AGENT, agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
-      props.settingsLoading.stop()
-      showWarnToast(`Failed to change ${errorLabel}`, err)
-    }
-  }
-
-  const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
-    const agent = props.tabStore.getAgentTab(agentId)
-    const defaultValue = optionGroupDefaultValue(agent?.availableOptionGroups, key) || value
-    const label = optionGroupLabel(agent?.availableOptionGroups, key)
-    handleOptionGroupSettingChange(agentId, key, value, defaultValue, label)
+    props.tabStore.updateTab(TabType.AGENT, agentId, {
+      optionValues: { ...curValues, ...settled },
+    })
   }
 
   /**
-   * Single entry point for any settings panel change. Routes the discriminated
-   * patch to the right RPC: `model`/`effort` go through `updateAgentSettings`,
-   * `permissionMode` may dispatch via the provider plugin's `changePermissionMode`,
-   * and `optionGroup` writes to `extraSettings`.
+   * Single entry point for any settings panel change. The settings model is now
+   * uniform: every change is a map of option-group id -> value (one axis for a plain
+   * option pick, several for an action button like Codex "Bypass permissions"). We
+   * optimistically write every axis into the tab's one generic `optionValues` map
+   * (model/effort/permissionMode and every provider extra alike, keyed by group id) and
+   * send ONE updateAgentSettings RPC carrying `{ options: sets }`, so a multi-axis change
+   * is applied ATOMICALLY -- the worker can't accept one axis and reject another, leaving
+   * the agent half-applied while the optimistic UI shows the full state. The worker
+   * decides how to apply it (live vs restart), so the frontend no longer special-cases
+   * permission mode or any other axis.
    */
-  const handleAgentSettingChange = (agentId: string, change: ProviderSettingChange) => {
-    switch (change.kind) {
-      case 'model':
-      case 'effort':
-        return handleModelOrEffortChange(agentId, change.kind, change.value)
-      case 'permissionMode':
-        return handlePermissionModeChange(agentId, change.value)
-      case 'optionGroup':
-        return handleOptionGroupChange(agentId, change.key, change.value)
+  const handleAgentSettingChange = async (agentId: string, change: ProviderSettingChange) => {
+    const { sets } = change
+    const keys = Object.keys(sets)
+    if (keys.length === 0)
+      return
+    const agent = props.tabStore.getAgentTab(agentId)
+    if (!agent || !agent.workerId)
+      return
+    // Refuse a change for an agent that has reported no option catalog yet: there is no group to
+    // back the optimistic write, so the UI would show a selection nothing can reconcile, and the
+    // RPC would target an axis the running session may not validate. The pre-unification model/effort
+    // handler refused the same way on an empty availableModels list; programmatic callers (the
+    // control-request "& Bypass Permissions" button, the plan-mode toggle) can otherwise reach here
+    // with an empty catalog because their visibility is gated on a static provider constant, not the
+    // live catalog.
+    if (!agent.optionGroups || agent.optionGroups.length === 0)
+      return
+
+    // Capture each axis's prior optimistic value so a rollback can restore it exactly --
+    // including deleting a key that had none. Writing '' instead would make
+    // agentTabOptionGroups treat '' as a real override and blank the group's selection
+    // (showing its default) rather than falling through to the catalog's confirmed currentValue.
+    const priors = keys.map(key => ({
+      key,
+      hadPrevious: agent.optionValues != null && key in agent.optionValues,
+      previous: agent.optionValues?.[key],
+    }))
+
+    // The effort value this change leaves in the store, snapshotted NOW -- before the optimistic
+    // write and the in-flight RPC. agent.optionValues is a live store proxy, so reading it after
+    // the await would see a concurrent edit's value. A change that also sets effort leaves its
+    // requested value; a model-only change leaves effort untouched at its pre-change value.
+    // reconcileSettledModelChange snaps effort only while the store still holds this value, so a
+    // concurrent effort edit (its own in-flight RPC) wins instead of being clobbered.
+    const expectedEffort = OPTION_ID_EFFORT in sets ? sets[OPTION_ID_EFFORT] : agent.optionValues?.[OPTION_ID_EFFORT]
+
+    // Optimistic update -- apply EVERY axis in one updateTab so a multi-axis change shows its
+    // combined state atomically. setOptionValue preserves the other axes' optimistic values and
+    // enforces the "never store empty" invariant (an empty value deletes the key rather than
+    // blanking the group with a spurious '' override).
+    let optimistic = agent.optionValues
+    for (const key of keys)
+      optimistic = setOptionValue(optimistic, key, sets[key])
+    props.tabStore.updateTab(TabType.AGENT, agentId, { optionValues: optimistic })
+
+    // Scope the in-flight marker to THIS agent AND to the axes this change touches, so the
+    // statusChange handler suppresses optimistic-value overwrites only for these axes on this
+    // agent -- another agent's unrelated push, and a server-initiated change to a DIFFERENT axis
+    // on this same agent, still apply their own confirmed current values.
+    props.settingsLoading.start(agentId, keys)
+    let resp: Awaited<ReturnType<typeof workerRpc.updateAgentSettings>>
+    try {
+      resp = await workerRpc.updateAgentSettings(agent.workerId, {
+        agentId,
+        settings: { options: { ...sets } },
+      })
     }
+    catch (err) {
+      // Roll back every axis this change set (other axes preserved via the spread). Restore
+      // each axis's prior value, or delete its key when it had no optimistic value before --
+      // so the group falls back to the catalog's confirmed currentValue instead of a spurious
+      // empty override.
+      //
+      // Roll back an axis only when THIS change's optimistic value is still the current one. A
+      // newer change to the same key (a rapid re-click) may have overwritten it while this RPC
+      // was in flight; restoring this change's stale `previous` would revert the user's newer
+      // selection out from under its own in-flight request.
+      const current = props.tabStore.getAgentTab(agentId)
+      const rolledBack = { ...(current?.optionValues || {}) }
+      let didRollback = false
+      for (const { key, hadPrevious, previous } of priors) {
+        if (rolledBack[key] !== sets[key])
+          continue
+        didRollback = true
+        if (hadPrevious)
+          rolledBack[key] = previous as string
+        else
+          delete rolledBack[key]
+      }
+      if (didRollback)
+        props.tabStore.updateTab(TabType.AGENT, agentId, { optionValues: rolledBack })
+      props.settingsLoading.stop(agentId, keys)
+      showWarnToast(`Failed to change ${keys.map(key => optionGroupLabel(agent.optionGroups, key)).join(', ')}`, err)
+      return
+    }
+    // The RPC succeeded. Clear the in-flight marker and reconcile OUTSIDE the rollback
+    // guard above: a fault while reconciling a confirmed change must not be mistaken for
+    // an RPC failure, which would revert the just-applied value and pop a false error
+    // toast. Stop FIRST so a (theoretical) reconcile fault can't strand the spinner until
+    // the safety-net timeout; reconcile runs synchronously right after, so no status push
+    // can interleave and overwrite the optimistic value before it snaps.
+    //
+    // A non-model live-apply change is NOT reply-reconciled: an ACP server's
+    // set_config_option response may omit the refreshed configOptions, so the reply's
+    // confirmed value can lag the just-applied selection, and snapping to it would
+    // revert a correct optimistic value. A genuinely unapplied change is instead
+    // corrected provider-side -- Pi/Codex/Claude restart when they can't apply a change
+    // live (see PiAgent.UpdateSettings) -- and via the next status push.
+    props.settingsLoading.stop(agentId, keys)
+    if (OPTION_ID_MODEL in sets)
+      reconcileSettledModelChange(agentId, sets[OPTION_ID_MODEL], resp.confirmedOptions ?? {}, expectedEffort)
   }
+
+  /**
+   * Permission-mode change shim for the approval-control "& Bypass Permissions"
+   * button (which calls onPermissionModeChange directly). Routes through the
+   * unified dispatcher.
+   */
+  const handlePermissionModeChange = (agentId: string, mode: PermissionMode) =>
+    handleAgentSettingChange(agentId, { sets: { [OPTION_ID_PERMISSION_MODE]: mode } })
 
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
@@ -434,10 +487,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     openAgentInWorkspace,
     handleOpenAgent,
     handleControlResponse,
-    handleModelOrEffortChange,
     handleInterrupt,
     handlePermissionModeChange,
-    handleOptionGroupChange,
     handleAgentSettingChange,
     handleRetryMessage,
     handleDeleteMessage,

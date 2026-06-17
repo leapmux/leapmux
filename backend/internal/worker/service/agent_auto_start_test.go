@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,59 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+// TestEnsureAgentRunning_SerializesConcurrentColdStarts is the regression guard for [C11]:
+// the auto-start path's HasAgent check and startAgent call must run under the per-agent
+// lifecycle lock (LockAgent), so two concurrent sends to a cold agent can't both pass the
+// check and spawn duplicate subprocesses (the second overwriting and orphaning the first in
+// the manager's agent map). Without the lock, both ensureAgentRunning calls enter startAgent
+// concurrently; with it, the second blocks until the first finishes.
+func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	// The mock blocks while "starting" so we can observe whether a second cold-start runs
+	// concurrently. It does NOT register the agent in the manager, so HasAgent stays false --
+	// which is exactly why the lifecycle lock (not the HasAgent re-check alone) is what
+	// serializes the two starts here.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		entered <- struct{}{}
+		<-release
+		return map[string]string{}, nil
+	}
+
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); _ = svc.ensureAgentRunning("agent-1", nil) }()
+	<-entered // the first cold-start is in flight, holding LockAgent
+
+	secondDone := make(chan struct{})
+	go func() { defer close(secondDone); _ = svc.ensureAgentRunning("agent-1", nil) }()
+
+	// The second cold-start must block on the per-agent lifecycle lock; its startAgent must
+	// NOT run concurrently with the first's -- that concurrency is the duplicate-spawn race.
+	select {
+	case <-entered:
+		t.Fatal("second cold-start entered startAgent concurrently with the first -- the lifecycle lock was not held around the HasAgent check + start, so duplicate subprocesses could spawn")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: the second start is blocked on LockAgent.
+	}
+
+	// Release both. The second now runs, but only AFTER the first releases the lock.
+	close(release)
+	<-entered // the second start runs, serialized after the first
+	<-firstDone
+	<-secondDone
+}
 
 // TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning verifies
 // that when SendAgentMessage triggers ensureAgentRunning on an INACTIVE agent
@@ -26,8 +80,8 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 
 	// Mock a successful auto-start so the happy path is exercised without
 	// spawning a real subprocess.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -82,7 +136,7 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, assert.AnError
 	}
 

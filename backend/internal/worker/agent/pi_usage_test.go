@@ -6,8 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // TestAugmentPiMessageEnd_NoUsageReturnsRawUnchanged covers a
@@ -60,7 +58,7 @@ func TestAugmentPiMessageEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 func TestAugmentPiMessageEnd_TotalsAreCumulative(t *testing.T) {
 	a := newPiAgentWithSink(&recordingControlSink{})
 	a.model = "m1"
-	a.availableModels = []*leapmuxv1.AvailableModel{{Id: "m1", ContextWindow: 1000}}
+	a.availableModels = []*ModelInfo{{Id: "m1", ContextWindow: 1000}}
 	first := a.augmentPiMessageEnd([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cost":{"total":0.5}}}}`))
 	second := a.augmentPiMessageEnd([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":50,"output":5,"cost":{"total":0.25}}}}`))
 

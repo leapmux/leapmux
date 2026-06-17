@@ -5,6 +5,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
 // encodeDataURI builds a data URI from a MIME type and raw bytes.
@@ -89,7 +90,13 @@ type OutputSink interface {
 	// broadcast the new settings (model/primary-agent together with the new mode) and
 	// only the chat notification remains. A no-op when oldMode is empty or unchanged.
 	NotifyPermissionModeChanged(oldMode, newMode string)
-	PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string)
+	// PersistSettingsRefresh folds the option values an agent reported back into the
+	// persisted options row as an optionmap.Map DELTA -- the shared merge contract (a
+	// non-empty value is set, an empty value DELETES the key, an ABSENT key is preserved;
+	// see the optionmap package doc). A provider therefore omits an axis it cannot report
+	// (Claude omits permissionMode to keep the stored value, including a startup-time
+	// set_permission_mode; ACP omits effort) and sends concrete values for everything it manages.
+	PersistSettingsRefresh(refresh optionmap.Map)
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	PersistLeapMuxNotification(content map[string]interface{})
@@ -110,14 +117,22 @@ type Agent interface {
 	DiscardOutput()
 	Wait() error
 	Stderr() string
-	CurrentSettings() *leapmuxv1.AgentSettings
 	HandleOutput(content []byte)
-	AvailableModels() []*leapmuxv1.AvailableModel
-	AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup
-	// UpdateSettings applies setting changes to a running agent so that
-	// the next turn picks them up without a restart. Providers that do
-	// not support live updates (e.g. Claude Code) return false.
-	UpdateSettings(s *leapmuxv1.AgentSettings) bool
+	// OptionGroups returns every agent configuration axis (model, effort,
+	// permission mode, and provider-specific options) as option groups,
+	// each carrying its current value, default, mutability, and display order.
+	// It is the single source for both the read model (catalog + current value)
+	// and the persisted settings (via CurrentOptions).
+	OptionGroups() []*leapmuxv1.AvailableOptionGroup
+	// UpdateSettings applies the agent's FULL current option map (id->value) to a running
+	// agent so the next turn picks the change up without a restart. The service always passes
+	// the COMPLETE merged map, NOT a sparse delta; implementers compare each axis against the
+	// running value and push only what differs. An EMPTY value means "no value for this axis"
+	// and is IGNORED -- it is NOT a delete here. (The empty-value-deletes rule of optionmap.Map
+	// applies only to the persistence/merge path -- optionsChangeDelta + casPersistAgentOptions --
+	// never to this in-memory apply.) Returns false when the change requires a restart (e.g. a
+	// Claude effort->auto transition).
+	UpdateSettings(options optionmap.Map) bool
 	// ClearContext starts a new thread/session on the running process,
 	// effectively clearing conversation context without a full restart.
 	// Returns the new session ID, or ("", false) if the provider does not

@@ -9,6 +9,7 @@ import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
 import {
   authedHeaders,
+  cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   getAdminOrgId,
@@ -472,6 +473,15 @@ export const processTest = base.extend<
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const workspaceUrl = `/o/admin/workspace/${workspaceId}`
     await use({ workspaceId, workspaceUrl })
+    // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
+    // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub
+    // half). Without it the worker keeps every test's Claude CLI subprocess alive;
+    // these accumulate on the shared separateHubWorker across the suite and starve
+    // resources, flaking later settings-menu interactions. Best effort.
+    try {
+      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    }
+    catch { /* best effort */ }
     try {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
     }

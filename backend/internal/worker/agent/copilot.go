@@ -12,6 +12,14 @@ const (
 	CopilotCLIModeAutopilot = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
 )
 
+// Copilot's server-driven ACP config-option ids (surfaced as mutable option groups,
+// not static templates). Declared in KnownOptionIDs so a not-running agent validates
+// them, matching the ids the live `session/set_config_option` channel reports.
+const (
+	CopilotConfigReasoningEffort = "reasoning_effort"
+	CopilotConfigAllowAll        = "allow_all"
+)
+
 // CopilotCLIAgent manages a single Copilot CLI ACP process.
 type CopilotCLIAgent struct {
 	acpBase
@@ -20,6 +28,7 @@ type CopilotCLIAgent struct {
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
 func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[CopilotCLIAgent]{
+		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		providerName: "copilot",
 		binaryName:   "copilot",
 		baseArgs:     []string{"--acp", "--stdio"},
@@ -27,41 +36,33 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent,
 		base:         func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *CopilotCLIAgent) {
 			a.modeChannel = modeChannelPermissionMode
-			a.reapplySettings = a.reapplyModelAndPermissionMode
-			a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
+			// Copilot's reasoning-effort axis is the convention id "reasoning_effort", not the
+			// well-known "effort" -- declare it so the env-effort override maps onto it.
+			a.effortConfigID = CopilotConfigReasoningEffort
 		},
 		afterHandshake: func(a *CopilotCLIAgent, handshake *acpSessionResult, opts Options) error {
-			return a.applyPermissionModeStartup(handshake, opts, CopilotCLIModeAgent, opts.Model, a.setModel)
+			return a.applyPermissionModeStartup(handshake, opts, CopilotCLIModeAgent, opts.Model())
 		},
 	})
 }
 
 func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: CopilotCLIModeAgent, Name: "Agent", IsDefault: true},
+		{Id: CopilotCLIModeAgent, Name: "Agent"},
 		{Id: CopilotCLIModePlan, Name: "Plan"},
 		{Id: CopilotCLIModeAutopilot, Name: "Autopilot"},
 	}
 }
 
-func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.permissionModeOptionGroups("Mode", fallbackCopilotCLIModes())
-}
-
 func init() {
-	registerAgentFactory(
+	// model + permissionMode (static group) + Copilot's server-driven config options. Copilot
+	// has no well-known "effort" axis -- its reasoning axis is the config option
+	// "reasoning_effort" -- so `--effort` against Copilot is correctly treated as foreign.
+	registerPermissionModeConfigProvider(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartCopilotCLI(ctx, opts, sink)
-		},
-		nil, // models discovered dynamically from session/new
-		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     OptionGroupKeyPermissionMode,
-			Label:   "Mode",
-			Options: fallbackCopilotCLIModes(),
-		}},
-		"LEAPMUX_COPILOT_DEFAULT_MODEL",
-		"",
-		"copilot",
+		StartCopilotCLI,
+		fallbackCopilotCLIModes(),
+		"LEAPMUX_COPILOT_DEFAULT_MODEL", "copilot",
+		CopilotConfigReasoningEffort, CopilotConfigAllowAll,
 	)
 }

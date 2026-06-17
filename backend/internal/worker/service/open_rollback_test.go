@@ -46,7 +46,7 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 
@@ -84,7 +84,7 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 
@@ -112,7 +112,7 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 

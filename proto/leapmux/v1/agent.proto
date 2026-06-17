@@ -74,24 +74,35 @@ enum ContentCompression {
 // --- Agent CRUD ---
 
 message OpenAgentRequest {
+  // Target: where the agent runs.
   string workspace_id = 1;
-  string model = 2;
-  string system_prompt = 3;
-  string title = 4;
-  string effort = 5;
-  string agent_session_id = 6;  // If set, resume from this session ID
-  string worker_id = 7;         // Target worker (required)
-  string working_dir = 8;       // Working directory on the worker (required)
-  bool create_worktree = 9;     // If true, create a git worktree before starting
-  string worktree_branch = 10;  // Branch name for the worktree
-  string checkout_branch = 11;      // "Switch to branch" mode
+  string org_id = 2;            // Workspace's org (mirrors OpenTerminalRequest.org_id); used by the worker to inject LEAPMUX_REMOTE_ORG_ID into the spawned process
+  string worker_id = 3;         // Target worker (required)
+  string working_dir = 4;       // Working directory on the worker (required)
+
+  // Agent configuration.
+  AgentProvider agent_provider = 5; // Coding agent provider (default: CLAUDE_CODE)
+  string title = 6;
+  string agent_session_id = 7;  // If set, resume from this session ID
+  // Initial option selections keyed by option-group id (e.g. "model", "effort",
+  // "permissionMode", and provider-specific axes). Missing well-known ids are
+  // filled with provider defaults server-side.
+  map<string, string> options = 8;
+
+  // Git worktree / branch selection (mutually exclusive modes).
+  bool create_worktree = 9;         // If true, create a git worktree before starting
+  string worktree_branch = 10;      // Branch name for the worktree
+  string worktree_base_branch = 11; // Base branch for "Create new worktree" (default: current branch)
   string use_worktree_path = 12;    // "Use existing worktree" mode
-  string worktree_base_branch = 13; // Base branch for "Create new worktree" (default: current branch)
-  string create_branch = 14;        // "Create new branch" mode — branch name to create
+  string checkout_branch = 13;      // "Switch to branch" mode
+  string create_branch = 14;        // "Create new branch" mode -- branch name to create
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
-  AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
-  map<string, string> extra_settings = 17; // Provider-specific persisted settings (e.g. Codex extras)
-  string org_id = 18;           // Workspace's org (mirrors OpenTerminalRequest.org_id); used by the worker to inject LEAPMUX_REMOTE_ORG_ID into the spawned process
+
+  // Reserved: slots freed when the model/effort scalars, system_prompt, and the
+  // extra_settings map collapsed into the generic `options` map. The numbers are NOT
+  // reused -- a new field takes a fresh number (>= 16) -- and the names cannot return.
+  reserved 16, 17, 18;
+  reserved "model", "system_prompt", "effort", "extra_settings";
 }
 
 message OpenAgentResponse {
@@ -125,61 +136,73 @@ message RenameAgentRequest {
 message RenameAgentResponse {}
 
 message AgentInfo {
+  // Identity.
   string id = 1;
   string workspace_id = 2;
   string title = 3;
-  string model = 4;
-  AgentStatus status = 5;
-  string created_at = 6;
-  string closed_at = 7;
-  string agent_session_id = 8;  // Non-empty if agent session can be resumed
-  string permission_mode = 9;
-  string effort = 10;
-  string worker_id = 11;        // Worker this agent runs on
-  string worker_name = 12;      // Human-readable worker name
-  string working_dir = 13;      // Working directory on the worker
-  AgentGitStatus git_status = 14; // Git status for the agent's working directory
-  string home_dir = 15;         // Worker's home directory for tilde path display
-  reserved 16; // was supports_model_effort
-  AgentProvider agent_provider = 17; // Coding agent provider
-  repeated AvailableModel available_models = 18; // Models reported by the agent process
-  repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
-  map<string, string> extra_settings = 20; // Provider-specific persisted settings (e.g. Codex extras)
-  string startup_error = 21; // Populated when status=AGENT_STATUS_STARTUP_FAILED
-  string startup_message = 22; // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status…")
+
+  // Worker / location.
+  string worker_id = 4;         // Worker this agent runs on
+  string worker_name = 5;       // Human-readable worker name
+  string working_dir = 6;       // Working directory on the worker
+  string home_dir = 7;          // Worker's home directory for tilde path display
+
+  // Agent configuration.
+  AgentProvider agent_provider = 8; // Coding agent provider
+  // All agent configuration axes (model, effort, permission mode, and every
+  // provider-specific option) reported by the agent process, each with its
+  // current value, default, mutability, and display order.
+  repeated AvailableOptionGroup option_groups = 9;
+
+  // Lifecycle / status.
+  AgentStatus status = 10;
+  string agent_session_id = 11; // Non-empty if agent session can be resumed
+  string created_at = 12;
+  string closed_at = 13;
+  string startup_error = 14;    // Populated when status=AGENT_STATUS_STARTUP_FAILED
+  string startup_message = 15;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
+
+  // Git.
+  AgentGitStatus git_status = 16; // Git status for the agent's working directory
+
+  // Reserved: slots freed when the model/effort/permission_mode scalars, the
+  // extra_settings map, and the available_models / available_option_groups lists collapsed
+  // into the generic `option_groups` list. 16 (supports_model_effort) was reused for
+  // git_status before this change; the rest are never reused, and the names cannot return.
+  reserved 17, 18, 19, 20, 21, 22;
+  reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
 }
 
-// AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
-message AvailableModel {
-  string id = 1;               // Model identifier (passed as "model" in requests)
-  string display_name = 2;     // Human-readable label
-  bool is_default = 3;         // Whether this is the provider's default model
-  string default_effort = 4;   // Default reasoning effort for this model
-  repeated AvailableEffort supported_efforts = 5; // Efforts this model supports
-  string description = 6;      // Tooltip / description text shown on hover
-  int64 context_window = 7;    // Context window size in tokens (0 = unknown)
-}
-
-// AvailableEffort describes a reasoning effort supported by a model.
-message AvailableEffort {
-  string id = 1;               // Effort identifier (e.g. "high", "medium")
-  string name = 2;             // Human-readable short label (e.g. "High")
-  string description = 3;      // Tooltip / description text shown on hover
-}
-
-// AvailableOption describes a single selectable option (e.g. a permission mode value).
+// AvailableOption describes a single selectable value within an option group
+// (e.g. a model, a reasoning effort, or a permission-mode value).
 message AvailableOption {
-  string id = 1;           // Value stored/sent in requests (e.g. "default", "never")
-  string name = 2;         // Human-readable label (e.g. "Default", "Full Auto")
-  string description = 3;  // Tooltip text
-  bool is_default = 4;     // Whether this is the provider's default option for the group
+  string id = 1;             // Value stored/sent in requests (e.g. "opus", "high", "default")
+  string name = 2;           // Human-readable label (e.g. "Opus 4.8", "High", "Default")
+  string description = 3;    // Tooltip text shown on hover
+  int64 context_window = 4;  // Context window size in tokens (0 = n/a); set only on "model" group options
+  // sub_groups carries the option groups this value determines -- set only on
+  // "model" group options, where each model carries its own model-dependent
+  // groups: the reasoning "effort" tiers it supports, and Claude's "extended
+  // thinking" group whose enabled label is "Adaptive" vs "On" per model. It lets
+  // the frontend recompute those dependent groups the instant the model selection
+  // changes, instead of waiting for the worker to re-emit them after a relaunch.
+  repeated AvailableOptionGroup sub_groups = 5;
 }
 
-// AvailableOptionGroup describes a named group of options (e.g. "Permission Mode", "Approval Policy").
+// AvailableOptionGroup is one axis of agent configuration. ALL agent options
+// are represented uniformly by this message: model, effort, permission mode,
+// primary agent, and every provider-specific axis (fast mode, sandbox policy,
+// service tier, ...). Well-known ids ("model", "effort", "permissionMode",
+// "primaryAgent") let callers fetch a specific axis; provider-specific axes use
+// their own id.
 message AvailableOptionGroup {
-  string key = 1;                        // Identifier (e.g. "permissionMode")
-  string label = 2;                      // Display label (e.g. "Permission Mode")
-  repeated AvailableOption options = 3;   // The options in this group
+  string id = 1;                        // Well-known or provider-specific group id
+  string label = 2;                     // Display label (e.g. "Model", "Permission Mode")
+  repeated AvailableOption options = 3;  // The selectable values in this group
+  string current_value = 4;             // Currently selected option id
+  string default_value = 5;             // Provider default option id
+  bool mutable = 6;                     // false => agent-controlled, render read-only
+  int32 order = 7;                      // Ascending display order in the popover
 }
 
 // --- Agent Messaging ---
@@ -240,21 +263,29 @@ message AgentStreamEnd {
 
 // AgentStatusChange notifies of agent status transitions.
 message AgentStatusChange {
+  // Identity.
   string agent_id = 1;
-  AgentStatus status = 2;
-  string agent_session_id = 3;  // Non-empty if agent session can be resumed
-  bool worker_online = 4;       // Whether the worker hosting this agent is online
-  string permission_mode = 5;
-  string model = 6;
-  string effort = 7;
-  AgentGitStatus git_status = 8; // Git status for the agent's working directory
-  reserved 9; // was supports_model_effort
-  AgentProvider agent_provider = 10; // Provider for this agent
-  map<string, string> extra_settings = 11; // Provider-specific persisted settings
-  repeated AvailableModel available_models = 12; // Models reported by the agent process (empty = don't update)
-  repeated AvailableOptionGroup available_option_groups = 13; // Option groups reported by the agent (empty = don't update)
-  string startup_error = 14; // Populated when status=AGENT_STATUS_STARTUP_FAILED
-  string startup_message = 15; // Phase label shown in the startup panel while status=AGENT_STATUS_STARTING (e.g. "Checking Git status…")
+  AgentProvider agent_provider = 2; // Provider for this agent
+
+  // Lifecycle / status.
+  AgentStatus status = 3;
+  string agent_session_id = 4;  // Non-empty if agent session can be resumed
+  bool worker_online = 5;       // Whether the worker hosting this agent is online
+  string startup_error = 6;     // Populated when status=AGENT_STATUS_STARTUP_FAILED
+  string startup_message = 7;   // Phase label shown in the startup panel while status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
+
+  // Agent configuration: all axes reported by the agent (empty = don't update).
+  repeated AvailableOptionGroup option_groups = 8;
+
+  // Git.
+  AgentGitStatus git_status = 9; // Git status for the agent's working directory
+
+  // Reserved: slots freed when the model/effort/permission_mode scalars, the
+  // extra_settings map, and the available_models / available_option_groups lists collapsed
+  // into the generic `option_groups` list. The numbers are NOT reused -- a new field takes
+  // a fresh number (>= 10) -- and the names cannot return.
+  reserved 10, 11, 12, 13, 14, 15;
+  reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
@@ -364,13 +395,11 @@ message DeleteAgentMessageRequest {
 
 message DeleteAgentMessageResponse {}
 
-// AgentSettings holds agent setting values. Empty strings mean "no change"
-// when used in UpdateAgentSettingsRequest.
+// AgentSettings holds option values to apply, keyed by option-group id
+// (e.g. "model", "effort", "permissionMode", "sandbox_policy"). Sparse: only
+// the included ids change; omitted ids are left untouched.
 message AgentSettings {
-  string model = 1;
-  string effort = 2;
-  string permission_mode = 3;
-  map<string, string> extra_settings = 4;
+  map<string, string> options = 1;
 }
 
 message UpdateAgentSettingsRequest {
@@ -378,7 +407,19 @@ message UpdateAgentSettingsRequest {
   AgentSettings settings = 2;
 }
 
-message UpdateAgentSettingsResponse {}
+message UpdateAgentSettingsResponse {
+  // The option values the agent settled on after applying the change -- e.g. the
+  // concrete model an account-default sentinel resolved to, and the effort a model
+  // switch reset to. The client reconciles its optimistic state against these rather
+  // than a separately-broadcast catalog, removing a cross-channel ordering dependency.
+  // ALWAYS populated: for an offline edit or a failed restart where no running agent
+  // confirms anything, this echoes the requested values filled with provider defaults
+  // (it is never empty). Reconcile only the model/effort axes against it -- a non-model
+  // axis applied live (ACP set_config_option) may not echo its refreshed value here, so
+  // the reply can lag the optimistic selection; that axis is corrected by the next
+  // status push instead.
+  map<string, string> confirmed_options = 1;
+}
 
 message ListAvailableProvidersRequest {}
 

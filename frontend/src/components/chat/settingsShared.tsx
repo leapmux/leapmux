@@ -1,26 +1,30 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { SettingsItem } from './settingsGroups'
 import Check from 'lucide-solid/icons/check'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
 import Dot from 'lucide-solid/icons/dot'
+import Flame from 'lucide-solid/icons/flame'
+import Rocket from 'lucide-solid/icons/rocket'
 import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
-import { createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, Index, Show, splitProps } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from './ChatView.css'
+import { EFFORT_AUTO, OPTION_GROUP_SEARCHABLE_THRESHOLD } from './settingsGroups'
 
 /**
- * Default icon-per-effort-level map used by {@link effortIcon}. Providers can
- * pass an override map to swap or extend any key (e.g. Claude maps `xhigh`
- * to a flame to free up Zap for its `max` tier).
+ * Icon-per-effort-level map used by {@link effortIcon}. Effort ids are global
+ * (not per-provider), so one map covers every tier: `ultracode` (xhigh +
+ * workflow orchestration) gets a rocket, `xhigh` a flame, and `max` keeps Zap.
  */
 export const DEFAULT_EFFORT_ICONS: Readonly<Record<string, LucideIcon>> = {
   [EFFORT_AUTO]: Sparkles,
-  xhigh: Zap,
+  ultracode: Rocket,
+  xhigh: Flame,
+  max: Zap,
   high: ChevronsUp,
   medium: Dot,
   low: ChevronsDown,
@@ -30,177 +34,25 @@ export const DEFAULT_EFFORT_ICONS: Readonly<Record<string, LucideIcon>> = {
 }
 
 /**
- * Render the icon for a thinking/effort level. Falls back to the default map
- * then to a neutral Dot. Overrides are merged on top of the defaults so a
- * caller only has to specify the keys it wants to change.
+ * Render the icon for a thinking/effort level, falling back to the default map
+ * then to a neutral Dot.
  */
-export function effortIcon(level: string, overrides?: Record<string, LucideIcon>): JSX.Element {
-  const I = overrides?.[level] ?? DEFAULT_EFFORT_ICONS[level] ?? Dot
+export function effortIcon(level: string): JSX.Element {
+  const I = DEFAULT_EFFORT_ICONS[level] ?? Dot
   return <Icon icon={I} size="xs" />
 }
 
-/** Option group key for the permission mode setting, shared across providers. */
-export const PERMISSION_MODE_KEY = 'permissionMode' as const
-
-/** Shared item type used by RadioGroup and settings helpers. */
-export interface SettingsItem {
+/**
+ * Shared props for the settings selectors (OptionGroupSelect / RadioGroup /
+ * SearchableSelect). All three render the same labelled, optionally-read-only
+ * fieldset (see {@link SettingsGroupFieldset}) and differ only in the body, so the
+ * common prop set lives here once; OptionGroupSelect and RadioGroup additionally take a
+ * radio `name`.
+ */
+interface SettingsSelectProps {
   label: string
-  value: string
-  tooltip?: string
-}
-
-/** Build model radio items from available models. */
-export function modelItems(availableModels: AvailableModel[] | undefined): SettingsItem[] {
-  if (availableModels && availableModels.length > 0)
-    return availableModels.map(m => ({ label: m.displayName || m.id, value: m.id, tooltip: m.description || undefined }))
-  return []
-}
-
-/** Resolve the default model ID from the available models list. */
-export function defaultModelId(availableModels: AvailableModel[] | undefined): string {
-  if (!availableModels || availableModels.length === 0)
-    return ''
-  return availableModels.find(m => m.isDefault)?.id || availableModels[0]?.id || ''
-}
-
-/** Build effort radio items for the current model. */
-export function effortItems(availableModels: AvailableModel[] | undefined, currentModel: string): SettingsItem[] {
-  if (availableModels && availableModels.length > 0) {
-    const model = availableModels.find(m => m.id === currentModel)
-    if (model)
-      return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
-  }
-  return []
-}
-
-/**
- * Whether `effort` is one of the tiers the given model currently offers. Used
- * to guard effort UI during an optimistic model switch, where the effort can
- * briefly be a value the new model doesn't support (e.g. "ultracode"/"xhigh"
- * left over from Opus after switching to Sonnet). Returns false when the model
- * list is empty/loading or the model is unknown.
- */
-export function effortValidForModel(availableModels: AvailableModel[] | undefined, currentModel: string, effort: string): boolean {
-  return effortItems(availableModels, currentModel).some(e => e.value === effort)
-}
-
-/**
- * The current effort if the model still offers it, else `EFFORT_AUTO`. Use this
- * for the effort RadioGroup's `current` value so it never renders with no
- * selection during an optimistic model switch, where the effort can briefly be
- * a tier the new model doesn't offer (e.g. "ultracode"/"xhigh" left over from
- * Opus after switching to Sonnet). `EFFORT_AUTO` is offered by every
- * effort-bearing model and is the value the backend resets to on a model change.
- */
-export function effortValueForModel(availableModels: AvailableModel[] | undefined, currentModel: string, effort: string): string {
-  return effortValidForModel(availableModels, currentModel, effort) ? effort : EFFORT_AUTO
-}
-
-/** Find an option group by key. */
-export function optionGroup(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string) {
-  return availableOptionGroups?.find(g => g.key === key)
-}
-
-/** Resolve the display label for an option group key. */
-export function optionGroupLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): string {
-  const group = optionGroup(availableOptionGroups, key)
-  return group?.label || key
-}
-
-/** Build option-group radio items. */
-export function optionGroupItems(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): SettingsItem[] {
-  const group = optionGroup(availableOptionGroups, key)
-  if (group && group.options.length > 0)
-    return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
-  return []
-}
-
-/** Find the permission mode option group. */
-export function permissionModeGroup(availableOptionGroups: AvailableOptionGroup[] | undefined) {
-  return optionGroup(availableOptionGroups, PERMISSION_MODE_KEY)
-}
-
-/** Build permission mode radio items. */
-export function permissionModeItems(availableOptionGroups: AvailableOptionGroup[] | undefined): SettingsItem[] {
-  return optionGroupItems(availableOptionGroups, PERMISSION_MODE_KEY)
-}
-
-/** Resolve model display name from available models. */
-export function modelDisplayName(availableModels: AvailableModel[] | undefined, currentModel: string): string {
-  if (availableModels && availableModels.length > 0) {
-    const model = availableModels.find(m => m.id === currentModel)
-    if (model)
-      return model.displayName || model.id
-  }
-  return currentModel
-}
-
-/** Resolve any option-group label from available option groups. */
-export function optionLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string, currentValue: string): string {
-  const group = optionGroup(availableOptionGroups, key)
-  if (group) {
-    const opt = group.options.find(o => o.id === currentValue)
-    if (opt)
-      return opt.name || opt.id
-  }
-  return currentValue
-}
-
-/** Threshold above which model selection uses a searchable select instead of radio buttons. */
-const MODEL_SEARCHABLE_THRESHOLD = 7
-
-/**
- * Model selector that uses RadioGroup for small lists and SearchableSelect
- * for lists exceeding the threshold.
- */
-export function ModelSelect(props: {
   items: SettingsItem[]
   testIdPrefix: string
-  name: string
-  current: string
-  onChange: (value: string) => void
-  fieldsetClass?: string
-}): JSX.Element {
-  return (
-    <Show
-      when={props.items.length > MODEL_SEARCHABLE_THRESHOLD}
-      fallback={(
-        <RadioGroup
-          label="Model"
-          items={props.items}
-          testIdPrefix={props.testIdPrefix}
-          name={props.name}
-          current={props.current}
-          onChange={props.onChange}
-          fieldsetClass={props.fieldsetClass}
-        />
-      )}
-    >
-      <SearchableSelect
-        label="Model"
-        items={props.items}
-        testIdPrefix={props.testIdPrefix}
-        current={props.current}
-        onChange={props.onChange}
-        fieldsetClass={props.fieldsetClass}
-      />
-    </Show>
-  )
-}
-
-/** Resolve the default option ID for an option group. */
-export function optionGroupDefaultValue(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): string {
-  const group = optionGroup(availableOptionGroups, key)
-  if (!group || group.options.length === 0)
-    return ''
-  return group.options.find(o => o.isDefault)?.id || group.options[0]?.id || ''
-}
-
-export function RadioGroup(props: {
-  label: string
-  items: { label: string, value: string, tooltip?: string }[]
-  testIdPrefix: string
-  name: string
   current: string
   onChange: (value: string) => void
   fieldsetClass?: string
@@ -208,6 +60,22 @@ export function RadioGroup(props: {
   disabled?: boolean
   /** Tooltip shown on the whole group explaining why it's read-only (implies disabled styling). */
   disabledReason?: string
+}
+
+/**
+ * Shared chrome for a settings group: the labelled `<div role="group">` with optional
+ * read-only (disabled) styling, wrapped in a Tooltip when a disabledReason explains why
+ * it's read-only. RadioGroup and SearchableSelect render their distinct body (radios /
+ * current value + listbox) as children, so the fieldset, its label, the
+ * data-disabled/aria-disabled toggling, and the disabled-reason tooltip live here once
+ * rather than byte-for-byte in each.
+ */
+function SettingsGroupFieldset(props: {
+  label: string
+  fieldsetClass?: string
+  disabled?: boolean
+  disabledReason?: string
+  children: JSX.Element
 }): JSX.Element {
   const labelId = createUniqueId()
   const group = (
@@ -221,37 +89,87 @@ export function RadioGroup(props: {
       class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
     >
       <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
-      <For each={props.items}>
-        {item => (
-          <Tooltip text={item.tooltip}>
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`${props.testIdPrefix}-${item.value}`}
-            >
-              <input
-                type="radio"
-                name={props.name}
-                value={item.value}
-                checked={props.current === item.value}
-                disabled={props.disabled}
-                onChange={() => {
-                  // Guard against a programmatic change event firing while disabled.
-                  if (!props.disabled)
-                    props.onChange(item.value)
-                }}
-              />
-              {item.label}
-            </label>
-          </Tooltip>
-        )}
-      </For>
+      {props.children}
     </div>
   )
   return (
     <Show when={props.disabledReason} fallback={group}>
       <Tooltip text={props.disabledReason}>{group}</Tooltip>
     </Show>
+  )
+}
+
+/**
+ * Generic option selector: RadioGroup for small lists, SearchableSelect for
+ * lists exceeding {@link OPTION_GROUP_SEARCHABLE_THRESHOLD}. Used for every
+ * option group (model, effort, permission mode, provider extras) so any axis
+ * with many values becomes filterable, not just model.
+ */
+export function OptionGroupSelect(props: SettingsSelectProps & { name: string }): JSX.Element {
+  // Both branches forward the same prop set; only RadioGroup also takes `name`.
+  // splitProps keeps `common` a reactive proxy (a plain object literal would snapshot
+  // the values once and break reactivity), so adding/renaming a shared prop is a single
+  // edit rather than two parallel ones that can silently diverge.
+  const [radioOnly, common] = splitProps(props, ['name'])
+  return (
+    <Show
+      when={props.items.length > OPTION_GROUP_SEARCHABLE_THRESHOLD}
+      fallback={<RadioGroup {...common} name={radioOnly.name} />}
+    >
+      <SearchableSelect {...common} />
+    </Show>
+  )
+}
+
+export function RadioGroup(props: SettingsSelectProps & { name: string }): JSX.Element {
+  return (
+    <SettingsGroupFieldset
+      label={props.label}
+      fieldsetClass={props.fieldsetClass}
+      disabled={props.disabled}
+      disabledReason={props.disabledReason}
+    >
+      {/*
+        Index (not For) keys the radios by position so the <label> DOM nodes are
+        STABLE across re-renders -- only their reactive content (value/checked/
+        label) updates. The worker re-broadcasts the catalog on every status push
+        and an optimistic model switch swaps the option list, both of which hand
+        this a fresh items array; with For, each push detaches and recreates every
+        radio, which flickers and races a Playwright/user click mid-recreation.
+        Index recomputes each radio's value/checked from its position, so the
+        rendered selection is always correct even when the list changes -- e.g. the
+        effort list grows/shrinks per model, or the model list gains an entry
+        mid-list when ensureSettledModelListed surfaces the resolved account-default
+        at its canonical rank. The only thing not preserved across such a mid-list
+        change is DOM node identity at/after the insertion point, a rare settle-time
+        event we accept over the per-push churn For would cause.
+      */}
+      <Index each={props.items}>
+        {item => (
+          <Tooltip text={item().tooltip}>
+            <label
+              role="menuitemradio"
+              class={styles.settingsRadioItem}
+              data-testid={`${props.testIdPrefix}-${item().value}`}
+            >
+              <input
+                type="radio"
+                name={props.name}
+                value={item().value}
+                checked={props.current === item().value}
+                disabled={props.disabled}
+                onChange={() => {
+                  // Guard against a programmatic change event firing while disabled.
+                  if (!props.disabled)
+                    props.onChange(item().value)
+                }}
+              />
+              {item().label}
+            </label>
+          </Tooltip>
+        )}
+      </Index>
+    </SettingsGroupFieldset>
   )
 }
 
@@ -279,6 +197,8 @@ export interface FilterableItem {
   value: string
   /** Optional secondary text shown right-aligned. */
   secondary?: string
+  /** Optional hover tooltip (e.g. an option's description). */
+  tooltip?: string
 }
 
 /**
@@ -316,24 +236,36 @@ export function FilterableListbox(props: {
     )
   })
 
+  // Keep highlightedIndex in range when the list shrinks underneath it -- props.items is
+  // re-emitted as a shorter catalog on an optimistic model switch (the model/effort lists swap),
+  // and the filter input is only one of the inputs that resize filtered(). Clamp (don't reset to
+  // 0) so a benign re-broadcast doesn't yank a user mid-keyboard-navigation; only an out-of-range
+  // index is pulled back to the last row. Without this, ArrowDown computes from a stale large
+  // index and Enter indexes past the end (guarded, but selects nothing).
+  createEffect(() => {
+    const len = filtered().length
+    setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
+  })
+
+  const scrollHighlightedIntoView = () => {
+    requestAnimationFrame(() => {
+      const el = listRef?.querySelectorAll<HTMLElement>('[data-listbox-item]')[highlightedIndex()]
+      el?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
     const items = filtered()
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
         setHighlightedIndex(i => Math.min(i + 1, items.length - 1))
-        requestAnimationFrame(() => {
-          const el = listRef?.children[highlightedIndex()] as HTMLElement | undefined
-          el?.scrollIntoView({ block: 'nearest' })
-        })
+        scrollHighlightedIntoView()
         break
       case 'ArrowUp':
         e.preventDefault()
         setHighlightedIndex(i => Math.max(i - 1, 0))
-        requestAnimationFrame(() => {
-          const el = listRef?.children[highlightedIndex()] as HTMLElement | undefined
-          el?.scrollIntoView({ block: 'nearest' })
-        })
+        scrollHighlightedIntoView()
         break
       case 'Enter': {
         e.preventDefault()
@@ -361,22 +293,27 @@ export function FilterableListbox(props: {
       <div class={listboxCls()} ref={listRef}>
         <For each={filtered()}>
           {(item, index) => (
-            <div
-              class={`${itemCls()}${index() === highlightedIndex() ? ` ${itemHighlightCls()}` : ''}${props.current != null && item.value === props.current ? ` ${itemSelectedCls()}` : ''}`}
-              data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
-              onClick={() => props.onSelect(item.value)}
-              onMouseEnter={() => setHighlightedIndex(index())}
-            >
-              <span>{highlightMatch(item.label, filter())}</span>
-              <Show when={item.secondary}>
-                <span class={styles.searchableSelectItemSecondary}>
-                  {highlightMatch(item.secondary!, filter())}
-                </span>
-              </Show>
-              <Show when={!item.secondary && props.current != null && item.value === props.current}>
-                <Icon icon={Check} size="xs" />
-              </Show>
-            </div>
+            <Tooltip text={item.tooltip}>
+              <div
+                // The Tooltip wraps each row in a display:contents span, so keyboard-nav
+                // scrolling looks the row up by this marker instead of listRef.children.
+                data-listbox-item=""
+                class={`${itemCls()}${index() === highlightedIndex() ? ` ${itemHighlightCls()}` : ''}${props.current != null && item.value === props.current ? ` ${itemSelectedCls()}` : ''}`}
+                data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
+                onClick={() => props.onSelect(item.value)}
+                onMouseEnter={() => setHighlightedIndex(index())}
+              >
+                <span>{highlightMatch(item.label, filter())}</span>
+                <Show when={item.secondary}>
+                  <span class={styles.searchableSelectItemSecondary}>
+                    {highlightMatch(item.secondary!, filter())}
+                  </span>
+                </Show>
+                <Show when={!item.secondary && props.current != null && item.value === props.current}>
+                  <Icon icon={Check} size="xs" />
+                </Show>
+              </div>
+            </Tooltip>
           )}
         </For>
       </div>
@@ -406,36 +343,30 @@ export function FilterableListbox(props: {
 }
 
 /** Searchable select for large item lists (e.g. models). */
-export function SearchableSelect(props: {
-  label: string
-  items: SettingsItem[]
-  testIdPrefix: string
-  current: string
-  onChange: (value: string) => void
-  fieldsetClass?: string
-}): JSX.Element {
-  const labelId = createUniqueId()
+export function SearchableSelect(props: SettingsSelectProps): JSX.Element {
   const currentLabel = () => {
     const item = props.items.find(i => i.value === props.current)
     return item?.label || props.current
   }
 
   return (
-    <div
-      role="group"
-      aria-labelledby={labelId}
-      class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
+    <SettingsGroupFieldset
+      label={props.label}
+      fieldsetClass={props.fieldsetClass}
+      disabled={props.disabled}
+      disabledReason={props.disabledReason}
     >
-      <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
       <div class={styles.searchableSelectCurrent} data-testid={`${props.testIdPrefix}-current`}>
         {currentLabel()}
       </div>
-      <FilterableListbox
-        items={props.items}
-        current={props.current}
-        testIdPrefix={props.testIdPrefix}
-        onSelect={props.onChange}
-      />
-    </div>
+      <Show when={!props.disabled}>
+        <FilterableListbox
+          items={props.items}
+          current={props.current}
+          testIdPrefix={props.testIdPrefix}
+          onSelect={props.onChange}
+        />
+      </Show>
+    </SettingsGroupFieldset>
   )
 }

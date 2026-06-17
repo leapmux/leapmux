@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
 func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest) {
@@ -60,7 +61,7 @@ func TestHelperProcessGooseCLI(*testing.T) {
 				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false, true
 			}
 			return "", false, false
-		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
+		case acpMethodSessionSetConfigOption, acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
 			return `{}`, false, true
 		default:
 			return "", false, false
@@ -89,13 +90,14 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 	assert.Equal(t, "goose-new", agent.sessionID)
 	assert.Equal(t, "default-model", agent.model)
 	assert.Equal(t, GooseCLIModeAuto, agent.permissionMode)
-	require.Len(t, agent.AvailableModels(), 2)
-	assert.Equal(t, "default-model", agent.AvailableModels()[0].GetId())
-	require.Len(t, agent.AvailableOptionGroups(), 1)
-	assert.Equal(t, "permissionMode", agent.AvailableOptionGroups()[0].GetKey())
+	require.Len(t, agent.availableModels, 2)
+	assert.Equal(t, "default-model", agent.availableModels[0].GetId())
+	groups := agent.OptionGroups()
+	modeGroup := optionids.GroupByID(groups, OptionIDPermissionMode)
+	require.NotNil(t, modeGroup)
 	// Verify mode names are capitalized (e.g. "smart_approve" → "Smart Approve").
-	modeNames := make([]string, 0, len(agent.AvailableOptionGroups()[0].GetOptions()))
-	for _, opt := range agent.AvailableOptionGroups()[0].GetOptions() {
+	modeNames := make([]string, 0, len(modeGroup.GetOptions()))
+	for _, opt := range modeGroup.GetOptions() {
 		modeNames = append(modeNames, opt.GetName())
 	}
 	assert.Equal(t, []string{"Auto", "Approve", "Smart Approve", "Chat"}, modeNames)
@@ -128,13 +130,13 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 	agent, requests := newGooseAgentForRPC(t)
 	agent.availableModes = []*leapmuxv1.AvailableOption{
-		{Id: GooseCLIModeAuto, Name: "Auto", IsDefault: true},
+		{Id: GooseCLIModeAuto, Name: "Auto"},
 		{Id: GooseCLIModeApprove, Name: "Approve"},
 	}
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:          "fast-model",
-		PermissionMode: GooseCLIModeApprove,
+	updated := agent.UpdateSettings(map[string]string{
+		OptionIDModel:          "fast-model",
+		OptionIDPermissionMode: GooseCLIModeApprove,
 	})
 	require.True(t, updated)
 	assert.Equal(t, "fast-model", agent.model)
@@ -142,8 +144,9 @@ func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
-	assert.Equal(t, "fast-model", recorded[0].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetConfigOption, recorded[0].Method)
+	assert.Equal(t, acpConfigOptionIDModel, recorded[0].Params["configId"])
+	assert.Equal(t, "fast-model", recorded[0].Params["value"])
 	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, GooseCLIModeApprove, recorded[1].Params["modeId"])
 }
@@ -159,11 +162,16 @@ func TestGooseCancelSessionSendsACPMethod(t *testing.T) {
 }
 
 func TestGooseAvailableOptionGroupsFallsBack(t *testing.T) {
-	agent := &GooseCLIAgent{}
+	// configure sets both the channel and the static fallback list; OptionGroups serves
+	// that fallback before the session reports a permission-mode catalog.
+	agent := &GooseCLIAgent{acpBase: acpBase{
+		modeChannel:       modeChannelPermissionMode,
+		secondaryFallback: fallbackGooseCLIModes(),
+	}}
 
-	groups := agent.AvailableOptionGroups()
+	groups := agent.OptionGroups()
 	require.Len(t, groups, 1)
-	assert.Equal(t, "permissionMode", groups[0].GetKey())
+	assert.Equal(t, "permissionMode", groups[0].GetId())
 	assert.Equal(t, GooseCLIModeAuto, groups[0].GetOptions()[0].GetId())
 }
 

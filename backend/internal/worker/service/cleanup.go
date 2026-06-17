@@ -27,6 +27,52 @@ func StartCleanupLoop(ctx context.Context, queries *db.Queries) {
 	})
 }
 
+// StartOrphanSweepLoop starts a background goroutine that periodically reclaims the
+// in-memory tracker state of agents the DB no longer lists as open (see
+// SweepOrphanedAgentState). Shares the cleanup cadence and jitter.
+func (svc *Context) StartOrphanSweepLoop(ctx context.Context) {
+	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(context.Context) {
+		svc.SweepOrphanedAgentState()
+	})
+}
+
+// SweepOrphanedAgentState reclaims the in-memory tracker state of agents that are
+// gone for good -- closed or deleted in the DB and not running -- but were never
+// routed through a cleanup path. It backstops the per-exit handler, which
+// deliberately keeps the trackers (ClearPendingControlRequests, not CleanupAgent) so
+// a relaunch can consolidate notifications. Open-but-inactive agents are LEFT ALONE:
+// their state is intentionally retained for a possible relaunch; only agents the DB no
+// longer lists as open are reclaimed.
+func (svc *Context) SweepOrphanedAgentState() {
+	tracked := svc.Output.TrackedAgentIDs()
+	if len(tracked) == 0 {
+		return
+	}
+	openIDs, err := svc.Queries.ListAllOpenAgentIDs(bgCtx())
+	if err != nil {
+		slog.Error("orphan sweep: list open agents", "error", err)
+		return
+	}
+	open := make(map[string]struct{}, len(openIDs))
+	for _, id := range openIDs {
+		open[id] = struct{}{}
+	}
+	var swept int
+	for _, id := range tracked {
+		if _, isOpen := open[id]; isOpen {
+			continue // open agent: state retained for a possible relaunch
+		}
+		if svc.Agents.HasAgent(id) {
+			continue // still running (defensive; a running agent should be open)
+		}
+		svc.Output.CleanupAgent(id)
+		swept++
+	}
+	if swept > 0 {
+		slog.Info("orphan sweep: reclaimed in-memory agent state", "count", swept)
+	}
+}
+
 func runCleanup(ctx context.Context, queries *db.Queries) {
 	cutoff := sql.NullTime{
 		Time:  time.Now().UTC().Add(-cleanupRetention),

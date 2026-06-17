@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -98,10 +99,24 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 		}
-		model := modelOrDefault(r.GetModel(), agentProvider)
-		effort := effortOrDefault(r.GetEffort(), agentProvider)
-		permissionMode := agent.PermissionModeOrDefault(agentProvider, "")
-		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
+		// Resolve the initial option selections: the client's requested values
+		// (model/effort/permissionMode/provider options), filled with provider
+		// defaults for any missing well-known and provider-specific ids.
+		requested := mergeOptions(nil, r.GetOptions())
+		options := resolveProviderDefaults(requested, agentProvider)
+		if options[agent.OptionIDPermissionMode] == "" {
+			options[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(agentProvider, "")
+		}
+		// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
+		// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
+		// dying at startup (Claude fails startup on a bad set_permission_mode). Model and effort are
+		// NOT validated here: every provider discovers its model catalog (and effort tiers) from the
+		// running CLI/daemon, seeding only a static fallback, so a value valid in the live catalog but
+		// absent from the seed would be wrongly rejected -- the running session validates those.
+		if err := agent.ValidateLaunchOptions(agentProvider, requested); err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
 
 		// Track whether this agent was created via session resume.
 		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
@@ -115,18 +130,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// fail-fast on disconnect). The actual worktree mutation happens
 		// later inside runAgentStartup, which uses its own startupCtx.
 		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
-			ID:             agentID,
-			WorkspaceID:    r.GetWorkspaceId(),
-			WorkingDir:     plan.PlannedWorkingDir,
-			HomeDir:        svc.HomeDir,
-			Title:          title,
-			Model:          model,
-			SystemPrompt:   r.GetSystemPrompt(),
-			Effort:         effort,
-			PermissionMode: permissionMode,
-			ExtraSettings:  marshalExtraSettings(extraSettings),
-			AgentProvider:  agentProvider,
-			Resumed:        resumed,
+			ID:            agentID,
+			WorkspaceID:   r.GetWorkspaceId(),
+			WorkingDir:    plan.PlannedWorkingDir,
+			HomeDir:       svc.HomeDir,
+			Title:         title,
+			Options:       marshalOptions(options),
+			AgentProvider: agentProvider,
+			Resumed:       resumed,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -157,12 +168,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		agentOpts := agent.Options{
 			AgentID:         agentID,
-			Model:           model,
-			Effort:          effort,
 			WorkingDir:      plan.PlannedWorkingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
-			PermissionMode:  permissionMode,
-			ExtraSettings:   extraSettings,
+			Options:         options,
 			StartupTimeout:  svc.agentStartupTimeout(),
 			APITimeout:      svc.agentAPITimeout(),
 			Shell:           svc.agentShell(),
@@ -174,7 +182,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		agent.TraceStartupPhase(agentID, "before_response")
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: svc.agentToProto(&dbAgent, false, nil, svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
+			Agent: svc.agentToProto(&dbAgent, false, nil),
 		})
 		agent.TraceStartupPhase(agentID, "response_sent")
 
@@ -500,16 +508,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				continue
 			}
 			hasAgent := svc.Agents.HasAgent(agents[i].ID)
-			// Preload cached models/option groups from DB for inactive agents
-			// so AvailableModels/AvailableOptionGroups return persisted data.
-			if !hasAgent {
-				svc.Agents.PreloadCache(
-					agents[i].ID,
-					unmarshalAvailableModels(agents[i].AvailableModels),
-					unmarshalAvailableOptionGroups(agents[i].AvailableOptionGroups),
-				)
-			}
-			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], hasAgent, gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
+			// agentToProto -> optionGroupsForAgent -> optionGroupsView already preloads the
+			// cached option-group catalog from the DB for an inactive agent (and decodes
+			// option_groups exactly once), so no separate PreloadCache is needed here -- a
+			// second one would decode and re-seed every closed agent's catalog redundantly.
+			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], hasAgent, gitStatuses[i]))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -713,173 +716,58 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		s := r.GetSettings()
-		newModel := s.GetModel()
-		if newModel == "" {
-			newModel = dbAgent.Model
-		}
-		newEffort := s.GetEffort()
-		if newEffort == "" {
-			// If the model changed and the client didn't specify a new
-			// effort, reset to EffortAuto so the CLI picks an appropriate
-			// default for the new model rather than inheriting the
-			// previous model's (possibly unsupported) effort.
-			if newModel != dbAgent.Model {
-				newEffort = agent.EffortAuto
-			} else {
-				newEffort = dbAgent.Effort
-			}
-		}
-		newPermissionMode := s.GetPermissionMode()
-		if newPermissionMode == "" {
-			newPermissionMode = agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
-		}
-		oldExtraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-		newExtraSettings := resolveCodexExtras(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
+		provider := dbAgent.AgentProvider
+		oldOptions := loadOptions(dbAgent.Options, provider)
+		newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
 
-		// Update the DB.
-		if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
-			Model:          newModel,
-			Effort:         newEffort,
-			PermissionMode: newPermissionMode,
-			ExtraSettings:  marshalExtraSettings(newExtraSettings),
-			ID:             agentID,
-		}); err != nil {
+		// Optimistic DB write of the requested options; corrected below to the values
+		// the session actually confirms (settledOptions). Persist only the axes this edit
+		// changes, via compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh
+		// (no shared lock) can't be clobbered by a stale full-map blob and vice versa.
+		optimistic, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
+			optionsChangeDelta(oldOptions, newOptions))
+		if err != nil {
 			slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
 			sendInternalError(sender, "failed to update agent settings")
 			return
 		}
+		// Refresh the in-memory row to the blob we just persisted so applySettingsLive's
+		// corrective CAS starts from the current row rather than the pre-write snapshot --
+		// otherwise its first compare-and-swap is guaranteed to miss (the row already moved)
+		// and burns an extra re-read before converging.
+		dbAgent.Options = optimistic
 
-		// The effort the agent actually confirmed can differ from what was
-		// requested, so we report the confirmed value -- captured below from
-		// whichever path runs -- rather than the request:
-		//   - Selecting ultracode on an account without the workflows
-		//     entitlement silently lands on xhigh.
-		//   - Selecting Auto (or a model switch, which resets effort to Auto)
-		//     relaunches without --effort and the CLI resolves Auto to a
-		//     concrete level (e.g. "high"). Reporting that resolved level rather
-		//     than "auto" is INTENTIONAL: the notification states the effort the
-		//     session is actually running at. Do not "fix" this back to "auto".
-		// Defaults to the requested value for an offline edit or a failed
-		// restart, where no running agent confirmed anything.
-		notifyEffort := newEffort
-
-		// Likewise report the model the session actually settled on, not the
-		// request. Selecting the account-default sentinel ("default") launches
-		// without --model; the CLI resolves a concrete model, which is what we
-		// persist (confirmedAgentSettings) and broadcast -- so the notification
-		// must name that concrete model, not "default" (and shows no change when
-		// the default resolves back to the model already in use). Defaults to the
-		// requested value for an offline edit or a failed restart.
-		notifyModel := newModel
-
-		// If the agent is currently running, try a live update first.
-		// Providers apply what they can without a restart (Codex applies to
-		// the next turn; Claude Code applies model/effort/permission changes
-		// via apply_flag_settings) and return true. They return false only for
-		// changes they can't apply live -- e.g. Claude Code switching effort
-		// back to auto, which needs a relaunch without --effort -- and we then
-		// fall back to stop+restart.
+		// settledOptions is the option map the session actually settled on -- the
+		// requested newOptions overlaid with whatever the running provider confirmed,
+		// then filled with provider defaults (confirmedOptions). The provider's
+		// confirmation can differ from the request on ANY axis:
+		//   - effort: selecting ultracode without the workflows entitlement lands on
+		//     xhigh; selecting Auto (or a model switch, which resets effort to Auto)
+		//     relaunches without --effort and the CLI resolves Auto to a concrete level.
+		//   - model: the account-default sentinel ("default") resolves to a concrete
+		//     model the session reports back.
+		//   - options: an ACP reasoning_effort the server downgraded, a Codex
+		//     sandbox/service_tier it adjusted.
+		// Reporting the settled (not requested) values is INTENTIONAL -- the
+		// notification, the persisted row, and the RPC reply all state what the session
+		// is actually running. settledOptions drives all three so they can't disagree.
+		// For an offline edit or a failed restart no agent confirms anything, so it
+		// stays equal to the requested newOptions.
+		settledOptions := newOptions
 		if svc.Agents.HasAgent(agentID) {
-			// Hold the per-agent lifecycle lock across the live update, the
-			// confirmed-settings readback, AND the corrective DB write below so a
-			// concurrent UpdateAgentSettings for the same agent can't land between
-			// them and make us report its effort instead of ours. The live update
-			// writes the confirmed effort into the agent's in-memory state
-			// synchronously (refreshSettingsFromAgent), so reading it back while
-			// still holding the lock yields exactly the value this update confirmed.
-			// RestartAgent takes this same (non-reentrant) lock itself, so the
-			// restart path runs outside this section and reports the confirmed
-			// settings it returns directly.
-			unlock := svc.Agents.LockAgent(agentID)
-			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
-				Model:          newModel,
-				Effort:         newEffort,
-				PermissionMode: newPermissionMode,
-				ExtraSettings:  newExtraSettings,
-			})
-			if updated {
-				notifyModel, notifyEffort = confirmedOrDefault(svc.Agents.CurrentSettings(agentID), notifyModel, notifyEffort)
-
-				// If the live update settled on a different model than requested (e.g. a
-				// provider that re-spells the model id on echo), persist the settled
-				// model AND effort so the DB row -- and the AgentInfo broadcast built from
-				// it -- agree with the settings_changed notification below. The optimistic
-				// write above stored newModel/newEffort; correct both to the confirmed
-				// values. Effort must be the confirmed level, not the requested one: the
-				// live update already wrote the confirmed effort to the DB via
-				// PersistSettingsRefresh, and the notification reports notifyEffort, so
-				// re-storing the requested newEffort here would clobber that with a value
-				// the session isn't running (e.g. an unentitled ultracode request that
-				// landed on xhigh), splitting the DB from the broadcast/notification.
-				//
-				// This write stays INSIDE the lifecycle lock (with the readback above),
-				// not after unlock: two concurrent UpdateAgentSettings for the same agent
-				// each confirm their own settled model/effort, so the corrective writes
-				// must serialize with the in-memory confirmation. Done after unlock they
-				// could reorder -- the earlier update's stale row landing last -- and leave
-				// the DB disagreeing with both the agent's running state and the
-				// broadcast/notification, the very split this lock exists to prevent.
-				if notifyModel != newModel {
-					if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
-						Model:  notifyModel,
-						Effort: notifyEffort,
-						ID:     agentID,
-					}); err != nil {
-						slog.Warn("failed to persist settled model after live update", "agent_id", agentID, "error", err)
-					}
-				}
-			}
-			unlock()
-
-			if !updated {
-				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-
-				agentOpts := agent.Options{
-					AgentID:         agentID,
-					Model:           newModel,
-					Effort:          newEffort,
-					WorkingDir:      dbAgent.WorkingDir,
-					ResumeSessionID: resumeSessionID,
-					PermissionMode:  newPermissionMode,
-					ExtraSettings:   newExtraSettings,
-					StartupTimeout:  svc.agentStartupTimeout(),
-					APITimeout:      svc.agentAPITimeout(),
-					Shell:           svc.agentShell(),
-					LoginShell:      svc.agentLoginShell(),
-					HomeDir:         svc.HomeDir,
-					AgentProvider:   dbAgent.AgentProvider,
-				}
-
-				sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-
-				confirmedSettings, err := svc.Agents.RestartAgent(bgCtx(), agentOpts, sink)
-				if err != nil {
-					slog.Error("failed to restart agent with new settings",
-						"agent_id", agentID, "error", err)
-					// Clear stale session ID so ensureAgentRunning won't try
-					// to resume a non-existent session on the next message.
-					_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
-						AgentSessionID: "",
-						ID:             agentID,
-					})
-					svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-						"type":  agent.NotificationTypeAgentError,
-						"error": "Failed to restart agent with new settings: " + err.Error(),
-					})
-				} else {
-					if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, newModel, newEffort, newPermissionMode, newExtraSettings, confirmedSettings); err != nil {
-						slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
-					}
-					notifyModel, notifyEffort = confirmedOrDefault(confirmedSettings, notifyModel, notifyEffort)
-					slog.Info("agent restarted with new settings",
-						"agent_id", agentID, "model", newModel, "effort", newEffort)
-				}
+			// Try a live update first; fall back to a full restart for changes the
+			// provider can't apply in place (e.g. Claude Code switching effort to auto).
+			if settled, applied := svc.applySettingsLive(dbAgent, newOptions); applied {
+				settledOptions = settled
+			} else {
+				settledOptions = svc.applySettingsViaRestart(dbAgent, newOptions)
 			}
 		}
 
-		// Broadcast settings_changed notification for the chat view.
-		changes := svc.buildSettingsChanges(&dbAgent, notifyModel, notifyEffort, newPermissionMode, oldExtraSettings, newExtraSettings)
+		// Broadcast settings_changed notification for the chat view, diffing the
+		// stored options against the settled ones (every axis corrected to the value
+		// the session actually confirmed).
+		changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
 		if len(changes) > 0 {
 			svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 				"type":    agent.NotificationTypeSettingsChanged,
@@ -887,7 +775,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 
-		sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{})
+		// Return the settled options so the client reconciles its optimistic state
+		// against the values this RPC confirmed -- not a separately-broadcast catalog,
+		// which would depend on cross-channel ordering (the broadcast arriving before
+		// this reply).
+		sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{ConfirmedOptions: settledOptions})
 	})
 
 	// SendControlResponse forwards the user's allow/deny on a tool-use
@@ -1360,13 +1252,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			// Send a statusChange marker (signals end of message replay).
 			dbAgent := verifiedAgentRows[i]
 			hasAgent := svc.Agents.HasAgent(agentID)
-			// Preload cached models/option groups from DB for inactive agents.
+			// Preload the cached option-group catalog from DB for inactive agents.
 			if !hasAgent {
-				svc.Agents.PreloadCache(
-					agentID,
-					unmarshalAvailableModels(dbAgent.AvailableModels),
-					unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups),
-				)
+				svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
 			}
 			status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, hasAgent)
 			var statusChange *leapmuxv1.AgentStatusChange
@@ -1511,28 +1399,23 @@ func (svc *Context) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 
 // agentToProto converts a DB Agent to a proto AgentInfo. Status,
 // startup_error, and startup_message are derived via deriveAgentStatus.
-func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
+func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
-		Id:                    a.ID,
-		WorkspaceId:           a.WorkspaceID,
-		Title:                 a.Title,
-		Model:                 modelOrDefault(a.Model, a.AgentProvider),
-		Status:                status,
-		WorkingDir:            a.WorkingDir,
-		PermissionMode:        agent.PermissionModeOrDefault(a.AgentProvider, a.PermissionMode),
-		Effort:                a.Effort,
-		AgentSessionId:        a.AgentSessionID,
-		HomeDir:               a.HomeDir,
-		WorkerId:              svc.WorkerID,
-		CreatedAt:             timefmt.Format(a.CreatedAt),
-		GitStatus:             gs,
-		AgentProvider:         a.AgentProvider,
-		AvailableModels:       availableModels,
-		AvailableOptionGroups: availableOptionGroups,
-		ExtraSettings:         loadExtraSettings(a.ExtraSettings, a.AgentProvider),
-		StartupError:          startupError,
-		StartupMessage:        startupMessage,
+		Id:             a.ID,
+		WorkspaceId:    a.WorkspaceID,
+		Title:          a.Title,
+		Status:         status,
+		WorkingDir:     a.WorkingDir,
+		AgentSessionId: a.AgentSessionID,
+		HomeDir:        a.HomeDir,
+		WorkerId:       svc.WorkerID,
+		CreatedAt:      timefmt.Format(a.CreatedAt),
+		GitStatus:      gs,
+		AgentProvider:  a.AgentProvider,
+		OptionGroups:   svc.optionGroupsForAgent(a),
+		StartupError:   startupError,
+		StartupMessage: startupMessage,
 	}
 
 	if a.ClosedAt.Valid {
@@ -1586,8 +1469,8 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	svc.broadcastAgentStarting(&dbAgent, phase1Msg, nil)
 	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
 	// initialOpts captures the launch-time settings. applyDBSettingsToAgentOptions
-	// (called below) assigns a fresh ExtraSettings map to agentOpts, so this
-	// snapshot stays valid as long as no caller mutates agentOpts.ExtraSettings
+	// (called below) assigns a fresh Options map to agentOpts, so this
+	// snapshot stays valid as long as no caller mutates agentOpts.Options
 	// in place between here and the final settings handoff.
 	initialOpts := agentOpts
 
@@ -1644,7 +1527,17 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	}
 
 	unlockFinalSettingsHandoff := svc.Agents.LockAgent(agentID)
-	defer unlockFinalSettingsHandoff()
+	// Released explicitly before any relaunch below (RestartAgent re-acquires
+	// this same non-reentrant lock); the guard keeps the deferred release a
+	// safety net for the panic path without double-unlocking.
+	handoffUnlocked := false
+	releaseHandoff := func() {
+		if !handoffUnlocked {
+			handoffUnlocked = true
+			unlockFinalSettingsHandoff()
+		}
+	}
+	defer releaseHandoff()
 
 	// A settings update can also land while startAgent is blocked in the
 	// provider handshake, before Manager.HasAgent can accept live updates.
@@ -1656,10 +1549,9 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	} else {
 		slog.Warn("agent startup: failed to refresh settings before active persist", "agent_id", agentID, "error", err)
 	}
-	latestOpts := applyDBSettingsToAgentOptions(startedOpts, &dbAgent)
-	confirmedForPersist := confirmedSettingsPreservingStartupChanges(confirmedSettings, initialOpts, latestOpts)
+	latestOpts, confirmedForPersist := resolveConfirmedStartupSettings(startedOpts, initialOpts, confirmedSettings, &dbAgent)
 
-	activeDbAgent, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(agentID, startedOpts, latestOpts, confirmedForPersist)
+	activeDbAgent, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(agentID, dbAgent.Options, latestOpts, confirmedForPersist, dbAgent.OptionGroups)
 	if err != nil {
 		slog.Warn("failed to persist confirmed agent settings", "agent_id", agentID, "error", err)
 		activeDbAgent = dbAgent
@@ -1668,100 +1560,120 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// Apply startup-time changes after the final DB handoff. For Claude Code
 	// this means set_permission_mode is sent after the initialize/startup
 	// sequence has fully settled, while the ACTIVE broadcast still carries
-	// the preserved DB value.
-	if !agentOptionsSettingsEqual(initialOpts, latestOpts) {
-		updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
-			Model:          latestOpts.Model,
-			Effort:         latestOpts.Effort,
-			PermissionMode: latestOpts.PermissionMode,
-			ExtraSettings:  latestOpts.ExtraSettings,
-		})
-		if !updated {
-			slog.Warn("agent startup: settings changed during startup but could not be applied live",
-				"agent_id", agentID)
+	// the preserved DB value. A change the provider can't apply live (e.g. a
+	// model switch made during startup, which resets effort to auto and so
+	// needs a relaunch) returns false; we relaunch below so the switch takes
+	// effect rather than being silently dropped.
+	relaunch := false
+	if !maps.Equal(initialOpts.Options, latestOpts.Options) {
+		if !svc.Agents.UpdateSettings(agentID, latestOpts.Options) {
+			relaunch = true
 		}
 	}
+	releaseHandoff()
 
+	if relaunch {
+		activeDbAgent = svc.relaunchForStartupSettingsChange(agentID, dbAgent.AgentProvider, latestOpts, activeDbAgent)
+	}
+
+	activeOptions := loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider)
 	slog.Info("agent started",
 		"agent_id", agentID,
-		"model", modelOrDefault(activeDbAgent.Model, activeDbAgent.AgentProvider),
-		"permission_mode", activeDbAgent.PermissionMode)
+		"model", activeOptions[agent.OptionIDModel],
+		"permission_mode", activeOptions[agent.OptionIDPermissionMode])
 
 	svc.broadcastAgentActive(&activeDbAgent, gitStatus)
-	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil && !agentDBSettingsEqual(activeDbAgent, latest) {
-		svc.broadcastSettingsStatusChange(latest, loadExtraSettings(latest.ExtraSettings, latest.AgentProvider))
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil && !maps.Equal(loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider), loadOptions(latest.Options, latest.AgentProvider)) {
+		svc.broadcastSettingsStatusChange(latest)
 	} else if err != nil {
 		slog.Warn("agent startup: failed to reconcile settings after active broadcast", "agent_id", agentID, "error", err)
 	}
 }
 
+// relaunchForStartupSettingsChange restarts the agent with opts after a settings
+// change that landed during the startup window required a relaunch (the live
+// update could not apply it -- e.g. a model switch resets effort to auto, which
+// the CLI only honors on a fresh launch). Without this the change is written to
+// the DB but never applied to the running process, leaving the agent on its
+// launch settings. Returns the refreshed db row, or fallback when the relaunch
+// or its persistence fails. Must be called with the per-agent lifecycle lock
+// released: RestartAgent acquires it itself.
+func (svc *Context) relaunchForStartupSettingsChange(agentID string, provider leapmuxv1.AgentProvider, opts agent.Options, fallback db.Agent) db.Agent {
+	slog.Info("agent startup: relaunching to apply settings changed during startup",
+		"agent_id", agentID, "model", opts.Model(), "effort", opts.Effort())
+	sink := svc.Output.NewSink(agentID, provider)
+	confirmed, err := svc.Agents.RestartAgent(bgCtx(), opts, sink)
+	if err != nil {
+		slog.Error("agent startup: failed to relaunch for startup-time settings change",
+			"agent_id", agentID, "error", err)
+		return fallback
+	}
+	// No orphan reconciliation on the startup path: persist the launch opts overlaid with the
+	// confirmed values + provider defaults, keeping every launch axis (a complete-snapshot
+	// reconcile is the apply paths' job, not startup's).
+	active, err := svc.persistConfirmedStartupSettings(agentID, provider, opts.Options, confirmed)
+	if err != nil {
+		slog.Warn("agent startup: failed to persist confirmed settings after relaunch",
+			"agent_id", agentID, "error", err)
+		return fallback
+	}
+	return active
+}
+
 func applyDBSettingsToAgentOptions(opts agent.Options, dbAgent *db.Agent) agent.Options {
-	opts.Model = modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
-	opts.Effort = dbAgent.Effort
-	opts.PermissionMode = agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
-	opts.ExtraSettings = loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	o := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	if o[agent.OptionIDPermissionMode] == "" {
+		o[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(dbAgent.AgentProvider, "")
+	}
+	opts.Options = o
 	return opts
 }
 
-func agentOptionsSettingsEqual(a, b agent.Options) bool {
-	return a.Model == b.Model &&
-		a.Effort == b.Effort &&
-		a.PermissionMode == b.PermissionMode &&
-		maps.Equal(a.ExtraSettings, b.ExtraSettings)
-}
-
-func agentDBSettingsEqual(a, b db.Agent) bool {
-	return agentOptionsSettingsEqual(
-		applyDBSettingsToAgentOptions(agent.Options{}, &a),
-		applyDBSettingsToAgentOptions(agent.Options{}, &b),
-	)
-}
-
-func confirmedSettingsPreservingStartupChanges(confirmed *leapmuxv1.AgentSettings, initial, latest agent.Options) *leapmuxv1.AgentSettings {
+// confirmedSettingsPreservingStartupChanges drops, from the confirmed option
+// map, any option the user changed while startup was finishing (initial !=
+// latest), so the confirmed-settings persist can't overwrite a late edit with a
+// startup-time default. Returns nil for a nil confirmed map.
+func confirmedSettingsPreservingStartupChanges(confirmed OptionMap, initial, latest agent.Options) OptionMap {
 	if confirmed == nil {
 		return nil
 	}
-	out, ok := proto.Clone(confirmed).(*leapmuxv1.AgentSettings)
-	if !ok {
-		return nil
-	}
-	if initial.Model != latest.Model {
-		out.Model = ""
-	}
-	if initial.Effort != latest.Effort {
-		out.Effort = ""
-	}
-	if initial.PermissionMode != latest.PermissionMode {
-		out.PermissionMode = ""
-	}
-	if len(out.ExtraSettings) > 0 {
-		extras := mergeExtraSettings(nil, out.ExtraSettings)
-		for _, key := range sortedExtraSettingKeys(initial.ExtraSettings, latest.ExtraSettings) {
-			if initial.ExtraSettings[key] != latest.ExtraSettings[key] {
-				delete(extras, key)
-			}
+	out := confirmed.Clone()
+	initialOpts, latestOpts := initial.Options, latest.Options
+	for _, key := range sortedOptionKeys(initialOpts, latestOpts) {
+		if initialOpts[key] != latestOpts[key] {
+			delete(out, key)
 		}
-		out.ExtraSettings = extras
 	}
 	return out
+}
+
+// resolveConfirmedStartupSettings derives the two values the startup handoff persists from the
+// (already-refreshed) DB row: latestOpts -- the launch options overlaid with the row's stored
+// settings (so a setting changed mid-startup is carried) -- and confirmedForPersist -- the
+// provider's confirmed blob with any such mid-startup edit dropped so it can't be overwritten
+// by a startup-time default. Pure: it reads dbAgent but performs no I/O, so the caller owns the
+// re-read that refreshes dbAgent first.
+func resolveConfirmedStartupSettings(startedOpts, initialOpts agent.Options, confirmedSettings map[string]string, dbAgent *db.Agent) (latestOpts agent.Options, confirmedForPersist OptionMap) {
+	latestOpts = applyDBSettingsToAgentOptions(startedOpts, dbAgent)
+	confirmedForPersist = confirmedSettingsPreservingStartupChanges(confirmedSettings, initialOpts, latestOpts)
+	return latestOpts, confirmedForPersist
 }
 
 // baseAgentStatusChange fills the fields that are identical across every
 // AgentStatusChange broadcast regardless of status. Per-status builders
 // layer status-specific fields (startupMessage, startupError, available
 // catalogs) on top.
+// baseAgentStatusChange omits OptionGroups: a STARTING/FAILED/INACTIVE broadcast
+// must not overwrite the frontend's last-known catalog (empty = don't update).
+// The ACTIVE and settings-refresh paths attach the catalog explicitly.
 func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
 	return &leapmuxv1.AgentStatusChange{
 		AgentId:        dbAgent.ID,
 		Status:         status,
 		AgentSessionId: dbAgent.AgentSessionID,
 		WorkerOnline:   true,
-		PermissionMode: agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode),
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:         dbAgent.Effort,
 		GitStatus:      gitStatus,
 		AgentProvider:  dbAgent.AgentProvider,
-		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 	}
 }
 
@@ -1790,8 +1702,7 @@ func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmux
 // slice.
 func (svc *Context) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
-	sc.AvailableModels = svc.Agents.AvailableModels(dbAgent.ID, dbAgent.AgentProvider)
-	sc.AvailableOptionGroups = svc.Agents.AvailableOptionGroups(dbAgent.ID, dbAgent.AgentProvider)
+	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
 	return sc
 }
 
@@ -1812,30 +1723,31 @@ func agentStartupLabel(verb string, provider leapmuxv1.AgentProvider) string {
 	return verb + " " + agentlabels.DisplayName(provider) + "…"
 }
 
+// broadcastStatusChange fans out a single AgentStatusChange to all subscribers,
+// wrapping it in the AgentEvent envelope. The lifecycle/settings broadcasters below
+// share this so the envelope construction lives in one place.
+func (svc *Context) broadcastStatusChange(agentID string, sc *leapmuxv1.AgentStatusChange) {
+	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
+}
+
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all
 // subscribers. Used by the OpenAgent startup goroutine for each phase
 // label transition.
 func (svc *Context) broadcastAgentStarting(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.AgentGitStatus) {
-	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
-		AgentId: dbAgent.ID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: buildAgentStartingStatus(dbAgent, message, gitStatus)},
-	})
+	svc.broadcastStatusChange(dbAgent.ID, buildAgentStartingStatus(dbAgent, message, gitStatus))
 }
 
 // broadcastAgentFailed fans out a STARTUP_FAILED AgentStatusChange.
 func (svc *Context) broadcastAgentFailed(dbAgent *db.Agent, errMsg string, gitStatus *leapmuxv1.AgentGitStatus) {
-	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
-		AgentId: dbAgent.ID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: buildAgentFailedStatus(dbAgent, errMsg, gitStatus)},
-	})
+	svc.broadcastStatusChange(dbAgent.ID, buildAgentFailedStatus(dbAgent, errMsg, gitStatus))
 }
 
 // broadcastAgentActive fans out an ACTIVE AgentStatusChange.
 func (svc *Context) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) {
-	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
-		AgentId: dbAgent.ID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: svc.buildAgentActiveStatus(dbAgent, gitStatus)},
-	})
+	svc.broadcastStatusChange(dbAgent.ID, svc.buildAgentActiveStatus(dbAgent, gitStatus))
 }
 
 // broadcastAgentInactive fans out an INACTIVE AgentStatusChange. Used to
@@ -1844,10 +1756,7 @@ func (svc *Context) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1
 // per-message delivery_error rather than a permanent STARTUP_FAILED, so
 // the agent stays retryable on the next send.
 func (svc *Context) broadcastAgentInactive(dbAgent *db.Agent) {
-	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
-		AgentId: dbAgent.ID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: buildAgentInactiveStatus(dbAgent, nil)},
-	})
+	svc.broadcastStatusChange(dbAgent.ID, buildAgentInactiveStatus(dbAgent, nil))
 }
 
 // runAgentPhase0 broadcasts the per-mode label and executes the git-mode
@@ -1882,38 +1791,63 @@ func (svc *Context) persistAgentStartupError(agentID, errMsg string) {
 	}
 }
 
-type confirmedAgentSettingsValues struct {
-	model          string
-	effort         string
-	permissionMode string
-	extraSettings  map[string]string
+// confirmedOptions overlays the values the provider actually confirmed
+// (CurrentOptions, captured after a live update or restart) onto the requested
+// base options, then fills provider defaults. A nil/empty confirmed map (offline
+// edit or failed restart) yields the base unchanged.
+func confirmedOptions(provider leapmuxv1.AgentProvider, base, confirmed OptionMap) OptionMap {
+	final := base.Clone()
+	for k, v := range confirmed {
+		if v != "" {
+			final[k] = v
+		}
+	}
+	return resolveProviderDefaults(final, provider)
 }
 
-func confirmedAgentSettings(provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) confirmedAgentSettingsValues {
-	confirmedModel := model
-	if confirmed != nil && confirmed.GetModel() != "" {
-		confirmedModel = confirmed.GetModel()
-	}
-	confirmedEffort := effort
-	if confirmed != nil && confirmed.GetEffort() != "" {
-		confirmedEffort = confirmed.GetEffort()
-	}
-	confirmedPermissionMode := permissionMode
-	if confirmed != nil && confirmed.GetPermissionMode() != "" {
-		confirmedPermissionMode = confirmed.GetPermissionMode()
-	}
-	confirmedExtraSettings := mergeExtraSettings(extraSettings, nil)
-	if confirmed != nil {
-		confirmedExtraSettings = mergeExtraSettings(confirmedExtraSettings, confirmed.GetExtraSettings())
-	}
-	confirmedExtraSettings = resolveCodexExtras(confirmedExtraSettings, provider)
+// surfacedOptions is a COMPLETE snapshot of every axis a running session currently surfaces (its
+// post-start CurrentOptions), as opposed to a sparse confirmation blob. reconcileOrphanedOptions /
+// settleConfirmedOptions consume it to decide which persisted axes the session no longer surfaces;
+// the named type makes the "must be complete" precondition a compile-time barrier (a caller has to
+// write an explicit surfacedOptions(...) conversion, asserting completeness) rather than a comment a
+// sparse-blob caller can silently ignore.
+type surfacedOptions OptionMap
 
-	return confirmedAgentSettingsValues{
-		model:          confirmedModel,
-		effort:         confirmedEffort,
-		permissionMode: confirmedPermissionMode,
-		extraSettings:  confirmedExtraSettings,
+// reconcileOrphanedOptions drops from opts any axis the running agent's COMPLETE confirmed
+// snapshot (surfaced) no longer carries -- e.g. an ACP effort/reasoning_effort the relaunched
+// model dropped, or an option applyStartupOptions re-pushed and the server rejected.
+// Leaving such a value persisted is the [E12] three-way disagreement (the row advertises a
+// value the session isn't running). Two kinds are kept: the model axis (always live), and the
+// provider's persisted-only options (Pi's pi_provider), which are persisted by design but never
+// surfaced -- so their absence from `surfaced` is expected, not orphaning.
+//
+// `surfaced` is the surfacedOptions type precisely because it MUST be a complete snapshot of every
+// axis the agent currently surfaces, NOT a sparse confirmation blob -- otherwise a legitimately-
+// present-but-unconfirmed axis would be wrongly dropped. Callers without such a snapshot (the
+// sparse-confirm startup-preserve path) cannot reach this without an explicit conversion.
+func reconcileOrphanedOptions(provider leapmuxv1.AgentProvider, opts OptionMap, surfaced surfacedOptions) OptionMap {
+	persistedOnly := agent.PersistedOnlyOptionIDs(provider)
+	out := opts.Clone()
+	for k := range out {
+		if k == agent.OptionIDModel || persistedOnly[k] {
+			continue
+		}
+		if surfaced[k] == "" {
+			delete(out, k)
+		}
 	}
+	return out
+}
+
+// settleConfirmedOptions overlays the provider-confirmed values onto requested, fills provider
+// defaults, THEN drops any axis the running session does not surface -- reconcile runs LAST so a
+// provider default resolveProviderDefaults fills for an axis the session dropped is removed rather
+// than resurrected. confirmedOptions alone would re-stamp such a default (e.g. a future provider
+// whose option default the session can drop), defeating reconcileOrphanedOptions when it ran
+// first. `confirmed` MUST be the running session's COMPLETE CurrentOptions snapshot (see
+// reconcileOrphanedOptions) -- the live-apply and restart paths both capture it that way.
+func settleConfirmedOptions(provider leapmuxv1.AgentProvider, requested OptionMap, confirmed surfacedOptions) OptionMap {
+	return reconcileOrphanedOptions(provider, confirmedOptions(provider, requested, OptionMap(confirmed)), confirmed)
 }
 
 // reportModelChange decides whether the settings_changed notification should carry
@@ -1935,126 +1869,485 @@ func reportModelChange(provider leapmuxv1.AgentProvider, oldModel, settledModel 
 	return agent.NormalizeModelID(provider, oldModel) != agent.NormalizeModelID(provider, settledModel)
 }
 
-// settingsChangeEntry builds the {old,new,oldLabel,newLabel} map a settings_changed
-// notification carries for one changed field, resolving both labels through label.
-// Shared by the model/effort/permission-mode entries so their shape stays identical.
-func settingsChangeEntry(oldID, newID string, label func(string) string) map[string]string {
-	return map[string]string{
-		"old": oldID, "new": newID,
-		"oldLabel": label(oldID), "newLabel": label(newID),
+// optionChangeEntry is the settings_changed payload for one changed option group: the value
+// ids (old/new) and their human-readable labels, plus the group's own label. It marshals to
+// the {old,new,oldLabel,newLabel,label} JSON shape the chat-view notification renderer reads
+// (see frontend notificationRenderers). Using a typed struct rather than a bare
+// map[string]string makes a misspelled key a compile error here instead of a silently-absent
+// field in the UI, and documents the wire shape in one place that every emitter shares.
+type optionChangeEntry struct {
+	Old        string `json:"old"`
+	New        string `json:"new"`
+	OldLabel   string `json:"oldLabel"`
+	NewLabel   string `json:"newLabel"`
+	GroupLabel string `json:"label"`
+}
+
+// optionGroupChangeEntry builds the settings_changed entry a notification carries for one
+// changed option group. valueLabel resolves the option value labels; groupLabel is the
+// human-readable group name (e.g. "Output Style").
+func optionGroupChangeEntry(oldID, newID string, valueLabel func(string) string, groupLabel string) optionChangeEntry {
+	return optionChangeEntry{
+		Old:        oldID,
+		New:        newID,
+		OldLabel:   valueLabel(oldID),
+		NewLabel:   valueLabel(newID),
+		GroupLabel: groupLabel,
 	}
 }
 
-// optionGroupChangeEntry builds the settings_changed entry for an extra-settings
-// option group: the standard {old,new,oldLabel,newLabel} shape from
-// settingsChangeEntry plus a "label" key naming the group. Encapsulating the extra
-// key here keeps callers from reaching into settingsChangeEntry's result to mutate
-// the shared shape post-construction. valueLabel resolves the option value labels;
-// groupLabel is the human-readable group name (e.g. "Output Style").
-func optionGroupChangeEntry(oldID, newID string, valueLabel func(string) string, groupLabel string) map[string]string {
-	entry := settingsChangeEntry(oldID, newID, valueLabel)
-	entry["label"] = groupLabel
-	return entry
+// acceptExposedOptions filters `incoming` to the axes the provider actually exposes, so a key it
+// can't apply never persists a phantom AND emits a misleading settings_changed notification for a
+// change the agent's UpdateSettings silently ignores. The CLI can send an arbitrary `agent set
+// --set key=value` (or a `--permission-mode` against a primary-agent provider, or `--effort`
+// against Cursor, which bakes effort into the model id) -- all foreign axes that must be dropped
+// rather than stored.
+//
+// An axis is valid when it is one of the provider's KNOWN ids (the static allowlist: model, the
+// secondary permission-mode/primary-agent axis, effort where the provider has one, and the
+// provider's declared options -- Codex's sandbox/network/..., Pi's pi_provider, the ACP server
+// config options) OR is present in `catalog` (a server-driven config option the running agent has
+// actually surfaced, accepted even before it is added to the static allowlist). The two together
+// make the catalog the authoritative key set; the frontend only ever sends catalog-exposed groups,
+// so only CLI mis-targets are stripped. catalog is built by the caller for the model the edit
+// settles on, so an option the NEW model exposes isn't rejected on the same edit that selects it.
+// Filtering into a fresh map leaves the caller's request (the decoded proto message) untouched.
+func (svc *Context) acceptExposedOptions(agentID string, provider leapmuxv1.AgentProvider, incoming OptionMap, catalog []*leapmuxv1.AvailableOptionGroup) OptionMap {
+	known := agent.KnownOptionIDs(provider)
+	accepted := make(OptionMap, len(incoming))
+	for axis, value := range incoming {
+		// An empty value on the edit path is NOT a clear. Every option is a select whose
+		// values are non-empty, the frontend only ever sends a concrete catalog selection, and
+		// mergeOptions below treats an empty value as a DELETE -- so a stray CLI
+		// `agent set --option key=` (no value) would otherwise destructively wipe the
+		// persisted option rather than being the no-op the user intended. Skip it. Provider-
+		// driven option clears flow through the separate refresh path (acpRefreshMap), not here.
+		if value == "" {
+			slog.Warn("ignoring empty option value on settings edit (not a clear)",
+				"agent_id", agentID, "option_id", axis, "provider", provider.String())
+			continue
+		}
+		if known[axis] || optionids.GroupByID(catalog, axis) != nil {
+			accepted[axis] = value
+			continue
+		}
+		slog.Warn("ignoring option not exposed by the provider",
+			"agent_id", agentID, "option_id", axis, "provider", provider.String())
+	}
+	return accepted
 }
 
-// buildSettingsChanges assembles the settings_changed "changes" map for the chat view:
-// one {old,new,oldLabel,newLabel} entry per field that actually changed between the
-// stored row (dbAgent) and the settled values (notifyModel/notifyEffort/
-// newPermissionMode plus the extra-settings maps). Display labels are resolved here so
-// the frontend needs no label maps of its own. Returns an empty map when nothing
-// changed. Extracted from the UpdateAgentSettings handler so the field-diff lives in one
-// named, testable place instead of inline in the RPC body.
+// resetEffortToAutoIfUnsupported resets newOptions' effort to EffortAuto, in place, when it
+// wouldn't be valid for the model the edit settles on -- for a provider that owns a model-dependent
+// effort catalog (Claude/Codex/Pi):
+//   - on a model switch, also when the client sent NO effort (explicitEffort == "") -- so the new
+//     model picks its own default rather than silently inheriting the previous model's tier;
+//   - whether or not the model switched, when the effort that WOULD persist -- whether explicitly
+//     sent (CLI `--effort xhigh`) OR inherited from the stored row -- is not a tier the settled
+//     model offers. Validating the MERGED value (not just the sent one) also catches a stale stored
+//     effort the unchanged model no longer offers because the live catalog narrowed mid-session
+//     (e.g. an entitlement was revoked); leaving it would persist an unsupported tier and surface a
+//     misleading effort in the settings_changed notification until a relaunch clamps it.
+//
+// EffortAuto is offered by every model, so resetting to it is always valid. An ACP provider's
+// effort is a server-driven axis independent of the model (or it has none, like Cursor), so this is
+// a no-op for them. Compares NORMALIZED model ids, not the raw strings: a model merely re-spelled
+// into the same normalized id (a CLI alias, or the account-default sentinel resolving to its
+// concrete id) is not a real switch and must not reset the user's effort -- mirroring
+// reportModelChange's normalized comparison used for the settings_changed notification.
+func resetEffortToAutoIfUnsupported(provider leapmuxv1.AgentProvider, newOptions OptionMap, catalog []*leapmuxv1.AvailableOptionGroup, oldModel, newModel, explicitEffort string) {
+	if !agent.ProviderManagesEffort(provider) {
+		return
+	}
+	switched := agent.NormalizeModelID(provider, newOptions[agent.OptionIDModel]) != agent.NormalizeModelID(provider, oldModel)
+	merged := newOptions[agent.OptionIDEffort]
+	// The merged-effort reset (second clause) fires only when the settled model is one the catalog
+	// actually describes (ModelEffortKnown): an effort can only be judged unsupported against a model
+	// whose effort set is known. A model ABSENT from the catalog -- e.g. a tier valid in the running
+	// provider's live catalog but missing from a stopped agent's static seed -- is left for the
+	// running session to validate, so a CLI `agent set --model <new> --effort xhigh` on a stopped
+	// agent doesn't silently clobber a valid effort to auto. Mirrors ValidateLaunchOptions's
+	// deliberate non-validation of model/effort against the seed.
+	if (switched && explicitEffort == "") ||
+		(merged != "" && agent.ModelEffortKnown(catalog, provider, newModel) && !agent.EffortSupportedByModel(catalog, provider, newModel, merged)) {
+		newOptions[agent.OptionIDEffort] = agent.EffortAuto
+	}
+}
+
+// sanitizeIncomingOptions turns a raw UpdateAgentSettings options map into the full,
+// validated option set to persist and apply: it drops axes the provider can't apply,
+// merges the rest over the agent's current options, resets effort on a model switch for
+// catalog-effort providers, and fills the provider's permission-mode and other defaults.
+func (svc *Context) sanitizeIncomingOptions(agentID string, provider leapmuxv1.AgentProvider, oldOptions, incoming OptionMap) OptionMap {
+	oldModel := oldOptions[agent.OptionIDModel]
+	// The model the edit settles on drives both the catalog the axis filter validates against and
+	// the model the effort reset checks: for a running agent OptionGroups ignores the model arg
+	// (it returns the live catalog), so this only changes the offline/static-fallback path --
+	// exactly where a CLI `agent set --model X --set someOption=...` targets a stopped agent.
+	newModel := oldModel
+	if m, ok := incoming[agent.OptionIDModel]; ok && m != "" {
+		newModel = m
+	}
+	catalog := svc.Agents.OptionGroups(agentID, provider, newModel)
+
+	accepted := svc.acceptExposedOptions(agentID, provider, incoming, catalog)
+	newOptions := mergeOptions(oldOptions, accepted)
+	resetEffortToAutoIfUnsupported(provider, newOptions, catalog, oldModel, newModel, accepted[agent.OptionIDEffort])
+
+	// Stamp the provider's default permission mode only when it actually has one.
+	// Providers with no permission-mode axis (OpenCode/Kilo primary-agent, Reasonix
+	// model-only) return "" here, and writing an empty key would surface it in the RPC
+	// reply's ConfirmedOptions even though marshalOptions drops it from the row.
+	if newOptions[agent.OptionIDPermissionMode] == "" {
+		if def := agent.PermissionModeOrDefault(provider, ""); def != "" {
+			newOptions[agent.OptionIDPermissionMode] = def
+		}
+	}
+	return resolveProviderDefaults(newOptions, provider)
+}
+
+// optionsChangeDelta returns the minimal set of axes the edit changes: every key whose
+// value differs between `from` and `to`, with the NEW value (an empty value for a key
+// `to` drops, which the wire merge then deletes). Feeding this delta -- rather than the
+// full `to` map -- to casPersistAgentOptions lets a settings edit and a concurrent
+// server-initiated refresh converge: the edit writes only what it touched, so a key the
+// refresh added (and the edit's stale snapshot lacks) is preserved instead of clobbered.
+func optionsChangeDelta(from, to OptionMap) OptionMap {
+	delta := OptionMap{}
+	for k, v := range to {
+		if from[k] != v {
+			delta[k] = v
+		}
+	}
+	for k := range from {
+		if _, ok := to[k]; !ok {
+			delta[k] = ""
+		}
+	}
+	return delta
+}
+
+// pushAndReadConfirmed applies `applied` to the running agent and reads back its COMPLETE
+// confirmed option snapshot, holding the per-agent lifecycle lock across BOTH so a concurrent
+// UpdateAgentSettings for the same agent can't land between them and make the caller read ITS
+// confirmation instead. It returns:
+//   - confirmed: the running session's CurrentOptions, or nil when the process exited between the
+//     in-memory accept and the readback -- the exit-cleanup goroutine deletes the manager entry
+//     under the manager mutex, NOT this lifecycle lock, so CurrentOptions returns nil. A running
+//     agent always returns a non-nil map (empty at most), so nil unambiguously means "gone"; a
+//     caller must NOT treat it as confirmation (the dead session settled nothing).
+//   - appliedLive: what UpdateSettings reported -- false means the provider can't apply this change
+//     live (e.g. Claude effort->auto) and the caller should relaunch.
+//
+// Shared by applySettingsLive (which gates on appliedLive and relaunches) and applyOptionChanges
+// (which only overlays when confirmed != nil), so the hold-lock-across-push-and-readback contract
+// lives in one place.
+func (svc *Context) pushAndReadConfirmed(agentID string, applied OptionMap) (confirmed OptionMap, appliedLive bool) {
+	unlock := svc.Agents.LockAgent(agentID)
+	defer unlock()
+	appliedLive = svc.Agents.UpdateSettings(agentID, applied)
+	return svc.Agents.CurrentOptions(agentID), appliedLive
+}
+
+// applySettingsLive attempts to apply newOptions to a running agent without a restart.
+// Providers apply what they can without a restart (Codex applies to the next turn; Claude
+// Code applies model/effort/permission changes via apply_flag_settings) and return true;
+// they return false only for changes they can't apply live -- e.g. Claude Code switching
+// effort back to auto, which needs a relaunch without --effort -- and the caller then
+// restarts. Returns the settled options (the request overlaid with what the provider
+// confirmed) and whether the change was applied live.
+func (svc *Context) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (OptionMap, bool) {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	confirmed, appliedLive := svc.pushAndReadConfirmed(agentID, newOptions)
+	// Not applied live (provider needs a relaunch), or the process exited mid-apply (nil
+	// snapshot -- see pushAndReadConfirmed): either way, overlaying nothing would persist/broadcast
+	// the un-clamped optimistic REQUEST as if the session had confirmed it, so report not-applied
+	// and let the caller restart and confirm against a fresh session instead.
+	if !appliedLive || confirmed == nil {
+		return newOptions, false
+	}
+	// `confirmed` is the running session's COMPLETE CurrentOptions snapshot, so settle the
+	// request against it -- overlay the confirmed values + provider defaults, THEN reconcile away
+	// any axis it no longer surfaces (the same [E12] guard the restart path applies). Without the
+	// reconcile, an ACP option the server accepted the write for but then dropped from its
+	// configOptions (it no longer applies) would stay persisted/broadcast as a value the live
+	// session isn't running. settleConfirmedOptions runs the reconcile LAST so a provider default
+	// the overlay re-fills for a now-unsurfaced axis is dropped rather than resurrected; it keeps
+	// the always-live model axis and the provider's persisted-only axes.
+	settledOptions := settleConfirmedOptions(provider, newOptions, surfacedOptions(confirmed))
+
+	// Persist EVERY axis the provider confirmed, not just model/effort: the optimistic
+	// write stored the REQUESTED values, so a clamp the provider applied to any axis (a
+	// re-spelled model, an effort downgrade, an ACP reasoning_effort the server lowered, a
+	// Codex sandbox/service_tier it adjusted) would otherwise be lost from the DB row --
+	// and the AgentInfo broadcast built from it -- even though the running agent applied it.
+	// Diff against newOptions (what the optimistic write left on the row), NOT oldOptions, so
+	// the delta also DELETES an axis the reconcile dropped that this very edit added -- a base
+	// of oldOptions would miss it (the orphan isn't in oldOptions). Persist via compare-and-swap
+	// on only those axes: two concurrent UpdateAgentSettings each merge their own delta, and a
+	// server-initiated PersistSettingsRefresh holding no lifecycle lock can't be clobbered --
+	// the CAS converges rather than letting a stale full-map write win.
+	if delta := optionsChangeDelta(newOptions, settledOptions); len(delta) > 0 {
+		if _, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options, delta); err != nil {
+			slog.Warn("failed to persist settled options after live update", "agent_id", agentID, "error", err)
+		}
+	}
+	return settledOptions, true
+}
+
+// applySettingsViaRestart stops and restarts the agent on newOptions (for a change the
+// provider couldn't apply live), persists the confirmed settings, and returns the settled
+// options -- the request overlaid with what the relaunched session confirmed, or the
+// unchanged request when the restart fails.
+func (svc *Context) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) OptionMap {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+
+	agentOpts := agent.Options{
+		AgentID:         agentID,
+		WorkingDir:      dbAgent.WorkingDir,
+		ResumeSessionID: resumeSessionID,
+		Options:         newOptions,
+		StartupTimeout:  svc.agentStartupTimeout(),
+		APITimeout:      svc.agentAPITimeout(),
+		Shell:           svc.agentShell(),
+		LoginShell:      svc.agentLoginShell(),
+		HomeDir:         svc.HomeDir,
+		AgentProvider:   provider,
+	}
+
+	sink := svc.Output.NewSink(agentID, provider)
+
+	confirmedOpts, err := svc.Agents.RestartAgent(bgCtx(), agentOpts, sink)
+	if err != nil {
+		slog.Error("failed to restart agent with new settings", "agent_id", agentID, "error", err)
+		// Clear stale session ID so ensureAgentRunning won't try to resume a
+		// non-existent session on the next message.
+		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+			AgentSessionID: "",
+			ID:             agentID,
+		})
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  agent.NotificationTypeAgentError,
+			"error": "Failed to restart agent with new settings: " + err.Error(),
+		})
+		return newOptions
+	}
+	// confirmedOpts is the relaunched agent's COMPLETE surfaced snapshot (CurrentOptions), so
+	// settle the request against it -- overlay the confirmed values + provider defaults, THEN
+	// reconcile away any axis the new session no longer surfaces (an option the new model dropped,
+	// or one applyStartupOptions re-pushed and the server rejected), instead of leaving the row
+	// advertising a value the session isn't running ([E12]). The reconcile runs LAST so a provider
+	// default the overlay re-fills for a now-unsurfaced axis is dropped rather than resurrected.
+	settled := settleConfirmedOptions(provider, newOptions, surfacedOptions(confirmedOpts))
+	// Pass the pre-settle newOptions as `stored` (what the optimistic write left on the row,
+	// carrying the orphaned axes) so the persisted delta DELETES the axes the relaunched session
+	// no longer surfaces, while `settled` is the option set we want to keep.
+	if _, err := svc.persistConfirmedAgentSettings(agentID, provider, newOptions, settled); err != nil {
+		slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
+	}
+	slog.Info("agent restarted with new settings",
+		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
+	return settled
+}
+
+// buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
+// {old,new,oldLabel,newLabel,label} entry per axis in `keys` whose value actually changed between
+// the prior options (oldOptions) and the settled values (newOptions). Display labels are resolved
+// here against the agent's option-group catalog so the frontend needs no label maps of its own.
+// When notifyFirstSet is false, an axis whose prior value was empty (a first set) is skipped.
+// Returns an empty map when nothing reports.
+//
+// Shared by the model-settle path (full union of keys, first sets announced) and the live
+// option-change path (only the applied keys, first sets gated by the caller's spec), so the
+// catalog-resolution rules below -- the SETTLED-model catalog and the row-catalog fallback -- are
+// applied once and can't drift between the two notification emitters.
 func (svc *Context) buildSettingsChanges(
 	dbAgent *db.Agent,
-	notifyModel, notifyEffort, newPermissionMode string,
-	oldExtraSettings, newExtraSettings map[string]string,
+	oldOptions, newOptions OptionMap,
+	keys []string,
+	notifyFirstSet bool,
 ) map[string]interface{} {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	modelLabel, effortLabel := svc.settingsDisplayLabels(agentID, provider)
+	// Build the catalog for the SETTLED model, not the provider default: an offline edit
+	// has no running agent, so OptionGroups falls back to the static catalog -- built with
+	// an empty model arg it enumerates only the provider-default model's effort tiers and
+	// leaks the raw id of an effort the new model introduces. Passing the new model rebuilds
+	// the effort group for it (matching persistConfirmedAgentSettings / optionGroupsView).
+	liveGroups := svc.Agents.OptionGroups(agentID, provider, newOptions[agent.OptionIDModel])
+	// A model switch relaunches the agent onto a different model whose rebuilt
+	// catalog may no longer list a value we need to name: the model the session
+	// switched away from (Claude Code hides standard-context Opus behind "default",
+	// so the resolved "opus[1m]" is listed only while it is the active model), or an
+	// effort tier the new model doesn't offer (e.g. "xhigh" after Opus->Sonnet).
+	// Resolving such a value against the live catalog alone leaks its raw bracketed
+	// id; fall back to the catalog persisted on the agent row, captured while those
+	// pre-change selections were still current.
+	prevGroups := parseOptionGroups(dbAgent.OptionGroups)
 	changes := map[string]interface{}{}
-	if reportModelChange(provider, dbAgent.Model, notifyModel) {
-		changes["model"] = settingsChangeEntry(modelOrDefault(dbAgent.Model, provider), notifyModel, modelLabel)
-	}
-	if dbAgent.Effort != notifyEffort {
-		changes["effort"] = settingsChangeEntry(effortOrDefault(dbAgent.Effort, provider), notifyEffort, effortLabel)
-	}
-	if dbAgent.PermissionMode != newPermissionMode {
-		changes[agent.OptionGroupKeyPermissionMode] = settingsChangeEntry(
-			dbAgent.PermissionMode, newPermissionMode,
-			func(m string) string { return svc.permissionModeLabel(agentID, m, provider) },
-		)
-	}
-	for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
-		oldVal, newVal := oldExtraSettings[key], newExtraSettings[key]
-		if oldVal != newVal {
-			changes[key] = optionGroupChangeEntry(
-				oldVal, newVal,
-				func(v string) string { return svc.optionLabel(agentID, key, v, provider) },
-				svc.optionGroupLabel(agentID, key, provider),
-			)
+	for _, key := range keys {
+		oldVal, newVal := oldOptions[key], newOptions[key]
+		if oldVal == newVal {
+			continue
 		}
+		// The model axis has a special "report" rule: a value that merely
+		// re-spelled into the same normalized model isn't a user-visible change,
+		// while the account-default sentinel resolving to a concrete model is.
+		if key == agent.OptionIDModel && !reportModelChange(provider, oldVal, newVal) {
+			continue
+		}
+		// An axis whose settled value is empty is no longer in effect: a model switch dropped it
+		// (reconcileOrphanedOptions removes an axis the relaunched session no longer surfaces, e.g.
+		// effort after switching to a model without an effort axis), or it was cleared. There is no
+		// new value to name, so emitting "Label (old -> )" would render a dangling arrow with a
+		// blank target. Omit it -- the axis simply disappears from the picker. (oldVal == newVal ==
+		// "" already returned above, so this fires only for a real removal, oldVal != "".)
+		if newVal == "" {
+			continue
+		}
+		if oldVal == "" {
+			// A first set whose value is just the axis's own DEFAULT being materialized is not a
+			// user-visible change -- skip it on either path. This bites permissionMode in
+			// particular: resolveProviderDefaults does NOT stamp it into oldOptions (only
+			// sanitizeIncomingOptions does, into the settled map), so the first settings edit on a
+			// fresh agent reads as ""->default and would otherwise announce a spurious
+			// "Permission Mode (default)" the user never chose. Compared against the SETTLED-model
+			// catalog's DefaultValue (the same liveGroups used for labels); a first set to a
+			// NON-default value is a real user choice, still announced when the caller opts in.
+			if def := optionids.GroupByID(liveGroups, key).GetDefaultValue(); def != "" && newVal == def {
+				continue
+			}
+			// A first set (no prior value) is otherwise noise on the live option-change path (an
+			// axis the agent settles for the first time), so it is announced only when asked.
+			if !notifyFirstSet {
+				continue
+			}
+		}
+		changes[key] = optionGroupChangeEntry(
+			oldVal, newVal,
+			func(v string) string { return resolveOptionValueLabel(liveGroups, prevGroups, key, v) },
+			// Reuse the already-fetched liveGroups rather than re-resolving the catalog
+			// per key (svc.optionGroupLabel would rebuild it every iteration).
+			optionGroupLabelInGroups(liveGroups, key),
+		)
 	}
 	return changes
 }
 
-// confirmedOrDefault resolves the model/effort to report in the settings_changed
-// notification: the values the session actually confirmed (e.g. the concrete model
-// the account-default sentinel resolved to, or the level Claude Code clamped an
-// effort down to), falling back to the requested model/effort when the confirmed
-// settings are nil (offline edit / failed restart) or omit a field. The live-update
-// and restart paths share it so they report the settled values identically.
-func confirmedOrDefault(confirmed *leapmuxv1.AgentSettings, model, effort string) (string, string) {
-	if confirmed == nil {
-		return model, effort
+// persistConfirmedAgentSettings persists the confirmed option values and the
+// provider-reported option-group catalog after a (re)start, returning the refreshed row
+// for the ACTIVE broadcast.
+//
+//   - stored: the option map currently on the row that this confirmation revises -- the options
+//     the agent was (re)launched with. Used as the CAS base; the delta against `final` is what
+//     this confirmation changes (a provider clamp, or an "" delete for an axis the relaunch dropped).
+//   - final:  the option set to settle the row on. The CALLER builds it -- confirmedOptions for the
+//     startup paths (which keep launch axes the session may not surface), settleConfirmedOptions for
+//     the live/restart apply paths (which reconcile a now-unsurfaced axis away). Recomputing it here
+//     would force ONE confirm-vs-settle policy on both kinds of caller; lifting it out keeps that
+//     policy with the caller that knows whether it holds a complete CurrentOptions snapshot.
+//
+// The options column is written via compare-and-swap on only the DELTA between `stored`
+// (with provider defaults, i.e. the row as written at launch) and the settled `final` -- the
+// provider's clamps plus any axis `final` dropped relative to `stored` (an "" delete).
+// CAS-merging the delta, rather than the blind full-map write this used before, means a
+// server-initiated PersistSettingsRefresh landing in the post-relaunch window -- the
+// relaunched reader goroutine holds no lifecycle lock -- can't be clobbered: its key isn't in
+// our delta, so the merge preserves it. The catalog is recomputed wholesale on every
+// confirmation, and written via a compare-and-swap against the catalog on the row when this
+// began (read into `prior` below): a richer catalog a running ACP provider discovered
+// concurrently -- persisted via SetAgentOptionGroups on the unsynchronized reader path -- is
+// kept rather than clobbered by this (possibly narrower) handoff catalog, the synchronous
+// mirror of the async variant's expected_option_groups guard. The row is then re-read once for
+// the broadcast (the writes have no single RETURNING row to hand back).
+func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, stored, final OptionMap) (db.Agent, error) {
+	base := resolveProviderDefaults(stored, provider)
+	// Snapshot the catalog on the row BEFORE the write so the option_groups CAS can tell it apart
+	// from a concurrently-discovered one (a richer catalog a running provider persisted in between).
+	prior, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		return db.Agent{}, err
 	}
-	if m := confirmed.GetModel(); m != "" {
-		model = m
-	}
-	if e := confirmed.GetEffort(); e != "" {
-		effort = e
-	}
-	return model, effort
+	// Persist the options DELTA and the catalog in ONE atomic statement so a concurrent
+	// PersistSettingsRefresh can't land between two separate writes and strand the row with this
+	// handoff's options beside a foreign catalog (the two move together-or-neither). The catalog is
+	// CAS-guarded against prior.OptionGroups -- the snapshot on the row when this handoff read it.
+	expectedCatalog, catalog := svc.confirmedCatalogOrSkip(agentID, provider, final, prior.OptionGroups, "confirmed-settings")
+	return casPersistConfirmedSettings(bgCtx(), svc.Queries, agentID, marshalOptions(base), optionsChangeDelta(base, final), expectedCatalog, catalog)
 }
 
-// persistConfirmedAgentSettings writes the confirmed request settings
-// and the provider-reported catalogs in a single UPDATE … RETURNING *,
-// so callers use the returned row directly instead of issuing a
-// follow-up GetAgentByID to build the ACTIVE broadcast.
-func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) (db.Agent, error) {
-	values := confirmedAgentSettings(provider, model, effort, permissionMode, extraSettings, confirmed)
-
-	return svc.Queries.UpdateAgentConfirmedSettings(bgCtx(), db.UpdateAgentConfirmedSettingsParams{
-		Model:                 values.model,
-		Effort:                values.effort,
-		PermissionMode:        values.permissionMode,
-		ExtraSettings:         marshalExtraSettings(values.extraSettings),
-		AvailableModels:       marshalAvailableModels(svc.Agents.AvailableModels(agentID, provider)),
-		AvailableOptionGroups: marshalAvailableOptionGroups(svc.Agents.AvailableOptionGroups(agentID, provider)),
-		ID:                    agentID,
-	})
+// persistConfirmedStartupSettings is the startup-path spelling of persistConfirmedAgentSettings:
+// it settles the row on the launch options overlaid with the provider-confirmed values + defaults
+// (confirmedOptions), keeping every launch axis the session may not surface. The "base == launch
+// options" policy lives here in ONE place so the several startup-confirmation sites can't re-spell
+// it and drift -- they pass the launch option map and the confirmed snapshot and nothing else.
+func (svc *Context) persistConfirmedStartupSettings(agentID string, provider leapmuxv1.AgentProvider, launch, confirmed OptionMap) (db.Agent, error) {
+	return svc.persistConfirmedAgentSettings(agentID, provider, launch, confirmedOptions(provider, launch, confirmed))
 }
 
-// persistConfirmedAgentSettingsPreservingStartedSettings is the async
-// startup variant. It lets the provider confirm settings that still
-// match the subprocess launch options, while preserving settings the user
-// changed during startup. The provider is taken from latest.AgentProvider.
-func (svc *Context) persistConfirmedAgentSettingsPreservingStartedSettings(agentID string, started, latest agent.Options, confirmed *leapmuxv1.AgentSettings) (db.Agent, error) {
+// confirmedCatalogFor marshals the provider-reported option-group catalog for the CONFIRMED
+// model (final[model]) -- not the launch model: for an account-default Claude agent the launch
+// model is the sentinel "default", whose static fallback (used when the agent is momentarily
+// unregistered) enumerates the provider-default model's effort tiers rather than the resolved
+// model's. Shared by both confirmed-settings persist paths so the model-resolution rule lives
+// in one place. Returns the marshal error rather than a truncated catalog (see marshalOptionGroups);
+// callers skip the catalog write on error and keep the prior catalog.
+func (svc *Context) confirmedCatalogFor(agentID string, provider leapmuxv1.AgentProvider, final OptionMap) (string, error) {
+	return marshalOptionGroups(svc.Agents.OptionGroups(agentID, provider, final[agent.OptionIDModel]))
+}
+
+// confirmedCatalogOrSkip marshals the provider-reported catalog for the confirmed model (via
+// confirmedCatalogFor) and returns the (expectedCatalog, catalog) CAS pair for a confirmed-settings
+// write. On a marshal failure it logs with logCtx and returns ("", "") so the catalog CAS is a
+// no-op -- the options still persist while the stored catalog is left intact rather than overwritten
+// with a truncated one (the next live push re-persists a full catalog). Shared by the synchronous
+// (persistConfirmedAgentSettings) and async (persistConfirmedAgentSettingsPreservingStartedSettings)
+// confirmed-settings paths so the marshal-fail-skip rule lives in one place. `expected` is the
+// catalog the caller read on the row -- returned as the CAS expectation when the marshal succeeds.
+func (svc *Context) confirmedCatalogOrSkip(agentID string, provider leapmuxv1.AgentProvider, final OptionMap, expected, logCtx string) (expectedCatalog, catalog string) {
+	catalog, err := svc.confirmedCatalogFor(agentID, provider, final)
+	if err != nil {
+		slog.Warn("skipping "+logCtx+" catalog write; catalog marshal failed",
+			"agent_id", agentID, "error", err)
+		return "", ""
+	}
+	return expected, catalog
+}
+
+// persistConfirmedAgentSettingsPreservingStartedSettings is the async startup variant. It
+// compare-and-swaps the confirmed options onto the row only while the options column still equals
+// `expectedOptions` -- the raw column read at the handoff, the snapshot `latest` was loaded from.
+// `latest` already incorporates any setting the user changed during startup, so the confirmed blob
+// (provider resolutions overlaid on `latest`) both applies those resolutions and preserves the
+// user's edits; a change that raced in AFTER the handoff read leaves the column != expectedOptions
+// and is left intact. The provider is taken from latest.AgentProvider.
+func (svc *Context) persistConfirmedAgentSettingsPreservingStartedSettings(agentID, expectedOptions string, latest agent.Options, confirmed map[string]string, expectedOptionGroups string) (db.Agent, error) {
 	provider := latest.AgentProvider
-	values := confirmedAgentSettings(provider, latest.Model, latest.Effort, latest.PermissionMode, latest.ExtraSettings, confirmed)
-	startedExtraSettings := resolveCodexExtras(mergeExtraSettings(nil, started.ExtraSettings), provider)
+	final := confirmedOptions(provider, latest.Options, confirmed)
+	// The CAS guard must compare against the row's CURRENT serialized options, canonicalized the
+	// same way every write produces the column (marshalOptions sorts keys and drops empties).
+	// `expectedOptions` is the raw options column read at the handoff. Recomputing
+	// resolveProviderDefaults(latest.Options) here instead would be WRONG: the column is not always a
+	// fixed point of that resolution -- a settings refresh that CLEARS a default-valued axis mid-
+	// startup (an empty-value delete in the options delta) leaves the column without that key, while
+	// resolveProviderDefaults re-fills it. The recomputed expectation would then never match the
+	// column, the options CASE would silently take ELSE, and the WHOLE confirmed blob (including the
+	// model resolution) would be discarded with no error. Guarding on the row's own canonical form
+	// makes the CAS land whenever no concurrent writer actually moved the row. (Using `started`
+	// instead would discard the confirmed blob whenever the user changed any axis mid-startup.)
+	expected := marshalOptions(parseOptions(expectedOptions))
 
+	expectedOptionGroups, catalog := svc.confirmedCatalogOrSkip(agentID, provider, final, expectedOptionGroups, "startup-confirmed")
 	return svc.Queries.UpdateAgentConfirmedSettingsPreservingStartedSettings(bgCtx(), db.UpdateAgentConfirmedSettingsPreservingStartedSettingsParams{
-		StartedModel:            started.Model,
-		ConfirmedModel:          values.model,
-		StartedEffort:           started.Effort,
-		ConfirmedEffort:         values.effort,
-		StartedPermissionMode:   started.PermissionMode,
-		ConfirmedPermissionMode: values.permissionMode,
-		StartedExtraSettings:    marshalExtraSettings(startedExtraSettings),
-		ConfirmedExtraSettings:  marshalExtraSettings(values.extraSettings),
-		AvailableModels:         marshalAvailableModels(svc.Agents.AvailableModels(agentID, provider)),
-		AvailableOptionGroups:   marshalAvailableOptionGroups(svc.Agents.AvailableOptionGroups(agentID, provider)),
-		ID:                      agentID,
+		ExpectedOptions:  expected,
+		ConfirmedOptions: marshalOptions(final),
+		// The catalog (confirmedCatalogFor) is CAS-guarded against expectedOptionGroups (the
+		// catalog on the row when this handoff read it) so a richer catalog a running provider
+		// discovered after the handoff -- persisted via SetAgentOptionGroups on a separate,
+		// unsynchronized path -- isn't clobbered by this one.
+		ExpectedOptionGroups: expectedOptionGroups,
+		OptionGroups:         catalog,
+		ID:                   agentID,
 	})
 }
 
@@ -2093,24 +2386,18 @@ func (svc *Context) handleClearContext(agentID string) {
 	// isWatchable. On success, handleSystemInit will overwrite it with the
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
-	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
-	permissionMode := agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
-	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
+	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
 		AgentID:        agentID,
-		Model:          model,
-		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
-		PermissionMode: permissionMode,
-		ExtraSettings:  extraSettings,
 		StartupTimeout: svc.agentStartupTimeout(),
 		APITimeout:     svc.agentAPITimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
 		AgentProvider:  dbAgent.AgentProvider,
-	}, sink)
+	}, &dbAgent)
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -2129,7 +2416,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		})
 		return
 	}
-	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, permissionMode, extraSettings, confirmedSettings)
+	activeDbAgent, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings)
 	if err != nil {
 		slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 		activeDbAgent = dbAgent
@@ -2191,6 +2478,19 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		return nil
 	}
 
+	// Serialize this cold-start against any concurrent auto-start or restart for the same
+	// agent. The HasAgent check above and startAgent below otherwise straddle no lock, so two
+	// concurrent sends to a cold agent (SendAgentMessage / a synthetic message / a control
+	// request) would both pass the check and spawn duplicate subprocesses -- the second
+	// overwriting (and orphaning) the first in the manager's agent map. LockAgent is the same
+	// per-agent lifecycle mutex restart/clear use (see RestartAgent); re-check HasAgent under
+	// it (double-checked locking) so a start that won the race is observed rather than repeated.
+	unlock := svc.Agents.LockAgent(agentID)
+	defer unlock()
+	if svc.Agents.HasAgent(agentID) {
+		return nil
+	}
+
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to fetch agent", "agent_id", agentID, "error", err)
@@ -2203,10 +2503,6 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	} else {
 		resumeSessionID = svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 	}
-	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
-	permissionMode := agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
-	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-
 	// Broadcast STARTING so the chat startup banner appears beneath any
 	// just-typed messages while the cold subprocess spins up. Symmetric
 	// with handleClearContext and runAgentStartup; without this, the
@@ -2214,22 +2510,19 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// silent — the bubble pulses but no progress affordance is shown.
 	svc.broadcastAgentStarting(&dbAgent, agentStartupLabel("Starting", dbAgent.AgentProvider), nil)
 
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
+	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
 		AgentID:         agentID,
-		Model:           model,
-		Effort:          dbAgent.Effort,
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: resumeSessionID,
-		PermissionMode:  permissionMode,
-		ExtraSettings:   extraSettings,
 		StartupTimeout:  svc.agentStartupTimeout(),
 		APITimeout:      svc.agentAPITimeout(),
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
 		HomeDir:         svc.HomeDir,
 		AgentProvider:   dbAgent.AgentProvider,
-	}, sink)
+	}, &dbAgent)
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		// Revert the STARTING broadcast so the spinner clears. Caller
@@ -2240,7 +2533,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
-	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, permissionMode, extraSettings, confirmedSettings); err != nil {
+	if _, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings); err != nil {
 		slog.Warn("ensureAgentRunning: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 
@@ -2310,26 +2603,15 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 	}
 }
 
-// broadcastSettingsStatusChange broadcasts an AgentStatusChange event
-// so frontends update their settings display. If extras is non-nil, the
-// ExtraSettings field is included in the broadcast.
-func (svc *Context) broadcastSettingsStatusChange(dbAgent db.Agent, extras map[string]string) {
-	sc := &leapmuxv1.AgentStatusChange{
-		AgentId:        dbAgent.ID,
-		Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-		AgentSessionId: dbAgent.AgentSessionID,
-		WorkerOnline:   true,
-		PermissionMode: agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode),
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:         dbAgent.Effort,
-		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:  dbAgent.AgentProvider,
-		ExtraSettings:  extras,
-	}
-	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
-		AgentId: dbAgent.ID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-	})
+// broadcastSettingsStatusChange broadcasts an UNSPECIFIED-status AgentStatusChange
+// carrying the refreshed option-group catalog, so frontends update their settings
+// display in place without a status transition. Shares the base field set with the
+// lifecycle status builders (baseAgentStatusChange) and attaches OptionGroups like the
+// ACTIVE path, so a future status-change field is wired here too.
+func (svc *Context) broadcastSettingsStatusChange(dbAgent db.Agent) {
+	sc := baseAgentStatusChange(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED, gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir))
+	sc.OptionGroups = svc.optionGroupsForAgent(&dbAgent)
+	svc.broadcastStatusChange(dbAgent.ID, sc)
 }
 
 // setAgentPermissionMode updates the agent's permission mode in the DB
@@ -2343,144 +2625,101 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 	svc.setAgentPermissionModeWithAgent(dbAgent, mode)
 }
 
-func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
+// applyOptionsSpec tunes how applyOptionChanges treats a set of option changes.
+type applyOptionsSpec struct {
+	// live pushes the changed values to a running agent via UpdateSettings. The
+	// permission-mode path leaves it false: it records a mode the agent already
+	// switched to itself (via a control response), so re-pushing would be redundant.
+	live bool
+	// notifyFirstSet, when false, suppresses the settings_changed notification for a
+	// change whose prior value was empty (a first set) -- permission mode shouldn't
+	// announce its initial default.
+	notifyFirstSet bool
+}
+
+// applyOptionChanges diffs `wanted` (id->new value) against the agent's stored options,
+// persists the changed axes, optionally pushes them to a running agent, broadcasts the
+// refreshed catalog, and emits a settings_changed notification. It returns dbAgent with
+// its Options updated (unchanged on a no-op or a DB error). Shared by the permission-mode,
+// collaboration-mode, and Codex-bypass setters so their persist/broadcast/notify sequence
+// can't drift.
+func (svc *Context) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec applyOptionsSpec) db.Agent {
 	agentID := dbAgent.ID
-	oldMode := dbAgent.PermissionMode
-	if oldMode == mode {
+	opts := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	applied := OptionMap{}
+	oldVals := OptionMap{}
+	for id, newVal := range wanted {
+		oldVal := opts[id]
+		if oldVal == newVal {
+			continue
+		}
+		oldVals[id] = oldVal
+		opts[id] = newVal
+		applied[id] = newVal
+	}
+	if len(applied) == 0 {
 		return dbAgent
 	}
-	if err := svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
-		PermissionMode: mode,
-		ID:             agentID,
-	}); err != nil {
-		slog.Error("set permission mode: DB update failed", "agent_id", agentID, "error", err)
-		return dbAgent
+
+	// For a live change, push to the running agent and read back the values it confirmed (a
+	// provider may clamp/normalize an axis -- e.g. Codex re-reads model/effort/approval/sandbox
+	// via config/read; collaboration_mode and network_access are per-turn params, not config
+	// keys, so config/read never echoes them and they keep the pushed value), overlaying them so
+	// the row we persist, the catalog we broadcast, AND the chat notification all reflect the
+	// CONFIRMED values rather than the optimistic request. The push + readback stay under the
+	// lifecycle lock so a concurrent UpdateAgentSettings for the same agent can't interleave and
+	// make us read its confirmation instead of ours.
+	provider := dbAgent.AgentProvider
+	if spec.live && svc.Agents.HasAgent(agentID) {
+		// Push the change and read back the confirmed snapshot under the lifecycle lock (see
+		// pushAndReadConfirmed). Overlay the provider's confirmed values only while the session is
+		// still live; when it's gone (nil snapshot), keep the REQUESTED values -- the next launch
+		// confirms/clamps them -- rather than treating a nil snapshot as confirmation and
+		// persisting/broadcasting the optimistic values as if the dead session had settled them.
+		if confirmed, _ := svc.pushAndReadConfirmed(agentID, applied); confirmed != nil {
+			opts = confirmedOptions(provider, opts, confirmed)
+		}
 	}
 
-	dbAgent.PermissionMode = mode
+	// Persist ONLY the axes we changed (with their provider-confirmed value), via a
+	// compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh -- which holds
+	// no lifecycle lock -- can neither lose our keys nor have its keys clobbered by a stale
+	// full-map blob. The lifecycle lock above does not serialize against that reader-goroutine
+	// writer, so the blind full-map write this path used before could drop a key the refresh
+	// had just merged in.
+	delta := make(OptionMap, len(applied))
+	for id := range applied {
+		delta[id] = opts[id]
+	}
+	settled, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options, delta)
+	if err != nil {
+		slog.Error("apply option changes: DB update failed", "agent_id", agentID, "options", applied, "error", err)
+		return dbAgent
+	}
+	dbAgent.Options = settled
 
-	svc.broadcastSettingsStatusChange(dbAgent, nil)
+	svc.broadcastSettingsStatusChange(dbAgent)
 
-	if oldMode != "" {
+	// Build the settings_changed notification from the CONFIRMED values (opts, after the live
+	// readback), diffing each applied axis against its prior value, so a clamp the provider applied
+	// is announced as the settled value -- matching the row and broadcast catalog. buildSettingsChanges
+	// resolves labels against the SETTLED-model catalog (avoiding the empty-model effort-id leak) and
+	// honors spec.notifyFirstSet, the same emitter the model-settle path uses.
+	changes := svc.buildSettingsChanges(&dbAgent, oldVals, opts, sortedOptionKeys(applied), spec.notifyFirstSet)
+	if len(changes) > 0 {
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": agent.NotificationTypeSettingsChanged,
-			"changes": map[string]interface{}{
-				agent.OptionGroupKeyPermissionMode: map[string]string{
-					"old": oldMode, "new": mode,
-					"oldLabel": svc.permissionModeLabel(agentID, oldMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, mode, dbAgent.AgentProvider),
-				},
-			},
+			"type":    agent.NotificationTypeSettingsChanged,
+			"changes": changes,
 		})
 	}
 
 	return dbAgent
 }
 
-// setAgentCollaborationMode updates the agent's collaboration mode
-// in the DB and broadcasts a statusChange + settings_changed notification.
-func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		slog.Error("set Codex collaboration mode: agent not found", "agent_id", agentID, "error", err)
-		return
-	}
-	svc.setAgentCollaborationModeWithAgent(dbAgent, mode)
-}
-
-func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
-	agentID := dbAgent.ID
-	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-	oldMode := extras[agent.CodexExtraCollaborationMode]
-	if oldMode == mode {
-		return dbAgent
-	}
-	extras[agent.CodexExtraCollaborationMode] = mode
-	newExtraSettings := marshalExtraSettings(extras)
-	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
-		ExtraSettings: newExtraSettings,
-		ID:            agentID,
-	}); err != nil {
-		slog.Error("set Codex collaboration mode: DB update failed", "agent_id", agentID, "error", err)
-		return dbAgent
-	}
-
-	dbAgent.ExtraSettings = newExtraSettings
-
-	if svc.Agents.HasAgent(agentID) {
-		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
-			agent.CodexExtraCollaborationMode: mode,
-		}})
-	}
-
-	svc.broadcastSettingsStatusChange(dbAgent, extras)
-
-	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": agent.NotificationTypeSettingsChanged,
-		"changes": map[string]interface{}{
-			agent.CodexExtraCollaborationMode: map[string]string{
-				"old": oldMode, "new": mode,
-				"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
-				"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
-			},
-		},
-	})
-
-	return dbAgent
-}
-
-// setCodexBypassExtrasWithAgent sets the Codex-specific extra settings for
-// bypass mode (full network access and no sandbox restrictions).
-func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) db.Agent {
-	agentID := dbAgent.ID
-	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-	changes := map[string]interface{}{}
-
-	setExtra := func(key, newVal string) {
-		oldVal := extras[key]
-		if oldVal == newVal {
-			return
-		}
-		extras[key] = newVal
-		changes[key] = map[string]string{
-			"old": oldVal, "new": newVal,
-			"label":    svc.optionGroupLabel(agentID, key, dbAgent.AgentProvider),
-			"oldLabel": svc.optionLabel(agentID, key, oldVal, dbAgent.AgentProvider),
-			"newLabel": svc.optionLabel(agentID, key, newVal, dbAgent.AgentProvider),
-		}
-	}
-	setExtra(agent.CodexExtraNetworkAccess, agent.CodexNetworkEnabled)
-	setExtra(agent.CodexExtraSandboxPolicy, agent.CodexSandboxDangerFullAccess)
-
-	if len(changes) == 0 {
-		return dbAgent
-	}
-
-	newExtraSettings := marshalExtraSettings(extras)
-	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
-		ExtraSettings: newExtraSettings,
-		ID:            agentID,
-	}); err != nil {
-		slog.Error("set Codex bypass extras: DB update failed", "agent_id", agentID, "error", err)
-		return dbAgent
-	}
-
-	dbAgent.ExtraSettings = newExtraSettings
-
-	if svc.Agents.HasAgent(agentID) {
-		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
-			agent.CodexExtraNetworkAccess: extras[agent.CodexExtraNetworkAccess],
-			agent.CodexExtraSandboxPolicy: extras[agent.CodexExtraSandboxPolicy],
-		}})
-	}
-
-	svc.broadcastSettingsStatusChange(dbAgent, extras)
-
-	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":    agent.NotificationTypeSettingsChanged,
-		"changes": changes,
-	})
-
-	return dbAgent
+func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
+	return svc.applyOptionChanges(dbAgent,
+		map[string]string{agent.OptionIDPermissionMode: mode},
+		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
 // sendSyntheticUserMessage persists and broadcasts a user message, then sends
@@ -2581,18 +2820,25 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	}
 }
 
-func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []byte) bool {
-	var crPayload struct {
-		PermissionMode string `json:"permissionMode"`
-		ClearContext   bool   `json:"clearContext"`
-		Response       struct {
-			RequestID string `json:"request_id"`
-			Response  struct {
-				Behavior string `json:"behavior"`
-				Message  string `json:"message"`
-			} `json:"response"`
+// controlResponsePlanModePayload is the decoded shape of a plan-mode control
+// response: the approve/reject envelope ({request_id, response:{behavior, message}})
+// plus the optional permission-mode switch and context-clear the frontend attaches.
+// Shared by the two plan-mode handlers (the Codex prompt-response path and the common
+// control-response path) so the wire shape is defined once and can't drift between them.
+type controlResponsePlanModePayload struct {
+	PermissionMode string `json:"permissionMode"`
+	ClearContext   bool   `json:"clearContext"`
+	Response       struct {
+		RequestID string `json:"request_id"`
+		Response  struct {
+			Behavior string `json:"behavior"`
+			Message  string `json:"message"`
 		} `json:"response"`
-	}
+	} `json:"response"`
+}
+
+func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []byte) bool {
+	var crPayload controlResponsePlanModePayload
 	if err := json.Unmarshal(content, &crPayload); err != nil {
 		return false
 	}
@@ -2645,11 +2891,20 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 			return false
 		}
 
-		dbAgent = svc.setAgentCollaborationModeWithAgent(dbAgent, agent.CodexCollaborationDefault)
+		// Settle Codex's collaboration axis back to its default mode (applied live, notify on
+		// first set).
+		dbAgent = svc.applyOptionChanges(dbAgent,
+			map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault},
+			applyOptionsSpec{live: true, notifyFirstSet: true})
 
 		if crPayload.PermissionMode != "" {
 			dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
-			svc.setCodexBypassExtrasWithAgent(dbAgent)
+			// Grant Codex bypass options for the approved mode: full network access and no
+			// sandbox restrictions (applied live, notify on first set).
+			svc.applyOptionChanges(dbAgent, map[string]string{
+				agent.CodexOptionNetworkAccess: agent.CodexNetworkEnabled,
+				agent.CodexOptionSandboxPolicy: agent.CodexSandboxDangerFullAccess,
+			}, applyOptionsSpec{live: true, notifyFirstSet: true})
 		}
 
 		if crPayload.ClearContext {
@@ -2785,17 +3040,7 @@ func extractControlResponseRequestID(content []byte) string {
 // initiates plan execution as needed. Returns true when the caller
 // should skip sending the response to the agent (clearContext path).
 func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte) bool {
-	var crPayload struct {
-		PermissionMode string `json:"permissionMode"`
-		ClearContext   bool   `json:"clearContext"`
-		Response       struct {
-			RequestID string `json:"request_id"`
-			Response  struct {
-				Behavior string `json:"behavior"`
-				Message  string `json:"message"`
-			} `json:"response"`
-		} `json:"response"`
-	}
+	var crPayload controlResponsePlanModePayload
 	if err := json.Unmarshal(content, &crPayload); err != nil {
 		return false
 	}
@@ -3004,23 +3249,22 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	// Restart agent with plan content. Use svc.startAgent — the
 	// test-injectable wrapper that forwards to svc.Agents.StartAgent in
 	// production — so unit tests can stub the restart out.
-	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
-	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
+	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
 		AgentID:        agentID,
-		Model:          model,
-		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
-		PermissionMode: targetMode,
-		ExtraSettings:  extraSettings,
 		StartupTimeout: svc.agentStartupTimeout(),
 		APITimeout:     svc.agentAPITimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
 		AgentProvider:  dbAgent.AgentProvider,
-	}, sink)
+	}, &dbAgent)
+	// Plan execution forces the target permission mode (e.g. acceptEdits).
+	// applyDBSettingsToAgentOptions populated a fresh Options map, so writing the
+	// key here is safe (no shared aliasing).
+	launchOptions.Options[agent.OptionIDPermissionMode] = targetMode
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
 	if err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -3033,7 +3277,7 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 		})
 		return
 	}
-	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, targetMode, extraSettings, confirmedSettings); err != nil {
+	if _, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings); err != nil {
 		slog.Warn("plan exec: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 

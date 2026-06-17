@@ -10,10 +10,21 @@ describe('registerACPProvider', () => {
   it('rejects planValue for a modelOnly provider', () => {
     expect(() => registerACPProvider({
       provider: AgentProvider.REASONIX,
-      settingsConfig: { kind: 'modelOnly', defaultModel: '', fallbackLabel: 'Model', testIdPrefix: 'model' },
+      settingsConfig: { kind: 'modelOnly' },
       ControlContent: () => null,
       ControlActions: () => null,
       planValue: 'plan',
     })).toThrow(/modelOnly/)
+  })
+
+  // settingsConfig and defaultPermissionMode are the two ways to declare a provider's
+  // settings shape; supplying NEITHER is a registration-time misconfiguration that must
+  // fail loudly (before registerProvider) rather than register a provider with no axis.
+  it('rejects a registration with neither settingsConfig nor defaultPermissionMode', () => {
+    expect(() => registerACPProvider({
+      provider: AgentProvider.REASONIX,
+      ControlContent: () => null,
+      ControlActions: () => null,
+    })).toThrow(/settingsConfig or defaultPermissionMode/)
   })
 })

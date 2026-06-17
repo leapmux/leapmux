@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -277,92 +275,4 @@ func emitErrorLine(enc *json.Encoder, mu *sync.Mutex, contextID, code string, er
 		"code":    code,
 		"message": err.Error(),
 	})
-}
-
-// RunAgentSet updates --model / --effort / --permission-mode /
-// --extra-setting key=value (repeatable).
-func RunAgentSet(rawCtx any, args []string) error {
-	var model, effort, permissionMode string
-	extras := stringSliceFlag{}
-	settings := &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{}}
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			fs.StringVar(&model, "model", "", "model id (empty = no change)")
-			fs.StringVar(&effort, "effort", "", "effort id (empty = no change)")
-			fs.StringVar(&permissionMode, "permission-mode", "", "permission mode (empty = no change)")
-			fs.Var(&extras, "extra-setting", "extra setting in key=value form (repeatable)")
-		},
-		validate: func() error {
-			settings.Model = model
-			settings.Effort = effort
-			settings.PermissionMode = permissionMode
-			for _, kv := range extras.values {
-				k, v, err := splitKV(kv)
-				if err != nil {
-					return remote.EmitErrorWith("invalid_request", err)
-				}
-				settings.ExtraSettings[k] = v
-			}
-			return nil
-		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
-			if err := callInnerRPC(ctx, c, workerID, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-				AgentId:  agentID,
-				Settings: settings,
-			}, nil); err != nil {
-				return err
-			}
-			return remote.EmitData(map[string]any{"agent_id": agentID, "applied": map[string]any{
-				"model":          model,
-				"effort":         effort,
-				"permissionMode": permissionMode,
-				"extras":         settings.ExtraSettings,
-			}})
-		},
-	})
-}
-
-// RunAgentSendControlResponse forwards a raw control_response payload
-// to a Claude-Code-style agent.
-func RunAgentSendControlResponse(rawCtx any, args []string) error {
-	var content string
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			fs.StringVar(&content, "content", "", "raw control_response JSON (required)")
-		},
-		validate: func() error {
-			if content == "" {
-				return remote.EmitError("invalid_request", "--content is required")
-			}
-			return nil
-		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
-			if err := callInnerRPC(ctx, c, workerID, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
-				AgentId: agentID,
-				Content: []byte(content),
-			}, nil); err != nil {
-				return err
-			}
-			return remote.EmitData(map[string]string{"agent_id": agentID})
-		},
-	})
-}
-
-// stringSliceFlag implements flag.Value for repeatable string flags.
-type stringSliceFlag struct {
-	values []string
-}
-
-func (s *stringSliceFlag) String() string { return fmt.Sprintf("%v", s.values) }
-func (s *stringSliceFlag) Set(v string) error {
-	s.values = append(s.values, v)
-	return nil
-}
-
-func splitKV(s string) (string, string, error) {
-	k, v, ok := strings.Cut(s, "=")
-	if !ok {
-		return "", "", fmt.Errorf("expected key=value, got %q", s)
-	}
-	return k, v, nil
 }

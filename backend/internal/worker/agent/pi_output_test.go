@@ -126,7 +126,7 @@ func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *test
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
-	a.availableModels = []*leapmuxv1.AvailableModel{{Id: "gpt-5.5", ContextWindow: 200000}}
+	a.availableModels = []*ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
 
 	raw := []byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}],"usage":{"input":100,"output":10,"cacheRead":20,"cacheWrite":5,"totalTokens":135,"cost":{"input":0.0001,"output":0.0002,"cacheRead":0.00001,"cacheWrite":0.00002,"total":0.00033}}}}`)
 	handlePiOutput(a, parseLine(raw))
@@ -162,7 +162,7 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
-	a.availableModels = []*leapmuxv1.AvailableModel{{Id: "gpt-5.5", ContextWindow: 200000}}
+	a.availableModels = []*ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cacheRead":20,"cacheWrite":5,"totalTokens":135,"cost":{"total":0.00033}}}}`)))
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))

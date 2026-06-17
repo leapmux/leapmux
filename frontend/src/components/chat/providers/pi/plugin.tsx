@@ -38,7 +38,6 @@ import {
   PiToolExecutionRenderer,
   PiToolResultRenderer,
 } from './renderers'
-import { DEFAULT_PI_EFFORT, DEFAULT_PI_MODEL, PiSettingsPanel, PiTriggerLabel } from './settings'
 
 /** Pi event types that carry no UI surface (lifecycle markers / fan-out). */
 const PI_HIDDEN_EVENT_TYPES = new Set<string>([
@@ -200,9 +199,6 @@ function piToolResultMeta(
 }
 
 const piPlugin: Provider = {
-  defaultModel: DEFAULT_PI_MODEL,
-  defaultEffort: DEFAULT_PI_EFFORT,
-  defaultPermissionMode: undefined,
   bypassPermissionMode: undefined,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
   // display and labels the copy action "session file path".
@@ -391,9 +387,6 @@ const piPlugin: Provider = {
 
   ControlContent: PiControlContent,
   ControlActions: PiControlActions,
-
-  SettingsPanel: PiSettingsPanel,
-  settingsTriggerLabel: PiTriggerLabel,
 }
 
 registerProvider(AgentProvider.PI, piPlugin)

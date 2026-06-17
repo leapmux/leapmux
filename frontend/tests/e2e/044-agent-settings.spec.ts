@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { ASSISTANT_BUBBLE_SELECTOR, lastAssistantBubble, openAgentViaUI, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, expectAssistantAnswer, openAgentViaUI, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Get the trigger button's text content. */
@@ -24,25 +24,25 @@ test.describe('Agent Settings', () => {
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
     // Switch to Accept Edits
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-acceptEdits"]').click()
+    await page.locator('[data-testid="permissionMode-acceptEdits"]').click()
     await expect(trigger).toContainText('Accept Edits')
     await waitForSettingsIdle(page)
 
     // Switch to Bypass Permissions
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-bypassPermissions"]').click()
+    await page.locator('[data-testid="permissionMode-bypassPermissions"]').click()
     await expect(trigger).toContainText('Bypass Permissions')
     await waitForSettingsIdle(page)
 
     // Switch to Don't Ask (always available — not plan/admin-gated)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-dontAsk"]').click()
+    await page.locator('[data-testid="permissionMode-dontAsk"]').click()
     await expect(trigger).toContainText('Don\'t Ask')
     await waitForSettingsIdle(page)
 
@@ -51,7 +51,7 @@ test.describe('Agent Settings', () => {
     // (see permission-modes docs); if the probe rejected it, the radio
     // is filtered out server-side and this block becomes a no-op.
     await openSettingsMenu(page)
-    const autoOption = page.locator('[data-testid="permission-mode-auto"]')
+    const autoOption = page.locator('[data-testid="permissionMode-auto"]')
     if (await autoOption.isVisible()) {
       await autoOption.click()
       await expect(trigger).toContainText('Auto Mode')
@@ -60,7 +60,7 @@ test.describe('Agent Settings', () => {
     }
 
     // Switch back to Default
-    await page.locator('[data-testid="permission-mode-default"]').click()
+    await page.locator('[data-testid="permissionMode-default"]').click()
     await expect(trigger).toContainText('Default')
   })
 
@@ -96,8 +96,10 @@ test.describe('Agent Settings', () => {
 
     // Wait for an assistant response — if the agent failed to start, we
     // would see an error notification instead.
-    const lastAssistant = lastAssistantBubble(page)
-    await expect(lastAssistant).toContainText('7', { timeout: 30000 })
+    // Scan all bubbles for the answer rather than .last(): the per-turn "Took Ns"
+    // meta bubble also carries data-role="agent" and can be last, racing the
+    // answer bubble.
+    await expectAssistantAnswer(page, { answer: /\b7\b/ })
   })
 
   test('switch effort', async ({ authenticatedWorkspace, page }) => {
@@ -148,7 +150,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
 
     // Switch to Opus — xhigh and max both appear.
-    await page.locator('[data-testid="model-opus"]').click()
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
@@ -174,7 +176,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-ultracode"]')).not.toBeVisible()
 
     // Switch to Opus — ultracode appears as the top concrete effort tier.
-    await page.locator('[data-testid="model-opus"]').click()
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
@@ -213,8 +215,8 @@ test.describe('Agent Settings', () => {
 
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-    const onOpt = page.locator('[data-testid="thinking-on"]')
-    const offOpt = page.locator('[data-testid="thinking-off"]')
+    const onOpt = page.locator('[data-testid="alwaysThinkingEnabled-on"]')
+    const offOpt = page.locator('[data-testid="alwaysThinkingEnabled-off"]')
 
     // Default (Sonnet — set via LEAPMUX_CLAUDE_DEFAULT_MODEL) supports
     // adaptive thinking, so the enabled option is labeled "Adaptive".
@@ -229,11 +231,11 @@ test.describe('Agent Settings', () => {
     await offOpt.click()
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="thinking-off"] input[type="radio"]')).toBeChecked()
+    await expect(page.locator('[data-testid="alwaysThinkingEnabled-off"] input[type="radio"]')).toBeChecked()
     await onOpt.click()
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="thinking-on"] input[type="radio"]')).toBeChecked()
+    await expect(page.locator('[data-testid="alwaysThinkingEnabled-on"] input[type="radio"]')).toBeChecked()
 
     // Switch to Haiku — no adaptive support, so the enabled option
     // relabels to "On". AgentStatusChange carries fresh option groups, so
@@ -246,7 +248,7 @@ test.describe('Agent Settings', () => {
     await expect(onOpt).not.toContainText('Adaptive')
 
     // Switch back to Opus — adaptive support returns.
-    await page.locator('[data-testid="model-opus"]').click()
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
@@ -260,7 +262,7 @@ test.describe('Agent Settings', () => {
 
     // Switch to Opus first, then pick xhigh.
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-opus"]').click()
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
 
@@ -292,7 +294,7 @@ test.describe('Agent Settings', () => {
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
 
     // Wait for the control_response round-trip to complete and DB to update.
@@ -338,7 +340,7 @@ test.describe('Agent Settings', () => {
 
     // Open dropdown and click a mode
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
 
     // Close the dropdown by pressing Escape
     await page.keyboard.press('Escape')
@@ -362,12 +364,11 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (ensures init message and session ID are stored)
-    const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText(/3,?333/, { timeout: 30000 })
+    await expectAssistantAnswer(page, { answer: /\b3,?333\b/ })
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
 
     // Wait for the control_response round-trip to complete and DB to update.
@@ -383,20 +384,15 @@ test.describe('Agent Settings', () => {
     // Wait for the editor to become visible again after worker reconnects
     await expect(editor).toBeVisible()
 
-    // Count existing assistant bubbles before sending the next message.
-    const assistantBubblesBefore = await page.locator(ASSISTANT_BUBBLE_SELECTOR).count()
-
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
     await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for a NEW assistant bubble to appear (not the prior warmup response).
-    await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR)).toHaveCount(assistantBubblesBefore + 1, { timeout: 30000 })
-
-    // The new bubble (last one) should contain "6912".
-    const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText(/6,?912/, { timeout: 30000 })
+    // 6912 only appears in this response (the warmup answered 3333), so scanning
+    // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
+    // .last() would otherwise race.
+    await expectAssistantAnswer(page, { answer: /\b6,?912\b/ })
 
     // Verify Plan Mode is still selected after worker restart
     await expect(trigger).toContainText('Plan Mode')
@@ -410,15 +406,13 @@ test.describe('Agent Settings', () => {
     await editor.click()
     await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText(/3,?333/, { timeout: 30000 })
+    await expectAssistantAnswer(page, { answer: /\b3,?333\b/ })
 
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()
     await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText(/6,?912/, { timeout: 30000 })
+    await expectAssistantAnswer(page, { answer: /\b6,?912\b/ })
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {
@@ -432,7 +426,6 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="model-haiku"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-sonnet"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-sonnet\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="model-opus"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-opus\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify effort items are enabled when idle
@@ -446,7 +439,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
 
     // Verify permission mode items are enabled when idle
-    await expect(page.locator('[data-testid="permission-mode-default"]')).not.toHaveAttribute('data-disabled', '')
+    await expect(page.locator('[data-testid="permissionMode-default"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify "Disabled while running" footnote is NOT visible when idle
     await expect(page.locator('[data-testid="settings-disabled-footnote"]')).not.toBeVisible()
@@ -467,13 +460,36 @@ test.describe('Agent Settings', () => {
     await expect(page.getByText('Model (Sonnet \u2192 Haiku)')).toBeVisible()
   })
 
+  test('Extended Thinking toggle round-trip tracks the confirmed state', async ({ authenticatedWorkspace, page }) => {
+    const toggle = async (state: 'on' | 'off') => {
+      await openSettingsMenu(page)
+      await page.locator(`[data-testid="alwaysThinkingEnabled-${state}"]`).click()
+      await waitForSettingsIdle(page)
+    }
+
+    // off -> on -> off. Turning thinking back ON sends the flag as null (clear to the
+    // CLI default), which get_settings then reports as ABSENT. The confirmed value
+    // must still settle on that default ("on") so the final OFF is a REAL change and
+    // the net settings notification reads "Off".
+    await toggle('off')
+    await toggle('on')
+    await toggle('off')
+
+    // The bug stranded the baseline on "off" after the on-toggle, making the final
+    // off a silent no-op -- which would leave the notification stuck on the net
+    // "...-> Adaptive" instead. (The notification shows just the new value when the
+    // option had no prior stored value -- see firstSet in notificationRenderers.)
+    await expect(page.getByText('Extended Thinking (Off)')).toBeVisible()
+    await expect(page.getByText('Extended Thinking (Adaptive)')).toHaveCount(0)
+  })
+
   test('permission mode change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
 
     // Verify the notification bubble appears in chat
@@ -504,7 +520,7 @@ test.describe('Agent Settings', () => {
 
     // Switch permission mode to Plan Mode
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
@@ -554,7 +570,7 @@ test.describe('Agent Settings', () => {
 
     // Switch the new agent to Plan Mode
     await openSettingsMenu(page)
-    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await page.locator('[data-testid="permissionMode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -123,9 +124,12 @@ func TestWorkspaceTabsToList_EmptyInputYieldsEmptySlice(t *testing.T) {
 // dropping anything unexpected.
 func TestAgentInfoToMap_RendersEnumsAsStrings(t *testing.T) {
 	in := &leapmuxv1.AgentInfo{
-		Id:            "ag-1",
-		Title:         "demo",
-		Model:         "claude-sonnet-4",
+		Id:    "ag-1",
+		Title: "demo",
+		// The model is projected from the "model" option group's current value.
+		OptionGroups: []*leapmuxv1.AvailableOptionGroup{
+			{Id: "model", CurrentValue: "claude-sonnet-4"},
+		},
 		Status:        leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		WorkerId:      "worker-A",
@@ -135,5 +139,52 @@ func TestAgentInfoToMap_RendersEnumsAsStrings(t *testing.T) {
 	assert.Equal(t, "Claude Code", got["agent_provider"])
 	assert.Equal(t, "ag-1", got["id"])
 	assert.Equal(t, "demo", got["title"])
+	assert.Equal(t, "claude-sonnet-4", got["model"])
 	assert.Equal(t, "worker-A", got["worker_id"])
+}
+
+// TestAgentInfoToMap_ProjectsOptionGroupsSnakeCase verifies the option-group catalog is
+// hand-projected into snake_case maps (not reflected from the proto struct's PascalCase Go
+// field names), including the int64 context_window and the recursive sub_groups on a model
+// option -- the shape `remote agent get` consumers parse.
+func TestAgentInfoToMap_ProjectsOptionGroupsSnakeCase(t *testing.T) {
+	in := &leapmuxv1.AgentInfo{
+		Id: "ag-1",
+		OptionGroups: []*leapmuxv1.AvailableOptionGroup{{
+			Id:           "model",
+			Label:        "Model",
+			CurrentValue: "opus",
+			DefaultValue: "opus",
+			Mutable:      true,
+			Order:        1,
+			Options: []*leapmuxv1.AvailableOption{{
+				Id:            "opus",
+				Name:          "Opus",
+				ContextWindow: 200000,
+				SubGroups: []*leapmuxv1.AvailableOptionGroup{{
+					Id:      "effort",
+					Label:   "Effort",
+					Options: []*leapmuxv1.AvailableOption{{Id: "high", Name: "High"}},
+				}},
+			}},
+		}},
+	}
+
+	groups, ok := agentInfoToMap(in)["option_groups"].([]map[string]any)
+	require.True(t, ok, "option_groups is a projected slice of snake_case maps")
+	require.Len(t, groups, 1)
+	assert.Equal(t, "model", groups[0]["id"])
+	assert.Equal(t, "Model", groups[0]["label"])
+	assert.Equal(t, "opus", groups[0]["current_value"])
+
+	opts, ok := groups[0]["options"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, opts, 1)
+	assert.Equal(t, "opus", opts[0]["id"])
+	assert.Equal(t, int64(200000), opts[0]["context_window"])
+
+	subs, ok := opts[0]["sub_groups"].([]map[string]any)
+	require.True(t, ok, "a model option's sub_groups recurse through the same projection")
+	require.Len(t, subs, 1)
+	assert.Equal(t, "effort", subs[0]["id"])
 }

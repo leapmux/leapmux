@@ -11,33 +11,47 @@ import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
-import type { AgentInfo, AgentProvider, AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 /**
- * Discriminated update emitted by a provider settings panel. The host
- * (`AgentEditorPanel` → `useAgentOperations`) routes each kind to the
- * appropriate RPC; the panel itself doesn't know whether `permissionMode`
- * is a top-level wire field or stored in `extraSettings`.
+ * An agent-settings change emitted by the (generic) settings panel: a map of
+ * option-group id -> new value. A single option pick carries one entry; an action
+ * button (e.g. Codex's "Bypass permissions") carries several. The host
+ * (`AgentEditorPanel` → `useAgentOperations`) applies them in ONE RPC so a
+ * multi-axis change is atomic; it routes by well-known group id and is otherwise
+ * provider-agnostic.
  */
-export type ProviderSettingChange
-  = | { kind: 'model', value: string }
-    | { kind: 'effort', value: string }
-    | { kind: 'permissionMode', value: PermissionMode }
-    | { kind: 'optionGroup', key: string, value: string }
+export interface ProviderSettingChange {
+  sets: Record<string, string>
+}
 
-/** Read-only settings state surfaced to provider panels. */
+/**
+ * A declarative "action" button a provider can surface in the settings panel
+ * that sets several option groups at once (e.g. Codex's "Bypass permissions",
+ * which sets network/sandbox/approval together). Rendered generically.
+ */
+export interface ProviderSettingsAction {
+  label: string
+  testId: string
+  /** Option-group id -> value to apply, all in one atomic change. */
+  sets: Record<string, string>
+}
+
+/**
+ * Read-only settings state surfaced to the settings panel. `optionGroups`
+ * carries every configuration axis (model, effort, permission mode, and
+ * provider-specific options) with its available values; `optionValues` carries
+ * the current (optimistically updated) selections as one generic map keyed by
+ * group id -- no axis is special-cased.
+ */
 export interface ProviderSettingsState {
   disabled?: boolean
   settingsLoading?: boolean
-  model?: string
-  effort?: string
-  permissionMode?: string
-  extraSettings?: Record<string, string>
-  availableModels?: AvailableModel[]
-  availableOptionGroups?: AvailableOptionGroup[]
+  optionValues?: Record<string, string>
+  optionGroups?: AvailableOptionGroup[]
 }
 
 export interface ProviderSettingsPanelProps extends ProviderSettingsState {
@@ -116,17 +130,11 @@ export interface ResultDividerModel {
 }
 
 export interface Provider {
-  /** Default model identifier for this provider. */
-  defaultModel?: string
-  /** Default effort for this provider. */
-  defaultEffort?: string
-  /** Default permission mode identifier for this provider. */
-  defaultPermissionMode?: PermissionMode
   /**
    * Extra per-provider settings to seed into a new agent's OpenAgent request.
    * Omit when the provider needs none. Codex seeds its collaboration mode.
    */
-  defaultExtraSettings?: Record<string, string>
+  defaultProviderOptions?: Record<string, string>
   /**
    * Fraction of the context window (as a percentage, e.g. 16.5) this provider
    * reserves as an autocompact buffer, subtracted from usable capacity when
@@ -289,45 +297,49 @@ export interface Provider {
   bypassPermissionMode?: PermissionMode
 
   /**
-   * Change the agent's permission mode. Claude Code sends a lightweight
-   * control_request (no restart), Codex restarts via UpdateAgentSettings.
-   */
-  changePermissionMode?: (
-    workerId: string,
-    agentId: string,
-    mode: PermissionMode,
-  ) => Promise<void>
-
-  /**
-   * Plan mode toggle configuration. Providers define how plan mode
-   * maps to their native settings so the shared toggle logic stays
-   * provider-agnostic.
+   * Plan mode toggle configuration. Providers define which option group +
+   * value represents "plan" mode so the shared toggle logic stays
+   * provider-agnostic. Claude maps it to `permissionMode=plan`, Codex to
+   * `collaboration_mode=plan`.
    */
   planMode?: {
-    /** Read the current plan-relevant mode from agent state. */
-    currentMode: (agent: { permissionMode?: string, extraSettings?: Record<string, string> }) => string
+    /** The option-group id whose value drives plan mode. */
+    groupKey: string
+    /** Read the current plan-relevant value from the agent's option values. */
+    currentMode: (agent: { optionValues?: Record<string, string> }) => string
     /** The value that represents "plan" mode. */
     planValue: string
-    /** The default (non-plan) mode value. */
+    /** The default (non-plan) value. */
     defaultValue: string
-    /** Apply a mode change via the unified change dispatcher. */
-    setMode: (mode: string, onChange: (change: ProviderSettingChange) => void) => void
   }
+
+  /**
+   * The option-group id whose current value labels the settings-trigger's third
+   * (mode) segment, after model and effort. Each provider names its single
+   * mode-like axis -- permissionMode for Claude/Cursor/Copilot/Goose, the
+   * collaboration_mode "Workflow" group for Codex, primaryAgent for OpenCode/Kilo
+   * -- so the trigger renders ONE group's value rather than fusing several. Omit
+   * for providers with no mode axis (Pi, Reasonix), which render no third segment.
+   *
+   * Distinct from `planMode` (the plan toggle): a provider can have a mode axis
+   * without a plan toggle (Goose), so the trigger must not derive its segment from
+   * planMode -- that coupling hid OpenCode's primary-agent segment whenever it
+   * wasn't at the plan value.
+   */
+  triggerModeGroupKey?: string
+
+  /**
+   * Declarative action buttons surfaced in the settings panel that set several
+   * option groups at once (e.g. Codex's "Bypass permissions"). Rendered by the
+   * generic panel; each entry dispatches one change per `sets` entry.
+   */
+  settingsActions?: ProviderSettingsAction[]
 
   /** Optional control request content component for this provider. */
   ControlContent?: Component<ContentProps>
 
   /** Optional control request actions component for this provider. */
   ControlActions?: Component<ActionsProps>
-
-  /** Optional settings panel component for this provider's agent settings dropdown. */
-  SettingsPanel?: Component<ProviderSettingsPanelProps>
-
-  /** Optional trigger label renderer for the settings dropdown button. */
-  settingsTriggerLabel?: (props: ProviderSettingsPanelProps) => JSX.Element
-
-  /** Optional extra class for the settings dropdown menu container. */
-  settingsMenuClass?: string
 
   /** Attachment support for the provider. */
   attachments?: AttachmentCapabilities
@@ -370,6 +382,20 @@ export function registerProvider(provider: AgentProvider, plugin: Provider): voi
 
 export function providerFor(provider: AgentProvider): Provider | undefined {
   return registry.get(provider)
+}
+
+/**
+ * Per-provider seed option selections for a fresh agent (e.g. Codex's collaboration
+ * mode), shaped to spread directly into an OpenAgent request:
+ * `...openAgentRequestOptions(provider)`. The plugin owns what (if anything) to seed via
+ * its `defaultProviderOptions`; the worker fills every other axis with its provider
+ * defaults. Returns `{}` when the provider seeds nothing, so the request omits `options`
+ * rather than sending an empty map. Centralizing this keeps a new provider's seeding from
+ * being wired into some agent-open paths but not others.
+ */
+export function openAgentRequestOptions(provider: AgentProvider): { options?: Record<string, string> } {
+  const options = providerFor(provider)?.defaultProviderOptions
+  return options ? { options } : {}
 }
 
 /**

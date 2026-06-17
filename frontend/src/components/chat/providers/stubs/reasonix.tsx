@@ -1,6 +1,5 @@
-import type { ACPSettingsPanelConfig } from '../acp/settings'
+import type { ACPSettingsPanelConfig } from '../acp/registerACPProvider'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { ACPControlActions, ACPControlContent } from '../../controls/ACPControlRequest'
 import { registerACPProvider } from '../acp/registerACPProvider'
 
 // Reasonix (DeepSeek) is a model-only ACP provider: the model is fixed at
@@ -10,15 +9,10 @@ import { registerACPProvider } from '../acp/registerACPProvider'
 // the default full-attachment capability.
 const settingsConfig: ACPSettingsPanelConfig = {
   kind: 'modelOnly',
-  defaultModel: import.meta.env.LEAPMUX_REASONIX_DEFAULT_MODEL || '',
-  fallbackLabel: 'Model',
-  testIdPrefix: 'model',
 }
 
 registerACPProvider({
   provider: AgentProvider.REASONIX,
   settingsConfig,
-  ControlContent: ACPControlContent,
-  ControlActions: ACPControlActions,
   attachments: { text: true, image: false, pdf: false, binary: false },
 })

@@ -118,7 +118,7 @@ func TestHandleCopilotOutput_ConfigOptionUpdateModeListOnlyBroadcasts(t *testing
 	agent.permissionMode = CopilotCLIModeAgent
 	agent.model = "gpt-5.4"
 	agent.availableModes = []*leapmuxv1.AvailableOption{
-		{Id: CopilotCLIModeAgent, Name: "Agent", IsDefault: true},
+		{Id: CopilotCLIModeAgent, Name: "Agent"},
 		{Id: CopilotCLIModePlan, Name: "Plan"},
 	}
 
@@ -137,7 +137,7 @@ func TestHandleCopilotOutput_ConfigOptionUpdateModeListOnlyBroadcasts(t *testing
 // A runtime config_option_update surfaces an unmapped option for a permission-mode
 // provider too, persisting its value in extras while the permission mode rides in its
 // own field (not extras, and never the empty primaryAgent base). This is the
-// permission-mode-provider runtime analogue of the OpenCode generic-surfacing test.
+// permission-mode-provider runtime analogue of the OpenCode option-surfacing test.
 func TestHandleCopilotOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.T) {
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
@@ -148,18 +148,18 @@ func TestHandleCopilotOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.T
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
-	// The generic group is surfaced after the mapped permission-mode group.
-	groups := agent.AvailableOptionGroups()
+	// The option group is surfaced after the mapped permission-mode group.
+	groups := agent.OptionGroups()
 	require.Len(t, groups, 2)
-	require.Equal(t, OptionGroupKeyPermissionMode, groups[0].GetKey())
-	require.Equal(t, "thoughtLevel", groups[1].GetKey())
+	require.Equal(t, OptionIDPermissionMode, groups[0].GetId())
+	require.Equal(t, "thoughtLevel", groups[1].GetId())
 
 	// The value persists via a settings refresh carrying the live mode (in its field)
-	// and the generic value (in extras); no primaryAgent key for a permission-mode
+	// and the option value (in extras); no primaryAgent key for a permission-mode
 	// provider.
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	require.Equal(t, CopilotCLIModeAgent, refresh.PermissionMode)
-	require.Equal(t, "high", refresh.ExtraSettings["thoughtLevel"])
-	require.NotContains(t, refresh.ExtraSettings, OptionGroupKeyPrimaryAgent)
+	require.Equal(t, "high", refresh.Options["thoughtLevel"])
+	require.NotContains(t, refresh.Options, OptionIDPrimaryAgent)
 }

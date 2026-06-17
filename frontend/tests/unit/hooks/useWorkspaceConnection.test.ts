@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -693,6 +694,79 @@ describe('startupMessage handling in agent statusChange', () => {
       applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
 
       expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
+      dispose()
+    })
+  })
+})
+
+describe('per-axis optimistic suppression in agent statusChange', () => {
+  // Mirrors the per-axis optionValues merge in useWorkspaceConnection's statusChange handler [S6]:
+  // keep the optimistic value for each axis the agent is actively changing (settingsLoading
+  // .pendingAxes), and apply the server's confirmed value for every OTHER axis. A pending axis ABSENT
+  // from prev is an in-flight CLEAR (useAgentOperations deletes a cleared key before marking it
+  // pending), so it stays absent rather than re-absorbing the server value. Driven by the REAL
+  // createLoadingSignal so the integration of pendingAxes with this merge is exercised.
+  function mergeOptionValues(
+    prev: Record<string, string>,
+    serverValues: Record<string, string>,
+    pendingAxes: ReadonlySet<string>,
+  ): Record<string, string> {
+    const merged = { ...serverValues }
+    for (const axis of pendingAxes) {
+      const optimistic = prev[axis]
+      if (optimistic !== undefined)
+        merged[axis] = optimistic
+      else
+        delete merged[axis]
+    }
+    return merged
+  }
+
+  it('keeps the pending axis optimistic while applying a server change to an unrelated axis', () => {
+    createRoot((dispose) => {
+      const s = createLoadingSignal()
+      // The user is optimistically switching the MODEL; the tab already holds that optimistic value.
+      s.start('agent-1', ['model'])
+      const prev = { model: 'opus', permissionMode: 'default' }
+      // A push confirms the OLD model (the in-flight RPC hasn't resolved server-side) AND a new
+      // server-initiated permissionMode.
+      const serverValues = { model: 'sonnet', permissionMode: 'plan' }
+
+      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      expect(merged.model).toBe('opus') // pending axis: optimistic value preserved
+      expect(merged.permissionMode).toBe('plan') // unrelated axis: server value applied, not stranded
+      dispose()
+    })
+  })
+
+  it('keeps a pending CLEARED axis absent rather than re-absorbing the server value', () => {
+    createRoot((dispose) => {
+      const s = createLoadingSignal()
+      // The user optimistically CLEARED permissionMode: useAgentOperations deleted the key from the
+      // tab's optionValues before marking the axis pending, so prev carries no permissionMode entry.
+      s.start('agent-1', ['permissionMode'])
+      const prev = { model: 'opus' }
+      // A push still carries the server's pre-clear permissionMode (the in-flight RPC hasn't resolved).
+      const serverValues = { model: 'opus', permissionMode: 'plan' }
+
+      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      expect('permissionMode' in merged).toBe(false) // in-flight clear preserved, not re-absorbed
+      expect(merged.model).toBe('opus') // unrelated axis untouched
+      dispose()
+    })
+  })
+
+  it('applies all server values once the pending change settles', () => {
+    createRoot((dispose) => {
+      const s = createLoadingSignal()
+      s.start('agent-1', ['model'])
+      s.stop('agent-1', ['model']) // the RPC resolved
+      const prev = { model: 'opus', permissionMode: 'default' }
+      const serverValues = { model: 'sonnet', permissionMode: 'plan' }
+
+      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      expect(merged.model).toBe('sonnet') // no longer pending -> server value applies
+      expect(merged.permissionMode).toBe('plan')
       dispose()
     })
   })

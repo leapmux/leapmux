@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -16,6 +17,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
 // Claude Code permission mode values.
@@ -67,11 +70,11 @@ type claudeCodeModelInfo struct {
 	Disabled              bool     `json:"disabled"`              // visible but not selectable; dropped during conversion
 }
 
-// Extra settings keys for Claude Code option groups.
+// Option keys for Claude Code option groups.
 const (
-	ExtraKeyOutputStyle    = "outputStyle"
-	ExtraKeyFastMode       = "fastMode"
-	ExtraKeyAlwaysThinking = "alwaysThinkingEnabled"
+	ClaudeOptionOutputStyle    = "outputStyle"
+	ClaudeOptionFastMode       = "fastMode"
+	ClaudeOptionAlwaysThinking = "alwaysThinkingEnabled"
 )
 
 // Extended Thinking option IDs. Claude Code only exposes a single
@@ -108,6 +111,14 @@ type ClaudeCodeAgent struct {
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult
 	confirmedPermissionMode string
+	// deferredPermissionModeReqID is the request_id of the LATEST set_permission_mode toggle
+	// whose ack the CLI deferred (it holds the response until the active turn ends). Guarded by
+	// a.mu, alongside confirmedPermissionMode. claudeCodeHandleControlResponse folds back ONLY
+	// the deferred ack whose request_id matches this, so a stale/duplicate ack -- or an earlier
+	// toggle's ack arriving after a newer toggle superseded it -- can't clobber the confirmed
+	// mode. Tracking only the latest (a later toggle overwrites it) means a superseded toggle's
+	// ack is ignored, leaving the mode the user last asked for. Empty when nothing is pending.
+	deferredPermissionModeReqID string
 
 	// Settings state from initialize response and runtime updates.
 	outputStyle           string
@@ -122,7 +133,7 @@ type ClaudeCodeAgent struct {
 	// insert) and never mutated afterward, so reads are safe without a.mu (callers may
 	// already hold it). nil/empty ⇒ fall back to the static claudeCodeAvailableModels
 	// catalog.
-	availableModels []*leapmuxv1.AvailableModel
+	availableModels []*ModelInfo
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -159,6 +170,15 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		baseArgs = append(baseArgs, "--resume", opts.ResumeSessionID)
 	}
 
+	// opts.Model() is the raw stored/operator-default value, which may be a legacy
+	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from
+	// LEAPMUX_CLAUDE_DEFAULT_MODEL). Canonicalize it up front so both the --model
+	// arg we forward and the initial a.model live in the same alias space the
+	// catalog and post-init refresh use -- otherwise launch would forward a bare
+	// "opus"/fully-qualified id and a.model would read it raw until the first
+	// get_settings refresh corrected it.
+	launchModel := normalizeClaudeCodeModel(opts.Model())
+
 	var modelEffortArgs []string
 	if !thirdPartyFromSettings {
 		// The dynamic catalog isn't known until the initialize response
@@ -166,13 +186,13 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		// catalog. Fable and the other shipped models live there; a model
 		// known only to a newer CLI downgrades ultracode→xhigh here and is
 		// re-enabled post-init by buildStartupFlagSettings.
-		modelEffortArgs = newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(opts.Model, opts.Effort)
+		modelEffortArgs = newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(launchModel, opts.Effort())
 	}
 
 	// Always probe for a shell-profile third-party provider unless settings
 	// already flagged one: a default-model launch sends no --model/--effort
 	// (empty modelEffortArgs) but must still detect a provider configured in the
-	// user's rc files so AvailableModels() can hide the model/effort UI.
+	// user's rc files so OptionGroups() can hide the model/effort UI.
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
 		Shell:           opts.Shell,
 		LoginShell:      opts.LoginShell,
@@ -203,8 +223,8 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 
 	a := &ClaudeCodeAgent{
 		processBase:            newProcessBase(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		model:                  opts.Model,
-		effort:                 opts.Effort,
+		model:                  launchModel,
+		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
 		sink:                   sink,
@@ -274,9 +294,9 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 	a.availableOutputStyles = initResp.AvailableOutputStyles
 	// Discover the model catalog from the initialize response. An empty result
-	// (old CLI or parse failure) leaves a.availableModels nil and AvailableModels()
-	// falls back to the static catalog. For a third-party provider AvailableModels()
-	// returns nil regardless (the UI hides model/effort), but effortResolver() still
+	// (old CLI or parse failure) leaves a.availableModels nil and OptionGroups()'s
+	// model projection falls back to the static catalog. For a third-party provider it
+	// surfaces no model group regardless (the UI hides model/effort), but effortResolver() still
 	// resolves over whatever the response carried (with the static fallback) so
 	// effort/window resolution has a usable catalog.
 	a.availableModels = convertClaudeModels(initResp.Models, initResp.UnavailableModels)
@@ -287,22 +307,22 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_permission_mode")
-	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode, PermissionModeDefault), timeout)
+	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), PermissionModeDefault), timeout)
 	if err != nil {
 		return a.formatStartupError("set_permission_mode", err)
 	}
 	a.confirmedPermissionMode = resp.Mode
 	TraceStartupPhase(opts.AgentID, "after_permission_mode")
 
-	// Apply persisted extra settings that differ from initialized defaults.
-	if flagSettings := a.buildStartupFlagSettings(opts.ExtraSettings); len(flagSettings) > 0 {
+	// Apply persisted options that differ from initialized defaults.
+	if flagSettings := a.buildStartupFlagSettings(opts.Options); len(flagSettings) > 0 {
 		if err := a.sendApplyFlagSettings(ctx, flagSettings, timeout); err != nil {
 			slog.Warn("apply_flag_settings at startup failed", "agent_id", a.agentID, "error", err)
 		}
 	}
 	// Refresh from the CLI once startup completes so the persisted effort
 	// reflects the value the CLI actually picked (e.g. when we launched
-	// with --effort omitted because Leapmux resolved Options.Effort to
+	// with --effort omitted because Leapmux resolved the effort option to
 	// "auto"). Run even if apply_flag_settings failed so the DB mirrors
 	// the CLI's actual state rather than what we tried to set.
 	a.refreshSettingsFromAgent(timeout)
@@ -351,7 +371,7 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 //     a listed model, or the user pinned one);
 //   - the model is in neither catalog (see above -- left unlisted on purpose).
 func (a *ClaudeCodeAgent) ensureSettledModelListed() {
-	if a.model == "" || a.model == DefaultModelSentinel {
+	if UsesAccountDefaultModel(a.model) {
 		return
 	}
 	if len(a.availableModels) == 0 || FindAvailableModel(a.availableModels, a.model) != nil {
@@ -361,41 +381,63 @@ func (a *ClaudeCodeAgent) ensureSettledModelListed() {
 	if entry == nil {
 		return
 	}
-	// Place the resolved model right after the account-default sentinel -- the entry
-	// "Default (recommended)" resolves it FROM -- rather than at the tail, so a
-	// powerful resolved model (e.g. Opus) sits near the top of the picker instead of
-	// below Haiku. Locating the sentinel by scan (not assuming index 0) keeps the
-	// placement correct whatever order convertClaudeModels emitted; no sentinel falls
-	// back to the front. The inserted pointer is the shared static-catalog entry, read
-	// only exactly as effortCatalog hands out claudeCodeAvailableModels directly --
-	// withDefaultModelMarked and stripDefaultModelBadge both clone before touching it.
-	insertAt := 0
-	if i := slices.IndexFunc(a.availableModels, func(m *leapmuxv1.AvailableModel) bool {
-		return m.GetId() == DefaultModelSentinel
-	}); i >= 0 {
-		insertAt = i + 1
+	// Place the resolved model at its CANONICAL slot -- the position it holds in the
+	// static catalog's most->least-powerful ordering (sentinel, Fable, Opus, Sonnet,
+	// Haiku) -- rather than right after the sentinel. The CLI's own selectable list
+	// already follows that ordering, so inserting the resolved model before the first
+	// listed model that outranks it drops it exactly where the static catalog puts it:
+	// opus[1m] (which the CLI hides behind "default") lands AFTER Fable, not jammed
+	// between the sentinel and Fable. A naive "right after the sentinel" insert put a
+	// resolved Opus ahead of Fable, contradicting the picker's documented order. Models
+	// the static catalog doesn't know (a future dynamic-only id) rank last, so the
+	// resolved static model sorts ahead of them. The inserted pointer is the shared
+	// static-catalog entry, read only exactly as effortCatalog hands out
+	// claudeCodeAvailableModels directly -- withDefaultModelMarked and
+	// withModelGroupDefaultMarked both clone before touching it.
+	rank := canonicalModelRank(a.model)
+	insertAt := len(a.availableModels)
+	for i, m := range a.availableModels {
+		if canonicalModelRank(m.GetId()) > rank {
+			insertAt = i
+			break
+		}
 	}
 	a.availableModels = slices.Insert(a.availableModels, insertAt, entry)
 }
 
-// buildStartupFlagSettings builds an apply_flag_settings payload for extra
+// canonicalModelRank returns modelID's index in the static claudeCodeAvailableModels
+// catalog, whose order IS the canonical most->least-powerful picker ordering (the
+// account-default sentinel first, then Fable, Opus, Sonnet, Haiku). A model the static
+// catalog does not list (a future dynamic-only id) ranks last so it sorts after every
+// catalog-known model. ensureSettledModelListed uses it to drop a resolved-but-unlisted
+// model into its canonical slot instead of right after the sentinel.
+func canonicalModelRank(modelID string) int {
+	if i := slices.IndexFunc(claudeCodeAvailableModels, func(m *ModelInfo) bool {
+		return m.GetId() == modelID
+	}); i >= 0 {
+		return i
+	}
+	return len(claudeCodeAvailableModels)
+}
+
+// buildStartupFlagSettings builds an apply_flag_settings payload for the option
 // settings that differ from the initialized defaults.
 //
 // Reads a.effort/a.model without holding a.mu: this runs only from
 // StartClaudeCode, before the agent is registered with the manager and thus
 // before any concurrent UpdateSettings/refreshSettingsFromAgent can touch those
 // fields, so the lock-free read is safe. Do not call it post-registration.
-func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[string]interface{} {
+func (a *ClaudeCodeAgent) buildStartupFlagSettings(options map[string]string) map[string]interface{} {
 	fs := map[string]interface{}{}
 	maps.Copy(fs, a.reconcileStartupEffortFlags())
-	if v := extra[ExtraKeyOutputStyle]; v != "" && v != a.outputStyle {
-		fs[ExtraKeyOutputStyle] = v
+	if v := options[ClaudeOptionOutputStyle]; v != "" && v != a.outputStyle {
+		fs[ClaudeOptionOutputStyle] = v
 	}
-	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
-		fs[ExtraKeyFastMode] = flagSettingOnOff(v)
+	if v := options[ClaudeOptionFastMode]; v != "" && v != a.fastMode {
+		fs[ClaudeOptionFastMode] = flagSettingOnOff(v)
 	}
-	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
-		fs[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
+	if v := options[ClaudeOptionAlwaysThinking]; v != "" && v != a.alwaysThinking {
+		fs[ClaudeOptionAlwaysThinking] = flagSettingThinking(v)
 	}
 	return fs
 }
@@ -613,44 +655,19 @@ func buildClaudeContentBlocks(content string, classified []classifiedAttachment)
 	return blocks
 }
 
-// CurrentSettings returns the current settings for this agent.
-func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
-	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
-	a.mu.Unlock()
-
-	extra := map[string]string{}
-	if outputStyle != "" {
-		extra[ExtraKeyOutputStyle] = outputStyle
-	}
-	if fastMode != "" {
-		extra[ExtraKeyFastMode] = fastMode
-	}
-	if thinking != "" {
-		extra[ExtraKeyAlwaysThinking] = thinking
-	}
-	return &leapmuxv1.AgentSettings{
-		Model:          model,
-		Effort:         effort,
-		PermissionMode: mode,
-		ExtraSettings:  extra,
-	}
-}
-
-// AvailableModels returns the Claude Code model/effort catalog: the per-agent
-// list discovered from the initialize response when present, else the static
-// claudeCodeAvailableModels fallback (see effortCatalog). Returns nil when a
-// third-party LLM provider is detected (either from settings at startup, or from
-// the shell wrapper's can_change_model_and_effort=false metadata), which tells
-// the frontend to hide model and effort settings.
+// availableModelCatalog returns the Claude Code model/effort catalog projected
+// into OptionGroups: the per-agent list discovered from the initialize response
+// when present, else the static claudeCodeAvailableModels fallback (see
+// effortCatalog). Returns nil when a third-party LLM provider is detected (from
+// settings at startup, or the shell wrapper's can_change_model_and_effort=false
+// metadata), which omits the model/effort groups so the frontend hides them.
 //
-// The returned slice and every AvailableModel/AvailableEffort it points at are
-// shared, immutable catalog data: the same effortTier* pointers back multiple
-// model slices (both the static catalog and the converted dynamic list), so a
-// mutation through any returned entry would corrupt every model that shares it.
-// Callers MUST treat the result as read-only; copy before mutating.
-func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+// The returned slice and every ModelInfo/EffortInfo it points at are shared,
+// immutable catalog data: the same effortTier* pointers back multiple model
+// slices (both the static catalog and the converted dynamic list), so a mutation
+// through any returned entry would corrupt every model that shares it. Callers
+// MUST treat the result as read-only; copy before mutating.
+func (a *ClaudeCodeAgent) availableModelCatalog() []*ModelInfo {
 	if a.hidesModelEffortUI() {
 		return nil
 	}
@@ -680,92 +697,119 @@ func (a *ClaudeCodeAgent) hidesModelEffortUI() bool {
 //
 // availableModels is written only during the pre-registration startup handshake and
 // never mutated afterward, so this read is safe without a.mu.
-func (a *ClaudeCodeAgent) effortCatalog() []*leapmuxv1.AvailableModel {
+func (a *ClaudeCodeAgent) effortCatalog() []*ModelInfo {
 	if len(a.availableModels) > 0 {
 		return a.availableModels
 	}
 	return claudeCodeAvailableModels
 }
 
-// AvailableOptionGroups returns dynamic option groups including output style,
-// fast mode (when available), and extended thinking, in addition to the
-// static permission mode group.
-func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+// OptionGroups returns every Claude configuration axis as config option
+// groups: model and effort (omitted for third-party providers that hide
+// model/effort UI), output style (when the CLI reports styles), fast mode,
+// extended thinking, and the permission mode group (with "auto" filtered when
+// the startup probe rejected it). Each group carries its confirmed current
+// value; the manager re-derives the model group's default badge.
+func (a *ClaudeCodeAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
+	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	availStyles := a.availableOutputStyles
 	autoAvail := a.autoModeAvailable
-	model := a.model
 	a.mu.Unlock()
 
 	var groups []*leapmuxv1.AvailableOptionGroup
-	for _, g := range AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) {
-		if g.GetKey() == OptionGroupKeyPermissionMode {
-			groups = append(groups, filterPermissionModeGroup(g, autoAvail))
-			continue
-		}
-		groups = append(groups, g)
+
+	if catalog := a.availableModelCatalog(); len(catalog) > 0 {
+		// Claude carries an extra per-model sub_group (extended thinking) beyond effort, so it
+		// passes claudeModelSubGroups; otherwise this is the same model+effort projection Codex
+		// and Pi use.
+		groups = append(groups, modelAndEffortGroups(catalog, model, effort, EffortGroupLabel, claudeModelSubGroups)...)
+	} else if model != "" {
+		// Hidden model/effort UI (a third-party session, or can_change_model_and_effort
+		// =false): there is no selectable catalog, but the session is running a concrete
+		// model. Surface it (and a concrete effort, when set) as READ-ONLY groups so
+		// `remote agent get`/list and the UI show what's running instead of a blank --
+		// the model isn't user-changeable here, so the groups are non-mutable. The model
+		// name is humanized (claudeFallbackDisplayName) so the readout matches the
+		// selectable catalog's friendly names rather than showing the raw bracketed id.
+		groups = append(groups, readOnlyModelAndEffortGroups(model, claudeFallbackDisplayName(model), effort)...)
 	}
 
 	if len(availStyles) > 0 {
-		opts := make([]*leapmuxv1.AvailableOption, 0, len(availStyles))
+		defs := make([]optDef, 0, len(availStyles))
 		for _, s := range availStyles {
-			opts = append(opts, &leapmuxv1.AvailableOption{
-				Id:        s,
-				Name:      titleCaseID(s, ""),
-				IsDefault: s == outputStyle,
-			})
+			defs = append(defs, optDef{Id: s, Name: titleCaseID(s, ""), Default: s == "default"})
 		}
-		groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-			Key:     ExtraKeyOutputStyle,
-			Label:   "Output Style",
-			Options: opts,
-		})
+		groups = append(groups, selectGroup(ClaudeOptionOutputStyle, "Output Style", OptionOrderProviderThird, outputStyle, defs))
 	}
 
-	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-		Key:   ExtraKeyFastMode,
-		Label: "Fast Mode",
-		Options: []*leapmuxv1.AvailableOption{
-			{Id: FastModeOn, Name: "On", IsDefault: fastMode == FastModeOn},
-			{Id: FastModeOff, Name: "Off", IsDefault: fastMode != FastModeOn},
-		},
-	})
+	groups = append(groups, selectGroup(ClaudeOptionFastMode, "Fast Mode", OptionOrderProviderSecond, fastMode, []optDef{
+		{Id: FastModeOn, Name: "On"},
+		{Id: FastModeOff, Name: "Off", Default: true},
+	}))
 
-	enabledName := "On"
-	if modelSupportsAdaptiveThinking(model) {
-		enabledName = "Adaptive"
+	groups = append(groups, thinkingGroupForModel(model, thinking))
+
+	if pg := optionids.GroupByID(AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), OptionIDPermissionMode); pg != nil {
+		groups = append(groups, livePermissionModeGroup(pg, mode, autoAvail))
 	}
-	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-		Key:   ExtraKeyAlwaysThinking,
-		Label: "Extended Thinking",
-		Options: []*leapmuxv1.AvailableOption{
-			{Id: AlwaysThinkingOn, Name: enabledName, IsDefault: thinking != AlwaysThinkingOff},
-			{Id: AlwaysThinkingOff, Name: "Off", IsDefault: thinking == AlwaysThinkingOff},
-		},
-	})
 
 	return groups
 }
 
-// filterPermissionModeGroup hides "auto" when the startup probe rejected it,
-// so the UI can't offer a mode this Claude Code instance can't enter.
-func filterPermissionModeGroup(group *leapmuxv1.AvailableOptionGroup, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
-	if autoAvail {
-		return group
+// thinkingGroupForModel builds the extended-thinking group for a model. The
+// enabled option's id is always "on"; only its display label varies by model
+// ("Adaptive" for models that pick thinking.type:"adaptive", "On" otherwise --
+// see modelSupportsAdaptiveThinking), so a model switch must re-emit this group.
+func thinkingGroupForModel(model, current string) *leapmuxv1.AvailableOptionGroup {
+	enabledName := "On"
+	if modelSupportsAdaptiveThinking(model) {
+		enabledName = "Adaptive"
 	}
-	opts := make([]*leapmuxv1.AvailableOption, 0, len(group.GetOptions()))
-	for _, o := range group.GetOptions() {
-		if o.GetId() == PermissionModeAuto {
-			continue
-		}
-		opts = append(opts, o)
+	return selectGroup(ClaudeOptionAlwaysThinking, "Extended Thinking", OptionOrderProviderFirst, current, []optDef{
+		{Id: AlwaysThinkingOn, Name: enabledName, Default: true},
+		{Id: AlwaysThinkingOff, Name: "Off"},
+	})
+}
+
+// claudeModelSubGroups is Claude's modelSubGroupsFunc: each model carries its
+// effort group AND its extended-thinking group (whose enabled label is per
+// model), so the frontend rebuilds both the instant the model selection changes
+// rather than waiting for the relaunch a model switch triggers. The carried
+// groups hold no current value (the frontend overlays the live selection); only
+// their option lists and defaults are model-dependent.
+func claudeModelSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
+	groups := effortSubGroups(m)
+	if m != nil {
+		groups = append(groups, thinkingGroupForModel(m.Id, ""))
 	}
-	return &leapmuxv1.AvailableOptionGroup{
-		Key:     group.GetKey(),
-		Label:   group.GetLabel(),
-		Options: opts,
+	return groups
+}
+
+// livePermissionModeGroup builds a writable permission-mode group from the
+// provider's static template, setting the confirmed current value and hiding
+// "auto" when the startup probe rejected it (so the UI can't offer a mode this
+// Claude Code instance can't enter).
+func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current string, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
+	if static != nil && !autoAvail {
+		// Hide "auto" when the startup probe rejected it: filter the template (never mutate
+		// the shared static group) so the UI can't offer a mode this Claude Code instance
+		// can't enter. liveGroup then overlays the live current value and supplies the
+		// id/label/default/order from the template.
+		//
+		// NEVER filter out the value the session is CURRENTLY in, though: if a live switch to
+		// "auto" succeeded after a transient startup probe failure left autoAvail=false, the
+		// confirmed current is "auto" while the probe result is stale. Dropping it would leave
+		// CurrentValue="auto" with no matching option -- an off-spec current the frontend can't
+		// render as selected (it clamps to the default, silently showing the wrong mode). Keeping
+		// the current value selectable guarantees the "current is always an option" invariant
+		// regardless of how autoAvail drifts, mirroring buildOptionGroup's injection for ACP.
+		static = filterGroupOptions(static, func(o *leapmuxv1.AvailableOption) bool {
+			return o.GetId() != PermissionModeAuto || o.GetId() == current
+		})
 	}
+	return liveGroup(static, current)
 }
 
 // ultracodeFlagSettings is the apply_flag_settings payload that enables the
@@ -804,7 +848,7 @@ func claudeEffortFlagSettings(newEffort, curEffort string) map[string]interface{
 // targetModel (the model the change lands on). It resolves newEffort against the
 // model first, so an unsupported combo can't be pushed to the CLI.
 //
-// The extra clause beyond claudeEffortFlagSettings handles the model-only change:
+// The additional clause beyond claudeEffortFlagSettings handles the model-only change:
 // when newEffort is empty there is no effort delta, so claudeEffortFlagSettings
 // returns nil and the CLI's per-session `ultracode` boolean would persist even
 // after switching onto a model that can't run it (e.g. opus+ultracode ->
@@ -938,7 +982,7 @@ func (r effortResolver) trustCLIUltracodeReport(model string, known bool) bool {
 // UpdateSettings applies settings changes via the apply_flag_settings control
 // request, avoiding a process restart. Returns true if the update was handled
 // (or nothing changed), false if a restart is needed.
-func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
 	a.mu.Lock()
 	curModel, curEffort := a.model, a.effort
 	curPermissionMode := a.confirmedPermissionMode
@@ -946,11 +990,20 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	availStyles := a.availableOutputStyles
 	a.mu.Unlock()
 
+	// Normalize the requested model to the same canonical id space a.model and the catalog
+	// use, so a re-spelled-but-identical model (a CLI alias like "claude-opus-4-8[1m]" vs the
+	// stored "opus[1m]") is recognized as unchanged -- no redundant apply_flag_settings, and
+	// the effort resolver's per-model lookup (which keys on normalized catalog ids) can still
+	// find the model to apply its ultracode-downgrade guard. The DefaultModelSentinel ("default")
+	// passes through normalization unchanged, so the sentinel restart check below still fires.
+	reqModel := normalizeClaudeCodeModel(options[OptionIDModel])
+	reqEffort := options[OptionIDEffort]
+
 	// Switching to EffortAuto can't be done live: the CLI doesn't accept
 	// effortLevel="auto" for apply_flag_settings, and the only way to go
 	// back to "let Claude pick" is to re-launch without --effort. Signal
 	// the caller to restart instead.
-	if IsEffortAutoTransition(s.Effort, curEffort) {
+	if IsEffortAutoTransition(reqEffort, curEffort) {
 		return false
 	}
 
@@ -959,14 +1012,14 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	// "default" the way set_model and the --model-omitted launch path do), so it
 	// would strand the session on a bogus "default" model. Re-launch so startup
 	// resolves it to the concrete model, mirroring the EffortAuto restart above.
-	if s.Model == DefaultModelSentinel && s.Model != curModel {
+	if reqModel == DefaultModelSentinel && reqModel != curModel {
 		return false
 	}
 
 	flagSettings := map[string]interface{}{}
 
-	if s.Model != "" && s.Model != curModel {
-		flagSettings["model"] = s.Model
+	if reqModel != "" && reqModel != curModel {
+		flagSettings["model"] = reqModel
 	}
 	// Resolve the requested effort against the model it will run under (the new model
 	// when this update also switches model) so a combined model+effort change can't
@@ -975,23 +1028,22 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	// but it keeps the live path consistent with buildModelEffortArgs's launch-time
 	// downgrade.
 	targetModel := curModel
-	if s.Model != "" {
-		targetModel = s.Model
+	if reqModel != "" {
+		targetModel = reqModel
 	}
-	maps.Copy(flagSettings, a.effortResolver().updateFlagSettings(targetModel, s.Effort, curEffort))
+	maps.Copy(flagSettings, a.effortResolver().updateFlagSettings(targetModel, reqEffort, curEffort))
 
-	extra := s.ExtraSettings
-	if v := extra[ExtraKeyOutputStyle]; v != "" && v != curOutputStyle {
+	if v := options[ClaudeOptionOutputStyle]; v != "" && v != curOutputStyle {
 		if !slices.Contains(availStyles, v) {
 			return false
 		}
-		flagSettings[ExtraKeyOutputStyle] = v
+		flagSettings[ClaudeOptionOutputStyle] = v
 	}
-	if v := extra[ExtraKeyFastMode]; v != "" && v != curFastMode {
-		flagSettings[ExtraKeyFastMode] = flagSettingOnOff(v)
+	if v := options[ClaudeOptionFastMode]; v != "" && v != curFastMode {
+		flagSettings[ClaudeOptionFastMode] = flagSettingOnOff(v)
 	}
-	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != curThinking {
-		flagSettings[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
+	if v := options[ClaudeOptionAlwaysThinking]; v != "" && v != curThinking {
+		flagSettings[ClaudeOptionAlwaysThinking] = flagSettingThinking(v)
 	}
 
 	if len(flagSettings) > 0 {
@@ -999,18 +1051,66 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 			slog.Error("apply_flag_settings failed", "agent_id", a.agentID, "error", err)
 			return false
 		}
-		a.refreshSettingsFromAgent(a.APITimeout())
 	}
 
-	if mode := s.GetPermissionMode(); mode != "" && mode != curPermissionMode {
-		resp, err := a.sendSetPermissionMode(a.ctx, mode, a.APITimeout())
-		if err != nil {
-			slog.Error("set_permission_mode failed", "agent_id", a.agentID, "mode", mode, "error", err)
+	if mode := options[OptionIDPermissionMode]; mode != "" && mode != curPermissionMode {
+		if !a.applyPermissionModeLive(mode) {
 			return false
 		}
+	}
+
+	// Read back, persist, and broadcast the flag-settings result ONLY after every live apply has
+	// landed -- NOT right after sendApplyFlagSettings above. This keeps a combined change
+	// all-or-nothing: if the permission-mode apply fails and returns false for a restart, no
+	// half-applied model/effort is broadcast (or folded into a.model/a.effort) first. The flag
+	// settings were already pushed to the CLI; deferring only their read-back/broadcast leaves the
+	// in-memory state consistent on the failure path, and the restart supersedes the live apply.
+	if len(flagSettings) > 0 {
+		a.refreshSettingsFromAgent(a.APITimeout())
+	}
+	return true
+}
+
+// applyPermissionModeLive applies a permission-mode change to the running CLI via
+// set_permission_mode, returning false (the caller must restart) only on a hard failure. Caller
+// holds NO lock. Extracted from UpdateSettings so the model/effort flag-settings build is no
+// longer interleaved with the permission-mode RPC's three-way ack handling.
+//
+// The control request is capped well below APITimeout: idle, the CLI acks set_permission_mode in
+// well under a second, but while a turn is streaming it defers the ack until the turn ends, so
+// holding the caller (and the per-agent lifecycle lock) for the full APITimeout and then restarting
+// would needlessly kill the in-flight turn.
+func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) bool {
+	resp, err := a.sendSetPermissionMode(a.ctx, mode, min(permissionModeApplyTimeout, a.APITimeout()))
+	switch {
+	case err == nil:
 		a.mu.Lock()
 		a.confirmedPermissionMode = resp.Mode
+		// A live switch that LANDED on auto proves the session can enter it, so clear a stale
+		// autoModeAvailable=false a transient startup probe failure may have left behind. Without
+		// this, OptionGroups would keep filtering "auto" out of the picker even though the session
+		// is running it. (livePermissionModeGroup still keeps the current value selectable as a
+		// backstop, but updating the flag makes the catalog state accurate, not just self-correcting.)
+		if resp.Mode == PermissionModeAuto {
+			a.autoModeAvailable = true
+		}
 		a.mu.Unlock()
+	case errors.Is(err, errControlTimeout):
+		// The ack is deferred because a turn is in progress, but the CLI still queues
+		// and applies the mode. Treat it as accepted-pending: record the requested mode
+		// optimistically and return true so the caller persists it WITHOUT restarting
+		// (which would abort the turn) or rolling the optimistic UI back. When the turn
+		// ends the CLI sends the deferred control_response, which claudeCodeHandleControlResponse
+		// folds back -- reconciling confirmedPermissionMode (and the persisted row) to the
+		// mode the CLI actually applied if it differs from this optimistic value.
+		slog.Info("set_permission_mode ack deferred (turn in progress); applying optimistically",
+			"agent_id", a.agentID, "mode", mode)
+		a.mu.Lock()
+		a.confirmedPermissionMode = mode
+		a.mu.Unlock()
+	default:
+		slog.Error("set_permission_mode failed", "agent_id", a.agentID, "mode", mode, "error", err)
+		return false
 	}
 	return true
 }
@@ -1075,19 +1175,26 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	if settings.Effective.OutputStyle != "" {
 		a.outputStyle = settings.Effective.OutputStyle
 	}
-	if settings.Effective.FastMode != nil {
-		if *settings.Effective.FastMode {
-			a.fastMode = FastModeOn
-		} else {
-			a.fastMode = FastModeOff
-		}
+	// get_settings' `effective` is the CLI's MERGED settings map (verified by
+	// disassembling the 2.1.170 binary: getSettings spreads PU().settings).
+	// apply_flag_settings DELETES a key when sent null, so a flag cleared to its
+	// default is ABSENT from `effective` and decodes here as a nil *bool. A nil thus
+	// means "at the CLI default", NOT "unchanged": settle the field on that concrete
+	// default rather than leaving the previous value stale. Otherwise turning Fast
+	// Mode off (flagSettingOnOff sends null) or Extended Thinking on
+	// (flagSettingThinking sends null) strands a.fastMode/a.alwaysThinking on the
+	// prior setting, which then persists -- desyncing the settings-changed baseline
+	// from the running session, so a later toggle compares against the wrong stored
+	// value and its notification silently no-ops or shows a reversed transition.
+	if settings.Effective.FastMode != nil && *settings.Effective.FastMode {
+		a.fastMode = FastModeOn
+	} else {
+		a.fastMode = FastModeOff // nil == cleared to the CLI default (off)
 	}
-	if settings.Effective.AlwaysThinkingEnabled != nil {
-		if *settings.Effective.AlwaysThinkingEnabled {
-			a.alwaysThinking = AlwaysThinkingOn
-		} else {
-			a.alwaysThinking = AlwaysThinkingOff
-		}
+	if settings.Effective.AlwaysThinkingEnabled != nil && !*settings.Effective.AlwaysThinkingEnabled {
+		a.alwaysThinking = AlwaysThinkingOff
+	} else {
+		a.alwaysThinking = AlwaysThinkingOn // nil == cleared to the CLI default (on)
 	}
 	model, effort := a.model, a.effort
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
@@ -1102,13 +1209,16 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		"alwaysThinking", thinking,
 	)
 
-	// get_settings does not report permission mode. Keep that field empty so
-	// the service preserves the DB value, including startup-time raw
-	// set_permission_mode changes that are applied again after startup.
-	a.sink.PersistSettingsRefresh(model, effort, "", map[string]string{
-		ExtraKeyOutputStyle:    outputStyle,
-		ExtraKeyFastMode:       fastMode,
-		ExtraKeyAlwaysThinking: thinking,
+	// get_settings does not report permission mode, so OMIT it from the refresh
+	// map: an absent key preserves the stored DB value, including startup-time raw
+	// set_permission_mode changes that are applied again after startup. model/
+	// effort/outputStyle/fastMode/thinking are all concrete here, so they upsert.
+	a.sink.PersistSettingsRefresh(map[string]string{
+		OptionIDModel:              model,
+		OptionIDEffort:             effort,
+		ClaudeOptionOutputStyle:    outputStyle,
+		ClaudeOptionFastMode:       fastMode,
+		ClaudeOptionAlwaysThinking: thinking,
 	})
 }
 
@@ -1137,14 +1247,18 @@ func flagSettingThinking(v string) interface{} {
 // normalizeClaudeCodeModel collapses the fully-qualified model ID that
 // Claude Code's get_settings "applied.model" field returns (e.g.
 // "claude-opus-4-7", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]")
-// back to the short alias leapmux uses (opus, opus[1m], sonnet,
-// sonnet[1m], haiku). Short aliases pass through unchanged.
+// back to the short alias leapmux uses (opus[1m], sonnet, sonnet[1m], haiku).
+// Short aliases pass through unchanged.
 //
 // Rules:
 //   - Strip an optional "claude-" prefix.
 //   - Preserve a trailing "[...]" bracket suffix (the 1M-context marker).
 //   - Keep only the leading alphabetic token (opus/sonnet/haiku), dropping
 //     version numbers (e.g. "-4-7") and date suffixes (e.g. "-20251001").
+//   - Fable and Opus ship only as 1M-context models, so every spelling of
+//     either collapses to "fable[1m]" / "opus[1m]" regardless of suffix --
+//     bare "opus" (the legacy standard-context alias the CLI no longer lists)
+//     is canonicalized to "opus[1m]" like every other Opus spelling.
 func normalizeClaudeCodeModel(model string) string {
 	if model == "" {
 		return ""
@@ -1186,6 +1300,19 @@ func normalizeClaudeCodeModel(model string) string {
 		// caller can still display it.
 		return model
 	}
+	// Fable and Opus ship only as 1M-context models, and their canonical ids
+	// carry the "[1m]" marker -- matching what the live CLI reports
+	// ("claude-fable-5[1m]", "claude-opus-4-8[1m]"). There is no standard-context
+	// Fable, and the standard-context Opus is a legacy id the live CLI no longer
+	// lists, so every spelling of either (bare "fable"/"opus" from an operator
+	// override or an older CLI listing, a fully-qualified value, an already-"[1m]"
+	// id, or a "[1m-beta]"-style decoration) collapses to "<family>[1m]" so a
+	// running Fable/Opus always matches its own catalog entry instead of splitting
+	// into "<family>" vs "<family>[1m]". If a standard-context Opus is ever
+	// reintroduced, this collapse must be revisited.
+	if alias == "fable" || alias == "opus" {
+		return alias + "[1m]"
+	}
 	return alias + suffix
 }
 
@@ -1217,27 +1344,27 @@ func modelSupportsAdaptiveThinking(model string) bool {
 //
 // Because the pointers are shared, they MUST be treated as read-only after init:
 // mutating one tier (e.g. its Description) would change it for every model slice
-// that references it. AvailableModels() hands these out without copying, so the
-// read-only contract extends to its callers (see its doc).
+// that references it. OptionGroups()'s model projection hands these out without
+// copying, so the read-only contract extends to its callers.
 var (
-	effortTierAuto      = &leapmuxv1.AvailableEffort{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"}
-	effortTierUltracode = &leapmuxv1.AvailableEffort{Id: "ultracode", Name: "Ultracode", Description: "xhigh effort plus standing dynamic-workflow orchestration"}
-	effortTierMax       = &leapmuxv1.AvailableEffort{Id: "max", Name: "Max", Description: "Maximum capability with deepest reasoning"}
-	effortTierXHigh     = &leapmuxv1.AvailableEffort{Id: EffortXHigh, Name: "X-High", Description: "Deeper reasoning than high, just below maximum"}
-	effortTierHigh      = &leapmuxv1.AvailableEffort{Id: EffortHigh, Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
-	effortTierMedium    = &leapmuxv1.AvailableEffort{Id: "medium", Name: "Medium", Description: "Balanced approach with standard implementation and testing"}
-	effortTierLow       = &leapmuxv1.AvailableEffort{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
+	effortTierAuto      = &EffortInfo{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"}
+	effortTierUltracode = &EffortInfo{Id: "ultracode", Name: "Ultracode", Description: "xhigh effort plus standing dynamic-workflow orchestration"}
+	effortTierMax       = &EffortInfo{Id: "max", Name: "Max", Description: "Maximum capability with deepest reasoning"}
+	effortTierXHigh     = &EffortInfo{Id: EffortXHigh, Name: "X-High", Description: "Deeper reasoning than high, just below maximum"}
+	effortTierHigh      = &EffortInfo{Id: EffortHigh, Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
+	effortTierMedium    = &EffortInfo{Id: "medium", Name: "Medium", Description: "Balanced approach with standard implementation and testing"}
+	effortTierLow       = &EffortInfo{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
 )
 
 // claudeEffortXHighMax is used by models that support both xhigh and max,
 // plus the xhigh+ultracode combo (currently Opus).
-var claudeEffortXHighMax = []*leapmuxv1.AvailableEffort{
+var claudeEffortXHighMax = []*EffortInfo{
 	effortTierAuto, effortTierUltracode, effortTierMax, effortTierXHigh, effortTierHigh, effortTierMedium, effortTierLow,
 }
 
 // claudeEffortMax is used by models that support max but not xhigh
 // (currently Sonnet 4.6, older Opus).
-var claudeEffortMax = []*leapmuxv1.AvailableEffort{
+var claudeEffortMax = []*EffortInfo{
 	effortTierAuto, effortTierMax, effortTierHigh, effortTierMedium, effortTierLow,
 }
 
@@ -1253,8 +1380,8 @@ const (
 
 // claudeCodeAvailableModels is the static model catalog. It is the source of
 // truth for DefaultModel(provider) (registry defaultModels) and the fallback
-// AvailableModels() returns when the per-agent dynamic catalog is empty (old
-// CLI, third-party provider, or parse failure). When the live CLI reports its
+// OptionGroups()'s model projection uses when the per-agent dynamic catalog is empty
+// (old CLI, third-party provider, or parse failure). When the live CLI reports its
 // own catalog, the dynamic list (convertClaudeModels) supersedes this.
 //
 // The leading DefaultModelSentinel entry is the IsDefault choice: a new tab (and
@@ -1267,11 +1394,24 @@ const (
 // most→least powerful order, matching Claude Code's own ordering ("Fable for the
 // hardest problems, Opus for complex work, Sonnet for most tasks, Haiku for
 // quick questions").
-var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
+var claudeCodeAvailableModels = []*ModelInfo{
 	{Id: DefaultModelSentinel, DisplayName: "Default (recommended)", Description: "Use your account's default model", IsDefault: true},
-	{Id: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow},
-	{Id: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
-	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow},
+	// Fable 5 is 1M-context only; its canonical id carries the [1m] marker so it
+	// matches the live CLI's "claude-fable-5[1m]" (normalizeClaudeCodeModel
+	// collapses every Fable spelling, bare "fable" included, to "fable[1m]"). The
+	// display name omits "(1M context)" -- there is no standard-context Fable to
+	// distinguish it from.
+	{Id: "fable[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
+	// opus is the legacy standard-context alias. normalizeClaudeCodeModel now
+	// collapses every Opus spelling (bare "opus" included) to "opus[1m]", so no
+	// path resolves to this entry by id anymore -- it is retained purely as a
+	// Hidden, exact-match-only safety net for any un-normalized legacy id that
+	// might still reach a FindAvailableModel lookup. FindAvailableModel matches
+	// raw ids, so this entry can never shadow the selectable opus[1m] below.
+	// Hidden from the picker: the live CLI no longer lists the standard-context
+	// Opus -- only opus[1m] -- so the static fallback must not resurrect it as a
+	// selectable option.
+	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow, Hidden: true},
 	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
 	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: claudeStandardContextWindow},
 	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: claudeOneMillionContextWindow},
@@ -1288,7 +1428,7 @@ var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
 // descriptions identical to the static catalog.
 type claudeEffortLevel struct {
 	level string
-	tier  *leapmuxv1.AvailableEffort
+	tier  *EffortInfo
 }
 
 var claudeEffortLevels = []claudeEffortLevel{
@@ -1327,16 +1467,16 @@ func recognizedClaudeEffortLevels(supported map[string]bool) []claudeEffortLevel
 // option (the model-side analogue of EffortAuto); buildModelEffortArgs omits
 // --model for it and withDefaultModelMarked gives it the IsDefault badge.
 // IsDefault is left unset here -- the manager applies it. Returns nil when
-// models is empty so AvailableModels() falls back to the static catalog.
+// models is empty so OptionGroups()'s model projection falls back to the static catalog.
 //
 // The returned entries reuse the shared effortTier* pointers, so the same
-// read-only contract as claudeCodeAvailableModels applies (see AvailableModels).
-func convertClaudeModels(models, unavailable []claudeCodeModelInfo) []*leapmuxv1.AvailableModel {
+// read-only contract as claudeCodeAvailableModels applies (see OptionGroups).
+func convertClaudeModels(models, unavailable []claudeCodeModelInfo) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
 	}
 	skip := buildModelSkipSet(unavailable)
-	out := make([]*leapmuxv1.AvailableModel, 0, len(models))
+	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]bool, len(models))
 	sentinelSeen := false
 	for _, m := range models {
@@ -1411,12 +1551,12 @@ func buildModelSkipSet(unavailable []claudeCodeModelInfo) map[string]bool {
 // only for the genuine account-default entry (matched on the RAW value) and has
 // already dropped any concrete model whose value merely normalizes to "default", so
 // the id check below is exact -- no need to re-examine the raw value here.
-func convertClaudeModel(m claudeCodeModelInfo, id string) *leapmuxv1.AvailableModel {
+func convertClaudeModel(m claudeCodeModelInfo, id string) *ModelInfo {
 	displayName := m.DisplayName
 	if displayName == "" {
 		displayName = claudeFallbackDisplayName(id)
 	}
-	am := &leapmuxv1.AvailableModel{
+	am := &ModelInfo{
 		Id:          id,
 		DisplayName: displayName,
 		Description: m.Description,
@@ -1486,14 +1626,14 @@ func normalizedEffortLevelSet(m claudeCodeModelInfo) map[string]bool {
 // xhigh; the recognized CLI levels then follow strongest->weakest. The order comes
 // from claudeEffortLevels (walked in reverse), not the CLI's reported order, so an
 // unexpected ordering can't scramble the menu.
-func claudeSupportedEfforts(supported map[string]bool) []*leapmuxv1.AvailableEffort {
+func claudeSupportedEfforts(supported map[string]bool) []*EffortInfo {
 	recognized := recognizedClaudeEffortLevels(supported)
 	// A model that claims effort support but lists only levels we don't recognize
 	// has no usable menu, so hide the selector instead of emitting a lone "auto".
 	if len(recognized) == 0 {
 		return nil
 	}
-	efforts := make([]*leapmuxv1.AvailableEffort, 0, len(recognized)+2)
+	efforts := make([]*EffortInfo, 0, len(recognized)+2)
 	efforts = append(efforts, effortTierAuto)
 	if supported[EffortXHigh] {
 		efforts = append(efforts, effortTierUltracode)
@@ -1536,7 +1676,10 @@ func claudeDefaultEffort(supported map[string]bool) string {
 // sentinel is the exception -- it has no window until it resolves), so new models stay
 // correct without a per-model table.
 func claudeContextWindowForValue(value string) int64 {
-	if is1MContextVariant(value) {
+	// Fable 5 is always 1M. Its canonical id is "fable[1m]" (caught by the suffix
+	// rule below), but a raw, un-normalized "fable" can still reach here from an API
+	// model id, so accept the bare alias too rather than mis-sizing it to 200K.
+	if value == "fable" || is1MContextVariant(value) {
 		return claudeOneMillionContextWindow
 	}
 	return claudeStandardContextWindow
@@ -1564,6 +1707,15 @@ func is1MContextVariant(id string) bool {
 // (e.g. `{"subtype":"initialize"}`). Returns the control result or an error
 // on timeout/cancellation/failure.
 func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody string, timeout time.Duration) (claudeCodeControlResult, error) {
+	_, resp, err := a.sendControlAndWaitWithID(ctx, requestBody, timeout)
+	return resp, err
+}
+
+// sendControlAndWaitWithID is sendControlAndWait that also returns the generated request_id, so
+// a caller that needs to correlate a LATE (deferred) control_response with the request it
+// belongs to -- the set_permission_mode path, whose ack the CLI holds until an active turn
+// ends -- can record that id. Most callers use sendControlAndWait and ignore it.
+func (a *ClaudeCodeAgent) sendControlAndWaitWithID(ctx context.Context, requestBody string, timeout time.Duration) (string, claudeCodeControlResult, error) {
 	requestID := generateRequestID()
 	ch := make(chan claudeCodeControlResult, 1)
 	a.registerPendingControl(requestID, ch)
@@ -1580,9 +1732,9 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 		// subprocess exits before the initialize write reaches the pipe.
 		select {
 		case <-a.processDone:
-			return claudeCodeControlResult{}, a.processExitError()
+			return requestID, claudeCodeControlResult{}, a.processExitError()
 		case <-time.After(1 * time.Second):
-			return claudeCodeControlResult{}, err
+			return requestID, claudeCodeControlResult{}, err
 		}
 	}
 	TraceStartupPhase(a.agentID, "control_stdin_write")
@@ -1591,20 +1743,26 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 	case resp := <-ch:
 		a.unregisterPendingControl(requestID)
 		if !resp.Success {
-			return resp, fmt.Errorf("%s", resp.Error)
+			return requestID, resp, fmt.Errorf("%s", resp.Error)
 		}
-		return resp, nil
+		return requestID, resp, nil
 	case <-a.processDone:
 		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, a.processExitError()
+		return requestID, claudeCodeControlResult{}, a.processExitError()
 	case <-ctx.Done():
 		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, ctx.Err()
+		return requestID, claudeCodeControlResult{}, ctx.Err()
 	case <-time.After(timeout):
 		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, fmt.Errorf("timeout waiting for agent to respond")
+		return requestID, claudeCodeControlResult{}, errControlTimeout
 	}
 }
+
+// errControlTimeout is returned by sendControlAndWait when the agent does not respond to a
+// control request within the timeout. It is a sentinel (its message is unchanged) so the
+// live permission-mode path can tell a deferred ack -- the CLI holds the set_permission_mode
+// response until an active turn ends -- from a genuine failure via errors.Is.
+var errControlTimeout = errors.New("timeout waiting for agent to respond")
 
 // sendApplyFlagSettings marshals flagSettings into an apply_flag_settings
 // control request and sends it, returning the control error (if any). The
@@ -1662,6 +1820,12 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 // sendSetPermissionMode issues set_permission_mode and falls back to the
 // requested mode when the response omits the applied mode field, so callers
 // always receive a non-empty resp.Mode on success.
+// permissionModeApplyTimeout caps how long the live UpdateSettings path waits for a
+// set_permission_mode ack. Kept short so a permission-mode toggle made while a turn is
+// streaming (the CLI defers the ack until the turn ends) fails fast and is applied
+// optimistically, rather than blocking for APITimeout and then restarting the agent.
+const permissionModeApplyTimeout = 2 * time.Second
+
 func (a *ClaudeCodeAgent) sendSetPermissionMode(ctx context.Context, mode string, timeout time.Duration) (claudeCodeControlResult, error) {
 	body, err := json.Marshal(map[string]string{
 		"subtype": "set_permission_mode",
@@ -1670,7 +1834,17 @@ func (a *ClaudeCodeAgent) sendSetPermissionMode(ctx context.Context, mode string
 	if err != nil {
 		return claudeCodeControlResult{}, err
 	}
-	resp, err := a.sendControlAndWait(ctx, string(body), timeout)
+	requestID, resp, err := a.sendControlAndWaitWithID(ctx, string(body), timeout)
+	if errors.Is(err, errControlTimeout) {
+		// The CLI deferred this ack until the active turn ends. Remember THIS request's id (as
+		// the latest pending toggle) so claudeCodeHandleControlResponse folds back only the ack
+		// that belongs to it -- not a stale/duplicate ack, nor an earlier toggle this one
+		// supersedes. The turn is still streaming, so the deferred ack cannot arrive before this
+		// returns, hence no race with the optimistic write the caller does next.
+		a.mu.Lock()
+		a.deferredPermissionModeReqID = requestID
+		a.mu.Unlock()
+	}
 	if err == nil && resp.Mode == "" {
 		resp.Mode = mode
 	}
@@ -1798,16 +1972,16 @@ func generateRequestID() string {
 type effortResolver struct {
 	// catalog is the primary catalog consulted first: the static one at launch, the
 	// per-agent dynamic one post-init.
-	catalog []*leapmuxv1.AvailableModel
+	catalog []*ModelInfo
 	// fallback is consulted only when catalog doesn't list a model, so a model the
 	// live CLI dropped from the dynamic list (e.g. reported in unavailable_models)
 	// but that the agent is actually running still resolves to its real
 	// capabilities instead of being treated as unknown. nil for the launch resolver
 	// and the single-catalog resolvers tests build via newEffortResolver.
-	fallback []*leapmuxv1.AvailableModel
+	fallback []*ModelInfo
 }
 
-func newEffortResolver(catalog []*leapmuxv1.AvailableModel) effortResolver {
+func newEffortResolver(catalog []*ModelInfo) effortResolver {
 	return effortResolver{catalog: catalog}
 }
 
@@ -1871,7 +2045,7 @@ func (r effortResolver) planLaunch(model, effort string) launchEffortPlan {
 // initialize completes).
 func (r effortResolver) buildModelEffortArgs(model, effort string) []string {
 	var args []string
-	if model != "" && model != DefaultModelSentinel {
+	if !UsesAccountDefaultModel(model) {
 		args = []string{"--model", model}
 	}
 	plan := r.planLaunch(model, effort)
@@ -1887,7 +2061,7 @@ func (r effortResolver) buildModelEffortArgs(model, effort string) []string {
 // resolves to its real efforts (see effortResolver). The single lookup is shared by
 // supports and supportsUltracode, which differ only in how they treat an unknown
 // model.
-func (r effortResolver) definedEfforts(modelID string) (efforts []*leapmuxv1.AvailableEffort, known bool) {
+func (r effortResolver) definedEfforts(modelID string) (efforts []*EffortInfo, known bool) {
 	if modelID == DefaultModelSentinel {
 		// The account-default sentinel is a placeholder, not a concrete model: its
 		// real efforts belong to whatever the CLI resolves it to. Report it as
@@ -1907,7 +2081,7 @@ func (r effortResolver) definedEfforts(modelID string) (efforts []*leapmuxv1.Ava
 	// model like Haiku, whose fallback entry is empty too) the known-but-empty
 	// verdict stands. This preserves the legitimate "CLI dropped a level" case: a
 	// dynamic entry with FEWER but non-empty efforts still wins over the fallback.
-	for _, cat := range [][]*leapmuxv1.AvailableModel{r.catalog, r.fallback} {
+	for _, cat := range [][]*ModelInfo{r.catalog, r.fallback} {
 		for _, m := range cat {
 			// Guard nil entries to match FindAvailableModel/withDefaultModelMarked,
 			// which already treat catalogs as possibly nil-bearing; convertClaudeModels
@@ -1937,8 +2111,8 @@ func (r effortResolver) contextWindow(modelID string) int64 {
 }
 
 // effortListContains reports whether efforts holds an entry with the given ID.
-func effortListContains(efforts []*leapmuxv1.AvailableEffort, id string) bool {
-	return slices.ContainsFunc(efforts, func(e *leapmuxv1.AvailableEffort) bool { return e.Id == id })
+func effortListContains(efforts []*EffortInfo, id string) bool {
+	return slices.ContainsFunc(efforts, func(e *EffortInfo) bool { return e.Id == id })
 }
 
 // supports reports whether the given effort ID is in the known SupportedEfforts
@@ -1984,7 +2158,7 @@ func (r effortResolver) launchRunsUltracode(model, effort string) bool {
 // Shared by buildModelEffortArgs (which omits --effort) and planLaunch, so the
 // launch flags and the startup reconcile see the same "sent nothing" set.
 func (r effortResolver) launchOmitsEffort(model, effort string) bool {
-	if effort == "" || effort == EffortAuto || model == "" || model == DefaultModelSentinel {
+	if effort == "" || effort == EffortAuto || UsesAccountDefaultModel(model) {
 		return true
 	}
 	efforts, known := r.definedEfforts(model)
@@ -2028,14 +2202,16 @@ func init() {
 		},
 		claudeCodeAvailableModels,
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OptionGroupKeyPermissionMode,
-			Label: "Permission Mode",
+			Id:           OptionIDPermissionMode,
+			Label:        "Permission Mode",
+			DefaultValue: PermissionModeDefault,
+			Mutable:      true,
+			Order:        OptionOrderPermissionMode,
 			Options: []*leapmuxv1.AvailableOption{
 				{
 					Id:          PermissionModeDefault,
 					Name:        "Default",
 					Description: "Standard behavior, prompts for dangerous operations.",
-					IsDefault:   true,
 				},
 				{
 					Id:          PermissionModePlan,
@@ -2068,4 +2244,11 @@ func init() {
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
 		"claude",
 	)
+	// Each Claude model carries its effort AND extended-thinking groups, so the
+	// frontend rebuilds both on a model switch (the static fallback needs this
+	// too, hence the registry override rather than only Claude.OptionGroups).
+	setModelSubGroups(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeModelSubGroups)
+	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, normalizeClaudeCodeModel)
+	// model + permissionMode (static group) + effort (built from the model catalog).
+	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, OptionIDEffort)
 }

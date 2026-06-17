@@ -1,5 +1,5 @@
 -- name: CreateAgent :exec
-INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, permission_mode, extra_settings, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, options, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;
@@ -30,59 +30,93 @@ UPDATE agents SET agent_session_id = ?, session_start_seq = (SELECT COALESCE(MAX
 -- name: ReopenAgent :exec
 UPDATE agents SET closed_at = NULL WHERE id = ?;
 
--- name: SetAgentPermissionMode :exec
-UPDATE agents SET permission_mode = ? WHERE id = ?;
+-- name: SetAgentOptions :exec
+UPDATE agents SET options = ? WHERE id = ?;
 
--- name: UpdateAgentModelAndEffort :exec
-UPDATE agents SET model = ?, effort = ? WHERE id = ?;
+-- SetAgentOptionGroups persists only the provider-reported catalog (option_groups),
+-- leaving the chosen option values untouched. Used when a running ACP provider discovers
+-- its catalog (e.g. a dynamic model list reported only after the session/new handshake)
+-- after the startup handoff already persisted a narrower one, so the post-exit offline
+-- read surfaces the discovered options instead of a stale static fallback.
+-- name: SetAgentOptionGroups :exec
+UPDATE agents SET option_groups = ? WHERE id = ?;
 
--- name: SetAgentExtraSettings :exec
-UPDATE agents SET extra_settings = ? WHERE id = ?;
+-- SetAgentOptionsIfUnchanged is a compare-and-swap: it overwrites options only when
+-- the column still equals expected_options -- the snapshot the new value was merged
+-- from. Returns the number of rows changed (0 when the row moved on between the read
+-- and the write), so a concurrent PersistSettingsRefresh can re-read, re-merge, and
+-- retry instead of clobbering the other writer's keys with a stale full-map blob.
+-- name: SetAgentOptionsIfUnchanged :execrows
+UPDATE agents SET options = sqlc.arg(options)
+WHERE id = sqlc.arg(id) AND options = sqlc.arg(expected_options);
 
--- name: UpdateAgentAllSettings :exec
-UPDATE agents SET model = ?, effort = ?, permission_mode = ?, extra_settings = ? WHERE id = ?;
-
--- UpdateAgentConfirmedSettings persists both the confirmed request
--- settings (model/effort/permissionMode/extraSettings) and the
--- provider-reported catalogs (availableModels/availableOptionGroups)
--- in a single UPDATE, returning the full row. Saves the trailing
--- SELECT that would otherwise be needed to build the ACTIVE broadcast.
--- name: UpdateAgentConfirmedSettings :one
-UPDATE agents SET
-  model = ?,
-  effort = ?,
-  permission_mode = ?,
-  extra_settings = ?,
-  available_models = ?,
-  available_option_groups = ?
-WHERE id = ?
-RETURNING *;
+-- SetAgentOptionGroupsIfUnchanged is the compare-and-swap form of SetAgentOptionGroups: it
+-- overwrites the provider-reported catalog only while the column still equals
+-- expected_option_groups -- the snapshot the new catalog is replacing. A running ACP provider
+-- that discovers a richer catalog (e.g. a dynamic model list reported only after the
+-- session/new handshake) and persists it via SetAgentOptionGroups on a separate, unsynchronized
+-- path must not be clobbered by a (re)start handoff's narrower catalog: when the column moved on
+-- (option_groups != expected_option_groups) this write is a no-op and the newer catalog is kept.
+-- It is the standalone mirror of the option_groups CASE in
+-- UpdateAgentConfirmedSettingsPreservingStartedSettings, for the synchronous
+-- persistConfirmedAgentSettings path that writes the catalog separately from the options CAS.
+-- Returns the number of rows changed (0 when the catalog moved on).
+-- name: SetAgentOptionGroupsIfUnchanged :execrows
+UPDATE agents SET option_groups = sqlc.arg(option_groups)
+WHERE id = sqlc.arg(id) AND option_groups = sqlc.arg(expected_option_groups);
 
 -- UpdateAgentConfirmedSettingsPreservingStartedSettings is used by
--- asynchronous startup. It persists provider-reported catalogs and
--- confirmed settings, but only overwrites settings columns that still
--- match the values used to start the subprocess. If the user changed a
--- setting while startup was finishing, preserve that newer DB value.
+-- asynchronous startup. It persists the provider-reported catalog and the
+-- confirmed option values via a compare-and-swap: the options column is only
+-- overwritten when it still equals expected_options -- the row snapshot the
+-- confirmed_options blob was derived from. confirmed_options already folds in
+-- any setting the user changed during startup, so writing it when the row still
+-- matches preserves those edits AND applies the provider's resolutions; a newer
+-- change that landed after the snapshot (row != expected_options) is left
+-- untouched.
+-- The option_groups (catalog) column is CAS-guarded INDEPENDENTLY against
+-- expected_option_groups: a running ACP provider that discovers its dynamic model
+-- list AFTER this handoff and persists it via SetAgentOptionGroups must not be
+-- clobbered by the (now narrower) startup catalog. Both writers touch only the
+-- option_groups column with no shared lock, so without this guard a late-landing
+-- handoff would overwrite the richer discovered catalog. When the catalog moved on
+-- (option_groups != expected_option_groups) we keep the newer one.
 -- name: UpdateAgentConfirmedSettingsPreservingStartedSettings :one
 UPDATE agents SET
-  model = CASE
-    WHEN model = sqlc.arg(started_model) THEN sqlc.arg(confirmed_model)
-    ELSE model
+  options = CASE
+    WHEN options = sqlc.arg(expected_options) THEN sqlc.arg(confirmed_options)
+    ELSE options
   END,
-  effort = CASE
-    WHEN effort = sqlc.arg(started_effort) THEN sqlc.arg(confirmed_effort)
-    ELSE effort
+  option_groups = CASE
+    WHEN option_groups = sqlc.arg(expected_option_groups) THEN sqlc.arg(option_groups)
+    ELSE option_groups
+  END
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- UpdateAgentConfirmedSettings atomically writes the confirmed options blob AND the provider
+-- option-group catalog in ONE statement, for the synchronous persistConfirmedAgentSettings path, so
+-- a concurrent options writer can't land BETWEEN two separate column writes and leave the row
+-- showing this handoff's options beside a foreign catalog. The options column is a compare-and-swap
+-- on expected_options (the snapshot the blob was merged from); the caller retries on a miss
+-- (the returned options != options). The option_groups column is written ONLY on that SAME
+-- successful options CAS (gated on options = expected_options) AND while it still equals
+-- expected_option_groups, so the two columns move together-or-neither -- a richer catalog a running
+-- provider discovered concurrently (option_groups != expected_option_groups) is preserved, and a
+-- lost options CAS writes nothing (the caller re-merges and retries, keeping both atomic). Pass
+-- option_groups = '' with expected_option_groups = '' to leave the catalog untouched (a no-op write,
+-- e.g. when its marshal failed).
+-- name: UpdateAgentConfirmedSettings :one
+UPDATE agents SET
+  options = CASE
+    WHEN options = sqlc.arg(expected_options) THEN sqlc.arg(options)
+    ELSE options
   END,
-  permission_mode = CASE
-    WHEN permission_mode = sqlc.arg(started_permission_mode) THEN sqlc.arg(confirmed_permission_mode)
-    ELSE permission_mode
-  END,
-  extra_settings = CASE
-    WHEN extra_settings = sqlc.arg(started_extra_settings) THEN sqlc.arg(confirmed_extra_settings)
-    ELSE extra_settings
-  END,
-  available_models = sqlc.arg(available_models),
-  available_option_groups = sqlc.arg(available_option_groups)
+  option_groups = CASE
+    WHEN options = sqlc.arg(expected_options) AND option_groups = sqlc.arg(expected_option_groups)
+    THEN sqlc.arg(option_groups)
+    ELSE option_groups
+  END
 WHERE id = sqlc.arg(id)
 RETURNING *;
 

@@ -16,6 +16,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
@@ -156,7 +157,7 @@ func TestAgent_StartAndStop(t *testing.T) {
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "test-workspace",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStart")
@@ -186,7 +187,7 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "test-workspace-2",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, noopSink{})
 	require.NoError(t, err, "mockStart")
@@ -202,7 +203,7 @@ func TestAgent_AgentID(t *testing.T) {
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "my-agent",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, noopSink{})
 	require.NoError(t, err, "mockStart")
@@ -220,7 +221,7 @@ func TestAgent_WorkingDir(t *testing.T) {
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "wd-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: dir,
 	}, noopSink{})
 	require.NoError(t, err, "mockStart")
@@ -271,7 +272,7 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 
 	agent, err := mockStartWithInit(ctx, Options{
 		AgentID:    "init-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStartWithInit")
@@ -303,7 +304,7 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 
 	agent, err := mockStartWithInit(ctx, Options{
 		AgentID:    "tool-count-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStartWithInit")
@@ -379,7 +380,7 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 
 	agent, err := mockStartWithInit(ctx, Options{
 		AgentID:    "span-type-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStartWithInit")
@@ -431,7 +432,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 
 	agent, err := mockStartWithInit(ctx, Options{
 		AgentID:    "parallel-span-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStartWithInit")
@@ -534,7 +535,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 				processDone: make(chan struct{}),
 				stderrDone:  make(chan struct{}),
 			},
-			model:          opts.Model,
+			model:          opts.Model(),
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
 			pendingControl: make(map[string]chan<- claudeCodeControlResult),
@@ -551,7 +552,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		go a.readOutputLoop(scanner)
 
 		// Replicate the startup handshake from StartClaudeCode().
-		mode := StringOrDefault(opts.PermissionMode, PermissionModeDefault)
+		mode := StringOrDefault(opts.PermissionMode(), PermissionModeDefault)
 		requestID := generateRequestID()
 		ch := make(chan claudeCodeControlResult, 1)
 		a.registerPendingControl(requestID, ch)
@@ -593,7 +594,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 	agent, err := startUnresponsive(ctx, Options{
 		AgentID:        "timeout-test-mock",
-		Model:          "test",
+		Options:        map[string]string{OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 200 * time.Millisecond,
 	}, noopSink{})
@@ -637,7 +638,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 				processDone: make(chan struct{}),
 				stderrDone:  make(chan struct{}),
 			},
-			model:          opts.Model,
+			model:          opts.Model(),
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
 			pendingControl: make(map[string]chan<- claudeCodeControlResult),
@@ -671,7 +672,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 	start := time.Now()
 	agent, err := startEarlyExit(ctx, Options{
 		AgentID:        "early-exit-test",
-		Model:          "test",
+		Options:        map[string]string{OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 5 * time.Second,
 	}, noopSink{})
@@ -903,7 +904,7 @@ func TestClaudeCodePermissionModeOptions_AllDescriptionsPopulated(t *testing.T) 
 
 	var permGroup *leapmuxv1.AvailableOptionGroup
 	for _, g := range groups {
-		if g.GetKey() == OptionGroupKeyPermissionMode {
+		if g.GetId() == OptionIDPermissionMode {
 			permGroup = g
 			break
 		}
@@ -927,30 +928,32 @@ func TestClaudeCodePermissionModeOptions_AllDescriptionsPopulated(t *testing.T) 
 		gotIDs = append(gotIDs, o.GetId())
 		assert.NotEmptyf(t, o.GetName(), "mode %q: Name must be set", o.GetId())
 		assert.NotEmptyf(t, o.GetDescription(), "mode %q: Description must be set (used as tooltip)", o.GetId())
-		if o.GetIsDefault() {
+		if o.GetId() == permGroup.GetDefaultValue() {
 			defaultCount++
 		}
 	}
 	assert.Equal(t, wantIDs, gotIDs, "unexpected mode ids or order")
-	assert.Equal(t, 1, defaultCount, "exactly one option should be marked IsDefault")
+	assert.Equal(t, 1, defaultCount, "exactly one option should match the group's DefaultValue")
 }
 
 func TestFilterPermissionModeGroup_AutoAvailable(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	got := filterPermissionModeGroup(staticGroup, true)
+	got := livePermissionModeGroup(staticGroup, PermissionModePlan, true)
 
-	assert.Same(t, staticGroup, got, "when auto is available, the static group should be returned unchanged")
+	// When auto is available, the options list is shared (unfiltered) and the
+	// current value is overlaid onto a fresh live group.
 	assert.Len(t, got.GetOptions(), 6)
+	assert.Equal(t, PermissionModePlan, got.GetCurrentValue())
 }
 
 func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	got := filterPermissionModeGroup(staticGroup, false)
+	got := livePermissionModeGroup(staticGroup, PermissionModeDefault, false)
 
 	require.NotSame(t, staticGroup, got, "filtered result must be a fresh copy")
-	assert.Equal(t, staticGroup.GetKey(), got.GetKey())
+	assert.Equal(t, staticGroup.GetId(), got.GetId())
 	assert.Equal(t, staticGroup.GetLabel(), got.GetLabel())
 
 	ids := make([]string, 0, len(got.GetOptions()))
@@ -966,6 +969,44 @@ func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
 		PermissionModeBypassPermissions,
 		PermissionModeDontAsk,
 	}, ids, "remaining modes should include dontAsk and all non-auto modes")
+}
+
+// TestLivePermissionModeGroup_KeepsCurrentAutoWhenUnavailable guards the off-spec-current
+// backstop: when autoModeAvailable is stale-false (a transient startup probe failure) but the
+// session was switched live to "auto", the current value MUST remain a selectable option.
+// Otherwise CurrentValue="auto" has no matching radio and the frontend clamps the displayed
+// selection to the default, silently showing the wrong mode while the agent runs in auto.
+func TestLivePermissionModeGroup_KeepsCurrentAutoWhenUnavailable(t *testing.T) {
+	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
+
+	got := livePermissionModeGroup(staticGroup, PermissionModeAuto, false)
+
+	assert.Equal(t, PermissionModeAuto, got.GetCurrentValue())
+	ids := make([]string, 0, len(got.GetOptions()))
+	for _, o := range got.GetOptions() {
+		ids = append(ids, o.GetId())
+	}
+	assert.Contains(t, ids, PermissionModeAuto,
+		"the current value must stay selectable even when autoModeAvailable is false")
+
+	// The filter still hides auto when it is NOT the current value (the ordinary unavailable case).
+	hidden := livePermissionModeGroup(staticGroup, PermissionModePlan, false)
+	hiddenIDs := make([]string, 0, len(hidden.GetOptions()))
+	for _, o := range hidden.GetOptions() {
+		hiddenIDs = append(hiddenIDs, o.GetId())
+	}
+	assert.NotContains(t, hiddenIDs, PermissionModeAuto,
+		"auto is still hidden when it is unavailable and not the current value")
+}
+
+func TestLivePermissionModeGroup_EmptyCurrentFallsBackToDefault(t *testing.T) {
+	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
+
+	// An empty current must resolve to the template's default rather than rendering a
+	// blank selection (delegated to liveGroup's empty-current fallback).
+	got := livePermissionModeGroup(staticGroup, "", true)
+	assert.Equal(t, staticGroup.GetDefaultValue(), got.GetCurrentValue())
+	assert.Equal(t, PermissionModeDefault, got.GetCurrentValue())
 }
 
 func TestIsAutoModeUnavailableError(t *testing.T) {
@@ -997,18 +1038,19 @@ func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *test
 		autoModeAvailable: false,
 	}
 
-	groups := agent.AvailableOptionGroups()
+	groups := agent.OptionGroups()
 	require.NotEmpty(t, groups, "expected at least the permission-mode group")
 
-	permGroup := groups[0]
-	assert.Equal(t, OptionGroupKeyPermissionMode, permGroup.GetKey())
+	permGroup := optionids.GroupByID(groups, OptionIDPermissionMode)
+	require.NotNil(t, permGroup)
 	for _, o := range permGroup.GetOptions() {
 		assert.NotEqual(t, PermissionModeAuto, o.GetId(), "auto must not appear when autoModeAvailable is false")
 	}
 
 	agent.autoModeAvailable = true
-	groups = agent.AvailableOptionGroups()
-	permGroup = groups[0]
+	groups = agent.OptionGroups()
+	permGroup = optionids.GroupByID(groups, OptionIDPermissionMode)
+	require.NotNil(t, permGroup)
 	found := false
 	for _, o := range permGroup.GetOptions() {
 		if o.GetId() == PermissionModeAuto {
@@ -1182,7 +1224,7 @@ func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	sonnetEfforts := []string{"auto", "max", "high", "medium", "low"}
 
 	// Fable and Opus share the full xhigh+ultracode effort menu.
-	for _, id := range []string{"fable", "fable[1m]", "opus", "opus[1m]"} {
+	for _, id := range []string{"fable[1m]", "opus", "opus[1m]"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
 		assert.Equal(t, opusEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
@@ -1277,7 +1319,7 @@ func TestLaunchOmitsEffort(t *testing.T) {
 // tolerate nil entries (matching FindAvailableModel/withDefaultModelMarked), so a
 // nil-bearing catalog can't panic the effort/ultracode lookups.
 func TestEffortResolver_NilGuard(t *testing.T) {
-	r := newEffortResolver([]*leapmuxv1.AvailableModel{nil, {Id: "opus", SupportedEfforts: claudeEffortXHighMax}, nil})
+	r := newEffortResolver([]*ModelInfo{nil, {Id: "opus", SupportedEfforts: claudeEffortXHighMax}, nil})
 	assert.True(t, r.supportsUltracode("opus"))
 	assert.False(t, r.supportsUltracode("missing"), "absent model is not trusted for ultracode")
 	assert.True(t, r.supports("opus", "xhigh"))
@@ -1291,23 +1333,27 @@ func TestEffortResolver_NilGuard(t *testing.T) {
 // ultracode-capable instead of silently downgrading it. The genuine downgrade case
 // (model still listed, minus xhigh) still wins because dynamic takes precedence.
 func TestEffortResolver_StaticFallbackTrustsFilteredModel(t *testing.T) {
-	// Dynamic catalog lists only sonnet -> opus is "filtered".
+	// The resolver is queried with normalized ids (a.model, buildModelEffortArgs's
+	// launchModel, normalizeClaudeCodeModel(...)), and Opus normalizes to "opus[1m]".
+	//
+	// Dynamic catalog lists only sonnet -> opus[1m] is "filtered".
 	filtered := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)}
 	r := filtered.effortResolver()
-	assert.True(t, r.supportsUltracode("opus"), "filtered opus resolves via the static fallback")
-	assert.Equal(t, EffortUltracode, r.resolveEffort("opus", EffortUltracode), "filtered opus keeps ultracode")
+	assert.True(t, r.supportsUltracode("opus[1m]"), "filtered opus[1m] resolves via the static fallback")
+	assert.Equal(t, EffortUltracode, r.resolveEffort("opus[1m]", EffortUltracode), "filtered opus[1m] keeps ultracode")
 	// A live edit echoing the current ultracode must NOT strip it for the filtered model.
-	assert.Empty(t, r.updateFlagSettings("opus", EffortUltracode, EffortUltracode),
+	assert.Empty(t, r.updateFlagSettings("opus[1m]", EffortUltracode, EffortUltracode),
 		"an unrelated live edit preserves a filtered model's ultracode")
 
 	// Dynamic precedence: a model the live CLI lists WITHOUT xhigh is genuinely not
-	// ultracode-capable even though the static catalog says it is.
+	// ultracode-capable even though the static catalog says it is. The bare "opus"
+	// value normalizes to the "opus[1m]" catalog id, so the query matches it directly.
 	dropped := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)}
-	assert.False(t, dropped.effortResolver().supportsUltracode("opus"),
+	assert.False(t, dropped.effortResolver().supportsUltracode("opus[1m]"),
 		"a live CLI that dropped xhigh wins over the static fallback")
 }
 
@@ -1473,11 +1519,40 @@ func TestEnsureSettledModelListed_InjectsResolvedDefault(t *testing.T) {
 	// The sentinel and the originally-listed models survive untouched.
 	assert.NotNil(t, FindAvailableModel(a.availableModels, DefaultModelSentinel))
 	assert.NotNil(t, FindAvailableModel(a.availableModels, "sonnet[1m]"))
-	// The resolved model is inserted right after the sentinel it resolves from, not
-	// stranded at the tail below Haiku.
-	require.GreaterOrEqual(t, len(a.availableModels), 2)
-	assert.Equal(t, DefaultModelSentinel, a.availableModels[0].GetId())
-	assert.Equal(t, "opus[1m]", a.availableModels[1].GetId(), "resolved model sits just after the sentinel")
+	// The resolved model lands in its CANONICAL slot: after Fable and before Sonnet,
+	// matching the static catalog's most->least-powerful order -- NOT jammed right
+	// after the sentinel (ahead of Fable), which is what a naive insert produced.
+	ids := make([]string, len(a.availableModels))
+	for i, m := range a.availableModels {
+		ids[i] = m.GetId()
+	}
+	assert.Equal(t, []string{DefaultModelSentinel, "fable[1m]", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"}, ids,
+		"opus[1m] is inserted after Fable, in canonical picker order")
+}
+
+// TestEnsureSettledModelListed_AppendsLowestRankAtEnd exercises the insertAt=len(...)
+// default branch: when the resolved model out-ranks (is lower priority than) NONE of
+// the already-listed models, the canonical-rank scan finds no insertion point and the
+// model must append at the very end. InjectsResolvedDefault inserts mid-list; this
+// covers the opposite boundary. The CLI list is truncated to the top two entries
+// (default, fable[1m]) so opus[1m] -- the real injectable, rank 3 -- has no
+// lower-priority neighbor to slot before.
+func TestEnsureSettledModelListed_AppendsLowestRankAtEnd(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		model:           "opus[1m]",
+		availableModels: convertClaudeModels(realCLIModelsNoOpus()[:2], nil),
+	}
+	require.Nil(t, FindAvailableModel(a.availableModels, "opus[1m]"),
+		"precondition: the truncated CLI list omits opus[1m]")
+
+	a.ensureSettledModelListed()
+
+	ids := make([]string, len(a.availableModels))
+	for i, m := range a.availableModels {
+		ids[i] = m.GetId()
+	}
+	assert.Equal(t, []string{DefaultModelSentinel, "fable[1m]", "opus[1m]"}, ids,
+		"a model lower-ranked than every listed model appends at the end, not mid-list")
 }
 
 // TestEnsureSettledModelListed_NoOps covers the cases that must leave the catalog
@@ -1568,6 +1643,23 @@ func TestEnsureSettledModelListed_StaticModelKeepsResolverVerdict(t *testing.T) 
 	assert.Equal(t, claudeEffortIDsFromList(beforeEfforts), claudeEffortIDsFromList(afterEfforts),
 		"the effort menu the resolver reports is unchanged by the picker insert")
 	assert.True(t, after.supportsUltracode("opus[1m]"), "ultracode support is unchanged")
+}
+
+// TestCanonicalModelRank pins the helper's contract directly: catalog membership
+// maps to the static index (most->least-powerful order), and a model the static
+// catalog does NOT list ranks last (== len) so it sorts after every known model.
+// The unknown->len branch is the one ensureSettledModelListed's tests never reach
+// (an unknown model is dropped before any rank is taken), yet it is what keeps a
+// future dynamic-only id from out-sorting a catalog-known model.
+func TestCanonicalModelRank(t *testing.T) {
+	assert.Equal(t, 0, canonicalModelRank(DefaultModelSentinel), "the sentinel ranks first")
+	assert.Equal(t, 1, canonicalModelRank("fable[1m]"))
+	assert.Equal(t, 3, canonicalModelRank("opus[1m]"))
+	assert.Equal(t, 6, canonicalModelRank("haiku"), "the weakest catalog model ranks last among known ids")
+	assert.Less(t, canonicalModelRank("fable[1m]"), canonicalModelRank("haiku"),
+		"a more powerful model out-ranks a weaker one")
+	assert.Equal(t, len(claudeCodeAvailableModels), canonicalModelRank("mystery[1m]"),
+		"a model absent from the static catalog ranks last so it sorts after every known id")
 }
 
 func TestClaudeEffortFlagSettings(t *testing.T) {
@@ -1891,7 +1983,7 @@ func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
 		effort        string
 		wantUltracode bool
 	}{
-		{"fable ultracode enables the combo", "fable", EffortUltracode, true},
+		{"fable[1m] ultracode enables the combo", "fable[1m]", EffortUltracode, true},
 		{"opus ultracode enables the combo", "opus", EffortUltracode, true},
 		{"opus[1m] ultracode enables the combo", "opus[1m]", EffortUltracode, true},
 		{"sonnet ultracode is not enabled (unsupported)", "sonnet", EffortUltracode, false},
@@ -1920,7 +2012,6 @@ func TestModelSupportsUltracode(t *testing.T) {
 	// Against the static catalog: the xhigh-capable models (Fable, Opus) list
 	// ultracode; Sonnet/Haiku do not. Unlike supports, unknown models are NOT trusted.
 	static := newEffortResolver(claudeCodeAvailableModels)
-	assert.True(t, static.supportsUltracode("fable"))
 	assert.True(t, static.supportsUltracode("fable[1m]"))
 	assert.True(t, static.supportsUltracode("opus"))
 	assert.True(t, static.supportsUltracode("opus[1m]"))
@@ -1950,7 +2041,7 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 		effort string
 		want   string
 	}{
-		{"fable keeps ultracode", "fable", "ultracode", "ultracode"},
+		{"fable[1m] keeps ultracode", "fable[1m]", "ultracode", "ultracode"},
 		{"opus keeps ultracode", "opus", "ultracode", "ultracode"},
 		{"opus[1m] keeps ultracode", "opus[1m]", "ultracode", "ultracode"},
 		{"sonnet downgrades ultracode to high", "sonnet", "ultracode", "high"},
@@ -1971,11 +2062,11 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 }
 
 // claudeEffortIDs returns the ordered effort IDs of a model, for catalog assertions.
-func claudeEffortIDs(m *leapmuxv1.AvailableModel) []string {
+func claudeEffortIDs(m *ModelInfo) []string {
 	return claudeEffortIDsFromList(m.SupportedEfforts)
 }
 
-func claudeEffortIDsFromList(efforts []*leapmuxv1.AvailableEffort) []string {
+func claudeEffortIDsFromList(efforts []*EffortInfo) []string {
 	ids := make([]string, 0, len(efforts))
 	for _, e := range efforts {
 		ids = append(ids, e.Id)
@@ -1986,8 +2077,11 @@ func claudeEffortIDsFromList(efforts []*leapmuxv1.AvailableEffort) []string {
 func TestConvertClaudeModels(t *testing.T) {
 	models := []claudeCodeModelInfo{
 		{Value: "default", DisplayName: "Default (recommended)", Description: "the account default", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		// A bare "fable" and an explicit "fable[1m]" both normalize to the canonical
+		// "fable[1m]" id, so they collapse to one entry (first, effort-bearing, wins).
 		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
 		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		// Opus is 1M-only: a bare "opus" normalizes to the canonical "opus[1m]" id.
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: claudeMaxLevels},
 		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
@@ -2005,7 +2099,7 @@ func TestConvertClaudeModels(t *testing.T) {
 	for _, m := range got {
 		ids = append(ids, m.Id)
 	}
-	assert.Equal(t, []string{"default", "fable", "fable[1m]", "opus", "sonnet", "haiku"}, ids)
+	assert.Equal(t, []string{"default", "fable[1m]", "opus[1m]", "sonnet", "haiku"}, ids)
 
 	byID := claudeModelsByID(got)
 	xhighEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
@@ -2023,19 +2117,18 @@ func TestConvertClaudeModels(t *testing.T) {
 	assert.Equal(t, int64(0), def.ContextWindow, "default sentinel has no context window until resolved")
 	assert.False(t, def.IsDefault, "convert leaves IsDefault for the manager to set")
 
-	// Fable: full xhigh+ultracode menu, xhigh default, 200K window, not marked default.
-	fable := byID["fable"]
+	// Fable: full xhigh+ultracode menu, xhigh default, 1M window. Canonical id is
+	// "fable[1m]"; the bare-"fable" input collapsed into it (dedup, first wins, so
+	// the display name is "Fable 5" not the duplicate's "Fable 5 (1M context)").
+	require.NotContains(t, byID, "fable", "bare fable normalizes to fable[1m]")
+	fable := byID["fable[1m]"]
 	require.NotNil(t, fable)
 	assert.Equal(t, "Fable 5", fable.DisplayName)
 	assert.Equal(t, "Most powerful for the hardest problems", fable.Description)
 	assert.Equal(t, xhighEfforts, claudeEffortIDs(fable))
 	assert.Equal(t, "xhigh", fable.DefaultEffort)
-	assert.Equal(t, int64(200_000), fable.ContextWindow)
+	assert.Equal(t, int64(1_000_000), fable.ContextWindow)
 	assert.False(t, fable.IsDefault, "convert leaves IsDefault for the manager to set")
-
-	// The [1m] suffix is the only context-window signal.
-	assert.Equal(t, int64(1_000_000), byID["fable[1m]"].ContextWindow)
-	assert.Equal(t, xhighEfforts, claudeEffortIDs(byID["fable[1m]"]))
 
 	// Sonnet: max but no xhigh ⇒ no ultracode, high default.
 	sonnet := byID["sonnet"]
@@ -2138,7 +2231,7 @@ func TestConvertClaudeModels_UnavailableSkipNormalized(t *testing.T) {
 	))
 
 	require.NotContains(t, got, "fable[1m]", "unavailable reported as claude-fable-5[1m] still filters fable[1m]")
-	require.NotContains(t, got, "opus", "unavailable reported as opus still filters claude-opus-4-8")
+	require.NotContains(t, got, "opus[1m]", "unavailable reported as aliased opus still filters claude-opus-4-8 (both normalize to opus[1m])")
 	require.Contains(t, got, "sonnet")
 	assert.Len(t, got, 1)
 }
@@ -2221,9 +2314,13 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
 	maxLevels := []string{"low", "medium", "high", "max"}
 	payload := []claudeCodeModelInfo{
-		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "opus", DisplayName: "Opus", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// The live CLI reports Fable fully-qualified; it canonicalizes to the static
+		// catalog's "fable[1m]" id.
+		{Value: "claude-fable-5[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// Opus is 1M-only: the live CLI lists only the 1M variant, which canonicalizes
+		// to the static catalog's selectable "opus[1m]" entry. (The static catalog's
+		// hidden legacy "opus" entry has no convert equivalent -- convert always emits
+		// "opus[1m]" -- so it is skipped in the comparison below.)
 		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
 		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
@@ -2235,6 +2332,13 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 		// The "default" sentinel is a hand-authored placeholder (no concrete
 		// model behind it), not a convert output, so it has no equivalent here.
 		if want.Id == DefaultModelSentinel {
+			continue
+		}
+		// The hidden legacy "opus" entry is a safety-net-only id: normalization
+		// collapses every Opus spelling to "opus[1m]", so convert never reproduces a
+		// bare "opus". Skip it -- the selectable "opus[1m]" entry IS reproduced and
+		// checked.
+		if want.Id == "opus" {
 			continue
 		}
 		m := got[want.Id]
@@ -2249,26 +2353,26 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 }
 
 func TestClaudeAvailableModels_DynamicFirstStaticFallback(t *testing.T) {
-	dynamic := []*leapmuxv1.AvailableModel{
+	dynamic := []*ModelInfo{
 		{Id: "mythos", DisplayName: "Mythos 6"},
 		{Id: "opus", DisplayName: "Opus"},
 	}
 
 	// Dynamic catalog present ⇒ returned verbatim.
 	a := &ClaudeCodeAgent{availableModels: dynamic}
-	assert.Equal(t, dynamic, a.AvailableModels())
+	assert.Equal(t, dynamic, a.availableModelCatalog())
 	assert.Equal(t, dynamic, a.effortCatalog())
 
 	// No dynamic catalog ⇒ static fallback.
 	empty := &ClaudeCodeAgent{}
-	assert.Equal(t, claudeCodeAvailableModels, empty.AvailableModels())
+	assert.Equal(t, claudeCodeAvailableModels, empty.availableModelCatalog())
 	assert.Equal(t, claudeCodeAvailableModels, empty.effortCatalog())
 
-	// Third-party provider ⇒ AvailableModels hides everything, but effortCatalog
-	// (the ungated picker backing) still returns the dynamic list -- AvailableModels
+	// Third-party provider ⇒ availableModelCatalog hides everything, but effortCatalog
+	// (the ungated picker backing) still returns the dynamic list -- availableModelCatalog
 	// owns the third-party gate, not effortCatalog.
 	thirdParty := &ClaudeCodeAgent{thirdPartyFromSettings: true, availableModels: dynamic}
-	assert.Nil(t, thirdParty.AvailableModels())
+	assert.Nil(t, thirdParty.availableModelCatalog())
 	assert.Equal(t, dynamic, thirdParty.effortCatalog())
 }
 
@@ -2294,12 +2398,14 @@ func TestBuildStartupFlagSettings_DynamicCatalogUltracode(t *testing.T) {
 // stranded at an xhigh the CLI rejects.
 func TestBuildStartupFlagSettings_DowngradesWhenDynamicDropsXHigh(t *testing.T) {
 	// Live CLI reports opus without xhigh -- so dynamically it is not
-	// ultracode-capable, even though the static catalog says it is.
+	// ultracode-capable, even though the static catalog says it is. The CLI's "opus"
+	// value normalizes to the "opus[1m]" catalog id, which is also what a.model holds
+	// (production keeps a.model in the normalized alias space).
 	dynamic := convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)
 
-	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	a := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic}
 	fs := a.buildStartupFlagSettings(nil)
 	// Launch sent --effort xhigh (static opus is ultracode-capable); the dynamic
 	// catalog resolves ultracode->high and clears the ultracode boolean.
@@ -2338,9 +2444,10 @@ func TestBuildStartupFlagSettings_FilteredModelHonorsLaunchVerdict(t *testing.T)
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)
 
-	// opus+ultracode: static knows opus is ultracode-capable and launch deferred the
-	// boolean here, so completing the combo preserves the user's choice.
-	opus := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	// opus[1m]+ultracode: static knows opus[1m] is ultracode-capable and launch deferred
+	// the boolean here, so completing the combo preserves the user's choice. (a.model is
+	// the normalized "opus[1m]", which the sonnet-only dynamic catalog does not list.)
+	opus := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic}
 	fs := opus.buildStartupFlagSettings(nil)
 	assert.Equal(t, EffortXHigh, fs["effortLevel"], "filtered ultracode model completes the combo (xhigh base)")
 	assert.Equal(t, true, fs["ultracode"], "filtered static-ultracode model keeps its ultracode boolean")
@@ -2375,7 +2482,7 @@ func TestBuildStartupFlagSettings_ThirdPartyEmitsNoEffort(t *testing.T) {
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 	}, nil)
 
-	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic, thirdPartyFromSettings: true}
+	a := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic, thirdPartyFromSettings: true}
 	fs := a.buildStartupFlagSettings(nil)
 	_, hasLevel := fs["effortLevel"]
 	_, hasUltra := fs["ultracode"]
@@ -2422,7 +2529,7 @@ func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
 
 	// Account-specific list (no opus[1m]) that includes the CLI "default"
 	// sentinel: the sentinel carries the IsDefault badge.
-	withSentinel := []*leapmuxv1.AvailableModel{
+	withSentinel := []*ModelInfo{
 		{Id: "default", DisplayName: "Default (recommended)"},
 		{Id: "claude-fable-5[1m]", DisplayName: "Fable"},
 		{Id: "sonnet", DisplayName: "Sonnet"},
@@ -2436,7 +2543,7 @@ func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
 	// A list missing the sentinel (a CLI that doesn't report it) falls back to
 	// the highest-preference entry present, so the picker still shows a default
 	// badge -- the configured default ("default") isn't in the list to mark.
-	noSentinel := []*leapmuxv1.AvailableModel{
+	noSentinel := []*ModelInfo{
 		{Id: "opus[1m]", DisplayName: "Opus (1M context)"},
 		{Id: "sonnet", DisplayName: "Sonnet"},
 	}
@@ -2452,5 +2559,39 @@ func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
 // pushing an unresolvable "default" model through apply_flag_settings.
 func TestUpdateSettings_SwitchToDefaultRestarts(t *testing.T) {
 	a := &ClaudeCodeAgent{model: "claude-fable-5[1m]", effort: EffortHigh}
-	assert.False(t, a.UpdateSettings(&leapmuxv1.AgentSettings{Model: DefaultModelSentinel}))
+	assert.False(t, a.UpdateSettings(map[string]string{OptionIDModel: DefaultModelSentinel}))
+}
+
+// TestClaudeOptionGroups_HiddenModelEffortUISurfacesReadOnly verifies a third-party
+// (hidden model/effort UI) session still surfaces its concrete model -- and a concrete
+// effort -- as READ-ONLY groups, so `remote agent get`/list and the UI show what's
+// running instead of a blank.
+func TestClaudeOptionGroups_HiddenModelEffortUISurfacesReadOnly(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		thirdPartyFromSettings: true,
+		model:                  "third-party-model",
+		effort:                 EffortHigh,
+	}
+
+	groups := a.OptionGroups()
+
+	mg := optionids.GroupByID(groups, OptionIDModel)
+	require.NotNil(t, mg, "the model is surfaced even with hidden model/effort UI")
+	assert.False(t, mg.GetMutable(), "but read-only -- the model is not user-changeable here")
+	assert.Equal(t, "third-party-model", mg.GetCurrentValue())
+
+	eg := optionids.GroupByID(groups, OptionIDEffort)
+	require.NotNil(t, eg, "a concrete effort is surfaced read-only too")
+	assert.False(t, eg.GetMutable())
+	assert.Equal(t, EffortHigh, eg.GetCurrentValue())
+}
+
+// An auto/empty effort is not surfaced for a hidden-UI session (nothing meaningful to show).
+func TestClaudeOptionGroups_HiddenUIAutoEffortOmitsEffortGroup(t *testing.T) {
+	a := &ClaudeCodeAgent{thirdPartyFromSettings: true, model: "tp", effort: EffortAuto}
+
+	groups := a.OptionGroups()
+
+	assert.NotNil(t, optionids.GroupByID(groups, OptionIDModel))
+	assert.Nil(t, optionids.GroupByID(groups, OptionIDEffort), "auto effort is not surfaced")
 }

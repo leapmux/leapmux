@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
 // testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
@@ -11,7 +12,7 @@ type testSinkSettingsRefreshed struct {
 	Model          string
 	Effort         string
 	PermissionMode string
-	ExtraSettings  map[string]string
+	Options        map[string]string
 }
 
 // testSinkModeChange records the args of a NotifyPermissionModeChanged call.
@@ -169,15 +170,25 @@ func (s *testSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 	defer s.mu.Unlock()
 	s.modeChanges = append(s.modeChanges, testSinkModeChange{Old: oldMode, New: newMode})
 }
-func (s *testSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
+func (s *testSink) PersistSettingsRefresh(refresh optionmap.Map) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make(map[string]string, len(extraSettings))
-	for k, v := range extraSettings {
-		cp[k] = v
+	// Split the unified refresh map back into the named fields the assertions read:
+	// the three well-known axes plus every other key as an "extra". An axis the
+	// provider omitted reads back as "" (absent), matching the old "" sentinel.
+	options := make(map[string]string)
+	for k, v := range refresh {
+		switch k {
+		case OptionIDModel, OptionIDEffort, OptionIDPermissionMode:
+		default:
+			options[k] = v
+		}
 	}
 	s.settingsRefreshes = append(s.settingsRefreshes, testSinkSettingsRefreshed{
-		Model: model, Effort: effort, PermissionMode: permissionMode, ExtraSettings: cp,
+		Model:          refresh[OptionIDModel],
+		Effort:         refresh[OptionIDEffort],
+		PermissionMode: refresh[OptionIDPermissionMode],
+		Options:        options,
 	})
 }
 func (s *testSink) BroadcastStatusActive(sessionID string) {
@@ -432,7 +443,7 @@ func (noopSink) BroadcastControlCancel(string)                                  
 func (noopSink) UpdateSessionID(string)                                            {}
 func (noopSink) UpdatePermissionMode(string)                                       {}
 func (noopSink) NotifyPermissionModeChanged(string, string)                        {}
-func (noopSink) PersistSettingsRefresh(string, string, string, map[string]string)  {}
+func (noopSink) PersistSettingsRefresh(optionmap.Map)                              {}
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}

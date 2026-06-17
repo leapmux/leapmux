@@ -201,62 +201,6 @@ func TestRunTabRename_RequiresTitle(t *testing.T) {
 	assert.Contains(t, env.Error["message"], "--title")
 }
 
-// TestApplyPermissionMode_NoOpOnEmptyMode pins the "user didn't pass
-// --permission-mode" path: no RPC fires and the helper returns "" so
-// the caller emits the regular agent envelope.
-func TestApplyPermissionMode_NoOpOnEmptyMode(t *testing.T) {
-	called := false
-	apply := func(context.Context, *remote.Client, string, string, proto.Message, proto.Message) error {
-		called = true
-		return nil
-	}
-	got := applyPermissionMode(context.Background(), nil, "worker-A", "agent-1", "", apply)
-	assert.Equal(t, "", got)
-	assert.False(t, called, "empty --permission-mode must not fire UpdateAgentSettings")
-}
-
-// TestApplyPermissionMode_BuildsRequestWithJustPermissionMode pins the
-// payload shape: model/effort/extras stay empty so the worker's
-// "empty == no change" semantics leave provider-driven defaults
-// untouched. A regression that populated those fields too would
-// silently clobber the agent's model the first time the user passes
-// --permission-mode after `agent open` already succeeded.
-func TestApplyPermissionMode_BuildsRequestWithJustPermissionMode(t *testing.T) {
-	var captured *leapmuxv1.UpdateAgentSettingsRequest
-	apply := func(_ context.Context, _ *remote.Client, workerID, method string, in proto.Message, _ proto.Message) error {
-		assert.Equal(t, "worker-A", workerID)
-		assert.Equal(t, "UpdateAgentSettings", method)
-		req, ok := in.(*leapmuxv1.UpdateAgentSettingsRequest)
-		require.True(t, ok, "in must be UpdateAgentSettingsRequest, got %T", in)
-		captured = req
-		return nil
-	}
-	got := applyPermissionMode(context.Background(), nil, "worker-A", "agent-1", "default", apply)
-	assert.Equal(t, "", got, "successful apply returns empty string")
-	require.NotNil(t, captured)
-	assert.Equal(t, "agent-1", captured.GetAgentId())
-	settings := captured.GetSettings()
-	require.NotNil(t, settings)
-	assert.Equal(t, "default", settings.GetPermissionMode())
-	assert.Equal(t, "", settings.GetModel(), "model must stay empty so worker treats it as 'no change'")
-	assert.Equal(t, "", settings.GetEffort(), "effort must stay empty so worker treats it as 'no change'")
-	assert.Empty(t, settings.GetExtraSettings())
-}
-
-// TestApplyPermissionMode_FailureReturnsErrorMessage covers the
-// non-fatal error path. The agent is up; we just couldn't apply the
-// permission mode. Returning the error message lets the caller fold
-// it into the JSON envelope as `permission_mode_apply_error` so
-// scripts can decide whether to retry.
-func TestApplyPermissionMode_FailureReturnsErrorMessage(t *testing.T) {
-	apply := func(context.Context, *remote.Client, string, string, proto.Message, proto.Message) error {
-		return errors.New("worker rejected: unknown permission mode")
-	}
-	got := applyPermissionMode(context.Background(), nil, "worker-A", "agent-1", "yolo", apply)
-	assert.Contains(t, got, "worker rejected")
-	assert.Contains(t, got, "unknown permission mode")
-}
-
 // TestRunAgentSendControlResponse_RequiresAgentAndContent pins the
 // invalid-args path. The control_response payload has no safe default
 // (the agent treats absent content as "no decision provided"), so

@@ -3,6 +3,5 @@ import { registerOpenCodeProtocolProvider } from '../registerOpenCodeProtocolPro
 
 registerOpenCodeProtocolProvider({
   provider: AgentProvider.KILO,
-  defaultModel: import.meta.env.LEAPMUX_KILO_DEFAULT_MODEL || '',
   defaultPrimaryAgent: 'code',
 })

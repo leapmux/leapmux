@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
 func installFakeKiloACP(t *testing.T, scenario string) {
@@ -61,14 +62,14 @@ func TestHelperProcessKiloACP(t *testing.T) {
 		case acpMethodSessionNew:
 			if scenario == "generic-option" {
 				// A third axis (thought_level) the model/mode channels don't claim; it
-				// must surface as a read-only generic group alongside the primary agent.
+				// must surface as a mutable option group alongside the primary agent.
 				writeResult(req.ID, `{"sessionId":"kilo-new","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"},{"id":"plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"anthropic/claude-sonnet-4","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}]},{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}`)
 				continue
 			}
 			// Kilo, like OpenCode, reports models only through the configOptions
 			// `model` select; primary agents arrive via the `modes` channel.
 			writeResult(req.ID, `{"sessionId":"kilo-new","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"},{"id":"plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"anthropic/claude-sonnet-4","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}`)
-		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
+		case acpMethodSessionSetConfigOption, acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
 			writeResult(req.ID, `{}`)
 		}
 	}
@@ -95,16 +96,19 @@ func TestStartKilo_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) {
 
 	assert.Equal(t, "kilo-new", agent.sessionID)
 	assert.Equal(t, "anthropic/claude-sonnet-4", agent.model)
-	require.Len(t, agent.AvailableModels(), 2)
-	assert.Equal(t, "anthropic/claude-sonnet-4", agent.AvailableModels()[0].GetId())
-	assert.True(t, agent.AvailableModels()[0].GetIsDefault())
-	assert.Equal(t, "openai/gpt-5", agent.AvailableModels()[1].GetId())
-	require.Len(t, agent.AvailableOptionGroups(), 1)
-	assert.Equal(t, OptionGroupKeyPrimaryAgent, agent.AvailableOptionGroups()[0].GetKey())
+	require.Len(t, agent.availableModels, 2)
+	assert.Equal(t, "anthropic/claude-sonnet-4", agent.availableModels[0].GetId())
+	assert.True(t, agent.availableModels[0].IsDefault)
+	assert.Equal(t, "openai/gpt-5", agent.availableModels[1].GetId())
+	groups := agent.OptionGroups()
+	modelGroup := optionids.GroupByID(groups, OptionIDModel)
+	require.NotNil(t, modelGroup)
+	assert.Equal(t, "anthropic/claude-sonnet-4", modelGroup.GetDefaultValue())
+	require.NotNil(t, optionids.GroupByID(groups, OptionIDPrimaryAgent))
 }
 
 // End-to-end: a Kilo handshake reporting an unmapped config option surfaces it as a
-// read-only generic group after the mapped primary-agent group. Kilo shares the
+// mutable option group after the mapped primary-agent group. Kilo shares the
 // primary-agent seam with OpenCode; this is the parity guard.
 func TestStartKilo_HandshakeSurfacesGenericConfigOption(t *testing.T) {
 	installFakeKiloACP(t, "generic-option")
@@ -124,9 +128,8 @@ func TestStartKilo_HandshakeSurfacesGenericConfigOption(t *testing.T) {
 		_ = agent.Wait()
 	})
 
-	groups := agent.AvailableOptionGroups()
-	require.Len(t, groups, 2, "the mapped primary-agent group plus one generic group")
-	assert.Equal(t, OptionGroupKeyPrimaryAgent, groups[0].GetKey())
-	assert.Equal(t, "thoughtLevel", groups[1].GetKey())
-	assert.Equal(t, "high", agent.CurrentSettings().GetExtraSettings()["thoughtLevel"])
+	groups := agent.OptionGroups()
+	assert.NotNil(t, optionids.GroupByID(groups, OptionIDPrimaryAgent))
+	assert.NotNil(t, optionids.GroupByID(groups, "thoughtLevel"))
+	assert.Equal(t, "high", CurrentOptions(groups)["thoughtLevel"])
 }

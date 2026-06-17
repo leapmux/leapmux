@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -25,7 +26,7 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		Model:         "opus",
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
@@ -75,7 +76,7 @@ func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
 			WorkspaceID:   "ws-1",
 			WorkingDir:    t.TempDir(),
 			HomeDir:       t.TempDir(),
-			Model:         "opus",
+			Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 			AgentProvider: provider,
 		}
 	}

@@ -1,4 +1,4 @@
-import type { AgentGitStatus, AgentProvider, AgentStatus, AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentGitStatus, AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
@@ -73,12 +73,12 @@ export interface AgentTab extends BaseTab {
   agentProvider?: AgentProvider
   agentStatus?: AgentStatus
   agentSessionId?: string
-  model?: string
-  effort?: string
-  permissionMode?: string
-  extraSettings?: Record<string, string>
-  availableModels?: AvailableModel[]
-  availableOptionGroups?: AvailableOptionGroup[]
+  // Current (optimistically-updated) selections, keyed by option-group id. Every
+  // axis -- model, effort, permission mode, and provider-specific options alike --
+  // lives here; there are no special-cased per-axis fields.
+  optionValues?: Record<string, string>
+  // Full option-group catalog (model/effort/permission/provider axes) reported by the agent.
+  optionGroups?: AvailableOptionGroup[]
   /**
    * Structured git status reported by the agent process. Flat
    * `gitBranch`/`gitOriginUrl`/`gitToplevel` mirror the most-used fields

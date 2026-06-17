@@ -1,9 +1,3 @@
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-// Import directly from registry (not providers/index) to avoid circular dependency.
-// providers/index re-exports from registry but also side-effect-imports claude/codex,
-// which import settingsShared, which imports this module's constants.
-import { providerFor } from '~/components/chat/providers/registry'
-
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
   const request = payload.request as Record<string, unknown> | undefined
@@ -95,22 +89,3 @@ export function decodeControlResponseBehavior(content: Uint8Array): 'allow' | 'd
  * Uses the same wire protocol as the Agent SDK's setPermissionMode().
  */
 export type PermissionMode = string
-
-/** Returns the default model for the given agent provider. */
-export function defaultModelForProvider(provider: AgentProvider): string {
-  return providerFor(provider)?.defaultModel ?? 'opus'
-}
-
-/**
- * Leapmux-side sentinel meaning "let the CLI pick its own default reasoning
- * effort". The backend omits --effort (Claude) / reasoning_effort (Codex)
- * when an agent carries this value, so older CLIs that don't recognize
- * newer effort names (e.g. "xhigh") still work. Mirrors `agent.EffortAuto`
- * in the Go worker.
- */
-export const EFFORT_AUTO = 'auto'
-
-/** Returns the default effort for the given agent provider. */
-export function defaultEffortForProvider(provider: AgentProvider): string {
-  return providerFor(provider)?.defaultEffort ?? EFFORT_AUTO
-}

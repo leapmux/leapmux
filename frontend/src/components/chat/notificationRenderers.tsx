@@ -19,7 +19,7 @@ import {
 } from './messageStyles.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
-import { PERMISSION_MODE_KEY } from './settingsShared'
+import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 
 // Provider-neutral notification labels used by the notification-thread switch
 // (`threadEntriesFor`). Hoisted to named constants so the wording lives in one
@@ -33,17 +33,25 @@ const UNKNOWN_ERROR_LABEL = 'Unknown error'
 // Display helpers for settings change notifications
 // ---------------------------------------------------------------------------
 
-function displayLabel(key: string): string {
+function displayLabel(provider: AgentProvider | undefined, key: string): string {
+  // Prefer the per-provider cached group label so a provider that relabels a well-known
+  // axis is honored (Pi labels its effort axis "Thinking Level"), then fall back to the
+  // canonical English name. The well-known fallbacks keep a historical notification
+  // readable when the cache hasn't been primed for that provider yet.
+  return getCachedSettingsGroupLabel(provider, key) ?? wellKnownAxisLabel(key)
+}
+
+function wellKnownAxisLabel(key: string): string {
   switch (key) {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
-    case PERMISSION_MODE_KEY: return 'Permission Mode'
-    default: return getCachedSettingsGroupLabel(key) ?? key
+    case OPTION_ID_PERMISSION_MODE: return 'Permission Mode'
+    default: return key
   }
 }
 
-function displayValue(key: string, value: string): string {
-  return getCachedSettingsLabel(key, value) ?? value
+function displayValue(provider: AgentProvider | undefined, key: string, value: string): string {
+  return getCachedSettingsLabel(provider, key, value) ?? value
 }
 
 /**
@@ -66,7 +74,7 @@ interface SettingsChange {
  * display, unchanged entries (old === new) are dropped, and non-object entries
  * are skipped so a malformed payload degrades rather than throws.
  */
-function parseSettingsChanges(changes: unknown): SettingsChange[] {
+function parseSettingsChanges(changes: unknown, provider: AgentProvider | undefined): SettingsChange[] {
   if (!isObject(changes))
     return []
   const result: SettingsChange[] = []
@@ -80,13 +88,13 @@ function parseSettingsChanges(changes: unknown): SettingsChange[] {
     result.push({
       // `?? ` (not `||`) so an explicit empty-string override is honored rather
       // than silently falling back to the cache-derived display.
-      label: pickString(val, 'label', undefined) ?? displayLabel(key),
+      label: pickString(val, 'label', undefined) ?? displayLabel(provider, key),
       // Gate the "(new)"-only form on the absence of an old VALUE, not on an
       // empty old DISPLAY: a real value whose display resolves to "" is still a
       // transition and must keep the arrow.
       firstSet: oldValue === '',
-      oldDisplay: pickString(val, 'oldLabel', undefined) ?? displayValue(key, oldValue),
-      newDisplay: pickString(val, 'newLabel', undefined) ?? displayValue(key, newValue),
+      oldDisplay: pickString(val, 'oldLabel', undefined) ?? displayValue(provider, key, oldValue),
+      newDisplay: pickString(val, 'newLabel', undefined) ?? displayValue(provider, key, newValue),
     })
   }
   return result
@@ -95,10 +103,11 @@ function parseSettingsChanges(changes: unknown): SettingsChange[] {
 /**
  * Format settings changes as `Label (old → new)` parts, degrading to
  * `Label (new)` when there is no old value. Used by the notification-thread
- * switch (`threadEntriesFor`) to render settings_changed notifications.
+ * switch (`threadEntriesFor`) to render settings_changed notifications. Labels are
+ * resolved against the agent's provider-scoped label cache.
  */
-function formatSettingsChanges(changes: unknown): string[] {
-  return parseSettingsChanges(changes).map(c =>
+function formatSettingsChanges(changes: unknown, provider: AgentProvider | undefined): string[] {
+  return parseSettingsChanges(changes, provider).map(c =>
     c.firstSet ? `${c.label} (${c.newDisplay})` : `${c.label} (${c.oldDisplay} → ${c.newDisplay})`,
   )
 }
@@ -308,7 +317,7 @@ function threadEntriesFor(
   const st = m.subtype as string | undefined
 
   if (t === NOTIFICATION_TYPE.SettingsChanged) {
-    const parts = formatSettingsChanges(m.changes)
+    const parts = formatSettingsChanges(m.changes, agentProvider)
     return parts.length > 0 ? textEntry(parts.join(', ')) : []
   }
   if (t === NOTIFICATION_TYPE.ContextCleared)

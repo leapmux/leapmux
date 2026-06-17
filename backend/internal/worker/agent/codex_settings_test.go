@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -119,8 +118,8 @@ func TestCodexRefreshSettingsFromAgent(t *testing.T) {
 	assert.Equal(t, "gpt-5.2", refresh.Model)
 	assert.Equal(t, "medium", refresh.Effort)
 	assert.Equal(t, "never", refresh.PermissionMode)
-	assert.Equal(t, "danger-full-access", refresh.ExtraSettings[CodexExtraSandboxPolicy])
-	assert.Equal(t, "fast", refresh.ExtraSettings[CodexExtraServiceTier])
+	assert.Equal(t, "danger-full-access", refresh.Options[CodexOptionSandboxPolicy])
+	assert.Equal(t, "fast", refresh.Options[CodexOptionServiceTier])
 }
 
 func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
@@ -132,6 +131,8 @@ func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
 					"model_reasoning_effort": null,
 					"approval_policy": null,
 					"sandbox_mode": null,
+					"network_access": null,
+					"collaboration_mode": null,
 					"service_tier": null
 				},
 				"origins": {}
@@ -145,6 +146,8 @@ func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
 	agent.effort = "high"
 	agent.approvalPolicy = "on-request"
 	agent.sandboxPolicy = "workspace-write"
+	agent.networkAccess = "enabled"
+	agent.collaborationMode = "plan"
 	agent.serviceTier = "default"
 
 	agent.refreshSettingsFromAgent()
@@ -154,7 +157,48 @@ func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
 	assert.Equal(t, "high", agent.effort)
 	assert.Equal(t, "on-request", agent.approvalPolicy)
 	assert.Equal(t, "workspace-write", agent.sandboxPolicy)
+	assert.Equal(t, "enabled", agent.networkAccess)
+	assert.Equal(t, "plan", agent.collaborationMode)
 	assert.Equal(t, "default", agent.serviceTier)
+}
+
+// TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration documents that Codex's
+// config/read does NOT carry network_access or collaboration_mode: network access is a boolean
+// nested under sandbox_workspace_write (not a top-level key), and collaboration_mode is a
+// per-turn parameter, not a config key at all (verified against the codex-rs app-server v2
+// Config struct). The readback therefore omits both, the table loop keeps their prior
+// (optimistically-pushed) values, and a live edit to either axis is never clobbered by
+// config/read -- while a real top-level config key (sandbox_mode) IS reconciled by the same loop.
+func TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration(t *testing.T) {
+	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		if method == "config/read" {
+			// A realistic Codex response: sandbox_mode is reported (a real top-level config key),
+			// but network_access and collaboration_mode are absent -- they are not config keys.
+			return json.RawMessage(`{
+				"config": {
+					"model": "gpt-5.2",
+					"sandbox_mode": "read-only"
+				},
+				"origins": {}
+			}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+
+	// The user optimistically set network on + plan collaboration via UpdateSettings.
+	agent.networkAccess = "enabled"
+	agent.collaborationMode = "plan"
+
+	agent.refreshSettingsFromAgent()
+
+	// config/read doesn't report these axes, so the pushed values survive unchanged -- no flip.
+	assert.Equal(t, "enabled", agent.networkAccess)
+	assert.Equal(t, "plan", agent.collaborationMode)
+	// A real top-level config key IS reconciled by the same table loop.
+	assert.Equal(t, "read-only", agent.sandboxPolicy)
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "enabled", refresh.Options[CodexOptionNetworkAccess])
+	assert.Equal(t, "plan", refresh.Options[CodexOptionCollaborationMode])
 }
 
 func TestCodexRefreshSettingsFromAgent_GranularApprovalPolicy(t *testing.T) {
@@ -195,14 +239,12 @@ func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
 		return json.RawMessage(`{}`)
 	})
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:          "gpt-5.2",
-		Effort:         "low",
-		PermissionMode: "never",
-		ExtraSettings: map[string]string{
-			CodexExtraSandboxPolicy: "read-only",
-			CodexExtraServiceTier:   "fast",
-		},
+	updated := agent.UpdateSettings(map[string]string{
+		OptionIDModel:            "gpt-5.2",
+		OptionIDEffort:           "low",
+		OptionIDPermissionMode:   "never",
+		CodexOptionSandboxPolicy: "read-only",
+		CodexOptionServiceTier:   "fast",
 	})
 	require.True(t, updated)
 
@@ -248,7 +290,7 @@ func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T)
 
 	agent.effort = "auto"
 	agent.model = "gpt-5.4"
-	agent.availableModels = []*leapmuxv1.AvailableModel{
+	agent.availableModels = []*ModelInfo{
 		{Id: "gpt-5.4", DefaultEffort: "high"},
 		{Id: "gpt-5.2", DefaultEffort: "medium"},
 	}
@@ -284,6 +326,43 @@ func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T)
 	assert.Equal(t, "auto", agent.effort, "with no catalog, auto stays auto")
 }
 
+// TestCodexOptionGroups_OrderAndCurrentsFromTemplates verifies the live catalog
+// carries each group's display order (now sourced from the registered template,
+// not a hand-maintained side map) and the agent's current values, with model and
+// effort leading and every provider group sorting after the model group.
+func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
+	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent.availableModels = []*ModelInfo{{Id: "gpt-5.4", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{{Id: "high"}, {Id: "low"}}}}
+	agent.serviceTier = CodexServiceTierFast
+
+	groups := agent.OptionGroups()
+	orderByID := map[string]int32{}
+	currentByID := map[string]string{}
+	for _, g := range groups {
+		orderByID[g.GetId()] = g.GetOrder()
+		currentByID[g.GetId()] = g.GetCurrentValue()
+	}
+
+	assert.Equal(t, OptionOrderModel, orderByID[OptionIDModel])
+	assert.Equal(t, OptionOrderEffort, orderByID[OptionIDEffort])
+	assert.Equal(t, OptionOrderProviderFirst, orderByID[CodexOptionServiceTier])
+	assert.Equal(t, OptionOrderProviderSecond, orderByID[CodexOptionCollaborationMode])
+	assert.Equal(t, OptionOrderProviderThird, orderByID[CodexOptionNetworkAccess])
+	assert.Equal(t, OptionOrderProviderFourth, orderByID[CodexOptionSandboxPolicy])
+	assert.Equal(t, OptionOrderPermissionMode, orderByID[OptionIDPermissionMode])
+
+	// The agent's per-axis current values flow through.
+	assert.Equal(t, "gpt-5.4", currentByID[OptionIDModel])
+	assert.Equal(t, "high", currentByID[OptionIDEffort])
+	assert.Equal(t, CodexServiceTierFast, currentByID[CodexOptionServiceTier])
+
+	for id, ord := range orderByID {
+		if id != OptionIDModel {
+			assert.Greater(t, ord, OptionOrderModel, "group %q must sort after the model group", id)
+		}
+	}
+}
+
 // TestCodexUpdateSettings_AutoRequiresRestart verifies that switching
 // effort to "auto" mid-session signals the caller to restart the agent
 // (returns false) rather than writing "auto" into Codex's live session
@@ -296,7 +375,7 @@ func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 
 	require.Equal(t, "high", agent.effort, "precondition")
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	updated := agent.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
 	require.False(t, updated, "switching to \"auto\" should request a restart")
 
 	assert.Equal(t, "high", agent.effort, "live effort must stay untouched until restart")
@@ -316,7 +395,31 @@ func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 
 	agent.effort = "auto"
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	updated := agent.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
 	require.True(t, updated, "a no-op \"auto\"→\"auto\" should not request a restart")
 	assert.Equal(t, "auto", agent.effort)
+}
+
+// TestCodexThreadParams covers the request params shared by thread/start and thread/resume that
+// StartCodex and ClearContext build identically via codexThreadParams. The model/cwd/approvalPolicy/
+// sandbox axes are stamped verbatim; serviceTier is included ONLY when codexServiceTierValue reports
+// a non-default tier (so the default/unset tier leaves Codex's normal tier untouched).
+func TestCodexThreadParams(t *testing.T) {
+	// A non-default service tier is included.
+	fast := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexServiceTierFast)
+	assert.Equal(t, "gpt-5.4", fast["model"])
+	assert.Equal(t, "/work", fast["cwd"])
+	assert.Equal(t, CodexDefaultApprovalPolicy, fast["approvalPolicy"])
+	assert.Equal(t, CodexDefaultSandboxPolicy, fast["sandbox"])
+	assert.Equal(t, CodexServiceTierFast, fast["serviceTier"], "a non-default tier is sent")
+
+	// The default tier omits serviceTier so Codex keeps its normal tier.
+	def := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	_, hasDefaultTier := def["serviceTier"]
+	assert.False(t, hasDefaultTier, "the default tier omits serviceTier")
+
+	// An empty (unset) tier likewise omits it.
+	empty := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, "")
+	_, hasEmptyTier := empty["serviceTier"]
+	assert.False(t, hasEmptyTier, "an empty tier omits serviceTier")
 }

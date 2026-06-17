@@ -4,10 +4,10 @@ import (
 	"context"
 
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
@@ -31,21 +31,42 @@ type openAgentArgs struct {
 	Position positionSpec
 }
 
+// spawnOptions builds the OpenAgent initial option map from the CLI's --model / --effort /
+// --permission-mode flags, omitting empty values so the worker fills provider defaults. The
+// permission mode rides in here -- applied at LAUNCH alongside model/effort (resolveProviderDefaults
+// for the catalog providers, the startup permission-mode apply for ACP) -- rather than via a
+// redundant post-spawn UpdateAgentSettings that would re-set the already-applied mode (and, for a
+// provider that applies the mode via restart, force a spawn-time relaunch). This treats permission
+// mode uniformly with every other axis, closing the last special-cased seam in the spawn path.
+func spawnOptions(model, effort, permissionMode string) map[string]string {
+	options := map[string]string{}
+	if model != "" {
+		options[optionids.Model] = model
+	}
+	if effort != "" {
+		options[optionids.Effort] = effort
+	}
+	if permissionMode != "" {
+		options[optionids.PermissionMode] = permissionMode
+	}
+	return options
+}
+
 // openAgentResult is what openAgentAndAddTab emits on success.
 type openAgentResult struct {
 	Agent          *leapmuxv1.AgentInfo
 	TileID         string
 	Position       string
-	PermissionWarn string
 	InitialMsgWarn string
 }
 
 // openAgentAndAddTab opens an agent on the worker, defaults its tile
 // to the workspace's root node when none is supplied, writes the
 // CRDT tab batch (tile_id + position + worker_id), and rolls the
-// agent back on CRDT failure. Permission-mode and initial-message
-// follow-ups run AFTER the CRDT batch — failures there surface as
-// non-fatal warnings on the result.
+// agent back on CRDT failure. The permission mode is seeded into the
+// OpenAgent options (applied at launch); the optional initial-message
+// follow-up runs AFTER the CRDT batch — its failure surfaces as a
+// non-fatal warning on the result.
 //
 // The three round-trips that don't depend on each other — OpenAgent on
 // the worker, resolveOrgID via GetWorkspace, and crdtBootstrap once
@@ -64,13 +85,14 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 	if err != nil {
 		return nil, remote.EmitErrorWith("resolve_failed", err)
 	}
+	// Initial option selections (model / effort / permission mode), built once.
+	options := spawnOptions(args.Model, args.Effort, args.PermissionMode)
 	req := &leapmuxv1.OpenAgentRequest{
 		OrgId:         orgID,
 		WorkspaceId:   args.WorkspaceID,
 		WorkerId:      args.WorkerID,
 		AgentProvider: args.Provider,
-		Model:         args.Model,
-		Effort:        args.Effort,
+		Options:       options,
 		Title:         args.Title,
 		WorkingDir:    args.WorkingDir,
 	}
@@ -119,34 +141,21 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 		TileID:   resolvedTileID,
 		Position: position,
 	}
-	// applyPermissionMode and the optional SendAgentMessage are both
-	// inner-RPCs against the same worker that just received OpenAgent.
-	// Share one Noise_NK channel across both so the post-spawn
-	// follow-ups don't each pay a fresh handshake.
-	if args.PermissionMode != "" || args.InitialMessage != "" {
+	// The permission mode rode in on the OpenAgent options above, so the only remaining
+	// post-spawn follow-up is the optional initial message -- an inner-RPC against the same
+	// worker that just received OpenAgent.
+	if args.InitialMessage != "" {
 		_ = withWorkerChannel(ctx, c, args.WorkerID, func(ch *tunnel.Channel) error {
-			result.PermissionWarn = applyPermissionMode(ctx, c, args.WorkerID, agentID, args.PermissionMode, channelInnerRPCApplier(ch))
-			if args.InitialMessage != "" {
-				if err := callInnerRPCOnChannelMarshal(ctx, ch, c, args.WorkerID, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
-					AgentId: agentID,
-					Content: args.InitialMessage,
-				}, nil); err != nil {
-					result.InitialMsgWarn = err.Error()
-				}
+			if err := callInnerRPCOnChannelMarshal(ctx, ch, c, args.WorkerID, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+				AgentId: agentID,
+				Content: args.InitialMessage,
+			}, nil); err != nil {
+				result.InitialMsgWarn = err.Error()
 			}
 			return nil
 		})
 	}
 	return result, nil
-}
-
-// channelInnerRPCApplier adapts an open E2EE channel into the
-// permissionModeApplier shape so applyPermissionMode can issue its
-// UpdateAgentSettings call without opening a fresh channel.
-func channelInnerRPCApplier(ch *tunnel.Channel) permissionModeApplier {
-	return func(ctx context.Context, c *remote.Client, workerID, method string, in proto.Message, out proto.Message) error {
-		return callInnerRPCOnChannelMarshal(ctx, ch, c, workerID, method, in, out)
-	}
 }
 
 // addTabToCRDT bootstraps the CRDT for `workspaceID` and submits the

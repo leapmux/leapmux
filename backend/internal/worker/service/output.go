@@ -21,6 +21,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -618,6 +619,13 @@ type OutputHandler struct {
 	// user message. Set via SetSendMessageFunc during service Init.
 	sendMessageFunc func(agentID, content string)
 
+	// agentStarting reports whether the agent is still in its startup window
+	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
+	// during service Init; nil in tests, where no startup is in progress.
+	// PersistSettingsRefresh consults it to avoid clobbering a settings change
+	// that landed mid-startup with the agent's confirmed launch settings.
+	agentStarting func(agentID string) bool
+
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
 
@@ -653,6 +661,13 @@ func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 	h.sendMessageFunc = fn
 }
 
+// SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
+// the startup window (see the agentStarting field). Call before any agent output
+// is processed.
+func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
+	h.agentStarting = fn
+}
+
 // CleanupAgent removes all per-agent state from the handler's maps.
 // Call this when an agent is permanently closed.
 func (h *OutputHandler) CleanupAgent(agentID string) {
@@ -661,6 +676,28 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.spanTrackers.Delete(agentID)
 	h.todos.Delete(agentID)
 	h.cleanupAutoContinue(agentID)
+}
+
+// TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
+// per-agent tracker state (notification thread, todos, span hierarchy). The periodic
+// orphan sweep uses it to find state that outlived its agent -- e.g. a subprocess that
+// crashed and was later closed without routing through ClearAgentRuntimeState (the
+// per-exit handler keeps this state for a possible relaunch, so it isn't cleared there).
+func (h *OutputHandler) TrackedAgentIDs() []string {
+	seen := make(map[string]struct{})
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos} {
+		m.Range(func(key, _ any) bool {
+			if id, ok := key.(string); ok {
+				seen[id] = struct{}{}
+			}
+			return true
+		})
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // broadcastControlCancel fans out a single AgentControlCancelRequest to
@@ -678,12 +715,20 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
 	})
 }
 
-// ClearAgentRuntimeState removes every piece of state tied to a dying
-// agent process: pending control_requests in the DB plus the in-memory
-// trackers cleared by CleanupAgent. A controlCancel is broadcast for
-// each deleted row so live tabs drop the prompt without waiting for the
-// reconnect-and-replay path.
-func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
+// ClearPendingControlRequests drops the agent's pending control_requests from the
+// DB and broadcasts a controlCancel for each, so request_ids bound to a now-exited
+// subprocess don't reappear stale on resume. It deletes by agent id ALONE (no per-process
+// generation column), so it must run only when no LATER process for the same agent id could
+// own pending requests. The worker wires it as the per-exit onExit handler, where that holds:
+// agent.Manager.stopAndWait blocks every relaunch until the OLD process's exit goroutine
+// (this handler included) has fully finished BEFORE registering the new provider, so a
+// relaunch's old-process onExit can only ever clear requests that genuinely belong to the
+// process that just went away -- never the freshly-restarted one's. It deliberately does NOT
+// touch the in-memory per-agent trackers (CleanupAgent): those carry timeline state (the open
+// notification thread, the to-do list, span hierarchy) that must SURVIVE a relaunch, or two
+// settings-change notifications bracketing a model/effort switch land in separate threads and
+// can no longer consolidate/cancel.
+func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 	deletedIDs, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
@@ -691,6 +736,16 @@ func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
 	for _, requestID := range deletedIDs {
 		h.broadcastControlCancel(agentID, requestID)
 	}
+}
+
+// ClearAgentRuntimeState removes every piece of state tied to a dying agent:
+// pending control_requests in the DB plus the in-memory trackers cleared by
+// CleanupAgent. Call it only when the agent is PERMANENTLY gone (close, context
+// clear, plan-exec restart) -- NOT from the per-exit onExit handler, which a
+// relaunch also triggers and which must keep the in-memory timeline state (see
+// ClearPendingControlRequests).
+func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
+	h.ClearPendingControlRequests(agentID)
 	h.CleanupAgent(agentID)
 }
 
@@ -744,6 +799,16 @@ type agentOutputSink struct {
 	// frontend would observe.
 	sessionInfoMu   sync.Mutex
 	lastSessionInfo map[string][]byte
+
+	// catalogMu serializes the read-build-persist of the option-group catalog in
+	// BroadcastStatusActive. Every BroadcastStatusActive for an agent runs on this one
+	// per-agent sink, but from several goroutines -- the reader goroutine folding a
+	// config_option_update, the ClearContext RPC, Pi's multi-handler fan-out. Without
+	// serialization two callers can read the same stale row, each capture a DIFFERENT live
+	// catalog, and blind-write, last-writer-wins persisting an OLDER catalog over a newer one.
+	// Holding catalogMu across the row read + status build (which captures the freshest live
+	// catalog) + write makes the last writer always persist the most recent live state.
+	catalogMu sync.Mutex
 }
 
 // --- OutputSink interface implementation ---
@@ -883,28 +948,24 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 	}
 }
 
-// buildStatusChange constructs an AgentStatusChange from the given DB agent
-// and overrides.  Fields that are always the same across callers (agentID,
-// workerOnline, agentProvider, gitStatus) are filled in
-// automatically.
+// buildStatusChange constructs an AgentStatusChange from the given DB agent.
+// Fields that are always the same across callers (agentID, workerOnline,
+// agentProvider, gitStatus) are filled in automatically. The option groups are
+// projected straight from the row's persisted options -- every caller writes the
+// new selections into the row before calling, so no per-axis override is needed.
 func (s *agentOutputSink) buildStatusChange(
 	dbAgent db.Agent,
 	status leapmuxv1.AgentStatus,
-	sessionID, permissionMode string,
+	sessionID string,
 ) *leapmuxv1.AgentStatusChange {
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:               s.agentID,
-		Status:                status,
-		AgentSessionId:        sessionID,
-		WorkerOnline:          true,
-		PermissionMode:        permissionMode,
-		Model:                 modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:                dbAgent.Effort,
-		GitStatus:             gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:         s.agentProvider,
-		ExtraSettings:         loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
-		AvailableModels:       s.h.agents.AvailableModels(s.agentID, dbAgent.AgentProvider),
-		AvailableOptionGroups: s.h.agents.AvailableOptionGroups(s.agentID, dbAgent.AgentProvider),
+		AgentId:        s.agentID,
+		Status:         status,
+		AgentSessionId: sessionID,
+		WorkerOnline:   true,
+		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentProvider:  s.agentProvider,
+		OptionGroups:   optionGroupsView(s.h.agents, &dbAgent, nil),
 	}
 }
 
@@ -912,17 +973,23 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 	dbAgent, fetchErr := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	oldMode := ""
 	if fetchErr == nil {
-		oldMode = dbAgent.PermissionMode
+		oldMode = parseOptions(dbAgent.Options)[agent.OptionIDPermissionMode]
+		// Merge ONLY the permission-mode key via compare-and-swap, not a full-map blob
+		// write built on this snapshot: UpdatePermissionMode holds no lifecycle lock and
+		// runs on the agent's output/reader goroutine, so a concurrent writer (an RPC
+		// UpdateAgentSettings landing effort, or a PersistSettingsRefresh) could otherwise
+		// have its change clobbered when our full-map write replays the stale snapshot --
+		// the exact race casPersistOptions exists to prevent.
+		if settled, wrote, err := s.casPersistOptions(dbAgent.Options, map[string]string{agent.OptionIDPermissionMode: mode}); err != nil {
+			slog.Warn("failed to persist permission mode", "agent_id", s.agentID, "error", err)
+		} else if wrote {
+			dbAgent.Options = settled
+		}
 	}
-
-	_ = s.h.queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
-		PermissionMode: mode,
-		ID:             s.agentID,
-	})
 
 	// Broadcast statusChange so frontends update their permission mode display.
 	if fetchErr == nil {
-		sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID, mode)
+		sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID)
 		s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 			AgentId: s.agentID,
 			Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
@@ -936,19 +1003,40 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 // NotifyPermissionModeChanged emits the chat-view settings_changed notification for
 // a permission-mode transition, without persisting the mode or broadcasting a
 // StatusChange. A no-op when oldMode is empty (unknown prior value) or unchanged.
+//
+// Display labels are resolved here at the emit site -- exactly as the RPC-driven
+// buildSettingsChanges path does -- so the notification is self-describing. The
+// server-initiated mode change (an ACP config_option_update routed through
+// UpdatePermissionMode) would otherwise carry only raw ids and depend entirely on the
+// frontend settings-label cache being primed, rendering an opaque mode id (e.g. a
+// Cursor/Copilot session-mode URL) on a cache miss.
 func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 	if oldMode == "" || oldMode == newMode {
 		return
 	}
+	// On a successful row fetch, resolve labels through the shared typed builder
+	// (optionGroupChangeEntry) so the {old,new,oldLabel,newLabel,label} keys are spelled in exactly
+	// one place -- a misspelled key is a compile error, not a silently-absent UI field -- the same
+	// goal the RPC-driven buildSettingsChanges path already relies on. On a fetch failure, fall back
+	// to the bare {old,new} ids (no label keys), so the frontend resolves labels from its cache
+	// rather than rendering blank for an explicit empty-string label (it honors an explicit "" over
+	// the cache; see notificationRenderers).
+	var change any = map[string]string{"old": oldMode, "new": newMode}
+	if dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID); err == nil {
+		groups := optionGroupsView(s.h.agents, &dbAgent, nil)
+		change = optionGroupChangeEntry(oldMode, newMode,
+			func(v string) string { return optionLabelInGroups(groups, agent.OptionIDPermissionMode, v) },
+			optionGroupLabelInGroups(groups, agent.OptionIDPermissionMode))
+	}
 	s.PersistLeapMuxNotification(map[string]interface{}{
 		"type": agent.NotificationTypeSettingsChanged,
 		"changes": map[string]interface{}{
-			agent.OptionGroupKeyPermissionMode: map[string]string{"old": oldMode, "new": newMode},
+			agent.OptionIDPermissionMode: change,
 		},
 	})
 }
 
-func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
+func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		slog.Error("failed to fetch agent for settings broadcast",
@@ -956,97 +1044,428 @@ func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode s
 		return
 	}
 
-	if permissionMode == "" {
-		permissionMode = dbAgent.PermissionMode
+	// Fold the refreshed values into the persisted options map using the wire
+	// merge contract (mergeOptions): a key present with a non-empty value is set,
+	// a key present with an empty value is deleted, and an ABSENT key is preserved.
+	// This single uniform policy replaces the old scalar-vs-options split:
+	//   - A provider that can't report an axis OMITS it so the stored value
+	//     survives -- Claude omits permissionMode (keeps a startup-time
+	//     set_permission_mode), ACP omits effort, ACP primary-agent providers omit
+	//     model when the server advertises none.
+	//   - A provider that cleared an option sends it as an empty value so the key
+	//     is removed (e.g. an ACP option the agent stopped surfacing).
+	// Every provider reports concrete values for what it manages, so this matches
+	// the previous behavior without naming any axis specially.
+	//
+	// The merge-and-no-op-detect happens in exactly ONE place per path: the running-agent
+	// path delegates it to casPersistAgentOptions (which returns wrote=false on a no-op);
+	// only the startup-window path, which skips that CAS, merges inline for its broadcast.
+	var newOptions string
+	startupWindow := s.h.agentStarting != nil && s.h.agentStarting(s.agentID)
+	if !startupWindow {
+		// Persist via a compare-and-swap so two concurrent refreshes -- the ACP reader
+		// goroutine folding a server-initiated config_option_update and an RPC-driven
+		// UpdateSettings -- can't lose each other's option writes. They share no lock on
+		// this path, so each merges onto the snapshot it read; a CAS that misses (the row
+		// moved on between read and write) re-reads, re-merges, and retries instead of
+		// overwriting the other writer's keys with a stale full-map blob.
+		//
+		// casPersistOptions also owns the no-op detection: it returns wrote=false when the
+		// merge leaves the row unchanged -- the refresh just re-confirms the stored values
+		// (refreshes fire after UpdateSettings, and startup readbacks often confirm the
+		// row), or a concurrent writer already landed an equivalent merge and broadcast it.
+		// Either way there is nothing new to persist or broadcast, so skip both.
+		settled, wrote, err := s.casPersistOptions(dbAgent.Options, refresh)
+		if err != nil {
+			slog.Error("failed to persist refreshed settings",
+				"agent_id", s.agentID, "error", err)
+			return
+		}
+		if !wrote {
+			return
+		}
+		newOptions = settled
+	} else {
+		// This refresh fires from the agent's first init message, which arrives
+		// while the agent is still inside startAgent's provider handshake -- before
+		// runAgentStartup's final settings handoff. A settings change made during
+		// that startup window is written to the DB by UpdateAgentSettings but can't
+		// be applied to the not-yet-ready agent, so persisting the confirmed LAUNCH
+		// settings here would clobber the user's choice (e.g. overwrite a model
+		// switched to during startup with the launch model). runAgentStartup's final
+		// handoff persists the confirmed settings with that change preserved (and
+		// relaunches to apply it), so skip the DB write while startup is in progress
+		// and only broadcast the early ACTIVE/status event.
+		//
+		// DELIBERATE startup-window divergence: the in-memory patch + broadcast below
+		// advertises the merged options even though the row on disk still holds the prior
+		// options. This is intentional, not a bug -- the early ACTIVE/status event must
+		// reflect the provider's just-confirmed catalog so the frontend isn't stuck on
+		// stale launch values, while the DB write is deferred (above) precisely so a
+		// mid-startup user change isn't clobbered. The transient where a concurrent DB read
+		// sees the older options is reconciled at runAgentStartup's handoff. Do NOT "fix"
+		// the divergence by gating the broadcast on a DB write -- that reintroduces the clobber.
+		stored := parseOptions(dbAgent.Options)
+		newOptions = marshalOptions(mergeOptions(stored, refresh))
+		// Skip the broadcast when the refresh is a no-op (the startup readback often just
+		// confirms the stored row), sparing a pointless frontend reactivity tick. Compare
+		// canonicalized forms on both sides so key ordering can't read as a change.
+		if newOptions == marshalOptions(stored) {
+			return
+		}
 	}
 
-	// An empty model means "the refresh did not carry a model; leave the stored value
-	// untouched", mirroring the permissionMode rule above. The ACP primary-agent
-	// providers (OpenCode/Kilo) can leave their in-memory model "" when the server
-	// advertises no current model, so a primary-agent-only config_option_update would
-	// otherwise clobber a stored model to "". Every provider passes a concrete model or
-	// "" because it is unknown -- never "" to deliberately clear -- so keep-stored is
-	// always the right resolution (a stored "" is itself a degraded "use default" state).
-	if model == "" {
-		model = dbAgent.Model
+	// Patch the fetched row in-memory to reflect the values we just persisted (or, in the
+	// startup window, would persist), avoiding a second GetAgentByID round-trip before we
+	// build the status-change event below.
+	dbAgent.Options = newOptions
+
+	sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID)
+
+	// Persist the live catalog too, not just the option VALUES above. A single server-initiated
+	// config_option_update that BOTH changes an option value AND grows the catalog (e.g. an ACP
+	// dynamic-model provider whose model list arrives post-handshake and the user switches to a
+	// just-revealed model in the same update) routes here -- the value change wins the
+	// mutually-exclusive switch in handleACPConfigOptionUpdate, so the listChanged branch that
+	// would persist the catalog via BroadcastStatusActive never runs. Without persisting here the
+	// grown catalog is lost from the option_groups column, and the post-exit offline picker serves
+	// the stale, narrower catalog. persistLiveCatalog shares BroadcastStatusActive's catalogMu +
+	// no-op/never-truncate guards, so the common value-only refresh costs one proto.Equal diff and
+	// no write. Skipped in the startup window for the same reason the options DB write is deferred
+	// above: runAgentStartup's handoff persists the confirmed catalog atomically, and a mid-startup
+	// write here could clobber a user change.
+	if !startupWindow {
+		s.persistLiveCatalog(sc.GetOptionGroups())
 	}
 
-	// An empty effort means "the refresh did not carry an effort; leave the stored
-	// value untouched", mirroring the permissionMode rule above. The ACP providers
-	// don't track effort and always pass "", so a model-only refresh would otherwise
-	// clobber a stored effort (e.g. a model switch resets it to "auto" via
-	// UpdateAgentSettings; a later runtime config_option_update would then wipe it
-	// to ""). Codex/Claude always pass a concrete level or "auto". Pi passes its
-	// thinkingLevel, which IS "" when no effort was ever set -- but in that case the
-	// stored effort is "" too (both come from opts.Effort), so keep-stored is a no-op;
-	// and where they diverge (a model switch left the row at "auto" while Pi's level
-	// is still ""), keeping the concrete "auto" beats blanking it. So keep-stored is
-	// always the right resolution -- a refresh never passes "" to deliberately clear.
-	if effort == "" {
-		effort = dbAgent.Effort
-	}
-
-	// A nil extraSettings means "the refresh did not carry extras; leave the stored
-	// value untouched" -- distinct from an empty map, which clears them. Mirrors the
-	// permissionMode=="" keep-stored rule above. Without this, the ACP permission-mode
-	// providers (which pass nil) would overwrite stored extra_settings with "{}".
-	newExtras := dbAgent.ExtraSettings
-	if extraSettings != nil {
-		newExtras = marshalExtraSettings(extraSettings)
-	}
-
-	// Skip the DB write and the watcher broadcast when the refresh is a
-	// no-op. Refresh fires after UpdateSettings (which has already
-	// persisted the same values) and after startup-time readbacks that
-	// often just confirm the stored row, so avoiding redundant
-	// UpdateAgentAllSettings calls and StatusChange events spares
-	// pointless DB churn and frontend reactivity ticks.
-	if dbAgent.Model == model &&
-		dbAgent.Effort == effort &&
-		dbAgent.PermissionMode == permissionMode &&
-		dbAgent.ExtraSettings == newExtras {
-		return
-	}
-
-	if err := s.h.queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
-		Model:          model,
-		Effort:         effort,
-		PermissionMode: permissionMode,
-		ExtraSettings:  newExtras,
-		ID:             s.agentID,
-	}); err != nil {
-		slog.Error("failed to persist refreshed settings",
-			"agent_id", s.agentID, "error", err)
-		return
-	}
-
-	// Patch the fetched row in-memory to reflect the values we just
-	// persisted, avoiding a second GetAgentByID round-trip before we build
-	// the status-change event below.
-	dbAgent.Model = model
-	dbAgent.Effort = effort
-	dbAgent.ExtraSettings = newExtras
-
-	sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID, permissionMode)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
 	})
 }
 
-func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
-	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+// persistLiveCatalog persists the live option-group catalog to this agent's row when it has
+// grown/changed beyond the stored copy, re-reading the row under catalogMu so a concurrent
+// BroadcastStatusActive can't last-writer-wins an older catalog over a newer one. Shares the
+// persistCatalogIfChanged no-op/never-truncate guards. Used by PersistSettingsRefresh, whose
+// value-change broadcast does not flow through BroadcastStatusActive yet can still carry a
+// freshly grown catalog. The catalog passed in is the same one just broadcast, so the persisted
+// row matches the event the frontend received.
+func (s *agentOutputSink) persistLiveCatalog(live []*leapmuxv1.AvailableOptionGroup) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+
+	existing, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
-		slog.Error("failed to fetch agent for status broadcast",
+		slog.Error("failed to fetch agent for catalog persist",
 			"agent_id", s.agentID, "error", err)
 		return
 	}
+	s.persistCatalogIfChanged(existing, live)
+}
 
-	sc := s.buildStatusChange(existingAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sessionID, existingAgent.PermissionMode)
+// optionsCASMaxAttempts bounds the PersistSettingsRefresh compare-and-swap retry loop.
+// Each lost race is another concurrent writer winning; in practice at most a couple
+// contend, so this is a generous ceiling that still fails loudly rather than spinning.
+const optionsCASMaxAttempts = 8
+
+// casPersistOptions persists a settings refresh for this sink's agent via the shared
+// compare-and-swap helper. See casPersistAgentOptions for the contract.
+func (s *agentOutputSink) casPersistOptions(expected string, refresh map[string]string) (string, bool, error) {
+	return casPersistAgentOptions(bgCtx(), s.h.queries, s.agentID, expected, refresh)
+}
+
+// withoutStaleClears returns refresh with every STALE clear removed -- an empty-valued (clear)
+// entry whose key is ABSENT from snapshot. Such a clear is a no-op against snapshot, so it
+// carries no intent for THIS snapshot; re-applying it to a newer row (re-read after a lost CAS,
+// or in the final last-writer-wins merge) would instead DELETE a value a concurrent writer set
+// on that key. A clear of a key the snapshot DOES hold is genuine -- it removes a value the
+// snapshot saw -- and is kept, so it still applies. Returns m unchanged (no allocation) when it
+// holds no stale clear, the common case. Called against each CAS iteration's own base snapshot so
+// a clear that turns stale only after a re-read is dropped on the next pass.
+func withoutStaleClears(refresh, snapshot map[string]string) map[string]string {
+	hasStale := false
+	for k, v := range refresh {
+		if v == "" {
+			if _, ok := snapshot[k]; !ok {
+				hasStale = true
+				break
+			}
+		}
+	}
+	if !hasStale {
+		return refresh
+	}
+	out := make(map[string]string, len(refresh))
+	for k, v := range refresh {
+		if v == "" {
+			if _, ok := snapshot[k]; !ok {
+				continue // stale clear: snapshot never held this key
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// narrowedOptionDelta canonicalizes one compare-and-swap attempt's inputs against the `expected`
+// snapshot: it drops any STALE clear from `delta` (an empty-value key absent from `expected`, which
+// carries no intent against this base and would clobber a concurrent writer's value of that key on a
+// lost CAS), and returns the narrowed delta, the canonical base (the snapshot re-marshaled, the value
+// the CAS compares against), and the canonical merge of the narrowed delta onto it. The three CAS
+// sites (casPersistAgentOptions' loop body and last-writer-wins tail, casPersistConfirmedSettings'
+// loop body) share this one "narrow, canonicalize, merge" contract -- and parse `expected` ONCE here
+// instead of three times each -- so a change to the contract lands in one place. A genuine clear (a
+// key present in `expected`) is kept and still applies.
+func narrowedOptionDelta(expected string, delta map[string]string) (narrowed map[string]string, base, merged string) {
+	snapshot := parseOptions(expected)
+	narrowed = withoutStaleClears(delta, snapshot)
+	base = marshalOptions(snapshot)
+	merged = marshalOptions(mergeOptions(snapshot, narrowed))
+	return narrowed, base, merged
+}
+
+// casPersistAgentOptions merges `refresh` onto the agent's stored options and writes the
+// result via SetAgentOptionsIfUnchanged (compare-and-swap), re-reading and re-merging
+// when a concurrent writer moves the row between the read and the write. `expected` is
+// the caller's already-read options snapshot, tried first to avoid a redundant fetch.
+// Returns (settled, true, nil) with the marshaled options actually persisted, or
+// (snapshot, false, nil) when the merge is a no-op -- the delta changes nothing against the
+// snapshot it was decided against (the caller's `expected` on the first try, or the row
+// re-read after a lost CAS). `snapshot` is that marshaled map, so the caller can broadcast it
+// without a re-fetch; on the common uncontended path it IS the current row.
+//
+// Shared by every options writer that holds no common lock: the ACP/RPC settings-refresh
+// sink (PersistSettingsRefresh, on the agent reader goroutine) and the service-layer
+// option-change setters (applyOptionChanges / applySettingsLive, on the RPC dispatcher).
+// The per-agent lifecycle lock does NOT serialize against the reader-goroutine writer (it
+// never takes the lock), so a blind full-map write could drop a key a refresh had just
+// merged in. Merging only each writer's own delta under CAS makes the two converge instead.
+func casPersistAgentOptions(ctx context.Context, q *db.Queries, agentID, expected string, refresh map[string]string) (string, bool, error) {
+	for attempt := 0; attempt < optionsCASMaxAttempts; attempt++ {
+		// Narrow stale clears, canonicalize the base, and merge -- against the re-read `expected` each
+		// iteration, so a clear that turns stale only after a concurrent delete is dropped too. The
+		// narrowed `refresh` is carried forward (monotonic narrowing across attempts).
+		var base, newOptions string
+		refresh, base, newOptions = narrowedOptionDelta(expected, refresh)
+		if newOptions == base {
+			// The refresh changes nothing against `expected` -- but `expected` is the caller's
+			// snapshot, which a concurrent writer may have moved on. Decide the no-op against the
+			// LIVE row, not the stale snapshot: re-read and re-merge so a refresh that WOULD
+			// re-assert the agent's confirmed value over a key another writer just cleared isn't
+			// silently skipped (which would leave the row diverged from the running agent until
+			// the next refresh). Still a no-op against the live row -> settled; otherwise fall
+			// through to the CAS below with the live row as the new base. (The next iteration's
+			// withoutStaleClears narrows `refresh` against that live row.)
+			dbAgent, err := q.GetAgentByID(ctx, agentID)
+			if err != nil {
+				return "", false, err
+			}
+			// Reaching the no-op branch means `refresh` is a no-op against `expected`: every SET
+			// equals the stored value and -- after the top-of-loop narrowing -- it holds no clear
+			// (a genuine clear of a key in `expected` would have changed base; a stale clear was
+			// dropped). So merge it directly against the live row; the next iteration re-narrows.
+			live := marshalOptions(parseOptions(dbAgent.Options))
+			if marshalOptions(mergeOptions(parseOptions(dbAgent.Options), refresh)) == live {
+				return live, false, nil
+			}
+			expected = dbAgent.Options
+			continue
+		}
+		changed, err := q.SetAgentOptionsIfUnchanged(ctx, db.SetAgentOptionsIfUnchangedParams{
+			Options: newOptions,
+			ID:      agentID,
+			// Compare against the CANONICAL form of the snapshot, the same value the no-op check
+			// above decided against -- not the raw `expected` string. Every options write goes
+			// through marshalOptions, so the stored column is always canonical; matching it with the
+			// canonical `base` keeps the expected-value representation consistent within this function
+			// rather than relying on the caller's snapshot already being canonical.
+			ExpectedOptions: base,
+		})
+		if err != nil {
+			return "", false, err
+		}
+		if changed > 0 {
+			return newOptions, true, nil
+		}
+		// The row changed between read and write; re-read and re-merge onto the new value.
+		dbAgent, err := q.GetAgentByID(ctx, agentID)
+		if err != nil {
+			return "", false, err
+		}
+		expected = dbAgent.Options
+	}
+	// Sustained contention lost every CAS attempt. Rather than DROP the write (which would
+	// silently strand the settled options), do a final last-writer-wins merge: re-read, merge
+	// only this writer's own delta onto the latest row, and write unconditionally. Merging
+	// (not blind-overwriting) still preserves other writers' keys; the only loss window is a
+	// write landing between this read and write -- the same window a single CAS iteration has,
+	// so this is strictly better than dropping the delta entirely.
+	dbAgent, err := q.GetAgentByID(ctx, agentID)
+	if err != nil {
+		return "", false, err
+	}
+	// Narrow stale clears against this final re-read too, so the unconditional write below can't
+	// delete a key a concurrent writer set that this delta never legitimately cleared. This is the
+	// terminal attempt, so the narrowed delta isn't carried forward -- only its merge is written.
+	_, base, newOptions := narrowedOptionDelta(dbAgent.Options, refresh)
+	if newOptions == base {
+		return base, false, nil
+	}
+	if err := q.SetAgentOptions(ctx, db.SetAgentOptionsParams{Options: newOptions, ID: agentID}); err != nil {
+		return "", false, err
+	}
+	slog.Warn("options CAS exhausted; applied final last-writer-wins merge",
+		"agent_id", agentID, "attempts", optionsCASMaxAttempts)
+	return newOptions, true, nil
+}
+
+// casPersistConfirmedSettings atomically persists the confirmed option DELTA and the provider
+// option-group catalog in ONE statement per attempt (UpdateAgentConfirmedSettings), so a concurrent
+// options writer can't land BETWEEN two separate column writes and leave the row showing this
+// handoff's options beside a foreign catalog. The options column merges only `delta` (preserving a
+// concurrent writer's other keys) under a CAS-with-retry on `expectedOptions`; the option_groups
+// column rides the SAME statement, written only on the successful options CAS so the two columns
+// move together-or-neither. `expectedCatalog`/`catalog` are the catalog CAS pair (the catalog
+// snapshot the row carried when this handoff began, and the new catalog); pass both "" to leave the
+// catalog untouched (e.g. when its marshal failed). Returns the settled row for the broadcast.
+func casPersistConfirmedSettings(ctx context.Context, q *db.Queries, agentID, expectedOptions string, delta map[string]string, expectedCatalog, catalog string) (db.Agent, error) {
+	for attempt := 0; attempt < optionsCASMaxAttempts; attempt++ {
+		// Drop stale clears against this base, exactly as casPersistAgentOptions does, so a delta
+		// pairing a set with a clear of a key a concurrent writer set can't clobber it on a retry.
+		var base, newOptions string
+		delta, base, newOptions = narrowedOptionDelta(expectedOptions, delta)
+		row, err := q.UpdateAgentConfirmedSettings(ctx, db.UpdateAgentConfirmedSettingsParams{
+			ExpectedOptions:      base,
+			Options:              newOptions,
+			ExpectedOptionGroups: expectedCatalog,
+			OptionGroups:         catalog,
+			ID:                   agentID,
+		})
+		if err != nil {
+			return db.Agent{}, err
+		}
+		// The options column equals newOptions iff our CAS hit -- OR a concurrent writer landed the
+		// identical blob. Our CAS hit when the options CASE matched (options = expected_options at
+		// statement time, so options = base = newOptions's source); then the gated option_groups CASE
+		// also took the THEN branch and rode the same statement. But the concurrent writer that landed
+		// the identical blob could be the options-only path (casPersistAgentOptions via
+		// PersistSettingsRefresh/applyOptionChanges), which NEVER writes option_groups: it left
+		// options = newOptions but option_groups = expected_option_groups, so our options CASE saw
+		// options != base, took ELSE, and the gated option_groups CASE took ELSE too -- dropping the
+		// catalog this handoff discovered. Re-assert the catalog with a standalone CAS so a richer one
+		// we found still lands. The CAS is a no-op (keeping the richer one) if a running provider grew
+		// the catalog past expectedCatalog in the meantime, mirroring the in-statement gate.
+		if row.Options == newOptions {
+			if catalog != "" && row.OptionGroups != catalog && row.OptionGroups == expectedCatalog {
+				updated, err := q.SetAgentOptionGroupsIfUnchanged(ctx, db.SetAgentOptionGroupsIfUnchangedParams{
+					OptionGroups:         catalog,
+					ExpectedOptionGroups: expectedCatalog,
+					ID:                   agentID,
+				})
+				if err != nil {
+					return db.Agent{}, err
+				}
+				if updated > 0 {
+					row.OptionGroups = catalog
+				}
+			}
+			return row, nil
+		}
+		// Lost the options CAS: the gated catalog CASE wrote nothing either, so re-merge the delta
+		// onto the live row and retry -- both columns stay atomic.
+		expectedOptions = row.Options
+	}
+	// Sustained contention lost every atomic attempt. Fall back to the (non-atomic) options-then-
+	// catalog writes: options via the guaranteed-landing CAS helper, then the standalone catalog CAS.
+	// This reintroduces the brief two-write window ONLY after optionsCASMaxAttempts failed atomic
+	// tries -- far rarer than the window the atomic path closes -- and still lands the confirmation.
+	slog.Warn("confirmed-settings atomic CAS exhausted; applied non-atomic fallback",
+		"agent_id", agentID, "attempts", optionsCASMaxAttempts)
+	if _, _, err := casPersistAgentOptions(ctx, q, agentID, expectedOptions, delta); err != nil {
+		return db.Agent{}, err
+	}
+	if catalog != "" || expectedCatalog != "" {
+		if _, err := q.SetAgentOptionGroupsIfUnchanged(ctx, db.SetAgentOptionGroupsIfUnchangedParams{
+			OptionGroups:         catalog,
+			ExpectedOptionGroups: expectedCatalog,
+			ID:                   agentID,
+		}); err != nil {
+			return db.Agent{}, err
+		}
+	}
+	return q.GetAgentByID(ctx, agentID)
+}
+
+func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
+	sc := s.persistCatalogAndBuildStatus(sessionID)
+	if sc == nil {
+		return
+	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
 	})
+}
+
+// persistCatalogAndBuildStatus reads the row, builds the ACTIVE status change (capturing the
+// freshest live catalog), and persists that catalog -- all under catalogMu so concurrent
+// BroadcastStatusActive callers on this one per-agent sink can't read the same stale row and
+// blind-write different live catalogs, last-writer-wins persisting an older catalog over a newer
+// one. The network broadcast is left to the caller so it runs OUTSIDE the lock. Returns nil (no
+// broadcast) when the row read fails.
+func (s *agentOutputSink) persistCatalogAndBuildStatus(sessionID string) *leapmuxv1.AgentStatusChange {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+
+	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if err != nil {
+		slog.Error("failed to fetch agent for status broadcast",
+			"agent_id", s.agentID, "error", err)
+		return nil
+	}
+
+	sc := s.buildStatusChange(existingAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sessionID)
+
+	// Persist the live catalog when it has grown/changed beyond the row's copy, so the
+	// post-exit offline read reflects options the running agent discovered AFTER the
+	// startup handoff already persisted a narrower catalog -- e.g. an ACP dynamic-model
+	// provider (Copilot/OpenCode/Goose) whose model list arrives only via a post-handshake
+	// config_option_update, which broadcasts through here. option_groups is a column separate
+	// from options, so this never races the options-value CAS. catalogMu (held here) serializes
+	// this against the OTHER BroadcastStatusActive calls on this one per-agent sink, so two
+	// concurrent broadcasts can't read the same row and blind-write divergent live catalogs,
+	// last-writer-wins persisting an older one. It does NOT serialize against the dispatcher/
+	// startup paths, which persist the catalog via SetAgentOptionGroupsIfUnchanged (a CAS on the
+	// same column, off this lock); the blind write here is still correct because `live` is the
+	// authoritative manager catalog (optionGroupsView -> Manager.OptionGroups for the running
+	// agent), which every catalog change re-broadcasts, so the row converges to the freshest live
+	// catalog on the next push regardless of interleaving. The proto.Equal diff keeps the common
+	// (unchanged-catalog) broadcast from writing on every push.
+	s.persistCatalogIfChanged(existingAgent, sc.GetOptionGroups())
+	return sc
+}
+
+// persistCatalogIfChanged writes the live option-group catalog to the row when it differs
+// from the stored one. Never overwrites a populated catalog with an empty one (a transient
+// empty live read must not wipe the persisted options), nor with a TRUNCATED one when a group
+// fails to marshal -- a partial catalog would never compare equal and so would re-write every push.
+func (s *agentOutputSink) persistCatalogIfChanged(existing db.Agent, live []*leapmuxv1.AvailableOptionGroup) {
+	if len(live) == 0 || optionGroupsEqual(parseOptionGroups(existing.OptionGroups), live) {
+		return
+	}
+	marshaled, err := marshalOptionGroups(live)
+	if err != nil {
+		slog.Warn("skipping discovered option-group catalog persist; marshal failed",
+			"agent_id", s.agentID, "error", err)
+		return
+	}
+	if err := s.h.queries.SetAgentOptionGroups(bgCtx(), db.SetAgentOptionGroupsParams{
+		OptionGroups: marshaled,
+		ID:           s.agentID,
+	}); err != nil {
+		slog.Warn("failed to persist discovered option-group catalog", "agent_id", s.agentID, "error", err)
+	}
 }
 
 // BroadcastGitStatus emits a partial AgentStatusChange carrying the
@@ -2052,15 +2471,9 @@ type indexedRaw struct {
 // identical bytes at every position. Used to short-circuit no-op writes in
 // the notification-thread append path.
 func rawMessageSlicesEqual(a, b []json.RawMessage) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !bytes.Equal(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
+	return slices.EqualFunc(a, b, func(x, y json.RawMessage) bool {
+		return bytes.Equal(x, y)
+	})
 }
 
 // consolidateNotificationThread consolidates a notification thread's messages.

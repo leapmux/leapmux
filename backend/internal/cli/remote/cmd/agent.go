@@ -127,39 +127,6 @@ func RunAgentProviders(rawCtx any, args []string) error {
 	})
 }
 
-// permissionModeApplier matches `callInnerRPCBest`'s signature so
-// applyPermissionMode can be unit-tested without standing up a real
-// E2EE channel or local-IPC socket.
-type permissionModeApplier func(ctx context.Context, c *remote.Client, workerID, method string, in proto.Message, out proto.Message) error
-
-// applyPermissionMode fires `UpdateAgentSettings` to set just the
-// permission-mode field. Returns an empty string on success or when
-// `mode` is empty (caller didn't pass --permission-mode); returns the
-// error's message on failure so the caller can fold it into the
-// `agent open` JSON envelope alongside the agent payload.
-//
-// We deliberately do not roll the agent back when this fails — the
-// agent is already running with provider defaults, which is more
-// useful than a force-closed tab whose creation just succeeded. The
-// caller surfaces the error so scripts can decide whether to retry
-// (the apply is idempotent — UpdateAgentSettings with the same
-// permission_mode value is safe to re-run).
-func applyPermissionMode(ctx context.Context, c *remote.Client, workerID, agentID, mode string, call permissionModeApplier) string {
-	if mode == "" {
-		return ""
-	}
-	req := &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: agentID,
-		Settings: &leapmuxv1.AgentSettings{
-			PermissionMode: mode,
-		},
-	}
-	if err := call(ctx, c, workerID, "UpdateAgentSettings", req, nil); err != nil {
-		return err.Error()
-	}
-	return ""
-}
-
 // providerListerFn matches `callInnerRPCBest`'s signature so
 // resolveProvider can be unit-tested without standing up a real E2EE
 // channel or local-IPC socket.

@@ -25,12 +25,12 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	var capturedMu sync.Mutex
 	var captured agent.Options
 	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		capturedMu.Lock()
 		captured = opts
 		capturedMu.Unlock()
 		close(done)
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -49,7 +49,7 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	}
 
 	capturedMu.Lock()
-	effort := captured.Effort
+	effort := captured.Effort()
 	capturedMu.Unlock()
 	assert.Equal(t, "auto", effort,
 		"agent.Options.Effort should default to \"auto\" (CLI picks its own default)")
@@ -58,13 +58,13 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	require.NotNil(t, resp.GetAgent())
 
-	assert.Equal(t, "auto", resp.GetAgent().GetEffort(),
-		"response agent.effort should echo the \"auto\" sentinel")
-
-	require.Eventually(t, func() bool {
-		dbAgent, err := svc.Queries.GetAgentByID(ctx, resp.GetAgent().GetId())
-		return err == nil && dbAgent.Effort == "auto"
-	}, 5*time.Second, 20*time.Millisecond)
+	// The "auto" sentinel is persisted as the effort option. (It is not surfaced
+	// as a standalone effort option group because the account-default model has no
+	// concrete effort tiers, but it is recorded so the launch reproduces it.)
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, resp.GetAgent().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "auto", loadOptions(dbAgent.Options, dbAgent.AgentProvider)[agent.OptionIDEffort],
+		"the agent's effort should default to the \"auto\" sentinel")
 }
 
 // TestOpenAgent_RespectsEnvOverride verifies that when
@@ -79,12 +79,12 @@ func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 	var capturedMu sync.Mutex
 	var captured agent.Options
 	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		capturedMu.Lock()
 		captured = opts
 		capturedMu.Unlock()
 		close(done)
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -102,7 +102,7 @@ func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 	}
 
 	capturedMu.Lock()
-	effort := captured.Effort
+	effort := captured.Effort()
 	capturedMu.Unlock()
 	assert.Equal(t, "high", effort,
 		"env var LEAPMUX_CLAUDE_DEFAULT_EFFORT should override the \"auto\" default")
@@ -119,19 +119,19 @@ func TestOpenAgent_PreservesExplicitEffort(t *testing.T) {
 	var capturedMu sync.Mutex
 	var captured agent.Options
 	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		capturedMu.Lock()
 		captured = opts
 		capturedMu.Unlock()
 		close(done)
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Effort:        "medium",
+		Options:       map[string]string{agent.OptionIDEffort: "medium"},
 	}, w)
 
 	require.Empty(t, w.errors, "OpenAgent should succeed")
@@ -143,7 +143,7 @@ func TestOpenAgent_PreservesExplicitEffort(t *testing.T) {
 	}
 
 	capturedMu.Lock()
-	effort := captured.Effort
+	effort := captured.Effort()
 	capturedMu.Unlock()
 	assert.Equal(t, "medium", effort,
 		"explicit effort in OpenAgent request should win over env var override")

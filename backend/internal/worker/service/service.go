@@ -19,6 +19,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -54,7 +55,7 @@ type Context struct {
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
 
-	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error)
+	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
 	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
@@ -239,7 +240,7 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 	return svc
 }
 
-func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
 	if svc.startAgentFn != nil {
 		return svc.startAgentFn(ctx, opts, sink)
 	}
@@ -295,6 +296,12 @@ func (svc *Context) Init() {
 
 	// Wire auto-continue so OutputHandler can send synthetic user messages.
 	svc.Output.SetSendMessageFunc(svc.sendSyntheticUserMessage)
+	// Let PersistSettingsRefresh detect the startup window so it doesn't clobber
+	// a settings change made mid-startup (see SetAgentStartingFunc).
+	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
+		_, _, _, ok := svc.AgentStartup.status(agentID)
+		return ok
+	})
 	svc.Output.restoreAutoContinueSchedules()
 
 	// No need to deactivate agents/terminals on startup — status is now
@@ -432,108 +439,69 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerTunnelHandlers(d, svc)
 }
 
-// modelOrDefault returns the model if non-empty, otherwise the provider's
-// default model from the agent registry (which checks env vars and the
-// registered default model list).
-func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
-	if model != "" {
-		return model
-	}
-	return agent.DefaultModel(provider)
-}
-
-// effortOrDefault returns the effort if non-empty, otherwise the provider's
-// LEAPMUX_*_DEFAULT_EFFORT env var override, otherwise agent.EffortAuto.
-// The sentinel tells the CLI layer to omit the --effort flag (Claude) or
-// the reasoning_effort field (Codex) so the agent binary picks its own
-// default.
-//
-// Caveat for Claude Code: LEAPMUX_CLAUDE_DEFAULT_EFFORT only takes effect when
-// LEAPMUX_CLAUDE_DEFAULT_MODEL also names a CONCRETE model. With the default model left
-// at the account-default sentinel ("default"), launch omits BOTH --model and --effort
-// (forwarding --effort against the sentinel risks an unsupported level on whatever the
-// account resolves to -- e.g. Haiku, which takes no --effort; see buildModelEffortArgs),
-// so the configured default effort is not applied to a sentinel-default agent. Pin a
-// concrete LEAPMUX_CLAUDE_DEFAULT_MODEL for the default effort to take effect.
-func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
-	if effort != "" {
-		return effort
-	}
-	if env := agent.EffortEnvOverride(provider); env != "" {
-		return env
-	}
-	return agent.EffortAuto
-}
-
-// settingsDisplayLabels returns lookup functions for model and effort display
-// names using the agent's AvailableModels data. If the agent is not running or
-// has no model list, the lookup functions return the raw ID as-is.
-func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.AgentProvider) (modelLabel, effortLabel func(string) string) {
-	models := svc.Agents.AvailableModels(agentID, provider)
-
-	// Build model ID → displayName map.
-	modelMap := make(map[string]string, len(models))
-	effortMap := make(map[string]string, len(models)*4)
-	for _, m := range models {
-		if m.DisplayName != "" {
-			modelMap[m.Id] = m.DisplayName
-		}
-		for _, e := range m.SupportedEfforts {
-			if e.Name != "" {
-				effortMap[e.Id] = e.Name
-			}
-		}
-	}
-
-	modelLabel = func(id string) string {
-		if label, ok := modelMap[id]; ok {
-			return label
-		}
-		return id
-	}
-	effortLabel = func(id string) string {
-		if label, ok := effortMap[id]; ok {
-			return label
-		}
-		return id
-	}
-	return
-}
-
-// permissionModeLabel returns a human-readable label for a permission mode ID
-// by looking up the "permissionMode" option group for the running agent when
-// available, then falling back to the provider registry.
-func (svc *Context) permissionModeLabel(agentID, mode string, provider leapmuxv1.AgentProvider) string {
-	return svc.optionLabel(agentID, agent.OptionGroupKeyPermissionMode, mode, provider)
-}
-
-func (svc *Context) optionGroupLabel(agentID, key string, provider leapmuxv1.AgentProvider) string {
-	for _, group := range svc.Agents.AvailableOptionGroups(agentID, provider) {
-		if group.Key == key {
-			if group.Label != "" {
-				return group.Label
-			}
-			return key
-		}
+// optionGroupLabelInGroups returns the display label of the option group with the
+// given id within a specific catalog, falling back to the id when the group is absent
+// or unlabeled. The catalog-scanning core shared by buildSettingsChanges /
+// applyOptionChanges (which fetch the catalog once and pass it in) and the sink's
+// server-initiated settings_changed notifications (NotifyPermissionModeChanged).
+func optionGroupLabelInGroups(groups []*leapmuxv1.AvailableOptionGroup, key string) string {
+	if label := optionids.GroupByID(groups, key).GetLabel(); label != "" {
+		return label
 	}
 	return key
 }
 
-// optionLabel looks up a human-readable label for an option value from the
-// runtime option groups when the agent is running, falling back to the raw
-// value if not found.
-func (svc *Context) optionLabel(agentID, key, value string, provider leapmuxv1.AgentProvider) string {
-	for _, group := range svc.Agents.AvailableOptionGroups(agentID, provider) {
-		if group.Key == key {
-			for _, opt := range group.Options {
-				if opt.Id == value {
-					return opt.Name
-				}
-			}
-			return value
+// findOptionInGroup returns the option with id `value` in the group keyed by `key`, or nil
+// when the group or option is absent. Shared by optionLabelInGroups and optionGroupOffersValue,
+// which differ only in what they read off the match (its display name vs its mere presence).
+func findOptionInGroup(groups []*leapmuxv1.AvailableOptionGroup, key, value string) *leapmuxv1.AvailableOption {
+	for _, opt := range optionids.GroupByID(groups, key).GetOptions() {
+		if opt.GetId() == value {
+			return opt
+		}
+	}
+	return nil
+}
+
+// optionLabelInGroups resolves an option value's display name within a specific
+// option-group catalog, falling back to the raw value when the group or option is
+// absent (or carries no name). The catalog-scanning core shared by applyOptionChanges,
+// which feeds it the agent's live catalog, and resolveOptionValueLabel, which also
+// consults the catalog persisted on the agent row.
+func optionLabelInGroups(groups []*leapmuxv1.AvailableOptionGroup, key, value string) string {
+	if opt := findOptionInGroup(groups, key, value); opt != nil {
+		if name := opt.GetName(); name != "" {
+			return name
 		}
 	}
 	return value
+}
+
+// resolveOptionValueLabel resolves an option value's display name, preferring the
+// live catalog and falling back to a historical (e.g. row-persisted) catalog, then
+// the raw value. The live label wins so a still-offered value shows its current
+// name; a value the live catalog has since dropped -- the model a session just
+// switched away from (Claude hides standard-context Opus behind "default", so
+// "opus[1m]" is listed only while active), or an effort tier the new model doesn't
+// offer (e.g. "xhigh" after Opus->Sonnet) -- still resolves via the historical
+// catalog instead of leaking the raw bracketed id into the settings_changed
+// notification.
+func resolveOptionValueLabel(live, prev []*leapmuxv1.AvailableOptionGroup, key, value string) string {
+	// Prefer the live catalog when it actually OFFERS the value -- a presence check, not a
+	// label-equality one. A self-named option (display name == id, e.g. a primary-agent id or
+	// a sandbox policy like "read-only") has label == value, which a `label != value` test
+	// would misread as "absent from live" and then let a stale historical name from prev win.
+	// Only when the value is genuinely absent from the live catalog do we fall back to prev.
+	if optionGroupOffersValue(live, key, value) {
+		return optionLabelInGroups(live, key, value)
+	}
+	return optionLabelInGroups(prev, key, value)
+}
+
+// optionGroupOffersValue reports whether the group keyed by `key` lists `value` as one of
+// its selectable options, regardless of whether that option carries a display name.
+func optionGroupOffersValue(groups []*leapmuxv1.AvailableOptionGroup, key, value string) bool {
+	return findOptionInGroup(groups, key, value) != nil
 }
 
 // sendProtoResponse is a helper that serializes a proto response and sends it.

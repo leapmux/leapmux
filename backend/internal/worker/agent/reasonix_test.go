@@ -60,7 +60,7 @@ func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
 
 	provider, err := StartReasonix(context.Background(), Options{
 		AgentID:       "reasonix-new",
-		Model:         "deepseek-flash",
+		Options:       map[string]string{OptionIDModel: "deepseek-flash"},
 		WorkingDir:    t.TempDir(),
 		Shell:         testutil.TestShell(),
 		LoginShell:    false,
@@ -76,8 +76,9 @@ func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
 
 	assert.Equal(t, "reasonix-new", agent.sessionID)
 	assert.Equal(t, "deepseek-flash", agent.model)
-	// Reasonix exposes no permission-mode / config-option groups.
-	assert.Nil(t, agent.AvailableOptionGroups())
+	// Reasonix's session reports no model catalog or config-option channel, so no
+	// option groups surface from the running agent.
+	assert.Nil(t, agent.OptionGroups())
 
 	// The model is fixed at startup via the `--model` flag.
 	recorded, err := os.ReadFile(argsFile)
@@ -121,7 +122,7 @@ func TestStartReasonix_LoadSessionUsesResumeID(t *testing.T) {
 
 	provider, err := StartReasonix(context.Background(), Options{
 		AgentID:         "reasonix-load",
-		Model:           "deepseek-pro",
+		Options:         map[string]string{OptionIDModel: "deepseek-pro"},
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "reasonix-resume",
 		Shell:           testutil.TestShell(),
@@ -149,11 +150,11 @@ func TestReasonixUpdateSettingsRelaunchesOnModelChange(t *testing.T) {
 	agent := &ReasonixAgent{}
 	agent.model = "deepseek-flash"
 
-	assert.False(t, agent.UpdateSettings(&leapmuxv1.AgentSettings{Model: "deepseek-pro"}),
+	assert.False(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-pro"}),
 		"a model change must signal a relaunch")
-	assert.True(t, agent.UpdateSettings(&leapmuxv1.AgentSettings{Model: "deepseek-flash"}),
+	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-flash"}),
 		"the same model needs no restart")
-	assert.True(t, agent.UpdateSettings(&leapmuxv1.AgentSettings{Model: ""}),
+	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: ""}),
 		"an empty model is a no-op")
 	// UpdateSettings must not mutate the stored model (the relaunch carries it).
 	assert.Equal(t, "deepseek-flash", agent.model)
@@ -171,7 +172,7 @@ func TestReasonixCancelSessionSendsACPMethod(t *testing.T) {
 
 func TestReasonixAvailableOptionGroupsIsNil(t *testing.T) {
 	agent := &ReasonixAgent{}
-	assert.Nil(t, agent.AvailableOptionGroups())
+	assert.Nil(t, agent.OptionGroups())
 }
 
 // TestReasonixIgnoresConfigOptionModelUpdate pins the modelFixedAtLaunch guard:
@@ -200,13 +201,13 @@ func TestReasonixModelCatalog(t *testing.T) {
 	defaults := 0
 	for _, m := range reasonixAvailableModels {
 		ids = append(ids, m.GetId())
-		if m.GetIsDefault() {
+		if m.IsDefault {
 			defaults++
 		}
 	}
 	assert.Equal(t, []string{"deepseek-flash", "deepseek-pro", "mimo-pro", "mimo-flash"}, ids)
 	assert.Equal(t, 1, defaults, "exactly one model is the default")
-	assert.True(t, reasonixAvailableModels[0].GetIsDefault(), "deepseek-flash is the default")
+	assert.True(t, reasonixAvailableModels[0].IsDefault, "deepseek-flash is the default")
 }
 
 func TestDefaultModel_ReasonixDefaultsToDeepseekFlash(t *testing.T) {

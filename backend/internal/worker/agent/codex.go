@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -24,10 +25,10 @@ const (
 )
 
 const (
-	CodexExtraSandboxPolicy     = "sandbox_policy"
-	CodexExtraNetworkAccess     = "network_access"
-	CodexExtraCollaborationMode = "collaboration_mode"
-	CodexExtraServiceTier       = "service_tier"
+	CodexOptionSandboxPolicy     = "sandbox_policy"
+	CodexOptionNetworkAccess     = "network_access"
+	CodexOptionCollaborationMode = "collaboration_mode"
+	CodexOptionServiceTier       = "service_tier"
 )
 
 // Codex sandbox policy values.
@@ -93,7 +94,7 @@ type CodexAgent struct {
 	// would otherwise double-count. Locking onto whichever arrives first keeps the
 	// counter moving for models that stream only one of the two.
 	reasoningStreamKind map[string]string
-	availableModels     []*leapmuxv1.AvailableModel
+	availableModels     []*ModelInfo
 	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID
 	collabSpanThreads   map[string]int    // spawnAgent span ID -> active child thread count
 }
@@ -127,8 +128,8 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 
 	a := &CodexAgent{
 		jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "codex", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-		model:       opts.Model,
-		effort:      opts.Effort,
+		model:       opts.Model(),
+		effort:      opts.Effort(),
 		workingDir:  opts.WorkingDir,
 		sink:        sink,
 	}
@@ -179,22 +180,14 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 
 	// 3. Use the permission mode directly as the Codex approval policy.
 	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
-	a.approvalPolicy = StringOrDefault(opts.PermissionMode, CodexDefaultApprovalPolicy)
-	a.sandboxPolicy = StringOrDefault(opts.ExtraSettings[CodexExtraSandboxPolicy], CodexDefaultSandboxPolicy)
-	a.networkAccess = StringOrDefault(opts.ExtraSettings[CodexExtraNetworkAccess], CodexDefaultNetworkAccess)
-	a.collaborationMode = StringOrDefault(opts.ExtraSettings[CodexExtraCollaborationMode], CodexDefaultCollaborationMode)
-	a.serviceTier = StringOrDefault(opts.ExtraSettings[CodexExtraServiceTier], CodexDefaultServiceTier)
+	a.approvalPolicy = StringOrDefault(opts.PermissionMode(), CodexDefaultApprovalPolicy)
+	a.sandboxPolicy = StringOrDefault(opts.Options[CodexOptionSandboxPolicy], CodexDefaultSandboxPolicy)
+	a.networkAccess = StringOrDefault(opts.Options[CodexOptionNetworkAccess], CodexDefaultNetworkAccess)
+	a.collaborationMode = StringOrDefault(opts.Options[CodexOptionCollaborationMode], CodexDefaultCollaborationMode)
+	a.serviceTier = StringOrDefault(opts.Options[CodexOptionServiceTier], CodexDefaultServiceTier)
 
 	// 4. Send "thread/start" or "thread/resume" request.
-	threadParams := map[string]interface{}{
-		"model":          opts.Model,
-		"cwd":            opts.WorkingDir,
-		"approvalPolicy": a.approvalPolicy,
-		"sandbox":        a.sandboxPolicy,
-	}
-	if st := codexServiceTierValue(a.serviceTier); st != nil {
-		threadParams["serviceTier"] = *st
-	}
+	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, a.approvalPolicy, a.sandboxPolicy, a.serviceTier)
 
 	threadMethod := "thread/start"
 	if opts.ResumeSessionID != "" {
@@ -216,7 +209,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 
 	// 6. Refresh from the CLI so the persisted effort reflects the value
 	// Codex actually applied — especially important when Leapmux resolved
-	// Options.Effort to "auto" and sent thread/start without the field.
+	// the effort option to "auto" and sent thread/start without the field.
 	// The readback broadcasts through the sink, which writes back to the
 	// agents table.
 	a.refreshSettingsFromAgent()
@@ -356,15 +349,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	workingDir := a.workingDir
 	a.mu.Unlock()
 
-	threadParams := map[string]interface{}{
-		"model":          model,
-		"cwd":            workingDir,
-		"approvalPolicy": approvalPolicy,
-		"sandbox":        sandboxPolicy,
-	}
-	if st := codexServiceTierValue(serviceTier); st != nil {
-		threadParams["serviceTier"] = *st
-	}
+	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
 
 	threadID, err := a.startThread(threadParams, a.agentID, a.APITimeout())
 	if err != nil || threadID == "" {
@@ -482,10 +467,8 @@ func (a *CodexAgent) sendTurnStart(
 	if s.model != "" {
 		params["model"] = s.model
 	}
-	// Skip EffortAuto to let Codex pick its own default effort (see
-	// codexCollaborationModeObject for the matching treatment).
-	if s.effort != "" && s.effort != EffortAuto {
-		params["effort"] = s.effort
+	if e, ok := codexEffortValue(s.effort); ok {
+		params["effort"] = e
 	}
 	if s.approvalPolicy != "" {
 		params["approvalPolicy"] = s.approvalPolicy
@@ -583,12 +566,11 @@ func codexCollaborationModeObject(mode, model, effort string) map[string]interfa
 	default:
 		return nil
 	}
-	// EffortAuto means "let Codex pick its own default effort"; we send
-	// null (matching the empty case) so the CLI is free to apply whatever
-	// default its version supports.
+	// EffortAuto (and empty) send null so the CLI applies whatever default its
+	// version supports; a concrete tier is passed through.
 	reasoningEffort := interface{}(nil)
-	if effort != "" && effort != EffortAuto {
-		reasoningEffort = effort
+	if e, ok := codexEffortValue(effort); ok {
+		reasoningEffort = e
 	}
 	return map[string]interface{}{
 		"mode": mode,
@@ -600,50 +582,148 @@ func codexCollaborationModeObject(mode, model, effort string) map[string]interfa
 	}
 }
 
+// codexEffortValue normalizes a stored effort for the Codex wire. EffortAuto (and
+// empty) mean "let Codex pick its own default effort", so they map to ("", false)
+// -- the caller omits the field / sends null; a concrete tier maps to (tier, true).
+// Single source of the auto-means-omit rule for both turn/start's top-level effort
+// and the nested collaborationMode reasoning_effort.
+func codexEffortValue(effort string) (string, bool) {
+	if effort == "" || effort == EffortAuto {
+		return "", false
+	}
+	return effort, true
+}
+
+// codexThreadParams builds the request params shared by thread/start and thread/resume,
+// so the launch (StartCodex) and clear-context (ClearContext) paths construct the thread
+// the same way and a new thread field is added once. The serviceTier field is included
+// only when codexServiceTierValue reports a non-default tier. StartCodex appends threadId
+// itself for the resume case.
+func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
+	params := map[string]interface{}{
+		"model":          model,
+		"cwd":            cwd,
+		"approvalPolicy": approvalPolicy,
+		"sandbox":        sandboxPolicy,
+	}
+	if st := codexServiceTierValue(serviceTier); st != nil {
+		params["serviceTier"] = *st
+	}
+	return params
+}
+
 // codexServiceTierValue converts a stored service tier to the turn/thread
 // wire value. A nil return omits the field and keeps Codex's normal tier.
 func codexServiceTierValue(tier string) *string {
-	switch tier {
-	case "", CodexDefaultServiceTier:
-		return nil
-	case CodexServiceTierFast:
-		v := CodexServiceTierFast
-		return &v
-	default:
-		return nil
+	// Only the explicit "fast" tier is sent on the wire; "", the default tier, and any unknown
+	// value all omit the field (nil) and keep Codex's normal tier.
+	if tier == CodexServiceTierFast {
+		return &tier
+	}
+	return nil
+}
+
+// codexAxis describes one Codex configuration axis. The settings-refresh map, the
+// OptionGroups current-value map, and the provider defaults all drive off this single
+// table, so adding a Codex axis is one row instead of three coordinated edits that can
+// silently drift (a missed one drops the axis from persistence or the picker).
+type codexAxis struct {
+	id string
+	// configKey is the axis's key under the "config" object in a config/read response,
+	// so refreshSettingsFromAgent can reconcile every axis from one table loop.
+	configKey string
+	get       func(*CodexAgent) string // reads the live value from agent state; call under a.mu
+	// set writes a (non-empty) requested value into agent state; call under a.mu. Having
+	// it on the table means "add a Codex axis = one table row" holds for the live-update
+	// writes too, so a new axis can't be silently dropped from UpdateSettings while still
+	// appearing in the picker via get.
+	set func(*CodexAgent, string)
+	// refreshFallback, when set, runs during refreshSettingsFromAgent ONLY if config/read
+	// did not report this axis (its config value was null/absent), to derive a value the
+	// CLI computes implicitly. Call under a.mu. Only effort has one (Codex omits
+	// model_reasoning_effort when unset, falling back to the model preset's default at
+	// inference time); every other axis simply keeps its prior value on an unreported field.
+	refreshFallback func(*CodexAgent)
+	// defaultValue is the Codex-specific default resolveProviderDefaults stamps for an
+	// provider option axis (sandbox/network/collaboration/service-tier). Empty for model, effort,
+	// and approval, which are defaulted by the shared model/effort/permission logic.
+	defaultValue string
+}
+
+var codexAxes = []codexAxis{
+	{id: OptionIDModel, configKey: "model", get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }},
+	{id: OptionIDEffort, configKey: "model_reasoning_effort", get: func(a *CodexAgent) string { return a.effort }, set: func(a *CodexAgent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback},
+	{id: OptionIDPermissionMode, configKey: "approval_policy", get: func(a *CodexAgent) string { return a.approvalPolicy }, set: func(a *CodexAgent, v string) { a.approvalPolicy = v }},
+	{id: CodexOptionSandboxPolicy, configKey: "sandbox_mode", get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: CodexDefaultSandboxPolicy},
+	{id: CodexOptionNetworkAccess, configKey: "network_access", get: func(a *CodexAgent) string { return a.networkAccess }, set: func(a *CodexAgent, v string) { a.networkAccess = v }, defaultValue: CodexDefaultNetworkAccess},
+	{id: CodexOptionCollaborationMode, configKey: "collaboration_mode", get: func(a *CodexAgent) string { return a.collaborationMode }, set: func(a *CodexAgent, v string) { a.collaborationMode = v }, defaultValue: CodexDefaultCollaborationMode},
+	{id: CodexOptionServiceTier, configKey: "service_tier", get: func(a *CodexAgent) string { return a.serviceTier }, set: func(a *CodexAgent, v string) { a.serviceTier = v }, defaultValue: CodexDefaultServiceTier},
+}
+
+// codexEffortRefreshFallback mirrors the CLI's implicit effort default when config/read
+// omits model_reasoning_effort: Codex only populates it when the user has explicitly set
+// it (config.toml, per-session override, ...); when unset, the CLI falls back to the
+// model preset's default_reasoning_level at inference time, which config/read does not
+// reflect. Applied only when the current effort is still EffortAuto, so a concrete prior
+// selection is never overwritten. Caller holds a.mu (model is reconciled before effort,
+// so a.model already reflects this refresh).
+func codexEffortRefreshFallback(a *CodexAgent) {
+	if a.effort != EffortAuto {
+		return
+	}
+	if m := FindAvailableModel(a.availableModels, a.model); m != nil && m.DefaultEffort != "" {
+		a.effort = m.DefaultEffort
 	}
 }
 
-// CurrentSettings returns the current settings for this agent.
-func (a *CodexAgent) CurrentSettings() *leapmuxv1.AgentSettings {
+// codexAxisValuesLocked snapshots every axis's live value into an id->value map. Caller
+// holds a.mu.
+func (a *CodexAgent) codexAxisValuesLocked() map[string]string {
+	vals := make(map[string]string, len(codexAxes))
+	for _, ax := range codexAxes {
+		vals[ax.id] = ax.get(a)
+	}
+	return vals
+}
+
+// codexOptionDefaults returns the Codex provider-option defaults (id->default), registered
+// into the factory entry (setProviderOptionDefaults) so resolveProviderDefaults stamps them
+// uniformly without re-listing each axis or branching on the provider.
+func codexOptionDefaults() map[string]string {
+	out := make(map[string]string)
+	for _, ax := range codexAxes {
+		if ax.defaultValue != "" {
+			out[ax.id] = ax.defaultValue
+		}
+	}
+	return out
+}
+
+// OptionGroups returns the model and effort groups plus the static Codex
+// option groups (service tier, collaboration mode, approval policy, sandbox,
+// network), each overlaid with the agent's confirmed current value.
+func (a *CodexAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		Effort:         a.effort,
-		PermissionMode: a.approvalPolicy,
-		ExtraSettings: map[string]string{
-			CodexExtraSandboxPolicy:     a.sandboxPolicy,
-			CodexExtraNetworkAccess:     a.networkAccess,
-			CodexExtraCollaborationMode: a.collaborationMode,
-			CodexExtraServiceTier:       a.serviceTier,
-		},
+	vals := a.codexAxisValuesLocked()
+	models := a.availableModels
+	a.mu.Unlock()
+
+	groups := modelAndEffortGroups(models, vals[OptionIDModel], vals[OptionIDEffort], EffortGroupLabel, nil)
+
+	// Current values are sourced per-axis from the snapshot; the display order is
+	// carried on each registered template (so a newly-registered group can't lose its
+	// order or sort ahead of the model group), and liveGroup defaults an unsupplied
+	// current to the template's default. The model/effort entries in vals are unused
+	// here -- they are rendered by modelAndEffortGroups above.
+	for _, sg := range AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX) {
+		groups = append(groups, liveGroup(sg, vals[sg.GetId()]))
 	}
-}
-
-// AvailableModels returns the models reported by the Codex process.
-func (a *CodexAgent) AvailableModels() []*leapmuxv1.AvailableModel {
-	return a.availableModels
-}
-
-// AvailableOptionGroups returns the static Codex option groups.
-func (a *CodexAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	return groups
 }
 
 // UpdateSettings stores new settings so the next turn/start picks them up,
 // then refreshes from the Codex server to confirm the effective state.
-func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+func (a *CodexAgent) UpdateSettings(options optionmap.Map) bool {
 	a.mu.Lock()
 	curEffort := a.effort
 	// Switching to EffortAuto can't be done live: Codex's session config
@@ -651,31 +731,24 @@ func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	// omitting the field on the next turn keeps the prior effort
 	// applied. A restart is the only way to hand control back to the
 	// CLI's own default.
-	if IsEffortAutoTransition(s.GetEffort(), curEffort) {
+	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {
 		a.mu.Unlock()
 		return false
 	}
-	if s.GetModel() != "" {
-		a.model = s.GetModel()
-	}
-	if s.GetEffort() != "" {
-		a.effort = s.GetEffort()
-	}
-	if s.GetPermissionMode() != "" {
-		a.approvalPolicy = s.GetPermissionMode()
-	}
-	extras := s.GetExtraSettings()
-	if v := extras[CodexExtraSandboxPolicy]; v != "" {
-		a.sandboxPolicy = v
-	}
-	if v := extras[CodexExtraNetworkAccess]; v != "" {
-		a.networkAccess = v
-	}
-	if v := extras[CodexExtraCollaborationMode]; v != "" {
-		a.collaborationMode = v
-	}
-	if v := extras[CodexExtraServiceTier]; v != "" {
-		a.serviceTier = v
+	// Table-driven so every axis applies the same "non-empty value overwrites" rule and
+	// a newly-added axis can't be forgotten here. The effort-auto guard above stays out
+	// of the loop -- it vetoes the whole update, which a per-axis setter can't express.
+	//
+	// Skipping an empty value does NOT violate the optionmap empty-deletes wire contract: that
+	// contract is honored UPSTREAM, at the persistence/merge boundary (mergeOptions drops a cleared
+	// key, resolveProviderDefaults refills the axis default), so every map that reaches UpdateSettings
+	// is already a fully-resolved snapshot with no empties to clear -- the edit path also rejects an
+	// empty value before it gets here (acceptExposedOptions). An empty here is therefore a phantom
+	// "unset", and keeping the prior value is the correct response, not a missed clear.
+	for _, ax := range codexAxes {
+		if v := options[ax.id]; v != "" {
+			ax.set(a, v)
+		}
 	}
 	a.mu.Unlock()
 
@@ -693,13 +766,7 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 	}
 
 	var result struct {
-		Config struct {
-			Model                json.RawMessage `json:"model"`
-			ModelReasoningEffort json.RawMessage `json:"model_reasoning_effort"`
-			ApprovalPolicy       json.RawMessage `json:"approval_policy"`
-			SandboxMode          json.RawMessage `json:"sandbox_mode"`
-			ServiceTier          json.RawMessage `json:"service_tier"`
-		} `json:"config"`
+		Config map[string]json.RawMessage `json:"config"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		slog.Warn("codex config/read unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -707,53 +774,36 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 	}
 
 	a.mu.Lock()
-	// Each field may be null or a string; only update if it's a non-empty string.
-	if s := jsonString(result.Config.Model); s != "" {
-		a.model = s
-	}
-	if s := jsonString(result.Config.ModelReasoningEffort); s != "" {
-		a.effort = s
-	} else if a.effort == EffortAuto {
-		// Codex only populates config.model_reasoning_effort when the user
-		// has explicitly set it (config.toml, per-session override, etc.).
-		// When unset, the CLI falls back to the model preset's
-		// default_reasoning_level at inference time — not reflected in
-		// config/read. Mirror that fallback here so the UI shows the
-		// effort Codex will actually use instead of staying at EffortAuto.
-		if m := FindAvailableModel(a.availableModels, a.model); m != nil && m.DefaultEffort != "" {
-			a.effort = m.DefaultEffort
+	// Reconcile every axis from one table loop (the same table that drives the picker and
+	// the live-update writes, so an axis can't be reconciled here but dropped elsewhere).
+	// Each config field may be null or a string; jsonString returns "" for null/absent/
+	// non-string (e.g. approval_policy reported as a {"granular":...} object), so an
+	// unreported axis keeps its prior value -- except effort, whose refreshFallback then
+	// mirrors the CLI's implicit model-preset default. Model is reconciled before effort
+	// (table order), so effort's fallback sees this refresh's model.
+	for _, ax := range codexAxes {
+		if s := jsonString(result.Config[ax.configKey]); s != "" {
+			ax.set(a, s)
+		} else if ax.refreshFallback != nil {
+			ax.refreshFallback(a)
 		}
 	}
-	// approval_policy can be a string ("on-request") or an object ({"granular":...}).
-	// Only update for the simple string case that LeapMux models.
-	if s := jsonString(result.Config.ApprovalPolicy); s != "" {
-		a.approvalPolicy = s
-	}
-	if s := jsonString(result.Config.SandboxMode); s != "" {
-		a.sandboxPolicy = s
-	}
-	if s := jsonString(result.Config.ServiceTier); s != "" {
-		a.serviceTier = s
-	}
-	model, effort, approval := a.model, a.effort, a.approvalPolicy
-	sandbox, network, collab, tier := a.sandboxPolicy, a.networkAccess, a.collaborationMode, a.serviceTier
+	vals := a.codexAxisValuesLocked()
 	a.mu.Unlock()
 
 	slog.Info("codex agent settings refreshed",
 		"agent_id", a.agentID,
-		"model", model,
-		"effort", effort,
-		"approvalPolicy", approval,
-		"sandboxPolicy", sandbox,
-		"serviceTier", tier,
+		"model", vals[OptionIDModel],
+		"effort", vals[OptionIDEffort],
+		"approvalPolicy", vals[OptionIDPermissionMode],
+		"sandboxPolicy", vals[CodexOptionSandboxPolicy],
+		"networkAccess", vals[CodexOptionNetworkAccess],
+		"collaborationMode", vals[CodexOptionCollaborationMode],
+		"serviceTier", vals[CodexOptionServiceTier],
 	)
 
-	a.sink.PersistSettingsRefresh(model, effort, approval, map[string]string{
-		CodexExtraSandboxPolicy:     sandbox,
-		CodexExtraNetworkAccess:     network,
-		CodexExtraCollaborationMode: collab,
-		CodexExtraServiceTier:       tier,
-	})
+	// Codex reports every axis it manages at a concrete value, so all upsert.
+	a.sink.PersistSettingsRefresh(vals)
 }
 
 // jsonString attempts to unmarshal a JSON value as a plain string.
@@ -770,7 +820,7 @@ func jsonString(raw json.RawMessage) string {
 }
 
 // queryAvailableModels sends a model/list request and converts the response.
-func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.AvailableModel {
+func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 	resp, err := a.sendRequest("model/list", json.RawMessage(`{}`), timeout)
 	if err != nil {
 		slog.Warn("codex model/list failed", "agent_id", a.agentID, "error", err)
@@ -797,16 +847,16 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 	}
 
 	// Build a lookup from default models so we can fill in missing metadata.
-	var defaults []*leapmuxv1.AvailableModel
+	var defaults []*ModelInfo
 	if reg, ok := agentFactoryRegistry[leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX]; ok {
 		defaults = reg.defaultModels
 	}
-	defaultsByID := make(map[string]*leapmuxv1.AvailableModel, len(defaults))
+	defaultsByID := make(map[string]*ModelInfo, len(defaults))
 	for _, d := range defaults {
 		defaultsByID[d.Id] = d
 	}
 
-	var models []*leapmuxv1.AvailableModel
+	var models []*ModelInfo
 	for _, m := range result.Data {
 		if m.Hidden {
 			continue
@@ -820,15 +870,15 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 		// the Leapmux-side "auto" sentinel so users can pick it from
 		// the UI even though the CLI never reports it.
 		raw := m.SupportedReasoningEfforts
-		efforts := make([]*leapmuxv1.AvailableEffort, 0, len(raw)+1)
-		efforts = append(efforts, &leapmuxv1.AvailableEffort{
+		efforts := make([]*EffortInfo, 0, len(raw)+1)
+		efforts = append(efforts, &EffortInfo{
 			Id:          EffortAuto,
 			Name:        "Auto",
 			Description: "Let Codex decide the appropriate effort",
 		})
 		for i := len(raw) - 1; i >= 0; i-- {
 			e := raw[i]
-			efforts = append(efforts, &leapmuxv1.AvailableEffort{
+			efforts = append(efforts, &EffortInfo{
 				Id:          e.ReasoningEffort,
 				Name:        codexEffortName(e.ReasoningEffort),
 				Description: e.Description,
@@ -852,7 +902,7 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 			displayName = codexModelDisplayName(id)
 		}
 
-		models = append(models, &leapmuxv1.AvailableModel{
+		models = append(models, &ModelInfo{
 			Id:               id,
 			DisplayName:      displayName,
 			Description:      description,
@@ -869,7 +919,7 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 // static fallback. "auto" is a Leapmux-side sentinel: the CLI never reports
 // or accepts it, but selecting it causes Leapmux to omit reasoning_effort
 // so Codex applies its own default.
-var codexDefaultEfforts = []*leapmuxv1.AvailableEffort{
+var codexDefaultEfforts = []*EffortInfo{
 	{Id: EffortAuto, Name: "Auto", Description: "Let Codex decide the appropriate effort"},
 	{Id: "xhigh", Name: "Extra High"},
 	{Id: "high", Name: "High"},
@@ -879,7 +929,7 @@ var codexDefaultEfforts = []*leapmuxv1.AvailableEffort{
 	{Id: "none", Name: "None"},
 }
 
-var codexDefaultModels = []*leapmuxv1.AvailableModel{
+var codexDefaultModels = []*ModelInfo{
 	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Latest frontier agentic coding model", IsDefault: true, DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 1_050_000},
 	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", Description: "Smaller frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
 	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
@@ -897,50 +947,63 @@ var codexBinaryCandidates = []string{"codex", "codex-x86_64-pc-windows-msvc"}
 func init() {
 	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartCodex(ctx, opts, sink)
-		},
+		StartCodex,
 		codexDefaultModels,
 		[]*leapmuxv1.AvailableOptionGroup{
 			{
-				Key:   CodexExtraServiceTier,
-				Label: "Fast Mode",
+				Id:           CodexOptionServiceTier,
+				Label:        "Fast Mode",
+				DefaultValue: CodexDefaultServiceTier,
+				Mutable:      true,
+				Order:        OptionOrderProviderFirst,
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexServiceTierFast, Name: "On", Description: "Use Codex fast mode for future turns"},
-					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier", IsDefault: true},
+					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier"},
 				},
 			},
 			{
-				Key:   CodexExtraCollaborationMode,
-				Label: "Workflow",
+				Id:           CodexOptionCollaborationMode,
+				Label:        "Workflow",
+				DefaultValue: CodexDefaultCollaborationMode,
+				Mutable:      true,
+				Order:        OptionOrderProviderSecond,
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: CodexCollaborationDefault, Name: "Default", IsDefault: true},
+					{Id: CodexCollaborationDefault, Name: "Default"},
 					{Id: CodexCollaborationPlan, Name: "Plan Mode"},
 				},
 			},
 			{
-				Key:   OptionGroupKeyPermissionMode,
-				Label: "Approval Policy",
+				Id:           OptionIDPermissionMode,
+				Label:        "Approval Policy",
+				DefaultValue: CodexDefaultApprovalPolicy,
+				Mutable:      true,
+				Order:        OptionOrderPermissionMode,
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "never", Name: "Full Auto"},
-					{Id: CodexDefaultApprovalPolicy, Name: "Suggest & Approve", IsDefault: true},
+					{Id: CodexDefaultApprovalPolicy, Name: "Suggest & Approve"},
 					{Id: "untrusted", Name: "Auto-edit"},
 				},
 			},
 			{
-				Key:   CodexExtraSandboxPolicy,
-				Label: "Sandbox Policy",
+				Id:           CodexOptionSandboxPolicy,
+				Label:        "Sandbox Policy",
+				DefaultValue: CodexDefaultSandboxPolicy,
+				Mutable:      true,
+				Order:        OptionOrderProviderFourth,
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexSandboxDangerFullAccess, Name: "Full Access", Description: "No filesystem restrictions"},
-					{Id: CodexSandboxWorkspaceWrite, Name: "Workspace Write", Description: "Write only within the working directory", IsDefault: true},
+					{Id: CodexSandboxWorkspaceWrite, Name: "Workspace Write", Description: "Write only within the working directory"},
 					{Id: CodexSandboxReadOnly, Name: "Read Only", Description: "No write access to the filesystem"},
 				},
 			},
 			{
-				Key:   CodexExtraNetworkAccess,
-				Label: "Network Access",
+				Id:           CodexOptionNetworkAccess,
+				Label:        "Network Access",
+				DefaultValue: CodexDefaultNetworkAccess,
+				Mutable:      true,
+				Order:        OptionOrderProviderThird,
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: CodexNetworkRestricted, Name: "Restricted", Description: "No network access from the sandbox", IsDefault: true},
+					{Id: CodexNetworkRestricted, Name: "Restricted", Description: "No network access from the sandbox"},
 					{Id: CodexNetworkEnabled, Name: "Enabled", Description: "Allow network access from the sandbox"},
 				},
 			},
@@ -949,6 +1012,13 @@ func init() {
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
 		codexBinaryCandidates...,
 	)
+	// model + the provider options above (static groups) + effort. The sandbox/network/
+	// collaboration/service-tier axes are already static optionGroups, so only effort
+	// (built from the model catalog) needs declaring here.
+	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, OptionIDEffort)
+	// Seed the sandbox/network/collaboration/service-tier defaults into a fresh agent's
+	// launch options; resolveProviderDefaults applies these for every provider uniformly.
+	setProviderOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexOptionDefaults())
 }
 
 // codexModelDisplayName generates a human-readable display name from a Codex

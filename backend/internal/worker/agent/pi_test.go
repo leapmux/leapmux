@@ -10,6 +10,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +39,7 @@ type piTestRig struct {
 
 // newPiTestRig sets up a PiAgent suitable for unit tests. The agent's stdin is
 // captured by a goroutine that decodes JSONL commands and either lets the
-// supplied responder craft a response, or replies with a generic success.
+// supplied responder craft a response, or replies with an option success.
 func newPiTestRig(t *testing.T, sink OutputSink) *piTestRig {
 	t.Helper()
 
@@ -466,22 +467,48 @@ func TestPi_ApplyAvailableModels_BuildsCatalog(t *testing.T) {
 	assert.ElementsMatch(t, []string{EffortAuto, PiThinkingOff}, got)
 }
 
+// TestPi_ApplyAvailableModels_EmptyResponseKeepsCatalog guards the robustness fix: a response
+// that parses but yields no usable model (an empty list, or every entry missing an id) carries
+// no information, so it must leave the previously-built catalog intact rather than wiping it to
+// an empty list (which would blank the model picker until the next non-empty response).
+func TestPi_ApplyAvailableModels_EmptyResponseKeepsCatalog(t *testing.T) {
+	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
+	a.applyAvailableModels(json.RawMessage(`{"models":[{"id":"gpt-5.5","name":"GPT 5.5","provider":"openai-codex","reasoning":true}]}`))
+	require.Equal(t, 1, len(a.availableModels), "the first non-empty response builds the catalog")
+
+	for _, raw := range []string{`{"models":[]}`, `{"models":[{"id":"","name":"No ID"}]}`, `{}`} {
+		a.applyAvailableModels(json.RawMessage(raw))
+		require.Equal(t, 1, len(a.availableModels), "an empty/all-empty-id response %q leaves the catalog intact", raw)
+		assert.Equal(t, "gpt-5.5", a.availableModels[0].Id)
+	}
+}
+
 func TestPi_CurrentSettings_ReflectsLocalState(t *testing.T) {
 	a := &PiAgent{
 		processBase:   processBase{agentID: "test-agent"},
 		model:         "gpt-5.5",
 		thinkingLevel: "medium",
 		provider:      "openai-codex",
+		availableModels: []*ModelInfo{{
+			Id:          "gpt-5.5",
+			DisplayName: "GPT-5.5",
+			SupportedEfforts: []*EffortInfo{
+				{Id: "low", Name: "Low"},
+				{Id: "medium", Name: "Medium"},
+			},
+		}},
 	}
-	settings := a.CurrentSettings()
-	assert.Equal(t, "gpt-5.5", settings.Model)
-	assert.Equal(t, "medium", settings.Effort)
-	assert.Equal(t, "openai-codex", settings.ExtraSettings[PiExtraProvider])
+	groups := a.OptionGroups()
+	assert.Equal(t, "gpt-5.5", optionids.CurrentValue(groups, OptionIDModel))
+	assert.Equal(t, "medium", optionids.CurrentValue(groups, OptionIDEffort))
+	// The provider is a Pi-internal field carried in the persisted settings refresh,
+	// not surfaced as an option group.
+	assert.Equal(t, "openai-codex", a.provider)
 }
 
-func TestPi_AvailableOptionGroups_IsNil(t *testing.T) {
+func TestPi_AvailableOptionGroups_IsNilWithoutCatalog(t *testing.T) {
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
-	assert.Nil(t, a.AvailableOptionGroups())
+	assert.Nil(t, a.OptionGroups())
 }
 
 func TestPi_UpdateSettings_AppliesModelAndThinking(t *testing.T) {
@@ -493,9 +520,9 @@ func TestPi_UpdateSettings_AppliesModelAndThinking(t *testing.T) {
 		return nil, true, ""
 	})
 
-	ok := rig.agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:  "gpt-5.5",
-		Effort: "high",
+	ok := rig.agent.UpdateSettings(map[string]string{
+		OptionIDModel:  "gpt-5.5",
+		OptionIDEffort: "high",
 	})
 	assert.True(t, ok)
 
@@ -524,8 +551,61 @@ func TestPi_UpdateSettings_EffortAutoRequiresRestart(t *testing.T) {
 		processBase:   processBase{agentID: "test-agent"},
 		thinkingLevel: "medium",
 	}
-	ok := a.UpdateSettings(&leapmuxv1.AgentSettings{Effort: EffortAuto})
+	ok := a.UpdateSettings(map[string]string{OptionIDEffort: EffortAuto})
 	assert.False(t, ok, "switching to auto should signal a restart")
+}
+
+// A live apply that fails must signal a restart (return false) rather than silently
+// reporting success, which would strand the UI on the requested value while the running
+// agent keeps the old one. The caller relaunches with the requested settings so the
+// change actually takes effect.
+func TestPi_UpdateSettings_FailedApplyRequestsRestart(t *testing.T) {
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.thinkingLevel = "low"
+	rig.agent.model = "gpt-5.5"
+
+	// Fail set_thinking_level; everything else succeeds.
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == "set_thinking_level" {
+			return nil, false, "thinking level rejected"
+		}
+		return nil, true, ""
+	})
+
+	ok := rig.agent.UpdateSettings(map[string]string{OptionIDEffort: "high"})
+	assert.False(t, ok, "a failed live apply must signal a restart, not report success")
+}
+
+// TestPi_UpdateSettings_PartialApplyRollsBack guards S5: when a combined model+effort change applies
+// the model live (set_model lands) but the thinking-level apply is rejected, UpdateSettings must
+// signal a restart AND roll the in-memory model/effort/provider back to their pre-change values, so
+// no half-applied pair (new model + old thinking level) is observable before the caller's restart
+// relaunches with the full requested settings.
+func TestPi_UpdateSettings_PartialApplyRollsBack(t *testing.T) {
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.model = "gpt-5.4"
+	rig.agent.thinkingLevel = "low"
+	rig.agent.provider = "openai"
+
+	// set_model succeeds; set_thinking_level is rejected.
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == "set_thinking_level" {
+			return nil, false, "thinking level rejected"
+		}
+		return nil, true, ""
+	})
+
+	ok := rig.agent.UpdateSettings(map[string]string{
+		OptionIDModel:  "gpt-5.5",
+		OptionIDEffort: "high",
+	})
+	assert.False(t, ok, "a partial live apply must signal a restart")
+
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, "gpt-5.4", rig.agent.model, "model rolled back to its pre-change value, not left half-applied")
+	assert.Equal(t, "low", rig.agent.thinkingLevel, "thinking level unchanged")
+	assert.Equal(t, "openai", rig.agent.provider, "provider unchanged")
 }
 
 func TestPi_Stop_SendsAbortBeforeClosingStdin(t *testing.T) {
@@ -653,12 +733,10 @@ func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
 		return nil, true, ""
 	})
 
-	ok := rig.agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:  "gpt-5.5",
-		Effort: "high",
-		ExtraSettings: map[string]string{
-			PiExtraProvider: "openai-codex",
-		},
+	ok := rig.agent.UpdateSettings(map[string]string{
+		OptionIDModel:    "gpt-5.5",
+		OptionIDEffort:   "high",
+		PiOptionProvider: "openai-codex",
 	})
 	require.True(t, ok)
 
@@ -666,7 +744,7 @@ func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
 	last := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.5", last.Model)
 	assert.Equal(t, "high", last.Effort)
-	assert.Equal(t, "openai-codex", last.ExtraSettings[PiExtraProvider])
+	assert.Equal(t, "openai-codex", last.Options[PiOptionProvider])
 }
 
 func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T) {
