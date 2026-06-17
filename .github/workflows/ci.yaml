@@ -37,7 +37,7 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
@@ -102,7 +102,7 @@ jobs:
             gstreamer1.0-pulseaudio
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -306,7 +306,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
@@ -315,7 +315,7 @@ jobs:
         run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -416,7 +416,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Load tool versions
         shell: bash
@@ -430,7 +430,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -528,7 +528,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Load tool versions and git metadata
         run: |
@@ -537,10 +537,10 @@ jobs:
           echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Docker build (dry run)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -587,14 +587,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           # Full history + tags so `git log <prev-prerelease>..HEAD` can
           # build the changelog block in the release notes below.
           fetch-depth: 0
 
       - name: Download installers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: desktop-*

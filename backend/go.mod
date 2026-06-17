@@ -1,20 +1,19 @@
 module github.com/leapmux/leapmux
 
-go 1.26.3
+go 1.26.4
 
 require (
 	connectrpc.com/connect v1.20.0
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
-	github.com/cenkalti/backoff/v5 v5.0.3
+	github.com/cenkalti/backoff/v6 v6.0.1
 	github.com/cloudflare/circl v1.6.3
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/docker/go-connections v0.7.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.18.6
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
@@ -30,15 +29,15 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
-	golang.org/x/crypto v0.52.0
-	golang.org/x/net v0.55.0
+	golang.org/x/crypto v0.53.0
+	golang.org/x/net v0.56.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.45.0
-	golang.org/x/term v0.43.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/sys v0.46.0
+	golang.org/x/term v0.44.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
-	modernc.org/sqlite v1.51.0
+	modernc.org/sqlite v1.52.0
 )
 
 require (
@@ -117,6 +116,7 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dnephin/pflag v1.0.7 // indirect
+	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
@@ -242,7 +242,7 @@ require (
 	github.com/pingcap/tidb/pkg/parser v0.0.0-20260418072757-ce92298d1124 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/prometheus/common v0.68.0 // indirect
+	github.com/prometheus/common v0.68.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/quasilyte/go-ruleguard v0.4.5 // indirect
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23 // indirect
@@ -317,9 +317,9 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260209203927-2842357ff358 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/tools v0.45.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
@@ -328,7 +328,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/gotestsum v1.13.0 // indirect
 	honnef.co/go/tools v0.7.0 // indirect
-	modernc.org/libc v1.72.5 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	mvdan.cc/gofumpt v0.9.2 // indirect

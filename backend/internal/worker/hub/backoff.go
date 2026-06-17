@@ -3,7 +3,7 @@ package hub
 import (
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v6"
 )
 
 const (
