@@ -974,6 +974,57 @@ func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
 	assert.False(t, hasEffort, "Cursor's reply carries no effort (it has no effort axis)")
 }
 
+// TestApplySettingsViaRestartBroadcastsConfirmedCatalog guards the restart-apply path: the
+// RPC response carries only confirmed option values, so the freshly registered provider's
+// option-group catalog must be broadcast separately after the restart handoff persists it.
+func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
+	ctx := context.Background()
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	const agentID = "agent-1"
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            agentID,
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
+	}))
+	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:       agentID,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		WorkingDir:    t.TempDir(),
+		Options:       map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"},
+	}, sink)
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent(agentID)
+
+	svc.Watchers.WatchAgent(agentID, &EventWatcher{ChannelID: w.channelID, Sender: channel.NewSender(w)})
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	settled := svc.applySettingsViaRestart(dbAgent, map[string]string{
+		agent.OptionIDModel:  "opus[1m]",
+		agent.OptionIDEffort: agent.EffortAuto,
+	})
+	assert.NotEmpty(t, settled[agent.OptionIDEffort])
+
+	var sawCatalog bool
+	for _, stream := range w.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if proto.Unmarshal(stream.GetPayload(), &resp) != nil {
+			continue
+		}
+		sc := resp.GetAgentEvent().GetStatusChange()
+		if sc != nil && len(sc.GetOptionGroups()) > 0 {
+			sawCatalog = true
+			break
+		}
+	}
+	assert.True(t, sawCatalog, "restart-applied settings must broadcast the confirmed option-group catalog")
+}
+
 // mustMarshalOptionGroups marshals a catalog for a test fixture, failing the test on error. Test
 // fixtures are always valid (no invalid-UTF-8 labels), so an error means a fixture bug rather than
 // the runtime truncation marshalOptionGroups now guards against.

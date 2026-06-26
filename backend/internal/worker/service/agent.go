@@ -2282,8 +2282,15 @@ func (svc *Context) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	// Pass the pre-settle newOptions as `stored` (what the optimistic write left on the row,
 	// carrying the orphaned axes) so the persisted delta DELETES the axes the relaunched session
 	// no longer surfaces, while `settled` is the option set we want to keep.
-	if _, err := svc.persistConfirmedAgentSettings(agentID, provider, newOptions, settled); err != nil {
+	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, provider, newOptions, settled)
+	if err != nil {
 		slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
+	} else {
+		// RestartAgent registers the new provider before returning, so this read serves the
+		// relaunched process's live catalog. Broadcast it explicitly: the provider's own early
+		// ACTIVE push can happen before dynamic catalogs (e.g. Codex model/list) are populated,
+		// while the RPC response carries only option values, not the refreshed option list.
+		svc.broadcastSettingsStatusChange(activeDbAgent)
 	}
 	slog.Info("agent restarted with new settings",
 		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
