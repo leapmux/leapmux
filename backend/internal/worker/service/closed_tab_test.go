@@ -425,7 +425,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
-			{AgentId: "agent-closed", AfterSeq: 0},
+			{AgentId: "agent-closed", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
 		},
 	}, w)
 

@@ -939,7 +939,9 @@ tasks:
       # Hugo ships as a Go tool dependency (see site/go.mod) and is invoked via
       # `go tool hugo` -- the same pattern as `go tool sqlc`. GOWORK=off keeps
       # the site module's large dependency graph out of the root go.work.
-      - cd site && GOWORK=off go tool hugo --gc --minify
+      # --cleanDestinationDir wipes public/ so old fingerprinted assets (whose
+      # hashed filenames change on every edit) don't accumulate as orphans.
+      - cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir
 
   # --- Clean ---
 

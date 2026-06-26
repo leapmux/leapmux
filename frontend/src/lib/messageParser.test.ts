@@ -691,6 +691,41 @@ describe('extractRateLimitInfo', () => {
     const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
+
+  it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
+    // Mirrors the backend: rate_limit_reached with rounding keeping every window
+    // under 100 must still surface the binding window as exceeded on replay.
+    const content = {
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'rate_limit_reached',
+          primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: 1774070211 },
+          secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1774525963 },
+        },
+      },
+    }
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
+    const result = extractRateLimitInfo(parseMessageContent(msg))
+    expect(result[0].key).toBe('five_hour')
+    expect(result[0].info.status).toBe('exceeded')
+    expect(result[1].info.status).toBe('allowed')
+  })
+
+  it('does not elevate for a non-time-window reached-type (credit depletion)', () => {
+    const content = {
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'workspace_owner_credits_depleted',
+          primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1774070211 },
+        },
+      },
+    }
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
+    const result = extractRateLimitInfo(parseMessageContent(msg))
+    expect(result[0].info.status).toBe('allowed')
+  })
 })
 
 // ---------------------------------------------------------------------------

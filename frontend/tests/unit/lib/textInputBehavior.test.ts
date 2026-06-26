@@ -12,9 +12,9 @@ describe('disableTextSubstitutions', () => {
 
     disableTextSubstitutions(root)
 
-    const textInput = root.querySelector('input[type="text"]')!
+    const textInput = root.querySelector<HTMLInputElement>('input[type="text"]')!
     const textarea = root.querySelector('textarea')!
-    const checkbox = root.querySelector('input[type="checkbox"]')!
+    const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!
 
     expect(textInput).toHaveAttribute('autocorrect', 'off')
     expect(textInput).toHaveAttribute('autocapitalize', 'off')

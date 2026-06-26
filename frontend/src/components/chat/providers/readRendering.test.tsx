@@ -112,6 +112,52 @@ describe('claude Read tool_result rendering', () => {
     expect(container.textContent ?? '').toContain('not parseable as cat-n')
   })
 
+  it('renders a PARTIAL Read (leading <system-reminder>) via the collapsible cat-n body, not plain <pre>', () => {
+    // Claude Code prepends a truncation notice to a partial Read. Before the
+    // leading-reminder strip the cat-n parse failed and the renderer fell back to an
+    // uncollapsible <pre> of the whole file -- so the row rendered full-height while
+    // the estimator (correctly) assumed a collapsed 3-row body, a huge delta.
+    const content
+      = '<system-reminder>[Truncated: PARTIAL view -- showing lines 1-2 of 9 total. Call Read with offset=3 for the next page.]</system-reminder>\n\n1\tpartialLineA\n2\tpartialLineB\n'
+    const parsed = makeReadResult(undefined, content)
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Read' })
+    // The cat-n (collapsible) body is chosen, not the uncollapsible <pre> fallback.
+    expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
+    const text = container.textContent ?? ''
+    expect(text).toContain('partialLineA')
+    expect(text).toContain('partialLineB')
+    // Collapsed (default): the reminder is captured but not rendered, so the body
+    // keeps the height the estimator assumes.
+    expect(text).not.toContain('Truncated: PARTIAL view')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('renders leading + trailing reminders as alerts (with variant) when expanded', () => {
+    const content
+      = '<system-reminder>[Truncated: PARTIAL view]</system-reminder>\n\n1\tfoo\n2\tbar\n\n<read-error>disk full</read-error>\n'
+    const parsed = makeReadResult(undefined, content)
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Read', getMessageUiState: () => true })
+    const alerts = container.querySelectorAll('[role="alert"]')
+    expect(alerts.length).toBe(2)
+    // Leading system-reminder -> default info (no data-variant), title-cased label.
+    expect(alerts[0].hasAttribute('data-variant')).toBe(false)
+    expect(alerts[0].querySelector('strong')?.textContent).toBe('System Reminder')
+    expect(alerts[0].textContent).toContain('[Truncated: PARTIAL view]')
+    // Trailing read-error -> data-variant="error", "Read Error" label.
+    expect(alerts[1].getAttribute('data-variant')).toBe('error')
+    expect(alerts[1].querySelector('strong')?.textContent).toBe('Read Error')
+    // The file body still renders.
+    expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
+  })
+
+  it('escapes HTML in reminder text so markup cannot be injected', () => {
+    const content = '<system-reminder>danger <script>alert(1)</script></system-reminder>\n\n1\tfoo'
+    const parsed = makeReadResult(undefined, content)
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Read', getMessageUiState: () => true })
+    expect(container.querySelector('script')).toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('<script>alert(1)</script>')
+  })
+
   it('skips the structured Read body for non-text variants (image)', () => {
     // Image variant: extractor returns null, fallback path renders content as-is.
     const parsed = makeReadResult({
@@ -121,6 +167,23 @@ describe('claude Read tool_result rendering', () => {
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Read' })
     expect(container.querySelector('[class*="codeView"]')).toBeNull()
     expect(container.textContent ?? '').toContain('[image data]')
+  })
+})
+
+describe('claude Write/create tool_result rendering', () => {
+  it('renders a no-sibling create as the new-file diff, not a bare success line', () => {
+    // type:"create" with the whole new file in `content` and no paired tool_use:
+    // claudeCreateResultDiff (shared with heightMetrics) now makes the renderer show
+    // the diff, so the render matches the estimate (was a one-line success -> huge delta).
+    const parsed = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'File created successfully at: /tmp/new.ts' }] },
+      tool_use_result: { type: 'create', filePath: '/tmp/new.ts', content: 'const a = 1\nconst b = 2\nconst c = 3' },
+    }
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Write' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('const a = 1') // the new file body renders as a diff
+    expect(text).not.toContain('File created successfully') // not the bare success line
   })
 })
 

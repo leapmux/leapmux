@@ -95,7 +95,6 @@ class FetchChannelTransport implements ChannelTransport {
     const ws = new WebSocket(wsUrl, {
       headers: { Cookie: this.cookie },
     } as any)
-    // @ts-expect-error -- Node.js WebSocket supports binaryType
     ws.binaryType = 'arraybuffer'
     return ws
   }
@@ -115,5 +114,5 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   const userId = await getUserId(hubUrl, cookie)
   // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
   // that can take up to 30s to start, and the E2EE round-trip adds overhead.
-  return new ChannelManager(new FetchChannelTransport(hubUrl, cookie, userId), { rpcTimeout: 60_000 })
+  return new ChannelManager(new FetchChannelTransport(hubUrl, cookie, userId), { rpcTimeoutFn: () => 60_000 })
 }

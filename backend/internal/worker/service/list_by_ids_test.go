@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -164,6 +165,24 @@ func TestListAgents_MixedAccess(t *testing.T) {
 	var resp leapmuxv1.ListAgentsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	assert.Len(t, resp.GetAgents(), 2, "only agents in ws-A should be returned")
+}
+
+func TestListAgents_NoAccessibleWorkspaceSetDenied(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+
+	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+		TabIds: []string{"a1"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Empty(t, resp.GetAgents(), "a nil accessible-workspace set must fail closed")
 }
 
 // --- ListTerminals by IDs ---
@@ -356,4 +375,43 @@ func TestListTerminals_InaccessibleWorkspaceDenied(t *testing.T) {
 	var resp leapmuxv1.ListTerminalsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	assert.Empty(t, resp.GetTerminals(), "terminal in inaccessible workspace should be filtered out")
+}
+
+func TestListTerminals_NoAccessibleWorkspaceSetDenied(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "t1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		Cols: 80, Rows: 24, Screen: []byte("screen"),
+	}))
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t1"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Empty(t, resp.GetTerminals(), "a nil accessible-workspace set must fail closed")
+}
+
+func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM agents WHERE id IN"})
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a1"}},
+	}, w)
+
+	streams := w.streamsSnapshot()
+	require.Len(t, streams, 1)
+	assert.True(t, streams[0].GetIsError())
+	assert.Equal(t, int32(codes.Internal), streams[0].GetErrorCode())
+	assert.Contains(t, streams[0].GetErrorMessage(), "failed to list agents")
 }

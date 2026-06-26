@@ -48,9 +48,10 @@ const CONTAINER_PAD_RIGHT = 1
 
 /**
  * Extension to bridge vertical lines across the gap between message rows.
- * Messages with span lines use a tightened gap of --space-2 (via negative
- * marginTop in messageRowWithSpanLines).  Each row extends the vertical
- * line by the full tightened gap so adjacent lines overlap seamlessly.
+ * Span-line rows sit a tightened --space-2 apart (the virtualizer encodes this
+ * gap directly in each row's offset; see useChatVirtualizer's gapSmallPx).
+ * Each row extends its vertical line by the full tightened gap so adjacent
+ * lines overlap seamlessly.
  */
 const ROW_GAP = 'var(--space-2)'
 

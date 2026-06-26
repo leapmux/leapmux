@@ -2,7 +2,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
@@ -13,9 +12,9 @@ import { SearchResultBody } from '../../../results/searchResult'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
 import { WebSearchResultsBody } from '../../../results/webSearchResults'
 import { ToolResultMessage } from '../../../toolRenderers'
-import { getAssistantContent, getMessageContentArray } from '../extractors/assistantContent'
+import { extractToolUseInfo, getMessageContentArray } from '../extractors/assistantContent'
 import { claudeBashFromToolResult } from '../extractors/bash'
-import { claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
+import { claudeCreateResultDiff, claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
 import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
@@ -28,24 +27,6 @@ import { ExitPlanModeResultView } from './exitPlanMode'
 import { RemoteTriggerResultView } from './remoteTrigger'
 import { TaskOutputResultView } from './taskOutput'
 import { ToolSearchResultView } from './toolSearch'
-
-/** Extract tool name and input from a parsed tool_use message. */
-function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: string, input: Record<string, unknown> } | null {
-  const obj = parsed.parentObject
-  if (!obj)
-    return null
-  const content = getAssistantContent(obj)
-  if (!content)
-    return null
-  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
-  if (!toolUse)
-    return null
-  const toolData = toolUse as Record<string, unknown>
-  return {
-    toolName: pickString(toolData, 'name'),
-    input: pickObject(toolData, 'input', {}),
-  }
-}
 
 /** Set of tool names whose results should be rendered as preformatted text. */
 const PRE_TEXT_TOOLS: ReadonlySet<string> = new Set([
@@ -246,12 +227,16 @@ export function renderClaudeToolResult(
   // When the tool failed (`is_error: true`), the edit was *not* applied — fall
   // back to text rendering so the error message surfaces instead of a diff
   // synthesized from the tool_use input.
-  const effectiveDiff = isClaudeFileEditTool(toolName) && isErrorVal !== true
+  // A Write/create whose tool_use sibling is absent carries the whole new file in
+  // the result's `content`; claudeCreateResultDiff recovers it as an all-added diff
+  // (shared with heightMetrics so the render matches the estimate) instead of
+  // dropping to a one-line "File created successfully".
+  const effectiveDiff = (isClaudeFileEditTool(toolName) && isErrorVal !== true
     ? pickFileEditDiff(
         claudeFileEditFromToolUseResult(toolUseResult),
         toolUseInfo ? claudeFileEditFromToolUseInput(toolUseInfo.toolName, toolUseInfo.input) : null,
       )
-    : null
+    : null) ?? claudeCreateResultDiff(toolUseResult, isErrorVal === true)
   const readFilePath = toolName === CLAUDE_TOOL.READ
     ? (readSource?.filePath || String(toolInput?.file_path || ''))
     : undefined

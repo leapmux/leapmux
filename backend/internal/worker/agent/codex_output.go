@@ -410,7 +410,11 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
-		if itemType == "commandExecution" || itemType == "fileChange" || itemType == "reasoning" {
+		// Only commandExecution and fileChange stream output deltas keyed by itemID
+		// (see the outputDelta handlers); end their live stream. mcpToolCall and
+		// dynamicToolCall never stream, so they need no end marker. (reasoning streams
+		// too, but completes in its own case below with its own BroadcastStreamEnd.)
+		if itemType == "commandExecution" || itemType == "fileChange" {
 			a.sink.BroadcastStreamEnd(itemID)
 		}
 		a.sink.CloseSpan(itemID)
@@ -649,6 +653,13 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		RateLimits struct {
 			Primary   *codexRateLimitTier `json:"primary"`
 			Secondary *codexRateLimitTier `json:"secondary"`
+			// RateLimitReachedType is emitted by newer Codex app-server builds
+			// (an Option in the v2 RateLimitSnapshot) and is absent on older
+			// ones. It is the authoritative "an actual limit was hit" signal --
+			// snake_case enum values like "rate_limit_reached" or
+			// "workspace_owner_credits_depleted". When absent, auto-continue
+			// falls back to the usedPercent>=100 heuristic.
+			RateLimitReachedType *string `json:"rateLimitReachedType"`
 		} `json:"rateLimits"`
 	}
 	if err := json.Unmarshal(params, &notif); err != nil {
@@ -656,45 +667,23 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		return
 	}
 
-	rateLimits := map[string]interface{}{}
-	var latestExceededReset *time.Time
-	for _, tier := range []*codexRateLimitTier{notif.RateLimits.Primary, notif.RateLimits.Secondary} {
-		if tier == nil {
-			continue
-		}
-		rlType := codexWindowToType(tier.WindowDurationMins)
-		status := "allowed"
-		if tier.UsedPercent >= 100 {
-			status = "exceeded"
-		} else if tier.UsedPercent >= 80 {
-			status = "allowed_warning"
-		}
-		info := map[string]interface{}{
-			"rate_limit_type": rlType,
-			"utilization":     float64(tier.UsedPercent) / 100,
-			"status":          status,
-		}
-		if tier.ResetsAt != nil {
-			info["resets_at"] = *tier.ResetsAt
-			if status == "exceeded" {
-				resetAt := time.Unix(*tier.ResetsAt, 0).UTC()
-				if latestExceededReset == nil || resetAt.After(*latestExceededReset) {
-					latestExceededReset = &resetAt
-				}
-			}
-		}
-		rateLimits[rlType] = info
+	reachedType := ""
+	if notif.RateLimits.RateLimitReachedType != nil {
+		reachedType = *notif.RateLimits.RateLimitReachedType
 	}
-	if len(rateLimits) > 0 {
+
+	summary := summarizeCodexRateLimits([]*codexRateLimitTier{notif.RateLimits.Primary, notif.RateLimits.Secondary}, reachedType)
+
+	if len(summary.rateLimits) > 0 {
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			"rate_limits": rateLimits,
+			"rate_limits": summary.rateLimits,
 		})
 	}
 
-	if latestExceededReset != nil {
+	if resumeReset := codexRateLimitResumeReset(reachedType, summary); resumeReset != nil {
 		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 			Reason:        AutoContinueReasonRateLimit,
-			DueAt:         *latestExceededReset,
+			DueAt:         *resumeReset,
 			SourcePayload: append([]byte(nil), content...),
 		})
 	} else {
@@ -702,11 +691,152 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 	}
 }
 
+// codexRateLimitSummary is the derived view of a Codex rateLimits snapshot: the
+// wire-shaped per-window map broadcast to the popover, plus the decision inputs
+// the auto-continue resume reads. Kept as one value so the elevate (applied in
+// place on rateLimits) and the resume can be unit-tested without an agent.
+type codexRateLimitSummary struct {
+	// rateLimits is the wire map (rate_limit_type -> info) for the session-info popover.
+	rateLimits map[string]interface{}
+	// latestExceededReset is the latest reset among windows already at >=100% that
+	// carry a reset -- the authoritative resume time for an already-exhausted window.
+	latestExceededReset *time.Time
+	// latestReset is the latest reset among ALL windows -- the resume fallback when a
+	// time-windowed block's binding window carries no reset of its own.
+	latestReset *time.Time
+	// bindingReset is the most-utilized window's own reset (nil when it has none).
+	bindingReset *time.Time
+}
+
+// summarizeCodexRateLimits converts the primary/secondary tiers into the wire map
+// and the elevate/resume decision inputs in a single pass, applying the popover
+// elevate in place. Pure (no agent side effects) so the elevate and resume edges
+// are unit-testable in isolation.
+func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) codexRateLimitSummary {
+	s := codexRateLimitSummary{rateLimits: map[string]interface{}{}}
+	// anyExceeded tracks whether ANY window is already at >=100% (status "exceeded"),
+	// reset or not -- the elevate gate below, matching the frontend's status-based gate.
+	anyExceeded := false
+	// Track the most-utilized window so a reached-type block whose usedPercent has
+	// been integer-rounded just under 100 still resolves to a window (and its reset)
+	// to wait on and to surface as "exceeded" in the popover.
+	var bindingTierKey string
+	bindingPct := -1.0
+	for _, tier := range tiers {
+		if tier == nil {
+			continue
+		}
+		rlType := codexWindowToType(tier.WindowDurationMins)
+		status := codexTierStatus(tier.UsedPercent)
+		if status == codexRateLimitStatusExceeded {
+			anyExceeded = true
+		}
+		info := map[string]interface{}{
+			"rate_limit_type": rlType,
+			"utilization":     float64(tier.UsedPercent) / 100,
+			"status":          status,
+		}
+		var tierReset *time.Time
+		if tier.ResetsAt != nil {
+			resetAt := time.Unix(*tier.ResetsAt, 0).UTC()
+			tierReset = &resetAt
+			info["resets_at"] = *tier.ResetsAt
+			if s.latestReset == nil || resetAt.After(*s.latestReset) {
+				s.latestReset = &resetAt
+			}
+			if status == codexRateLimitStatusExceeded {
+				if s.latestExceededReset == nil || resetAt.After(*s.latestExceededReset) {
+					s.latestExceededReset = &resetAt
+				}
+			}
+		}
+		if tier.UsedPercent > bindingPct {
+			bindingPct = tier.UsedPercent
+			bindingTierKey = rlType
+			s.bindingReset = tierReset
+		}
+		s.rateLimits[rlType] = info
+	}
+
+	// When Codex's authoritative reached-type says a time-windowed rate limit is hit
+	// but rounding kept every window just under 100, elevate the most-utilized window
+	// to "exceeded" so the popover matches the auto-continue decision. Gate on "no
+	// window already exceeded" (status >=100), NOT on "no exceeded window carries a
+	// reset": a window at >=100% without a reset already reads as exceeded, so
+	// elevating a DIFFERENT binding window there would disagree with the frontend
+	// replay path, which gates purely on the per-window status (extractRateLimitInfo).
+	if reachedType == codexRateLimitReachedTimeWindow && !anyExceeded && bindingTierKey != "" {
+		if info, ok := s.rateLimits[bindingTierKey].(map[string]interface{}); ok {
+			info["status"] = codexRateLimitStatusExceeded
+		}
+	}
+	return s
+}
+
 // codexRateLimitTier represents a single tier from Codex rate limit data.
 type codexRateLimitTier struct {
 	UsedPercent        float64 `json:"usedPercent"`
 	WindowDurationMins int     `json:"windowDurationMins"`
 	ResetsAt           *int64  `json:"resetsAt"`
+}
+
+// Codex synthesized rate-limit status values. Codex emits a raw usedPercent per
+// window with no status string of its own, so we classify here. Kept in sync
+// with the frontend's codexTierToRateLimitInfo so popover and notifications
+// agree on the thresholds.
+const (
+	codexRateLimitStatusAllowed        = "allowed"
+	codexRateLimitStatusAllowedWarning = "allowed_warning"
+	codexRateLimitStatusExceeded       = "exceeded"
+)
+
+// codexRateLimitReachedTimeWindow is the one Codex rateLimitReachedType that
+// lifts on the rolling-window timer and is therefore safe to auto-resume. The
+// others ("workspace_*_credits_depleted", "workspace_*_usage_limit_reached") are
+// billing/usage caps a reset timer won't clear, so they must not auto-continue.
+const codexRateLimitReachedTimeWindow = "rate_limit_reached"
+
+// codexTierStatus classifies a window's usedPercent into the synthesized status
+// vocabulary shared with the frontend.
+func codexTierStatus(usedPercent float64) string {
+	switch {
+	case usedPercent >= 100:
+		return codexRateLimitStatusExceeded
+	case usedPercent >= 80:
+		return codexRateLimitStatusAllowedWarning
+	default:
+		return codexRateLimitStatusAllowed
+	}
+}
+
+// codexRateLimitResumeReset decides when (if ever) a Codex agent should
+// auto-resume after a rate-limit snapshot, returning the reset time to wait for
+// or nil to cancel any pending resume.
+//
+//   - reachedType == "" (older Codex without the signal): fall back to the
+//     usedPercent>=100 heuristic and resume at the latest exhausted window's reset.
+//   - reachedType == "rate_limit_reached": a time-windowed block. Resume at the
+//     latest exhausted window's reset, or the most-utilized window's reset when
+//     rounding kept every window just under 100. When the most-utilized window
+//     carries no reset of its own, fall back to the latest reset ANY window
+//     reported so a resumable block still resumes instead of being cancelled.
+//   - any other reachedType (credits depleted / usage cap): do not resume -- the
+//     block won't lift on the rolling-window timer, so waiting would just re-hit it.
+func codexRateLimitResumeReset(reachedType string, s codexRateLimitSummary) *time.Time {
+	switch reachedType {
+	case "":
+		return s.latestExceededReset
+	case codexRateLimitReachedTimeWindow:
+		if s.latestExceededReset != nil {
+			return s.latestExceededReset
+		}
+		if s.bindingReset != nil {
+			return s.bindingReset
+		}
+		return s.latestReset
+	default:
+		return nil
+	}
 }
 
 // codexWindowToType maps a Codex window duration (minutes) to a rate limit type string.

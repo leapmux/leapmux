@@ -18,7 +18,7 @@
 <meta property="og:type" content="{{ if .IsPage }}article{{ else }}website{{ end }}" />
 <meta property="og:url" content="{{ .Permalink }}" />
 <meta property="og:site_name" content="{{ .Site.Title }}" />
-<meta property="og:locale" content="{{ .Params.locale | default site.Language.LanguageCode }}" />
+<meta property="og:locale" content="{{ .Params.locale | default site.Language.Locale }}" />
 
 <meta property="og:image" content="{{ $ogImage }}" />
 <meta property="og:image:type" content="image/png" />

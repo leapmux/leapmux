@@ -3,7 +3,7 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import MessageSquare from 'lucide-solid/icons/message-square'
-import { createMemo } from 'solid-js'
+import { createMemo, untrack } from 'solid-js'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -73,7 +73,12 @@ function AgentPromptView(props: {
   text: string
   context?: RenderContext
 }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.AGENT_PROMPT)
+  // Key from the shared classification mapper (context.expandUiKey) so it matches
+  // the estimator's pre-mount assumption; the literal is the context-less fallback.
+  // untrack: the key is stable for a row (kind+provider don't change), so read it
+  // once -- mirrors ThinkingBubble's `untrack(() => props.stateKey)`.
+  const stateKey = untrack(() => props.context?.expandUiKey ?? MESSAGE_UI_KEY.AGENT_PROMPT)
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
   const isCollapsed = () => !expanded() && hasMoreLinesThan(props.text, COLLAPSED_RESULT_ROWS)
   const html = createMemo(() => renderMarkdown(props.text))
 

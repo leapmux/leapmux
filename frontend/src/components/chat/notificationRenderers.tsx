@@ -365,7 +365,15 @@ function threadEntriesFor(
  * provider-specific messages (e.g. Codex MCP startup statuses) before the
  * shared switch handles provider-neutral types.
  */
-export function renderNotificationThread(messages: unknown[], agentProvider?: AgentProvider): JSXElement {
+/**
+ * Pure: the ordered render entries (text + divider) a notification thread produces,
+ * AFTER group coalescing (a run of same-key `group` entries collapses into one
+ * `Prefix: a, b, c` text entry). The single source of truth for both
+ * `renderNotificationThread` and the height estimator's body metrics
+ * (`notificationThreadMetrics`), so the two can't drift on WHICH children render or
+ * WHAT they say -- the height estimator sizes from exactly what the renderer emits.
+ */
+export function notificationThreadEntries(messages: unknown[], agentProvider?: AgentProvider): RenderEntry[] {
   const entries: RenderEntry[] = []
   const groupOrder: string[] = []
   const groups = new Map<string, { prefix: string, entries: string[] }>()
@@ -405,6 +413,44 @@ export function renderNotificationThread(messages: unknown[], agentProvider?: Ag
   }
 
   flushGroups()
+  return entries
+}
+
+/**
+ * Pure body metrics for the notification height estimate: the total rendered text
+ * length and the number of laid-out BLOCKS the thread becomes. `renderNotificationThread`
+ * coalesces a run of consecutive `text` entries into ONE comma-joined paragraph
+ * `<div>` and renders each `divider` as its own block, so a many-child thread with a
+ * short joined body lays out as a few wrapped lines -- NOT one line per child. Sizing
+ * from this (vs the child count) is what keeps the estimate from inflating ~8x on a
+ * coalesced thread, while staying biased up (the block count floors the wrapped rows).
+ */
+export function notificationThreadMetrics(messages: unknown[], agentProvider?: AgentProvider): { textLength: number, blockCount: number } {
+  const entries = notificationThreadEntries(messages, agentProvider)
+  let textLength = 0
+  let blockCount = 0
+  let inTextRun = false
+  for (const e of entries) {
+    if (e.kind === 'text') {
+      // Consecutive text entries join with ', ' into one paragraph; count the run
+      // as a single block and add the 2-char joiner for every entry after the first.
+      textLength += e.text.length + (inTextRun ? 2 : 0)
+      if (!inTextRun) {
+        blockCount++
+        inTextRun = true
+      }
+    }
+    else {
+      textLength += e.text.length
+      blockCount++
+      inTextRun = false
+    }
+  }
+  return { textLength, blockCount }
+}
+
+export function renderNotificationThread(messages: unknown[], agentProvider?: AgentProvider): JSXElement {
+  const entries = notificationThreadEntries(messages, agentProvider)
 
   const elements: JSXElement[] = []
   let pendingText: string[] = []

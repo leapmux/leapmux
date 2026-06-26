@@ -37,10 +37,10 @@ type Transport interface {
 // `Done()` to wait for the goroutine to drain.
 //
 // The cursor state lives outside the Transport so a re-subscribe (or
-// a fresh Subscription from a previous one) can resume cleanly. The
-// Subscription itself is single-flight — Update serializes with
-// in-flight callbacks via its own mutex; concurrent Updates from
-// different goroutines are safe.
+// a fresh Subscription from a previous one) can resume cleanly. Lifecycle
+// operations are single-flight: Update and Cancel serialize the whole
+// cancel/wait/open/store sequence, not just field reads/writes, so concurrent
+// callers cannot orphan a newly-opened stream.
 type Subscription struct {
 	transport Transport
 	agents    *AgentCursor
@@ -61,9 +61,10 @@ type Subscription struct {
 	// Nil = ignore.
 	onCursorReset func(terminalID string)
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	done   <-chan struct{}
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	cancel      context.CancelFunc
+	done        <-chan struct{}
 }
 
 // NewSubscription wires the transport and cursors. Callbacks fire
@@ -94,6 +95,9 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 // drained. This is safe to call from a snapshot-reconciliation
 // goroutine that may be re-issuing every few hundred milliseconds.
 func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsRequest) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.mu.Lock()
 	prevDone := s.done
 	prevCancel := s.cancel
@@ -105,6 +109,15 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 
 	cancel, done, err := s.transport.OpenWatchEvents(ctx, req, s.dispatch)
 	if err != nil {
+		// The previous subscription was already cancelled and drained above, and
+		// the re-open failed, so there is no live subscription. Clear the stale
+		// cancel/done (they still point at the torn-down previous stream) so Done()
+		// reports "no subscription" (a closed channel) and a later Cancel() doesn't
+		// invoke a cancel func for an already-dead stream.
+		s.mu.Lock()
+		s.cancel = nil
+		s.done = nil
+		s.mu.Unlock()
 		return fmt.Errorf("open watch events: %w", err)
 	}
 	s.mu.Lock()
@@ -117,6 +130,9 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 // Cancel stops the in-flight subscription, if any. Safe to call from
 // any goroutine; idempotent.
 func (s *Subscription) Cancel() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.mu.Lock()
 	cancel, done := s.cancel, s.done
 	s.cancel, s.done = nil, nil
@@ -156,10 +172,42 @@ func (s *Subscription) dispatch(resp *leapmuxv1.WatchEventsResponse) {
 		if ae == nil {
 			return
 		}
-		// Update the cursor BEFORE the callback so a callback that
-		// crashes doesn't leave the cursor stale on retry.
+		// A WatchEvents subscription registers its watcher BEFORE replaying
+		// history, so a message created in that window is delivered twice -- once
+		// live, once in the replay. The cursor is the high-water mark of seqs
+		// already forwarded, so a REPLAYED frame at or below it is that duplicate:
+		// advance the cursor (a monotonic no-op) but don't forward it again. The
+		// cursor advances BEFORE the callback so a callback that crashes doesn't leave
+		// the cursor stale on retry.
+		//
+		// A plain `seq <= cursor` drop is correct because message seqs are MONOTONIC:
+		// a deleted tail seq is never reused (the worker allocates from a per-agent
+		// high-water, see message_seq_hwm), so a LIVE frame for a new message ALWAYS
+		// carries seq > the highest seq forwarded, and the only frame that can land at
+		// seq <= cursor is the replay copy of a message already forwarded live. That
+		// makes the overlap dedup ORDER-INDEPENDENT: the register-before-replay message
+		// arrives once live and once replayed, and whichever lands first is forwarded
+		// (its seq > cursor then) while the second is dropped (seq <= cursor) -- no
+		// reliance on the live copy winning the race, and no risk of swallowing a
+		// (now-impossible) reused-seq live frame.
+		//
+		// The read-and-advance is ONE atomic Cursor.Advance, not a separate Get +
+		// Update: a reconnect (Update) lets a late frame from the torn-down old stream
+		// run dispatch concurrently with the new stream's replay of the SAME seq, and a
+		// non-atomic check would let both read the stale cursor, both see "not a
+		// duplicate," and forward the message twice. Advance forwards for exactly the
+		// one caller that strictly advances the cursor.
+		//
+		// Only PERSISTED messages (seq >= 0) participate. Ephemeral frames carry a
+		// negative sentinel seq (agent_session_info uses -1: live thinking-token /
+		// usage / rate-limit updates that are never replayed and have no place in the
+		// cursor); forward them unconditionally and leave the cursor untouched.
 		if msg := ae.GetAgentMessage(); msg != nil {
-			s.agents.Update(ae.GetAgentId(), msg.GetSeq())
+			if seq := msg.GetSeq(); seq >= 0 {
+				if !s.agents.Advance(ae.GetAgentId(), seq) {
+					return
+				}
+			}
 		}
 		if s.onAgent != nil {
 			s.onAgent(ae)

@@ -339,6 +339,24 @@ export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boole
 }
 
 /**
+ * Copy-on-write splice of `next` git fields into the first tab `match` selects,
+ * returning the SAME `tabs` array when there is no match or the fields don't differ --
+ * so the caller can detect "nothing changed" by reference identity and skip a
+ * snapshot write (a no-op write would churn the workspace snapshot and re-render the
+ * sidebar). The shared core of the background-workspace git-status updates in the
+ * agent and terminal event handlers, which both must touch only the one matched tab,
+ * and only when its git fields actually change.
+ */
+export function spliceTabGitFields(tabs: Tab[], match: (t: Tab) => boolean, next: GitTabFields): Tab[] {
+  const i = tabs.findIndex(match)
+  if (i < 0 || !gitTabFieldsDiffer(tabs[i], next))
+    return tabs
+  const copy = tabs.slice()
+  copy[i] = { ...copy[i], ...next }
+  return copy
+}
+
+/**
  * Directory whose git status determines a tab's branch/origin. Mirror of
  * `gitutil.ResolveGitDir` on the backend — both sides must resolve the
  * same way so `resolveOptimisticGitInfo`'s dir-match guard stays correct.

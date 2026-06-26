@@ -45,7 +45,7 @@ export const CodexReasoningRenderer = defineCodexRenderer({
 
     return (
       <Show when={text()}>
-        <ThinkingBubble text={text()} icon={Brain} label="Thinking" stateKey={MESSAGE_UI_KEY.CODEX_REASONING} context={props.context} />
+        <ThinkingBubble text={text()} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.CODEX_REASONING} context={props.context} />
       </Show>
     )
   },

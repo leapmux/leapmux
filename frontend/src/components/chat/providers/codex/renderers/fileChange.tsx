@@ -1,17 +1,17 @@
 import type { JSX } from 'solid-js'
-import type { ParsedUnifiedDiff, StructuredPatchHunk } from '../../../diff'
 import type { RenderContext } from '../../../messageRenderers'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { FileChangeShape } from '../extractors/fileChange'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import File from 'lucide-solid/icons/file'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import { createMemo, For, Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
-import { isObject, pickString } from '~/lib/jsonPick'
+import { pickString } from '~/lib/jsonPick'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
-import { diffStatsFromHunks, parseUnifiedDiffCached, rawDiffToHunks } from '../../../diff'
+import { diffStatsFromHunks } from '../../../diff'
 import { FileEditDiffBody, fileEditDiffFromHunks, fileEditDiffFromNewFile } from '../../../results/fileEditDiff'
 import { ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import {
@@ -23,77 +23,13 @@ import {
 } from '../../../toolStyles.css'
 import { renderDeleteTitle, renderEditTitle, renderWriteTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
+import {
+  buildFileChangeShape,
+  codexChangeKind,
+  completedFileChangeEntries,
+} from '../extractors/fileChange'
 import { LiveStreamOutput } from '../renderHelpers'
 import { readLiveStream } from '../status'
-
-function codexChangeKind(change: Record<string, unknown>): string {
-  const kind = change.kind
-  if (typeof kind === 'string')
-    return kind
-  if (isObject(kind) && typeof kind.type === 'string')
-    return kind.type as string
-  return ''
-}
-
-function isSimpleAddChange(change: Record<string, unknown>): boolean {
-  return codexChangeKind(change) === 'add' && typeof change.diff === 'string' && (change.diff as string).length > 0
-}
-
-function isSimpleDeleteChange(change: Record<string, unknown>): boolean {
-  return codexChangeKind(change) === 'delete'
-}
-
-type CompletedFileChangeEntry
-  = | { kind: 'diff', path: string, hunks: StructuredPatchHunk[] }
-    | { kind: 'add', path: string, hunks: StructuredPatchHunk[] }
-
-function completedFileChangeEntries(
-  changes: Array<Record<string, unknown>>,
-  parsedDiffs: Map<Record<string, unknown>, ParsedUnifiedDiff | null>,
-): CompletedFileChangeEntry[] {
-  return changes.flatMap((change): CompletedFileChangeEntry[] => {
-    const path = pickString(change, 'path')
-    const diffText = pickString(change, 'diff')
-    const parsed = parsedDiffs.get(change) ?? null
-    if (parsed) {
-      return [{ kind: 'diff', path, hunks: parsed.hunks }]
-    }
-    if (isSimpleAddChange(change)) {
-      return [{ kind: 'add', path, hunks: rawDiffToHunks('', diffText) }]
-    }
-    return []
-  })
-}
-
-interface FileChangeShape {
-  changes: Array<Record<string, unknown>>
-  parsedDiffs: Map<Record<string, unknown>, ParsedUnifiedDiff | null>
-  simpleAdd: Record<string, unknown> | null
-  simpleAddPath: string
-  simpleAddContent: string
-  simpleDelete: Record<string, unknown> | null
-  simpleDeletePath: string
-}
-
-function buildFileChangeShape(item: Record<string, unknown>): FileChangeShape {
-  const changes = (item.changes as Array<Record<string, unknown>>) || []
-  const parsedDiffs = new Map<Record<string, unknown>, ParsedUnifiedDiff | null>()
-  for (const change of changes) {
-    const diffText = typeof change.diff === 'string' ? change.diff : ''
-    parsedDiffs.set(change, diffText ? parseUnifiedDiffCached(diffText) : null)
-  }
-  const simpleAdd = changes.length === 1 && isSimpleAddChange(changes[0]) ? changes[0] : null
-  const simpleDelete = changes.length === 1 && isSimpleDeleteChange(changes[0]) ? changes[0] : null
-  return {
-    changes,
-    parsedDiffs,
-    simpleAdd,
-    simpleAddPath: simpleAdd ? pickString(simpleAdd, 'path') : '',
-    simpleAddContent: simpleAdd ? pickString(simpleAdd, 'diff') : '',
-    simpleDelete,
-    simpleDeletePath: simpleDelete ? pickString(simpleDelete, 'path') : '',
-  }
-}
 
 interface FileChangeRenderArgs {
   shape: FileChangeShape
@@ -173,13 +109,9 @@ function inProgressSimpleHeader(
     return { icon: FilePlus, title: renderWriteTitle(shape.simpleAddPath, shape.simpleAddContent, cwd, homeDir), path: shape.simpleAddPath }
   if (shape.simpleDelete)
     return { icon: File, title: renderDeleteTitle(shape.simpleDeletePath, cwd, homeDir), path: shape.simpleDeletePath }
-
-  const onlyChange = shape.changes.length === 1 ? shape.changes[0] : null
-  const onlyChangeDiff = onlyChange ? shape.parsedDiffs.get(onlyChange) ?? null : null
-  if (onlyChange && codexChangeKind(onlyChange) === 'update' && onlyChangeDiff) {
-    const editPath = pickString(onlyChange, 'path')
-    return { icon: FileEdit, title: renderEditTitle(editPath, onlyChangeDiff.oldText, onlyChangeDiff.newText, false, cwd, homeDir), path: editPath }
-  }
+  // simpleUpdateDiff is non-null exactly when simpleUpdate is set (computed together).
+  if (shape.simpleUpdate)
+    return { icon: FileEdit, title: renderEditTitle(shape.simpleUpdatePath, shape.simpleUpdateDiff!.oldText, shape.simpleUpdateDiff!.newText, false, cwd, homeDir), path: shape.simpleUpdatePath }
   return null
 }
 

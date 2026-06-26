@@ -34,8 +34,23 @@ globalStyle(`${markdownContent} li > input[type="checkbox"]`, {
   pointerEvents: 'none',
 })
 
-// Copy button for code blocks (injected via DOM)
-globalStyle(`${markdownContent} pre .copy-code-button`, {
+// Copy button for code blocks (injected via DOM by MessageBubble.injectCopyButtons).
+//
+// Keyed to the `code-copy-host` marker class the injector adds to every <pre> it
+// augments -- NOT to `.markdownContent`. The button is injected into code blocks in any
+// context (markdown bodies AND non-markdown <pre> such as a result-divider error
+// detail), but the positioning used to be scoped to `${markdownContent} pre ...`, so a
+// <pre> outside the markdown wrapper got an UNpositioned button that fell inline at the
+// end of the text. Anchoring on the marker class instead positions it top-right
+// everywhere, and the marker carries `position: relative` so the absolute button anchors
+// to its own <pre> regardless of the surrounding layout.
+export const codeCopyHostClass = 'code-copy-host'
+
+globalStyle(`.${codeCopyHostClass}`, {
+  position: 'relative',
+})
+
+globalStyle(`.${codeCopyHostClass} .copy-code-button`, {
   all: 'unset',
   boxSizing: 'border-box',
   position: 'absolute',
@@ -55,11 +70,11 @@ globalStyle(`${markdownContent} pre .copy-code-button`, {
   transition: 'opacity 0.15s',
 })
 
-globalStyle(`${markdownContent} pre:hover .copy-code-button`, {
+globalStyle(`.${codeCopyHostClass}:hover .copy-code-button`, {
   opacity: '1',
 })
 
-globalStyle(`${markdownContent} pre .copy-code-button:hover`, {
+globalStyle(`.${codeCopyHostClass} .copy-code-button:hover`, {
   backgroundColor: 'var(--card)',
   color: 'var(--foreground)',
 })

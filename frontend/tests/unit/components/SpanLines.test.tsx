@@ -14,7 +14,7 @@ describe('spanLines', () => {
   it('renders a container with one column per line entry', () => {
     const { container } = render(() => (
       <SpanLines
-        lines={[{ span_id: 'span-A', color: 0 }]}
+        lines={[{ span_id: 'span-A', color: 0, type: 'active' }]}
         spanOpener
       />
     ))
@@ -27,7 +27,7 @@ describe('spanLines', () => {
   it('renders correct number of columns with null entries', () => {
     const { container } = render(() => (
       <SpanLines
-        lines={[{ span_id: 'span-A', color: 0 }, null, { span_id: 'span-B', color: 1 }]}
+        lines={[{ span_id: 'span-A', color: 0, type: 'active' }, null, { span_id: 'span-B', color: 1, type: 'active' }]}
         spanOpener
       />
     ))
@@ -41,9 +41,9 @@ describe('spanLines', () => {
     const { container } = render(() => (
       <SpanLines
         lines={[
-          { span_id: 'span-A', color: 0 },
-          { span_id: 'span-B', color: 1 },
-          { span_id: 'span-C', color: 2 },
+          { span_id: 'span-A', color: 0, type: 'active' },
+          { span_id: 'span-B', color: 1, type: 'active' },
+          { span_id: 'span-C', color: 2, type: 'active' },
         ]}
         spanOpener={false}
       />

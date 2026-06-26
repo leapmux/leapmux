@@ -2,10 +2,13 @@ package streamevents
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // TestAgentCursor_Update_Monotonic pins the contract that lower-seq
@@ -24,10 +27,47 @@ func TestAgentCursor_Update_Monotonic(t *testing.T) {
 	assert.Equal(t, int64(12), c.Update("a-1", 12))
 }
 
-// TestAgentCursor_Snapshot_RestrictAndSeed: the entry list must
-// include cursors for tracked agents AND seed unknown (newly-arrived)
-// agents at after_seq=0. This is what makes resubscribe-on-tab-change
-// lossless across the cancel + re-open boundary.
+// TestAgentCursor_Advance pins the atomic compare-and-advance the WatchEvents dedup
+// relies on: it returns true (forward) exactly when the value STRICTLY advances the
+// cursor, and false (drop) for a duplicate (equal or lower) seq.
+func TestAgentCursor_Advance(t *testing.T) {
+	c := NewAgentCursor()
+	assert.True(t, c.Advance("a", 5), "the first seq advances")
+	assert.False(t, c.Advance("a", 5), "the same seq is a duplicate")
+	assert.False(t, c.Advance("a", 3), "a lower seq is a duplicate")
+	assert.True(t, c.Advance("a", 6), "a higher seq advances")
+	assert.Equal(t, int64(6), c.Get("a"))
+	assert.False(t, c.Advance("", 1), "an empty id never advances")
+}
+
+// TestAgentCursor_Advance_AtomicSingleWinner pins the property the prior non-atomic
+// Get-then-Update dedup lacked: when many goroutines race Advance with the SAME seq,
+// exactly one observes advanced=true. That is what stops a reconnect's overlapping
+// streams (a late frame from the torn-down stream + the new stream's replay of the
+// same seq) from both forwarding the message and emitting a duplicate.
+func TestAgentCursor_Advance_AtomicSingleWinner(t *testing.T) {
+	c := NewAgentCursor()
+	const goroutines = 32
+	var winners int64
+	wg := &sync.WaitGroup{}
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if c.Advance("a", 7) {
+				atomic.AddInt64(&winners, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int64(1), atomic.LoadInt64(&winners),
+		"exactly one racing Advance for the same seq may forward; the rest are duplicates")
+}
+
+// TestAgentCursor_Snapshot_RestrictAndSeed: the entry list must include cursors
+// for tracked agents AND seed unknown (newly-arrived) agents with a fresh LATEST
+// subscription. This is what makes resubscribe-on-tab-change lossless across
+// the cancel + re-open boundary.
 func TestAgentCursor_Snapshot_RestrictAndSeed(t *testing.T) {
 	c := NewAgentCursor()
 	c.Update("a-1", 5)
@@ -41,9 +81,13 @@ func TestAgentCursor_Snapshot_RestrictAndSeed(t *testing.T) {
 	require.Len(t, entries, 2)
 	// Entries are sorted by id, so we know the order.
 	assert.Equal(t, "a-1", entries[0].GetAgentId())
-	assert.Equal(t, int64(5), entries[0].GetAfterSeq())
+	// a-1 has seen seq 5: resume AFTER_CURSOR from 5.
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, entries[0].GetReplay())
+	assert.Equal(t, int64(5), entries[0].GetCursorSeq())
 	assert.Equal(t, "a-3", entries[1].GetAgentId())
-	assert.Equal(t, int64(0), entries[1].GetAfterSeq())
+	// a-3 is brand new (seq 0): a fresh LATEST subscription, cursor ignored.
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, entries[1].GetReplay())
+	assert.Equal(t, int64(0), entries[1].GetCursorSeq())
 }
 
 // TestAgentCursor_Snapshot_NilRestrictReturnsAllTracked: a nil
@@ -58,10 +102,41 @@ func TestAgentCursor_Snapshot_NilRestrictReturnsAllTracked(t *testing.T) {
 	require.Len(t, entries, 2)
 	got := map[string]int64{}
 	for _, e := range entries {
-		got[e.GetAgentId()] = e.GetAfterSeq()
+		// Both have seen messages, so both resume AFTER_CURSOR from their seq.
+		assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, e.GetReplay())
+		got[e.GetAgentId()] = e.GetCursorSeq()
 	}
 	assert.Equal(t, int64(1), got["a-1"])
 	assert.Equal(t, int64(2), got["a-2"])
+}
+
+// TestAgentWatchEntry maps a resume cursor to the explicit WatchEvents replay
+// mode: seq 0 (nothing seen) -> a fresh LATEST subscription; a positive seq ->
+// AFTER_CURSOR resume from it. A negative seq is malformed and also maps to
+// LATEST (the <= 0 branch), never an AFTER_CURSOR with a bogus cursor.
+func TestAgentWatchEntry(t *testing.T) {
+	fresh := AgentWatchEntry("a-1", 0)
+	assert.Equal(t, "a-1", fresh.GetAgentId())
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, fresh.GetReplay())
+	assert.Equal(t, int64(0), fresh.GetCursorSeq())
+
+	neg := AgentWatchEntry("a-1", -3)
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, neg.GetReplay(),
+		"a malformed negative seq must not produce an AFTER_CURSOR resume")
+
+	resume := AgentWatchEntry("a-2", 7)
+	assert.Equal(t, "a-2", resume.GetAgentId())
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, resume.GetReplay())
+	assert.Equal(t, int64(7), resume.GetCursorSeq())
+}
+
+// TestIsResumeCursor covers the shared "is this seq a real resume point" threshold
+// (seqs are assigned from 1): only a positive seq names a resume point.
+func TestIsResumeCursor(t *testing.T) {
+	assert.True(t, IsResumeCursor(1), "the first assignable seq is a resume point")
+	assert.True(t, IsResumeCursor(42))
+	assert.False(t, IsResumeCursor(0), "0 means nothing observed yet")
+	assert.False(t, IsResumeCursor(-1), "a negative seq is malformed, not a resume point")
 }
 
 // TestAgentCursor_Reset clears just the targeted agent without
@@ -232,17 +307,18 @@ func TestAgentCursor_Snapshot_EmptyRestrictReturnsZeroEntries(t *testing.T) {
 		"restrict={} means 'no agents wanted'; result must be empty")
 }
 
-// TestAgentCursor_Snapshot_RestrictAllUnknownSeedsZeros covers the
+// TestAgentCursor_Snapshot_RestrictAllUnknownSeedsFreshLatest covers the
 // new-tab-on-watched-worker case where every restrict id is unknown
-// to the cursor. All entries must seed at after_seq=0 so the new
+// to the cursor. All entries must seed as a fresh LATEST subscription so the new
 // subscription receives the worker's current state from scratch.
-func TestAgentCursor_Snapshot_RestrictAllUnknownSeedsZeros(t *testing.T) {
+func TestAgentCursor_Snapshot_RestrictAllUnknownSeedsFreshLatest(t *testing.T) {
 	c := NewAgentCursor()
 	entries := c.Snapshot(map[string]struct{}{"a-x": {}, "a-y": {}})
 	require.Len(t, entries, 2)
 	for _, e := range entries {
-		assert.Equal(t, int64(0), e.GetAfterSeq(),
-			"unknown agents in restrict must seed at zero")
+		assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, e.GetReplay(),
+			"unknown agents in restrict must seed as a fresh LATEST subscription")
+		assert.Equal(t, int64(0), e.GetCursorSeq())
 	}
 }
 

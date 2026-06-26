@@ -1,7 +1,7 @@
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { readFileSourceFromContent } from '../../../results/readFileResult'
-import { parseCatNContent } from '../../../results/ReadResultView'
+import { parseReadContent } from '../../../results/ReadResultView'
 
 /** Non-text Read variants that the catch-all renderer continues to handle. */
 const NON_TEXT_READ_TYPES = new Set(['image', 'notebook', 'pdf', 'parts', 'file_unchanged'])
@@ -29,6 +29,10 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
   if (variantType && NON_TEXT_READ_TYPES.has(variantType))
     return null
 
+  // The leading/trailing <tag> blocks (system-reminders, etc.) live in the raw
+  // resultContent regardless of whether a structured `file` payload is present, so
+  // extract them here and attach to whichever source shape we build.
+  const { leading, lines, trailing } = parseReadContent(resultContent)
   const file = pickObject(toolUseResult, 'file')
 
   if (file) {
@@ -37,24 +41,28 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
     const startLine = pickNumber(file, 'startLine', 1)
     const totalLines = pickNumber(file, 'totalLines', 0)
     const numLines = pickNumber(file, 'numLines', 0)
-    return readFileSourceFromContent({
-      filePath,
-      content: fileContent,
-      startLine,
-      totalLines,
-      numLines,
-      fallbackContent: resultContent,
-    })
+    return {
+      ...readFileSourceFromContent({
+        filePath,
+        content: fileContent,
+        startLine,
+        totalLines,
+        numLines,
+        fallbackContent: resultContent,
+      }),
+      leading,
+      trailing,
+    }
   }
 
-  // Subagent fallback: try to parse the raw resultContent as cat-n.
-  const parsedLines = parseCatNContent(resultContent)
-  const filePath = pickString(toolInput, 'file_path')
+  // Subagent fallback: the raw resultContent's cat-n body, plus its reminders.
   return {
-    filePath,
-    lines: parsedLines,
+    filePath: pickString(toolInput, 'file_path'),
+    lines,
     totalLines: 0,
     numLines: 0,
     fallbackContent: resultContent,
+    leading,
+    trailing,
   }
 }

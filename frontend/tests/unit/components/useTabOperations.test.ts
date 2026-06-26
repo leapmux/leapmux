@@ -1,6 +1,8 @@
+import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -9,17 +11,21 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 import { flush } from '../helpers/async'
 import { installTestBridge } from '../helpers/crdtBridge'
+import { makeMessage } from '../helpers/messageFactory'
 
 // Default: every FILE / AGENT / TERMINAL close path now routes through
 // inspectLastTabClose, so a vi.fn() with no implementation would resolve
 // to `undefined` and trip the `status.shouldPrompt` access. Default to
 // the no-prompt happy path; per-test overrides use mockResolvedValueOnce.
-const mockInspectLastTabClose = vi.fn(() => Promise.resolve({ shouldPrompt: false } as unknown))
-const mockPushBranch = vi.fn()
-const mockRegisterFileTabPath = vi.fn(() => Promise.resolve({}))
-const mockRevokeFileTabPath = vi.fn(() => Promise.resolve({}))
-const mockCloseAgent = vi.fn(() => Promise.resolve({ result: undefined }))
-const mockCloseTerminal = vi.fn(() => Promise.resolve({ result: undefined }))
+// Each mock forwards the worker RPC's (workerId, req, ...) arguments, so
+// the param list is typed as `unknown[]`; tests read them back via
+// `mock.calls[0]` and narrow `req` with a per-call `as { ... }` cast.
+const mockInspectLastTabClose = vi.fn((..._args: unknown[]) => Promise.resolve({ shouldPrompt: false } as unknown))
+const mockPushBranch = vi.fn((..._args: unknown[]) => {})
+const mockRegisterFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockRevokeFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockCloseAgent = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
+const mockCloseTerminal = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
 const mockShowWarnToast = vi.fn()
 const mockShowInfoToast = vi.fn()
 
@@ -42,15 +48,17 @@ vi.mock('~/components/terminal/TerminalView', () => ({
 }))
 
 function makeUserMessage(id: string, seq: bigint) {
-  return {
+  return makeMessage({
     id,
     seq,
-    role: 1,
+    source: MessageSource.USER,
     content: new TextEncoder().encode('{"content":"test"}'),
-  } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  })
 }
 
-function setup() {
+const DEFAULT_SCROLL_STATE: () => SavedViewportScroll | undefined = () => ({ atBottom: false, hasMoreNewer: false })
+
+function setup(getScrollState: () => SavedViewportScroll | undefined = DEFAULT_SCROLL_STATE) {
   // Override the global test bridge with a known tile id so the
   // projection's root leaf matches what this test wants to address
   // (tabStore.addTab pre-positions tabs onto `tileId`).
@@ -83,9 +91,9 @@ function setup() {
       handleTerminalClose,
     } as never,
     activeTab: () => tabStore.activeTab() ?? undefined,
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
     focusEditor: vi.fn(),
-    getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+    getScrollState,
     setFileTreePath: vi.fn(),
     getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',
@@ -471,6 +479,39 @@ describe('useTabOperations', () => {
     })
   })
 
+  it('clears a stale saved viewport when the outgoing tab has no restorable position', () => {
+    createRoot((dispose) => {
+      // The outgoing view is empty / all-hidden and scrolled away from the
+      // bottom, so getScrollState() returns undefined.
+      const { tabStore, chatStore, ops, tileId } = setup(() => undefined)
+      // A prior visit left a saved anchor for agent-a.
+      chatStore.viewportScroll.set('agent-a', { anchor: { id: 'old', offsetWithinRow: 40 }, atBottom: false, hasMoreNewer: false })
+      expect(chatStore.viewportScroll.get('agent-a')).toBeDefined()
+
+      const nextTab = tabStore.state.tabs.find(t => t.id === 'agent-b')!
+      ops.handleTabSelect(nextTab)
+      tabStore.setActiveTabForTile(tileId, nextTab.type, nextTab.id)
+
+      // The stale save is cleared rather than left to restore a wrong position.
+      expect(chatStore.viewportScroll.get('agent-a')).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('saves the viewport when the outgoing tab has a restorable position', () => {
+    createRoot((dispose) => {
+      const saved = { anchor: { id: 'm5', offsetWithinRow: 12 }, atBottom: false, hasMoreNewer: false }
+      const { tabStore, chatStore, ops, tileId } = setup(() => saved)
+
+      const nextTab = tabStore.state.tabs.find(t => t.id === 'agent-b')!
+      ops.handleTabSelect(nextTab)
+      tabStore.setActiveTabForTile(tileId, nextTab.type, nextTab.id)
+
+      expect(chatStore.viewportScroll.get('agent-a')).toEqual(saved)
+      dispose()
+    })
+  })
+
   it('does not trim when switching focus to a tab in a different tile', () => {
     createRoot((dispose) => {
       const { tabStore, chatStore, ops } = setup()
@@ -554,9 +595,9 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         agentOps: { handleAgentClose } as never,
         termOps: { handleTerminalClose } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -612,9 +653,9 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         agentOps: { handleAgentClose } as never,
         termOps: { handleTerminalClose } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -667,9 +708,9 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         agentOps: { handleAgentClose } as never,
         termOps: { handleTerminalClose } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -738,9 +779,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         agentOps: { handleAgentClose: vi.fn() } as never,
         termOps: { handleTerminalClose: vi.fn() } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-test',
@@ -781,9 +822,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         agentOps: { handleAgentClose: vi.fn() } as never,
         termOps: { handleTerminalClose: vi.fn() } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-test',
@@ -831,9 +872,9 @@ function setupWithFloatingWindow() {
     agentOps: { handleAgentClose } as never,
     termOps: { handleTerminalClose } as never,
     activeTab: () => tabStore.activeTab() ?? undefined,
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
     focusEditor: vi.fn(),
-    getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+    getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',
@@ -858,7 +899,8 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
     await createRoot(async (dispose) => {
       try {
         const { tabStore, floatingWindowStore, ops } = setupWithFloatingWindow()
-        const { windowId, tileId } = floatingWindowStore.addWindow()
+        // The test bridge is installed, so addWindow() always returns a window.
+        const { windowId, tileId } = floatingWindowStore.addWindow()!
         tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId, filePath: '/a.txt', workerId: 'w-1' })
 
         expect(floatingWindowStore.state.windows).toHaveLength(1)
@@ -880,7 +922,8 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
     await createRoot(async (dispose) => {
       try {
         const { tabStore, floatingWindowStore, ops } = setupWithFloatingWindow()
-        const { windowId, tileId } = floatingWindowStore.addWindow()
+        // The test bridge is installed, so addWindow() always returns a window.
+        const { windowId, tileId } = floatingWindowStore.addWindow()!
         const newTileId = floatingWindowStore.splitTile(windowId, tileId, 'horizontal')!
         tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId, filePath: '/a.txt', workerId: 'w-1' })
         tabStore.addTab({ type: TabType.FILE, id: 'f2', tileId: newTileId, filePath: '/b.txt', workerId: 'w-1' })
@@ -1021,7 +1064,8 @@ describe('useTabOperations.closeTabWithAction', () => {
     await createRoot(async (dispose) => {
       try {
         const { tabStore, floatingWindowStore, ops } = setupWithFloatingWindow()
-        const { windowId, tileId } = floatingWindowStore.addWindow()
+        // The test bridge is installed, so addWindow() always returns a window.
+        const { windowId, tileId } = floatingWindowStore.addWindow()!
         // Add an AGENT tab to the floating tile; the floating window
         // now contains exactly one tab in one tile.
         tabStore.addTab({ type: TabType.AGENT, id: 'agent-float', tileId, workerId: 'w-1' })
@@ -1142,9 +1186,9 @@ describe('useTabOperations.closeTabWithAction', () => {
         agentOps: { handleAgentClose } as never,
         termOps: { handleTerminalClose } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -1190,9 +1234,9 @@ describe('useTabOperations.closeTabWithAction', () => {
         agentOps: { handleAgentClose: vi.fn() } as never,
         termOps: { handleTerminalClose: vi.fn() } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -1238,9 +1282,9 @@ describe('useTabOperations.closeTabWithAction', () => {
         agentOps: { handleAgentClose: vi.fn() } as never,
         termOps: { handleTerminalClose: vi.fn() } as never,
         activeTab: () => tabStore.activeTab() ?? undefined,
-        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test' }),
+        getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
         focusEditor: vi.fn(),
-        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
@@ -1286,9 +1330,9 @@ function setupForFocusMigration() {
     agentOps: { handleAgentClose } as never,
     termOps: { handleTerminalClose } as never,
     activeTab: () => tabStore.activeTab() ?? undefined,
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
     focusEditor: vi.fn(),
-    getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+    getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',

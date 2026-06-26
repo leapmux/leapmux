@@ -307,6 +307,135 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	require.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
 }
 
+// TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules verifies that newer
+// Codex builds that emit the authoritative rateLimitReachedType schedule a resume
+// when a time-windowed rate limit is reached.
+func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()))
+}
+
+// TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels is the key carve-out:
+// a credit-depletion block does NOT reset on the rolling-window timer, so even at
+// 100% usage it must cancel rather than schedule a doomed-to-re-hit resume.
+func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"workspace_owner_credits_depleted","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an auto-continue")
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
+}
+
+// TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap
+// (admin-set, not time-windowed) is treated like credit depletion: no resume.
+func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"workspace_member_usage_limit_reached","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+	require.Equal(t, 1, sink.AutoCancelCount())
+}
+
+// TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers the case
+// where the authoritative reached-type fires but integer-rounded usedPercent has
+// not ticked to 100. The most-utilized window must both bind the resume time and
+// surface as "exceeded" in the popover broadcast.
+func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()),
+		"resume should bind to the most-utilized window's reset")
+
+	require.Equal(t, 1, sink.SessionInfoCount())
+	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok)
+	primary, ok := rateLimits["five_hour"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "exceeded", primary["status"], "binding window must show as exceeded despite 99%%")
+}
+
+// TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a
+// time-windowed block whose most-utilized (binding) window carries NO resetsAt
+// while a sibling window does. The resume must fall back to the sibling's reset
+// rather than cancel and strand a block that WILL lift on the rolling-window timer.
+func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	// primary (five_hour) is the most-utilized window (binds the resume) but reports
+	// no resetsAt; secondary (seven_day) carries one. Before the fallback the nil
+	// binding reset cancelled the resume entirely.
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.AutoScheduleCount(), "a resumable time-window block must not be cancelled when the binding window lacks a reset")
+	assert.Equal(t, 0, sink.AutoCancelCount())
+	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1894000000, 0).UTC()),
+		"resume falls back to the latest available window reset")
+}
+
+// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset exercises the pure
+// summarizer's elevate + resume edges directly (no agent), covering the
+// binding-window-without-reset fallback that the handler test drives end to end.
+func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
+	resetSecondary := int64(1894000000)
+	tiers := []*codexRateLimitTier{
+		{UsedPercent: 99, WindowDurationMins: 300},                              // binding, no reset
+		{UsedPercent: 20, WindowDurationMins: 10080, ResetsAt: &resetSecondary}, // sibling, has reset
+	}
+	s := summarizeCodexRateLimits(tiers, codexRateLimitReachedTimeWindow)
+
+	require.Nil(t, s.bindingReset, "the most-utilized window carries no reset")
+	require.NotNil(t, s.latestReset)
+	assert.True(t, s.latestReset.Equal(time.Unix(resetSecondary, 0).UTC()))
+
+	resume := codexRateLimitResumeReset(codexRateLimitReachedTimeWindow, s)
+	require.NotNil(t, resume, "must resume via the sibling reset, not cancel")
+	assert.True(t, resume.Equal(time.Unix(resetSecondary, 0).UTC()))
+
+	// The rounding elevate still surfaces the most-utilized window as exceeded.
+	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "exceeded", five["status"])
+}
+
+// TestSummarizeCodexRateLimits_ExceededWindowGatesElevate locks the elevate gate to
+// the per-window status (any window at >=100% suppresses the elevate), matching the
+// frontend replay path so the popover and the live broadcast can't disagree. The
+// already-exceeded window keeps its status; a low sibling is never lifted.
+func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
+	tiers := []*codexRateLimitTier{
+		{UsedPercent: 100, WindowDurationMins: 300},  // exceeded by status, no reset
+		{UsedPercent: 20, WindowDurationMins: 10080}, // low sibling
+	}
+	s := summarizeCodexRateLimits(tiers, codexRateLimitReachedTimeWindow)
+
+	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "exceeded", five["status"])
+	seven, ok := s.rateLimits["seven_day"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "allowed", seven["status"], "a low sibling must not be elevated when another window is already exceeded")
+}
+
 func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
@@ -727,6 +856,31 @@ func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
 	require.Equal(t, 1, sink.MessageCount())
 	require.Equal(t, 1, sink.StreamEndCount())
 	require.Equal(t, "reason-1", sink.LastStreamEnd())
+}
+
+func TestHandleCodexOutput_McpToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
+	// Only commandExecution and fileChange stream output deltas keyed by itemID, so only
+	// they end a live stream on completion. mcpToolCall (and dynamicToolCall) never stream,
+	// so a completion must NOT emit a stream-end -- a phantom end for a never-started stream.
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"mcpToolCall","id":"mcp-1","status":"completed","result":{"content":[{"type":"text","text":"ok"}]}}}}`
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 0, sink.StreamEndCount())
+}
+
+func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"dynamicToolCall","id":"dyn-1","status":"completed"}}}`
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 0, sink.StreamEndCount())
 }
 
 func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {

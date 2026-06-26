@@ -18,10 +18,9 @@ import (
 // downstream `jq` filters can branch on `.source == "error"`.
 func TestEmitErrorLine_WritesValidJSON(t *testing.T) {
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	mu := &sync.Mutex{}
+	em := &lineEmitter{enc: json.NewEncoder(&buf)}
 
-	emitErrorLine(enc, mu, "agent-XYZ", "subscribe_failed", errors.New("boom"))
+	require.NoError(t, em.emitError("agent-XYZ", "subscribe_failed", errors.New("boom")))
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
@@ -38,19 +37,23 @@ func TestEmitErrorLine_WritesValidJSON(t *testing.T) {
 // state and the consumer would see invalid JSON.
 func TestEmitErrorLine_ConcurrentEmissionStaysWellFormed(t *testing.T) {
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	mu := &sync.Mutex{}
+	em := &lineEmitter{enc: json.NewEncoder(&buf)}
 
 	const n = 32
 	wg := &sync.WaitGroup{}
 	wg.Add(n)
+	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			emitErrorLine(enc, mu, "ctx", "code", errors.New("err"))
+			errs <- em.emitError("ctx", "code", errors.New("err"))
 		}()
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
 
 	dec := json.NewDecoder(&buf)
 	count := 0
@@ -71,11 +74,25 @@ func TestEmitErrorLine_ConcurrentEmissionStaysWellFormed(t *testing.T) {
 // nil is a programmer error and panicking surfaces it in tests.
 func TestEmitErrorLine_PanicsOnNilError(t *testing.T) {
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	mu := &sync.Mutex{}
+	em := &lineEmitter{enc: json.NewEncoder(&buf)}
 	assert.Panics(t, func() {
-		emitErrorLine(enc, mu, "ctx", "code", nil)
+		_ = em.emitError("ctx", "code", nil)
 	})
+}
+
+type failingJSONLineWriter struct{ err error }
+
+func (w failingJSONLineWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestLineEmitter_EmitReturnsAndLatchesWriteError(t *testing.T) {
+	errWrite := errors.New("disk full")
+	em := &lineEmitter{enc: json.NewEncoder(failingJSONLineWriter{err: errWrite})}
+
+	require.ErrorIs(t, em.emit(map[string]any{"seq": 1}), errWrite)
+	require.ErrorIs(t, em.emit(map[string]any{"seq": 2}), errWrite)
+	require.ErrorIs(t, em.Err(), errWrite)
 }
 
 // TestRenderAgentMessage_DecompressesContentToJSON pins the core UX
@@ -159,6 +176,23 @@ func TestRenderAgentMessage_ParsesSpanLines(t *testing.T) {
 func TestRenderAgentMessage_EmptySpanLinesOmitted(t *testing.T) {
 	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
 	_, has := rendered["span_lines"]
+	assert.False(t, has)
+}
+
+// TestRenderAgentMessage_PreviousSeqMarksAReseq pins the supersession marker: a live
+// reseq broadcast (previous_seq > 0) surfaces `previous_seq` so a --follow consumer can
+// reconcile the moved row by id instead of seeing an unexplained duplicate.
+func TestRenderAgentMessage_PreviousSeqMarksAReseq(t *testing.T) {
+	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 55, PreviousSeq: 20})
+	assert.Equal(t, int64(20), rendered["previous_seq"])
+}
+
+// TestRenderAgentMessage_ZeroPreviousSeqOmitted pins the proto3 zero-value contract:
+// a normal (non-reseq) row, a single-page read, or a replay carries previous_seq 0 and
+// the field must not appear, so consumers don't special-case `"previous_seq": 0`.
+func TestRenderAgentMessage_ZeroPreviousSeqOmitted(t *testing.T) {
+	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
+	_, has := rendered["previous_seq"]
 	assert.False(t, has)
 }
 

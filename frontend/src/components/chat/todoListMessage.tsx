@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
-import type { TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import { Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'

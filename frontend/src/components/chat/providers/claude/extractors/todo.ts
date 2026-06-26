@@ -1,6 +1,6 @@
 import type { TodoListSource } from '../../../todoListMessage'
 import { pluralize } from '~/lib/plural'
-import { rawTodosToItems } from '~/stores/chat.store'
+import { rawTodosToItems } from '~/stores/chatTodos'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeProgressOutput } from './normalizeProgressOutput'
+import { normalizedCommandBody, normalizeProgressOutput, stripLeadingBlankLines } from './normalizeProgressOutput'
 
 describe('normalizeProgressOutput', () => {
   it('returns input unchanged when no carriage returns are present', () => {
@@ -95,5 +95,44 @@ describe('normalizeProgressOutput', () => {
     const result = normalizeProgressOutput('\rfoo')
     expect(result.hadCarriageReturns).toBe(true)
     expect(result.text).toBe('\nfoo')
+  })
+})
+
+describe('stripLeadingBlankLines', () => {
+  it('trims a run of leading blank/whitespace-only lines but keeps interior + content', () => {
+    expect(stripLeadingBlankLines('\n\n  \nfoo\nbar')).toBe('foo\nbar')
+    // Pairs with normalizeProgressOutput: a leading bare `\r` becomes `\n`, then strips.
+    expect(stripLeadingBlankLines(normalizeProgressOutput('\rfoo').text)).toBe('foo')
+  })
+
+  it('is a no-op when there is no leading blank line', () => {
+    expect(stripLeadingBlankLines('foo\nbar')).toBe('foo\nbar')
+    expect(stripLeadingBlankLines('')).toBe('')
+    // Trailing blank lines are preserved (only LEADING ones are trimmed).
+    expect(stripLeadingBlankLines('foo\n\n')).toBe('foo\n\n')
+  })
+})
+
+describe('normalizedCommandBody', () => {
+  it('applies normalize THEN strip in order (a leading bare CR becomes a trimmed blank)', () => {
+    // The order matters: normalizeProgressOutput turns the leading `\r` into a `\n`,
+    // which stripLeadingBlankLines then trims. Both the renderer (commandResult) and
+    // the height estimate (claudeBashHeightFields) route through this one helper.
+    const body = normalizedCommandBody('\rfoo')
+    expect(body.text).toBe('foo')
+    expect(body.hadCarriageReturns).toBe(true)
+  })
+
+  it('strips leading blanks and reports no CR for plain output', () => {
+    const body = normalizedCommandBody('\n\n  \nfoo\nbar')
+    expect(body.text).toBe('foo\nbar')
+    expect(body.hadCarriageReturns).toBe(false)
+  })
+
+  it('matches the hand-composed normalize+strip the call sites previously inlined', () => {
+    for (const input of ['\rfoo', 'a\rb\rc', 'plain', '\n\nx', 'a\r\nb']) {
+      const norm = normalizeProgressOutput(input)
+      expect(normalizedCommandBody(input)).toEqual({ text: stripLeadingBlankLines(norm.text), hadCarriageReturns: norm.hadCarriageReturns })
+    }
   })
 })

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,26 @@ func (svc *Context) agentShell() string {
 // agentLoginShell returns whether the agent should use interactive+login shell flags.
 func (svc *Context) agentLoginShell() bool {
 	return svc.UseLoginShell
+}
+
+// baseAgentOptions builds an agent.Options pre-filled with the per-agent identity
+// (agentID, workingDir, provider) and the shared launch-environment block -- timeouts,
+// shell, and home dir -- that every launch / restart / clear-context / relaunch path
+// repeats verbatim. Callers overlay the per-site fields (ResumeSessionID, Options,
+// ExtraEnv) on the returned value, so a new launch-environment field or a renamed
+// timeout accessor is a one-line change here instead of five parallel edits that one
+// path would eventually drift on.
+func (svc *Context) baseAgentOptions(agentID, workingDir string, provider leapmuxv1.AgentProvider) agent.Options {
+	return agent.Options{
+		AgentID:        agentID,
+		WorkingDir:     workingDir,
+		AgentProvider:  provider,
+		StartupTimeout: svc.agentStartupTimeout(),
+		APITimeout:     svc.agentAPITimeout(),
+		Shell:          svc.agentShell(),
+		LoginShell:     svc.agentLoginShell(),
+		HomeDir:        svc.HomeDir,
+	}
 }
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
@@ -166,19 +187,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		})
 
-		agentOpts := agent.Options{
-			AgentID:         agentID,
-			WorkingDir:      plan.PlannedWorkingDir,
-			ResumeSessionID: r.GetAgentSessionId(),
-			Options:         options,
-			StartupTimeout:  svc.agentStartupTimeout(),
-			APITimeout:      svc.agentAPITimeout(),
-			Shell:           svc.agentShell(),
-			LoginShell:      svc.agentLoginShell(),
-			HomeDir:         svc.HomeDir,
-			AgentProvider:   agentProvider,
-			ExtraEnv:        remoteEnvs,
-		}
+		agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
+		agentOpts.ResumeSessionID = r.GetAgentSessionId()
+		agentOpts.Options = options
+		agentOpts.ExtraEnv = remoteEnvs
 
 		agent.TraceStartupPhase(agentID, "before_response")
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
@@ -311,7 +323,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// which the frontend classifies as user_content and renders as markdown.
 		// When attachments are present, include their metadata (filename + mime_type)
 		// but not the raw binary data (too large for DB storage).
-		var innerJSON []byte
+		var payload interface{}
 		if len(attachments) > 0 {
 			type attachmentMeta struct {
 				Filename string `json:"filename"`
@@ -321,15 +333,19 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			for i, a := range attachments {
 				meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
 			}
-			innerJSON, err = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
-			if err != nil {
-				slog.Warn("user message marshal failed", "agent_id", agentID, "error", err)
-			}
+			payload = map[string]interface{}{"content": content, "attachments": meta}
 		} else {
-			innerJSON, err = json.Marshal(map[string]string{"content": content})
-			if err != nil {
-				slog.Warn("user message marshal failed", "agent_id", agentID, "error", err)
-			}
+			payload = map[string]string{"content": content}
+		}
+		// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
+		// compress + persist + broadcast an empty-content row (while still handing the
+		// agent the real content), silently corrupting the visible history. Fail the
+		// RPC instead so the caller can retry, mirroring the persist-failure path below.
+		innerJSON, err := json.Marshal(payload)
+		if err != nil {
+			slog.Error("failed to encode user message", "agent_id", agentID, "error", err)
+			sendInternalError(sender, "failed to encode message")
+			return
 		}
 		compressed, compressionType := msgcodec.Compress(innerJSON)
 
@@ -504,7 +520,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
-			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
+			if !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
 			hasAgent := svc.Agents.HasAgent(agents[i].ID)
@@ -531,11 +547,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		limit := int64(r.GetLimit())
-		if limit <= 0 || limit > 50 {
-			limit = 50
-		}
-
 		agentID := r.GetAgentId()
 		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
 		if !ok {
@@ -548,64 +559,55 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		afterSeq := r.GetAfterSeq()
-		beforeSeq := r.GetBeforeSeq()
+		// Resolve the anchor + cursor + caller limit to a query plan. The routing
+		// and the cursor/limit clamps are pure (resolveMessagePage), so they're
+		// unit tested without a DB; this handler only runs the selected query and
+		// plumbs the result.
+		plan := resolveMessagePage(r.GetAnchor(), r.GetCursorSeq(), int64(r.GetLimit()))
 
-		// Only ship the to-do list on the initial "latest" page — scroll
+		// Only ship the to-do list on the cold-start LATEST page — scroll
 		// pagination requests don't need to re-fetch it (the client
 		// already has the authoritative snapshot from cold start and
 		// receives live mutations via AgentTodosChanged broadcasts).
+		// Derived from the resolved plan, NOT from the raw anchor, so it stays in
+		// lockstep with the query: LATEST, UNSPECIFIED, AND any unknown anchor all
+		// resolve to messagePageLatest (the switch default), so any caller that
+		// gets the latest messages also gets the to-do snapshot -- never the
+		// latest page with an empty to-do list.
+		isLatestPage := plan.mode == messagePageLatest
 		var todoItems []todoevents.Item
-		if afterSeq == 0 && beforeSeq == 0 {
+		// Whether the to-do snapshot is authoritative. The client overwrites its
+		// list only when this is true, so a non-latest page (no snapshot) and a
+		// failed LoadTodos (DB error) both leave the client's list intact instead
+		// of wiping it with the empty array a repeated field always serializes to.
+		todosLoaded := false
+		if isLatestPage {
 			items, todoErr := svc.Output.LoadTodos(ctx, agentID)
 			if todoErr != nil {
 				slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
+			} else {
+				todoItems = items
+				todosLoaded = true
 			}
-			todoItems = items
 		}
 
-		var dbMessages []db.Message
-		var queryErr error
-
-		if beforeSeq > 0 {
-			// BACKWARD: fetch messages with seq < before_seq, returned in descending order.
-			dbMessages, queryErr = svc.Queries.ListMessagesByAgentIDReverse(ctx, db.ListMessagesByAgentIDReverseParams{
-				AgentID: agentID,
-				Seq:     beforeSeq,
-				Limit:   limit + 1, // Fetch one extra to determine has_more.
-			})
-		} else if afterSeq > 0 {
-			// FORWARD: fetch messages with seq > after_seq in ascending order.
-			dbMessages, queryErr = svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-				AgentID: agentID,
-				Seq:     afterSeq,
-				Limit:   limit + 1,
-			})
-		} else {
-			// LATEST: fetch the most recent messages.
-			dbMessages, queryErr = svc.Queries.ListLatestMessagesByAgentID(ctx, db.ListLatestMessagesByAgentIDParams{
-				AgentID: agentID,
-				Limit:   limit + 1,
-			})
-		}
-
+		// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
+		dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
 		if queryErr != nil {
 			slog.Error("failed to list messages", "agent_id", agentID, "error", queryErr)
 			sendInternalError(sender, "failed to list messages")
 			return
 		}
 
-		hasMore := int64(len(dbMessages)) > limit
+		hasMore := int64(len(dbMessages)) > plan.limit
 		if hasMore {
-			dbMessages = dbMessages[:limit]
+			dbMessages = dbMessages[:plan.limit]
 		}
 
-		// For BACKWARD and LATEST queries, results come in descending order;
-		// reverse them so the response is always in ascending seq order.
-		if beforeSeq > 0 || (afterSeq == 0 && beforeSeq == 0) {
-			for i, j := 0, len(dbMessages)-1; i < j; i, j = i+1, j-1 {
-				dbMessages[i], dbMessages[j] = dbMessages[j], dbMessages[i]
-			}
+		// LATEST and BEFORE come back descending; flip to ascending so the
+		// response is always ordered oldest-to-newest by seq.
+		if plan.mode.descending() {
+			reverseMessages(dbMessages)
 		}
 
 		protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
@@ -613,10 +615,25 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			protoMessages = append(protoMessages, messageToProto(&dbMessages[i]))
 		}
 
+		// The authoritative live-tail seq, so the --follow CLI can resolve a resume
+		// point even when this page is empty (never inferring a spurious seq 0 from an
+		// empty page on a populated agent). A query error degrades to -1 (the shared
+		// "indeterminate" sentinel), NOT 0: 0 means "the agent genuinely has no
+		// messages" (resume fresh), so a spurious 0 from an error would wrongly tell the
+		// CLI to drain from the start. -1 tells the consumer to fall back to its own
+		// loaded cursor instead. See ListAgentMessagesResponse.latest_seq.
+		latestSeq, maxErr := svc.Queries.GetMaxSeqByAgentID(ctx, agentID)
+		if maxErr != nil {
+			slog.Warn("failed to read max seq for list response", "agent_id", agentID, "error", maxErr)
+			latestSeq = -1
+		}
+
 		sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
-			Messages: protoMessages,
-			HasMore:  hasMore,
-			Todos:    todoevents.ItemsToProto(todoItems),
+			Messages:    protoMessages,
+			HasMore:     hasMore,
+			Todos:       todoevents.ItemsToProto(todoItems),
+			TodosLoaded: todosLoaded,
+			LatestSeq:   latestSeq,
 		})
 	})
 
@@ -675,10 +692,47 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		if err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
+		// Deletion is allowed ONLY for a FAILED USER message -- the single thing the UI
+		// ever deletes (retrying or dismissing a message that failed to reach the agent;
+		// see useAgentOperations.handleRetryMessage / handleDeleteMessage). Enforcing it
+		// here, not just client-side, keeps the windowing invariants intact: deleting an
+		// arbitrary DELIVERED message -- a mid-history row, a tool_use/tool_result span,
+		// or a reseq'd notification thread -- could strand a windowed reader's loaded rows
+		// above a vanished tail or orphan the (window-scoped) span index. A failed user
+		// message carries no span and sits where it was sent, so removing it can never
+		// drop the live tail below a delivered loaded row -- which is what makes the
+		// windowed client's delete reconcile (chatLiveTail.onDelete) provably safe.
+		row, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
+			ID:      messageID,
+			AgentID: agentID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			// Already gone (idempotent double-delete): the delete that removed it already
+			// broadcast the real seq, so respond OK and skip the broadcast.
+			sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
+			return
+		}
+		if err != nil {
+			slog.Error("failed to read message before delete", "agent_id", agentID, "message_id", messageID, "error", err)
+			sendInternalError(sender, "failed to delete message")
+			return
+		}
+		if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_USER || row.DeliveryError == "" {
+			sendInvalidArgument(sender, "only a failed user message can be deleted")
+			return
+		}
+
+		deletedSeq, err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
 			AgentID: agentID,
 			ID:      messageID,
-		}); err != nil {
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			// Raced with a concurrent delete between the read above and here: still an
+			// idempotent no-op -- the delete that won already broadcast the real seq.
+			sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
+			return
+		}
+		if err != nil {
 			slog.Error("failed to delete message", "agent_id", agentID, "message_id", messageID, "error", err)
 			sendInternalError(sender, "failed to delete message")
 			return
@@ -686,13 +740,27 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
 
-		// Broadcast deletion to all watchers.
+		// The authoritative new live tail AFTER the delete (0 if no rows remain). A
+		// windowed client whose loaded window lags the live tail sets its recorded
+		// live-tail seq to exactly this when the deleted row was that tail -- no
+		// guesswork. On the exceptional query-error path, degrade to the shared "-1"
+		// indeterminate sentinel rather than guessing deletedSeq - 1: the old guess
+		// under-reported a non-tail delete's tail and conflated a deleted seq 1 with
+		// "agent empty". -1 tells the client to leave its recorded tail unchanged (see
+		// AgentMessageDeleted.new_latest_seq / removeMessage), which is always safe.
+		newLatestSeq := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq after delete")
+
+		// Broadcast deletion to all watchers, carrying the deleted row's seq (so a
+		// windowed client can tell whether the deleted row was its recorded tail)
+		// and the authoritative new tail (so it can set the tail exactly).
 		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 			AgentId: agentID,
 			Event: &leapmuxv1.AgentEvent_MessageDeleted{
 				MessageDeleted: &leapmuxv1.AgentMessageDeleted{
-					AgentId:   agentID,
-					MessageId: messageID,
+					AgentId:      agentID,
+					MessageId:    messageID,
+					Seq:          deletedSeq,
+					NewLatestSeq: newLatestSeq,
 				},
 			},
 		})
@@ -1089,8 +1157,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// WatchEvents registers the channel as a watcher for agent/terminal events.
-	// It replays messages since afterSeq, sends a statusChange marker,
-	// replays pending control requests, then streams live events.
+	// It replays messages per each agent entry's replay mode (LATEST page, or
+	// AFTER_CURSOR from its cursor_seq), sends a statusChange marker, replays
+	// pending control requests, then streams live events.
 	// Access control: only agents/terminals in workspaces accessible to the
 	// user (via the channel's accessible_workspace_ids) are watched.
 	//
@@ -1132,7 +1201,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if len(requestedAgentIDs) > 0 {
 			rows, err := svc.Queries.ListAgentsByIDs(bgCtx(), requestedAgentIDs)
 			if err != nil {
-				slog.Warn("WatchEvents: ListAgentsByIDs failed", "error", err)
+				slog.Error("WatchEvents: ListAgentsByIDs failed", "error", err)
+				_ = sender.SendStream(&leapmuxv1.InnerStreamMessage{
+					IsError:      true,
+					ErrorCode:    int32(codes.Internal),
+					ErrorMessage: "failed to list agents",
+				})
+				return
 			}
 			for _, row := range rows {
 				agentRowsByID[row.ID] = row
@@ -1219,99 +1294,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		replayGitStatuses := gitutil.BatchGetGitStatus(bgCtx(), replayDirs)
 
-		// Process each verified agent entry: replay messages, send status.
+		// Process each verified agent entry: replay messages, send status. Each
+		// agent's catch-up is the same bracketed sequence (CatchUpStart -> message
+		// replay -> todo refresh -> status -> control-request replay -> CatchUpComplete);
+		// replayAgentCatchUp owns it so the replayStartTail/catchUpLatestSeq bracketing
+		// invariant is visible at one boundary.
 		for i, agentEntry := range verifiedAgents {
-			agentID := agentEntry.GetAgentId()
-			afterSeq := agentEntry.GetAfterSeq()
-
-			// Replay messages with seq > afterSeq (up to 50).
-			if afterSeq >= 0 {
-				messages, err := svc.Queries.ListMessagesByAgentID(bgCtx(), db.ListMessagesByAgentIDParams{
-					AgentID: agentID,
-					Seq:     afterSeq,
-					Limit:   50,
-				})
-				if err != nil {
-					slog.Error("failed to list messages for replay", "agent_id", agentID, "error", err)
-				} else {
-					for j := range messages {
-						broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
-							Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
-								AgentEvent: &leapmuxv1.AgentEvent{
-									AgentId: agentID,
-									Event: &leapmuxv1.AgentEvent_AgentMessage{
-										AgentMessage: messageToProto(&messages[j]),
-									},
-								},
-							},
-						})
-					}
-				}
-			}
-
-			// Send a statusChange marker (signals end of message replay).
-			dbAgent := verifiedAgentRows[i]
-			hasAgent := svc.Agents.HasAgent(agentID)
-			// Preload the cached option-group catalog from DB for inactive agents.
-			if !hasAgent {
-				svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
-			}
-			status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, hasAgent)
-			var statusChange *leapmuxv1.AgentStatusChange
-			switch status {
-			case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
-				statusChange = buildAgentStartingStatus(&dbAgent, startupMessage, replayGitStatuses[i])
-			case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
-				statusChange = buildAgentFailedStatus(&dbAgent, startupError, replayGitStatuses[i])
-			case leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE:
-				statusChange = svc.buildAgentActiveStatus(&dbAgent, replayGitStatuses[i])
-			default:
-				statusChange = buildAgentInactiveStatus(&dbAgent, replayGitStatuses[i])
-			}
-			broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
-				Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
-					AgentEvent: &leapmuxv1.AgentEvent{
-						AgentId: agentID,
-						Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: statusChange},
-					},
-				},
-			})
-
-			// Replay pending control requests.
-			controlReqs, err := svc.Queries.ListControlRequestsByAgentID(bgCtx(), agentID)
-			if err != nil {
-				slog.Error("failed to list control requests for replay", "agent_id", agentID, "error", err)
-			} else {
-				for _, cr := range controlReqs {
-					broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
-						Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
-							AgentEvent: &leapmuxv1.AgentEvent{
-								AgentId: agentID,
-								Event: &leapmuxv1.AgentEvent_ControlRequest{
-									ControlRequest: &leapmuxv1.AgentControlRequest{
-										AgentId:   agentID,
-										RequestId: cr.RequestID,
-										Payload:   cr.Payload,
-									},
-								},
-							},
-						},
-					})
-				}
-			}
-
-			// Send catch-up complete sentinel so the client knows replay
-			// for this agent is done and can transition to live phase.
-			broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
-				Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
-					AgentEvent: &leapmuxv1.AgentEvent{
-						AgentId: agentID,
-						Event: &leapmuxv1.AgentEvent_CatchUpComplete{
-							CatchUpComplete: &leapmuxv1.CatchUpComplete{},
-						},
-					},
-				},
-			})
+			svc.replayAgentCatchUp(sender, agentEntry, verifiedAgentRows[i], replayGitStatuses[i])
 		}
 
 		// Send the minimum screen bytes each verified terminal needs to
@@ -1371,6 +1360,165 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Stream stays open — events will be pushed via watcher.Sender.SendStream().
 		// The handler returns immediately; cleanup happens when the channel closes.
+	})
+}
+
+// replayAgentCatchUp replays one verified agent's catch-up burst to a freshly
+// (re)subscribed watcher: a CatchUpStart pre-trim marker, the bounded message replay,
+// the authoritative to-do snapshot, the status marker, pending control requests, and
+// the CatchUpComplete sentinel -- in that order. The CatchUpStart/CatchUpComplete
+// tail reads bracket the replay so a reconnecting client reaps only the
+// (latest_seq, start_tail_seq] phantom band and exempts live arrivals that raced in.
+func (svc *Context) replayAgentCatchUp(
+	sender *channel.Sender,
+	agentEntry *leapmuxv1.WatchAgentEntry,
+	dbAgent db.Agent,
+	gitStatus *leapmuxv1.AgentGitStatus,
+) {
+	agentID := agentEntry.GetAgentId()
+
+	// Pre-trim marker: read the authoritative live-tail seq and send it BEFORE
+	// the message replay, so a reconnecting windowed client drops phantom rows
+	// (a tail it loaded before disconnect that was deleted while it was away) up
+	// front, rather than flashing them until CatchUpComplete reconciles at the end.
+	// -1 on a query error tells the client to skip the reconcile (see
+	// CatchUpStart.latest_seq). The tail is re-read for CatchUpComplete below so the
+	// final authority reflects any message created mid-replay.
+	replayStartTail := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq for catch-up start")
+	broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_CatchUpStart{
+			CatchUpStart: &leapmuxv1.CatchUpStart{LatestSeq: replayStartTail},
+		},
+	})
+
+	// Replay up to maxMessagePageLimit messages so a just-subscribed client
+	// has recent context. A RESUMING subscriber (replay == AFTER_CURSOR) gets
+	// the forward catch-up (seq > cursor_seq). A FRESH subscriber (LATEST, or
+	// UNSPECIFIED defaulting to it) gets the LATEST page, matching the
+	// windowing client's own initial latest-page load (ListAgentMessages
+	// LATEST) so the two dedup -- replaying the OLDEST page here instead would
+	// splice the first messages in front of the latest window and tear a gap
+	// into the loaded history.
+	// Route the resume mode through the SAME resolveMessagePage the paginated
+	// ListAgentMessages handler uses (replayPageAnchor picks the anchor, mirroring
+	// the client's AgentWatchEntry), rather than hand-rolling the query choice.
+	replayAnchor := replayPageAnchor(agentEntry.GetReplay(), agentEntry.GetCursorSeq())
+	replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), maxMessagePageLimit)
+	replayMessages, replayErr := svc.fetchMessagePageRows(bgCtx(), agentID, replayPlan.mode, replayPlan.bound, replayPlan.limit)
+	// A LATEST plan comes back newest-first; reverse to ascending so the replay
+	// broadcasts oldest-to-newest like the forward path. (No has_more trim: the
+	// replay is a bounded best-effort burst, not a paginated read.)
+	if replayPlan.mode.descending() {
+		reverseMessages(replayMessages)
+	}
+	if replayErr != nil {
+		slog.Error("failed to list messages for replay", "agent_id", agentID, "error", replayErr)
+	} else {
+		for j := range replayMessages {
+			broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				// No replayed flag: message seqs are monotonic (a deleted seq is
+				// never reused, see message_seq_hwm), so a live frame is ALWAYS
+				// at seq > the consumer's forwarded high-water and a plain
+				// seq <= cursor dedup drops only true replay duplicates.
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: messageToProto(&replayMessages[j]),
+				},
+			})
+		}
+	}
+
+	// Refresh the to-do sidebar on (re)subscribe. A RESUMING client catches up
+	// via AFTER pages, and those (unlike the cold-start LATEST page) never carry
+	// the to-do snapshot; it also does NOT re-run its initial latest-page load
+	// (initialLoadComplete is sticky). So a to-do mutation it missed while
+	// disconnected would leave the sidebar stale until a manual jump-to-latest.
+	// Ship the authoritative current snapshot here so `todosChanged` -- the
+	// client's sole sidebar driver -- reconciles it on every subscribe. Harmless
+	// for a fresh client (idempotent with its cold-start snapshot, deduped by the
+	// store's wholesale replace) and ignored by the --follow CLI (which forwards
+	// only AgentMessage events).
+	if todoItems, todoErr := svc.Output.LoadTodos(bgCtx(), agentID); todoErr != nil {
+		slog.Warn("failed to load agent_todos for replay", "agent_id", agentID, "error", todoErr)
+	} else {
+		broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+			AgentId: agentID,
+			Event: &leapmuxv1.AgentEvent_TodosChanged{
+				TodosChanged: &leapmuxv1.AgentTodosChanged{
+					AgentId: agentID,
+					Todos:   todoevents.ItemsToProto(todoItems),
+				},
+			},
+		})
+	}
+
+	// Send a statusChange marker (signals end of message replay).
+	hasAgent := svc.Agents.HasAgent(agentID)
+	// Preload the cached option-group catalog from DB for inactive agents.
+	if !hasAgent {
+		svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
+	}
+	status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, hasAgent)
+	var statusChange *leapmuxv1.AgentStatusChange
+	switch status {
+	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
+		statusChange = buildAgentStartingStatus(&dbAgent, startupMessage, gitStatus)
+	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
+		statusChange = buildAgentFailedStatus(&dbAgent, startupError, gitStatus)
+	case leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE:
+		statusChange = svc.buildAgentActiveStatus(&dbAgent, gitStatus)
+	default:
+		statusChange = buildAgentInactiveStatus(&dbAgent, gitStatus)
+	}
+	broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: statusChange},
+	})
+
+	// Replay pending control requests.
+	controlReqs, err := svc.Queries.ListControlRequestsByAgentID(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("failed to list control requests for replay", "agent_id", agentID, "error", err)
+	} else {
+		for _, cr := range controlReqs {
+			broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_ControlRequest{
+					ControlRequest: &leapmuxv1.AgentControlRequest{
+						AgentId:   agentID,
+						RequestId: cr.RequestID,
+						Payload:   cr.Payload,
+					},
+				},
+			})
+		}
+	}
+
+	// Send catch-up complete sentinel so the client knows replay for this
+	// agent is done and can transition to live phase. Carry the authoritative
+	// live-tail seq (highest existing message seq) so a client that missed
+	// deletions while disconnected can drop phantom rows beyond it and clamp
+	// its recorded live-tail (see CatchUpComplete.latest_seq). On a query error
+	// send -1 (NOT 0): the client trims rows strictly above latest_seq, so a
+	// genuine 0 (empty agent) correctly drops a fully-deleted window, while a
+	// spurious 0 would wrongly wipe a populated one -- the negative sentinel
+	// tells the client "couldn't determine, skip reconciliation".
+	catchUpLatestSeq := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq for catch-up complete")
+	broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_CatchUpComplete{
+			// start_tail_seq = the tail when replay began (CatchUpStart's value),
+			// so the client reaps only the (latest_seq, start_tail_seq] phantom band
+			// and exempts live arrivals that raced in during catch-up (seq above it).
+			// No replay_has_more: a bounded replay's gap is closed by the client's
+			// CONTINUOUS tail-reconcile (the loaded window lagging the recorded live
+			// tail), not a per-frame flag.
+			CatchUpComplete: &leapmuxv1.CatchUpComplete{
+				LatestSeq:    catchUpLatestSeq,
+				StartTailSeq: replayStartTail,
+			},
+		},
 	})
 }
 
@@ -2103,18 +2251,9 @@ func (svc *Context) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
-	agentOpts := agent.Options{
-		AgentID:         agentID,
-		WorkingDir:      dbAgent.WorkingDir,
-		ResumeSessionID: resumeSessionID,
-		Options:         newOptions,
-		StartupTimeout:  svc.agentStartupTimeout(),
-		APITimeout:      svc.agentAPITimeout(),
-		Shell:           svc.agentShell(),
-		LoginShell:      svc.agentLoginShell(),
-		HomeDir:         svc.HomeDir,
-		AgentProvider:   provider,
-	}
+	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
+	agentOpts.ResumeSessionID = resumeSessionID
+	agentOpts.Options = newOptions
 
 	sink := svc.Output.NewSink(agentID, provider)
 
@@ -2386,16 +2525,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	// isWatchable. On success, handleSystemInit will overwrite it with the
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
-	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
-		AgentID:        agentID,
-		WorkingDir:     dbAgent.WorkingDir,
-		StartupTimeout: svc.agentStartupTimeout(),
-		APITimeout:     svc.agentAPITimeout(),
-		Shell:          svc.agentShell(),
-		LoginShell:     svc.agentLoginShell(),
-		HomeDir:        svc.HomeDir,
-		AgentProvider:  dbAgent.AgentProvider,
-	}, &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
 	if err != nil {
@@ -2510,17 +2640,8 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// silent — the bubble pulses but no progress affordance is shown.
 	svc.broadcastAgentStarting(&dbAgent, agentStartupLabel("Starting", dbAgent.AgentProvider), nil)
 
-	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
-		AgentID:         agentID,
-		WorkingDir:      dbAgent.WorkingDir,
-		ResumeSessionID: resumeSessionID,
-		StartupTimeout:  svc.agentStartupTimeout(),
-		APITimeout:      svc.agentAPITimeout(),
-		Shell:           svc.agentShell(),
-		LoginShell:      svc.agentLoginShell(),
-		HomeDir:         svc.HomeDir,
-		AgentProvider:   dbAgent.AgentProvider,
-	}, &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	launchOptions.ResumeSessionID = resumeSessionID
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
 	if err != nil {
@@ -3249,16 +3370,7 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	// Restart agent with plan content. Use svc.startAgent — the
 	// test-injectable wrapper that forwards to svc.Agents.StartAgent in
 	// production — so unit tests can stub the restart out.
-	launchOptions := applyDBSettingsToAgentOptions(agent.Options{
-		AgentID:        agentID,
-		WorkingDir:     dbAgent.WorkingDir,
-		StartupTimeout: svc.agentStartupTimeout(),
-		APITimeout:     svc.agentAPITimeout(),
-		Shell:          svc.agentShell(),
-		LoginShell:     svc.agentLoginShell(),
-		HomeDir:        svc.HomeDir,
-		AgentProvider:  dbAgent.AgentProvider,
-	}, &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	// Plan execution forces the target permission mode (e.g. acceptEdits).
 	// applyDBSettingsToAgentOptions populated a fresh Options map, so writing the
 	// key here is safe (no shared aliasing).
@@ -3305,6 +3417,18 @@ func parseSetPermissionMode(content string) (string, bool) {
 	return msg.Request.Mode, true
 }
 
+// broadcastReplayAgentEvent wraps an AgentEvent in the WatchEventsResponse
+// envelope and sends it to a single subscriber -- the single-sender twin of
+// WatcherManager.BroadcastAgentEvent (which fans the same envelope out to all
+// watchers). The WatchEvents replay loop emits several agent events this way, so
+// routing them through one helper keeps the four-level envelope from being
+// re-spelled (and the AgentId mis-filled) per event.
+func broadcastReplayAgentEvent(sender *channel.Sender, event *leapmuxv1.AgentEvent) {
+	broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
+	})
+}
+
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.
 func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResponse) {
 	slog.Debug("stream payload", "payload", protojson.Format(resp))
@@ -3316,6 +3440,139 @@ func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResp
 	_ = sender.SendStream(&leapmuxv1.InnerStreamMessage{
 		Payload: payload,
 	})
+}
+
+// maxMessagePageLimit is the hub-enforced ceiling on a ListAgentMessages page
+// size: a request asking for more (or for a non-positive count) is clamped to
+// this. Mirrored in the proto doc comment and the CLI flag help.
+const maxMessagePageLimit = 50
+
+// messagePageMode is the DB scan resolveMessagePage selects for an anchor.
+type messagePageMode int
+
+const (
+	// messagePageAscending pages forward by seq > bound (OLDEST / AFTER).
+	messagePageAscending messagePageMode = iota
+	// messagePageBefore pages backward by seq < bound, fetched descending (BEFORE).
+	messagePageBefore
+	// messagePageLatest returns the most recent page, fetched descending
+	// (LATEST / UNSPECIFIED / any unknown anchor).
+	messagePageLatest
+)
+
+// descending reports whether the mode's query returns rows in DESCENDING seq order
+// (so the caller must reverse them to ascending). It is the single source of that
+// fact: fetchMessagePageRows routes exactly these modes to the descending queries,
+// so a new mode's reverse-direction follows from the mode itself rather than a
+// separately-maintained flag that could drift out of step with the query routing.
+func (m messagePageMode) descending() bool {
+	return m == messagePageBefore || m == messagePageLatest
+}
+
+// messagePagePlan is the resolved, query-agnostic decision for one
+// ListAgentMessages request: which scan to run, the seq bound, and the clamped page
+// size. Whether the result needs reversing to ascending is derived from
+// mode.descending(), not stored, so it can't disagree with the query routing.
+type messagePagePlan struct {
+	mode messagePageMode
+	// bound is the seq lower bound (ascending: seq > bound) or exclusive upper
+	// bound (before: seq < bound); unused for the latest page.
+	bound int64
+	// limit is the clamped page size; the caller fetches limit+1 to probe has_more.
+	limit int64
+}
+
+// replayPageAnchor maps a WatchEvents resume (replay mode + cursor) to the
+// MessagePageAnchor its replay query uses -- the worker-side mirror of the client's
+// AgentWatchEntry (which maps the resume cursor to the replay mode). AFTER_CURSOR with
+// a real (positive) cursor pages forward (AFTER seq > cursor); everything else -- a
+// fresh LATEST/UNSPECIFIED subscribe, OR an AFTER_CURSOR whose cursor is non-positive
+// (a malformed client: seqs are assigned from 1, so "after <= 0" names no resume
+// point) -- replays the LATEST page. Mapping a non-positive AFTER_CURSOR to AFTER
+// instead would scan seq > 0 and return the OLDEST page, splicing the first messages
+// in front of the latest window. Pure, so the routing is unit-testable.
+func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmuxv1.MessagePageAnchor {
+	if replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR && cursorSeq > 0 {
+		return leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
+	}
+	return leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST
+}
+
+// maxSeqOrIndeterminate reads the agent's live-tail seq on a background context,
+// returning the shared -1 "indeterminate" sentinel (after logging logMsg) on a
+// query error. -1 (NOT 0) is deliberate: 0 means the agent is genuinely empty, so a
+// spurious 0 from an error would wrongly wipe a populated window / drain from the
+// start, while -1 tells the consumer to skip reconciliation and keep its own cursor.
+// Shared by the delete, catch-up-start, and catch-up-complete broadcasts so the
+// sentinel rule lives in one place. The synchronous list-response handler does NOT
+// use this -- it reads max seq on the cancellable request ctx and logs an expected
+// cancellation at Warn, not Error.
+func (svc *Context) maxSeqOrIndeterminate(agentID, logMsg string) int64 {
+	seq, err := svc.Queries.GetMaxSeqByAgentID(bgCtx(), agentID)
+	if err != nil {
+		slog.Error(logMsg, "agent_id", agentID, "error", err)
+		return -1
+	}
+	return seq
+}
+
+// resolveMessagePage maps an anchor + cursor + caller limit to a query plan.
+// Pure (no ctx / DB), so the anchor routing and the cursor/limit clamps are unit
+// testable without a database. OLDEST is AFTER from the very first message: both
+// scan ascending, OLDEST with bound 0 (ignoring the cursor), AFTER from
+// cursor_seq. Seqs are positive (assigned from 1), so a negative cursor is
+// malformed and clamps to 0; with bound 0 the natural boundary results hold
+// (AFTER returns from the oldest message, BEFORE returns empty).
+func resolveMessagePage(anchor leapmuxv1.MessagePageAnchor, cursorSeq, limit int64) messagePagePlan {
+	if limit <= 0 || limit > maxMessagePageLimit {
+		limit = maxMessagePageLimit
+	}
+	if cursorSeq < 0 {
+		cursorSeq = 0
+	}
+	switch anchor {
+	case leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST:
+		return messagePagePlan{mode: messagePageAscending, bound: 0, limit: limit}
+	case leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER:
+		return messagePagePlan{mode: messagePageAscending, bound: cursorSeq, limit: limit}
+	case leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_BEFORE:
+		return messagePagePlan{mode: messagePageBefore, bound: cursorSeq, limit: limit}
+	default: // LATEST, UNSPECIFIED, or any unknown anchor.
+		return messagePagePlan{mode: messagePageLatest, limit: limit}
+	}
+}
+
+// fetchMessagePageRows runs the query a resolved page plan selects, returning the
+// rows in the query's NATURAL order (ascending for AFTER/OLDEST, descending for
+// BEFORE/LATEST -- the caller reverses when plan.mode.descending(), after any
+// has_more trim).
+// Shared by the paginated ListAgentMessages handler and the WatchEvents replay so
+// the mode->query decision lives in one place rather than being hand-rolled twice.
+// `limit` is the row cap (the handler passes plan.limit+1 to detect has_more; the
+// replay passes the bare cap, having no has_more to report).
+func (svc *Context) fetchMessagePageRows(ctx context.Context, agentID string, mode messagePageMode, bound, limit int64) ([]db.Message, error) {
+	switch mode {
+	case messagePageAscending:
+		// Ascending page from `bound`: OLDEST starts at seq > 0 (the earliest page),
+		// AFTER at seq > cursor_seq (scroll-down / catch-up / forward resume).
+		return svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: agentID, Seq: bound, Limit: limit})
+	case messagePageBefore:
+		// Older page: seq < cursor_seq, fetched descending, reversed by the caller.
+		return svc.Queries.ListMessagesByAgentIDReverse(ctx, db.ListMessagesByAgentIDReverseParams{AgentID: agentID, Seq: bound, Limit: limit})
+	default: // messagePageLatest (LATEST / UNSPECIFIED / any unknown anchor)
+		// Most recent page, fetched descending, reversed by the caller.
+		return svc.Queries.ListLatestMessagesByAgentID(ctx, db.ListLatestMessagesByAgentIDParams{AgentID: agentID, Limit: limit})
+	}
+}
+
+// reverseMessages flips a []db.Message in place. The descending-order queries
+// (ListLatest / ListReverse) come back newest-first; both the paged read and the
+// fresh-subscriber replay normalize to ascending-by-seq so every consumer sees
+// one ordering.
+func reverseMessages(msgs []db.Message) {
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
 }
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.

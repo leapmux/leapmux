@@ -7,6 +7,7 @@ import type { CliPathStatus } from '~/api/platformBridge'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { GetGitFileStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { Tab } from '~/stores/tab.types'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, Match, on, Show, Switch, untrack } from 'solid-js'
@@ -728,7 +729,7 @@ export const AppShell: ParentComponent = (props) => {
   const toggleLeftSidebarRef = createImperativeRef<() => void>()
   const toggleRightSidebarRef = createImperativeRef<() => void>()
   const focusEditorRef = createImperativeRef<() => void>()
-  const getScrollStateRef = createImperativeRef<() => { distFromBottom: number, atBottom: boolean } | undefined>()
+  const getScrollStateRef = createImperativeRef<() => SavedViewportScroll | undefined>()
   const forceScrollToBottomRef = createImperativeRef<() => void>()
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
 
@@ -863,7 +864,7 @@ export const AppShell: ParentComponent = (props) => {
     const tab = activeTab()
     if (tab?.type !== TabType.AGENT)
       return []
-    return chatStore.getTodos(tab.id)
+    return chatStore.todos.get(tab.id)
   })
 
   const showTodos = createMemo(() => activeTabType() === TabType.AGENT && activeTodos().length > 0)

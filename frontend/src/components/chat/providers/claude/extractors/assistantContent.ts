@@ -1,6 +1,7 @@
 import type { ContentBlock } from '~/lib/contentBlocks'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { asContentArray, getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
-import { isObject } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
  * Extract `message.content` array from a Claude `{type: 'assistant',
@@ -21,6 +22,24 @@ export function getAssistantContent(parsed: unknown): ContentBlock[] | null {
  */
 export function getMessageContentArray(parsed: unknown): ContentBlock[] | null {
   return isObject(parsed) ? getMessageContent(parsed) : null
+}
+
+/** Extract tool name and input from a parsed Claude tool_use message. */
+export function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: string, input: Record<string, unknown> } | null {
+  const obj = parsed.parentObject
+  if (!obj)
+    return null
+  const content = getAssistantContent(obj)
+  if (!content)
+    return null
+  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
+  if (!toolUse)
+    return null
+  const toolData = toolUse as Record<string, unknown>
+  return {
+    toolName: pickString(toolData, 'name'),
+    input: pickObject(toolData, 'input', {}),
+  }
 }
 
 /**

@@ -6,6 +6,7 @@ import type { LastTabCloseChoice, LastTabConfirmState } from '~/components/shell
 import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createChatStore } from '~/stores/chat.store'
+import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -36,7 +37,7 @@ interface UseTabOperationsOpts {
   activeTab: () => Tab | undefined
   getCurrentTabContext: () => TabContext
   focusEditor: () => void
-  getScrollState: () => { distFromBottom: number, atBottom: boolean } | undefined
+  getScrollState: () => SavedViewportScroll | undefined
   setFileTreePath: (path: string) => void
   /** Org id used for file-tab E2EE worker RPCs. */
   getOrgId: () => string | undefined
@@ -101,8 +102,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // visible, schedules a rAF that clears the saved state, and by the
     // time the user switches back the saved state is gone.
     batch(() => {
-      if (prevAgentId && scrollState !== undefined) {
-        chatStore.saveViewportScroll(prevAgentId, scrollState.distFromBottom, scrollState.atBottom)
+      if (prevAgentId) {
+        // The previous tab is still visible here, so getScrollState() returning
+        // undefined means there is genuinely nothing to restore (the list ref is
+        // gone or the pane has zero height). An all-hidden window scrolled away
+        // from the bottom returns a raw-scrollTop fallback instead, which we save.
+        // Clear any stale save from a prior visit rather than leaving it to
+        // restore the wrong position -- viewportScroll.set only writes, never clears.
+        if (scrollState !== undefined)
+          chatStore.viewportScroll.set(prevAgentId, scrollState)
+        else
+          chatStore.viewportScroll.clear(prevAgentId)
       }
       tabStore.activateTab(tab.tileId ?? '', tab.type, tab.id)
     })
@@ -118,7 +128,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       && prevTab.tileId === tab.tileId
       && chatStore.getMessages(prevAgentId).length > MAX_BACKGROUND_CHAT_MESSAGES
     ) {
-      chatStore.trimOldMessages(prevAgentId, MAX_BACKGROUND_CHAT_MESSAGES)
+      chatStore.trimOldestEnd(prevAgentId, MAX_BACKGROUND_CHAT_MESSAGES)
     }
 
     if (tab.type === TabType.AGENT) {

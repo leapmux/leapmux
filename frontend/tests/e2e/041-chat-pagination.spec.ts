@@ -44,5 +44,25 @@ test.describe('Chat Pagination & Scroll', () => {
       const seqValue = await seqElements.nth(i).getAttribute('data-seq')
       expect(Number(seqValue)).toBeGreaterThan(0)
     }
+
+    // Virtualized rows are absolutely positioned via translateY inside the
+    // spacer. The first row sits at offset 0 (transform 'none'), so assert on a
+    // LATER row instead — a non-zero translateY computes to a matrix(...), which
+    // actually proves the virtualizer laid rows out rather than trivially
+    // accepting the first row's 'none'.
+    if (count > 1) {
+      const lastTransform = await seqElements.last().evaluate(el => getComputedStyle(el).transform)
+      expect(lastTransform).toMatch(/^matrix/)
+    }
+    else {
+      const transform = await seqElements.first().evaluate(el => getComputedStyle(el).transform)
+      expect(transform === 'none' || transform.startsWith('matrix')).toBe(true)
+    }
+
+    // Stick-to-bottom must survive virtualization: after a streamed turn while
+    // at the bottom, the viewport stays pinned to the live tail.
+    const scroller = page.locator('[data-chat-scroll-container="true"]')
+    const distFromBottom = await scroller.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)
+    expect(distFromBottom).toBeLessThan(40)
   })
 })

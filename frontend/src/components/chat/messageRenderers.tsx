@@ -5,7 +5,8 @@ import type { MessageUiKey } from './messageUiKeys'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
@@ -20,7 +21,7 @@ import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
-import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { pluginFor } from './providers/registry'
 import {
   toolInputText,
@@ -56,6 +57,16 @@ export interface RenderContext {
   jsonCopied?: () => boolean
   /** Whether thinking/reasoning bubbles should start expanded by default. */
   expandAgentThoughts?: boolean
+  /**
+   * The per-message UI key for this row's EXPAND toggle (thinking/reasoning/plan/
+   * agent-prompt bubble), resolved ONCE from the row's kind+provider via
+   * `expandedUiKeyFor`. The thinking-style renderers read it instead of a hand-typed
+   * literal, so they read the SAME key the off-screen height estimator assumed
+   * (ChatView's `expandedStateFor`, which calls the same mapper) -- the two can't
+   * drift. Absent only when a row is rendered without a MessageBubble context
+   * (isolated tests/previews), where each renderer falls back to its own literal.
+   */
+  expandUiKey?: MessageUiKey
   /** Pre-parsed tool_use message for tool_result bubbles to inspect (cached by the store). */
   toolUseParsed?: ParsedMessageContent
   /** Pre-parsed tool_result message for tool_use bubbles to inspect (cached by the store). */
@@ -84,13 +95,17 @@ export interface MessageContentRenderer {
  * Centralizes the `?.() ?? false` boilerplate every shared result body needs.
  */
 export function getToolResultExpanded(context: RenderContext | undefined): boolean {
-  return context?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED) ?? false
+  return context?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+    ?? messageUiDefault(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
 }
 
 export function useSharedExpandedState(
   getContext: () => RenderContext | undefined,
   key: MessageUiKey,
-  initial: () => boolean = () => false,
+  // Defaults to the key's shared MESSAGE_UI_DEFAULTS entry (resolved against the
+  // context's expandAgentThoughts pref); a renderer with a per-row default passes
+  // its own thunk to override it.
+  initial: () => boolean = () => messageUiDefault(key, { expandAgentThoughts: getContext()?.expandAgentThoughts }),
 ): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
   const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? initial()
@@ -125,14 +140,12 @@ export function ThinkingBubble(props: {
   label: string
   stateKey: MessageUiKey
   context?: RenderContext
-  defaultExpanded?: boolean
 }): JSX.Element {
   const stateKey = untrack(() => props.stateKey)
-  const [expanded, setExpanded] = useSharedExpandedState(
-    () => props.context,
-    stateKey,
-    () => props.defaultExpanded ?? props.context?.expandAgentThoughts ?? true,
-  )
+  // The default-expanded value comes from the stateKey's MESSAGE_UI_DEFAULTS entry
+  // (THINKING / CODEX_REASONING follow expandAgentThoughts; PLAN_EXECUTION collapses)
+  // via useSharedExpandedState, so the renderer and the height estimator can't drift.
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
 
   return (
     <>
@@ -157,11 +170,13 @@ export function ThinkingBubble(props: {
 }
 
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={MESSAGE_UI_KEY.THINKING} context={props.context} />
+  // Key from the shared classification mapper (context.expandUiKey) so it matches
+  // the estimator's pre-mount assumption; the literal is the context-less fallback.
+  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING} context={props.context} />
 }
 
 export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={MESSAGE_UI_KEY.PLAN_EXECUTION} context={props.context} defaultExpanded={false} />
+  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION} context={props.context} />
 }
 
 /**

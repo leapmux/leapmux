@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
-import type { TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
 import { For } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
-import { isTerminalTodoStatus, todoDisplayLabel } from '~/stores/chat.store'
+import { isTerminalTodoStatus, todoDisplayLabel } from '~/stores/chatTodos'
 import { TaskCheckbox } from './TaskCheckbox'
 import * as styles from './TodoList.css'
 

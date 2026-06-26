@@ -14,8 +14,8 @@ describe('fileBrowserStore', () => {
   it('sets path and entries', () => {
     const store = createFileBrowserStore()
     const entries: FileInfo[] = [
-      { $typeName: 'leapmux.v1.FileInfo', name: 'src', path: '/src', isDir: true, size: 0n, modTime: '', permissions: '' },
-      { $typeName: 'leapmux.v1.FileInfo', name: 'main.go', path: '/main.go', isDir: false, size: 1024n, modTime: '', permissions: '' },
+      { $typeName: 'leapmux.v1.FileInfo', name: 'src', path: '/src', isDir: true, size: 0n, modTime: '', permissions: '', hidden: false },
+      { $typeName: 'leapmux.v1.FileInfo', name: 'main.go', path: '/main.go', isDir: false, size: 1024n, modTime: '', permissions: '', hidden: false },
     ]
     store.setPath('/project')
     store.setEntries(entries)

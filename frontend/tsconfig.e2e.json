@@ -1,0 +1,11 @@
+{
+  // E2E specs run under Playwright, NOT vitest/jsdom -- their `test`/`expect` and the
+  // Node built-ins they use (node:fs, node:child_process, ...) need a different ambient
+  // type set than the unit suite. Kept as a SEPARATE project so the main tsconfig stays
+  // vitest-typed; `bun run typecheck:e2e` checks this one.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@playwright/test", "node"]
+  },
+  "include": ["tests/e2e"]
+}

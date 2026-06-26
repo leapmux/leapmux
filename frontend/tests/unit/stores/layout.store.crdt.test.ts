@@ -114,7 +114,7 @@ describe('createLayoutStore (projection-driven)', () => {
           return `tombstoneNode:${op.body.value.nodeId}`
         if (op.body.case === 'setNodeRegister' && op.body.value.field?.case === 'kind')
           return `setNodeKind:${op.body.value.nodeId}`
-        return op.body.case
+        return op.body.case ?? ''
       })
       expect(opCases.some(c => c.startsWith('tombstoneNode:'))).toBe(true)
       expect(opCases).toContain('setNodeKind:root-leaf')

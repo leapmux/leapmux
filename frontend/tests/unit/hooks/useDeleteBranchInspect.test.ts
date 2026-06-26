@@ -86,7 +86,6 @@ describe('useDeleteBranchInspect', () => {
         workerId: 'w1',
         gitToplevel: '/repo',
         branchName: null,
-        isWorktree: false,
         onError: () => {},
       })
       await flushMicrotasks()
@@ -127,7 +126,6 @@ describe('useDeleteBranchInspect', () => {
         workerId: 'w1',
         gitToplevel: '/repo',
         branchName: 'doomed',
-        isWorktree: false,
         onError,
       })
       await flushMicrotasks()

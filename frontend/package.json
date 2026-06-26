@@ -16,7 +16,8 @@
     "test:e2e": "bun scripts/run-e2e.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && bun run typecheck:e2e",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.0",

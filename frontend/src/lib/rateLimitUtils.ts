@@ -47,16 +47,63 @@ export function* iterCodexRateLimitTiers(payload: Record<string, unknown> | null
   }
 }
 
+/**
+ * The one Codex `rateLimitReachedType` that lifts on the rolling-window timer
+ * (the others are billing/usage caps). Mirrors the backend constant of the same
+ * name; used to elevate a rounded-under-100 window to "exceeded".
+ */
+export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = 'rate_limit_reached'
+
+/**
+ * Codex `rateLimitReachedType` values (snake_case, from the v2 RateLimitSnapshot)
+ * mapped to display labels. `rate_limit_reached` is the time-windowed limit that
+ * lifts on its own; the others are billing/usage caps that a reset timer won't
+ * clear. Newer Codex builds emit this snapshot-level field; older builds omit it.
+ */
+export const CODEX_RATE_LIMIT_REACHED_LABELS: Record<string, string> = {
+  rate_limit_reached: 'Rate limit reached',
+  workspace_owner_credits_depleted: 'Out of credits',
+  workspace_member_credits_depleted: 'Out of credits',
+  workspace_owner_usage_limit_reached: 'Usage limit reached',
+  workspace_member_usage_limit_reached: 'Usage limit reached',
+}
+
+/**
+ * Read the snapshot-level `rateLimitReachedType` from a Codex
+ * `account/rateLimits/updated` payload. This is Codex's authoritative
+ * "an actual limit was hit" signal -- present even when no rolling window is over
+ * its threshold (e.g. credit depletion) -- so it must be surfaced independently
+ * of the per-tier usedPercent classification. Returns undefined when absent or
+ * empty (older Codex builds, or a routine non-blocking update).
+ */
+export function codexRateLimitReachedType(payload: Record<string, unknown> | null | undefined): string | undefined {
+  const rl = pickObject(pickObject(payload, 'params'), 'rateLimits')
+  const t = rl?.rateLimitReachedType
+  return typeof t === 'string' && t.length > 0 ? t : undefined
+}
+
+/** Human-readable label for a Codex rateLimitReachedType, with a generic fallback. */
+export function formatCodexRateLimitReached(reachedType: string): string {
+  return CODEX_RATE_LIMIT_REACHED_LABELS[reachedType] ?? 'Rate limit reached'
+}
+
 /** Convert a Codex rate limit tier to RateLimitInfo. */
 export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLimitInfo {
-  const usedPercent = tier.usedPercent as number ?? 0
-  const windowMins = tier.windowDurationMins as number
-  const rateLimitType = WINDOW_DURATION_TYPES[windowMins]
-    ?? (windowMins >= 1440 ? `${Math.round(windowMins / 1440)}_day` : `${Math.round(windowMins / 60)}_hour`)
+  // `tier` is wire-shaped `Record<string, unknown>`, so coerce defensively rather than
+  // `as number`: a non-numeric usedPercent (a malformed/replayed payload) would otherwise
+  // produce a NaN utilization and an 'allowed' status that disagrees with the backend's
+  // typed float64 classification. A missing/non-numeric windowDurationMins falls back to
+  // an empty type key (no `NaN_hour`).
+  const usedPercent = typeof tier.usedPercent === 'number' ? tier.usedPercent : 0
+  const windowMins = typeof tier.windowDurationMins === 'number' ? tier.windowDurationMins : undefined
+  const rateLimitType = windowMins === undefined
+    ? ''
+    : WINDOW_DURATION_TYPES[windowMins]
+      ?? (windowMins >= 1440 ? `${Math.round(windowMins / 1440)}_day` : `${Math.round(windowMins / 60)}_hour`)
   return {
     rateLimitType,
     utilization: usedPercent / 100,
-    resetsAt: tier.resetsAt as number | undefined,
+    resetsAt: typeof tier.resetsAt === 'number' ? tier.resetsAt : undefined,
     status: usedPercent >= 100 ? 'exceeded' : usedPercent >= 80 ? 'allowed_warning' : 'allowed',
   }
 }

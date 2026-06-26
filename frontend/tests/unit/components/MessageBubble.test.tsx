@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
@@ -149,6 +150,41 @@ describe('result_divider dispatch', () => {
     const bubble = screen.getByTestId('message-content')
     expect(bubble).toHaveTextContent('Took 1.1s')
     expect(bubble).not.toHaveTextContent('duration_ms')
+  })
+
+  it('marks a result-divider error <pre> (non-markdown) so its copy button positions top-right', async () => {
+    // The error detail renders in a bare <pre class={resultErrorDetail}> OUTSIDE
+    // `.markdownContent`. injectCopyButtons still adds a copy button to it; the fix is the
+    // `code-copy-host` marker, which carries the absolute top-right positioning + relative
+    // anchor so the button no longer falls inline at the end of the error text.
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      content: rawContent({
+        type: 'result',
+        is_error: true,
+        subtype: 'error_during_execution',
+        result: '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use',
+        duration_ms: 261000,
+      }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    expect(content).toHaveTextContent('Error during execution')
+    const pre = content.querySelector('pre')
+    expect(pre).toBeInTheDocument()
+    expect(pre).toHaveTextContent('ede_diagnostic')
+
+    await waitFor(() => {
+      expect(pre!.querySelector('.copy-code-button')).toBeInTheDocument()
+      expect(pre!.classList.contains(codeCopyHostClass)).toBe(true)
+    })
   })
 })
 
@@ -465,7 +501,7 @@ describe('messageBubble rawJson', () => {
     expect(envelope.span_lines).toBe('[{"span_id": "broken"')
   })
 
-  it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', () => {
+  it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', async () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
       content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
@@ -479,11 +515,80 @@ describe('messageBubble rawJson', () => {
 
     const content = screen.getByTestId('message-content')
     expect(content.querySelector('pre')).toBeInTheDocument()
-    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
 
     const toolbar = screen.getByTestId('message-toolbar')
     expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
     expect(view.container.querySelector('[data-code-copy="false"]')).toBeInTheDocument()
+
+    // Copy-button injection is deferred to idle, so a synchronous "no button" check would
+    // pass regardless of whether the skip logic works. Advance PAST idle to prove the
+    // `data-code-copy="false"` skip actually runs: the <pre> gets neither a copy button
+    // nor the code-copy-host positioning marker.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+    expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
+  })
+
+  it('re-injects the copy button after the content re-renders (async highlight swap)', async () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    // The code block renders and the copy button is injected (deferred to idle).
+    const pre = await waitFor(() => {
+      const p = content.querySelector('pre')
+      expect(p).toBeInTheDocument()
+      expect(p!.querySelector('.copy-code-button')).toBeInTheDocument()
+      return p!
+    })
+
+    // Simulate the async highlight swap: the worker's highlighted HTML replaces the
+    // placeholder's innerHTML, wiping the injected button. The observer must re-inject it.
+    const mdBody = pre.parentElement!
+    mdBody.innerHTML = '<pre class="shiki"><code class="language-js">const x = 1</code></pre>'
+    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+
+    await waitFor(() => {
+      const swapped = content.querySelector('pre')!
+      expect(swapped.querySelector('.copy-code-button')).toBeInTheDocument()
+      expect(swapped.classList.contains(codeCopyHostClass)).toBe(true)
+    })
+  })
+
+  it('does not re-inject the copy button when it is clicked (so its "Copied" state survives)', async () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    const btn = await waitFor(() => {
+      const b = content.querySelector('.copy-code-button')
+      expect(b).toBeInTheDocument()
+      return b!
+    })
+
+    // Clicking copy flips the IconButton's icon (Copy -> Check): a subtree mutation under
+    // contentRef. The observer must IGNORE button-internal mutations -- re-injecting would
+    // dispose this button mid-click and wipe its transient "Copied" checkmark.
+    fireEvent.click(btn)
+    await new Promise(resolve => setTimeout(resolve, 20)) // past the idle debounce
+    // SAME node still in place -> no re-injection fired for the button's own mutation.
+    expect(content.querySelector('.copy-code-button')).toBe(btn)
   })
 })
 

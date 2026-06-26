@@ -1,4 +1,5 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
@@ -64,5 +65,51 @@ describe('agent info card session ID row', () => {
     render(() => <InfoCardContent agent={agent(AgentProvider.CLAUDE_CODE, 'claude-session-123')} />)
 
     expect(screen.getByTestId('session-id-value')).toHaveTextContent('claude-session-123')
+  })
+})
+
+describe('agent info card rate-limit rows', () => {
+  // Unix seconds in the future, for a deterministically-positive reset countdown.
+  const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
+
+  function InfoCardWithInfo(props: { agent: AgentInfo, agentSessionInfo: AgentSessionInfo }) {
+    const { infoHoverCardContent } = useAgentInfoCard(props)
+    return <div>{infoHoverCardContent()}</div>
+  }
+
+  it('renders a warning tier with label, utilization, and countdown', () => {
+    const { container } = render(() => (
+      <InfoCardWithInfo
+        agent={agent(AgentProvider.CODEX, 's')}
+        agentSessionInfo={{
+          rateLimits: {
+            five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85, resetsAt: future(3600) },
+          },
+        }}
+      />
+    ))
+    const text = container.textContent ?? ''
+    expect(text).toContain('5-Hour Rate Limit')
+    expect(text).toContain('Warning')
+    expect(text).toContain('85% used')
+    expect(text).toContain('resets in')
+  })
+
+  it('renders a Claude "rejected" tier as Exceeded without a redundant utilization', () => {
+    const { container } = render(() => (
+      <InfoCardWithInfo
+        agent={agent(AgentProvider.CLAUDE_CODE, 's')}
+        agentSessionInfo={{
+          rateLimits: {
+            seven_day: { rateLimitType: 'seven_day', status: 'rejected', utilization: 1, resetsAt: future(7200) },
+          },
+        }}
+      />
+    ))
+    const text = container.textContent ?? ''
+    expect(text).toContain('7-Day Rate Limit')
+    expect(text).toContain('Exceeded')
+    expect(text).toContain('resets in')
+    expect(text).not.toContain('% used')
   })
 })

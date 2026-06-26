@@ -6,8 +6,8 @@ import { readResp, statResp } from '../helpers/workerRpcMocks'
 
 const statFileImpl = vi.fn()
 const readFileImpl = vi.fn()
-const readGitFileImpl = vi.fn(async () => ({ exists: false, content: new Uint8Array() }))
-const downloadImpl = vi.fn(() => Promise.resolve())
+const readGitFileImpl = vi.fn(async (..._args: unknown[]) => ({ exists: false, content: new Uint8Array() }))
+const downloadImpl = vi.fn((..._args: unknown[]) => Promise.resolve())
 
 vi.mock('~/api/workerRpc', () => ({
   statFile: (...args: unknown[]) => statFileImpl(...args),

@@ -1,4 +1,5 @@
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import { getOrCreate } from '~/lib/getOrCreate'
 
 /**
  * Per-provider cache of option display names, populated from AgentInfo's option
@@ -56,19 +57,6 @@ function setWithCap<V>(map: Map<string, V>, key: string, value: V, max: number):
       break
     map.delete(oldest)
   }
-}
-
-/**
- * Return `map[key]`, lazily inserting a fresh value from `factory` when absent. Used only for
- * the PROVIDER dimension, which is bounded by the provider enum (a handful) and so needs no cap.
- */
-function getOrCreate<K, V>(map: Map<K, V>, key: K, factory: () => V): V {
-  let value = map.get(key)
-  if (value === undefined) {
-    value = factory()
-    map.set(key, value)
-  }
-  return value
 }
 
 /** Update the cache from an agent's option-group catalog (called when AgentInfo arrives). */

@@ -8,6 +8,7 @@
 // lookup; each side carries the per-provider hooks its layer needs.
 
 import type { Component, JSX } from 'solid-js'
+import type { HeightInput, RowUiState } from '../chatHeightEstimator'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
@@ -76,8 +77,12 @@ export interface ClassificationInput extends ParsedMessageContent {
 }
 
 export interface ClassificationContext {
+  /**
+   * Whether the message's span has a live command stream right now. The only
+   * context a classifier consults today: a Codex reasoning row with no persisted
+   * summary/content is `assistant_thinking` while streaming, else `hidden`.
+   */
   hasCommandStream?: boolean
-  commandStreamLength?: number
 }
 
 /**
@@ -200,6 +205,37 @@ export interface Provider {
   ) => ToolResultMeta | null
 
   /**
+   * Extract the PROVIDER-SPECIFIC slice of a row's pre-mount height input from
+   * its own wire format: diff geometry (from this provider's file-edit
+   * extractor), and the tool_result `bodyMarkdown`/`hasHeader` flags +
+   * `result_divider` detail that depend on per-provider payload shapes. The
+   * shared `buildHeightInput` fills the provider-neutral slice (text/line
+   * counts, attachments, images, tool-input summaries) and merges this on top.
+   *
+   * Returns the fields this provider computes (a `Partial<HeightInput>`), or
+   * null when it contributes nothing for the row. MUST NOT return
+   * `kind`/`toolName`/`hasSpanLines` -- the orchestrator owns those. Diff
+   * fields take precedence: when this returns `diffUnifiedRows`/`diffSplitRows`
+   * the row is sized as a diff and the generic slice is skipped.
+   *
+   * `toolUseParsed` is the paired tool_use sibling (resolved by spanId, same as
+   * the renderer's lookup), so a tool_result row can reach the input-side data
+   * its renderer uses (Claude's edit input, Pi's start args).
+   *
+   * `state` is the row's resolved interactive UI state (collapsed / expanded /
+   * toolBodyExpanded / diffView), so a provider whose renderer's expand toggle keys
+   * on a provider-specific MESSAGE_UI_KEY (e.g. ACP's tool_call_update body) can size
+   * the expanded body the same way the renderer draws it. `toolBodyExpanded` is
+   * resolved from the renderer's own key per provider (toolBodyExpandedKeyFor).
+   */
+  heightMetrics?: (
+    category: MessageCategory,
+    parsed: ParsedMessageContent,
+    toolUseParsed: ParsedMessageContent | undefined,
+    state: RowUiState,
+  ) => Partial<HeightInput> | null
+
+  /**
    * Extract quotable text from a parsed message — used by MessageBubble to
    * decide whether to surface the Reply / Copy-as-markdown buttons and what
    * text to ship to the clipboard. Each provider knows its own wire format:
@@ -247,6 +283,16 @@ export interface Provider {
    * back to the raw-JSON renderer).
    */
   resultDivider?: (parsed: unknown) => ResultDividerModel | null
+
+  /**
+   * Whether a persisted result-divider with this `subtype` ends the provider's
+   * ACTIVE turn, so the client clears the live turn-id it tracks. Only Codex
+   * tracks a live turn id (codex_turn_id, cleared so a reconnect/missed-event
+   * doesn't leave a phantom thinking indicator); other providers omit this and
+   * the connection hook does nothing. Keeps the provider's turn-end subtype
+   * knowledge in the provider plugin rather than string-matched in the hook.
+   */
+  resultDividerEndsActiveTurn?: (subtype: string | undefined) => boolean
 
   /**
    * Extract `Question[]` from an `AskUserQuestion` control request payload.

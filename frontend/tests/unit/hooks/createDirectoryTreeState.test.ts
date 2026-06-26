@@ -1,13 +1,14 @@
+import type { Mock } from 'vitest'
 import type { DirectoryTreeHandle } from '~/components/tree/DirectoryTree'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { flush } from '../helpers/async'
 
-function makeHandle(): DirectoryTreeHandle & { refresh: ReturnType<typeof vi.fn> } {
+function makeHandle(): DirectoryTreeHandle & { refresh: Mock<() => void> } {
   return {
-    collapseAll: vi.fn(),
-    refresh: vi.fn(),
+    collapseAll: vi.fn<() => void>(),
+    refresh: vi.fn<() => void>(),
   }
 }
 

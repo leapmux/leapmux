@@ -19,6 +19,13 @@ CREATE TABLE agents (
     option_groups    TEXT NOT NULL DEFAULT '[]',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     session_start_seq INTEGER NOT NULL DEFAULT 0,
+    -- Per-agent monotonic message-seq high-water mark. Message seqs are allocated as
+    -- (message_seq_hwm + 1) rather than (MAX(live seq) + 1), so a deleted tail seq is
+    -- NEVER reused. That keeps the AFTER_CURSOR reconnect/replay cursor unambiguous: a
+    -- reused seq would let a freshly-created message masquerade as the deleted row that
+    -- previously held the seq, so an AFTER_CURSOR(cursor) resume (seq > cursor) would
+    -- silently skip the new message. Maintained by the triggers on `messages` below.
+    message_seq_hwm  INTEGER NOT NULL DEFAULT 0,
     startup_error    TEXT NOT NULL DEFAULT '',
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME
@@ -49,6 +56,25 @@ CREATE TABLE messages (
 -- uses to find a tool_result's paired tool_use, so SQLite serves the
 -- ORDER BY seq ASC LIMIT 1 from the index rather than re-sorting matches.
 CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, source, seq) WHERE span_id <> '';
+
+-- Advance agents.message_seq_hwm whenever a message is assigned a seq -- a fresh
+-- insert (CreateMessage) or a notification reseq that moves a row to the tail
+-- (UpdateNotificationThread). Guarded (message_seq_hwm < NEW.seq) so it can only
+-- ever raise the mark, never lower it, and so a no-op write is cheap.
+-- +goose StatementBegin
+CREATE TRIGGER trg_messages_seq_hwm_insert AFTER INSERT ON messages
+BEGIN
+    UPDATE agents SET message_seq_hwm = NEW.seq
+    WHERE id = NEW.agent_id AND message_seq_hwm < NEW.seq;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER trg_messages_seq_hwm_update AFTER UPDATE OF seq ON messages
+BEGIN
+    UPDATE agents SET message_seq_hwm = NEW.seq
+    WHERE id = NEW.agent_id AND message_seq_hwm < NEW.seq;
+END;
+-- +goose StatementEnd
 
 -- Pending control requests
 CREATE TABLE control_requests (
@@ -199,5 +225,7 @@ DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
 DROP TABLE IF EXISTS auto_continue_schedules;
 DROP TABLE IF EXISTS control_requests;
+DROP TRIGGER IF EXISTS trg_messages_seq_hwm_update;
+DROP TRIGGER IF EXISTS trg_messages_seq_hwm_insert;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS agents;
