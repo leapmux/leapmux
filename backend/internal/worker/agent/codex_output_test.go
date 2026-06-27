@@ -38,7 +38,7 @@ func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn-42"}}}`
+	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	sink.mu.Lock()
@@ -1282,6 +1282,22 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotResetThinkingTokens(t *t
 	// proving the child-thread turn/started did not reset the estimate.
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"qrstuvwx","threadId":"main-thread"}}`)))
 	assert.Equal(t, int64(6), lastThinkingTokens(sink), "a child-thread turn/started must not reset the primary estimate")
+}
+
+func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
+	require.Equal(t, "main-turn", sink.LastSessionInfo()["codex_turn_id"])
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
+
+	agent.mu.Lock()
+	turnID := agent.turnID
+	agent.mu.Unlock()
+	assert.Equal(t, "main-turn", turnID, "interrupts and steering must keep targeting the active main-thread turn")
+	assert.Equal(t, 1, sink.SessionInfoCount(), "child turns must not replace the frontend turn id")
 }
 
 func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly(t *testing.T) {

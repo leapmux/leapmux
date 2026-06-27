@@ -117,32 +117,27 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		} `json:"turn"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
-		// Gate the thinking-token restart on the main thread -- a collab subagent's
-		// turn/started carries its own child threadId, and the frontend has no counter
-		// clear for turn/started, so an ungated reset would zero the primary agent's
-		// counter mid-phase and spin the odometer backward. Mirrors
-		// handleTurnCompleted's main-thread gate and observeMainThreadText. Resolved
-		// before the lock below (isMainThreadID takes a.mu itself) so the main-only
-		// reasoning-map clear folds into the single turn-state critical section.
-		main := a.isMainThreadID(notif.ThreadID)
+		// A collab subagent's turn/started carries a child threadId. It must not
+		// replace the primary turn ID used for turn/interrupt and turn/steer, and
+		// the frontend has no counter clear for child turns. This mirrors
+		// handleTurnCompleted's main-thread gate and observeMainThreadText.
+		if !a.isMainThreadID(notif.ThreadID) {
+			return
+		}
 		a.mu.Lock()
 		a.turnID = notif.Turn.ID
 		a.turnToolUses = 0
 		a.turnSawPlan = false
 		a.turnPlanText = ""
 		a.streamingPlan = false
-		if main {
-			// Drop any per-item reasoning-stream locks from a prior turn so itemIds
-			// can't leak across turns (e.g. a reasoning item left open by an abort).
-			clear(a.reasoningStreamKind)
-		}
+		// Drop any per-item reasoning-stream locks from a prior turn so itemIds
+		// can't leak across turns (e.g. a reasoning item left open by an abort).
+		clear(a.reasoningStreamKind)
 		a.mu.Unlock()
-		if main {
-			// A fresh turn begins: restart the thinking-token estimate from zero. The
-			// reset is lock-free (the estimator self-locks), so it stays outside the
-			// critical section above.
-			a.thinkingTokens.reset()
-		}
+		// A fresh turn begins: restart the thinking-token estimate from zero. The
+		// reset is lock-free (the estimator self-locks), so it stays outside the
+		// critical section above.
+		a.thinkingTokens.reset()
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{

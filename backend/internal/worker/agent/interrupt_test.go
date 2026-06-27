@@ -262,6 +262,33 @@ func TestCodexAgent_Interrupt_SendsTurnInterruptNotification(t *testing.T) {
 	assert.Equal(t, "turn-42", params["turnId"])
 }
 
+func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {
+	rig := newCodexInterruptRig(t)
+	rig.agent.sink = &testSink{}
+	rig.agent.threadID = "main-thread"
+
+	handleCodexOutput(rig.agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
+	handleCodexOutput(rig.agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
+
+	require.NoError(t, rig.agent.Interrupt())
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rig.captured()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	frames := rig.captured()
+	require.Len(t, frames, 1)
+	assert.Equal(t, "turn/interrupt", frames[0]["method"])
+
+	params, ok := frames[0]["params"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "main-thread", params["threadId"])
+	assert.Equal(t, "main-turn", params["turnId"])
+}
+
 func TestCodexAgent_Interrupt_NoTurnIsNoop(t *testing.T) {
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
@@ -288,6 +315,68 @@ func TestCodexAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	err := rig.agent.Interrupt()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
+}
+
+func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	readPipe, writePipe, err := os.Pipe()
+	require.NoError(t, err)
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.stdin = writePipe
+	agent.ctx = ctx
+	agent.cancel = cancel
+	agent.processDone = make(chan struct{})
+	agent.stderrDone = make(chan struct{})
+	agent.apiTimeout = 2 * time.Second
+	close(agent.stderrDone)
+
+	var (
+		mu       sync.Mutex
+		captured []map[string]any
+	)
+	go func() {
+		scanner := bufio.NewScanner(readPipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			var frame map[string]any
+			if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
+				continue
+			}
+			mu.Lock()
+			captured = append(captured, frame)
+			mu.Unlock()
+
+			id, ok := frame["id"].(float64)
+			if !ok {
+				continue
+			}
+			agent.deliver(int64(id), json.RawMessage(`{}`))
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		_ = writePipe.Close()
+		_ = readPipe.Close()
+	})
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
+
+	require.NoError(t, agent.SendInput("steer this", nil))
+
+	mu.Lock()
+	frames := append([]map[string]any(nil), captured...)
+	mu.Unlock()
+	require.Len(t, frames, 1)
+	assert.Equal(t, "turn/steer", frames[0]["method"])
+
+	params, ok := frames[0]["params"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "main-thread", params["threadId"])
+	assert.Equal(t, "main-turn", params["expectedTurnId"])
 }
 
 // --- Pi ---
