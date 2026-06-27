@@ -1675,7 +1675,7 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	}
 
 	unlockFinalSettingsHandoff := svc.Agents.LockAgent(agentID)
-	// Released explicitly before any relaunch below (RestartAgent re-acquires
+	// Released explicitly before any relaunch below (restartAgent re-acquires
 	// this same non-reentrant lock); the guard keeps the deferred release a
 	// safety net for the panic path without double-unlocking.
 	handoffUnlocked := false
@@ -1745,12 +1745,12 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 // the DB but never applied to the running process, leaving the agent on its
 // launch settings. Returns the refreshed db row, or fallback when the relaunch
 // or its persistence fails. Must be called with the per-agent lifecycle lock
-// released: RestartAgent acquires it itself.
+// released: restartAgent acquires it itself.
 func (svc *Context) relaunchForStartupSettingsChange(agentID string, provider leapmuxv1.AgentProvider, opts agent.Options, fallback db.Agent) db.Agent {
 	slog.Info("agent startup: relaunching to apply settings changed during startup",
 		"agent_id", agentID, "model", opts.Model(), "effort", opts.Effort())
 	sink := svc.Output.NewSink(agentID, provider)
-	confirmed, err := svc.Agents.RestartAgent(bgCtx(), opts, sink)
+	confirmed, err := svc.restartAgent(bgCtx(), opts, sink)
 	if err != nil {
 		slog.Error("agent startup: failed to relaunch for startup-time settings change",
 			"agent_id", agentID, "error", err)
@@ -2257,7 +2257,7 @@ func (svc *Context) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 
 	sink := svc.Output.NewSink(agentID, provider)
 
-	confirmedOpts, err := svc.Agents.RestartAgent(bgCtx(), agentOpts, sink)
+	confirmedOpts, err := svc.restartAgent(bgCtx(), agentOpts, sink)
 	if err != nil {
 		slog.Error("failed to restart agent with new settings", "agent_id", agentID, "error", err)
 		// Clear stale session ID so ensureAgentRunning won't try to resume a

@@ -1000,6 +1000,9 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
 
+	restartCalls := 0
+	svc.startAgentFn = mockAgentStarter(t, svc, func(agent.Options) { restartCalls++ })
+
 	svc.Watchers.WatchAgent(agentID, &EventWatcher{ChannelID: w.channelID, Sender: channel.NewSender(w)})
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
@@ -1009,6 +1012,7 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 		agent.OptionIDEffort: agent.EffortAuto,
 	})
 	assert.NotEmpty(t, settled[agent.OptionIDEffort])
+	assert.Equal(t, 1, restartCalls, "settings restart must use the injectable starter so unit tests do not require a real agent binary")
 
 	var sawCatalog bool
 	for _, stream := range w.streamsSnapshot() {
@@ -1023,6 +1027,23 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 		}
 	}
 	assert.True(t, sawCatalog, "restart-applied settings must broadcast the confirmed option-group catalog")
+}
+
+func mockAgentStarter(t *testing.T, svc *Context, onStart func(agent.Options)) func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	t.Helper()
+	return func(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+		if onStart != nil {
+			onStart(opts)
+		}
+		confirmed, err := svc.Agents.MockStartAgent(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		confirmed[agent.OptionIDModel] = agent.NormalizeModelID(opts.AgentProvider, opts.Model())
+		confirmed[agent.OptionIDEffort] = opts.Effort()
+		confirmed[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(opts.AgentProvider, opts.PermissionMode())
+		return confirmed, nil
+	}
 }
 
 // mustMarshalOptionGroups marshals a catalog for a test fixture, failing the test on error. Test

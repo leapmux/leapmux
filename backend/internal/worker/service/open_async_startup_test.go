@@ -205,6 +205,70 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	assert.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[agent.CodexOptionCollaborationMode])
 }
 
+func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	const agentID = "agent-startup-relaunch"
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	workingDir := t.TempDir()
+	initialOptions := map[string]string{
+		agent.OptionIDModel:          "opus[1m]",
+		agent.OptionIDEffort:         "high",
+		agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+	}
+	relaunchOptions := map[string]string{
+		agent.OptionIDModel:          "sonnet",
+		agent.OptionIDEffort:         agent.EffortAuto,
+		agent.OptionIDPermissionMode: agent.PermissionModePlan,
+	}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            agentID,
+		WorkspaceID:   "ws-1",
+		WorkingDir:    workingDir,
+		HomeDir:       t.TempDir(),
+		AgentProvider: provider,
+		// In production the startup handoff has already persisted the latest settings before
+		// relaunchForStartupSettingsChange bounces the process to apply them.
+		Options: marshalOptions(relaunchOptions),
+	}))
+	fallback, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+
+	sink := svc.Output.NewSink(agentID, provider)
+	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:       agentID,
+		AgentProvider: provider,
+		WorkingDir:    workingDir,
+		Options:       initialOptions,
+	}, sink)
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent(agentID)
+
+	restartCalls := 0
+	var restarted agent.Options
+	svc.startAgentFn = mockAgentStarter(t, svc, func(opts agent.Options) {
+		restartCalls++
+		restarted = opts
+	})
+
+	relaunchOpts := svc.baseAgentOptions(agentID, workingDir, provider)
+	relaunchOpts.Options = relaunchOptions
+	active := svc.relaunchForStartupSettingsChange(agentID, provider, relaunchOpts, fallback)
+
+	require.Equal(t, 1, restartCalls, "startup-time relaunch must use the injectable starter so tests do not require a real agent binary")
+	assert.Equal(t, relaunchOpts.Options, restarted.Options)
+
+	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, active.Options, stored.Options)
+	got := loadOptions(stored.Options, provider)
+	assert.Equal(t, "sonnet", got[agent.OptionIDModel])
+	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort])
+	assert.Equal(t, agent.PermissionModePlan, got[agent.OptionIDPermissionMode])
+}
+
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
