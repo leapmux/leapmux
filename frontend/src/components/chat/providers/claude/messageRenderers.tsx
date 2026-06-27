@@ -10,14 +10,14 @@ import { getMessageContentArray } from './extractors/assistantContent'
 
 /** Handles assistant messages: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}} */
 export const assistantTextRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
+  render(parsed, context) {
     const content = getMessageContentArray(parsed)
     if (!content)
       return null
     const text = joinContentParagraphs(content, { text: 'text' })
     if (!text)
       return null
-    return <MarkdownText text={text} />
+    return <MarkdownText text={text} context={context} />
   },
 }
 
@@ -64,7 +64,7 @@ export const taskStartedRenderer: MessageContentRenderer = {
  * as markdown.
  */
 export const userTextContentRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
+  render(parsed, context) {
     if (!isObject(parsed) || parsed.type !== 'user')
       return null
 
@@ -88,7 +88,7 @@ export const userTextContentRenderer: MessageContentRenderer = {
     if (!text)
       return null
 
-    return <MarkdownText text={text} />
+    return <MarkdownText text={text} context={context} />
   },
 }
 
@@ -100,10 +100,10 @@ export const userTextContentRenderer: MessageContentRenderer = {
  * a `type` field (those are routed to other Claude-shaped renderers).
  */
 export const userContentRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
+  render(parsed, context) {
     if (!isObject(parsed) || 'type' in parsed)
       return null
-    return <UserContentMessage parsed={parsed} />
+    return <UserContentMessage parsed={parsed} context={context} />
   },
 }
 

@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount } from 'solid-js'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 import * as styles from './FileViewer.css'
 
 const FALLBACK_ROW_HEIGHT = 20
@@ -76,9 +77,12 @@ export function HexView(props: {
   }))
 
   onMount(() => {
-    const obs = new ResizeObserver(([entry]) => setViewHeight(entry.contentRect.height))
-    obs.observe(scrollRef)
-    onCleanup(() => obs.disconnect())
+    const obs = createRafResizeObserver(([entry]) => {
+      if (entry)
+        setViewHeight(entry.contentRect.height)
+    })
+    obs?.observe(scrollRef)
+    onCleanup(() => obs?.disconnect())
 
     // Measure actual row height from a rendered row
     requestAnimationFrame(() => {

@@ -1,5 +1,6 @@
 import type { ChatScrollState, ChatScrollVirtualizer, ScrollContext } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { ScrollAnchor } from '~/stores/chatTypes'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
@@ -8,6 +9,7 @@ import {
   installControllableResizeObserver,
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
+import { FLING_SETTLE_MS } from './chatScrollFlingSettle'
 import { inferScrollDirection } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createScrollVelocity } from './chatScrollVelocity'
@@ -100,6 +102,7 @@ interface FakeScrollDiv {
   setClientHeight: (n: number) => void
   setClientWidth: (n: number) => void
   setScrollTop: (n: number) => void
+  setRawScrollTop: (n: number) => void
   getScrollTop: () => number
 }
 
@@ -159,6 +162,12 @@ function makeFakeScrollDiv(): FakeScrollDiv {
     },
     setScrollTop: (n) => {
       scrollTop = clamp(n)
+    },
+    // Safari/WebKit rubber-band overscroll can report negative scrollTop on read
+    // even though normal assignments clamp. Tests use this to exercise the hook's
+    // logical scroll-position normalization.
+    setRawScrollTop: (n) => {
+      scrollTop = n
     },
     getScrollTop: () => scrollTop,
   }
@@ -1060,6 +1069,16 @@ describe('createscrollvelocity', () => {
 })
 
 describe('usechatscroll render-ahead overscan', () => {
+  it('keeps the fling lead cap below the multi-screen mount burst budget', () => {
+    // A 1200px cap left only ~2.3k px of forward coverage on a 733px pane once base
+    // overscan was included, which can still expose blank spacer under coalesced
+    // momentum. A 4000px cap mounted 30+ rows in one observed 732px-pane scroll commit.
+    // Keep the cap in the middle: enough coverage for a delayed compositor frame, but
+    // reject any return toward the old multi-screen mount burst.
+    expect(FLING_OVERSCAN_MAX_PX).toBeGreaterThanOrEqual(1800)
+    expect(FLING_OVERSCAN_MAX_PX).toBeLessThanOrEqual(2400)
+  })
+
   it('extends the rendered slice ahead in the fling direction during a fast scroll', () =>
     new Promise<void>((resolve, reject) => {
       // Real timers (no fake): the velocity tracker reads a monotonic clock, so a
@@ -1359,6 +1378,111 @@ describe('usechatscroll windowing trim', () => {
       })
     }))
 
+  it('does not trim the older buffer after an older prepend wakes the auto-scroll effect again', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(8000)
+          div.setClientHeight(733)
+          div.setScrollTop(2500)
+          const mkSeqMsgs = (first: number, last: number): AgentChatMessage[] =>
+            Array.from({ length: last - first + 1 }, (_, i) => {
+              const seq = BigInt(first + i)
+              return { id: `m${seq}`, seq } as AgentChatMessage
+            })
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkSeqMsgs(101, 250))
+          const [streamingText, setStreamingText] = createSignal('')
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          setTotal(8000)
+          let trims = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            onTrimOldMessages: () => { trims++ },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+          trims = 0
+
+          // Older prefetch: the first server seq moves earlier, while the newest edge
+          // is unchanged. The auto-scroll effect must treat this as an older-buffer
+          // mutation, not as live-tail growth to cap.
+          setMessages(mkSeqMsgs(51, 250))
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(trims).toBe(0)
+
+          // A later non-row wake-up used to see the stale pre-prepend signature and
+          // trim the just-prefetched older rows, producing a prepend/trim re-pin pair.
+          setStreamingText('tail is still streaming')
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(trims).toBe(0)
+
+          // A real newest-edge row append still runs the live-tail cap.
+          setMessages(mkSeqMsgs(51, 251))
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(trims).toBeGreaterThan(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still trims when an older prepend also advances the newest edge', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(8000)
+          div.setClientHeight(733)
+          div.setScrollTop(2500)
+          const mkSeqMsgs = (first: number, last: number): AgentChatMessage[] =>
+            Array.from({ length: last - first + 1 }, (_, i) => {
+              const seq = BigInt(first + i)
+              return { id: `m${seq}`, seq } as AgentChatMessage
+            })
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkSeqMsgs(101, 250))
+          const [streamingText] = createSignal('')
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          setTotal(8000)
+          let trims = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            onTrimOldMessages: () => { trims++ },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+          trims = 0
+
+          setMessages(mkSeqMsgs(51, 251))
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(trims).toBeGreaterThan(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('passes a viewport-protecting keepNewest so the oldest trim spares the reader\'s anchored row', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -1372,7 +1496,7 @@ describe('usechatscroll windowing trim', () => {
             Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           const [streamingText] = createSignal('')
-          // A virtualizer that pins the viewport top to row 'm50' (the reader
+          // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
           const virt: ChatScrollVirtualizer = {
             totalHeight: () => 5000,
@@ -1633,7 +1757,7 @@ describe('usechatscroll windowing trim', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Scroll up: capture the viewport-top anchor m281 (index 280).
+          // Scroll up: capture the viewport-midpoint anchor m291 (index 290).
           div.setScrollTop(28000)
           hook.handlers.onScroll()
           expect(hook.atBottom()).toBe(false)
@@ -1644,7 +1768,8 @@ describe('usechatscroll windowing trim', () => {
           // EXCEEDS the base cap (150), so the store (Math.max(150, keepNewest)) actually
           // retains the buffer. The OLD viewport-only keepNewest would be 401 - 280 = 121,
           // which clamps to just the base 150 -- reaping the 31-row older buffer the
-          // filler maintains and forcing a refetch. So this scenario is production-
+          // filler maintains and forcing a refetch. The midpoint anchor alone would keep
+          // even less (401 - 290 = 111), so this scenario is production-
           // observable: 181 kept vs 150.
           setMessages(mkIdMsgs(401))
           await Promise.resolve()
@@ -1715,6 +1840,54 @@ describe('usechatscroll windowing trim', () => {
     }))
 })
 
+describe('usechatscroll scroll coordinate normalization', () => {
+  it('uses clamped scrollTop for viewport and anchor logic during rubber-band overscroll', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const updateViewport = vi.fn()
+          const anchorAt = vi.fn((top: number): ScrollAnchor => ({ id: `top@${top}`, offsetWithinRow: 0 }))
+          const virt: ChatScrollVirtualizer = {
+            totalHeight: () => 5000,
+            geometryVersion: () => 0,
+            updateViewport,
+            anchorAt,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+          updateViewport.mockClear()
+          anchorAt.mockClear()
+          div.setRawScrollTop(-12)
+
+          hook.handlers.onScroll()
+
+          expect(anchorAt).toHaveBeenCalledWith(250)
+          expect(updateViewport).toHaveBeenCalledWith(0, 500, undefined)
+          expect(hook.atBottom()).toBe(false)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+})
+
 describe('usechatscroll anchor re-pin', () => {
   // A controllable virtualizer where the anchored row sits at `rowOffset`.
   // `prepend(px)` simulates older history landing above it: the row's offset
@@ -1774,8 +1947,7 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // User scrolls up; the row at the viewport top sits at offset 90, so
-          // the captured anchor is { row, offsetWithinRow: 10 }.
+          // User scrolls up; the viewport midpoint sits 260px into the row at offset 90.
           div.setScrollTop(100)
           hook.handlers.onScroll()
           expect(hook.atBottom()).toBe(false)
@@ -1785,9 +1957,227 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // The row moved from offset 90 to 690; scrollTop tracks it to keep the
-          // same 10px-into-the-row viewport position (690 + 10), NOT snap to bottom.
+          // The row moved from offset 90 to 690; scrollTop tracks it to keep the same
+          // 260px-into-the-row midpoint position (690 + 260 - 250), NOT snap to bottom.
           expect(div.getScrollTop()).toBe(700)
+          expect(hook.atBottom()).toBe(false)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('translates stale native momentum events after a large prepend re-pin', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(100)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const ctrl = makeControllableVirtualizer()
+
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Capture the viewport's row at scrollTop 100 (rowOffset 90,
+          // offsetWithinRow 10), then prepend 600px of older history. The anchor
+          // re-pin correctly translates the viewport to 700.
+          div.setScrollTop(100)
+          hook.handlers.onScroll()
+          hook.handlers.onWheel({ deltaX: 0, deltaY: -1, ctrlKey: false } as WheelEvent)
+          ctrl.prepend(600)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(700)
+
+          // Chromium/WebKit can still deliver a native momentum scroll event in the
+          // OLD coordinate space after the re-pin write. This event represents the
+          // user's continued -20px movement from 100 -> 80; it must be translated
+          // into the NEW coordinate space (700 -> 680), not accepted as scrollTop 80.
+          div.setScrollTop(80)
+          hook.handlers.onScroll()
+
+          expect(div.getScrollTop()).toBe(680)
+          expect(hook.atBottom()).toBe(false)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not translate current-coordinate momentum that merely crosses the old midpoint', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(100)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const ctrl = makeControllableVirtualizer()
+
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Same setup as the stale-native translation case: the user is scrolling
+          // older, then a prepend re-pin shifts the current coordinate space from
+          // 100 -> 700.
+          div.setScrollTop(100)
+          hook.handlers.onScroll()
+          hook.handlers.onWheel({ deltaX: 0, deltaY: -1, ctrlKey: false } as WheelEvent)
+          ctrl.prepend(600)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(700)
+
+          // This is a normal native momentum event in the NEW coordinate space,
+          // continuing upward from 700. It is now >300px from afterTop and near the
+          // old coordinate, so the prior midpoint-only heuristic misclassified it
+          // as stale and translated it to 980. Since it did NOT move from the old
+          // beforeTop in the user's older direction, it must be left alone.
+          div.setScrollTop(380)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(380)
+
+          // The first current-coordinate event disarms the stale-shift window. Even
+          // if a later current-coordinate scroll reaches the old side within the
+          // original timeout, it must not be translated by the obsolete +600 shift.
+          div.setScrollTop(80)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(80)
+
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not translate current-coordinate momentum after a compensating re-pin cancels the shift', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(100)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const ctrl = makeControllableVirtualizer()
+
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(100)
+          hook.handlers.onScroll()
+          ctrl.prepend(600)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(700)
+
+          // A far-above trim can remove most of the just-added coordinate-space shift
+          // while keeping the same anchored row visually fixed. Once this compensating
+          // re-pin leaves only a small net movement, subsequent native momentum scroll
+          // events are already in the CURRENT coordinate space and must not be
+          // translated by the stale +600 prepend delta.
+          ctrl.prepend(-520)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(180)
+
+          div.setScrollTop(160)
+          hook.handlers.onScroll()
+
+          expect(div.getScrollTop()).toBe(160)
+          expect(hook.atBottom()).toBe(false)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('translates stale native momentum that is near the old coordinate even if intent changed', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(100)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const ctrl = makeControllableVirtualizer()
+
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // The last known wheel intent was older, then a large older-page prepend
+          // re-pins the viewport from old coordinate 100 to current coordinate 1600.
+          div.setScrollTop(100)
+          hook.handlers.onScroll()
+          hook.handlers.onWheel({ deltaX: 0, deltaY: -1, ctrlKey: false } as WheelEvent)
+          ctrl.prepend(1500)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(1600)
+
+          // Chromium/WebKit can still deliver a delayed native momentum event in
+          // the old coordinate space. The sampled old-coordinate position can be
+          // slightly *newer* than the pre-repin top even though the last recorded
+          // intent was older (coalescing, bounce-back, or a direction reversal).
+          // Because it is still close to the old coordinate and far from the new
+          // coordinate, it must translate by the coordinate-space shift rather
+          // than being accepted as current-coordinate scrollTop 280.
+          div.setScrollTop(280)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(1780)
           expect(hook.atBottom()).toBe(false)
           dispose()
           resolve()
@@ -2031,7 +2421,7 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Anchor the viewport top to the row at offset 90 (offsetWithinRow 10).
+          // Anchor the viewport midpoint to the row at offset 90 (offsetWithinRow 260).
           div.setScrollTop(100)
           hook.handlers.onScroll()
           expect(hook.atBottom()).toBe(false)
@@ -2044,7 +2434,7 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // scrollTop follows the row: 140 + 10.
+          // scrollTop follows the row: 140 + 260 - midpoint offset 250.
           expect(div.getScrollTop()).toBe(150)
           dispose()
           resolve()
@@ -2081,7 +2471,7 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Scroll up so the viewport top anchors to the row at offset 90.
+          // Scroll up so the viewport midpoint anchors to the row at offset 90.
           div.setScrollTop(100)
           hook.handlers.onScroll()
           expect(hook.atBottom()).toBe(false)
@@ -2099,7 +2489,7 @@ describe('usechatscroll anchor re-pin', () => {
           expect(hook.atBottom()).toBe(false)
 
           // A later geometry change must still re-pin to the RESTORED anchor: the
-          // row moves from 90 to 690 and scrollTop tracks it (690 + 10). Had the
+          // row moves from 90 to 690 and scrollTop tracks it (690 + 260 - 250). Had the
           // failed jump left the anchor null, scrollTop would stay at 100.
           ctrl.prepend(600)
           await Promise.resolve()
@@ -2313,6 +2703,68 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
+  it('preserves the user-captured anchor if forceScrollToBottom\'s jump fails after a mid-flight scroll', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(100)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const ctrl = makeControllableVirtualizer()
+          let rejectJump: (reason?: unknown) => void = () => {}
+
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => true,
+            onJumpToLatest: () => new Promise<void>((_, reject) => { rejectJump = reject }),
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Establish a pre-jump anchor at scrollTop 100.
+          div.setScrollTop(100)
+          hook.handlers.onScroll()
+          expect(hook.atBottom()).toBe(false)
+
+          hook.forceScrollToBottom()
+          expect(hook.atBottom()).toBe(true)
+
+          // The user scrolls to a different position while the jump is still pending.
+          // handleScroll captures that newer midpoint anchor and clears atBottom.
+          div.setScrollTop(300)
+          hook.handlers.onScroll()
+          expect(hook.atBottom()).toBe(false)
+
+          rejectJump(new Error('worker offline'))
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // A later prepend should preserve the USER'S mid-flight anchor at 300:
+          // rowOffset 90 -> 690, offsetWithinRow 460, midpoint offset 250 => 900.
+          // Restoring the stale pre-jump anchor would land at 700 instead.
+          ctrl.prepend(600)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(900)
+
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('re-syncs atBottom instead of sticking when a live append leaves newer messages during forceScrollToBottom\'s jump', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -2380,7 +2832,7 @@ describe('usechatscroll anchor re-pin', () => {
           const [streamingText] = createSignal('')
 
           // Controllable virt: only `resolvableId` resolves; anchorAt always
-          // reports the row currently at the viewport top.
+          // reports the row currently at the viewport midpoint.
           let resolvableId = 'row-a'
           let currentTopId = 'row-a'
           let rowOffset = 290
@@ -2402,13 +2854,13 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Scroll up → capture anchor { id: 'row-a', offsetWithinRow: 10 }.
+          // Scroll up -> capture anchor { id: 'row-a', offsetWithinRow: 260 }.
           div.setScrollTop(300)
           hook.handlers.onScroll()
           expect(hook.atBottom()).toBe(false)
 
           // 'row-a' is trimmed out of the window: it no longer resolves, and the
-          // row now at the viewport top is 'row-b'. The re-pin must re-anchor to
+          // row now at the viewport midpoint is 'row-b'. The re-pin must re-anchor to
           // 'row-b' (scrollTop unchanged), not silently keep the dead anchor.
           resolvableId = 'row-b'
           currentTopId = 'row-b'
@@ -2418,7 +2870,7 @@ describe('usechatscroll anchor re-pin', () => {
           expect(div.getScrollTop()).toBe(300)
 
           // A later prepend grows offsets: the re-anchored 'row-b' tracks it
-          // (890 + 10). Had the hook kept the dead 'row-a' anchor,
+          // (890 + 260 - midpoint offset 250). Had the hook kept the dead 'row-a' anchor,
           // scrollTopForAnchor would stay null and scrollTop would never correct.
           rowOffset = 890
           setVersion(v => v + 1)
@@ -2530,8 +2982,8 @@ describe('usechatscroll anchor re-pin', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [streamingText] = createSignal('')
           const [version, setVersion] = createSignal(0)
-          // A measurement below the anchor: scrollTopForAnchor resolves to within
-          // a sub-pixel of the current scrollTop (the anchor didn't move).
+          // A measurement below the midpoint anchor: scrollTopForAnchor resolves to within
+          // a sub-pixel of the current viewport midpoint (the anchor didn't move).
           const virt: ChatScrollVirtualizer = {
             totalHeight: () => {
               version()
@@ -2539,9 +2991,9 @@ describe('usechatscroll anchor re-pin', () => {
             },
             geometryVersion: version,
             updateViewport: () => {},
-            anchorAt: () => ({ id: 'a', offsetWithinRow: 0 }),
+            anchorAt: top => ({ id: 'a', offsetWithinRow: top }),
             scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 300.4,
+            scrollTopForAnchor: a => a.offsetWithinRow + 0.4,
           }
           const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
           hook.attachListRef(div.el)
@@ -2577,10 +3029,11 @@ describe('usechatscroll anchor re-pin', () => {
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [streamingText] = createSignal('')
-          // A small (100px) offset shift from a row mounting+measuring during the
-          // user's scroll. 100 < clientHeight/2 (250), so the re-pin suppresses
-          // the correction: scrollTop stays where the user flung (no write to
-          // cancel momentum). The tiny offset drift is the deliberate cost.
+          // A small (100px) same-flush geometry shift during the user's scroll.
+          // 100 < clientHeight/2 (250), so the re-pin suppresses the correction:
+          // scrollTop stays where the user flung (no write to cancel momentum).
+          // Visible-row measurements use a separate deferral queue; this stub pins
+          // the re-pin policy for geometry that has already committed.
           const SHIFT = 100
           const ANCHOR_OFFSET = 290
           let armed = false
@@ -2629,7 +3082,7 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
-  it('applies a small re-pin correction immediately during a SLOW scroll (no momentum to defer)', () =>
+  it('absorbs a medium re-pin correction during a slow native scroll', () =>
     new Promise<void>((resolve, reject) => {
       // Fake performance.now too, so the velocity tracker sees a controllable,
       // genuinely-slow cadence instead of two same-tick (Infinity) samples.
@@ -2643,7 +3096,8 @@ describe('usechatscroll anchor re-pin', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [streamingText] = createSignal('')
           // Same 100px under-estimate shift the fling test defers -- but reached by a
-          // SLOW deliberate scroll (no inertia), so the re-pin must write it now.
+          // SLOW native scroll. It is still a browser-owned scroll event, so writing
+          // scrollTop here fights the user's trajectory; absorb/re-anchor instead.
           const SHIFT = 100
           const ANCHOR_OFFSET = 290
           let armed = false
@@ -2681,15 +3135,16 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
 
           // 100ms later, a 10px nudge = 0.1 px/ms, far below the fling threshold.
-          // The row mounts+shifts during THIS event, so the re-pin fires and -- with
-          // no momentum to protect -- corrects immediately (310 -> 410).
+          // The row mounts+shifts during THIS event, so the re-pin fires. A medium
+          // estimate correction is absorbed rather than written (310 -> 410 would
+          // be a visible bounce in the slow tail of a trackpad scroll).
           vi.advanceTimersByTime(100)
           armed = true
           div.setScrollTop(310)
           hook.handlers.onScroll()
           await Promise.resolve()
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(410)
+          expect(div.getScrollTop()).toBe(310)
 
           vi.useRealTimers()
           dispose()
@@ -2703,7 +3158,7 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
-  it('settles the deferred fling correction in one write once momentum stops', () =>
+  it('drops the deferred fling correction once momentum stops', () =>
     new Promise<void>((resolve, reject) => {
       // Fake only setTimeout/clearTimeout so the rAF microtask mock + queueMicrotask
       // still drive the synchronous scroll writes; advance to fire the settle.
@@ -2717,8 +3172,8 @@ describe('usechatscroll anchor re-pin', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [streamingText] = createSignal('')
           // Same setup as the suppress test: a 100px shift (< clientHeight/2) is
-          // deferred during the fling. The settle then applies the accumulated
-          // drift in one write once momentum stops.
+          // deferred during the fling. Once momentum stops, the current visual
+          // position wins; the settle re-anchors there instead of snapping by 100px.
           const SHIFT = 100
           const ANCHOR_OFFSET = 290
           let armed = false
@@ -2757,11 +3212,11 @@ describe('usechatscroll anchor re-pin', () => {
           // Deferred during the fling — scrollTop stays where momentum left it.
           expect(div.getScrollTop()).toBe(300)
 
-          // Momentum stops (no further scroll events): the debounce fires and the
-          // deferred 100px correction is applied in one write (300 -> 400).
+          // Momentum stops (no further scroll events): the debounce fires and drops
+          // the deferred correction instead of applying a post-fling snap.
           vi.advanceTimersByTime(200)
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(400)
+          expect(div.getScrollTop()).toBe(300)
 
           dispose()
           vi.useRealTimers()
@@ -2828,7 +3283,7 @@ describe('usechatscroll anchor re-pin', () => {
           // The 100px correction is applied RIGHT AWAY (752 -> 852), not suppressed.
           expect(div.getScrollTop()).toBe(852)
           // No fling-settle was armed, so advancing past the debounce changes
-          // nothing -- a fling would only now produce the deferred jump.
+          // nothing -- a fling would only now accept and re-anchor deferred drift.
           vi.advanceTimersByTime(300)
           await Promise.resolve()
           expect(div.getScrollTop()).toBe(852)
@@ -2967,10 +3422,10 @@ describe('usechatscroll anchor re-pin', () => {
           hook.handlers.onScroll()
           await Promise.resolve()
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(300) // deferred, NOT corrected to 400 yet
+          expect(div.getScrollTop()).toBe(300) // deferred/absorbed, NOT corrected to 400
           vi.advanceTimersByTime(300)
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(400) // the settle applies it after momentum stops
+          expect(div.getScrollTop()).toBe(300) // no post-momentum settle snap
 
           dispose()
           vi.useRealTimers()
@@ -3112,7 +3567,7 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
-  it('does not settle mid-momentum: each scroll event resets the debounce', () =>
+  it('does not write a deferred correction while momentum events continue', () =>
     new Promise<void>((resolve, reject) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       createRoot(async (dispose) => {
@@ -3168,7 +3623,67 @@ describe('usechatscroll anchor re-pin', () => {
           // Now genuinely idle past the threshold.
           vi.advanceTimersByTime(100)
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(400)
+          expect(div.getScrollTop()).toBe(300) // idle settle accepts the current position
+
+          dispose()
+          vi.useRealTimers()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          vi.useRealTimers()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('defers visible measurement commits during momentum and flushes them after the quiet settle', () =>
+    new Promise<void>((resolve, reject) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          let deferred = false
+          const setVisibleMeasurementDeferral = vi.fn((next: boolean) => {
+            deferred = next
+          })
+          const flushDeferredMeasurements = vi.fn(() => {
+            deferred = false
+            return true
+          })
+          const virt: ChatScrollVirtualizer = {
+            totalHeight: () => 8000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: scrollTop => ({ id: 'anchored-row', offsetWithinRow: scrollTop }),
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: anchor => anchor.offsetWithinRow,
+            setVisibleMeasurementDeferral,
+            hasDeferredMeasurements: () => deferred,
+            flushDeferredMeasurements,
+          }
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(300)
+          hook.handlers.onWheel({ deltaX: 0, deltaY: -120, ctrlKey: false } as WheelEvent)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+          expect(setVisibleMeasurementDeferral).toHaveBeenCalledWith(true)
+          expect(flushDeferredMeasurements).not.toHaveBeenCalled()
+
+          vi.advanceTimersByTime(FLING_SETTLE_MS)
+          await Promise.resolve()
+
+          expect(setVisibleMeasurementDeferral).toHaveBeenLastCalledWith(false)
+          expect(flushDeferredMeasurements).toHaveBeenCalledTimes(1)
 
           dispose()
           vi.useRealTimers()
@@ -3479,8 +3994,8 @@ describe('usechatscroll anchor re-pin', () => {
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [streamingText] = createSignal('')
-          // Two scroll events, each mounting+measuring a row that shifts the
-          // offset map during refreshViewport (synchronous re-pin). Phase 1 is a
+          // Two scroll events, each committing a geometry shift during
+          // refreshViewport (synchronous re-pin). Phase 1 is a
           // user scroll with a LARGE (400px) shift: 400 >= clientHeight/2 (250) so
           // it writes (300 -> 700) and records 700 as the programmatic position.
           // Phase 2 is the browser's echo of that write at 700, carrying a SMALL
@@ -3616,7 +4131,7 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
-  it('does not double-count when two measurements shift the anchor within one scroll event', () =>
+  it('drops coalesced deferred measurements without a post-momentum write', () =>
     new Promise<void>((resolve, reject) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       createRoot(async (dispose) => {
@@ -3630,9 +4145,9 @@ describe('usechatscroll anchor re-pin', () => {
           const SHIFT = 50
           const ANCHOR_OFFSET = 290
           let armed = false
-          // 0 -> no shift; 1 -> first row measured (+50); 2 -> second row (+100).
+          // 0 -> no shift; 1 -> first geometry commit (+50); 2 -> second (+100).
           // Both bumps happen inside ONE updateViewport (one scroll event, one
-          // anchor capture), simulating two rows mounting+measuring together.
+          // anchor capture), simulating two already-committed row-height changes.
           let shiftLevel = 0
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
@@ -3667,13 +4182,12 @@ describe('usechatscroll anchor re-pin', () => {
           await Promise.resolve()
           expect(div.getScrollTop()).toBe(300) // deferred, momentum preserved
 
-          // Settle: the anchor moved +100 total (two +50 measurements), so the
-          // correct landing is 300 + 100 = 400. A naive accumulator that adds the
-          // absolute-from-capture correction on EACH repin would bank 50 + 100 =
-          // 150 and overshoot to 450 -- the double-count this guards against.
+          // Settle accepts the current visual position instead of applying the
+          // +100 correction as a post-momentum write. The accumulator still sees
+          // both same-capture measurements, but the user never gets a snap.
           vi.advanceTimersByTime(200)
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(400)
+          expect(div.getScrollTop()).toBe(300)
 
           dispose()
           vi.useRealTimers()
@@ -3687,7 +4201,7 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
-  it('sums distinct deferrals across two captures without double-counting one', () =>
+  it('drops distinct deferrals across captures without a post-momentum write', () =>
     new Promise<void>((resolve, reject) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       createRoot(async (dispose) => {
@@ -3700,10 +4214,9 @@ describe('usechatscroll anchor re-pin', () => {
           const [streamingText] = createSignal('')
           // Two SEPARATE scroll events at two positions, each capturing a DIFFERENT
           // anchor and deferring its own distinct shift (+50 for row-a at 300, then
-          // +30 for row-b at 200). row-b is captured AFTER the +50 already landed in
-          // the map, so its correction is only +30 -- the +50 is a separate, still-
-          // unapplied deferral. settle must sum the two genuine deferrals (200 + 80 =
-          // 280), NOT drop row-a's +50 (which would give 230) nor re-count it (310).
+          // +30 for row-b at 200). Older code summed those into a later +80 settle
+          // write; the current behavior accepts the user's final visual position
+          // and re-anchors there instead.
           let phase = 0
           let shiftA = false
           let shiftB = false
@@ -3753,7 +4266,7 @@ describe('usechatscroll anchor re-pin', () => {
 
           vi.advanceTimersByTime(200) // settle fires
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(280) // 200 + (50 + 30)
+          expect(div.getScrollTop()).toBe(200) // no 200 + (50 + 30) settle snap
 
           dispose()
           vi.useRealTimers()
@@ -5093,7 +5606,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
-          div.setClientHeight(500) // bufferTarget = 3 screens = 1500px
+          div.setClientHeight(500) // bufferTarget = 3 screens = 1500px; refill watermark = 2.5 screens = 1250px
           let scrollHeight = 700
           div.setScrollHeight(scrollHeight)
           div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500
@@ -5133,13 +5646,16 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
             },
           })
           hook.attachListRef(div.el)
-          // Drain the microtask-paced fill until the buffer above reaches the target.
-          for (let i = 0; i < 50 && div.getScrollTop() < 1500; i++)
+          // Drain the microtask-paced fill until the buffer above reaches the refill
+          // watermark. Hysteresis intentionally stops short of the ideal 3-screen target
+          // so a tiny post-trim deficit does not fetch a full page and re-pin again.
+          for (let i = 0; i < 50 && div.getScrollTop() < 1250; i++)
             await Promise.resolve()
 
-          // Pre-fetched ahead to ~3 screens of buffer (a handful of pages, NOT a
+          // Pre-fetched ahead to the refill watermark (a handful of pages, NOT a
           // thrash) then stopped. Every page made progress.
-          expect(div.getScrollTop()).toBeGreaterThanOrEqual(1500)
+          expect(div.getScrollTop()).toBeGreaterThanOrEqual(1250)
+          expect(div.getScrollTop()).toBeLessThan(1500)
           expect(olderLoads).toBeGreaterThanOrEqual(3)
           expect(olderLoads).toBeLessThanOrEqual(5)
           dispose()
@@ -5242,12 +5758,13 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           })
           hook.attachListRef(div.el)
           const distBelow = () => div.el.scrollHeight - div.getScrollTop() - div.el.clientHeight
-          for (let i = 0; i < 50 && distBelow() < 1500; i++)
+          for (let i = 0; i < 50 && distBelow() < 1250; i++)
             await Promise.resolve()
 
-          // Filled the below-buffer to ~3 screens, bounded, no thrash. The above-buffer
-          // was already full, so no older load fired.
-          expect(distBelow()).toBeGreaterThanOrEqual(1500)
+          // Filled the below-buffer to the refill watermark, bounded, no thrash. The
+          // above-buffer was already full, so no older load fired.
+          expect(distBelow()).toBeGreaterThanOrEqual(1250)
+          expect(distBelow()).toBeLessThan(1500)
           expect(newerLoads).toBeGreaterThanOrEqual(3)
           expect(newerLoads).toBeLessThanOrEqual(5)
           dispose()
@@ -5757,8 +6274,8 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
           div.setScrollTop(500) // at the bottom (the live tail, initially)
 
           // Growable total + a real anchor, so dropping follow yields ANCHORED (not
-          // following). scrollTopForAnchor returns the captured bottom, so the re-pin
-          // is a no-op when newer appends BELOW the anchor -- isolating the follow path.
+          // following). scrollTopForAnchor returns the captured midpoint, so the re-pin is
+          // a no-op when newer appends BELOW the anchor -- isolating the follow path.
           const [total, setTotal] = createSignal(1000)
           const virt: ChatScrollVirtualizer = {
             totalHeight: () => total(),
@@ -5766,7 +6283,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
             updateViewport: () => {},
             anchorAt: () => ({ id: 'row', offsetWithinRow: 0 }),
             scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 600,
+            scrollTopForAnchor: () => 850,
           }
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [streamingText] = createSignal('')
@@ -5897,11 +6414,14 @@ describe('createscrollinput', () => {
       tryNewer: 0,
       forceBottom: 0,
       cancelPending: 0,
+      captureAnchor: 0,
+      captureTopAnchor: 0,
     }
     const input = createScrollInput(
       makeScrollContext({ getEl: () => el }),
       {
-        captureAnchor: () => {},
+        captureAnchor: () => { calls.captureAnchor++ },
+        captureTopAnchor: () => { calls.captureTopAnchor++ },
         checkAtBottom: () => {},
         forceScrollToBottom: () => { calls.forceBottom++ },
         cancelScrollAnimation: () => {},
@@ -5970,6 +6490,14 @@ describe('createscrollinput', () => {
     input.handleKeyDown({ key: 'End', preventDefault: () => {} } as KeyboardEvent)
     expect(calls.forceBottom).toBe(1)
     expect(calls.lastScrollDir).toEqual(['newer'])
+  })
+
+  it('handleKeyDown Home pins to the viewport-top anchor', () => {
+    const { input, calls } = setup(fakeEl())
+    input.handleKeyDown({ key: 'Home', preventDefault: () => {} } as KeyboardEvent)
+    expect(calls.captureTopAnchor).toBe(1)
+    expect(calls.captureAnchor).toBe(0)
+    expect(calls.lastScrollDir).toEqual(['older'])
   })
 
   it('handleKeyDown ignores modifier-chorded keys', () => {

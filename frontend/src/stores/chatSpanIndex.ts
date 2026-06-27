@@ -41,8 +41,18 @@ export interface ChatSpanIndex {
    * result's cached classification / height estimate.
    */
   getOpenerId: (agentId: string, spanId: string) => string | undefined
+  /** The opener message for a spanId, or undefined. */
+  getOpenerMessage: (agentId: string, spanId: string) => AgentChatMessage | undefined
   /** Parsed result (tool_result) for a spanId, or undefined. Parse is cached. */
   getResultParsed: (agentId: string, spanId: string) => ParsedMessageContent | undefined
+  /**
+   * The result (tool_result) message id for a spanId, or undefined. Lets a
+   * consumer resolve the RESULT's content version from a tool_use spanId, so
+   * opener rows that render hidden result data can invalidate on result edits.
+   */
+  getResultId: (agentId: string, spanId: string) => string | undefined
+  /** The result message for a spanId, or undefined. */
+  getResultMessage: (agentId: string, spanId: string) => AgentChatMessage | undefined
   /**
    * Drop the memoized parse for a message replaced in place under a stable
    * reference (the store's same-seq update). The local parse cache assumes message
@@ -163,7 +173,10 @@ export function createSpanIndex(): ChatSpanIndex {
     reindex,
     getOpenerParsed: (agentId: string, spanId: string) => getParsed(openers, agentId, spanId),
     getOpenerId: (agentId: string, spanId: string) => openers.get(agentId)?.get(spanId)?.id,
+    getOpenerMessage: (agentId: string, spanId: string) => openers.get(agentId)?.get(spanId),
     getResultParsed: (agentId: string, spanId: string) => getParsed(results, agentId, spanId),
+    getResultId: (agentId: string, spanId: string) => results.get(agentId)?.get(spanId)?.id,
+    getResultMessage: (agentId: string, spanId: string) => results.get(agentId)?.get(spanId),
     invalidate: (message: AgentChatMessage) => parsedCache.delete(message),
   }
 }

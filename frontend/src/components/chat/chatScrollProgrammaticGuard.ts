@@ -29,6 +29,15 @@ interface EchoMarker {
   at: number
   /** Monotonic generation, so a consumer removes the exact marker its event matched. */
   gen: number
+  /** Human-readable source of the programmatic write, for scroll diagnostics. */
+  source?: string
+}
+
+export interface EchoMarkerDebug {
+  top: number
+  ageMs: number
+  gen: number
+  source?: string
 }
 
 /**
@@ -80,20 +89,20 @@ export function createProgrammaticScrollGuard(
    * when a long burst overflows the ring -- so an echo delivered a few frames late is
    * still recognized, while a write that produced no echo ages out instead of lingering.
    */
-  const mark = () => {
+  const mark = (source?: string) => {
     const el = getEl()
     if (!el)
       return
     pruneStale()
     writeGen++
-    markers.push({ top: el.scrollTop, at: now(), gen: writeGen })
+    markers.push({ top: el.scrollTop, at: now(), gen: writeGen, source })
     if (markers.length > MAX_ECHO_MARKERS)
       markers.shift()
     onMark?.(el.scrollTop)
   }
 
   /** Write scrollTop without it being interpreted as a user gesture. */
-  const write = (top: number) => {
+  const write = (top: number, source?: string) => {
     const el = getEl()
     if (!el)
       return
@@ -104,7 +113,7 @@ export function createProgrammaticScrollGuard(
     // never be consumed -- it would instead linger the full TTL and swallow a genuine
     // user scroll that happens to land within 1px of that pixel.
     if (el.scrollTop !== before)
-      mark()
+      mark(source)
   }
 
   // The index of a fresh marker within 1px of the current scrollTop, or -1. Searched
@@ -155,5 +164,16 @@ export function createProgrammaticScrollGuard(
       markers.splice(i, 1)
   }
 
-  return { mark, write, isEcho, matchedEchoGen, consumeEcho }
+  const debugMarkers = (): EchoMarkerDebug[] => {
+    pruneStale()
+    const at = now()
+    return markers.map(m => ({
+      top: m.top,
+      ageMs: at - m.at,
+      gen: m.gen,
+      source: m.source,
+    }))
+  }
+
+  return { mark, write, isEcho, matchedEchoGen, consumeEcho, debugMarkers }
 }

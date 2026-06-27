@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { AlertVariant } from '~/components/common/Alert'
 import type { CachedToken } from '~/lib/tokenCache'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js'
 import { guessLanguage } from '~/lib/languageMap'
 import { shikiHighlighter } from '~/lib/renderMarkdown'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
@@ -201,20 +201,66 @@ export function parseCatNContent(content: string): ParsedCatLine[] | null {
 export function ReadResultView(props: {
   lines: ParsedCatLine[]
   filePath?: string
+  /** Hidden DOM premeasurement keeps line geometry but skips Shiki/token workers. */
+  premeasureMode?: boolean
+  /** Visible scrolling keeps line geometry but skips Shiki/token workers until idle. */
+  syntaxHighlightingPaused?: boolean
+  /** Active browser selection: keep existing tokens but avoid replacing text nodes. */
+  textSelectionActive?: () => boolean
 }): JSX.Element {
   const lang = () => props.filePath ? guessLanguage(props.filePath) : undefined
 
   const [tokenizedLines, setTokenizedLines] = createSignal<CachedToken[][] | null>(null)
+  let tokenizedKey: string | undefined
+  let pendingTokenized: { key: string, tokens: CachedToken[][] } | undefined
+  const shouldDeferTokenApplication = () => untrack(() => props.syntaxHighlightingPaused === true || props.textSelectionActive?.() === true)
+  const currentTokenKey = (): string | undefined => {
+    const l = lang()
+    const lines = props.lines
+    if (!l || lines.length === 0 || lines.length > HIGHLIGHT_LINE_LIMIT)
+      return undefined
+    return `${l}\0${lines.map(line => line.text).join('\n')}`
+  }
+
+  createEffect(() => {
+    if (props.premeasureMode || props.syntaxHighlightingPaused || props.textSelectionActive?.())
+      return
+    const key = currentTokenKey()
+    if (!key || pendingTokenized?.key !== key)
+      return
+    tokenizedKey = key
+    setTokenizedLines(pendingTokenized.tokens)
+    pendingTokenized = undefined
+  })
 
   createEffect(on(
-    () => [lang(), props.lines] as const,
-    ([l, lines]) => {
-      setTokenizedLines(null)
-
-      if (!l || lines.length === 0 || lines.length > HIGHLIGHT_LINE_LIMIT)
+    () => [lang(), props.lines, props.premeasureMode, props.syntaxHighlightingPaused, props.textSelectionActive?.() === true] as const,
+    ([l, lines, premeasureMode, syntaxHighlightingPaused, textSelectionActive]) => {
+      if (premeasureMode || !l || lines.length === 0 || lines.length > HIGHLIGHT_LINE_LIMIT) {
+        tokenizedKey = undefined
+        pendingTokenized = undefined
+        setTokenizedLines(null)
         return
+      }
 
       const code = lines.map(line => line.text).join('\n')
+      const key = `${l}\0${code}`
+
+      if (syntaxHighlightingPaused || textSelectionActive) {
+        if (tokenizedKey !== key) {
+          tokenizedKey = undefined
+          pendingTokenized = undefined
+          setTokenizedLines(null)
+        }
+        return
+      }
+
+      if (tokenizedKey === key)
+        return
+
+      tokenizedKey = undefined
+      pendingTokenized = undefined
+      setTokenizedLines(null)
 
       // ANSI is a special Shiki built-in — tokenize synchronously on the main
       // thread since the web worker's highlighter core may not support it.
@@ -225,9 +271,14 @@ export function ReadResultView(props: {
             themes: { light: 'github-light', dark: 'github-dark' },
             defaultColor: false,
           })
-          setTokenizedLines(result.tokens.map(line =>
+          const tokens = result.tokens.map(line =>
             line.map(t => ({ content: t.content, htmlStyle: t.htmlStyle })),
-          ))
+          )
+          tokenizedKey = key
+          if (shouldDeferTokenApplication())
+            pendingTokenized = { key, tokens }
+          else
+            setTokenizedLines(tokens)
         }
         catch { /* fall through to plain text */ }
         return
@@ -236,6 +287,7 @@ export function ReadResultView(props: {
       // Synchronous cache check — avoids flash of unstyled text on re-expand
       const cached = getCachedTokens(l, code)
       if (cached) {
+        tokenizedKey = key
         setTokenizedLines(cached)
         return
       }
@@ -243,9 +295,18 @@ export function ReadResultView(props: {
       // Async: dispatch to Web Worker, render plain text until ready
       let cancelled = false
       tokenizeAsync(l, code).then((tokens) => {
-        if (!cancelled) {
-          setTokenizedLines(tokens)
+        if (cancelled || key !== untrack(currentTokenKey))
+          return
+        if (!tokens) {
+          setTokenizedLines(null)
+          return
         }
+        if (shouldDeferTokenApplication()) {
+          pendingTokenized = { key, tokens }
+          return
+        }
+        tokenizedKey = key
+        setTokenizedLines(tokens)
       })
 
       onCleanup(() => {

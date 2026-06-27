@@ -237,10 +237,9 @@ describe('thinking renderer honors context.expandUiKey', () => {
     const category = { kind: 'assistant_thinking' } as MessageCategory
     const getMessageUiState = vi.fn().mockReturnValue(false)
     const setMessageUiState = vi.fn()
-    // The classification mapper resolved this row's expand key to CODEX_REASONING; the
-    // renderer must look its shared UI-state up under THAT key so it agrees with the
-    // off-screen height estimator (which used the same mapper), not the hand-typed
-    // THINKING literal it falls back to only when rendered without a context.
+    // The classification mapper resolved this row's expand key to CODEX_REASONING;
+    // the renderer must look its shared UI-state up under THAT key, not the
+    // hand-typed THINKING literal it falls back to only without a context.
     const context: RenderContext = {
       expandUiKey: MESSAGE_UI_KEY.CODEX_REASONING,
       getMessageUiState,

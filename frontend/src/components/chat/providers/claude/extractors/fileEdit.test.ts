@@ -142,6 +142,23 @@ describe('claudeFileEditFromToolUseResult', () => {
       originalFile: undefined,
     })
   })
+
+  it('ignores malformed structuredPatch arrays and falls back to oldString/newString', () => {
+    expect(claudeFileEditFromToolUseResult({
+      filePath: '/tmp/a.ts',
+      structuredPatch: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', 42] },
+      ],
+      oldString: 'old',
+      newString: 'new',
+    })).toEqual({
+      filePath: '/tmp/a.ts',
+      structuredPatch: null,
+      oldStr: 'old',
+      newStr: 'new',
+      originalFile: undefined,
+    })
+  })
 })
 
 describe('claudeCreateResultDiff', () => {

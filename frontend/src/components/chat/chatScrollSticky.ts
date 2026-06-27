@@ -56,7 +56,7 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     // (already pinned) fires no scroll event, so marking it would leave a stale marker
     // that swallows a real user scroll to within 1px of the bottom for the marker TTL.
     if (el.scrollTop !== before)
-      ctx.markProgrammaticScroll()
+      ctx.markProgrammaticScroll('stick-bottom')
     return true
   }
 

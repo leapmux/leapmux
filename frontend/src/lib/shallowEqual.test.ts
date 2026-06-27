@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shallowEqual, shallowEqualArrays, shallowEqualArraysDeep, shallowEqualExcept } from './shallowEqual'
+import { shallowEqual, shallowEqualArrays, shallowEqualArraysDeep, shallowEqualExcept, shallowEqualSets } from './shallowEqual'
 
 describe('shallowequal', () => {
   it('returns true for same reference', () => {
@@ -78,6 +78,22 @@ describe('shallowequalarraysdeep', () => {
   it('returns false when an element key differs', () => {
     expect(shallowEqualArraysDeep([{ a: 1 }], [{ a: 2 }])).toBe(false)
     expect(shallowEqualArraysDeep([{ a: 1 }, { a: 2 }], [{ a: 1 }, { a: 3 }])).toBe(false)
+  })
+})
+
+describe('shallowequalsets', () => {
+  it('returns true for same reference', () => {
+    const set = new Set(['a'])
+    expect(shallowEqualSets(set, set)).toBe(true)
+  })
+
+  it('compares membership without depending on insertion order', () => {
+    expect(shallowEqualSets(new Set(['a', 'b']), new Set(['b', 'a']))).toBe(true)
+  })
+
+  it('returns false when size or membership differs', () => {
+    expect(shallowEqualSets(new Set(['a']), new Set(['a', 'b']))).toBe(false)
+    expect(shallowEqualSets(new Set(['a', 'b']), new Set(['a', 'c']))).toBe(false)
   })
 })
 

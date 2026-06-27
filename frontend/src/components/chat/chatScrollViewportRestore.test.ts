@@ -125,7 +125,7 @@ describe('chatscrollviewportrestore handleResize', () => {
       // Animation ends; the re-scheduled flush now performs the restore.
       state.animating = false
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(1200)
+      expect(writeScrollTop).toHaveBeenCalledWith(1200, 'viewport-restore-anchor')
     }
     finally {
       raf.restore()
@@ -138,7 +138,7 @@ describe('chatscrollviewportrestore handleResize', () => {
       const { restore, writeScrollTop } = harness() // state.animating stays false
       restore.handleResize()
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(1200)
+      expect(writeScrollTop).toHaveBeenCalledWith(1200, 'viewport-restore-anchor')
     }
     finally {
       raf.restore()
@@ -211,7 +211,7 @@ describe('chatscrollviewportrestore restore priority', () => {
       restore.handleResize()
       raf.flush()
       // raw-top restore wins over the hasMoreNewer tail-snap (800 is within [0, 4500]).
-      expect(writeScrollTop).toHaveBeenCalledWith(800)
+      expect(writeScrollTop).toHaveBeenCalledWith(800, 'viewport-restore-raw-top')
       expect(forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {
@@ -253,7 +253,7 @@ describe('chatscrollviewportrestore restore priority', () => {
       })
       restore.handleResize()
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(250)
+      expect(writeScrollTop).toHaveBeenCalledWith(250, 'viewport-restore-near-anchor')
       expect(forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {

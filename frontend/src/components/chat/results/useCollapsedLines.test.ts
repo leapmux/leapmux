@@ -83,4 +83,17 @@ describe('usecollapsedlines', () => {
       dispose()
     })
   })
+
+  it('returns an empty collapsed display for a zero-line threshold', () => {
+    createRoot((dispose) => {
+      const { display, isCollapsed } = useCollapsedLines({
+        text: () => 'a\nb\nc',
+        expanded: () => false,
+        threshold: 0,
+      })
+      expect(isCollapsed()).toBe(true)
+      expect(display()).toBe('')
+      dispose()
+    })
+  })
 })

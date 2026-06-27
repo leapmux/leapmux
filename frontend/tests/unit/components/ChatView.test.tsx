@@ -2,15 +2,15 @@ import type { VirtualItem } from '~/components/chat/useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { ChatView } from '~/components/chat/ChatView'
+import { ChatView, rowChromeHeightKey } from '~/components/chat/ChatView'
 import { computeOverscanPx } from '~/components/chat/chatViewportGeometry'
 import { sameVirtualItems } from '~/components/chat/useChatVirtualizer'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
-import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObservers } from '../helpers/resizeObserverStub'
+import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '../helpers/resizeObserverStub'
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
@@ -28,6 +28,16 @@ beforeAll(() => {
     dispatchEvent() { return false }
   } as unknown as typeof Worker
 })
+
+async function reportChatViewportSize(view: { container: HTMLElement }, width = 800, height = 733): Promise<void> {
+  const scrollContainer = view.container.querySelector('[data-chat-scroll-container]') as HTMLElement | null
+  expect(scrollContainer).not.toBeNull()
+  vi.spyOn(scrollContainer!, 'getBoundingClientRect').mockImplementation(() => ({
+    width,
+    height,
+  }) as DOMRect)
+  await triggerResizeObserverFor(scrollContainer!)
+}
 
 // `role` ('user' | 'assistant') only labels the call site for readability;
 // ChatView classifies messages off `message.source` (left UNSPECIFIED here,
@@ -287,23 +297,32 @@ describe('computeOverscanPx', () => {
 })
 
 describe('samevirtualitems', () => {
-  const item = (id: string, hasSpanLines = false, estimateKey?: string): VirtualItem => ({ id, hasSpanLines, estimateKey })
+  const item = (id: string, hasSpanLines = false, heightKey?: string): VirtualItem => ({ id, hasSpanLines, heightKey })
 
   it('is true for the same reference and for a geometry-equivalent rebuild', () => {
     const a = [item('m1', false, '1'), item('m2', true, '2')]
     expect(sameVirtualItems(a, a)).toBe(true)
     // A fresh array (a streaming/command-stream delta re-walk) with identical
-    // id/hasSpanLines/estimateKey is geometry-equivalent -> keep the prior, no churn.
+    // id/hasSpanLines/heightKey is geometry-equivalent -> keep the prior, no churn.
     const b = [item('m1', false, '1'), item('m2', true, '2')]
     expect(sameVirtualItems(a, b)).toBe(true)
   })
 
   it('is false when a content version, span-line flag, id, or length changes', () => {
     const base = [item('m1', false, '1'), item('m2', true, '2')]
-    expect(sameVirtualItems(base, [item('m1', false, '1'), item('m2', true, '3')])).toBe(false) // estimateKey bumped
+    expect(sameVirtualItems(base, [item('m1', false, '1'), item('m2', true, '3')])).toBe(false) // heightKey bumped
     expect(sameVirtualItems(base, [item('m1', true, '1'), item('m2', true, '2')])).toBe(false) // hasSpanLines flipped
     expect(sameVirtualItems(base, [item('mX', false, '1'), item('m2', true, '2')])).toBe(false) // id changed (reorder/insert)
     expect(sameVirtualItems(base, [item('m1', false, '1')])).toBe(false) // a row appeared/left
+  })
+})
+
+describe('rowChromeHeightKey', () => {
+  it('changes when delivery error or pending-label chrome changes', () => {
+    const base = rowChromeHeightKey(undefined, undefined)
+    expect(rowChromeHeightKey('failed', undefined)).not.toBe(base)
+    expect(rowChromeHeightKey(undefined, 'queued')).not.toBe(base)
+    expect(rowChromeHeightKey('failed', 'queued')).not.toBe(rowChromeHeightKey('failed', undefined))
   })
 })
 
@@ -640,6 +659,156 @@ describe('chatView', () => {
     // The span starts streaming -> the reasoning row must flip to visible.
     setStream([{ kind: 'reasoning_content', text: 'pondering...' }])
     await waitFor(() => expect(view.container.querySelector('[data-seq="2"]')).not.toBeNull())
+  })
+
+  it('keeps unmeasured interior rows invisible without collapsing the live tail', async () => {
+    const messages = [
+      { ...makeMessage('assistant', 'Older tall output', 'msg-1'), seq: 1n },
+      { ...makeMessage('assistant', 'Current message', 'msg-2'), seq: 2n },
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    const row = await waitFor(() => {
+      const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    })
+    const spacer = row.parentElement as HTMLElement | null
+    expect(spacer).not.toBeNull()
+    expect(row.style.visibility).toBe('')
+
+    await reportChatViewportSize(view)
+
+    await waitFor(() => expect(row.style.visibility).toBe('hidden'))
+    expect(row.style.opacity).toBe('0')
+    const tailRow = view.container.querySelector('[data-seq="2"]') as HTMLElement | null
+    expect(tailRow).not.toBeNull()
+    expect(tailRow!.style.visibility).toBe('')
+    expect(tailRow!.style.opacity).toBe('1')
+    expect(spacer!.style.height).toBe('96px')
+
+    vi.spyOn(tailRow!, 'getBoundingClientRect').mockImplementation(() => ({ height: 32 }) as DOMRect)
+    await triggerResizeObserverFor(tailRow!)
+    await waitFor(() => expect(spacer!.style.height).toBe('32px'))
+
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 480 }) as DOMRect)
+    await triggerResizeObserverFor(row)
+
+    await waitFor(() => expect(row.style.visibility).toBe(''))
+    expect(row.style.opacity).toBe('1')
+    expect(spacer!.style.height).toBe('532px')
+  })
+
+  it('keeps streaming text visible until its replacement row is measured', async () => {
+    const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
+    const [streamingText, setStreamingText] = createSignal('Streaming answer')
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages()} streamingText={streamingText()} />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
+
+    await reportChatViewportSize(view)
+
+    batch(() => {
+      setMessages([{ ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 1n }])
+      setStreamingText('')
+    })
+
+    const row = await waitFor(() => {
+      const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    })
+
+    expect(row.style.visibility).toBe('hidden')
+    expect(row.style.opacity).toBe('0')
+
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
+    await triggerResizeObserverFor(row)
+
+    await waitFor(() => expect(row.style.visibility).toBe(''))
+    expect(row.style.opacity).toBe('1')
+  })
+
+  it('keeps streaming text visible when its replacement row appears before streaming clears', async () => {
+    const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
+    const [streamingText, setStreamingText] = createSignal('Streaming answer')
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages()} streamingText={streamingText()} />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
+
+    await reportChatViewportSize(view)
+
+    setMessages([{ ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 1n }])
+
+    const row = await waitFor(() => {
+      const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    })
+    expect(row.style.visibility).toBe('hidden')
+    expect(row.style.opacity).toBe('0')
+
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
+    await triggerResizeObserverFor(row)
+    expect(row.style.visibility).toBe('hidden')
+    expect(row.style.opacity).toBe('0')
+
+    setStreamingText('')
+
+    await waitFor(() => expect(row.style.visibility).toBe(''))
+    expect(row.style.opacity).toBe('1')
+  })
+
+  it('keeps streaming text visible until a post-hidden replacement row is measured', async () => {
+    const prior = { ...makeMessage('assistant', 'Prior answer', 'prior-1'), seq: 1n }
+    const hidden = { ...makeCodexHiddenLifecycleMessage('hidden-1'), seq: 2n }
+    const final = { ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 3n }
+    const [messages, setMessages] = createSignal<AgentChatMessage[]>([prior])
+    const [streamingText, setStreamingText] = createSignal('Streaming answer')
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages()} streamingText={streamingText()} />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
+
+    await reportChatViewportSize(view)
+
+    batch(() => {
+      setStreamingText('')
+      setMessages([prior, hidden])
+    })
+    expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
+
+    setMessages([prior, hidden, final])
+
+    const row = await waitFor(() => {
+      const el = view.container.querySelector('[data-seq="3"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    })
+    expect(row.style.visibility).toBe('hidden')
+    expect(row.style.opacity).toBe('0')
+
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
+    await triggerResizeObserverFor(row)
+
+    await waitFor(() => expect(row.style.visibility).toBe(''))
+    expect(row.style.opacity).toBe('1')
   })
 
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {

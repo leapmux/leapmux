@@ -17,7 +17,7 @@ export const popover = style({
   // top/left coords would render off by `vv-offset` while iOS still
   // has a residual offset. Identity (0) outside that brief window.
   'transform': 'translateY(var(--vv-offset, 0px))',
-  'transition': 'opacity 0.1s',
+  'transition': 'opacity var(--transition)',
   ':hover': {
     opacity: 1,
   },

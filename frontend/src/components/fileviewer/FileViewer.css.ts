@@ -222,7 +222,7 @@ export const viewToggle = style({
   'border': '1px solid var(--border)',
   'backgroundColor': 'var(--card)',
   'opacity': 0.8,
-  'transition': 'opacity 0.15s',
+  'transition': 'opacity var(--transition)',
   ':hover': {
     opacity: 1,
   },
@@ -323,7 +323,7 @@ export const imageToolbar = style({
   'border': '1px solid var(--border)',
   'backgroundColor': 'var(--card)',
   'opacity': 0.8,
-  'transition': 'opacity 0.15s',
+  'transition': 'opacity var(--transition)',
   ':hover': {
     opacity: 1,
   },

@@ -1,3 +1,4 @@
+import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mock the worker bridge so the async highlight path is driven deterministically
@@ -7,7 +8,7 @@ vi.mock('~/lib/markdownWorkerClient', () => ({
 }))
 
 const { renderMarkdownInWorker } = await import('~/lib/markdownWorkerClient')
-const { _getPlaceholderCacheSize, _resetMarkdownCache, renderMarkdown } = await import('~/lib/renderMarkdown')
+const { _getPlaceholderCacheSize, _resetMarkdownCache, renderMarkdown, renderMarkdownCachedOrPlain } = await import('~/lib/renderMarkdown')
 
 const mockWorker = renderMarkdownInWorker as unknown as ReturnType<typeof vi.fn>
 
@@ -89,6 +90,43 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(_getPlaceholderCacheSize()).toBe(0)
     expect(renderMarkdown(text)).toContain('rejected worker')
     expect(mockWorker).not.toHaveBeenCalled()
+  })
+
+  it('caches a plain render when the worker bridge throws synchronously', async () => {
+    const text = 'sync throw worker'
+    mockWorker.mockImplementation(() => {
+      throw new Error('worker blocked by policy')
+    })
+
+    expect(() => renderMarkdown(text)).not.toThrow()
+    await flushMicrotasks()
+    mockWorker.mockClear()
+
+    expect(_getPlaceholderCacheSize()).toBe(0)
+    expect(renderMarkdown(text)).toContain(text)
+    expect(mockWorker).not.toHaveBeenCalled()
+  })
+
+  it('does not subscribe cached-or-plain renders to worker completion invalidations', async () => {
+    const text = '```js\nconst paused = true\n```'
+    mockWorker.mockResolvedValue('<pre class="shiki">highlighted</pre>')
+    let runs = 0
+    let dispose: (() => void) | undefined
+
+    createRoot((d) => {
+      dispose = d
+      createEffect(() => {
+        runs++
+        renderMarkdownCachedOrPlain(text)
+      })
+    })
+    expect(runs).toBe(1)
+
+    renderMarkdown(text)
+    await flushMicrotasks()
+
+    expect(runs).toBe(1)
+    dispose?.()
   })
 
   it('_resetMarkdownCache clears inFlight so the same text re-dispatches after a reset', () => {

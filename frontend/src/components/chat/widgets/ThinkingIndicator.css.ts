@@ -44,7 +44,7 @@ export const verbRow = style({
 // `grid-template: 1fr / 1fr` puts both spans in the same cell;
 // `gridArea: '1 / 1'` on each span (via the verb rule below) anchors
 // them. The cell sizes to max(both contents) — short-lived during the
-// 500ms fade, then the now-inactive slot is cleared and the cell
+// --transition fade, then the now-inactive slot is cleared and the cell
 // shrinks to just the active verb.
 export const verbStack = style({
   display: 'inline-grid',
@@ -82,10 +82,11 @@ export const baselineStrut = style([verbSlotBase, {
 
 export const verb = style([verbSlotBase, {
   opacity: 0,
-  // ROTATION_FADE_MS in ThinkingIndicator.tsx tracks this duration —
+  // ROTATION_FADE_MS in ThinkingIndicator.tsx tracks --transition via
+  // motion.medium from tokens.ts —
   // keep them in lockstep so the inactive-slot clear lands exactly
   // when the fade visually completes.
-  transition: 'opacity 500ms ease-in-out',
+  transition: 'opacity var(--transition)',
 }])
 
 // Applied to whichever of the two stacked slots is currently the

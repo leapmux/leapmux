@@ -22,12 +22,19 @@ const HUGE_TARGET = 1e9
  * measurement. scrollTop/distBottom drive only the buffer DEFICIT (kept < the huge target,
  * so both sides stay deficient). Returns hooks to drive + observe the filler.
  */
-function harness(opts: { olderGrowsBy?: number, newerGrowsBy?: number } = {}) {
+function harness(opts: {
+  olderGrowsBy?: number
+  newerGrowsBy?: number
+  bufferTargetPx?: number
+  scrollTop?: number
+  distBottom?: number
+} = {}) {
   const olderGrowsBy = opts.olderGrowsBy ?? 0
   const newerGrowsBy = opts.newerGrowsBy ?? 0
+  const bufferTargetPx = opts.bufferTargetPx ?? HUGE_TARGET
   let enabled = false
-  let scrollTop = 0
-  let distBottom = 0
+  let scrollTop = opts.scrollTop ?? 0
+  let distBottom = opts.distBottom ?? 0
   // Content above / below the captured ref row (the geometry offsets contentAbove /
   // contentBelow read). Each grows ONLY when a load on that side prepends/appends visible
   // content -- never from scrollTop/distBottom -- so each side's progress signal is immune
@@ -58,7 +65,7 @@ function harness(opts: { olderGrowsBy?: number, newerGrowsBy?: number } = {}) {
       createScrollBufferFiller({
         getEl,
         messages: () => [] as AgentChatMessage[],
-        bufferTargetPx: () => HUGE_TARGET,
+        bufferTargetPx: () => bufferTargetPx,
         hasOlder: () => hasOlder,
         hasNewer: () => hasNewer,
         fetchingOlder: () => false,
@@ -100,6 +107,8 @@ function harness(opts: { olderGrowsBy?: number, newerGrowsBy?: number } = {}) {
     setSuppressOlder: (v: boolean) => { suppressOlder = v },
     setRefTrimmed: (v: boolean) => { refTrimmed = v },
     setUnanchorable: (v: boolean) => { unanchorable = v },
+    setOlderBuffer: (px: number) => { scrollTop = px },
+    setNewerBuffer: (px: number) => { distBottom = px },
     // Simulate a live-tail append BETWEEN fills: it grows the BELOW buffer (content + DOM)
     // without a filler load -- the growth that would fool a global-total progress signal
     // into crediting an all-hidden OLDER fetch.
@@ -125,6 +134,30 @@ function harness(opts: { olderGrowsBy?: number, newerGrowsBy?: number } = {}) {
 }
 
 describe('chatscrollbufferfiller', () => {
+  it('requires meaningful buffer depletion before fetching a full page', () => {
+    const older = harness({ bufferTargetPx: 300, scrollTop: 260 })
+    older.enable()
+    older.setHas(true, false)
+    older.setLastScrollDir('older')
+    older.filler.fill()
+    expect(older.counts().olderLoads).toBe(0)
+
+    older.setOlderBuffer(249)
+    older.filler.fill()
+    expect(older.counts().olderLoads).toBe(1)
+
+    const newer = harness({ bufferTargetPx: 300, distBottom: 260 })
+    newer.enable()
+    newer.setHas(false, true)
+    newer.setLastScrollDir('newer')
+    newer.filler.fill()
+    expect(newer.counts().newerLoads).toBe(0)
+
+    newer.setNewerBuffer(249)
+    newer.filler.fill()
+    expect(newer.counts().newerLoads).toBe(1)
+  })
+
   it('keeps serving a productive newer side instead of wedging it behind an all-hidden older run', () => {
     // older loads never grow their buffer (scrollTop flat = all hidden); newer loads grow
     // theirs. A single shared counter would page older, climb to the cap, and halt BOTH

@@ -17,17 +17,21 @@ interface AnchorRepinFlingSettle {
 /** The velocity read the re-pin uses to tell a momentum fling from a deliberate scroll. */
 interface AnchorRepinVelocity {
   isFling: () => boolean
+  isActivelyFlinging: () => boolean
+  hasRecentMomentumInput: () => boolean
 }
 
 export interface AnchorRepinDeps {
   /** The scroll container element (a plain ref in the hook), or undefined before mount. */
   getEl: () => HTMLDivElement | undefined
-  /** The offset map: resolve an anchor to a scrollTop, and a scrollTop to its top row. */
+  /** The offset map: resolve an anchor to a content Y, and a content Y to its row. */
   virt: Pick<ChatScrollVirtualizer, 'anchorAt' | 'scrollTopForAnchor'>
   /** True while a programmatic scroll animation is running (a re-pin defers into it). */
   isAnimating: () => boolean
   /** Programmatic scrollTop write whose echo the guard recognizes as ours. */
-  writeScrollTop: (top: number) => void
+  writeScrollTop: (top: number, source?: string) => void
+  /** Logical scrollTop read. Defaults to the raw DOM value for unit tests/helpers. */
+  readScrollTop?: (el: HTMLDivElement) => number
   /** Velocity reads, lazily fetched at call time. */
   velocity: AnchorRepinVelocity
   /** The fling-settle unit, via a thunk to break the captureAnchor<->flingSettle cycle. */
@@ -35,11 +39,20 @@ export interface AnchorRepinDeps {
   /**
    * True only while a USER scroll event is mounting+measuring newly revealed rows (inside
    * handleScroll's refreshViewport). The geometry re-pin fires synchronously off those
-   * measurements; while set it defers small corrections, because writing scrollTop
-   * mid-fling cancels the browser's momentum and reads as a jump.
+   * measurements; while set it absorbs slow-scroll micro-corrections and defers fling
+   * corrections, because writing scrollTop against the native scroll event reads as a jump.
    */
   isUserScrolling: () => boolean
 }
+
+/**
+ * Small estimate->measure corrections should not fight a user's slow/manual scroll. For
+ * deltas this small, re-anchor to the live viewport and let the user's scroll trajectory
+ * win. Larger shifts are structural enough (prepend/trim/tall outlier) that preserving
+ * the existing anchor is less surprising than silently absorbing the movement.
+ */
+const SMALL_USER_SCROLL_REPIN_ABSORB_PX = 128
+const VIEWPORT_MIDPOINT_RATIO = 0.5
 
 /**
  * The anchor + re-pin engine: the hook's single most intricate invariant, extracted from
@@ -59,6 +72,19 @@ export interface AnchorRepinDeps {
  * without a creation cycle.
  */
 export function createAnchorRepin(deps: AnchorRepinDeps) {
+  const readScrollTop = (el: HTMLDivElement) => deps.readScrollTop?.(el) ?? el.scrollTop
+  const viewportAnchorOffset = (el: HTMLDivElement, ratio: number) => Math.max(0, el.clientHeight * ratio)
+  const clampScrollTop = (el: HTMLDivElement, top: number) => Math.min(Math.max(0, top), maxScrollTopOf(el))
+  const captureViewportAnchor = (el: HTMLDivElement) => {
+    const scrollTop = readScrollTop(el)
+    const offset = viewportAnchorOffset(el, VIEWPORT_MIDPOINT_RATIO)
+    return {
+      anchor: deps.virt.anchorAt(scrollTop + offset),
+      captureTop: scrollTop,
+      viewportOffsetRatio: VIEWPORT_MIDPOINT_RATIO,
+    }
+  }
+
   // Scroll-mode state machine: is the viewport pinned to the live tail, or holding a
   // specific row stationary while scrolled up? Replaces a nullable `anchor` variable so
   // "following the tail" and "anchored to a row" are explicit, type-checked states
@@ -72,7 +98,9 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
   // `userScrolling`/`repinning` (transient reentrancy guards that can BOTH be set while
   // anchored), and `suppressAutoLoadOlderAfterRestore` (a one-shot). Folding them into
   // this union would make illegal combinations representable.
-  type ScrollMode = { kind: 'following' } | { kind: 'anchored', anchor: ScrollAnchor }
+  type ScrollMode
+    = | { kind: 'following' }
+      | { kind: 'anchored', anchor: ScrollAnchor, viewportOffsetRatio: number }
   let scrollMode: ScrollMode = { kind: 'following' }
   // The scrollTop the current anchor was resolved FROM (the viewport position at
   // capture). repinToAnchor uses it to spot a STALE anchor: a keep-position write is only
@@ -96,6 +124,11 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
 
   /** The pinned row while anchored, or null while following the live tail. */
   const currentAnchor = (): ScrollAnchor | null => (scrollMode.kind === 'anchored' ? scrollMode.anchor : null)
+  /** The pinned row plus where it is held inside the viewport. */
+  const currentAnchorState = (): { anchor: ScrollAnchor, viewportOffsetRatio: number } | null =>
+    scrollMode.kind === 'anchored'
+      ? { anchor: scrollMode.anchor, viewportOffsetRatio: scrollMode.viewportOffsetRatio }
+      : null
   /** True while following the live tail (not anchored to a row). */
   const isFollowing = () => scrollMode.kind === 'following'
   /** Transition to following the live tail (drop any anchor). */
@@ -104,38 +137,58 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
   }
   /**
    * Transition to anchored at `a`, or to following when `a` is null (empty list). Records
-   * the viewport position the anchor was resolved from. `captureTop` defaults to the live
-   * scrollTop -- correct for every capture/re-anchor site, where the anchor IS resolved
-   * from the current position; restoreSavedViewport passes the landed scrollTop explicitly
-   * because it anchors around a programmatic write rather than the current position.
+   * the viewport position the anchor was resolved from and the viewport-relative line
+   * where the anchor should remain pinned. `captureTop` defaults to the live scrollTop --
+   * correct for every capture/re-anchor site, where the anchor IS resolved from the
+   * current position; restoreSavedViewport passes the landed scrollTop explicitly because
+   * it anchors around a programmatic write rather than the current position.
    */
-  const setAnchor = (a: ScrollAnchor | null, captureTop?: number) => {
-    scrollMode = a ? { kind: 'anchored', anchor: a } : { kind: 'following' }
+  const setAnchor = (a: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio = 0) => {
+    scrollMode = a
+      ? { kind: 'anchored', anchor: a, viewportOffsetRatio: Math.max(0, Math.min(1, viewportOffsetRatio)) }
+      : { kind: 'following' }
     if (a) {
       const el = deps.getEl()
-      anchorCaptureTop = captureTop ?? (el ? el.scrollTop : 0)
+      anchorCaptureTop = captureTop ?? (el ? readScrollTop(el) : 0)
     }
   }
 
-  /** Capture the current viewport-top anchor (used while scrolled up). */
+  /** Capture the current viewport-midpoint anchor (used while scrolled up). */
   const captureAnchor = () => {
     const el = deps.getEl()
     if (el) {
-      setAnchor(deps.virt.anchorAt(el.scrollTop))
+      const captured = captureViewportAnchor(el)
+      setAnchor(captured.anchor, captured.captureTop, captured.viewportOffsetRatio)
       // A new capture re-baselines deferred-drift accounting: subsequent suppressed
       // corrections are measured from THIS anchor position.
       deps.flingSettle().rebase()
     }
   }
 
-  // Re-anchor to the row now under the viewport top and DROP any deferred fling drift (the
-  // accumulated correction to keep the ABANDONED anchor stationary, which would land as a
-  // jump if applied to the new one). Shared by repinToAnchor's two re-anchor branches --
-  // the stale-during-fling guard and the anchor-no-longer-resolves case -- so their
-  // setAnchor + flingSettle.reset() can never drift apart.
+  /** Capture the row at the viewport top (used by explicit top jumps). */
+  const captureTopAnchor = () => {
+    const el = deps.getEl()
+    if (el) {
+      const scrollTop = readScrollTop(el)
+      setAnchor(deps.virt.anchorAt(scrollTop), scrollTop, 0)
+      deps.flingSettle().rebase()
+    }
+  }
+
+  // Re-anchor to the row now under the viewport midpoint and DROP any deferred fling
+  // drift (the accumulated correction to keep the ABANDONED anchor stationary, which
+  // would land as a jump if applied to the new one). Shared by repinToAnchor's two
+  // re-anchor branches -- the stale-during-fling guard and the anchor-no-longer-resolves
+  // case -- so their setAnchor + flingSettle.reset() can never drift apart.
   const reanchorAndDropDrift = () => {
     const el = deps.getEl()
-    setAnchor(el ? deps.virt.anchorAt(el.scrollTop) : null)
+    if (el) {
+      const captured = captureViewportAnchor(el)
+      setAnchor(captured.anchor, captured.captureTop, captured.viewportOffsetRatio)
+    }
+    else {
+      setAnchor(null)
+    }
     deps.flingSettle().reset()
   }
 
@@ -170,25 +223,30 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     }
     repinning = true
     try {
-      const a = currentAnchor()
-      if (a) {
-        const top = deps.virt.scrollTopForAnchor(a)
+      const anchorState = currentAnchorState()
+      if (anchorState) {
+        const top = deps.virt.scrollTopForAnchor(anchorState.anchor)
         if (top != null) {
-          const fromTop = el.scrollTop
-          const signed = top - fromTop
+          const targetTop = clampScrollTop(el, top - viewportAnchorOffset(el, anchorState.viewportOffsetRatio))
+          const fromTop = readScrollTop(el)
+          const signed = targetTop - fromTop
           const delta = Math.abs(signed)
           // Skip a write that wouldn't meaningfully move scrollTop (a measurement below the
           // anchor doesn't shift it): assigning scrollTop at all can interrupt a momentum
           // scroll, so don't do it for nothing. And while the user is actively flinging,
           // defer small corrections -- writing scrollTop mid-fling cancels the momentum, and
           // over a run of off-estimate diffs that reads as repeated jumps. We ACCUMULATE the
-          // deferred shift into flingSettle instead of dropping it, so its settle can undo
-          // the whole accumulated overshoot in one write once momentum stops (see
-          // createFlingSettle). A correction big enough to be a real jump (a page-sized
-          // prepend/trim above the anchor, or an outlier measurement) still applies
-          // immediately, since landing off by that much would be worse than one interrupted
-          // fling -- and supersedes any deferred drift.
+          // deferred shift into flingSettle so its settle can accept the resulting visual
+          // position and re-anchor there once momentum stops (see createFlingSettle). A
+          // correction big enough to be a real jump (a page-sized prepend/trim above the
+          // anchor, or an outlier measurement) still applies immediately, since landing off
+          // by that much would be worse than one interrupted fling -- and supersedes any
+          // deferred drift.
           const flingSuppressPx = el.clientHeight / 2
+          const smallUserScrollAbsorbPx = Math.min(SMALL_USER_SCROLL_REPIN_ABSORB_PX, flingSuppressPx)
+          const flingLike = deps.velocity.isFling()
+          const activeFling = deps.velocity.isActivelyFlinging()
+          const recentMomentumInput = deps.velocity.hasRecentMomentumInput()
           // How far the viewport has moved since this anchor was captured. Large only when a
           // fling outran the per-scroll-event captures (see anchorCaptureTop) -- a
           // keep-position prepend/trim leaves the viewport in place, so this stays ~0 for
@@ -204,10 +262,11 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // No meaningful move.
           }
           else if (flungAway) {
-            // Stale anchor (the "scroll up, snap back" loop): the viewport flew a full screen
-            // from capture, so the captured row is no longer the right thing to pin to. Re-
-            // anchor to the row now under the viewport top -- leaving the fling intact -- and
-            // drop the deferred drift, which was measured against the now-abandoned anchor.
+            // Stale anchor (the "scroll up, snap back" loop): the viewport flew a full
+            // screen from capture, so the captured row is no longer the right thing to pin
+            // to. Re-anchor to the row now under the viewport midpoint -- leaving the fling
+            // intact -- and drop the deferred drift, which was measured against the now-
+            // abandoned anchor.
             //
             // NOTE: a LARGE correction over a ~STATIONARY viewport (movedSinceCapture ~0) is
             // deliberately NOT dropped here, even mid-fling. That is a real keep-position
@@ -216,10 +275,21 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // falls through to the immediate-write branch below.
             reanchorAndDropDrift()
           }
-          else if (deps.isUserScrolling() && deps.velocity.isFling() && delta < flingSuppressPx) {
+          else if ((deps.isUserScrolling() || recentMomentumInput) && !flingLike && delta <= smallUserScrollAbsorbPx) {
+            // A small estimate->measure correction arrived while the user is slowly
+            // scrolling, or during the low-velocity tail just after the scroll handler
+            // returned. Writing scrollTop here fights the native momentum event and
+            // shows up as a tiny backward/forward bounce. Absorb the correction by making
+            // the current viewport row the new anchor; large structural shifts still fall
+            // through and preserve the old anchor.
+            reanchorAndDropDrift()
+          }
+          else if ((deps.isUserScrolling() ? flingLike : activeFling || (recentMomentumInput && flingLike)) && delta < flingSuppressPx) {
             // A small correction during a FAST scroll (real momentum): defer it, so the
-            // write doesn't cancel the fling. A slow deliberate scroll (isFling() false)
-            // falls through and corrects immediately -- no drift.
+            // write doesn't cancel the fling. Some measurements land just AFTER
+            // handleScroll returns, so use the stricter "actively flinging" signal outside
+            // the handler instead of requiring isUserScrolling to still be true. Slow/manual
+            // scrolls absorbed by the branch above leave no deferred drift to recapture later.
             deps.flingSettle().accumulate(signed)
           }
           else if (maxScrollTopOf(el) <= 0) {
@@ -229,27 +299,28 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
           }
           else {
             // Immediate keep-position write: the content moved under a (roughly) stationary
-            // viewport, so writing scrollTop to `top` keeps the anchored row visually put.
+            // viewport, so writing scrollTop to `targetTop` keeps the anchored row visually put.
             // This is the path a page-sized prepend/trim takes EVEN during an active fling --
             // compensating it synchronously (same flush as the spacer/row transforms) is what
             // makes the shift invisible; dropping or deferring it would leak its full height
-            // as scroll drift. A slow deliberate scroll's small corrections also land here.
-            deps.writeScrollTop(top)
-            // The anchor now sits at `top` (we moved the viewport to keep it there), so
-            // re-baseline the capture position; otherwise the next re-pin would measure this
-            // intentional keep-position move as stale movement.
-            anchorCaptureTop = top
+            // as scroll drift. Slow deliberate scrolls still land here for corrections above
+            // the small-jump absorb threshold.
+            deps.writeScrollTop(targetTop, 'anchor-repin')
+            // The anchor now sits at its stored viewport line (we moved the viewport to keep
+            // it there), so re-baseline the capture position; otherwise the next re-pin
+            // would measure this intentional keep-position move as stale movement.
+            anchorCaptureTop = targetTop
             deps.flingSettle().reset()
           }
         }
         else {
           // The anchored row no longer resolves -- it was trimmed out of the window, or (the
           // common case) an optimistic local reconciled to its server echo under a new id /
-          // a reseq changed its id. Re-anchor to whatever row now sits at the viewport top
-          // (scrollTop is unchanged) so subsequent geometry changes keep a valid pin instead
-          // of letting the view silently drift. Drop any deferred fling drift: it was the
-          // accumulated correction to keep the now-gone row stationary, so applying it to the
-          // re-anchored row at settle would be a jump.
+          // a reseq changed its id. Re-anchor to whatever row now sits at the viewport
+          // midpoint (scrollTop is unchanged) so subsequent geometry changes keep a valid
+          // pin instead of letting the view silently drift. Drop any deferred fling drift:
+          // it was the accumulated correction to keep the now-gone row stationary, so
+          // applying it to the re-anchored row at settle would be a jump.
           reanchorAndDropDrift()
         }
       }
@@ -282,10 +353,12 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
 
   return {
     currentAnchor,
+    currentAnchorState,
     isFollowing,
     followTail,
     setAnchor,
     captureAnchor,
+    captureTopAnchor,
     repinToAnchor,
     applyDeferredRepinOnCancel,
     resetDeferredRepin,

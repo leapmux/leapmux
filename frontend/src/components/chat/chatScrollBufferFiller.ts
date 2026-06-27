@@ -4,6 +4,15 @@ import { createEffect } from 'solid-js'
 import { distFromBottom } from './chatScrollGeometry'
 
 /**
+ * Fetching one raw page is a large mutation: it prepends/appends rows, re-pins the
+ * viewport, and may immediately trigger an opposite-end trim. Do not do that for a
+ * tiny shortfall just below the ideal buffer target, or slow scrolling can fall into a
+ * fetch -> trim -> tiny-deficit -> fetch loop. The trim logic still keeps the full
+ * target when content exists; this is only the lower refill watermark.
+ */
+const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
+
+/**
  * The scroll-buffer filler: pre-fetches RAW history pages to keep a buffer of
  * VISIBLE content beyond the viewport in each direction, so scrolling stays smooth
  * even in a hidden-heavy stretch (where a raw page adds almost no scroll height and
@@ -123,9 +132,10 @@ export function createScrollBufferFiller(deps: {
     if (!el)
       return { older: false, newer: false }
     const target = deps.bufferTargetPx()
+    const triggerPx = Math.max(0, target - el.clientHeight * BUFFER_REFILL_HYSTERESIS_SCREENS)
     return {
-      older: ceilingAllowed('older') && el.scrollTop < target && deps.hasOlder() && !deps.suppressOlder(),
-      newer: ceilingAllowed('newer') && distFromBottom(el) < target && deps.hasNewer(),
+      older: ceilingAllowed('older') && el.scrollTop < triggerPx && deps.hasOlder() && !deps.suppressOlder(),
+      newer: ceilingAllowed('newer') && distFromBottom(el) < triggerPx && deps.hasNewer(),
     }
   }
 

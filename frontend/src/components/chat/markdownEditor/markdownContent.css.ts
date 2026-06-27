@@ -67,7 +67,7 @@ globalStyle(`.${codeCopyHostClass} .copy-code-button`, {
   color: 'var(--muted-foreground)',
   cursor: 'pointer',
   opacity: '0',
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
 })
 
 globalStyle(`.${codeCopyHostClass}:hover .copy-code-button`, {

@@ -28,7 +28,7 @@ export function AgentResultView(props: {
 
   return (
     <ToolStatusHeader icon={icon()} title={`Agent ${props.agentId} ${formatAgentStatus(props.status)}`}>
-      <CollapsibleContent kind="markdown-tool-result" text={props.content} isCollapsed={isCollapsed()} />
+      <CollapsibleContent kind="markdown-tool-result" text={props.content} isCollapsed={isCollapsed()} context={props.context} />
     </ToolStatusHeader>
   )
 }

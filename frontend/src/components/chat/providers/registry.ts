@@ -8,7 +8,6 @@
 // lookup; each side carries the per-provider hooks its layer needs.
 
 import type { Component, JSX } from 'solid-js'
-import type { HeightInput, RowUiState } from '../chatHeightEstimator'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
@@ -203,37 +202,6 @@ export interface Provider {
     spanType: string | undefined,
     toolUseParsed: ParsedMessageContent | undefined,
   ) => ToolResultMeta | null
-
-  /**
-   * Extract the PROVIDER-SPECIFIC slice of a row's pre-mount height input from
-   * its own wire format: diff geometry (from this provider's file-edit
-   * extractor), and the tool_result `bodyMarkdown`/`hasHeader` flags +
-   * `result_divider` detail that depend on per-provider payload shapes. The
-   * shared `buildHeightInput` fills the provider-neutral slice (text/line
-   * counts, attachments, images, tool-input summaries) and merges this on top.
-   *
-   * Returns the fields this provider computes (a `Partial<HeightInput>`), or
-   * null when it contributes nothing for the row. MUST NOT return
-   * `kind`/`toolName`/`hasSpanLines` -- the orchestrator owns those. Diff
-   * fields take precedence: when this returns `diffUnifiedRows`/`diffSplitRows`
-   * the row is sized as a diff and the generic slice is skipped.
-   *
-   * `toolUseParsed` is the paired tool_use sibling (resolved by spanId, same as
-   * the renderer's lookup), so a tool_result row can reach the input-side data
-   * its renderer uses (Claude's edit input, Pi's start args).
-   *
-   * `state` is the row's resolved interactive UI state (collapsed / expanded /
-   * toolBodyExpanded / diffView), so a provider whose renderer's expand toggle keys
-   * on a provider-specific MESSAGE_UI_KEY (e.g. ACP's tool_call_update body) can size
-   * the expanded body the same way the renderer draws it. `toolBodyExpanded` is
-   * resolved from the renderer's own key per provider (toolBodyExpandedKeyFor).
-   */
-  heightMetrics?: (
-    category: MessageCategory,
-    parsed: ParsedMessageContent,
-    toolUseParsed: ParsedMessageContent | undefined,
-    state: RowUiState,
-  ) => Partial<HeightInput> | null
 
   /**
    * Extract quotable text from a parsed message — used by MessageBubble to

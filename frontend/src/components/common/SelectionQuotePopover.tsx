@@ -7,8 +7,15 @@ import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
 import * as styles from './SelectionQuotePopover.css'
 
 interface SelectionQuotePopoverProps {
+  class?: string
   containerRef: HTMLElement | undefined
   onQuote: (selectedText: string, startLine?: number, endLine?: number) => void
+  /**
+   * Reports whether the document selection is currently inside this wrapper.
+   * Chat uses this to freeze syntax-highlight DOM swaps while the browser owns
+   * a live text selection; replacing selected text nodes clears the selection.
+   */
+  onSelectionActiveChange?: (active: boolean) => void
   children: JSX.Element
 }
 
@@ -17,8 +24,54 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
   let popoverRef: HTMLDivElement | undefined
   const [visible, setVisible] = createSignal(false)
   const [position, setPosition] = createSignal({ top: 0, left: 0 })
+  let selectionActive = false
+  let selectionFrame: number | undefined
+  let clampFrame: number | undefined
 
   const hidePopover = () => setVisible(false)
+
+  const cancelScheduledFrames = () => {
+    if (selectionFrame !== undefined) {
+      cancelAnimationFrame(selectionFrame)
+      selectionFrame = undefined
+    }
+    if (clampFrame !== undefined) {
+      cancelAnimationFrame(clampFrame)
+      clampFrame = undefined
+    }
+  }
+
+  const currentContainer = (): HTMLElement | undefined => {
+    // When containerRef is passed as a static prop (e.g. from ChatView), it can
+    // become a stale, disconnected DOM element after a SolidJS <Show> toggles.
+    // Fall back to wrapperRef when the containerRef is no longer in the document.
+    const propsRef = props.containerRef
+    return (propsRef && propsRef.isConnected ? propsRef : null) ?? wrapperRef
+  }
+
+  const setSelectionActive = (active: boolean) => {
+    if (selectionActive === active)
+      return
+    selectionActive = active
+    props.onSelectionActiveChange?.(active)
+  }
+
+  const selectionInsideContainer = (selection: Selection, container: HTMLElement): boolean => {
+    const anchorNode = selection.anchorNode
+    const focusNode = selection.focusNode
+    return !!anchorNode && !!focusNode && container.contains(anchorNode) && container.contains(focusNode)
+  }
+
+  const updateSelectionActive = (): Selection | null => {
+    const selection = window.getSelection()
+    const container = currentContainer()
+    if (!selection || selection.isCollapsed || !selection.toString().trim() || !container || !selectionInsideContainer(selection, container)) {
+      setSelectionActive(false)
+      return null
+    }
+    setSelectionActive(true)
+    return selection
+  }
 
   const handleMouseDown = (e: MouseEvent) => {
     // Don't hide the popover when clicking the popover itself (Quote button),
@@ -32,28 +85,20 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
   const handleMouseUp = () => {
     // Small delay to let the browser finalize the selection
-    requestAnimationFrame(() => {
-      const selection = window.getSelection()
-      if (!selection || selection.isCollapsed || !selection.toString().trim())
-        return
-
-      // When containerRef is passed as a static prop (e.g. from ChatView), it can
-      // become a stale, disconnected DOM element after a SolidJS <Show> toggles.
-      // Fall back to wrapperRef when the containerRef is no longer in the document.
-      const propsRef = props.containerRef
-      const container = (propsRef && propsRef.isConnected ? propsRef : null) ?? wrapperRef
-      if (!container)
-        return
-
-      // Check that the selection is within our container
-      if (!container.contains(selection.anchorNode) || !container.contains(selection.focusNode))
+    cancelScheduledFrames()
+    selectionFrame = requestAnimationFrame(() => {
+      selectionFrame = undefined
+      const selection = updateSelectionActive()
+      if (!selection)
         return
 
       // Position the popover above the end of the selection
       const range = selection.getRangeAt(0)
       const rects = [...range.getClientRects()]
-      if (rects.length === 0)
+      if (rects.length === 0) {
+        setSelectionActive(false)
         return
+      }
 
       const lastRect = rects.at(-1)!
 
@@ -64,7 +109,8 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
       setVisible(true)
 
       // After the popover renders, clamp to viewport bounds.
-      requestAnimationFrame(() => {
+      clampFrame = requestAnimationFrame(() => {
+        clampFrame = undefined
         if (!popoverRef)
           return
         const rect = popoverRef.getBoundingClientRect()
@@ -92,6 +138,7 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
     void navigator.clipboard.writeText(text)
     selection.removeAllRanges()
+    setSelectionActive(false)
     hidePopover()
   }
 
@@ -107,15 +154,16 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
     props.onQuote(text, lineRange?.startLine, lineRange?.endLine)
     selection.removeAllRanges()
+    setSelectionActive(false)
     hidePopover()
   }
 
   // Hide the popover when the selection is cleared (e.g. by focusing another input).
   const handleSelectionChange = () => {
+    const selection = updateSelectionActive()
     if (!visible())
       return
-    const selection = window.getSelection()
-    if (!selection || selection.isCollapsed)
+    if (!selection)
       hidePopover()
   }
 
@@ -128,11 +176,13 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
       el.removeEventListener('mousedown', handleMouseDown)
       el.removeEventListener('mouseup', handleMouseUp)
       document.removeEventListener('selectionchange', handleSelectionChange)
+      cancelScheduledFrames()
+      setSelectionActive(false)
     })
   })
 
   return (
-    <div ref={wrapperRef}>
+    <div ref={wrapperRef} class={props.class}>
       {props.children}
       <Show when={visible()}>
         <div

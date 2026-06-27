@@ -1,11 +1,14 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via renderAnsi/renderMarkdown/renderJsonHighlight, not arbitrary user input */
 import type { JSX } from 'solid-js'
+import type { RenderContext } from '../messageRenderers'
 import { createMemo, Match, Switch } from 'solid-js'
-import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
-import { renderJsonHighlight } from '../toolRenderers'
+import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
+import { renderMarkdownForContext, shouldPauseSyntaxHighlighting } from '../messageRenderers'
+import { renderJsonHighlightForContext } from '../toolRenderers'
 import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre } from '../toolStyles.css'
+import { hasMoreLinesThan } from './collapse'
 
 /**
  * The kinds of content body that share the collapse-N-lines treatment:
@@ -43,6 +46,16 @@ export interface CollapsibleContentProps {
   isCollapsed: boolean
   /** Body kind. See {@link CollapsibleContentKind}. */
   kind: CollapsibleContentKind
+  /** Renderer context; premeasure mode skips worker/Shiki work while preserving block layout. */
+  context?: RenderContext
+}
+
+const ANSI_HIGHLIGHT_LINE_LIMIT = 1000
+const ANSI_HIGHLIGHT_CHAR_LIMIT = 20000
+
+function canHighlightAnsi(text: string): boolean {
+  return text.length <= ANSI_HIGHLIGHT_CHAR_LIMIT
+    && !hasMoreLinesThan(text, ANSI_HIGHLIGHT_LINE_LIMIT)
 }
 
 /**
@@ -54,31 +67,65 @@ export interface CollapsibleContentProps {
  */
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
   const collapsedClass = () => props.isCollapsed ? ` ${toolResultCollapsed}` : ''
-  const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
   const slice = () => props.display ?? props.text
+  const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
+  const ansiPlainText = createMemo(() => isAnsi() ? stripAnsi(slice()) : slice())
+  const pauseSyntax = () => shouldPauseSyntaxHighlighting(props.context)
+  const ansiHtml = (text: string) => {
+    if (props.context?.premeasureMode)
+      return undefined
+    const displayed = getCachedRenderValueForString<string>(props.context, 'ansi-displayed:collapsibleContent', text)
+    if (displayed !== undefined)
+      return displayed
+    if (pauseSyntax() || !canHighlightAnsi(text))
+      return undefined
+    const cached = getCachedRenderValueForString<string>(props.context, 'ansi-highlight:collapsibleContent', text)
+    if (cached !== undefined)
+      return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, cached)
+    const html = renderAnsi(text)
+    setCachedRenderValueForString(props.context, 'ansi-highlight:collapsibleContent', text, html)
+    return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, html)
+  }
+  const renderedAnsiHtml = createMemo(() => isAnsi() ? ansiHtml(slice()) : undefined)
+  const markdownHtml = (text: string) => renderMarkdownForContext(text, props.context)
+  const markdownSliceHtml = createMemo(() => markdownHtml(slice()))
+  const markdownFullHtml = createMemo(() => markdownHtml(props.text))
+  const JsonContent = () => {
+    const jsonHighlight = createMemo(() => renderJsonHighlightForContext(props.text, props.context, 'collapsibleContent'))
+    return (
+      <Switch>
+        <Match when={jsonHighlight() === null}>
+          <div class={`${toolResultContentPre}${collapsedClass()}`}>{props.text}</div>
+        </Match>
+        <Match when={true}>
+          <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={jsonHighlight()!} />
+        </Match>
+      </Switch>
+    )
+  }
 
   return (
     <Switch>
       <Match when={props.kind === 'markdown'}>
-        <div class={`${markdownContent}${collapsedClass()}`} innerHTML={renderMarkdown(slice())} />
+        <div class={`${markdownContent}${collapsedClass()}`} innerHTML={markdownSliceHtml()} />
       </Match>
       <Match when={props.kind === 'markdown-tool-result'}>
         {/* Markdown bodies don't truncate by lines (would slice mid-block); the
             full text is rendered and only the fade class differs by `isCollapsed`. */}
-        <div class={`${toolResultContent}${collapsedClass()}`} innerHTML={renderMarkdown(props.text)} />
+        <div class={`${toolResultContent}${collapsedClass()}`} innerHTML={markdownFullHtml()} />
       </Match>
       <Match when={props.kind === 'json'}>
         {/* Same as 'markdown-tool-result': render full shiki HTML; visual clip via fade. */}
-        <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={renderJsonHighlight(props.text)} />
+        <JsonContent />
       </Match>
       <Match when={props.kind === 'pre'}>
         <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
       </Match>
-      <Match when={isAnsi()}>
-        <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={renderAnsi(slice())} />
+      <Match when={renderedAnsiHtml()}>
+        {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={html()} />}
       </Match>
       <Match when={props.kind === 'ansi-or-pre'}>
-        <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
+        <div class={`${toolResultContentPre}${collapsedClass()}`}>{ansiPlainText()}</div>
       </Match>
     </Switch>
   )

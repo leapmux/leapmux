@@ -43,7 +43,7 @@ function startPayloadFor(context: RenderContext | undefined): Record<string, unk
 function renderDiffSources(sources: FileEditDiffSource[], context: RenderContext | undefined): JSX.Element {
   return (
     <For each={sources}>
-      {source => <FileEditDiffBody source={source} view={context?.diffView?.() ?? 'unified'} />}
+      {source => <FileEditDiffBody source={source} view={context?.diffView?.() ?? 'unified'} context={context} />}
     </For>
   )
 }

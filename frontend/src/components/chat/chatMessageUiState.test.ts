@@ -1,9 +1,6 @@
-import type { ClassifiedEntry } from './chatEntryCache'
-import type { RowUiStateDeps } from './chatMessageUiState'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { capInsertionOrder, createMessageUiState, resolveRowUiState } from './chatMessageUiState'
+import { capInsertionOrder, createMessageUiState } from './chatMessageUiState'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 
 describe('capInsertionOrder', () => {
@@ -111,11 +108,11 @@ describe('createmessageuistate', () => {
       // A real bool toggle bumps the version.
       ui.setMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, true)
       expect(ui.getUiVersion('m1')).toBe(1)
-      // A no-op set (same value) must NOT bump -- the estimate key shouldn't churn.
+      // A no-op set (same value) must NOT bump -- the height key shouldn't churn.
       ui.setMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, true)
       expect(ui.getUiVersion('m1')).toBe(1)
       // A diff-view change bumps too, and a different key/override on the same id
-      // keeps advancing the same per-id counter (any UI change invalidates the estimate).
+      // keeps advancing the same per-id counter (any UI change invalidates measured height).
       ui.setLocalDiffView('m1', 'split')
       expect(ui.getUiVersion('m1')).toBe(2)
       ui.setLocalDiffView('m1', 'split') // no-op
@@ -150,96 +147,5 @@ describe('createmessageuistate', () => {
       expect(ui.getMessageUiBool('k1024', KEY)).toBe(true)
       dispose()
     })
-  })
-})
-
-describe('resolverowuistate', () => {
-  const entry = (kind: string, opts: { id?: string, toolName?: string, provider?: AgentProvider } = {}): ClassifiedEntry =>
-    ({
-      msg: { id: opts.id ?? 'm1', agentProvider: opts.provider },
-      category: opts.toolName ? { kind, toolName: opts.toolName } : { kind },
-    } as unknown as ClassifiedEntry)
-
-  const deps = (over: {
-    bools?: Record<string, boolean>
-    diffOverride?: 'unified' | 'split'
-    expandAgentThoughts?: boolean
-    diffView?: 'unified' | 'split'
-  } = {}): RowUiStateDeps => ({
-    getMessageUiBool: (id, key) => over.bools?.[`${id}|${key}`],
-    getLocalDiffView: () => over.diffOverride,
-    expandAgentThoughts: over.expandAgentThoughts ?? true,
-    diffView: over.diffView ?? 'unified',
-  })
-
-  it('resolves a tool_result row to collapsed-by-default with no other flags', () => {
-    expect(resolveRowUiState(entry('tool_result'), deps())).toEqual({
-      collapsed: true, // TOOL_RESULT_EXPANDED default false -> collapsed
-      expanded: false,
-      toolBodyExpanded: false,
-      diffView: 'unified',
-    })
-  })
-
-  it('uncollapses a tool_result when its TOOL_RESULT_EXPANDED override is set', () => {
-    const s = resolveRowUiState(entry('tool_result'), deps({ bools: { [`m1|${MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED}`]: true } }))
-    expect(s.collapsed).toBe(false)
-  })
-
-  it('resolves a Codex commandExecution / ACP body tool_use collapse from TOOL_RESULT_EXPANDED', () => {
-    // A settled commandExecution renders ToolResultMessage, and the ACP execute/read/
-    // search/fetch bodies read getToolResultExpanded -- all keyed on TOOL_RESULT_EXPANDED.
-    for (const tool of ['commandExecution', 'execute', 'read', 'search', 'fetch']) {
-      const e = entry('tool_use', { toolName: tool })
-      expect(resolveRowUiState(e, deps()).collapsed).toBe(true) // default collapsed
-      expect(resolveRowUiState(e, deps({ bools: { [`m1|${MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED}`]: true } })).collapsed).toBe(false)
-    }
-  })
-
-  it('resolves a Codex collab prompt collapse from its OWN CODEX_COLLAB_AGENT_TOOL_CALL key', () => {
-    const collab = entry('tool_use', { toolName: 'collabAgentToolCall' })
-    expect(resolveRowUiState(collab, deps()).collapsed).toBe(true) // default collapsed
-    // Its own key uncollapses it...
-    expect(resolveRowUiState(collab, deps({ bools: { [`m1|${MESSAGE_UI_KEY.CODEX_COLLAB_AGENT_TOOL_CALL}`]: true } })).collapsed).toBe(false)
-    // ...and the shared tool_result key does NOT (the collab body reads its own key).
-    expect(resolveRowUiState(collab, deps({ bools: { [`m1|${MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED}`]: true } })).collapsed).toBe(true)
-  })
-
-  it('leaves a webSearch tool_use uncollapsed-irrelevant (no result-body collapse key)', () => {
-    // Settled webSearch is header-only (alwaysVisible), so it consumes no collapse flag.
-    expect(resolveRowUiState(entry('tool_use', { toolName: 'webSearch' }), deps()).collapsed).toBe(false)
-  })
-
-  it('expands a thinking row per the global expandAgentThoughts pref', () => {
-    expect(resolveRowUiState(entry('assistant_thinking'), deps({ expandAgentThoughts: true })).expanded).toBe(true)
-    expect(resolveRowUiState(entry('assistant_thinking'), deps({ expandAgentThoughts: false })).expanded).toBe(false)
-  })
-
-  it('reads a codex thinking row under CODEX_REASONING, ignoring the shared THINKING key', () => {
-    const codex = entry('assistant_thinking', { provider: AgentProvider.CODEX })
-    // An override under CODEX_REASONING collapses it even though the pref expands.
-    expect(resolveRowUiState(codex, deps({ expandAgentThoughts: true, bools: { [`m1|${MESSAGE_UI_KEY.CODEX_REASONING}`]: false } })).expanded).toBe(false)
-    // An override under the SHARED THINKING key is NOT read for a codex row.
-    expect(resolveRowUiState(codex, deps({ expandAgentThoughts: true, bools: { [`m1|${MESSAGE_UI_KEY.THINKING}`]: false } })).expanded).toBe(true)
-  })
-
-  it('expands a Bash tool_use body only when its TOOL_USE_LAYOUT override is set', () => {
-    const bash = entry('tool_use', { toolName: 'Bash' })
-    expect(resolveRowUiState(bash, deps()).toolBodyExpanded).toBe(false)
-    expect(resolveRowUiState(bash, deps({ bools: { [`m1|${MESSAGE_UI_KEY.TOOL_USE_LAYOUT}`]: true } })).toolBodyExpanded).toBe(true)
-  })
-
-  it('reads an ACP execute body under OPENCODE_TOOL_CALL_UPDATE, NOT the Bash TOOL_USE_LAYOUT key', () => {
-    const execute = entry('tool_use', { toolName: 'execute' })
-    expect(resolveRowUiState(execute, deps()).toolBodyExpanded).toBe(false)
-    // An override under the renderer's own key expands it.
-    expect(resolveRowUiState(execute, deps({ bools: { [`m1|${MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE}`]: true } })).toolBodyExpanded).toBe(true)
-    // An override under the Bash key is NOT read for an execute row.
-    expect(resolveRowUiState(execute, deps({ bools: { [`m1|${MESSAGE_UI_KEY.TOOL_USE_LAYOUT}`]: true } })).toolBodyExpanded).toBe(false)
-  })
-
-  it('prefers a per-row diff-view override over the global pref, falling back when absent', () => {
-    expect(resolveRowUiState(entry('tool_result'), deps({ diffView: 'unified', diffOverride: 'split' })).diffView).toBe('split')
-    expect(resolveRowUiState(entry('tool_result'), deps({ diffView: 'split' })).diffView).toBe('split')
   })
 })

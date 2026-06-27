@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js'
+import type { RenderContext } from '../messageRenderers'
 import type { DiffGap, DiffGapSummary, DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { CachedToken } from '~/lib/tokenCache'
@@ -36,6 +37,14 @@ const GAP_EXPAND_STEP = 10
 
 /** Line limit for diff syntax highlighting. */
 const HIGHLIGHT_LINE_LIMIT = 1000
+
+function shouldPauseDiffTokenization(context: RenderContext | undefined): boolean {
+  return context?.premeasureMode === true || context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true
+}
+
+function tokenKeyPart(value: string): string {
+  return `${value.length}:${value}`
+}
 
 /** Render a single context line from a gap with optional syntax highlighting. */
 function GapContextLine(props: { lineNum: number, text: string, tokens?: CachedToken[] | null, splitView?: boolean }): JSX.Element {
@@ -82,6 +91,7 @@ function DiffGapSeparator(props: {
   isFirst?: boolean
   /** True when this gap is the last element in the diff container. */
   isLast?: boolean
+  context?: RenderContext
 }): JSX.Element {
   const total = () => props.gap.lines.length
   const hiddenCount = () => total() - props.revealedTop - props.revealedBottom
@@ -91,10 +101,28 @@ function DiffGapSeparator(props: {
   // Lazy tokenization: only tokenize revealed lines on demand
   const [tokenMap, setTokenMap] = createSignal<Map<number, CachedToken[]>>(new Map())
   const [tokenizing, setTokenizing] = createSignal(false)
+  const tokenSourceKey = () => {
+    const filePath = props.filePath ?? ''
+    return [
+      tokenKeyPart(filePath),
+      props.gap.startLineNumber,
+      props.gap.lines.length,
+      ...props.gap.lines.map(tokenKeyPart),
+    ].join('|')
+  }
+
+  createEffect(on(tokenSourceKey, () => {
+    setTokenMap(new Map())
+    setTokenizing(false)
+  }))
 
   createEffect(on(
-    () => [props.revealedTop, props.revealedBottom, props.filePath, props.gap] as const,
-    ([revTop, revBottom, fp, gap]) => {
+    () => [props.revealedTop, props.revealedBottom, props.filePath, props.gap, tokenSourceKey(), shouldPauseDiffTokenization(props.context)] as const,
+    ([revTop, revBottom, fp, gap, _sourceKey, paused]) => {
+      if (paused) {
+        setTokenizing(false)
+        return
+      }
       if ((revTop === 0 && revBottom === 0) || !fp)
         return
       const lang = guessLanguage(fp)
@@ -139,10 +167,14 @@ function DiffGapSeparator(props: {
       tokenizeAsync(lang, code).then((tokens) => {
         if (cancelled)
           return
+        if (!tokens) {
+          setTokenizing(false)
+          return
+        }
         setTokenMap((prev) => {
           const next = new Map(prev)
           for (let j = 0; j < untokenizedIndices.length; j++)
-            next.set(untokenizedIndices[j], tokens![j])
+            next.set(untokenizedIndices[j], tokens[j])
           return next
         })
         setTokenizing(false)
@@ -252,47 +284,85 @@ function DiffGapSummarySeparator(props: {
 function useDiffTokens(
   hunks: () => StructuredPatchHunk[],
   filePath: () => string | undefined,
+  context: () => RenderContext | undefined,
 ): {
   oldTokens: () => CachedToken[][] | null
   newTokens: () => CachedToken[][] | null
 } {
   const [oldTokens, setOldTokens] = createSignal<CachedToken[][] | null>(null)
   const [newTokens, setNewTokens] = createSignal<CachedToken[][] | null>(null)
+  let tokenKey: string | undefined
+  let oldComplete = false
+  let newComplete = false
+
+  const reset = () => {
+    tokenKey = undefined
+    oldComplete = false
+    newComplete = false
+    setOldTokens(null)
+    setNewTokens(null)
+  }
 
   createEffect(on(
-    () => [hunks(), filePath()] as const,
-    ([h, fp]) => {
-      setOldTokens(null)
-      setNewTokens(null)
-
-      if (!fp)
+    () => [hunks(), filePath(), shouldPauseDiffTokenization(context())] as const,
+    ([h, fp, paused]) => {
+      if (!fp) {
+        reset()
         return
+      }
       const lang = guessLanguage(fp)
-      if (!lang)
+      if (!lang) {
+        reset()
         return
-      if (countHunkLines(h) > HIGHLIGHT_LINE_LIMIT)
+      }
+      if (countHunkLines(h) > HIGHLIGHT_LINE_LIMIT) {
+        reset()
         return
+      }
 
       const { oldCode, newCode } = extractSidesFromHunks(h)
+      const key = [lang, tokenKeyPart(oldCode), tokenKeyPart(newCode)].join('\0')
+      if (tokenKey !== key) {
+        tokenKey = key
+        oldComplete = false
+        newComplete = false
+        setOldTokens(null)
+        setNewTokens(null)
+      }
+      if (paused)
+        return
+      if (oldComplete && newComplete)
+        return
+
       let cancelled = false
 
       // Check cache synchronously for both sides
-      const cachedOld = getCachedTokens(lang, oldCode)
-      const cachedNew = getCachedTokens(lang, newCode)
-      if (cachedOld)
+      const cachedOld = oldComplete ? null : getCachedTokens(lang, oldCode)
+      const cachedNew = newComplete ? null : getCachedTokens(lang, newCode)
+      if (cachedOld) {
+        oldComplete = true
         setOldTokens(cachedOld)
-      if (cachedNew)
+      }
+      if (cachedNew) {
+        newComplete = true
         setNewTokens(cachedNew)
+      }
 
       // Fetch any uncached sides from worker
-      if (!cachedOld) {
+      if (!oldComplete) {
         tokenizeAsync(lang, oldCode).then((tokens) => {
+          if (cancelled || tokenKey !== key)
+            return
+          oldComplete = true
           if (!cancelled)
             setOldTokens(tokens)
         })
       }
-      if (!cachedNew) {
+      if (!newComplete) {
         tokenizeAsync(lang, newCode).then((tokens) => {
+          if (cancelled || tokenKey !== key)
+            return
+          newComplete = true
           if (!cancelled)
             setNewTokens(tokens)
         })
@@ -375,8 +445,8 @@ function diffContainerClass(base: string, showLineNumbers?: boolean): string {
 }
 
 /** Render a unified diff view from hunks. */
-function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
-  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
+function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: RenderContext }): JSX.Element {
+  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath, () => props.context)
   const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
   const groups = createMemo(() => groupByHunk(lines()))
 
@@ -430,6 +500,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
                         onExpandUp={() => expandUp(`before-${hi()}`, gap().lines.length)}
                         onExpandAll={() => expandAll(`before-${hi()}`, gap().lines.length)}
                         isFirst={groupIdx() === 0}
+                        context={props.context}
                       />
                     )}
                   </Show>
@@ -447,6 +518,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
                         onExpandUp={() => expandUp('trailing', trailing().lines.length)}
                         onExpandAll={() => expandAll('trailing', trailing().lines.length)}
                         isLast
+                        context={props.context}
                       />
                     )}
                   </Show>
@@ -479,8 +551,8 @@ function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): J
 }
 
 /** Render a split diff view from hunks (removed on left, added on right). */
-function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
-  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
+function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: RenderContext }): JSX.Element {
+  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath, () => props.context)
   const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens()))
 
   const { gapData, syntheticGaps } = useGapData(() => props.hunks, () => props.originalFile)
@@ -543,6 +615,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
                           onExpandAll={() => expandAll(`before-${hi()}`, gap().lines.length)}
                           splitView
                           isFirst={groupIdx() === 0}
+                          context={props.context}
                         />
                       )}
                     </Show>
@@ -564,6 +637,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
                           onExpandAll={() => expandAll('trailing', trailing().lines.length)}
                           splitView
                           isLast
+                          context={props.context}
                         />
                       )}
                     </Show>
@@ -579,10 +653,27 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
 }
 
 /** Renders a diff view (unified or split) from hunks with optional syntax highlighting. */
-export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
+export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: RenderContext }): JSX.Element {
   return (
-    <Show when={props.view === 'unified'} fallback={<SplitDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />}>
-      <UnifiedDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />
+    <Show
+      when={props.view === 'unified'}
+      fallback={(
+        <SplitDiffView
+          hunks={props.hunks}
+          filePath={props.filePath}
+          originalFile={props.originalFile}
+          showLineNumbers={props.showLineNumbers}
+          context={props.context}
+        />
+      )}
+    >
+      <UnifiedDiffView
+        hunks={props.hunks}
+        filePath={props.filePath}
+        originalFile={props.originalFile}
+        showLineNumbers={props.showLineNumbers}
+        context={props.context}
+      />
     </Show>
   )
 }

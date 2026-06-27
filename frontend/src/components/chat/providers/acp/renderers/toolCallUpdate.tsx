@@ -1,4 +1,3 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark/shiki/ANSI, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { CommandResultSource } from '../../../results/commandResult'
@@ -12,20 +11,20 @@ import { useCopyButton } from '~/hooks/useCopyButton'
 import { pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { ACP_TOOL_KIND } from '~/types/toolMessages'
-import { useSharedExpandedState } from '../../../messageRenderers'
+import { cachedRenderValue } from '../../../messageRenderCache'
+import { getExpandedForKey, useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
-import { firstNonEmptyLine } from '../../../rendererUtils'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../../results/collapse'
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
 import { commandOutputIsCollapsible, CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, pickFileEditDiff } from '../../../results/fileEditDiff'
-import { isMultiLineCommand, MultiLineCommandBody } from '../../../results/multiLineCommandBody'
+import { CommandInputBody, CommandInputSummary, createCommandInputExpansionState } from '../../../results/multiLineCommandBody'
 import { ReadFileResultBody } from '../../../results/readFileResult'
 import { SearchResultBody } from '../../../results/searchResult'
 import { ToolHeaderRow } from '../../../results/ToolStatusHeader'
-import { hasMoreLinesThan, useCollapsedLines } from '../../../results/useCollapsedLines'
+import { useCollapsedLines } from '../../../results/useCollapsedLines'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
-import { COLLAPSED_RESULT_ROWS, renderBashHighlight, ToolUseLayout } from '../../../toolRenderers'
-import { toolInputSummary } from '../../../toolStyles.css'
+import { ToolUseLayout } from '../../../toolRenderers'
 import { renderReadTitle, renderSearchTitle } from '../../../toolTitleRenderers'
 import { acpExecuteFromToolCall } from '../extractors/execute'
 import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput } from '../extractors/fileEdit'
@@ -73,14 +72,29 @@ function readTitle(rawInput: Record<string, unknown> | undefined, fallbackTitle:
  * null for `'none'` so the caller can fall through to the generic text body.
  */
 function renderKindBody(body: AcpKindBody, context: RenderContext | undefined): JSX.Element | null {
+  const bodyContext = acpExpandedContext(context)
   switch (body.kind) {
-    case 'execute': return <CommandResultBody source={body.source} context={context} />
-    case 'edit': return <FileEditDiffBody source={body.diff} view={context?.diffView?.() ?? 'unified'} />
-    case 'read': return <ReadFileResultBody source={body.source} context={context} />
-    case 'search': return <SearchResultBody source={body.source} context={context} />
-    case 'fetch': return <WebFetchResultBody source={body.source} context={context} />
+    case 'execute': return <CommandResultBody source={body.source} context={bodyContext} />
+    case 'edit': return <FileEditDiffBody source={body.diff} view={context?.diffView?.() ?? 'unified'} context={context} />
+    case 'read': return <ReadFileResultBody source={body.source} context={bodyContext} />
+    case 'search': return <SearchResultBody source={body.source} context={bodyContext} />
+    case 'fetch': return <WebFetchResultBody source={body.source} context={bodyContext} />
     case 'none': return null
   }
+}
+
+function acpExpandedContext(context: RenderContext | undefined): RenderContext | undefined {
+  if (!context)
+    return undefined
+  const bodyContext = Object.create(context) as RenderContext
+  Object.defineProperty(bodyContext, 'getMessageUiState', {
+    enumerable: true,
+    value: (key: Parameters<NonNullable<RenderContext['getMessageUiState']>>[0]) =>
+      key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+        ? getExpandedForKey(context, MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE)
+        : context.getMessageUiState?.(key),
+  })
+  return bodyContext
 }
 
 /**
@@ -89,12 +103,16 @@ function renderKindBody(body: AcpKindBody, context: RenderContext | undefined): 
  * title, summary, expand/collapse, and body rendering — mirroring Claude Code's
  * tool_use + tool_result combined in a single message.
  */
-function ToolCallUpdateMessage(props: {
+export function ToolCallUpdateMessage(props: {
   toolUse: Record<string, unknown>
   context?: RenderContext
 }): JSX.Element {
   const kind = () => props.toolUse.kind as string | undefined
-  const rawInput = createMemo(() => pickObject(props.toolUse, 'rawInput') ?? undefined)
+  const rawInput = createMemo(() => {
+    const context = props.context
+    const toolUse = props.toolUse
+    return cachedRenderValue(context, 'acp.toolCallUpdate.rawInput', () => pickObject(toolUse, 'rawInput') ?? undefined)
+  })
 
   const icon = () => kindIcon(kind())
   const command = createMemo(() => pickString(rawInput(), 'command'))
@@ -103,12 +121,17 @@ function ToolCallUpdateMessage(props: {
 
   // Memo: read 5+ times per render across the JSX below; without this,
   // `extractToolOutput` re-walks `props.toolUse.content` each access.
-  const output = createMemo(() => extractToolOutput(props.toolUse))
+  const output = createMemo(() => {
+    const context = props.context
+    const toolUse = props.toolUse
+    return cachedRenderValue(context, 'acp.toolCallUpdate.output', () => extractToolOutput(toolUse))
+  })
   const outputText = createMemo(() => stripLeadingBlankLines(output().text))
   const isFailed = () => props.toolUse.status === 'failed'
 
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE)
   const { copied: commandCopied, copy: copyCommand } = useCopyButton(() => command())
+  const { commandExpandable: commandInputExpandable, setSummaryOverflows } = createCommandInputExpansionState(() => command())
 
   // Output collapsing — shared hook keeps isCollapsed/display memoized.
   const collapsed = useCollapsedLines({ text: outputText, expanded })
@@ -117,36 +140,43 @@ function ToolCallUpdateMessage(props: {
   // tool_call_update with `content[].type=diff` can land on any kind in
   // principle, and we render the diff before other kind-specific bodies.
   const body = createMemo<AcpKindBody>(() => {
-    // On failure, `rawInput` is the attempted edit/write input, not an
-    // applied change. Do not synthesize a success-looking diff from it (or
-    // from a diff block) when the tool_call_update status is failed.
-    const diff = isFailed()
-      ? null
-      : pickFileEditDiff(
-          acpFileEditFromToolCallContent(props.toolUse.content),
-          acpFileEditFromToolCallRawInput(kind(), rawInput()),
-        )
-    if (diff)
-      return { kind: 'edit', diff }
-    switch (kind()) {
-      case ACP_TOOL_KIND.EXECUTE: {
-        const source = acpExecuteFromToolCall(props.toolUse)
-        return source ? { kind: 'execute', source } : { kind: 'none' }
+    const context = props.context
+    const toolUse = props.toolUse
+    const toolKind = kind()
+    const input = rawInput()
+    const failed = isFailed()
+    return cachedRenderValue(context, 'acp.toolCallUpdate.kindBody', () => {
+      // On failure, `rawInput` is the attempted edit/write input, not an
+      // applied change. Do not synthesize a success-looking diff from it (or
+      // from a diff block) when the tool_call_update status is failed.
+      const diff = failed
+        ? null
+        : pickFileEditDiff(
+            acpFileEditFromToolCallContent(toolUse.content),
+            acpFileEditFromToolCallRawInput(toolKind, input),
+          )
+      if (diff)
+        return { kind: 'edit', diff }
+      switch (toolKind) {
+        case ACP_TOOL_KIND.EXECUTE: {
+          const source = acpExecuteFromToolCall(toolUse)
+          return source ? { kind: 'execute', source } : { kind: 'none' }
+        }
+        case ACP_TOOL_KIND.READ: {
+          const source = acpReadFromToolCall(toolUse)
+          return source && source.lines !== null ? { kind: 'read', source } : { kind: 'none' }
+        }
+        case ACP_TOOL_KIND.SEARCH: {
+          const source = acpSearchFromToolCall(toolUse)
+          return source ? { kind: 'search', source } : { kind: 'none' }
+        }
+        case ACP_TOOL_KIND.FETCH: {
+          const source = acpWebFetchFromToolCall(toolUse)
+          return source ? { kind: 'fetch', source } : { kind: 'none' }
+        }
       }
-      case ACP_TOOL_KIND.READ: {
-        const source = acpReadFromToolCall(props.toolUse)
-        return source && source.lines !== null ? { kind: 'read', source } : { kind: 'none' }
-      }
-      case ACP_TOOL_KIND.SEARCH: {
-        const source = acpSearchFromToolCall(props.toolUse)
-        return source ? { kind: 'search', source } : { kind: 'none' }
-      }
-      case ACP_TOOL_KIND.FETCH: {
-        const source = acpWebFetchFromToolCall(props.toolUse)
-        return source ? { kind: 'fetch', source } : { kind: 'none' }
-      }
-    }
-    return { kind: 'none' }
+      return { kind: 'none' }
+    })
   })
 
   // Kind-specific title
@@ -159,27 +189,35 @@ function ToolCallUpdateMessage(props: {
   }
 
   // Kind-specific summary (only EXECUTE has one today)
-  const summary = (): JSX.Element | undefined => {
+  const summary = (collapsedSummary: boolean): JSX.Element | undefined => {
     if (kind() !== ACP_TOOL_KIND.EXECUTE)
       return undefined
     const cmd = command()
     if (!cmd)
       return undefined
-    return <div class={toolInputSummary} innerHTML={renderBashHighlight(firstNonEmptyLine(cmd) ?? cmd)} />
+    return (
+      <CommandInputSummary
+        command={cmd}
+        context={props.context}
+        collapsed={collapsedSummary}
+        namespace="acp.toolCallUpdate.summary"
+        onOverflowChange={setSummaryOverflows}
+      />
+    )
   }
 
   // Expand/collapse. For execute kind the body is `CommandResultBody`,
   // which normalizes `\r`-overwrites into separate lines — match that here
   // so the toggle button shows over progress output the body would clip.
-  const multiLine = createMemo(() => isMultiLineCommand(command()))
+  const commandExpandable = createMemo(() => kind() === ACP_TOOL_KIND.EXECUTE && commandInputExpandable())
   const outputCollapsible = () => kind() === ACP_TOOL_KIND.EXECUTE
     ? commandOutputIsCollapsible(outputText())
     : hasMoreLinesThan(outputText(), COLLAPSED_RESULT_ROWS)
-  const hasExpandable = () => multiLine() || outputCollapsible()
-  const expandLabel = () => multiLine() ? 'Show full command' : 'Expand output'
+  const hasExpandable = () => commandExpandable() || outputCollapsible()
+  const expandLabel = () => commandExpandable() ? 'Show full command' : 'Expand output'
 
-  // Execute-specific: hide summary when expanded + multi-line command
-  const displaySummary = () => expanded() && multiLine() ? undefined : summary()
+  // Execute-specific: hide summary when expanded + expandable command.
+  const displaySummary = () => expanded() && commandExpandable() ? undefined : summary(!expanded())
 
   return (
     <ToolUseLayout
@@ -198,16 +236,16 @@ function ToolCallUpdateMessage(props: {
       }}
       alwaysVisible
     >
-      {/* Execute: full multi-line command (when expanded) */}
-      <Show when={kind() === ACP_TOOL_KIND.EXECUTE && expanded() && multiLine()}>
-        <MultiLineCommandBody command={command()} />
+      {/* Execute: full command (when expanded) */}
+      <Show when={kind() === ACP_TOOL_KIND.EXECUTE && expanded() && commandExpandable()}>
+        <CommandInputBody command={command()} context={props.context} namespace="acp.toolCallUpdate.body" />
       </Show>
 
       <Show
         when={body().kind !== 'none'}
         fallback={(
           <Show when={outputText()}>
-            <CollapsibleContent kind="ansi-or-pre" text={outputText()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} />
+            <CollapsibleContent kind="ansi-or-pre" text={outputText()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} context={props.context} />
           </Show>
         )}
       >

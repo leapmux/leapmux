@@ -2,7 +2,7 @@
  * Pure viewport / layout geometry for the chat message list: design-token probing,
  * width bucketing, and the overscan-band policy. Extracted from ChatView so the
  * math is coupling-free (no component, no reactive read) and testable at its
- * boundaries, mirroring the other chat leaves (chatHeightShared, chatDiffGeometry).
+ * boundaries, mirroring the other chat leaves (chatHeightShared, chatRowGeometry).
  */
 
 /**
@@ -23,8 +23,9 @@ export function measureSpaceToken(varName: string, fallback: number): number {
 
 /**
  * Bucket a measured content width to the nearest 8px so scrollbar/sub-pixel jitter
- * doesn't storm the geom recompute (only unmeasured/off-screen rows re-estimate on a
- * width change, but every 1px wobble would still churn the memo).
+ * doesn't storm the geom recompute (only unmeasured/off-screen rows need their
+ * cached DOM height invalidated on a width change, but every 1px wobble would
+ * still churn the memo).
  */
 export function bucketWidth(w: number): number {
   return Math.round(w / 8) * 8
@@ -87,7 +88,7 @@ export function createViewportSizeObserver(opts: {
  * Viewport-relative overscan band: mount ~1.5 screenfuls of rows on EACH side of
  * the message-list viewport so a tall, never-measured row (e.g. a
  * syntax-highlighted diff) is mounted and measured BEFORE it scrolls into view --
- * shrinking the window where the analytical estimate alone sizes the spacer, and
+ * shrinking the window where the generic fallback alone sizes the spacer, and
  * with it the first-encounter re-pin. Keyed off the LIST viewport height, NOT
  * window.innerHeight: ChatView renders inside tiles/splits, where the pane is
  * often a fraction of the window and a window-relative band would over-mount

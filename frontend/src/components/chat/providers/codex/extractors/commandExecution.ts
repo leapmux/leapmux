@@ -40,8 +40,8 @@ const TOOL_USE_HEADER_CLASS_FRAGMENT = 'toolUseHeader__'
  * payload. The backend sometimes echoes the rendered tool-use chrome (an
  * HTML `<div>` block) back into the aggregated output stream; this walks the
  * matching depth-counted div-block and drops it. Shared by the renderer
- * (commandExecution.tsx) and the off-screen height estimate (codexHeightMetrics)
- * so the body the estimate sizes matches the body that mounts.
+ * (commandExecution.tsx) and command-result utilities so rendered output stays
+ * consistent.
  */
 export function stripToolUseHeaderFromOutput(output: string): string {
   if (!output.includes(TOOL_USE_HEADER_CLASS_FRAGMENT))

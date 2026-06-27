@@ -5,6 +5,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { formatVersionLine } from '~/lib/systemInfo'
+import { motion } from '~/styles/tokens'
 import * as styles from './LauncherView.css'
 
 const log = createLogger('launcher')
@@ -95,7 +96,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     return new Promise((resolve) => {
       containerRef!.addEventListener('transitionend', () => resolve(), { once: true })
       // Fallback in case transitionend doesn't fire.
-      setTimeout(resolve, 400)
+      setTimeout(resolve, motion.medium + 100)
     })
   }
 

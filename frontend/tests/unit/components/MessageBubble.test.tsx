@@ -264,6 +264,36 @@ describe('thinking message toolbar buttons', () => {
     expect(screen.queryByTestId('message-copy-markdown')).toBeInTheDocument()
   })
 
+  it('keeps inert Quote and Copy Markdown button slots during premeasure', async () => {
+    const onReply = vi.fn()
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: 'Premeasure should keep toolbar geometry.' }] },
+    }
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(innerMsg),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={onReply} premeasureMode />
+      </PreferencesProvider>
+    ))
+
+    const quote = screen.getByTestId('message-quote')
+    const copy = screen.getByTestId('message-copy-markdown')
+    expect(quote).toBeInTheDocument()
+    expect(copy).toBeInTheDocument()
+
+    fireEvent.click(quote)
+    fireEvent.click(copy)
+    await Promise.resolve()
+
+    expect(onReply).not.toHaveBeenCalled()
+    expect(clipboardContent).toBeNull()
+  })
+
   it('copies thinking content to clipboard via Copy Markdown', async () => {
     const thinkingText = 'Let me think step by step about this problem.'
     const innerMsg = {
@@ -285,6 +315,29 @@ describe('thinking message toolbar buttons', () => {
     fireEvent.click(copyBtn)
     await waitFor(() => expect(clipboardContent).not.toBeNull())
     expect(clipboardContent).toBe(thinkingText)
+  })
+})
+
+describe('premeasure tool action geometry', () => {
+  it('keeps an inert in-flow tool-use raw JSON action slot during premeasure', async () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(askUserQuestionToolUse([{ header: 'Premeasure' }])),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} premeasureMode />
+      </PreferencesProvider>
+    ))
+
+    const copyJson = screen.getByTestId('message-copy-json')
+    expect(copyJson).toBeInTheDocument()
+
+    fireEvent.click(copyJson)
+    await Promise.resolve()
+
+    expect(clipboardContent).toBeNull()
   })
 })
 

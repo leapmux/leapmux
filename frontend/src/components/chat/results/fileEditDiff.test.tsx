@@ -1,7 +1,16 @@
 import type { StructuredPatchHunk } from '../diff'
 import type { FileEditDiffSource } from './fileEditDiff'
-import { describe, expect, it } from 'vitest'
-import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditDiffHunks, fileEditHasDiff, pickFileEditDiff } from './fileEditDiff'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { describe, expect, it, vi } from 'vitest'
+import { FileEditDiffBody, fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditDiffHunks, fileEditHasDiff, normalizeStructuredPatchHunks, pickFileEditDiff } from './fileEditDiff'
+
+const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (_lang: string, code: string) =>
+  code.split('\n').map(line => [{ content: line, htmlStyle: {} }]),
+))
+
+vi.mock('~/lib/shikiWorkerClient', () => ({
+  tokenizeAsync: tokenizeAsyncMock,
+}))
 
 const PATCH: StructuredPatchHunk[] = [
   { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
@@ -47,10 +56,59 @@ describe('fileEditHasDiff', () => {
     expect(fileEditHasDiff(source({ oldStr: '', newStr: '' }))).toBe(false)
   })
 
+  it('ignores malformed structuredPatch arrays instead of treating them as renderable', () => {
+    const malformed = [{ oldStart: 1, oldLines: Number.NaN, newStart: 1, newLines: 1, lines: ['-old'] }]
+    expect(fileEditHasDiff(source({ structuredPatch: malformed as unknown as StructuredPatchHunk[] }))).toBe(false)
+  })
+
   it('returns false for an "all-removed" change (non-empty old, empty new)', () => {
     // The new-file shortcut intentionally only applies to oldStr=''+newStr='something'.
     // An empty replacement is not currently treated as a renderable diff by itself.
     expect(fileEditHasDiff(source({ oldStr: 'gone', newStr: '' }))).toBe(false)
+  })
+})
+
+describe('normalizeStructuredPatchHunks', () => {
+  it('keeps valid hunk arrays by reference', () => {
+    expect(normalizeStructuredPatchHunks(PATCH)).toBe(PATCH)
+  })
+
+  it('rejects non-string hunk lines', () => {
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [42] },
+    ])).toBeNull()
+  })
+
+  it('rejects empty hunk payloads', () => {
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: 0, newStart: 1, newLines: 0, lines: [] },
+    ])).toBeNull()
+  })
+
+  it('rejects negative and non-finite hunk coordinates', () => {
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: -1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old'] },
+    ])).toBeNull()
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: Number.NaN, newStart: 1, newLines: 1, lines: ['-old'] },
+    ])).toBeNull()
+  })
+
+  it('rejects hunks whose line counts do not match their payload', () => {
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: 2, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+    ])).toBeNull()
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [' old', '+new'] },
+    ])).toBeNull()
+  })
+
+  it('drops unified-diff no-newline marker lines from otherwise valid hunks', () => {
+    expect(normalizeStructuredPatchHunks([
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '\\ No newline at end of file', '+new'] },
+    ])).toEqual([
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+    ])
   })
 })
 
@@ -135,5 +193,32 @@ describe('pickFileEditDiff', () => {
   it('returns null when both inputs are null/undefined', () => {
     expect(pickFileEditDiff(null, null)).toBeNull()
     expect(pickFileEditDiff(undefined, undefined)).toBeNull()
+  })
+})
+
+describe('fileEditDiffBody', () => {
+  it('forwards premeasure context so diff tokenization is skipped', async () => {
+    tokenizeAsyncMock.mockClear()
+    const originalFile = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n')
+
+    render(() => (
+      <FileEditDiffBody
+        source={source({
+          filePath: 'example.ts',
+          structuredPatch: [
+            { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, lines: [' line 10'] },
+          ],
+          originalFile,
+        })}
+        view="unified"
+        context={{ premeasureMode: true }}
+      />
+    ))
+
+    fireEvent.click(screen.getByText('9 lines hidden'))
+    await Promise.resolve()
+
+    expect(screen.getByText('line 1')).toBeInTheDocument()
+    expect(tokenizeAsyncMock).not.toHaveBeenCalled()
   })
 })

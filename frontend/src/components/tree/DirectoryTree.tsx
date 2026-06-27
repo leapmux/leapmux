@@ -17,6 +17,7 @@ import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/l
 import { formatErrorMessage } from '~/lib/errors'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
@@ -503,7 +504,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // When the tree container shrinks (e.g. WorktreeOptions appearing below),
   // re-scroll the selected node into view if it was pushed out.
   onMount(() => {
-    const observer = new ResizeObserver(() => {
+    const observer = createRafResizeObserver(() => {
       if (!treeRef)
         return
       const selected = treeRef.querySelector(`.${styles.nodeSelected}`) as HTMLElement | null
@@ -515,8 +516,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
         treeRef.scrollTop += nodeRect.top - containerRect.top
       }
     })
-    observer.observe(treeRef)
-    onCleanup(() => observer.disconnect())
+    observer?.observe(treeRef)
+    onCleanup(() => observer?.disconnect())
   })
 
   // -------------------------------------------------------------------------

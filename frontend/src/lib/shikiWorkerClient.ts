@@ -8,13 +8,24 @@ const pending = new Map<number, {
   resolve: (tokens: CachedToken[][] | null) => void
 }>()
 
+function failWorker(failedWorker: Worker | null): void {
+  failedWorker?.terminate()
+  if (worker !== failedWorker)
+    return
+  for (const entry of pending.values())
+    entry.resolve(null)
+  pending.clear()
+  worker = null
+}
+
 function getWorker(): Worker {
   if (!worker) {
-    worker = new Worker(
+    const nextWorker = new Worker(
       new URL('./shikiWorker.ts', import.meta.url),
       { type: 'module' },
     )
-    worker.onmessage = (e: MessageEvent<TokenizeResponse>) => {
+    worker = nextWorker
+    nextWorker.onmessage = (e: MessageEvent<TokenizeResponse>) => {
       const { id, tokens } = e.data
       const entry = pending.get(id)
       if (entry) {
@@ -22,15 +33,10 @@ function getWorker(): Worker {
         entry.resolve(tokens)
       }
     }
-    worker.onerror = () => {
+    nextWorker.onerror = () => {
       // On worker crash, reject all pending and recreate on next call. Terminate the
       // dead worker first so its thread + Shiki highlighter aren't leaked across crashes.
-      for (const entry of pending.values()) {
-        entry.resolve(null)
-      }
-      pending.clear()
-      worker?.terminate()
-      worker = null
+      failWorker(nextWorker)
     }
   }
   return worker
@@ -48,8 +54,18 @@ export function tokenizeAsync(
   if (cached)
     return Promise.resolve(cached)
 
+  if (typeof Worker === 'undefined')
+    return Promise.resolve(null)
+
   const id = nextId++
-  const w = getWorker()
+  let w: Worker
+  try {
+    w = getWorker()
+  }
+  catch {
+    worker = null
+    return Promise.resolve(null)
+  }
 
   return new Promise((resolve) => {
     pending.set(id, {
@@ -61,6 +77,11 @@ export function tokenizeAsync(
       },
     })
     const msg: TokenizeRequest = { type: 'tokenize', id, lang, code }
-    w.postMessage(msg)
+    try {
+      w.postMessage(msg)
+    }
+    catch {
+      failWorker(w)
+    }
   })
 }

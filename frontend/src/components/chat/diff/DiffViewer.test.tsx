@@ -1,7 +1,9 @@
 import type { StructuredPatchHunk } from '.'
-import { render } from '@solidjs/testing-library'
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
+import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { setCachedTokens } from '~/lib/tokenCache'
 import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk, rawDiffToHunks } from '.'
 import { buildUnifiedLines } from './diffTokenRender'
 
@@ -147,6 +149,90 @@ describe('diffView rendering preserves whitespace', () => {
     const { removedText, addedText } = extractDiffTexts(container, 'split')
     expect(removedText).toBe('        return value;')
     expect(addedText).toBe('    return newValue;')
+  })
+
+  it('falls back to plain gap context when worker tokenization is unavailable', async () => {
+    const originalWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+    try {
+      const originalFile = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
+      render(() => (
+        <DiffView
+          filePath="example.ts"
+          originalFile={originalFile}
+          hunks={[{
+            oldStart: 10,
+            oldLines: 1,
+            newStart: 10,
+            newLines: 1,
+            lines: [' line 10'],
+          }]}
+          view="unified"
+        />
+      ))
+
+      fireEvent.click(screen.getByText('9 lines hidden'))
+      await Promise.resolve()
+
+      expect(screen.getByText('line 1')).toBeInTheDocument()
+      expect(screen.getByText('line 9')).toBeInTheDocument()
+    }
+    finally {
+      if (originalWorkerDescriptor)
+        Object.defineProperty(globalThis, 'Worker', originalWorkerDescriptor)
+      else
+        Reflect.deleteProperty(globalThis, 'Worker')
+    }
+  })
+
+  it('invalidates cached revealed gap tokens when original gap text changes', async () => {
+    const hunk = {
+      oldStart: 10,
+      oldLines: 1,
+      newStart: 10,
+      newLines: 1,
+      lines: [' line 10'],
+    }
+    const oldLines = Array.from({ length: 10 }, (_, i) => i === 9 ? 'line 10' : `old line ${i + 1}`)
+    const newLines = Array.from({ length: 10 }, (_, i) => i === 9 ? 'line 10' : `new line ${i + 1}`)
+    const oldGapCode = oldLines.slice(0, 9).join('\n')
+    const newGapCode = newLines.slice(0, 9).join('\n')
+    setCachedTokens(
+      'typescript',
+      oldGapCode,
+      oldLines.slice(0, 9).map(line => [{ content: `old-token:${line}`, htmlStyle: {} }]),
+    )
+    setCachedTokens(
+      'typescript',
+      newGapCode,
+      newLines.slice(0, 9).map(line => [{ content: `new-token:${line}`, htmlStyle: {} }]),
+    )
+    const [originalFile, setOriginalFile] = createSignal(oldLines.join('\n'))
+
+    render(() => (
+      <DiffView
+        filePath="example.ts"
+        originalFile={originalFile()}
+        hunks={[hunk]}
+        view="unified"
+      />
+    ))
+
+    fireEvent.click(screen.getByText('9 lines hidden'))
+    await waitFor(() => {
+      expect(screen.getByText('old-token:old line 1')).toBeInTheDocument()
+    })
+
+    setOriginalFile(newLines.join('\n'))
+
+    await waitFor(() => {
+      expect(screen.getByText('new-token:new line 1')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('old-token:old line 1')).not.toBeInTheDocument()
   })
 })
 

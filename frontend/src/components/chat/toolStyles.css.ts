@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
-import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.css'
+import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -67,6 +67,9 @@ export const toolResultContentAnsi = style({
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
   fontSize: 'var(--text-8)',
+  lineHeight: 1.5,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
 })
 
 // Override Shiki's default <pre> styling inside ANSI tool result
@@ -136,6 +139,19 @@ export const toolInputSummary = style({
   wordBreak: 'break-all',
 })
 
+// Collapsed command input summaries show the first three visual rows. This is
+// intentionally a visual row cap (not hard-line truncation) so a very long
+// single-line command is clipped correctly after wrapping.
+export const commandInputCollapsed = style({
+  maxHeight: '4.8em',
+  overflow: 'hidden',
+})
+
+export const commandInputCollapsedFade = style({
+  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+})
+
 // Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
 globalStyle(`${toolInputSummary} pre.shiki`, {
   margin: 0,
@@ -164,6 +180,16 @@ globalStyle(`${toolInputSummary} pre.shiki span`, {
 })
 
 globalStyle(`html[data-theme="dark"] ${toolInputSummary} pre.shiki span`, {
+  color: 'var(--shiki-dark)',
+  backgroundColor: 'var(--shiki-dark-bg, transparent)',
+})
+
+globalStyle(`${toolInputSummary} span[data-shiki-token]`, {
+  color: 'var(--shiki-light)',
+  backgroundColor: 'var(--shiki-light-bg, transparent)',
+})
+
+globalStyle(`html[data-theme="dark"] ${toolInputSummary} span[data-shiki-token]`, {
   color: 'var(--shiki-dark)',
   backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
@@ -203,7 +229,7 @@ export const toolHeaderActions = style({
   gap: '2px',
   flexShrink: 0,
   opacity: 0,
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
 })
 
 // Timestamp text in tool header actions (muted, small)

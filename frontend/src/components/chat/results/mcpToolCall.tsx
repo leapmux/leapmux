@@ -4,7 +4,7 @@ import type { RenderContext } from '../messageRenderers'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickFirstString, pickString } from '~/lib/jsonPick'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { renderMarkdownForContext } from '../messageRenderers'
 import {
   mcpImage,
   mcpImageRow,
@@ -119,7 +119,7 @@ export function McpToolCallBody(props: {
       </Show>
       <Show when={props.source.content.length > 0}>
         <For each={props.source.content}>
-          {item => <McpContentItemView item={item} />}
+          {item => <McpContentItemView item={item} context={props.context} />}
         </For>
       </Show>
       <Show when={props.source.structuredJson}>
@@ -133,17 +133,18 @@ export function McpToolCallBody(props: {
   )
 }
 
-function McpContentItemView(props: { item: McpContentItem }): JSX.Element {
+function McpContentItemView(props: { item: McpContentItem, context?: RenderContext }): JSX.Element {
+  const markdownHtml = (text: string) => renderMarkdownForContext(text, props.context)
   return (
     <Switch>
       <Match when={props.item.type === 'text'}>
         <div
           class={toolResultContent}
-          innerHTML={renderMarkdown((props.item as { type: 'text', text: string }).text)}
+          innerHTML={markdownHtml((props.item as { type: 'text', text: string }).text)}
         />
       </Match>
       <Match when={props.item.type === 'image'}>
-        <McpImageView item={props.item as { type: 'image', mimeType?: string, urlOrData?: string }} />
+        <McpImageView item={props.item as { type: 'image', mimeType?: string, urlOrData?: string }} premeasureMode={props.context?.premeasureMode} />
       </Match>
       <Match when={props.item.type === 'resource'}>
         <McpResourceView item={props.item as { type: 'resource', uri: string, mimeType?: string }} />
@@ -204,6 +205,7 @@ export function imageRenderInfo(item: { type: 'image', mimeType?: string, urlOrD
 
 function McpImageView(props: {
   item: { type: 'image', mimeType?: string, urlOrData?: string }
+  premeasureMode?: boolean
 }): JSX.Element {
   const info = createMemo(() => imageRenderInfo(props.item))
 
@@ -217,7 +219,7 @@ function McpImageView(props: {
           class={mcpImage}
           src={info().src}
           alt={props.item.mimeType ?? 'image'}
-          loading="lazy"
+          loading={props.premeasureMode ? 'eager' : 'lazy'}
           decoding="async"
           referrerpolicy="no-referrer"
         />

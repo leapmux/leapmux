@@ -45,7 +45,7 @@ export function TaskOutputResultView(props: {
   return (
     <ToolStatusHeader icon={icon()} title={title()}>
       <Show when={display()}>
-        <CollapsibleContent kind="ansi-or-pre" text={output()} display={display()} isCollapsed={isCollapsed()} />
+        <CollapsibleContent kind="ansi-or-pre" text={output()} display={display()} isCollapsed={isCollapsed()} context={props.context} />
       </Show>
     </ToolStatusHeader>
   )

@@ -230,7 +230,7 @@ export const mobileOverlay = style({
   'zIndex': 99,
   'opacity': 0,
   'pointerEvents': 'none',
-  'transition': `opacity ${motion.medium}ms ease`,
+  'transition': 'opacity var(--transition)',
   '@media': {
     '(prefers-reduced-motion: reduce)': {
       transition: 'none',

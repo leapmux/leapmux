@@ -18,17 +18,14 @@ function jsonInt64(value: bigint): number | string {
  * view exists to inspect. `sourceName` is the display label for `message.source`
  * (the caller's sourceLabel), passed in so this stays a pure, UI-free function.
  *
- * `heights` (optional) carries the virtualizer's analytical row-height estimate, the
- * measured DOM height for this row, and the full estimate `breakdown` (kind / total
- * / terms / metrics -- the same detail the divergence WARN logs), emitted under a
- * `geometry.height` namespace for calibrating the off-screen height estimator.
- * Omitted when neither estimate nor measurement is known.
+ * `heights` (optional) carries the measured DOM height for this row as
+ * `geometry.height`. It is omitted until the row has a real DOM measurement.
  */
 export function buildRawJsonEnvelope(
   message: AgentChatMessage,
   parsed: ParsedMessageContent,
   sourceName: string,
-  heights?: { estimated?: number, measured?: number, breakdown?: unknown },
+  heights?: { measured?: number },
 ): string {
   const envelope: Record<string, unknown> = {
     id: message.id,
@@ -61,26 +58,10 @@ export function buildRawJsonEnvelope(
   if (parsed.wrapper && parsed.wrapper.old_seqs.length > 0)
     envelope.old_seqs = parsed.wrapper.old_seqs
 
-  // Debug geometry: the virtualizer's analytical row-height estimate vs the
-  // measured DOM height, for calibrating the off-screen height estimator. A
-  // `geometry` namespace (not a flat field) so future per-row geometry (offset,
-  // width) can nest alongside. delta/delta_pct are signed (measured - estimated,
-  // positive => under-estimate) and only emitted when both numbers are present.
-  if (heights && (heights.estimated !== undefined || heights.measured !== undefined)) {
-    const h: Record<string, unknown> = {
-      estimated: heights.estimated ?? null,
-      measured: heights.measured ?? null,
-    }
-    if (heights.estimated !== undefined && heights.measured !== undefined) {
-      h.delta = heights.measured - heights.estimated
-      h.delta_pct = heights.measured === 0 ? 0 : (heights.measured - heights.estimated) / heights.measured
-    }
-    // The full estimate breakdown (kind/total/terms/metrics) when wired -- the same
-    // detail the divergence WARN logs, so a height mismatch is debuggable straight
-    // from Copy Raw JSON.
-    if (heights.breakdown != null)
-      h.breakdown = heights.breakdown
-    envelope.geometry = { height: h }
+  // Debug geometry: the row's measured DOM height. A `geometry` namespace (not
+  // a flat field) leaves room for future per-row geometry (offset, width).
+  if (heights?.measured !== undefined) {
+    envelope.geometry = { height: heights.measured }
   }
 
   if (parsed.wrapper) {

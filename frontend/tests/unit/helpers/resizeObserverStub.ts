@@ -8,7 +8,10 @@
 let observers: ControllableResizeObserver[] = []
 
 function entryFor(target: Element): ResizeObserverEntry {
-  return { target } as ResizeObserverEntry
+  return {
+    target,
+    contentRect: target.getBoundingClientRect(),
+  } as ResizeObserverEntry
 }
 
 class ControllableResizeObserver {

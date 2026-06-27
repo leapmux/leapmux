@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
@@ -39,17 +40,15 @@ export interface ThinkingIndicatorProps {
 // paused). Long enough that any individual verb gets noticed but short
 // enough that a multi-minute turn surfaces several.
 const ROTATION_INTERVAL_MS = 60_000
-// CSS opacity transition duration on the verb spans. Kept in lockstep
-// with the value in ThinkingIndicator.css — rotation logic uses it to
-// know when the now-inactive span has finished fading out, so the dead
-// content can be cleared without affecting the grid cell width during
-// the fade itself.
-const ROTATION_FADE_MS = 500
-// The wrapper's opacity-fade duration when the indicator collapses (the 0.3s
-// `opacity` transition in the render style below). The token count holds its
-// last value mounted for this long after the gate closes so it fades out WITH
-// the collapsing row instead of popping; see `countTokens`.
-const ROW_FADE_MS = 300
+// CSS opacity transition duration for the verb spans and wrapper fade. Kept in
+// lockstep with --transition (mirrored by motion.medium) because
+// rotation/collapse logic uses the value to clear faded-out content.
+const ROTATION_FADE_MS = motion.medium
+const ROW_FADE_MS = motion.medium
+// Collapsing also delays the `grid-template-rows` transition by ROW_FADE_MS, so
+// the wrapper must remain in flow for both phases. After that, `display: none`
+// releases the parent flex gap; a zero-height flex item still creates a gap.
+const ROW_COLLAPSE_TOTAL_MS = ROW_FADE_MS * 2
 
 // Module-level cache of the indicator's persistent state per id —
 // the verb currently displayed and the last compass angle (in
@@ -167,7 +166,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // restructure like a tile split, while the agent is still actively
   // thinking — seed expanded=true so the indicator appears
   // already-open. CSS transitions don't fire on the initial render
-  // value, so this skips the 300ms expand animation that would
+  // value, so this skips the --transition expand animation that would
   // otherwise look like a disappear/reappear flicker. Fresh mounts
   // with the agent idle still start collapsed.
   //
@@ -179,6 +178,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // eslint-disable-next-line solid/reactivity
   const initiallyVisible = !!props.visible
   const [expanded, setExpanded] = createSignal(initiallyVisible)
+  const [present, setPresent] = createSignal(initiallyVisible)
 
   const sim = createCompassSimulation((state) => {
     setAngleDeg((state.angle * 180) / Math.PI)
@@ -188,8 +188,17 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   let expandRafId = 0
   let tickRafId = 0
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
+  let presenceVersion = 0
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined
   const pendingClearTimers = new Set<ReturnType<typeof setTimeout>>()
   let wasVisible = initiallyVisible
+
+  const clearPresenceTimer = () => {
+    if (presenceTimer === undefined)
+      return
+    clearTimeout(presenceTimer)
+    presenceTimer = undefined
+  }
 
   // The token count's mounted value, decoupled from the live estimate so it can
   // fade out WITH the collapsing row instead of popping. While the count should
@@ -223,7 +232,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
   // indicator's height settles. Used both for the false→true expand
-  // animation (where the row grows over 300ms) and for the
+  // animation (where the row grows over --transition) and for the
   // initiallyVisible mount case (where there's no animation, but the
   // freshly-laid-out indicator's SVG / font load can still nudge
   // scrollHeight up after the initial paint and leave a re-mounted
@@ -296,6 +305,9 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     const paused = props.paused ?? false
 
     if (visible) {
+      presenceVersion += 1
+      clearPresenceTimer()
+      setPresent(true)
       if (!wasVisible) {
         wasVisible = true
         // Genuine idle→thinking transition inside a live component:
@@ -318,6 +330,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       cancelAnimationFrame(expandRafId)
       cancelAnimationFrame(tickRafId)
       setExpanded(false)
+      if (untrack(present) && presenceTimer === undefined) {
+        const version = ++presenceVersion
+        presenceTimer = setTimeout(() => {
+          presenceTimer = undefined
+          if (version === presenceVersion)
+            setPresent(false)
+        }, ROW_COLLAPSE_TOTAL_MS)
+      }
     }
 
     // Compass simulation + in-turn verb rotation are both gated on
@@ -351,6 +371,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     pendingClearTimers.clear()
     if (countFadeTimer !== undefined)
       clearTimeout(countFadeTimer)
+    clearPresenceTimer()
   })
 
   const verbSpan = (
@@ -384,11 +405,12 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       class={styles.wrapper}
       data-testid="thinking-indicator"
       style={{
+        'display': present() ? 'grid' : 'none',
         'grid-template-rows': expanded() ? '1fr' : '0fr',
         'opacity': expanded() ? 1 : 0,
         'transition': expanded()
-          ? 'grid-template-rows 0.3s ease-out, opacity 0.3s ease-out 0.3s'
-          : 'opacity 0.3s ease-out, grid-template-rows 0.3s ease-out 0.3s',
+          ? `grid-template-rows var(--transition), opacity var(--transition) ${motion.medium}ms`
+          : `opacity var(--transition), grid-template-rows var(--transition) ${motion.medium}ms`,
       }}
     >
       <div class={styles.wrapperInner}>

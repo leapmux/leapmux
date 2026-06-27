@@ -1,4 +1,3 @@
-/* eslint-disable solid/no-innerhtml -- HTML produced via shiki, not arbitrary user input */
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import Eye from 'lucide-solid/icons/eye'
@@ -11,7 +10,10 @@ import Wrench from 'lucide-solid/icons/wrench'
 import { createMemo, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { renderBashHighlight, ToolUseLayout } from '../../../toolRenderers'
+import { useSharedExpandedState } from '../../../messageRenderers'
+import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
+import { CommandInputBody, CommandInputSummary, createCommandInputExpansionState } from '../../../results/multiLineCommandBody'
+import { ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
 import { extractPiBash } from '../extractors/bash'
@@ -24,21 +26,39 @@ interface RendererProps {
   context?: RenderContext
 }
 
-function PiBashRenderer(props: { payload: Record<string, unknown>, context?: RenderContext }): JSX.Element {
+export function PiBashRenderer(props: { payload: Record<string, unknown>, context?: RenderContext }): JSX.Element {
   const bash = createMemo(() => extractPiBash(props.payload))
   const command = () => bash()?.command ?? ''
   const title = () => renderBashTitle('Run command', command()) || 'Run command'
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.TOOL_USE_LAYOUT)
+  const { commandExpandable, setSummaryOverflows } = createCommandInputExpansionState(command)
   return (
     <ToolUseLayout
       icon={Terminal}
       toolName="Bash"
       title={title()}
-      summary={(
-        <div class={toolInputSummary} innerHTML={renderBashHighlight(command())} />
-      )}
+      summary={
+        expanded() && commandExpandable()
+          ? undefined
+          : (
+              <CommandInputSummary
+                collapsed={!expanded()}
+                command={command()}
+                context={props.context}
+                namespace="pi.toolExecution.summary"
+                onOverflowChange={setSummaryOverflows}
+              />
+            )
+      }
       context={props.context}
-      alwaysVisible
-    />
+      expanded={expanded()}
+      onToggleExpand={commandExpandable() ? () => setExpanded(v => !v) : undefined}
+      expandLabel="Show full command"
+    >
+      <Show when={expanded() && commandExpandable()}>
+        <CommandInputBody command={command()} context={props.context} namespace="pi.toolExecution.body" />
+      </Show>
+    </ToolUseLayout>
   )
 }
 

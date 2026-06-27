@@ -7,6 +7,7 @@ import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPan
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, reloadFontsAndClearAtlas, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
@@ -273,7 +274,7 @@ const TerminalContainer: Component<{
     // ResizeObserver on this terminal's container element.
     // Only send resize to worker when dimensions actually change to avoid
     // unnecessary SIGWINCH that triggers zsh PROMPT_SP '%' on snapshot restore.
-    const resizeObserver = new ResizeObserver(() => {
+    const resizeObserver = createRafResizeObserver(() => {
       const inst = instances.get(props.terminalId)
       if (inst && props.active && props.visible) {
         const prevCols = inst.terminal.cols
@@ -284,10 +285,10 @@ const TerminalContainer: Component<{
         }
       }
     })
-    resizeObserver.observe(ref)
+    resizeObserver?.observe(ref)
 
     onCleanup(() => {
-      resizeObserver.disconnect()
+      resizeObserver?.disconnect()
     })
   })
 

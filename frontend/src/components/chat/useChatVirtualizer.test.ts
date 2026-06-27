@@ -1,7 +1,8 @@
-import type { VirtualItem } from './useChatVirtualizer'
+import type { TallRowMeasureStats, ViewportUpdateStats, VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { ESTIMATE_CACHE_MAX, HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
+import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
+import { HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 
 function makeItems(specs: Array<{ seq: number, span?: boolean }>): VirtualItem[] {
   // `seq` is only a convenient way to derive a unique row id in these specs; the
@@ -70,6 +71,30 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('reserves zero geometry for collapsed-until-measured rows', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(3))
+      virt.measure('m1', 100)
+      virt.measure('m3', 100)
+      expect(virt.totalHeight()).toBe(340)
+
+      virt.setCollapsedUntilMeasuredIds(new Set(['m2']))
+
+      expect(virt.heightOfIndex(1)).toBe(0)
+      expect(virt.offsetOfIndex(1)).toBe(100)
+      expect(virt.offsetOfIndex(2)).toBe(100)
+      expect(virt.totalHeight()).toBe(200)
+
+      expect(virt.primeHeight('m2', 250)).toBe(true)
+
+      expect(virt.heightOfIndex(1)).toBe(250)
+      expect(virt.offsetOfIndex(1)).toBe(120)
+      expect(virt.offsetOfIndex(2)).toBe(390)
+      expect(virt.totalHeight()).toBe(490)
+      dispose()
+    })
+  })
+
   it('ignores a zero-height measurement (hidden tab) and leaves the estimate intact', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
@@ -126,430 +151,10 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('uses the injected per-item estimate for an unmeasured row', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [
-        { id: 'a', hasSpanLines: false },
-        { id: 'b', hasSpanLines: false },
-      ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        // Per-item analytical estimate: 'a' is a tall diff, 'b' a short header.
-        // Unmeasured rows use this, NOT the flat seed/mean.
-        estimate: item => (item.id === 'a' ? 500 : 30),
-      })
-      expect(virt.heightOfIndex(0)).toBe(500)
-      expect(virt.heightOfIndex(1)).toBe(30)
-      expect(virt.offsetOfIndex(1)).toBe(520) // 500 + large gap (20)
-      dispose()
-    })
-  })
-
-  it('falls back to the running mean when the estimator THROWS (a malformed payload must not blank the list)', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false },
-        { id: 'b', hasSpanLines: false },
-      ])
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        // The estimator throws for 'a' (a provider heightMetrics hook faulting on a
-        // malformed payload). It runs inside geom's createMemo, which has no error
-        // boundary, so an uncaught throw would blank the ENTIRE list. It must be
-        // contained to the running-mean fallback for just that row.
-        estimate: (item) => {
-          if (item.id === 'a')
-            throw new Error('malformed payload')
-          return 30
-        },
-        estimateEpoch: () => 800, // exercise the memoized path ChatView uses
-      })
-      expect(() => virt.totalHeight()).not.toThrow()
-      expect(virt.heightOfIndex(0)).toBe(100) // 'a' threw -> running-mean seed
-      expect(virt.heightOfIndex(1)).toBe(30) // 'b' estimates normally
-      dispose()
-    })
-  })
-
-  it('memoizes per-row estimates across measurements and re-estimates on a width-epoch change', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(makeItems([{ seq: 1 }, { seq: 2 }, { seq: 3 }]))
-      const [width, setWidth] = createSignal(800)
-      const calls = new Map<string, number>()
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        // A width-dependent estimate, so a width change MUST re-estimate.
-        estimate: (item) => {
-          calls.set(item.id, (calls.get(item.id) ?? 0) + 1)
-          return width() / 8
-        },
-        estimateEpoch: width,
-      })
-      // The initial geom scan estimates each row exactly once.
-      expect(virt.totalHeight()).toBeGreaterThan(0)
-      expect([calls.get('m1'), calls.get('m2'), calls.get('m3')]).toEqual([1, 1, 1])
-
-      // Measuring m1 bumps geomVersion -> geom recomputes, but m2/m3 reuse their
-      // cached estimates (the estimator is NOT re-run for them).
-      virt.measure('m1', 200)
-      virt.totalHeight()
-      expect([calls.get('m2'), calls.get('m3')]).toEqual([1, 1])
-
-      // A width change invalidates the cache -> every still-unmeasured row is
-      // re-estimated at the new width; the measured m1 stays on heightCache.
-      setWidth(1600)
-      virt.totalHeight()
-      expect([calls.get('m2'), calls.get('m3')]).toEqual([2, 2])
-      expect(calls.get('m1')).toBe(1)
-      expect(virt.heightOfIndex(1)).toBe(200) // 1600 / 8
-      dispose()
-    })
-  })
-
-  it('prunes the estimate cache when a row leaves the window, so re-adding it re-estimates', () => {
-    createRoot((dispose) => {
-      const [list, setList] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'c', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      const calls = new Map<string, number>()
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: (item) => {
-          calls.set(item.id, (calls.get(item.id) ?? 0) + 1)
-          return 50
-        },
-        estimateEpoch: () => '800', // constant epoch: never a wholesale clear
-      })
-      virt.totalHeight()
-      expect([calls.get('a'), calls.get('b'), calls.get('c')]).toEqual([1, 1, 1])
-
-      // 'b' leaves the loaded window (a trim). geom's retain drops its cached
-      // estimate; the still-resident rows keep theirs (not re-estimated).
-      setList([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'c', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      virt.totalHeight()
-      expect([calls.get('a'), calls.get('c')]).toEqual([1, 1])
-
-      // 'b' returns under the SAME id + estimateKey. Because its entry was pruned on
-      // leaving (not merely aged behind the backstop cap), it re-estimates rather
-      // than handing back a value that's no longer guaranteed current.
-      setList([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'c', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      virt.totalHeight()
-      expect(calls.get('b')).toBe(2)
-      expect([calls.get('a'), calls.get('c')]).toEqual([1, 1])
-      dispose()
-    })
-  })
-
-  it('re-estimates an unmeasured row whose estimateKey (content version) changed in place at a constant epoch', () => {
-    createRoot((dispose) => {
-      // An off-screen row's content changes in place under a STABLE id (a reseq /
-      // notification consolidation): same id, new estimateKey, unchanged epoch and
-      // never measured. Keyed by id alone the estimate cache would hand back the
-      // pre-change height; the per-row content token must bust it.
-      const [list, setList] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      const width = 800
-      const heights: Record<string, number> = { a: 50, b: 50 }
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: item => heights[item.id],
-        estimateEpoch: () => `${width}`, // constant: a content change is NOT a global epoch change
-      })
-      expect(virt.heightOfIndex(0)).toBe(50)
-
-      // Row 'a' grows in place (reseq): bump ONLY its estimateKey + its estimate.
-      heights.a = 300
-      setList([
-        { id: 'a', hasSpanLines: false, estimateKey: 's2' },
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      // 'a' re-estimates (its key changed); 'b' keeps its cached estimate.
-      expect(virt.heightOfIndex(0)).toBe(300)
-      expect(virt.heightOfIndex(1)).toBe(50)
-      dispose()
-    })
-  })
-
-  it('reuses the cached estimate across a measurement-only recompute when estimateKey is unchanged', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      const calls = new Map<string, number>()
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: (item) => {
-          calls.set(item.id, (calls.get(item.id) ?? 0) + 1)
-          return 60
-        },
-        estimateEpoch: () => 'const',
-      })
-      virt.totalHeight()
-      expect([calls.get('a'), calls.get('b')]).toEqual([1, 1])
-      // Measuring 'a' bumps geomVersion; with an unchanged estimateKey, 'b' must
-      // NOT be re-estimated (the memoization win the content token must preserve).
-      virt.measure('a', 200)
-      virt.totalHeight()
-      expect(calls.get('b')).toBe(1)
-      dispose()
-    })
-  })
-
-  it('caches a poison marker for an unusable estimate so a malformed row is not re-parsed every geom pass, yet still tracks the live running mean', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' }, // estimator always unusable
-        { id: 'b', hasSpanLines: false, estimateKey: 's1' },
-        { id: 'c', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      const calls = new Map<string, number>()
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        // 'a' is a malformed payload: the estimator returns NaN every time. Its
-        // estimateKey never changes and it never measures while off-screen, so
-        // without a poison marker it would re-parse on EVERY geom recompute.
-        estimate: (item) => {
-          calls.set(item.id, (calls.get(item.id) ?? 0) + 1)
-          return item.id === 'a' ? Number.NaN : 60
-        },
-        estimateEpoch: () => 'const',
-      })
-      // Initial geom scan runs the estimator once per row; 'a' is unusable and gets
-      // a poison marker, falling back to the running-mean seed (no row measured yet).
-      virt.totalHeight()
-      expect(calls.get('a')).toBe(1)
-      expect(virt.heightOfIndex(0)).toBe(100)
-
-      // Two measurement-only recomputes (each bumps geomVersion -> geom re-runs).
-      // 'a' stays an unmeasured estimate; the poison marker holds its call count at
-      // 1 instead of re-parsing the malformed payload on each pass.
-      virt.measure('b', 200)
-      virt.totalHeight()
-      virt.measure('c', 200)
-      virt.totalHeight()
-      expect(calls.get('a')).toBe(1)
-
-      // A poison hit returns the LIVE running mean, not a frozen seed: with b and c
-      // measured at 200, 'a' now falls back to 200 rather than the original 100.
-      expect(virt.heightOfIndex(0)).toBe(200)
-      expect(calls.get('a')).toBe(1) // reading the fallback must not re-run the estimator
-      dispose()
-    })
-  })
-
-  it('re-runs the estimator for a poisoned row only after its estimateKey changes (the in-place fix lands)', () => {
-    createRoot((dispose) => {
-      const [list, setList] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, estimateKey: 's1' },
-      ])
-      const calls = new Map<string, number>()
-      let usable = false
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: (item) => {
-          calls.set(item.id, (calls.get(item.id) ?? 0) + 1)
-          return usable ? 300 : Number.NaN
-        },
-        estimateEpoch: () => 'const',
-      })
-      virt.totalHeight()
-      expect(calls.get('a')).toBe(1)
-      expect(virt.heightOfIndex(0)).toBe(100) // poison -> running-mean seed
-
-      // The row's content is fixed in place (a reseq lands valid metadata): its
-      // estimateKey changes, which must bust the poison marker and re-estimate.
-      usable = true
-      setList([{ id: 'a', hasSpanLines: false, estimateKey: 's2' }])
-      expect(virt.heightOfIndex(0)).toBe(300)
-      expect(calls.get('a')).toBe(2)
-      dispose()
-    })
-  })
-
-  it('keeps both cache bounds above the chat window ceiling', async () => {
+  it('keeps the measured-height cache bound above the chat window ceiling', () => {
     // The height cache is LRU-capped with mountedIds protected, so its cap must
-    // exceed the largest in-memory window or it would evict in-window rows. The
-    // estimate cache is bounded by window liveness (geom's retain), so its cap is a
-    // pure backstop -- but it's kept above the ceiling too so the backstop never
-    // becomes a hot eviction path. Pin the margin so raising the window ceiling past
-    // either cap can't silently regress it.
-    const { MAX_LOADED_CHAT_MESSAGES_CEILING } = await import('~/stores/chat.store')
-    expect(ESTIMATE_CACHE_MAX).toBeGreaterThan(MAX_LOADED_CHAT_MESSAGES_CEILING)
+    // exceed the largest in-memory window or it would evict in-window rows.
     expect(HEIGHT_CACHE_MAX).toBeGreaterThan(MAX_LOADED_CHAT_MESSAGES_CEILING)
-  })
-
-  it('re-estimates unmeasured rows when the epoch changes at CONSTANT width (a global UI toggle)', () => {
-    createRoot((dispose) => {
-      // Models ChatView's composite epoch: the estimate output depends on a
-      // global pref (e.g. expandAgentThoughts) as well as the content width, so
-      // the epoch must fold the pref in. Width is held constant here; only the
-      // pref flips. A stale estimate-cache (keyed on width alone) would hand back
-      // the pre-toggle height for every off-screen row -- the exact bug this guards.
-      const [list] = createSignal(makeItems([{ seq: 1 }, { seq: 2 }]))
-      const [expanded, setExpanded] = createSignal(false)
-      const width = 800
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: () => (expanded() ? 400 : 50),
-        // Epoch folds in the non-width input -> flipping it busts the cache.
-        estimateEpoch: () => `${width}|${expanded() ? 1 : 0}`,
-      })
-      expect(virt.heightOfIndex(0)).toBe(50)
-      expect(virt.totalHeight()).toBe(120) // 50 + 20 + 50
-      setExpanded(true)
-      expect(virt.heightOfIndex(0)).toBe(400) // re-estimated, not the stale 50
-      expect(virt.totalHeight()).toBe(820) // 400 + 20 + 400
-      dispose()
-    })
-  })
-
-  it('without an estimate epoch, re-estimates every unmeasured row on each measurement (un-memoized path)', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(makeItems([{ seq: 1 }, { seq: 2 }]))
-      let m2Calls = 0
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: (item) => {
-          if (item.id === 'm2')
-            m2Calls += 1
-          return 100
-        },
-        // No estimateEpoch -> the prior, un-memoized behavior.
-      })
-      virt.totalHeight()
-      expect(m2Calls).toBe(1)
-      virt.measure('m1', 200)
-      virt.totalHeight()
-      expect(m2Calls).toBe(2) // re-estimated each scan, no cache
-      dispose()
-    })
-  })
-
-  it('falls back to the running mean when the injected estimate is non-finite, keeping the offset map sane', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [
-        { id: 'a', hasSpanLines: false },
-        { id: 'b', hasSpanLines: false },
-        { id: 'c', hasSpanLines: false },
-      ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        // A misbehaving estimator: NaN for 'b' (e.g. malformed diff metadata),
-        // Infinity for 'c'. Feeding either straight into the cumulative offset
-        // map would turn every later offset into NaN/Infinity and blank the list.
-        estimate: item => (item.id === 'a' ? 200 : item.id === 'b' ? Number.NaN : Number.POSITIVE_INFINITY),
-      })
-      // 'a' is fine; 'b'/'c' fall back to the seed running-mean (100).
-      expect(virt.heightOfIndex(0)).toBe(200)
-      expect(virt.heightOfIndex(1)).toBe(100)
-      expect(virt.heightOfIndex(2)).toBe(100)
-      // The whole offset map stays finite: 200 + 20 + 100 + 20 + 100.
-      expect(virt.offsetOfIndex(2)).toBe(340)
-      expect(Number.isFinite(virt.totalHeight())).toBe(true)
-      expect(virt.totalHeight()).toBe(440)
-      dispose()
-    })
-  })
-
-  it('lets a measured height override the injected estimate', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false }]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: () => 500,
-      })
-      expect(virt.heightOfIndex(0)).toBe(500) // estimate first
-      virt.measure('a', 333)
-      expect(virt.heightOfIndex(0)).toBe(333) // measured wins, authoritative
-      dispose()
-    })
-  })
-
-  it('recomputes offsets when the estimate\'s reactive dependency changes', () => {
-    createRoot((dispose) => {
-      // Models the content-width signal: the injected estimate reads it, so geom
-      // tracks it and re-estimates unmeasured rows when it changes (the mechanism
-      // behind a viewport resize re-wrapping prose for off-screen rows).
-      const [width, setWidth] = createSignal(100)
-      const [list] = createSignal<VirtualItem[]>([{ id: 'a', hasSpanLines: false }])
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: () => width(),
-      })
-      expect(virt.heightOfIndex(0)).toBe(100)
-      expect(virt.totalHeight()).toBe(100)
-      setWidth(400)
-      expect(virt.heightOfIndex(0)).toBe(400)
-      expect(virt.totalHeight()).toBe(400)
-      dispose()
-    })
   })
 
   it('fires onFirstMeasure once on first measurement, not on re-measure', () => {
@@ -569,6 +174,92 @@ describe('usechatvirtualizer geometry', () => {
       expect(calls).toEqual([['a', 200]]) // first measurement reported
       virt.measure('a', 260) // re-measure (async growth) — carries no fresh estimate
       expect(calls).toEqual([['a', 200]]) // not reported again
+      dispose()
+    })
+  })
+
+  it('primes a measured height without firing the first visible-measure callback', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false, heightKey: 'k1' }]
+      const [list] = createSignal(items)
+      const calls: Array<[string, number]> = []
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+        onFirstMeasure: (id, h) => calls.push([id, h]),
+      })
+      expect(virt.primeHeight('a', 275, 'k1')).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(275)
+      expect(virt.hasMeasuredHeight('a')).toBe(true)
+      expect(calls).toEqual([])
+
+      virt.measure('a', 280)
+      expect(calls).toEqual([])
+      dispose()
+    })
+  })
+
+  it('does not let hidden premeasure overwrite an already measured mounted row', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'k1' },
+      ])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      virt.attachRow('a', fakeRow(320))
+
+      expect(virt.heightOfIndex(0)).toBe(320)
+      expect(virt.primeHeight('a', 120, 'k1')).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(320)
+      dispose()
+    })
+  })
+
+  it('ignores a pre-measured height when the row heightKey changed before commit', () => {
+    createRoot((dispose) => {
+      const [list, setList] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'old' },
+      ])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+      expect(virt.primeHeight('a', 275, 'old')).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(100)
+      expect(virt.hasMeasuredHeight('a')).toBe(false)
+      dispose()
+    })
+  })
+
+  it('falls back instead of using a stale measured height when heightKey changes', () => {
+    createRoot((dispose) => {
+      const [list, setList] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'old' },
+      ])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      expect(virt.primeHeight('a', 275, 'old')).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(275)
+      setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+      expect(virt.heightOfIndex(0)).toBe(100)
+      expect(virt.hasMeasuredHeight('a')).toBe(false)
       dispose()
     })
   })
@@ -647,20 +338,19 @@ describe('usechatvirtualizer geometry', () => {
         { id: 'a', hasSpanLines: false },
         { id: 'b', hasSpanLines: false },
       ])
-      // Row 'a' is UNDER-estimated: estimate 80, but it will measure 600.
+      // Row 'a' is UNDER-estimated by the fallback: 100, but it will measure 600.
       const virt = useChatVirtualizer({
         items: list,
         overscanPx: 0,
         estimateHeight: 100,
         gapSmallPx: 10,
         gapLargePx: 20,
-        estimate: item => (item.id === 'a' ? 80 : 100),
       })
-      // Anchor at the MIDDLE of the 80px estimate (scrollTop 40 -> fraction 0.5).
-      const anchor = virt.anchorAt(40)
-      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 40, basisHeight: 80, gapFraction: 0 })
-      // Before measure, resolve returns the captured 40 (basis == current estimate).
-      expect(virt.scrollTopForAnchor(anchor!)).toBe(40)
+      // Anchor at the MIDDLE of the 100px fallback (scrollTop 50 -> fraction 0.5).
+      const anchor = virt.anchorAt(50)
+      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 50, basisHeight: 100, gapFraction: 0 })
+      // Before measure, resolve returns the captured 50 (basis == current fallback).
+      expect(virt.scrollTopForAnchor(anchor!)).toBe(50)
       // Row 'a' measures 600. The 0.5 fraction maps to 0.5 * 600 = 300 -- the pin
       // tracks the row's growth instead of staying at a stale 40px.
       virt.measure('a', 600)
@@ -726,7 +416,7 @@ describe('usechatvirtualizer geometry', () => {
 
   it('resolves an OVER-estimated row PROPORTIONALLY so a measure-smaller keeps the fraction (no yank to the bottom)', () => {
     createRoot((dispose) => {
-      // Row 'a' is estimated tall (400) before it mounts; estimates bias UP.
+      // Row 'a' starts with a tall fallback before it mounts.
       const items: VirtualItem[] = [
         { id: 'a', hasSpanLines: false },
         { id: 'b', hasSpanLines: false },
@@ -735,10 +425,9 @@ describe('usechatvirtualizer geometry', () => {
       const virt = useChatVirtualizer({
         items: list,
         overscanPx: 0,
-        estimateHeight: 100,
+        estimateHeight: 400,
         gapSmallPx: 10,
         gapLargePx: 20,
-        estimate: item => (item.id === 'a' ? 400 : 100),
       })
       // Anchor at 90% into the over-estimated row 'a' (scrollTop 360 / 400 = 0.9).
       const anchor = virt.anchorAt(360)
@@ -750,36 +439,6 @@ describe('usechatvirtualizer geometry', () => {
       // 0.9 * 120 = 108, so the anchored content stays at the same relative spot.
       virt.measure('a', 120)
       expect(virt.scrollTopForAnchor(anchor!)).toBe(108)
-      dispose()
-    })
-  })
-
-  it('resolves PROPORTIONALLY when an UNMEASURED row\'s estimate shrinks before it mounts (S1: no truncation)', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false },
-        { id: 'b', hasSpanLines: false },
-      ])
-      const [estH, setEstH] = createSignal(400)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        estimate: item => (item.id === 'a' ? estH() : 100),
-        estimateEpoch: estH, // a change re-runs the estimator for unmeasured rows
-      })
-      // Anchor at 90% into the 400px estimate, still unmeasured.
-      const anchor = virt.anchorAt(360)
-      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 360, basisHeight: 400, gapFraction: 0 })
-      expect(virt.scrollTopForAnchor(anchor!)).toBe(360)
-
-      // The estimate SHRINKS 400 -> 200 (a width / prefs re-estimate) while the row is
-      // STILL unmeasured. The old absolute clamp truncated the 360 offset to the new
-      // 200 -- yanking the pin to the bottom; proportional keeps 0.9 -> 0.9*200 = 180.
-      setEstH(200)
-      expect(virt.scrollTopForAnchor(anchor!)).toBe(180)
       dispose()
     })
   })
@@ -900,6 +559,79 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('defers visible-row attach measurements until the deferral is released', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(1))
+      const row = fakeRow(333)
+      document.body.append(row)
+
+      virt.setVisibleMeasurementDeferral(true)
+      virt.attachRow('m1', row)
+
+      expect(virt.hasDeferredMeasurements()).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(100)
+      expect(virt.totalHeight()).toBe(100)
+
+      virt.setVisibleMeasurementDeferral(false)
+      expect(virt.flushDeferredMeasurements()).toBe(true)
+      expect(virt.hasDeferredMeasurements()).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(333)
+      expect(virt.totalHeight()).toBe(333)
+      row.remove()
+      dispose()
+    })
+  })
+
+  it('defers hidden premeasure commits until the measurement deferral is released', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(3))
+
+      virt.setVisibleMeasurementDeferral(true)
+      expect(virt.primeHeight('m1', 700)).toBe(false)
+      expect(virt.primeHeight('m1', 852)).toBe(false)
+      expect(virt.primeHeight('m1', 0)).toBe(false)
+
+      expect(virt.hasDeferredMeasurements()).toBe(true)
+      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(100)
+      expect(virt.totalHeight()).toBe(340)
+
+      virt.setVisibleMeasurementDeferral(false)
+      expect(virt.flushDeferredMeasurements()).toBe(true)
+
+      expect(virt.hasDeferredMeasurements()).toBe(false)
+      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(852)
+      expect(virt.totalHeight()).toBe(2596)
+      dispose()
+    })
+  })
+
+  it('keeps a collapsed hidden premeasure at zero until its deferred height flushes', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(2))
+      virt.measure('m2', 100)
+      virt.setCollapsedUntilMeasuredIds(new Set(['m1']))
+
+      virt.setVisibleMeasurementDeferral(true)
+      expect(virt.primeHeight('m1', 300)).toBe(false)
+
+      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(0)
+      expect(virt.offsetOfIndex(1)).toBe(0)
+      expect(virt.totalHeight()).toBe(100)
+
+      virt.setVisibleMeasurementDeferral(false)
+      expect(virt.flushDeferredMeasurements()).toBe(true)
+
+      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(300)
+      expect(virt.offsetOfIndex(1)).toBe(320)
+      expect(virt.totalHeight()).toBe(420)
+      dispose()
+    })
+  })
+
   it('reflects mounted rows in mountedIds: attachRow adds an id, detachRow removes it', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3)) // m1, m2, m3
@@ -969,6 +701,143 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('keeps adjacent rows mounted when one row is taller than the pixel overscan band', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(5))
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 1200,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      // Row m2 is taller than viewport + top/bottom overscan, so the pure pixel
+      // intersection in the middle of the row would collapse the slice to just m2.
+      // Keep its immediate neighbors mounted anyway: crossing a tall-row boundary
+      // should have overlapping DOM rather than replacing every rendered row at once.
+      expect(virt.measure('m2', 5000)).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(100)
+      expect(virt.heightOfIndex(1)).toBe(5000)
+
+      // Offsets: m1 [0,100), gap, m2 [120,5120). At scrollTop 2500, the 1200px
+      // overscan band [1300,4200] sits wholly inside m2.
+      expect(virt.computeRange(2500, 500)).toEqual({ start: 0, end: 3 })
+      dispose()
+    })
+  })
+
+  it('reports range diagnostics when the overscan band fits inside a tall row', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(5))
+      let reported: ViewportUpdateStats | undefined
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 1200,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+        shouldReportPerf: () => true,
+        onViewportUpdate: stats => reported = stats,
+      })
+
+      expect(virt.measure('m2', 5000)).toBe(true)
+      virt.updateViewport(2500, 500)
+
+      expect(reported?.nextStart).toBe(0)
+      expect(reported?.nextEnd).toBe(3)
+      expect(reported?.tallRow).toMatchObject({
+        reason: 'single-row-window',
+        rowCount: 5,
+        totalHeight: 5480,
+        maxScrollTop: 4980,
+        clampedScrollTop: 2500,
+        scrollTopWasClamped: false,
+        overscanPx: 1200,
+        overTop: 1200,
+        overBottom: 1200,
+        guardBandPx: 1200,
+        overscanTop: 1300,
+        overscanBottom: 4200,
+        rawStart: 1,
+        rawEnd: 2,
+        expandedForTallRow: true,
+        tallRowIndex: 1,
+        tallRowId: 'm2',
+        tallRowHeight: 5000,
+        tallRowHeightSource: 'measured',
+        tallRowTop: 120,
+        tallRowBottom: 5120,
+        viewportTopOffsetInTallRow: 2380,
+        viewportBottomOffsetInTallRow: 2880,
+      })
+      dispose()
+    })
+  })
+
+  it('reports tall-row measurement diagnostics without changing the fallback estimate', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(5))
+      let reported: TallRowMeasureStats | undefined
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 1200,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+        shouldReportPerf: () => true,
+        onTallRowMeasure: stats => reported = stats,
+      })
+
+      expect(virt.measure('m2', 5000)).toBe(true)
+
+      expect(reported).toMatchObject({
+        id: 'm2',
+        source: 'visible',
+        height: 5000,
+        firstMeasure: true,
+        fallbackExcluded: true,
+        previousFallbackExcluded: false,
+        fallbackEstimateBefore: 100,
+        fallbackEstimateAfter: 100,
+        geometryVersionBefore: 0,
+        geometryVersionAfter: 1,
+        indexBefore: 1,
+        indexAfter: 1,
+        rowTopBefore: 120,
+        rowTopAfter: 120,
+        totalHeightBefore: 580,
+        totalHeightAfter: 5480,
+      })
+      dispose()
+    })
+  })
+
+  it('updates fallback contribution when an epsilon re-measure crosses the outlier threshold', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(2))
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+
+      expect(virt.measure('m1', 1200.2)).toBe(true)
+      expect(virt.estimateHeight()).toBe(100)
+      expect(virt.totalHeight()).toBeCloseTo(1320.2)
+
+      expect(virt.measure('m1', 1199.9)).toBe(true)
+      expect(virt.estimateHeight()).toBe(1199.9)
+      expect(virt.totalHeight()).toBeCloseTo(2419.8)
+
+      expect(virt.measure('m1', 1200.2)).toBe(true)
+      expect(virt.estimateHeight()).toBe(100)
+      expect(virt.totalHeight()).toBeCloseTo(1320.2)
+      dispose()
+    })
+  })
+
   it('clamps the render-ahead to the list bounds (no negative start / past-end overflow)', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(50)) // offset[i] = i*120, n = 50
@@ -995,114 +864,120 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('reports viewport update stats for changed and unchanged slices', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(5))
+      const updates: ViewportUpdateStats[] = []
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+        onViewportUpdate: stats => updates.push(stats),
+      })
+
+      virt.updateViewport(200, 200)
+      expect(updates[0]).toMatchObject({
+        scrollTop: 200,
+        clientHeight: 200,
+        leadDir: undefined,
+        leadPx: 0,
+        previousStart: 0,
+        previousEnd: 0,
+        nextStart: 1,
+        nextEnd: 4,
+        previousRows: 0,
+        nextRows: 3,
+        addedRows: 3,
+        removedRows: 0,
+        rangeChanged: true,
+      })
+      expect(updates[0].computeMs).toBeGreaterThanOrEqual(0)
+      expect(updates[0].totalMs).toBeGreaterThanOrEqual(updates[0].computeMs)
+
+      virt.updateViewport(205, 200, { dir: 'newer', px: 50 })
+      expect(updates[1]).toMatchObject({
+        scrollTop: 205,
+        clientHeight: 200,
+        leadDir: 'newer',
+        leadPx: 50,
+        previousStart: 1,
+        previousEnd: 4,
+        nextStart: 1,
+        nextEnd: 4,
+        previousRows: 3,
+        nextRows: 3,
+        addedRows: 0,
+        removedRows: 0,
+        rangeChanged: false,
+      })
+      expect(virt.range()).toEqual({ start: 1, end: 4 })
+      dispose()
+    })
+  })
+
+  it('does not collect perf hook stats when the runtime gate is closed', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(5))
+      const viewportUpdates: ViewportUpdateStats[] = []
+      const attachStats: unknown[] = []
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+        shouldReportPerf: () => false,
+        onViewportUpdate: stats => viewportUpdates.push(stats),
+        onRowAttachMeasure: stats => attachStats.push(stats),
+      })
+
+      virt.updateViewport(200, 200)
+      virt.attachRow('m1', fakeRow(120))
+
+      expect(viewportUpdates).toEqual([])
+      expect(attachStats).toEqual([])
+      expect(virt.range()).toEqual({ start: 1, end: 4 })
+      expect(virt.heightOfIndex(0)).toBe(120)
+      dispose()
+    })
+  })
+
   describe('heightDebugOfId (raw-JSON debug surface)', () => {
-    function withEstimate(estimate: (item: VirtualItem) => number, items: VirtualItem[]) {
-      const [list] = createSignal(items)
-      return useChatVirtualizer({ items: list, overscanPx: 0, estimateHeight: 100, gapSmallPx: 10, gapLargePx: 20, estimate })
-    }
-
-    it('returns the analytical estimate with measured undefined before the row is measured', () => {
-      createRoot((dispose) => {
-        const virt = withEstimate(() => 500, [{ id: 'a', hasSpanLines: false }])
-        expect(virt.heightDebugOfId('a')).toEqual({ estimated: 500, measured: undefined })
-        dispose()
-      })
-    })
-
-    it('keeps BOTH the estimate and the measured height once measured (heightOfIndex collapses them)', () => {
-      createRoot((dispose) => {
-        const virt = withEstimate(() => 500, [{ id: 'a', hasSpanLines: false }])
-        virt.measure('a', 333)
-        // heightOfIndex resolves to the measured value; heightDebugOfId surfaces both.
-        expect(virt.heightOfIndex(0)).toBe(333)
-        expect(virt.heightDebugOfId('a')).toEqual({ estimated: 500, measured: 333 })
-        dispose()
-      })
-    })
-
-    it('reports estimated undefined when the estimator throws or returns an unusable value, but still surfaces a measurement', () => {
-      createRoot((dispose) => {
-        const virt = withEstimate(
-          item => (item.id === 'thrower' ? (() => { throw new Error('malformed') })() : Number.NaN),
-          [{ id: 'thrower', hasSpanLines: false }, { id: 'nan', hasSpanLines: false }],
-        )
-        expect(virt.heightDebugOfId('thrower').estimated).toBeUndefined()
-        expect(virt.heightDebugOfId('nan').estimated).toBeUndefined()
-        virt.measure('nan', 210)
-        expect(virt.heightDebugOfId('nan')).toEqual({ estimated: undefined, measured: 210 })
-        dispose()
-      })
-    })
-
-    it('swallows a throwing estimateBreakdown after the estimate succeeded (no escape to the debug surface)', () => {
-      createRoot((dispose) => {
-        // runEstimate succeeds (est !== null), so the breakdown branch runs. estimateBreakdown
-        // RE-EVALUATES features(); if that second eval throws (payload/state changed between the
-        // two calls), heightDebugOfId must swallow it like runEstimate does -- not let it escape
-        // into the raw-JSON debug/copy surface. The estimate still surfaces; breakdown is undefined.
-        const [list] = createSignal<VirtualItem[]>([{ id: 'a', hasSpanLines: false }])
-        const virt = useChatVirtualizer({
-          items: list,
-          overscanPx: 0,
-          estimateHeight: 100,
-          gapSmallPx: 10,
-          gapLargePx: 20,
-          estimate: () => 500,
-          estimateBreakdown: () => { throw new Error('features re-eval threw') },
-        })
-        // Calling heightDebugOfId would error the test if the breakdown throw escaped;
-        // the guard swallows it, so the call returns with the estimate and no breakdown.
-        const info = virt.heightDebugOfId('a')
-        expect(info.estimated).toBe(500)
-        expect(info.breakdown).toBeUndefined()
-        dispose()
-      })
-    })
-
-    it('returns both fields undefined for an unknown id', () => {
+    it('returns measured undefined before the row is measured', () => {
       createRoot((dispose) => {
         const { virt } = setup(plainItems(2))
-        const info = virt.heightDebugOfId('nope')
-        expect(info.estimated).toBeUndefined()
-        expect(info.measured).toBeUndefined()
+        expect(virt.heightDebugOfId('m1')).toEqual({ measured: undefined })
         dispose()
       })
     })
 
-    it('reports estimated undefined when no per-item estimator is wired, yet still surfaces a measurement', () => {
+    it('surfaces the measured height once measured', () => {
       createRoot((dispose) => {
-        // setup() injects no `estimate`, so runEstimate has nothing to call and the
-        // analytical estimate is unavailable -- but a measured row still reports.
-        const { virt } = setup(plainItems(2)) // ids m1, m2
-        expect(virt.heightDebugOfId('m1')).toEqual({ estimated: undefined, measured: undefined })
+        const { virt } = setup(plainItems(2))
         virt.measure('m1', 250)
-        expect(virt.heightDebugOfId('m1')).toEqual({ estimated: undefined, measured: 250 })
+        expect(virt.heightDebugOfId('m1')).toEqual({ measured: 250 })
         dispose()
       })
     })
 
-    it('surfaces the estimate breakdown from estimateBreakdown when wired', () => {
+    it('omits stale measured height when the height key changes', () => {
       createRoot((dispose) => {
-        const [list] = createSignal<VirtualItem[]>([{ id: 'a', hasSpanLines: false }])
-        const breakdown = { kind: 'x', total: 500, terms: [], metrics: {} }
-        const virt = useChatVirtualizer({
-          items: list,
-          overscanPx: 0,
-          estimateHeight: 100,
-          gapSmallPx: 10,
-          gapLargePx: 20,
-          estimate: () => 500,
-          estimateBreakdown: () => breakdown,
-        })
-        expect(virt.heightDebugOfId('a')).toEqual({ estimated: 500, measured: undefined, breakdown })
+        const [list, setList] = createSignal<VirtualItem[]>([{ id: 'a', hasSpanLines: false, heightKey: 'old' }])
+        const virt = useChatVirtualizer({ items: list, overscanPx: 0, estimateHeight: 100, gapSmallPx: 10, gapLargePx: 20 })
+        expect(virt.measure('a', 250)).toBe(true)
+        expect(virt.heightDebugOfId('a')).toEqual({ measured: 250 })
+        setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+        expect(virt.heightDebugOfId('a')).toEqual({ measured: undefined })
         dispose()
       })
     })
 
-    it('omits the breakdown when no estimateBreakdown is wired', () => {
+    it('returns measured undefined for an unknown id', () => {
       createRoot((dispose) => {
-        const virt = withEstimate(() => 500, [{ id: 'a', hasSpanLines: false }])
-        expect(virt.heightDebugOfId('a').breakdown).toBeUndefined()
+        const { virt } = setup(plainItems(2))
+        expect(virt.heightDebugOfId('nope')).toEqual({ measured: undefined })
         dispose()
       })
     })
@@ -1110,24 +985,24 @@ describe('usechatvirtualizer geometry', () => {
 })
 
 describe('samevirtualitems geometry equality', () => {
-  const base: VirtualItem = { id: 'm1', hasSpanLines: false, estimateKey: 'k1', seq: 1n, features: () => ({ kind: 'prose', hasSpanLines: false }) }
+  const base: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1', seq: 1n }
 
   it('is true for arrays equal on the geometry fields', () => {
     expect(sameVirtualItems([{ ...base }], [{ ...base }])).toBe(true)
   })
 
-  it('ignores non-geometry fields (seq / features) when they differ', () => {
-    // seq is an anchor label and features is a lazy estimate thunk -- neither feeds the
-    // offset map, so a row that differs ONLY in those must still compare equal (else the
-    // memo would needlessly rebuild geometry on every streaming delta).
-    const other: VirtualItem = { ...base, seq: 999n, features: () => ({ kind: 'tool_result', hasSpanLines: false }) }
+  it('ignores non-geometry fields (seq) when they differ', () => {
+    // seq is an anchor label, not an offset input, so a row that differs ONLY there
+    // must still compare equal (else the memo would needlessly rebuild geometry on
+    // every streaming delta).
+    const other: VirtualItem = { ...base, seq: 999n }
     expect(sameVirtualItems([base], [other])).toBe(true)
   })
 
   it('is false when any geometry field differs', () => {
     expect(sameVirtualItems([base], [{ ...base, id: 'm2' }])).toBe(false)
     expect(sameVirtualItems([base], [{ ...base, hasSpanLines: true }])).toBe(false)
-    expect(sameVirtualItems([base], [{ ...base, estimateKey: 'k2' }])).toBe(false)
+    expect(sameVirtualItems([base], [{ ...base, heightKey: 'k2' }])).toBe(false)
   })
 
   it('is false for different lengths and true for the same reference', () => {

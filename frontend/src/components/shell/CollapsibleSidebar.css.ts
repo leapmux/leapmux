@@ -217,7 +217,7 @@ export const sectionDragHandle = style({
   'justifyContent': 'center',
   'cursor': 'grab',
   'opacity': 0,
-  'transition': 'opacity 0.15s',
+  'transition': 'opacity var(--transition)',
   'color': 'var(--muted-foreground)',
   'zIndex': 1,
   ':active': {

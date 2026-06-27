@@ -84,7 +84,7 @@ const DesktopFadeIn: ParentComponent = (props) => {
   })
 
   return (
-    <div style={{ height: '100%', opacity: opacity(), transition: 'opacity 0.3s ease' }}>
+    <div style={{ height: '100%', opacity: opacity(), transition: 'opacity var(--transition)' }}>
       {props.children}
     </div>
   )

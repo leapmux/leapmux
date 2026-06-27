@@ -1,4 +1,6 @@
+import type { RafResizeObserver } from '~/lib/resizeObserver'
 import { createSignal, onCleanup, onMount } from 'solid-js'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 
 export type TileSizeClass = 'full' | 'narrow' | 'compact' | 'minimal' | 'micro'
 export type TileHeightClass = 'tall' | 'short' | 'tiny'
@@ -32,19 +34,19 @@ export function heightToHeightClass(height: number): TileHeightClass {
 type Subscriber = (width: number, height: number) => void
 
 const subscribers = new Map<Element, Subscriber>()
-let sharedObserver: ResizeObserver | null = null
+let sharedObserver: RafResizeObserver | null = null
 
-function getSharedObserver(): ResizeObserver | null {
+function getSharedObserver(): RafResizeObserver | null {
   if (typeof ResizeObserver === 'undefined')
     return null
   if (sharedObserver === null) {
-    sharedObserver = new ResizeObserver((entries) => {
+    sharedObserver = createRafResizeObserver((entries) => {
       for (const entry of entries) {
         const cb = subscribers.get(entry.target)
         if (cb)
           cb(entry.contentRect.width, entry.contentRect.height)
       }
-    })
+    }) ?? null
   }
   return sharedObserver
 }

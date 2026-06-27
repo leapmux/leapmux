@@ -44,6 +44,7 @@ export function RemoteTriggerResultView(props: {
           kind="json"
           text={pretty()}
           isCollapsed={isCollapsed()}
+          context={props.context}
         />
       </Show>
     </ToolStatusHeader>

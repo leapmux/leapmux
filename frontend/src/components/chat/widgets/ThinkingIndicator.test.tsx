@@ -2,6 +2,7 @@
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { motion } from '~/styles/tokens'
 import { ThinkingIndicator } from './ThinkingIndicator'
 
 // The token-count <Show> gates on BOTH `visible` and a positive estimate, so the
@@ -40,9 +41,10 @@ describe('thinking indicator token count', () => {
     // The estimate's clear is event-driven, so a stale value can briefly outlive
     // the indicator; gating the count on `visible` keeps it from rendering (and
     // running its roll effects) inside a collapsed, invisible row.
-    const { queryByText } = render(() => (
+    const { getByTestId, queryByText } = render(() => (
       <ThinkingIndicator visible={false} thinkingTokens={1234} />
     ))
+    expect((getByTestId('thinking-indicator') as HTMLElement).style.display).toBe('none')
     expect(queryByText(/tokens/)).toBeNull()
   })
 
@@ -72,9 +74,57 @@ describe('thinking indicator token count', () => {
       setVisible(false)
       expect(queryByText('500 tokens')).toBeInTheDocument()
 
-      // Once the wrapper's opacity fade (ROW_FADE_MS = 300) elapses, it unmounts.
-      vi.advanceTimersByTime(300)
+      // Once the wrapper's opacity fade (ROW_FADE_MS) elapses, it unmounts.
+      vi.advanceTimersByTime(motion.medium)
       expect(queryByText('500 tokens')).toBeNull()
+    }
+    finally {
+      globalThis.requestAnimationFrame = realRaf
+      vi.useRealTimers()
+    }
+  })
+
+  it('removes the collapsed wrapper from flex layout after the hide transition', () => {
+    vi.useFakeTimers()
+    const realRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
+    try {
+      const [visible, setVisible] = createSignal(true)
+      const { getByTestId } = render(() => (
+        <ThinkingIndicator visible={visible()} paused={true} />
+      ))
+      const indicator = getByTestId('thinking-indicator') as HTMLElement
+      expect(indicator.style.display).toBe('grid')
+
+      setVisible(false)
+      expect(indicator.style.display).toBe('grid')
+
+      vi.advanceTimersByTime(motion.medium * 2)
+      expect(indicator.style.display).toBe('none')
+    }
+    finally {
+      globalThis.requestAnimationFrame = realRaf
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the wrapper in layout when shown again before hide cleanup fires', () => {
+    vi.useFakeTimers()
+    const realRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
+    try {
+      const [visible, setVisible] = createSignal(true)
+      const { getByTestId } = render(() => (
+        <ThinkingIndicator visible={visible()} paused={true} />
+      ))
+      const indicator = getByTestId('thinking-indicator') as HTMLElement
+
+      setVisible(false)
+      vi.advanceTimersByTime(motion.medium)
+      setVisible(true)
+      vi.advanceTimersByTime(motion.medium * 2)
+
+      expect(indicator.style.display).toBe('grid')
     }
     finally {
       globalThis.requestAnimationFrame = realRaf

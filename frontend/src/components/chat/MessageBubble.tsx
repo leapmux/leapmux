@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
+import type { MessageRenderCache } from './messageRenderCache'
 import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
@@ -10,7 +11,7 @@ import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
-import { createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { render } from 'solid-js/web'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { IconButton } from '~/components/common/IconButton'
@@ -33,7 +34,7 @@ import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiK
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
 import { renderResultDivider } from './resultDividerRenderers'
-import { renderJsonHighlight, ToolHeaderActions } from './toolRenderers'
+import { renderJsonHighlightForContext, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -142,8 +143,14 @@ export interface MessageBubbleHost {
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: MessageUiKey, value: boolean) => void
-  /** Debug: this row's analytical estimate + measured height + estimate breakdown, for the raw-JSON surface. */
-  getHeightDebug?: () => { estimated?: number, measured?: number, breakdown?: unknown }
+  /** Debug: this row's measured DOM height, for the raw-JSON surface. */
+  getHeightDebug?: () => { measured?: number }
+  /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */
+  renderCache?: MessageRenderCache
+  /** True while visible row rendering should avoid starting syntax-highlight jobs. */
+  syntaxHighlightingPaused?: () => boolean
+  /** True while the user has a live document selection inside the chat content. */
+  textSelectionActive?: () => boolean
 }
 
 interface MessageBubbleProps {
@@ -164,6 +171,8 @@ interface MessageBubbleProps {
   onReply?: (quotedText: string) => void
   /** Lifted state and lookups owned by the parent ChatView. */
   host?: MessageBubbleHost
+  /** Hidden premeasurement pass: keep layout structure, skip interactive/expensive chrome. */
+  premeasureMode?: boolean
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -191,7 +200,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const rawJson = (): string =>
     buildRawJsonEnvelope(props.message, parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
-  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => prettifyJson(rawJson()))
+  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode ? undefined : prettifyJson(rawJson()))
 
   // Look up the parsed sibling tool_use for tool_result bubbles.
   const toolUseParsed = createMemo(() => {
@@ -241,7 +250,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const hasToolResultDiff = () => toolMeta()?.hasDiff ?? false
   const hasCopyableResult = () => toolMeta()?.hasCopyable ?? false
 
-  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => toolMeta()?.copyableContent() ?? undefined)
+  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => props.premeasureMode ? undefined : toolMeta()?.copyableContent() ?? undefined)
 
   const diffView = () => props.host?.localDiffView ?? prefs.diffView()
   const toggleDiffView = () => props.host?.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
@@ -264,23 +273,27 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    onCopyJson: copyJson,
-    jsonCopied,
+    get onCopyJson() { return copyJson },
+    get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
     get createdAt() { return props.message.createdAt },
     get expandAgentThoughts() { return prefs.expandAgentThoughts() },
     // Resolve the row's expand-toggle UI key ONCE here (kind + provider), so the
-    // thinking-style renderers read the same key the off-screen height estimator
-    // assumed -- see expandedUiKeyFor. Getter so the literal stays referentially
-    // stable while tracking a category/provider change.
+    // thinking-style renderers read the same key ChatView resolved -- see
+    // expandedUiKeyFor. Getter so the literal stays referentially stable while
+    // tracking a category/provider change.
     get expandUiKey() { return expandedUiKeyFor(category().kind, props.message.agentProvider) },
     get toolUseParsed() { return toolUseParsed() },
     get toolResultParsed() { return toolResultParsed() },
+    get renderCache() { return props.host?.renderCache },
+    syntaxHighlightingPaused: () => props.host?.syntaxHighlightingPaused?.() ?? false,
+    textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
     commandStream: () => props.host?.commandStream?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
-    get setMessageUiState() { return props.host?.setMessageUiState },
+    get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
+    get premeasureMode() { return props.premeasureMode === true },
   }
 
   // Quotable text dispatch: each provider plugin reads its own wire format
@@ -297,7 +310,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => extractQuotableText() ?? undefined)
+  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : extractQuotableText() ?? undefined)
 
   const rowClass = () => messageRowClass(category().kind, props.message.source)
   const isLocalPending = () => props.message.id.startsWith('local-')
@@ -331,10 +344,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // The raw-JSON last-resort block (shiki-highlighted), shared by the `hidden`
   // category and the unsupported-provider error surface so the shiki/innerHTML
   // incantation and its lint-disable live in one place and can't drift.
-  const rawJsonBlock = () => (
+  const rawJsonBlock = () => {
+    const json = prettifyJson(rawJson())
+    const highlighted = renderJsonHighlightForContext(json, renderContext, 'rawJsonBlock')
+    if (highlighted === null)
+      return <div class={chatStyles.hiddenMessageJson} data-code-copy="false">{json}</div>
     // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
-    <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={renderJsonHighlight(prettifyJson(rawJson()))} />
-  )
+    return <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={highlighted} />
+  }
 
   // Loud surface for a message whose `agentProvider` is UNSPECIFIED or has no
   // registered plugin (classify returns `unsupported_provider`). We refuse to
@@ -350,12 +367,16 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   )
 
   onMount(() => {
+    if (props.premeasureMode)
+      return
     if (!contentRef)
       return
     const el = contentRef
     let disposers: Array<() => void> = []
     let idle: number | undefined
     let observer: MutationObserver | undefined
+    let reinjectAfterSelection = false
+    const isTextSelectionActive = () => untrack(() => props.host?.textSelectionActive?.() ?? false)
     const disposeAll = () => {
       for (const d of disposers)
         d()
@@ -378,13 +399,29 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // by and runs only for rows that settle visible. The debounce also coalesces the burst
     // of mutations from one re-render into a single re-injection.
     const schedule = () => {
+      if (isTextSelectionActive()) {
+        reinjectAfterSelection = true
+        return
+      }
       if (idle !== undefined)
         cancelIdle(idle)
       idle = requestIdle(() => {
         idle = undefined
+        if (isTextSelectionActive()) {
+          reinjectAfterSelection = true
+          return
+        }
         reinject()
       })
     }
+    createEffect(() => {
+      if (props.host?.textSelectionActive?.())
+        return
+      if (!reinjectAfterSelection)
+        return
+      reinjectAfterSelection = false
+      schedule()
+    })
     // Re-apply on a CONTENT change, not just the first render: a code block's body is
     // produced by renderMarkdown, whose syntax highlighting now lands ASYNCHRONOUSLY (the
     // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
@@ -449,7 +486,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             caller={{
               onCopyContent: hasCopyableResult() ? copyResultContent : undefined,
               contentCopied: resultCopied(),
-              onReply: extractQuotableText() ? handleReply : undefined,
+              onReply: extractQuotableText() ? (props.premeasureMode ? () => {} : handleReply) : undefined,
               onCopyMarkdown: extractQuotableText() ? copyMarkdown : undefined,
               markdownCopied: markdownCopied(),
             }}

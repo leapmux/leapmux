@@ -23,7 +23,7 @@ export function ExitPlanModeResultView(props: {
   return (
     <ToolStatusHeader icon={icon()} title={title()}>
       <Show when={props.isError}>
-        <MarkdownText text={props.resultContent} />
+        <MarkdownText text={props.resultContent} context={props.context} />
       </Show>
       <Show when={!props.isError && filePath()}>
         <div class={toolResultPrompt}>

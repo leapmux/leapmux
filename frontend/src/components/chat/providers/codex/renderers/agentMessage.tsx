@@ -10,7 +10,7 @@ export const CodexAgentMessageRenderer = defineCodexRenderer({
     const text = (): string => (props.item.text as string) || ''
     return (
       <Show when={text()}>
-        <MarkdownText text={text()} />
+        <MarkdownText text={text()} context={props.context} />
       </Show>
     )
   },

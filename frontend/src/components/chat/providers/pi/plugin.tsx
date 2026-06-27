@@ -11,9 +11,9 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatUnifiedDiffText } from '../../diff'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
+import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks } from '../../results/fileEditDiff'
-import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
 import { registerProvider } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
@@ -27,7 +27,6 @@ import { PiControlActions, PiControlContent } from './controls'
 import { extractPiBash } from './extractors/bash'
 import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
 import { piExtractTool } from './extractors/toolCommon'
-import { piHeightMetrics } from './heightMetrics'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from './protocol'
 import {
@@ -111,7 +110,7 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
   tool_result: (_cat, parsed, context) =>
     <PiToolResultRenderer parsed={parsed} context={context} />,
-  user_content: (_cat, parsed) => <UserContentMessage parsed={parsed} />,
+  user_content: (_cat, parsed, context) => <UserContentMessage parsed={parsed} context={context} />,
   plan_execution: (_cat, parsed, context) => {
     const obj = isObject(parsed) ? parsed : null
     const text = obj && typeof obj.content === 'string' ? obj.content : ''
@@ -305,8 +304,6 @@ const piPlugin: Provider = {
   resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
-
-  heightMetrics: piHeightMetrics,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

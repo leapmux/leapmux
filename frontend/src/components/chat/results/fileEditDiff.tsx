@@ -1,10 +1,12 @@
 import type { JSX } from 'solid-js'
-import type { HeightInput } from '../chatHeightEstimator'
 import type { StructuredPatchHunk } from '../diff'
+import type { RenderContext } from '../messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import { createMemo } from 'solid-js'
-import { diffHeightFields, mergeDiffHeightFields } from '../chatDiffGeometry'
 import { DiffView, rawDiffToHunks } from '../diff'
+import { cachedRenderValueForStrings } from '../messageRenderCache'
+
+const NO_NEWLINE_MARKER = '\\ No newline at end of file'
 
 /**
  * Two halves: a pre-computed `structuredPatch` (e.g. from Claude's
@@ -34,6 +36,79 @@ export function fileEditDiffFromNewFile(path: string, content: string): FileEdit
   }
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function normalizeStructuredPatchHunk(value: unknown): StructuredPatchHunk | null {
+  if (typeof value !== 'object' || value === null)
+    return null
+  const hunk = value as Partial<StructuredPatchHunk>
+  if (!isNonNegativeSafeInteger(hunk.oldStart)
+    || !isNonNegativeSafeInteger(hunk.oldLines)
+    || !isNonNegativeSafeInteger(hunk.newStart)
+    || !isNonNegativeSafeInteger(hunk.newLines)
+    || !Array.isArray(hunk.lines)
+    || hunk.lines.length === 0) {
+    return null
+  }
+
+  let filteredLines: string[] | undefined
+  let oldLineCount = 0
+  let newLineCount = 0
+  for (let i = 0; i < hunk.lines.length; i++) {
+    const line = hunk.lines[i]
+    if (typeof line !== 'string')
+      return null
+    if (line.startsWith(NO_NEWLINE_MARKER)) {
+      filteredLines ??= hunk.lines.slice(0, i)
+      continue
+    }
+    if (line.length === 0 || (line[0] !== ' ' && line[0] !== '+' && line[0] !== '-'))
+      return null
+    if (line[0] !== '+')
+      oldLineCount++
+    if (line[0] !== '-')
+      newLineCount++
+    filteredLines?.push(line)
+  }
+  if (oldLineCount !== hunk.oldLines || newLineCount !== hunk.newLines)
+    return null
+
+  return filteredLines
+    ? {
+        oldStart: hunk.oldStart,
+        oldLines: hunk.oldLines,
+        newStart: hunk.newStart,
+        newLines: hunk.newLines,
+        lines: filteredLines,
+      }
+    : (hunk as StructuredPatchHunk)
+}
+
+export function normalizeStructuredPatchHunks(hunks: unknown): StructuredPatchHunk[] | null {
+  if (!Array.isArray(hunks))
+    return null
+  let normalizedHunks: StructuredPatchHunk[] | undefined
+  for (let i = 0; i < hunks.length; i++) {
+    const normalized = normalizeStructuredPatchHunk(hunks[i])
+    if (!normalized)
+      return null
+    if (normalizedHunks) {
+      normalizedHunks.push(normalized)
+    }
+    else if (normalized !== hunks[i]) {
+      normalizedHunks = (hunks.slice(0, i) as StructuredPatchHunk[]).concat(normalized)
+    }
+  }
+  return normalizedHunks ?? (hunks as StructuredPatchHunk[])
+}
+
+function nonEmptyStructuredPatch(source: FileEditDiffSource): StructuredPatchHunk[] | null {
+  const hunks = normalizeStructuredPatchHunks(source.structuredPatch)
+  return hunks && hunks.length > 0 ? hunks : null
+}
+
 /**
  * Build a FileEditDiffSource for an edit whose unified diff has already
  * been parsed into structured hunks. Provider-neutral: used by Codex's
@@ -43,7 +118,7 @@ export function fileEditDiffFromNewFile(path: string, content: string): FileEdit
 export function fileEditDiffFromHunks(path: string, hunks: StructuredPatchHunk[]): FileEditDiffSource {
   return {
     filePath: path,
-    structuredPatch: hunks,
+    structuredPatch: normalizeStructuredPatchHunks(hunks),
     oldStr: '',
     newStr: '',
   }
@@ -52,7 +127,7 @@ export function fileEditDiffFromHunks(path: string, hunks: StructuredPatchHunk[]
 export function fileEditHasDiff(source: FileEditDiffSource | null | undefined): source is FileEditDiffSource {
   if (!source)
     return false
-  if (source.structuredPatch && source.structuredPatch.length > 0)
+  if (nonEmptyStructuredPatch(source))
     return true
   // New-file write: empty old + non-empty new is an all-added diff.
   if (source.oldStr === '' && source.newStr !== '')
@@ -81,51 +156,30 @@ export function pickFileEditDiff(
  * otherwise compute from `oldStr`/`newStr` via `rawDiffToHunks`.
  */
 export function fileEditDiffHunks(source: FileEditDiffSource): StructuredPatchHunk[] {
-  return source.structuredPatch && source.structuredPatch.length > 0
-    ? source.structuredPatch
-    : rawDiffToHunks(source.oldStr, source.newStr)
-}
-
-/**
- * Pre-mount height fields for a row rendering `source` as a file-edit diff, or
- * null when there is no diff to size. The shared tail of the per-provider
- * `heightMetrics` hooks that resolve a single source via `pickFileEditDiff`
- * (Claude tool_result, ACP tool_call_update): once the source is resolved the
- * row is sized identically -- the hunks' geometry plus the original-file context
- * the diff view uses for between-hunk gaps -- so the contract lives in one place
- * next to `fileEditDiffHunks` instead of being duplicated per provider.
- */
-export function diffFieldsFromSource(source: FileEditDiffSource | null): Partial<HeightInput> | null {
-  if (!source)
-    return null
-  return diffHeightFields(fileEditDiffHunks(source), source.originalFile)
-}
-
-/**
- * Pre-mount height fields for a row rendering MULTIPLE sources as N stacked
- * file-edit diff blocks (a multi-file Pi edit). Each source is sized
- * independently -- its own hunks, its own originalFile gap separators -- then
- * summed via mergeDiffHeightFields, which records diffBlockCount so the
- * estimator charges container chrome per block. Sizing the concatenated hunks
- * as one block instead would under-count chrome by (N-1) blocks and let a
- * cross-file hunk boundary spuriously trip the between-hunk separator test.
- */
-export function diffFieldsFromSources(sources: FileEditDiffSource[]): Partial<HeightInput> | null {
-  const slices = sources
-    .map(diffFieldsFromSource)
-    .filter((f): f is Partial<HeightInput> => f !== null)
-  return mergeDiffHeightFields(slices)
+  return nonEmptyStructuredPatch(source) ?? rawDiffToHunks(source.oldStr, source.newStr)
 }
 
 export function FileEditDiffBody(props: {
   source: FileEditDiffSource
   view: DiffViewPreference
   showLineNumbers?: boolean
+  context?: RenderContext
 }): JSX.Element {
   // Memo: DiffView reads `hunks` from several effects/memos during a single
   // render pass; without this, `rawDiffToHunks` (and the underlying
   // `diffLines`) would re-run on every read.
-  const hunks = createMemo(() => fileEditDiffHunks(props.source))
+  const hunks = createMemo(() => {
+    const source = props.source
+    const structuredPatch = nonEmptyStructuredPatch(source)
+    if (structuredPatch)
+      return structuredPatch
+    return cachedRenderValueForStrings(
+      props.context,
+      'fileEditDiff.hunks',
+      [source.filePath, source.oldStr, source.newStr],
+      () => rawDiffToHunks(source.oldStr, source.newStr),
+    )
+  })
   return (
     <DiffView
       hunks={hunks()}
@@ -133,6 +187,7 @@ export function FileEditDiffBody(props: {
       filePath={props.source.filePath}
       originalFile={props.source.originalFile}
       showLineNumbers={props.showLineNumbers}
+      context={props.context}
     />
   )
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containsAnsi, escapeHtml, renderAnsi } from './renderAnsi'
+import { containsAnsi, escapeHtml, renderAnsi, stripAnsi } from './renderAnsi'
 
 const ESC = '\x1B'
 const RED = `${ESC}[31m`
@@ -27,9 +27,13 @@ describe('containsAnsi', () => {
     expect(containsAnsi('')).toBe(false)
   })
 
-  it('returns false for ESC sequences that are not SGR (e.g. cursor movement)', () => {
-    // ESC [ A is "cursor up" — not an SGR `m` sequence; the renderer should not treat it as ANSI color.
-    expect(containsAnsi(`${ESC}[A`)).toBe(false)
+  it('detects non-SGR CSI control escapes that the stripper removes', () => {
+    expect(containsAnsi(`${ESC}[A`)).toBe(true)
+    expect(containsAnsi(`${ESC}[2K`)).toBe(true)
+  })
+
+  it('detects OSC control escapes that the stripper removes', () => {
+    expect(containsAnsi(`${ESC}]8;;https://example.com${ESC}\\link${ESC}]8;;${ESC}\\`)).toBe(true)
   })
 })
 
@@ -57,6 +61,31 @@ describe('renderAnsi', () => {
   it('does not include the raw ESC character in the rendered HTML', () => {
     const html = renderAnsi(`${RED}colored${RESET}`)
     expect(html.includes('\x1B')).toBe(false)
+  })
+
+  it('strips non-SGR CSI controls before rendering', () => {
+    const html = renderAnsi(`before${ESC}[2Kafter${ESC}[A`)
+    expect(html.includes(ESC)).toBe(false)
+    expect(html).toContain('before')
+    expect(html).toContain('after')
+  })
+
+  it('strips OSC controls before rendering while preserving visible text', () => {
+    const html = renderAnsi(`before${ESC}]8;;https://example.com${ESC}\\link${ESC}]8;;${ESC}\\after`)
+    expect(html.includes(ESC)).toBe(false)
+    expect(html).toContain('before')
+    expect(html).toContain('link')
+    expect(html).toContain('after')
+  })
+})
+
+describe('stripAnsi', () => {
+  it('strips CSI controls beyond SGR while preserving printable text', () => {
+    expect(stripAnsi(`${GREEN}ok${RESET}${ESC}[2K\rnext${ESC}[A`)).toBe('ok\rnext')
+  })
+
+  it('strips OSC controls while preserving surrounding text', () => {
+    expect(stripAnsi(`before${ESC}]8;;https://example.com${ESC}\\link${ESC}]8;;${ESC}\\after`)).toBe('beforelinkafter')
   })
 })
 

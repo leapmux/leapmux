@@ -22,7 +22,7 @@ export function PiAssistantMessage(props: Props): JSX.Element {
   })
   return (
     <Show when={text()}>
-      <MarkdownText text={text()} />
+      <MarkdownText text={text()} context={props.context} />
     </Show>
   )
 }

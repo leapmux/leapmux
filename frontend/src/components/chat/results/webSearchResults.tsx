@@ -4,9 +4,8 @@ import type { RenderContext } from '../messageRenderers'
 import type { WebSearchLink } from './webSearchExtract'
 import { For, Show } from 'solid-js'
 import { pluralize } from '~/lib/plural'
-import { renderMarkdown } from '~/lib/renderMarkdown'
 import { extractDomain } from '~/lib/url'
-import { getToolResultExpanded } from '../messageRenderers'
+import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
 import {
   toolMessage,
   toolResultCollapsed,
@@ -56,7 +55,7 @@ export function WebSearchResultsBody(props: {
         </div>
       </Show>
       <Show when={expanded() && props.source.summary}>
-        <div class={toolResultContent} innerHTML={renderMarkdown(props.source.summary)} />
+        <div class={toolResultContent} innerHTML={renderMarkdownForContext(props.source.summary, props.context)} />
       </Show>
     </div>
   )

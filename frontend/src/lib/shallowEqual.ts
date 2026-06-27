@@ -44,6 +44,19 @@ export function shallowEqualArrays(a: readonly unknown[], b: readonly unknown[])
   return arraysEqualBy(a, b, Object.is)
 }
 
+/** Unordered `Object.is` equality for two sets. Same-reference early-exit. */
+export function shallowEqualSets<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  if (Object.is(a, b))
+    return true
+  if (a.size !== b.size)
+    return false
+  for (const item of a) {
+    if (!b.has(item))
+      return false
+  }
+  return true
+}
+
 /**
  * Like `shallowEqualArrays`, but compares each element with `shallowEqual`
  * (per-key Object.is) instead of by reference. Useful for stores that

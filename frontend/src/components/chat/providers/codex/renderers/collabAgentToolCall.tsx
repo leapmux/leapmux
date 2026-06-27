@@ -4,11 +4,10 @@ import Bot from 'lucide-solid/icons/bot'
 import { createMemo, Show } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { pickString } from '~/lib/jsonPick'
-import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { markdownContent } from '../../../markdownEditor/markdownContent.css'
-import { useSharedExpandedState } from '../../../messageRenderers'
+import { renderMarkdownForContext, useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
 import { joinMetaParts } from '../../../rendererUtils'
 import { ToolUseLayout } from '../../../toolRenderers'
@@ -65,7 +64,11 @@ defineCodexRenderer({
         return spawnAgentDetails() ? `Subagent (${spawnAgentDetails()})` : 'Subagent'
       return renderAgentTitle(displayName()) || codexStatusTitle(displayName(), status())
     })
-    const promptHtml = createMemo(() => hasCollapsiblePrompt() ? renderMarkdown(prompt()) : '')
+    const promptHtml = createMemo(() => {
+      if (!hasCollapsiblePrompt())
+        return ''
+      return renderMarkdownForContext(prompt(), props.context)
+    })
     const summary = (): JSX.Element | undefined => {
       if (expanded())
         return undefined
