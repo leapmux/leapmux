@@ -24,7 +24,6 @@ import {
   DEFAULT_CODEX_COLLABORATION_MODE,
 } from './constants'
 import { CODEX_RENDERERS } from './defineRenderer'
-import { codexHeightMetrics } from './heightMetrics'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
 // the registry) by `renderMessage` for non-`item.type` shapes.
@@ -409,7 +408,7 @@ const codexPlugin: Provider = {
     if (category.kind === 'assistant_thinking')
       return <CodexReasoningRenderer parsed={parsed} context={context} />
     if (category.kind === 'user_content')
-      return <UserContentMessage parsed={parsed} />
+      return <UserContentMessage parsed={parsed} context={context} />
     if (category.kind === 'plan_execution') {
       const obj = isObject(parsed) ? parsed as Record<string, unknown> : null
       const text = obj && typeof obj.content === 'string' ? obj.content as string : ''
@@ -437,8 +436,6 @@ const codexPlugin: Provider = {
   },
 
   toolResultMeta: codexToolResultMeta,
-
-  heightMetrics: codexHeightMetrics,
 
   resultDivider: codexResultDivider,
 

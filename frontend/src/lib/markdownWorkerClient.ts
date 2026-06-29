@@ -13,13 +13,24 @@ let worker: Worker | null = null
 let nextId = 0
 const pending = new Map<number, (html: string | null) => void>()
 
+function failWorker(failedWorker: Worker | null): void {
+  failedWorker?.terminate()
+  if (worker !== failedWorker)
+    return
+  for (const resolve of pending.values())
+    resolve(null)
+  pending.clear()
+  worker = null
+}
+
 function getWorker(): Worker {
   if (!worker) {
-    worker = new Worker(
+    const nextWorker = new Worker(
       new URL('./markdownWorker.ts', import.meta.url),
       { type: 'module' },
     )
-    worker.onmessage = (e: MessageEvent<MarkdownRenderResponse>) => {
+    worker = nextWorker
+    nextWorker.onmessage = (e: MessageEvent<MarkdownRenderResponse>) => {
       const { id, html } = e.data
       const resolve = pending.get(id)
       if (resolve) {
@@ -27,15 +38,11 @@ function getWorker(): Worker {
         resolve(html)
       }
     }
-    worker.onerror = () => {
+    nextWorker.onerror = () => {
       // On worker crash, resolve all pending to null (callers keep their plain
       // placeholder) and recreate the worker on the next call. Terminate the dead
       // worker first so its thread + Shiki highlighter aren't leaked across crashes.
-      for (const resolve of pending.values())
-        resolve(null)
-      pending.clear()
-      worker?.terminate()
-      worker = null
+      failWorker(nextWorker)
     }
   }
   return worker
@@ -46,11 +53,27 @@ function getWorker(): Worker {
  * string, or null if the worker crashed (the caller keeps its plain placeholder).
  */
 export function renderMarkdownInWorker(text: string): Promise<string | null> {
+  if (typeof Worker === 'undefined')
+    return Promise.resolve(null)
+
   const id = nextId++
-  const w = getWorker()
+  let w: Worker
+  try {
+    w = getWorker()
+  }
+  catch {
+    worker = null
+    return Promise.resolve(null)
+  }
+
   return new Promise((resolve) => {
     pending.set(id, resolve)
     const msg: MarkdownRenderRequest = { type: 'render', id, text }
-    w.postMessage(msg)
+    try {
+      w.postMessage(msg)
+    }
+    catch {
+      failWorker(w)
+    }
   })
 }

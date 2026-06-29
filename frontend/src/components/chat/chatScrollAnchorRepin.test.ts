@@ -17,7 +17,11 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
   const el = fakeEl(geometry)
   const writes: number[] = []
   const flingSettle = { accumulate: vi.fn(), reset: vi.fn(), rebase: vi.fn() }
-  const velocity = { isFling: vi.fn(() => false) }
+  const velocity = {
+    isFling: vi.fn(() => false),
+    isActivelyFlinging: vi.fn(() => false),
+    hasRecentMomentumInput: vi.fn(() => false),
+  }
   const virt = {
     anchorAt: vi.fn((top: number): ScrollAnchor | null => anchorAt(`top@${top}`)),
     scrollTopForAnchor: vi.fn((): number | null => 100),
@@ -70,20 +74,52 @@ describe('createanchorrepin state machine', () => {
     expect(repin.isFollowing()).toBe(true)
   })
 
-  it('captureAnchor pins the viewport-top row and rebases fling-settle', () => {
+  it('captureAnchor pins the viewport-midpoint row and rebases fling-settle', () => {
     const { repin, el, virt, flingSettle } = setup()
     el.scrollTop = 200
     repin.captureAnchor()
+    expect(virt.anchorAt).toHaveBeenCalledWith(450)
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@450'))
+    expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
+  })
+
+  it('captureTopAnchor pins the viewport-top row and rebases fling-settle', () => {
+    const { repin, el, virt, flingSettle } = setup()
+    el.scrollTop = 200
+    repin.captureTopAnchor()
     expect(virt.anchorAt).toHaveBeenCalledWith(200)
     expect(repin.currentAnchor()).toEqual(anchorAt('top@200'))
     expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a captured viewport-midpoint row stationary when it re-pins', () => {
+    const { repin, el, writes, virt } = setup()
+    el.scrollTop = 100
+    repin.captureAnchor() // captures 350: scrollTop 100 + clientHeight/2 250
+    virt.scrollTopForAnchor.mockReturnValue(450) // content above the midpoint grew by 100
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([200]) // 450 - midpoint offset 250
+  })
+
+  it('keeps a captured viewport-top row pinned to the top when it re-pins', () => {
+    const { repin, el, writes, virt } = setup()
+    el.scrollTop = 0
+    repin.captureTopAnchor()
+    virt.scrollTopForAnchor.mockReturnValue(120)
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([120])
   })
 })
 
 describe('createanchorrepin repinToAnchor decision', () => {
   it('does nothing while following the tail (no anchor to pin)', () => {
-    const { repin, writes } = setup()
+    const { repin, writes, virt } = setup()
     repin.repinToAnchor()
+    expect(virt.scrollTopForAnchor).not.toHaveBeenCalled()
     expect(writes).toEqual([])
   })
 
@@ -113,7 +149,7 @@ describe('createanchorrepin repinToAnchor decision', () => {
     virt.scrollTopForAnchor.mockReturnValue(50) // a stale resolve the re-pin would yank back to
     repin.repinToAnchor()
     expect(writes).toEqual([]) // left the fling intact
-    expect(repin.currentAnchor()).toEqual(anchorAt('top@600')) // re-anchored to the live viewport row
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@850')) // re-anchored to the live viewport row
     expect(flingSettle.reset).toHaveBeenCalled()
   })
 
@@ -138,12 +174,80 @@ describe('createanchorrepin repinToAnchor decision', () => {
     const { repin, el, writes, virt, velocity, flingSettle, setUserScrolling } = setup()
     setUserScrolling(true)
     velocity.isFling.mockReturnValue(true)
+    velocity.isActivelyFlinging.mockReturnValue(true)
     el.scrollTop = 0
     repin.setAnchor(anchorAt('m1'))
     virt.scrollTopForAnchor.mockReturnValue(50) // delta 50 < flingSuppressPx, >= REPIN_MIN
     repin.repinToAnchor()
     expect(writes).toEqual([]) // deferred, not written mid-fling
     expect(flingSettle.accumulate).toHaveBeenCalledWith(50) // signed shift accumulated
+  })
+
+  it('accumulates a small correction during an active fling even after the scroll handler returns', () => {
+    const { repin, el, writes, virt, velocity, flingSettle } = setup()
+    velocity.isActivelyFlinging.mockReturnValue(true)
+    el.scrollTop = 3000
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(2918) // measurement shrink above the anchor
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([])
+    expect(flingSettle.accumulate).toHaveBeenCalledWith(-82)
+  })
+
+  it('does not write a momentum-tail correction after the scroll handler returns', () => {
+    const { repin, el, writes, virt, velocity, flingSettle } = setup({ clientHeight: 733 })
+    velocity.hasRecentMomentumInput.mockReturnValue(true)
+    el.scrollTop = 2677
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(2651) // low-velocity momentum tail measurement
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([])
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@3043.5'))
+    expect(flingSettle.reset).toHaveBeenCalled()
+  })
+
+  it('re-anchors instead of writing a small correction during a slow user scroll', () => {
+    const { repin, el, writes, virt, flingSettle, setUserScrolling } = setup()
+    setUserScrolling(true)
+    el.scrollTop = 100
+    repin.setAnchor(anchorAt('m1')) // captured at scrollTop 100
+    virt.scrollTopForAnchor.mockReturnValue(116) // a small measurement correction above the anchor
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([])
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@350'))
+    expect(flingSettle.reset).toHaveBeenCalled()
+  })
+
+  it('re-anchors instead of writing a medium estimate correction during a slow native scroll', () => {
+    const { repin, el, writes, virt, flingSettle, setUserScrolling } = setup({ clientHeight: 733, scrollHeight: 6000 })
+    setUserScrolling(true)
+    el.scrollTop = 4397
+    repin.setAnchor(anchorAt('m1')) // captured at the live viewport position
+    virt.scrollTopForAnchor.mockReturnValue(4319) // 78px, like a tool row measuring shorter
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([])
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@4763.5'))
+    expect(flingSettle.reset).toHaveBeenCalled()
+  })
+
+  it('still writes a large correction during a slow user scroll', () => {
+    const { repin, el, writes, virt, setUserScrolling } = setup()
+    setUserScrolling(true)
+    el.scrollTop = 100
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(260)
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([260])
   })
 
   it('skips the write when the content fits the viewport (nothing to scroll)', () => {
@@ -163,7 +267,7 @@ describe('createanchorrepin repinToAnchor decision', () => {
     virt.scrollTopForAnchor.mockReturnValue(null) // anchor gone
     repin.repinToAnchor()
     expect(writes).toEqual([])
-    expect(repin.currentAnchor()).toEqual(anchorAt('top@50')) // re-anchored to the surviving viewport-top row
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@300')) // re-anchored to the surviving viewport-midpoint row
     expect(flingSettle.reset).toHaveBeenCalled()
   })
 })

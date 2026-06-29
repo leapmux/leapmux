@@ -165,7 +165,7 @@ export const controlBannerActions = style({
   top: 'var(--space-1)',
   right: 'var(--space-1)',
   opacity: 0,
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
 })
 
 globalStyle(`${controlBanner}:hover .${controlBannerActions}`, {

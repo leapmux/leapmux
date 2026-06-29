@@ -96,6 +96,20 @@ describe('claude MCP tool_result rendering', () => {
     expect(img?.getAttribute('loading')).toBe('lazy')
   })
 
+  it('keeps renderable inline images in premeasure mode', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+    ])
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'mcp__playwright__screenshot',
+      premeasureMode: true,
+    })
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=')
+    expect(img?.getAttribute('loading')).toBe('eager')
+  })
+
   it('renders external image URLs as a link (not inlined)', () => {
     const parsed = makeMcpToolResult([
       { type: 'image', url: 'https://example.com/screenshot.png' },

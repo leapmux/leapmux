@@ -5,13 +5,13 @@ import { Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
-import { isMultiLineCommand, MultiLineCommandBody } from '../../../results/multiLineCommandBody'
+import { CommandInputBody, CommandInputSummary, createCommandInputExpansionState } from '../../../results/multiLineCommandBody'
 import { ToolUseLayout } from '../../../toolRenderers'
 
 /**
- * Inner component for tool_use messages. Renders the header and, for Bash,
- * an expandable multi-line command body. Edit/Write diffs live on the result
- * message — see renderClaudeToolResult.
+ * Inner component for tool_use messages. Renders the header and, for Bash, an
+ * expandable full-command body. Edit/Write diffs live on the result message --
+ * see renderClaudeToolResult.
  */
 export function ToolUseMessage(props: {
   toolName: string
@@ -27,21 +27,31 @@ export function ToolUseMessage(props: {
 }): JSX.Element {
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.TOOL_USE_LAYOUT)
   const { copied: commandCopied, copy: copyCommand } = useCopyButton(() => props.fullCommand)
+  const { commandExpandable, setSummaryOverflows } = createCommandInputExpansionState(() => props.fullCommand)
 
   const resolvedTitle = () => props.title ?? `${props.toolName}${props.fallbackDisplay || ''}`
 
-  // Bash: collapsible when command is multi-line.
-  const multiLine = () => isMultiLineCommand(props.fullCommand)
+  const summary = () => props.fullCommand
+    ? (
+        <CommandInputSummary
+          command={props.fullCommand}
+          context={props.context}
+          collapsed
+          namespace="claude.toolUse.summary"
+          onOverflowChange={setSummaryOverflows}
+        />
+      )
+    : props.summary
 
   return (
     <ToolUseLayout
       icon={props.icon}
       toolName={props.toolName}
       title={resolvedTitle()}
-      summary={multiLine() && expanded() ? undefined : props.summary}
+      summary={commandExpandable() && expanded() ? undefined : summary()}
       context={props.context}
       expanded={expanded()}
-      onToggleExpand={multiLine() ? () => setExpanded(v => !v) : undefined}
+      onToggleExpand={commandExpandable() ? () => setExpanded(v => !v) : undefined}
       expandLabel="Show full command"
       headerActions={{
         onCopyContent: props.fullCommand ? copyCommand : undefined,
@@ -49,8 +59,8 @@ export function ToolUseMessage(props: {
         copyContentLabel: 'Copy Command',
       }}
     >
-      <Show when={multiLine() && expanded()}>
-        <MultiLineCommandBody command={props.fullCommand!} />
+      <Show when={commandExpandable() && expanded()}>
+        <CommandInputBody command={props.fullCommand!} context={props.context} namespace="claude.toolUse.body" />
       </Show>
     </ToolUseLayout>
   )

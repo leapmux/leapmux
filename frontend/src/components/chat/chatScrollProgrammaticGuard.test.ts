@@ -134,4 +134,16 @@ describe('createprogrammaticscrollguard', () => {
     g.write(250) // moved
     expect(marks).toEqual([250])
   })
+
+  it('exposes marker sources for diagnostics', () => {
+    const el = fakeEl(0)
+    const clock = fakeClock()
+    const g = createProgrammaticScrollGuard(() => el, undefined, clock.now)
+
+    g.write(120, 'anchor-repin')
+    clock.advance(25)
+    expect(g.debugMarkers()).toEqual([
+      { top: 120, ageMs: 25, gen: 1, source: 'anchor-repin' },
+    ])
+  })
 })

@@ -116,6 +116,44 @@ function renderPlain(text: string): string {
   return result
 }
 
+/**
+ * Render markdown without syntax highlighting or worker dispatch.
+ *
+ * Hidden chat premeasurement needs markdown block geometry (paragraph/list/code
+ * structure) but must not enqueue Shiki work for rows the user may never see.
+ * This shares the cached plain-placeholder path used by visible markdown while
+ * highlighted HTML is still in flight.
+ */
+export function renderMarkdownPlain(text: string): string {
+  return renderPlain(text)
+}
+
+/**
+ * Return completed highlighted markdown from the shared cache without
+ * subscribing to worker-completion invalidations. Selection-preserving chat
+ * renders use this to keep already-highlighted DOM stable while refusing a
+ * plain→highlighted swap that would clear the browser selection.
+ */
+export function getCachedMarkdownHtml(text: string): string | undefined {
+  const cached = markdownCache.get(text)
+  if (cached !== undefined)
+    lruSet(markdownCache, text, cached)
+  return cached
+}
+
+/**
+ * Return highlighted markdown when it is already cached, otherwise return the
+ * plain placeholder without dispatching a worker render. Used during scroll:
+ * already-highlighted rows must not blink back to plain, but cache misses should
+ * not start new syntax jobs on the scroll-critical path.
+ */
+export function renderMarkdownCachedOrPlain(text: string): string {
+  const cached = getCachedMarkdownHtml(text)
+  if (cached !== undefined)
+    return cached
+  return renderPlain(text)
+}
+
 /** Full synchronous highlighted render (main-thread Shiki). The no-Worker fallback. */
 function renderHighlightedSync(text: string): string {
   return renderWithPlainFallback(syncProcessor, text)
@@ -166,23 +204,26 @@ export function renderMarkdown(text: string, skipCache = false): string {
   // placeholder now. On completion the highlighted HTML is cached and the version
   // bumps, re-rendering this caller with it. A null result (worker crash) caches the
   // plain render so it degrades gracefully instead of retrying forever.
+  let completedSynchronously = false
   if (!inFlight.has(text)) {
     inFlight.add(text)
-    renderMarkdownInWorker(text)
-      .then((html) => {
-        inFlight.delete(text)
-        lruSet(markdownCache, text, html ?? plainRender(text))
-        // The highlighted (or fallback) result now serves from markdownCache, so the
-        // plain placeholder for this text is dead -- drop it to bound the cache.
-        placeholderCache.delete(text)
-        scheduleVersionBump()
-      })
-      .catch(() => {
-        inFlight.delete(text)
-        lruSet(markdownCache, text, plainRender(text))
-        placeholderCache.delete(text)
-        scheduleVersionBump()
-      })
+    const complete = (html: string | null): void => {
+      inFlight.delete(text)
+      lruSet(markdownCache, text, html ?? plainRender(text))
+      // The highlighted (or fallback) result now serves from markdownCache, so the
+      // plain placeholder for this text is dead -- drop it to bound the cache.
+      placeholderCache.delete(text)
+      scheduleVersionBump()
+    }
+    try {
+      renderMarkdownInWorker(text)
+        .then(complete)
+        .catch(() => complete(null))
+    }
+    catch {
+      complete(null)
+      completedSynchronously = true
+    }
   }
-  return renderPlain(text)
+  return completedSynchronously ? markdownCache.get(text)! : renderPlain(text)
 }

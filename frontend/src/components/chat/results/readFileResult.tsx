@@ -3,7 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import type { ParsedCatLine, ReadReminder } from './ReadResultView'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
-import { getToolResultExpanded } from '../messageRenderers'
+import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
 import { toolMessage, toolResultCollapsed, toolResultContentPre } from '../toolStyles.css'
 import { ReadResultView } from './ReadResultView'
 import { useCollapsedItems } from './useCollapsedLines'
@@ -85,7 +85,13 @@ export function ReadFileResultBody(props: {
         when={hasParsedLines() && items().length > 0}
         fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || 'Empty file'}</div>}
       >
-        <ReadResultView lines={displayItems()} filePath={props.source.filePath} />
+        <ReadResultView
+          lines={displayItems()}
+          filePath={props.source.filePath}
+          premeasureMode={props.context?.premeasureMode}
+          syntaxHighlightingPaused={shouldPauseSyntaxHighlighting(props.context)}
+          textSelectionActive={props.context?.textSelectionActive}
+        />
       </Show>
       <Show when={expanded()}>
         <For each={props.source.trailing ?? []}>

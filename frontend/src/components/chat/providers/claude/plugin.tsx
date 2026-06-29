@@ -14,7 +14,6 @@ import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../m
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { getAssistantContent } from './extractors/assistantContent'
-import { claudeHeightMetrics } from './heightMetrics'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
 import { claudeResultDivider } from './resultDivider'
@@ -309,7 +308,6 @@ const claudeCodePlugin: Provider = {
   clearsThinkingTokensForMessage: () => true,
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
-  heightMetrics: claudeHeightMetrics,
   extractQuotableText: claudeExtractQuotableText,
   notificationThreadEntry: claudeNotificationThreadEntry,
   resultDivider: claudeResultDivider,

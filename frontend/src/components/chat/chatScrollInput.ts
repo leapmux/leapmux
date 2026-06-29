@@ -22,6 +22,7 @@ const PAGE_SCROLL_OVERLAP_PX = 48
 export function createScrollInput(ctx: ScrollContext, extras: {
   // High-level scroll actions declared later in the hook than the shared context.
   captureAnchor: () => void
+  captureTopAnchor: () => void
   checkAtBottom: () => void
   forceScrollToBottom: () => void
   cancelScrollAnimation: () => void
@@ -37,9 +38,9 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   const scrollToTopPosition = () => {
     if (!ctx.getEl())
       return
-    ctx.writeScrollTop(0)
+    ctx.writeScrollTop(0, 'input-scroll-top')
     // Anchor to the first row so a later geometry change keeps us pinned at top.
-    extras.captureAnchor()
+    extras.captureTopAnchor()
     ctx.setAtBottom(false)
   }
 

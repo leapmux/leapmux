@@ -9,6 +9,7 @@ import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
 import { PREFIX_SIDEBAR, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { trailingDebounce } from '~/lib/debounce'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
@@ -433,12 +434,12 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             class={styles.center}
             style={{ 'flex': '1 1 0px', 'min-width': '0px' }}
             ref={(el) => {
-              const observer = new ResizeObserver((entries) => {
+              const observer = createRafResizeObserver((entries) => {
                 for (const entry of entries)
                   props.setCenterPanelHeight(entry.contentRect.height)
               })
-              observer.observe(el)
-              onCleanup(() => observer.disconnect())
+              observer?.observe(el)
+              onCleanup(() => observer?.disconnect())
             }}
           >
             <Show

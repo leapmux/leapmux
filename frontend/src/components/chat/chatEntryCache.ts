@@ -1,9 +1,10 @@
 import type { Accessor } from 'solid-js'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { SpanMessageRevision } from '~/stores/chatTypes'
 import { createMemo } from 'solid-js'
 import { shallowEqual } from '~/lib/shallowEqual'
-import { buildEstimateKey } from './chatHeightEstimator'
+import { buildHeightKey } from './chatRowGeometry'
 import { classifyParsedMessage } from './messageClassification'
 import { parseSpanLines } from './spanLinesParse'
 
@@ -20,7 +21,7 @@ import { parseSpanLines } from './spanLinesParse'
 
 /**
  * The dimensions that decide whether a cached entry is still reusable for a message
- * under a STABLE id: the seq plus the four derived signals that can move while the
+ * under a STABLE id: the seq plus derived signals that can move while the
  * seq+id stay put. Built once per (re)classify (freshnessOf) and compared
  * structurally by isEntryFresh, so adding a freshness dimension is a single edit
  * here -- the builder and the comparison can't drift out of a parallel hand-synced
@@ -50,24 +51,42 @@ export interface EntryFreshness {
   hasCommandStream: boolean
   /**
    * Whether the row's span had a paired tool_use (opener) parse available at
-   * classify time. A tool_result's analytical height reads its sibling opener
-   * (Claude's edit input, Pi's start args) to size the diff exactly; if the opener
-   * arrives LATER (older-page prepend / reseq / re-broadcast) while the result is
-   * off-screen, the cache must re-build (and bust the height estimate) so the row
-   * isn't frozen at its no-sibling size. (A tool_use row's own span resolves to
-   * itself, so this stays stably true for openers — no spurious rebuilds.)
+   * classify time. A tool_result's renderer reads its sibling opener (Claude's edit
+   * input, Pi's start args); if the opener arrives LATER (older-page prepend /
+   * reseq / re-broadcast) while the result is off-screen, the cache must re-build
+   * (and bust the measured-height cache key) so the row isn't frozen at its
+   * no-sibling shape. (A tool_use row's own span resolves to itself, so this stays
+   * stably true for openers — no spurious rebuilds.)
    */
   hasToolUseSibling: boolean
   /**
    * The paired tool_use OPENER's content version at classify time (0 for non-result
-   * rows or when no opener is indexed). A tool_result reads its opener's body to size
-   * the diff; the opener is a DIFFERENT message, so an in-place same-seq replacement
-   * of the opener bumps the OPENER's content version while the result's own seq, id,
-   * and `contentVersion` stay put. Folding it into the freshness check rebuilds (and
-   * re-estimates) the result row on such an opener change instead of leaving it frozen
-   * at the pre-change diff size. Also folded into the height estimate key.
+   * rows or when no opener is indexed). Retained separately for tests/debugging and
+   * for hosts that do not yet supply full sibling revisions; the revision key below
+   * is the stronger freshness dimension used for identity/seq replacement.
    */
   toolUseSiblingContentVersion: number
+  /**
+   * Stable token for the paired tool_use opener identity/seq/content version. A
+   * present-to-different-present sibling replacement can keep contentVersion at 0,
+   * so the version alone is not enough to bust cached result rows.
+   */
+  toolUseSiblingRevisionKey: string
+  /**
+   * Whether the row's span had a paired tool_result parse available at classify
+   * time. Some tool_use rows (Claude Task*) render from hidden result data, so
+   * late result arrival must rebuild the opener row instead of freezing it at its
+   * no-result shape.
+   */
+  hasToolResultSibling: boolean
+  /**
+   * The paired tool_result's content version at classify time (0 for non-opener
+   * rows or when no result is indexed). Retained separately for tests/debugging and
+   * legacy hosts; the revision key below also covers identity/seq replacement.
+   */
+  toolResultSiblingContentVersion: number
+  /** Stable token for the paired tool_result identity/seq/content version. */
+  toolResultSiblingRevisionKey: string
 }
 
 /**
@@ -90,20 +109,24 @@ export type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & {
 }
 
 /**
- * The analytical-height estimate-cache key for a classified entry at a given UI
- * version. Reads the four height-affecting freshness signals (the opener content
- * version, content version, sibling presence, command-stream presence) off the
- * entry's OWN freshness signature, so a new freshness dimension that affects height
- * is wired in one place here -- not hand-copied into the ChatView call site, the
- * same drift hazard EntryFreshness itself guards against. Live streaming TEXT is
+ * The measured-height cache key for a classified entry at a given UI
+ * version. Reads height-affecting freshness signals (sibling presence/content
+ * versions, content version, command-stream presence) off the entry's OWN
+ * freshness signature, so a new freshness dimension that affects height is wired
+ * in one place here -- not hand-copied into the ChatView call site, the same
+ * drift hazard EntryFreshness itself guards against. Live streaming TEXT is
  * deliberately excluded (it grows per-delta and lives outside msg.content); see
- * ChatView's virtualItems and EstimateKeyInputs for the rationale.
+ * ChatView's virtualItems and HeightKeyInputs for the rationale.
  */
-export function estimateKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
-  return buildEstimateKey({
+export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
+  return buildHeightKey({
     seq: entry.msg.seq,
     hasToolUseSibling: entry.freshness.hasToolUseSibling,
     toolUseContentVersion: entry.freshness.toolUseSiblingContentVersion,
+    toolUseRevisionKey: entry.freshness.toolUseSiblingRevisionKey,
+    hasToolResultSibling: entry.freshness.hasToolResultSibling,
+    toolResultContentVersion: entry.freshness.toolResultSiblingContentVersion,
+    toolResultRevisionKey: entry.freshness.toolResultSiblingRevisionKey,
     uiVersion,
     contentVersion: entry.freshness.contentVersion,
     hasCommandStream: entry.freshness.hasCommandStream,
@@ -126,18 +149,37 @@ export interface ClassifiedEntryCacheDeps {
   /**
    * Whether a span has a paired tool_use (opener) parse right now, read
    * REACTIVELY (the store's span index). Lets a tool_result row re-classify and
-   * re-estimate the moment its opener is indexed, instead of staying frozen at its
-   * no-sibling height when the opener arrives after it.
+   * invalidate measured height the moment its opener is indexed, instead of staying
+   * frozen at its no-sibling height when the opener arrives after it.
    */
   hasToolUseSiblingBySpanId?: (spanId: string) => boolean
   /**
    * The paired tool_use opener's content version for a span, read REACTIVELY (the
    * store's getToolUseContentVersionBySpanId). A tool_result sizes its diff from the
    * opener, so an in-place opener body change -- which bumps the opener's version,
-   * not the result's -- must wake this memo to re-classify and re-estimate the
+   * not the result's -- must wake this memo to re-classify and invalidate the
    * result row. Only consulted for tool_result rows (see toolUseSiblingContentVersionOf).
    */
   toolUseSiblingContentVersionBySpanId?: (spanId: string) => number
+  /**
+   * Full paired tool_use revision for a span. Preferred over content-version-only
+   * freshness because a reindexed sibling can change id/seq while its content
+   * version remains at the default 0.
+   */
+  toolUseSiblingRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
+  /**
+   * Whether a span has a paired tool_result parse right now, read REACTIVELY.
+   * Lets tool_use rows that render hidden result data re-classify when the result
+   * arrives after the opener was first measured.
+   */
+  hasToolResultSiblingBySpanId?: (spanId: string) => boolean
+  /**
+   * The paired tool_result content version for a span, read REACTIVELY. Only
+   * consulted for tool_use rows (see toolResultSiblingContentVersionOf).
+   */
+  toolResultSiblingContentVersionBySpanId?: (spanId: string) => number
+  /** Full paired tool_result revision for a span. */
+  toolResultSiblingRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
   /**
    * The row's content version (the store's getMessageContentVersion), bumped on a
    * same-seq in-place body replacement. MUST read REACTIVELY: that merge changes
@@ -157,7 +199,7 @@ export interface ClassifiedEntryCache {
   visibleEntries: Accessor<ClassifiedEntry[]>
   /** Whether ANY message would render — cheaper than materializing visibleEntries(). */
   hasVisibleEntries: Accessor<boolean>
-  /** The cached entry for a message id (for the height-estimate-miss logger). */
+  /** The cached entry for a message id (used by scroll/debug logging). */
   getEntry: (id: string) => ClassifiedEntry | undefined
 }
 
@@ -175,14 +217,30 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     !!msg.spanId && (deps.hasRenderableStreamBySpanId?.(msg.spanId) ?? false)
   const hasToolUseSibling = (msg: AgentChatMessage): boolean =>
     !!msg.spanId && (deps.hasToolUseSiblingBySpanId?.(msg.spanId) ?? false)
+  const hasToolResultSiblingOf = (msg: AgentChatMessage, kind: string): boolean =>
+    kind.startsWith('tool_use') && !!msg.spanId && (deps.hasToolResultSiblingBySpanId?.(msg.spanId) ?? false)
   const contentVersionOf = (msg: AgentChatMessage): number =>
     deps.contentVersionById?.(msg.id) ?? 0
+  const revisionKeyOf = (revision: SpanMessageRevision | undefined): string =>
+    revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}`
   // The opener's content version, but ONLY for tool_result rows (the only kind that
   // sizes from a sibling opener). Scoping it to tool_result avoids an opener row
   // redundantly tracking its OWN version twice (once as contentVersion, once here).
-  const toolUseSiblingContentVersionOf = (msg: AgentChatMessage, kind: string): number =>
+  const toolUseSiblingRevisionOf = (msg: AgentChatMessage, kind: string): SpanMessageRevision | undefined =>
     kind === 'tool_result' && !!msg.spanId
-      ? (deps.toolUseSiblingContentVersionBySpanId?.(msg.spanId) ?? 0)
+      ? deps.toolUseSiblingRevisionBySpanId?.(msg.spanId)
+      : undefined
+  const toolUseSiblingContentVersionOf = (msg: AgentChatMessage, kind: string, revision?: SpanMessageRevision): number =>
+    kind === 'tool_result' && !!msg.spanId
+      ? (revision?.contentVersion ?? deps.toolUseSiblingContentVersionBySpanId?.(msg.spanId) ?? 0)
+      : 0
+  const toolResultSiblingRevisionOf = (msg: AgentChatMessage, kind: string): SpanMessageRevision | undefined =>
+    kind.startsWith('tool_use') && !!msg.spanId
+      ? deps.toolResultSiblingRevisionBySpanId?.(msg.spanId)
+      : undefined
+  const toolResultSiblingContentVersionOf = (msg: AgentChatMessage, kind: string, revision?: SpanMessageRevision): number =>
+    kind.startsWith('tool_use') && !!msg.spanId
+      ? (revision?.contentVersion ?? deps.toolResultSiblingContentVersionBySpanId?.(msg.spanId) ?? 0)
       : 0
   /**
    * Build the freshness signature for `msg` classified as `kind`. The SINGLE place
@@ -192,13 +250,23 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * isEntryFresh passes the CACHED entry's kind so the comparison reads the same slot
    * the entry was built with.
    */
-  const freshnessOf = (msg: AgentChatMessage, kind: string): EntryFreshness => ({
-    seq: msg.seq,
-    contentVersion: contentVersionOf(msg),
-    hasCommandStream: hasRenderableStream(msg),
-    hasToolUseSibling: hasToolUseSibling(msg),
-    toolUseSiblingContentVersion: toolUseSiblingContentVersionOf(msg, kind),
-  })
+  const freshnessOf = (msg: AgentChatMessage, kind: string): EntryFreshness => {
+    const toolUseRevision = toolUseSiblingRevisionOf(msg, kind)
+    const toolUseContentVersion = toolUseSiblingContentVersionOf(msg, kind, toolUseRevision)
+    const toolResultRevision = toolResultSiblingRevisionOf(msg, kind)
+    const toolResultContentVersion = toolResultSiblingContentVersionOf(msg, kind, toolResultRevision)
+    return {
+      seq: msg.seq,
+      contentVersion: contentVersionOf(msg),
+      hasCommandStream: hasRenderableStream(msg),
+      hasToolUseSibling: hasToolUseSibling(msg),
+      toolUseSiblingContentVersion: toolUseContentVersion,
+      toolUseSiblingRevisionKey: revisionKeyOf(toolUseRevision) || (toolUseContentVersion === 0 ? '' : `legacy:${toolUseContentVersion}`),
+      hasToolResultSibling: hasToolResultSiblingOf(msg, kind),
+      toolResultSiblingContentVersion: toolResultContentVersion,
+      toolResultSiblingRevisionKey: revisionKeyOf(toolResultRevision) || (toolResultContentVersion === 0 ? '' : `legacy:${toolResultContentVersion}`),
+    }
+  }
   /**
    * A cached entry is reusable only if its freshness signature still matches the
    * message's: the seq, the in-place content version, the command-stream presence,

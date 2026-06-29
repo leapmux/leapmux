@@ -1,6 +1,8 @@
 import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
-import { COLLAPSED_RESULT_ROWS } from '../toolRenderers'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
+
+export { hasMoreLinesThan } from './collapse'
 
 /**
  * Per-line character cap applied to the collapsed slice. The visual fade mask
@@ -31,24 +33,6 @@ function emitClippedLines(text: string, cap: number): string {
     start = next + 1
   }
   return parts.join('')
-}
-
-/**
- * Equivalent to `text.split('\n').length > threshold` but stops scanning as
- * soon as the threshold is exceeded — avoids the full-array allocation for
- * long bash/tool outputs where only the count matters.
- */
-export function hasMoreLinesThan(text: string, threshold: number): boolean {
-  let needed = threshold
-  let idx = 0
-  while (needed > 0) {
-    const next = text.indexOf('\n', idx)
-    if (next === -1)
-      return false
-    needed--
-    idx = next + 1
-  }
-  return true
 }
 
 export interface UseCollapsedLinesOptions {
@@ -91,6 +75,8 @@ export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedL
     const text = opts.text()
     const cap = COLLAPSED_LINE_CHAR_CAP
     const threshold = readThreshold()
+    if (threshold <= 0)
+      return ''
     let idx = 0
     let hasLong = false
     for (let i = 0; i < threshold; i++) {

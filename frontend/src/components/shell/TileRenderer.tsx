@@ -589,7 +589,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const lookups: ChatMessageLookups = {
               getToolUseParsedBySpanId: spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId),
               getToolUseContentVersionBySpanId: spanId => chatStore.getToolUseContentVersionBySpanId(agentId, spanId),
+              getToolUseRevisionBySpanId: spanId => chatStore.getToolUseRevisionBySpanId(agentId, spanId),
               getToolResultParsedBySpanId: spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId),
+              getToolResultContentVersionBySpanId: spanId => chatStore.getToolResultContentVersionBySpanId(agentId, spanId),
+              getToolResultRevisionBySpanId: spanId => chatStore.getToolResultRevisionBySpanId(agentId, spanId),
               getCommandStreamBySpanId: spanId => chatStore.getCommandStream(agentId, spanId),
               hasRenderableCommandStreamBySpanId: spanId => chatStore.hasRenderableCommandStream(agentId, spanId),
               getMessageContentVersion: id => chatStore.getMessageContentVersion(id),

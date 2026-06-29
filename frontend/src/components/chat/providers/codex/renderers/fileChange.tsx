@@ -80,6 +80,7 @@ function renderCompletedFileChange(args: FileChangeRenderArgs): JSX.Element {
                 <FileEditDiffBody
                   source={fileEditDiffFromHunks(entry.path, entry.hunks)}
                   view={context?.diffView?.() ?? 'unified'}
+                  context={context}
                 />
               </div>
             )

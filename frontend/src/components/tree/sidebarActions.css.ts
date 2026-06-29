@@ -14,7 +14,7 @@ export const sidebarActions = style({
 /** Menu trigger button — hidden until parent hover or menu open. */
 export const menuTrigger = style({
   opacity: 0,
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
   selectors: {
     '&[aria-expanded="true"]': {
       opacity: 1,

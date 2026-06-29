@@ -173,8 +173,8 @@ describe('claude Read tool_result rendering', () => {
 describe('claude Write/create tool_result rendering', () => {
   it('renders a no-sibling create as the new-file diff, not a bare success line', () => {
     // type:"create" with the whole new file in `content` and no paired tool_use:
-    // claudeCreateResultDiff (shared with heightMetrics) now makes the renderer show
-    // the diff, so the render matches the estimate (was a one-line success -> huge delta).
+    // claudeCreateResultDiff makes the renderer show the diff instead of a one-line
+    // success, which was the previous rendering bug.
     const parsed = {
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'File created successfully at: /tmp/new.ts' }] },

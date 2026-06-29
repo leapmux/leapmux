@@ -1,8 +1,7 @@
-import type { StructuredPatchHunk } from '../../../diff'
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import { pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
-import { fileEditDiffFromNewFile } from '../../../results/fileEditDiff'
+import { fileEditDiffFromNewFile, normalizeStructuredPatchHunks } from '../../../results/fileEditDiff'
 
 /** Tool names whose tool_use input describes a file edit. */
 export function isClaudeFileEditTool(toolName: string): boolean {
@@ -44,18 +43,15 @@ export function claudeFileEditFromToolUseInput(
  * fields at all. Surfaces the structuredPatch when present so the picker can
  * prefer it over the tool_use-derived fallback.
  *
- * Future work: Claude also sends `userModified` (true when the user
- * hand-edited the patch via the permission prompt) and `gitDiff` (rich git
- * status info). Surface these when there is a UI surface ready to use them.
+ * Claude may also send `userModified` (true when the user hand-edited the
+ * patch via the permission prompt) and `gitDiff` (rich git status info).
  */
 export function claudeFileEditFromToolUseResult(
   toolUseResult: Record<string, unknown> | null | undefined,
 ): FileEditDiffSource | null {
   if (!toolUseResult)
     return null
-  const structuredPatch = Array.isArray(toolUseResult.structuredPatch)
-    ? toolUseResult.structuredPatch as StructuredPatchHunk[]
-    : null
+  const structuredPatch = normalizeStructuredPatchHunks(toolUseResult.structuredPatch)
   const filePath = pickString(toolUseResult, 'filePath')
   const oldStr = pickString(toolUseResult, 'oldString')
   const newStr = pickString(toolUseResult, 'newString')
@@ -70,9 +66,8 @@ export function claudeFileEditFromToolUseResult(
  * new file in `content` (type 'create') with no structuredPatch/oldString/newString
  * AND no paired tool_use sibling to recover the input-side diff from: the new body
  * as an all-added diff. Null for a non-create, an error (the edit was not applied),
- * or a create with empty content. SHARED by the renderer (toolResults/index.tsx)
- * and the height estimator (heightMetrics.ts) so the two can't drift -- the bug
- * that previously sized the row as a 169-row diff while rendering a one-line success.
+ * or a create with empty content. SHARED by renderer paths so they all recover the
+ * same all-added diff instead of dropping to a one-line success.
  */
 export function claudeCreateResultDiff(
   toolUseResult: Record<string, unknown> | null | undefined,

@@ -83,7 +83,7 @@ export const linkPopover = style({
   // Opacity animation matching OAT dropdown pattern
   opacity: 0,
   transform: 'translateY(4px)',
-  transition: 'opacity 150ms ease-out, transform 150ms ease-out, display 150ms allow-discrete, overlay 150ms allow-discrete',
+  transition: 'opacity var(--transition), transform var(--transition), display var(--transition) allow-discrete, overlay var(--transition) allow-discrete',
   selectors: {
     '&:popover-open': {
       display: 'flex',

@@ -3,10 +3,8 @@ import { isObject, pickString } from '~/lib/jsonPick'
 import { parseUnifiedDiffCached, rawDiffToHunks } from '../../../diff'
 
 /**
- * Pure extraction of a Codex `fileChange` item's diff geometry, shared by the
- * renderer (`renderers/fileChange.tsx`) and the height estimator
- * (`heightMetrics.ts`) so both read the changes the same way -- no drift between
- * what mounts and what the row is pre-sized as.
+ * Pure extraction of a Codex `fileChange` item's diff geometry, shared by
+ * renderer paths so they all read file changes the same way.
  */
 
 export function codexChangeKind(change: Record<string, unknown>): string {

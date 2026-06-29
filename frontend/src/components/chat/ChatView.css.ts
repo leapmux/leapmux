@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { breakpoints } from '~/styles/tokens'
 
@@ -41,9 +41,18 @@ export const messageListSpacer = style({
   flex: 1,
 })
 
+// This wrapper is the direct flex child of the scroll container. It must keep
+// the virtual spacer's full height; shrinking it lets the browser clamp
+// scrollTop against transient child overflow while virtual rows are swapped.
+export const messageListSelectionRoot = style({
+  flexShrink: 0,
+  overflowAnchor: 'none',
+})
+
 export const messageListContent = style({
   display: 'flex',
   flexDirection: 'column',
+  flexShrink: 0,
   gap: 'var(--space-5)',
 })
 
@@ -462,6 +471,7 @@ export const messageRowContent = style({
 export const virtualSpacer = style({
   position: 'relative',
   width: '100%',
+  flexShrink: 0,
   // We anchor the viewport ourselves (useChatScroll); browser scroll anchoring
   // on the absolutely-positioned children would fight our re-pin math.
   overflowAnchor: 'none',
@@ -471,10 +481,47 @@ export const virtualSpacer = style({
 // `contain: paint` / `content-visibility` — that would clip the span-line
 // bridges that intentionally overflow the row to connect adjacent rails.
 export const virtualRow = style({
-  position: 'absolute',
+  'position': 'absolute',
+  'top': 0,
+  'left': 0,
+  'right': 0,
+  'transition': 'opacity var(--transition)',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+const virtualRowFadeIn = keyframes({
+  from: { opacity: 0 },
+  to: { opacity: 1 },
+})
+
+export const virtualRowAppear = style({
+  'animation': `${virtualRowFadeIn} var(--transition)`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+    },
+  },
+})
+
+export const premeasureRoot = style({
+  position: 'fixed',
   top: 0,
   left: 0,
-  right: 0,
+  visibility: 'hidden',
+  pointerEvents: 'none',
+  overflow: 'hidden',
+  zIndex: -1,
+  contain: 'layout paint',
+})
+
+export const premeasureRow = style({
+  display: 'flow-root',
+  position: 'relative',
+  width: '100%',
 })
 
 export const editorPanelWrapper = style({

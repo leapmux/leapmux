@@ -40,7 +40,7 @@ export function renderClaudeToolUse(
   // Generic tool_use rendering
   const input = pickObject(toolUse, 'input', {})
   const title = renderClaudeToolTitle(toolName, input, context)
-  const summary = deriveToolSummary(toolName, input, context)
+  const summary = toolName === CLAUDE_TOOL.BASH ? undefined : deriveToolSummary(toolName, input, context)
   const fallbackDisplay = title ? null : formatToolInput(toolUse.input)
 
   // Edit/Write tool_use messages render only the header — the diff lives on the

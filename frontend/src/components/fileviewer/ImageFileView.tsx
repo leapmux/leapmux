@@ -4,6 +4,7 @@ import type { ViewMode } from './ViewToggle'
 import { createEffect, createMemo, createSignal, Match, onCleanup, Switch } from 'solid-js'
 import { getImageMimeType, isSvgExtension } from '~/lib/fileType'
 import { basename } from '~/lib/paths'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
 import { TextFileView } from './TextFileView'
@@ -38,12 +39,12 @@ function ImageRender(props: {
   })
 
   createEffect(() => {
-    const observer = new ResizeObserver(([entry]) => {
+    const observer = createRafResizeObserver(([entry]) => {
       if (entry)
         setContainerSize({ w: entry.contentRect.width, h: entry.contentRect.height })
     })
-    observer.observe(containerRef)
-    onCleanup(() => observer.disconnect())
+    observer?.observe(containerRef)
+    onCleanup(() => observer?.disconnect())
   })
 
   const fitScale = createMemo(() => {

@@ -4,13 +4,14 @@ import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
 import { normalizedCommandBody, normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
+import { cachedRenderValueForString } from '../messageRenderCache'
 import { getToolResultExpanded } from '../messageRenderers'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
-import { COLLAPSED_RESULT_ROWS } from '../toolRenderers'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
-import { hasMoreLinesThan, useCollapsedLines } from './useCollapsedLines'
+import { useCollapsedLines } from './useCollapsedLines'
 
 /**
  * Provider-neutral source for a command-execution result (Claude `Bash`,
@@ -40,7 +41,7 @@ export interface CommandResultSource {
  * (`commandOutputIsCollapsible`) must agree on this threshold or the expand button
  * hides over output the body actually clips -- so both read it from here.
  */
-function commandCollapseThreshold(hadCarriageReturns: boolean): number {
+export function commandCollapseThreshold(hadCarriageReturns: boolean): number {
   return hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS
 }
 
@@ -93,9 +94,18 @@ export function CommandResultBody(props: {
 }): JSX.Element {
   // The shared normalize-then-strip transform (order matters: normalize CR
   // overwrites first so a leading bare `\r` becomes a `\n` that strip can then
-  // trim). normalizedCommandBody is the single source the height estimate
-  // (claudeBashHeightFields) also sizes from, so the body can't drift.
-  const body = createMemo(() => normalizedCommandBody(props.source.output))
+  // trim). normalizedCommandBody is the single source every command-result
+  // renderer path uses, so the body can't drift.
+  const body = createMemo(() => {
+    const context = props.context
+    const output = props.source.output
+    return cachedRenderValueForString(
+      context,
+      'commandResult.normalizedBody',
+      output,
+      () => normalizedCommandBody(output),
+    )
+  })
   const normalized = createMemo(() => body().text)
   const expanded = () => getToolResultExpanded(props.context)
   // After CR normalization the output has at most PROGRESS_MAX_ROWS rows
@@ -131,7 +141,7 @@ export function CommandResultBody(props: {
       when={normalized()}
       fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
     >
-      <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} />
+      <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} context={props.context} />
     </Show>
   )
 

@@ -5,6 +5,7 @@ import type { ReadFileResultSource } from '../../../results/readFileResult'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
+import { cachedRenderValue } from '../../../messageRenderCache'
 import { pickFileEditDiff } from '../../../results/fileEditDiff'
 import { McpToolCallBody } from '../../../results/mcpToolCall'
 import { ReadFileResultBody } from '../../../results/readFileResult'
@@ -59,6 +60,11 @@ interface DispatchInfo {
   toolInput: Record<string, unknown> | undefined
   resultData: Record<string, unknown>
   readSource: ReadFileResultSource | null
+}
+
+interface DispatchState extends DispatchInfo {
+  toolName: string
+  toolUseInfo: ReturnType<typeof extractToolUseInfo> | null
 }
 
 type ToolResultEntry = (info: DispatchInfo, context: RenderContext | undefined) => JSX.Element | null
@@ -177,28 +183,31 @@ export function renderClaudeToolResult(
   if (!toolResult)
     return null
 
-  const resultData = toolResult as Record<string, unknown>
-  const resultContent = Array.isArray(resultData.content)
-    ? joinContentParagraphs(resultData.content as Array<Record<string, unknown>>, { text: 'text' })
-    : String(resultData.content || '')
+  const dispatch = cachedRenderValue(context, 'claude.toolResult.dispatchState', (): DispatchState => {
+    const resultData = toolResult as Record<string, unknown>
+    const resultContent = Array.isArray(resultData.content)
+      ? joinContentParagraphs(resultData.content as Array<Record<string, unknown>>, { text: 'text' })
+      : String(resultData.content || '')
 
-  // Extract tool name: prefer span_type (always set for span messages),
-  // then tool_use_result, then linked tool_use message.
-  const toolUseResult = pickObject(parsed, 'tool_use_result') ?? undefined
-  const toolUseInfo = context?.toolUseParsed ? extractToolUseInfo(context.toolUseParsed) : null
-  const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || '')
-  const toolInput = toolUseInfo?.input
+    // Extract tool name: prefer span_type (always set for span messages),
+    // then tool_use_result, then linked tool_use message.
+    const toolUseResult = pickObject(parsed, 'tool_use_result') ?? undefined
+    const toolUseInfo = context?.toolUseParsed ? extractToolUseInfo(context.toolUseParsed) : null
+    const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || '')
+    const toolInput = toolUseInfo?.input
 
-  // Build a Read result source via the shared extractor; null for non-text
-  // Read variants (image/notebook/pdf/parts/file_unchanged), which fall
-  // through to the catch-all renderer's existing handling.
-  const readSource = toolName === CLAUDE_TOOL.READ
-    ? claudeReadFromToolResult({ toolUseResult, resultContent, toolInput })
-    : null
+    // Build a Read result source via the shared extractor; null for non-text
+    // Read variants (image/notebook/pdf/parts/file_unchanged), which fall
+    // through to the catch-all renderer's existing handling.
+    const readSource = toolName === CLAUDE_TOOL.READ
+      ? claudeReadFromToolResult({ toolUseResult, resultContent, toolInput })
+      : null
+    return { toolName, toolUseInfo, toolUseResult, resultContent, toolInput, resultData, readSource }
+  })
 
   // Try the per-tool entry; null means "fall through to MCP/catch-all".
-  const entry = TOOL_RESULT_ENTRIES[toolName]
-  const dispatchInfo: DispatchInfo = { toolUseResult, resultContent, toolInput, resultData, readSource }
+  const entry = TOOL_RESULT_ENTRIES[dispatch.toolName]
+  const dispatchInfo: DispatchInfo = dispatch
   if (entry) {
     const result = entry(dispatchInfo, context)
     if (result !== null)
@@ -206,13 +215,13 @@ export function renderClaudeToolResult(
   }
 
   // MCP (mcp__server__tool): render args + content blocks via the shared body.
-  if (isClaudeMcpTool(toolName)) {
+  if (isClaudeMcpTool(dispatch.toolName)) {
     const mcpSource = claudeMcpFromToolResult({
-      toolName,
-      toolInput,
-      toolUseResult,
-      resultContent: Array.isArray(resultData.content) ? resultData.content : resultContent,
-      isError: resultData.is_error === true,
+      toolName: dispatch.toolName,
+      toolInput: dispatch.toolInput,
+      toolUseResult: dispatch.toolUseResult,
+      resultContent: Array.isArray(dispatch.resultData.content) ? dispatch.resultData.content : dispatch.resultContent,
+      isError: dispatch.resultData.is_error === true,
     })
     if (mcpSource)
       return <McpToolCallBody source={mcpSource} context={context} />
@@ -221,32 +230,32 @@ export function renderClaudeToolResult(
   // Catch-all: shared `ToolResultMessage`. Reads `displayKind` /
   // `effectiveDiff` / `readFilePath` — computed only here since none of the
   // per-tool entries above need them.
-  const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
-  const displayKind = pickDisplayKind(toolName, isPreText)
-  const isErrorVal = typeof resultData.is_error === 'boolean' ? resultData.is_error : undefined
+  const isPreText = dispatch.toolName === '' || PRE_TEXT_TOOLS.has(dispatch.toolName)
+  const displayKind = pickDisplayKind(dispatch.toolName, isPreText)
+  const isErrorVal = typeof dispatch.resultData.is_error === 'boolean' ? dispatch.resultData.is_error : undefined
   // When the tool failed (`is_error: true`), the edit was *not* applied — fall
   // back to text rendering so the error message surfaces instead of a diff
   // synthesized from the tool_use input.
   // A Write/create whose tool_use sibling is absent carries the whole new file in
   // the result's `content`; claudeCreateResultDiff recovers it as an all-added diff
-  // (shared with heightMetrics so the render matches the estimate) instead of
+  // (shared with the extractor so all render paths agree) instead of
   // dropping to a one-line "File created successfully".
-  const effectiveDiff = (isClaudeFileEditTool(toolName) && isErrorVal !== true
+  const effectiveDiff = (isClaudeFileEditTool(dispatch.toolName) && isErrorVal !== true
     ? pickFileEditDiff(
-        claudeFileEditFromToolUseResult(toolUseResult),
-        toolUseInfo ? claudeFileEditFromToolUseInput(toolUseInfo.toolName, toolUseInfo.input) : null,
+        claudeFileEditFromToolUseResult(dispatch.toolUseResult),
+        dispatch.toolUseInfo ? claudeFileEditFromToolUseInput(dispatch.toolUseInfo.toolName, dispatch.toolUseInfo.input) : null,
       )
-    : null) ?? claudeCreateResultDiff(toolUseResult, isErrorVal === true)
-  const readFilePath = toolName === CLAUDE_TOOL.READ
-    ? (readSource?.filePath || String(toolInput?.file_path || ''))
+    : null) ?? claudeCreateResultDiff(dispatch.toolUseResult, isErrorVal === true)
+  const readFilePath = dispatch.toolName === CLAUDE_TOOL.READ
+    ? (dispatch.readSource?.filePath || String(dispatch.toolInput?.file_path || ''))
     : undefined
-  const commandResult = toolName === CLAUDE_TOOL.BASH
-    ? claudeBashFromToolResult({ toolUseResult, resultContent, isError: isErrorVal })
+  const commandResult = dispatch.toolName === CLAUDE_TOOL.BASH
+    ? claudeBashFromToolResult({ toolUseResult: dispatch.toolUseResult, resultContent: dispatch.resultContent, isError: isErrorVal })
     : null
 
   return (
     <ToolResultMessage
-      resultContent={effectiveDiff !== null ? '' : resultContent}
+      resultContent={effectiveDiff !== null ? '' : dispatch.resultContent}
       displayKind={displayKind}
       diffSource={effectiveDiff}
       readFilePath={readFilePath}

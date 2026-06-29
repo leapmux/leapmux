@@ -1,13 +1,14 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input */
 import type { CommandResultSource } from '../../../results/commandResult'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createEffect, createMemo, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { CODEX_ITEM } from '~/types/toolMessages'
+import { cachedRenderValue } from '../../../messageRenderCache'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
-import { firstNonEmptyLine, formatDuration, joinMetaParts } from '../../../rendererUtils'
-import { renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
+import { formatDuration, joinMetaParts } from '../../../rendererUtils'
+import { CommandInputSummary } from '../../../results/multiLineCommandBody'
+import { ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary, toolResultContentPre } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
@@ -22,8 +23,16 @@ defineCodexRenderer({
   render: (props) => {
     // baseSource + stripped output are the hot work — only re-run when
     // `props.item` changes, not on UI-only re-renders (expand toggle).
-    const baseSource = createMemo(() => codexCommandFromItem(props.item))
-    const output = createMemo(() => stripToolUseHeaderFromOutput(baseSource()?.output ?? ''))
+    const baseSource = createMemo(() => {
+      const context = props.context
+      const item = props.item
+      return cachedRenderValue(context, 'codex.commandExecution.baseSource', () => codexCommandFromItem(item))
+    })
+    const output = createMemo(() => {
+      const context = props.context
+      const sourceOutput = baseSource()?.output ?? ''
+      return cachedRenderValue(context, 'codex.commandExecution.strippedOutput', () => stripToolUseHeaderFromOutput(sourceOutput))
+    })
 
     const command = createMemo(() => codexUnwrapCommand((props.item.command as string) || '(command)'))
     const cwd = (): string => (props.item.cwd as string) || ''
@@ -37,7 +46,6 @@ defineCodexRenderer({
         setExpanded(true)
     })
 
-    const displayCommand = createMemo(() => firstNonEmptyLine(command()) ?? command())
     const title = createMemo(() => renderBashTitle('Run command', command()) || 'Run command')
 
     const statusParts = createMemo(() => {
@@ -59,7 +67,12 @@ defineCodexRenderer({
             title={title()}
             summary={(
               <>
-                <div class={toolInputSummary} innerHTML={renderBashHighlight(displayCommand())} />
+                <CommandInputSummary
+                  collapsed={!expanded()}
+                  command={command()}
+                  context={props.context}
+                  namespace="codex.commandExecution.summary"
+                />
                 <Show when={statusParts()}>
                   <div class={toolInputSummary}>{statusParts()}</div>
                 </Show>

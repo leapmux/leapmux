@@ -3,8 +3,9 @@ import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualize
 import type { AgentChatMessage, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
+import { createLogger } from '~/lib/logger'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
-import { firstServerSeq } from '~/stores/chatMessageOrder'
+import { firstServerSeq, lastServerSeq } from '~/stores/chatMessageOrder'
 import { isOptimisticLocal } from '~/stores/chatReconcile'
 import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
@@ -31,7 +32,10 @@ export type ChatScrollState = SavedViewportScroll
 export type ChatScrollVirtualizer = Pick<
   UseChatVirtualizerResult,
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
->
+> & Partial<Pick<
+  UseChatVirtualizerResult,
+  'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements'
+>>
 
 /**
  * The STABLE scroll primitives the extracted scroll helpers (createStickyBottom /
@@ -63,12 +67,12 @@ export interface ScrollContext {
   /** Recompute the rendered row slice for the current scroll position. */
   refreshViewport: () => void
   /** Programmatic scrollTop write whose echo the guard recognizes as ours. */
-  writeScrollTop: (top: number) => void
+  writeScrollTop: (top: number, source?: string) => void
   /** Recognize the next clamped-bottom scrollTop write as our own programmatic scroll. */
-  markProgrammaticScroll: () => void
+  markProgrammaticScroll: (source?: string) => void
   /** Advance the velocity baseline without scoring a sample (a programmatic write is not a gesture). */
   syncVelocityToProgrammatic: (pos: number) => void
-  setAnchor: (a: ScrollAnchor | null, captureTop?: number) => void
+  setAnchor: (a: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio?: number) => void
 }
 
 const STICKY_BOTTOM_THRESHOLD_PX = 32
@@ -110,20 +114,21 @@ if (import.meta.hot) {
  * Scroll speed (px/ms) at or above which a wheel/trackpad scroll counts as an
  * inertial FLING whose momentum a scrollTop write would cancel -- so the geometry
  * re-pin defers a small correction into flingSettle instead of writing it. Below
- * it the scroll is a slow DELIBERATE gesture with no momentum to protect, so the
- * correction applies immediately (no ~150ms drift-then-settle). A fling fires
- * events tens of px apart every ~16ms (well above 1 px/ms); a deliberate scroll
- * creeps a few px per event. Unknown/idle velocity is treated as a fling (defer),
- * so the prior always-defer behavior holds until a slow cadence is established.
+ * it the scroll is a slow DELIBERATE gesture: medium estimate corrections are
+ * absorbed by re-anchoring to the live viewport, while large structural shifts
+ * still write immediately. A fling fires events tens of px apart every ~16ms
+ * (well above 1 px/ms); a deliberate scroll creeps a few px per event.
+ * Unknown/idle velocity is treated as a fling (defer), so the prior always-defer
+ * behavior holds until a slow cadence is established.
  */
 const FLING_VELOCITY_THRESHOLD_PX_PER_MS = 1
 /**
  * Render-ahead look-ahead window (ms) for the fling overscan: the rendered slice is
  * extended in the scroll direction by `velocity * this`, covering the distance the
  * viewport travels between the compositor scrolling a frame and the next range
- * update. Sized to a few frames of lag (scroll events can coalesce under load) so a
- * fast momentum fling never paints an unrendered gap; capped by FLING_OVERSCAN_MAX_PX
- * so an extreme flick can't mount an unbounded slice in one frame.
+ * update. Sized to a few frames of lag (scroll events can coalesce under load) while
+ * keeping the cap small enough that an extreme flick cannot mount dozens of rows in
+ * one synchronous scroll commit.
  *
  * NO-SKIP INVARIANT -- a fast fling STALLS, it never SKIPS a message. Three
  * mechanisms together guarantee every message in a fling's path is shown:
@@ -143,8 +148,39 @@ const FLING_VELOCITY_THRESHOLD_PX_PER_MS = 1
  * stall rarer, never a velocity clamp.
  */
 const FLING_OVERSCAN_LOOKAHEAD_MS = 100
-/** Ceiling (px) on the fling render-ahead overscan, bounding the rows mounted per frame. */
-export const FLING_OVERSCAN_MAX_PX = 4000
+/**
+ * Ceiling (px) on fling render-ahead. A prior 4000px cap mounted 30+ rows in one
+ * viewport update on a 732px pane, producing 30ms+ scroll commits. 1200px was too
+ * tight under coalesced momentum events: combined with the base overscan it covered
+ * only ~2.3k px on a 733px pane, leaving a plausible blank-spacer gap when the
+ * compositor advanced farther before the next main-thread range commit. 1800px keeps
+ * that forward coverage near four screens on the logged pane while still avoiding the
+ * old multi-screen mount burst.
+ */
+export const FLING_OVERSCAN_MAX_PX = 1800
+/**
+ * Browser momentum can deliver one or two native scroll events in the OLD coordinate
+ * space after a large anchor re-pin moved scrollTop to preserve position across an
+ * older-page prepend. Keep this window short: it is only for compositor-delayed
+ * momentum echoes immediately after the coordinate-space shift, not for later user
+ * navigation.
+ */
+const STALE_NATIVE_SCROLL_TRANSLATE_MS = 300
+/**
+ * A stale old-coordinate momentum sample can land slightly on the "wrong" side of
+ * beforeTop after event coalescing, rubber-band bounce-back, or a quick direction
+ * reversal. Keep the direction check for midpoint/current-coordinate protection, but
+ * exempt samples that are still very close to the old coordinate after a large re-pin.
+ */
+const STALE_NATIVE_OLD_COORDINATE_PROXIMITY_CLIENT_RATIO = 0.4
+const STALE_NATIVE_OLD_COORDINATE_PROXIMITY_DELTA_RATIO = 0.15
+/**
+ * How long after a wheel/trackpad or touch-end gesture we consider asynchronous
+ * geometry re-pins unsafe to write synchronously. Scroll events can trail the input
+ * event by a few frames; keep the window comfortably above one fling-settle debounce
+ * without letting unrelated later layout work inherit "momentum" semantics.
+ */
+const MOMENTUM_INPUT_GRACE_MS = 750
 /**
  * Screens of VISIBLE content the buffer filler keeps loaded beyond the viewport in
  * each direction (see createScrollBufferFiller). Big enough that a deliberate scroll
@@ -159,6 +195,7 @@ const SCROLL_BUFFER_SCREENS = 3
  * hand off to sticky-bottom (~1s at 60fps) instead of chasing forever.
  */
 const SCROLL_TO_BOTTOM_MAX_FRAMES = 60
+const scrollPerfLog = createLogger('chatScrollPerf')
 
 // ---------------------------------------------------------------------------
 // Scroll-anomaly diagnostics (permanent WARN logging)
@@ -380,7 +417,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let scrollAnimationId: number | null = null
   let suppressAutoLoadOlderAfterRestore = false
   let autoScrollFirstSeq: bigint | undefined
+  let autoScrollLastSeq: bigint | undefined
   let lastAutoScrollSig: unknown[] = []
+  let lastTrimMessageCount: number | undefined
   let resizeObserver: ResizeObserver | undefined
   // resizeRafId / prevClientHeight now live inside createViewportRestore.
   // The scroll-buffer filler's fill(), assigned where the unit is created (after the
@@ -397,6 +436,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // breaks it without the old pair of reassigned `() => {}` stubs, which would silently
   // no-op if a future edit forgot to wire them.
   let flingSettle!: ReturnType<typeof createFlingSettle>
+  let recentAnchorRepinShift: {
+    beforeTop: number
+    afterTop: number
+    delta: number
+    clientHeight: number
+    dir: 'older' | 'newer'
+    at: number
+  } | undefined
 
   const virt = opts.virtualizer
   // Distinguishes a fast fling (defer corrections to protect momentum) from a slow
@@ -420,10 +467,111 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     () => messageListRef,
     pos => scrollVelocity.syncToProgrammatic(pos),
   )
-  const { mark: markProgrammaticScroll, write: writeScrollTopProgrammatically, isEcho: isProgrammaticEcho } = progGuard
-  // True only while a USER scroll event is mounting+measuring newly revealed
-  // rows (inside handleScroll's refreshViewport). The geometry re-pin fires
-  // synchronously off those measurements; while this is set it suppresses small
+  const isProgrammaticEcho = progGuard.isEcho
+
+  // The user's most recent scroll/keyboard intent. Drives pagination when the
+  // viewport can't scroll (content fits, e.g. an all-hidden window page), the
+  // auto-advance through hidden-only pages, and stale-native-scroll translation
+  // after large coordinate-space shifts.
+  let lastScrollDir: 'older' | 'newer' = 'older'
+
+  const scrollDomDebugSnapshot = () => {
+    const el = messageListRef
+    if (!el)
+      return undefined
+    return {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      maxScrollTop: maxScrollTopOf(el),
+      virtTotalHeight: virt.totalHeight(),
+      rowCount: opts.messages().length,
+      hasOlder: !!opts.hasOlderMessages?.(),
+      hasNewer: !!opts.hasNewerMessages?.(),
+      fetchingOlder: !!opts.fetchingOlder?.(),
+      fetchingNewer: !!opts.fetchingNewer?.(),
+    }
+  }
+
+  const logScrollDebug = (event: string, payload: Record<string, unknown>) => {
+    if (scrollPerfLog.isDebug())
+      scrollPerfLog.debug(event, payload)
+  }
+
+  const markProgrammaticScroll = (source?: string) => {
+    const before = scrollPerfLog.isDebug() ? scrollDomDebugSnapshot() : undefined
+    progGuard.mark(source)
+    if (scrollPerfLog.isDebug()) {
+      logScrollDebug('scroll marker', {
+        source,
+        before,
+        after: scrollDomDebugSnapshot(),
+        markers: progGuard.debugMarkers(),
+      })
+    }
+  }
+
+  const writeScrollTopProgrammatically = (top: number, source?: string) => {
+    const el = messageListRef
+    const beforeTop = el?.scrollTop
+    const beforeClientHeight = el?.clientHeight ?? 0
+    const before = scrollPerfLog.isDebug() ? scrollDomDebugSnapshot() : undefined
+    progGuard.write(top, source)
+    const afterTop = el?.scrollTop
+    if (
+      source === 'anchor-repin'
+      && beforeTop !== undefined
+      && afterTop !== undefined
+      && beforeClientHeight > 0
+    ) {
+      const now = monotonicNow()
+      const previous = recentAnchorRepinShift
+      const extendsRecentShift = previous !== undefined
+        && now - previous.at <= STALE_NATIVE_SCROLL_TRANSLATE_MS
+        && Math.abs(beforeTop - previous.afterTop) <= beforeClientHeight
+      const baseBeforeTop = extendsRecentShift ? previous.beforeTop : beforeTop
+      const delta = afterTop - baseBeforeTop
+      if (Math.abs(delta) > beforeClientHeight) {
+        recentAnchorRepinShift = {
+          beforeTop: baseBeforeTop,
+          afterTop,
+          delta,
+          clientHeight: beforeClientHeight,
+          dir: lastScrollDir,
+          at: now,
+        }
+      }
+      else if (extendsRecentShift) {
+        // A second anchor re-pin can compensate the large coordinate-space jump
+        // that created the stale-native guard (for example, trimming rows far above
+        // the viewport after an older-page prepend). Once the cumulative movement
+        // is small again, native momentum events are already in the current
+        // coordinate space; translating them by the obsolete prepend delta causes
+        // the exact jump this guard exists to prevent.
+        recentAnchorRepinShift = undefined
+      }
+    }
+    else if (source !== 'stale-native-scroll-translate' && source !== 'anchor-repin') {
+      recentAnchorRepinShift = undefined
+    }
+    if (scrollPerfLog.isDebug()) {
+      const after = scrollDomDebugSnapshot()
+      const moved = before !== undefined && after !== undefined
+        ? after.scrollTop - before.scrollTop
+        : undefined
+      logScrollDebug('scroll write', {
+        source,
+        requestedTop: top,
+        moved,
+        before,
+        after,
+        markers: progGuard.debugMarkers(),
+      })
+    }
+  }
+  // True only while a USER scroll event is refreshing newly revealed rows (inside
+  // handleScroll's refreshViewport). The geometry re-pin can fire synchronously
+  // from same-flush geometry changes; while this is set it suppresses small
   // scrollTop corrections, because writing scrollTop mid-fling cancels the
   // browser's momentum and reads as a jump. Idle/async re-pins (post-mount
   // growth, prepend, trim, restore) leave it false and write normally.
@@ -447,19 +595,22 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   const activePointers = new Set<number>()
   let touchActive = false
   const isScrollInputActive = () => activePointers.size > 0 || touchActive
+  let momentumInputUntil = 0
+  const markMomentumInput = () => {
+    momentumInputUntil = monotonicNow() + MOMENTUM_INPUT_GRACE_MS
+  }
+  const clearMomentumInput = () => {
+    momentumInputUntil = 0
+  }
+  const hasRecentMomentumInput = () => monotonicNow() <= momentumInputUntil
   // The clamped target scrollTop of an in-flight keyboard PageUp/PageDown (null =
   // none). A discrete page is NOT a momentum fling: the geometry re-pin it
   // triggers must apply immediately (so the page lands where the user can already
-  // read it), never deferred into flingSettle as a ~150ms-late jump. Matched by
-  // POSITION rather than "the next scroll event" so an unrelated fling that
+  // read it), never deferred into flingSettle's accept-and-reanchor path. Matched
+  // by POSITION rather than "the next scroll event" so an unrelated fling that
   // interleaves before the page's own native scroll event can't consume it.
   let discretePageTarget: number | null = null
   let viewportRefreshRafId = 0
-  // The user's most recent scroll/keyboard intent. Drives pagination when the
-  // viewport can't scroll (content fits, e.g. an all-hidden window page) and
-  // the auto-advance through hidden-only pages, where scroll position alone
-  // can't tell which way the user wants to go.
-  let lastScrollDir: 'older' | 'newer' = 'older'
   // The scrollTop observed on the previous scroll event, so handleScroll can
   // infer the direction from the position delta. handleWheel/handleKeyDown set
   // lastScrollDir for wheel/key input, but a scrollbar drag, touch scroll, or
@@ -468,6 +619,80 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // update it without changing direction) so the next user delta measures from
   // the real current position, not a stale one.
   let lastScrollTopForDir = 0
+  // Safari/WebKit rubber-band overscroll can expose transient negative/over-max
+  // scrollTop values on read. Treat those as native edge physics, not list
+  // coordinates: anchor resolution, viewport ranges, velocity, and saved state must
+  // operate in the clamped scroll coordinate space without writing to the DOM.
+  const readLogicalScrollTop = (el: HTMLDivElement) => clampScrollTop(el, el.scrollTop)
+
+  const translateStaleNativeScrollAfterRepin = () => {
+    const el = messageListRef
+    const shift = recentAnchorRepinShift
+    if (!el || !shift)
+      return undefined
+    const ageMs = monotonicNow() - shift.at
+    if (ageMs > STALE_NATIVE_SCROLL_TRANSLATE_MS) {
+      recentAnchorRepinShift = undefined
+      return undefined
+    }
+    // A direct drag or a real programmatic echo is already in the current coordinate
+    // space. The stale case is only compositor-delayed momentum that lands near the
+    // pre-repin coordinate after the anchor-repin write moved the viewport elsewhere.
+    if (isScrollInputActive() || isProgrammaticEcho())
+      return undefined
+
+    const staleTop = el.scrollTop
+    const oldCoordinateWindowPx = Math.max(shift.clientHeight * 2, FLING_OVERSCAN_MAX_PX)
+    const oldCoordinateDistance = Math.abs(staleTop - shift.beforeTop)
+    const nearOldCoordinate = oldCoordinateDistance <= oldCoordinateWindowPx
+    const farFromNewCoordinate = Math.abs(staleTop - shift.afterTop) > Math.abs(shift.delta) / 2
+    // A delayed old-coordinate momentum event should continue from the pre-repin
+    // position in the user's known scroll direction. A normal current-coordinate
+    // scroll after a prepend re-pin can pass through the midpoint between afterTop
+    // and beforeTop; without this side check, that legitimate scroll gets
+    // misclassified and translated back down.
+    const movesFromOldCoordinateInIntentDirection = shift.dir === 'older'
+      ? staleTop <= shift.beforeTop + EDGE_INTENT_TOLERANCE_PX
+      : staleTop >= shift.beforeTop - EDGE_INTENT_TOLERANCE_PX
+    const stillClearlyOldCoordinate = oldCoordinateDistance <= Math.min(
+      shift.clientHeight * STALE_NATIVE_OLD_COORDINATE_PROXIMITY_CLIENT_RATIO,
+      Math.abs(shift.delta) * STALE_NATIVE_OLD_COORDINATE_PROXIMITY_DELTA_RATIO,
+    )
+    if (!nearOldCoordinate || !farFromNewCoordinate || (!movesFromOldCoordinateInIntentDirection && !stillClearlyOldCoordinate)) {
+      // Once a real native scroll arrives in the current coordinate space, the
+      // compositor has caught up. Do not keep a stale shift armed long enough to
+      // translate a later legitimate scroll that merely crosses the old midpoint.
+      recentAnchorRepinShift = undefined
+      return undefined
+    }
+
+    const translatedTop = clampScrollTop(el, staleTop + shift.delta)
+    if (Math.abs(translatedTop - staleTop) < REPIN_MIN_DELTA_PX)
+      return undefined
+
+    const debug = scrollPerfLog.isDebug()
+    const before = debug ? scrollDomDebugSnapshot() : undefined
+    // Write without arming the echo marker yet: this event is still a USER momentum
+    // event and must flow through the normal anchor/velocity/range path. We mark the
+    // post-write position after classification so the browser's follow-up scroll event
+    // for this assignment is ignored without swallowing the current event.
+    el.scrollTop = translatedTop
+    lastScrollTopForDir = shift.afterTop
+    if (debug) {
+      const after = scrollDomDebugSnapshot()
+      logScrollDebug('stale native scroll translated', {
+        staleTop,
+        translatedTop,
+        shift,
+        ageMs,
+        moved: after !== undefined && before !== undefined ? after.scrollTop - before.scrollTop : undefined,
+        before,
+        after,
+        markers: progGuard.debugMarkers(),
+      })
+    }
+    return { staleTop, translatedTop, shift, ageMs }
+  }
 
   // The anchor + re-pin engine (scroll-mode state machine + the keep-position re-pin),
   // extracted into its own unit (createAnchorRepin). It owns scrollMode / anchorCaptureTop
@@ -481,11 +706,28 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     virt,
     isAnimating: () => scrollAnimationId !== null,
     writeScrollTop: writeScrollTopProgrammatically,
-    velocity: scrollVelocity,
+    velocity: {
+      isFling: () => scrollVelocity.isFling(),
+      isActivelyFlinging: () => scrollVelocity.isActivelyFlinging() && hasRecentMomentumInput(),
+      hasRecentMomentumInput,
+    },
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
+    readScrollTop: readLogicalScrollTop,
   })
-  const { currentAnchor, isFollowing, followTail, setAnchor, captureAnchor, repinToAnchor } = anchorRepin
+  const { currentAnchor, currentAnchorState, isFollowing, followTail, setAnchor, captureAnchor, captureTopAnchor, repinToAnchor } = anchorRepin
+
+  const hasDeferredMeasurements = () => virt.hasDeferredMeasurements?.() ?? false
+  const releaseDeferredMeasurements = () => {
+    clearMomentumInput()
+    virt.setVisibleMeasurementDeferral?.(false)
+    virt.flushDeferredMeasurements?.()
+  }
+  const acceptDeferredMeasurementsAtCurrentViewport = () => {
+    if (hasDeferredMeasurements())
+      captureAnchor()
+    releaseDeferredMeasurements()
+  }
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -522,7 +764,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    */
   const refreshViewport = (lead?: ViewportLead) => {
     if (messageListRef)
-      virt.updateViewport(messageListRef.scrollTop, messageListRef.clientHeight, lead)
+      virt.updateViewport(readLogicalScrollTop(messageListRef), messageListRef.clientHeight, lead)
   }
 
   /**
@@ -578,13 +820,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   const { stickToBottom, shouldRestickToBottom, restickIfAtBottom } = stickyBottom
 
   // Fling-settle: accumulates the re-pin corrections deferred mid-fling and
-  // applies them in one write once momentum stops (see repinToAnchor + handleScroll).
+  // accepts them by re-anchoring to the current viewport once momentum stops.
   // Assigns the forward `let` above; stickyBottom (drop-on-stick) and the anchor engine's
   // captureAnchor (rebase) reach it through their thunks now that it exists.
   flingSettle = createFlingSettle(scrollCtx, {
     isRepinning: anchorRepin.isRepinning,
     getAnchor: currentAnchor,
     captureAnchor,
+    hasDeferredWork: hasDeferredMeasurements,
+    onSettleQuiet: releaseDeferredMeasurements,
   })
 
   // True between a forced stop (grab/tap) and the user's next genuine scroll: pauses
@@ -619,6 +863,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     cancelScrollAnimation()
     flingSettle.cancel()
     flingSettle.reset()
+    acceptDeferredMeasurementsAtCurrentViewport()
     bufferFillPaused = true
   }
 
@@ -668,7 +913,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // whether it fired (the overscroll-drag tracker consumes this). Clears the
   // one-shot post-restore suppression so a deliberate reach-the-top always pages.
   const tryLoadOlderOnExplicitTopIntent = (): boolean => {
-    if (!messageListRef || messageListRef.scrollTop > EDGE_INTENT_TOLERANCE_PX || !canLoadOlderMessages())
+    if (!messageListRef || readLogicalScrollTop(messageListRef) > EDGE_INTENT_TOLERANCE_PX || !canLoadOlderMessages())
       return false
     suppressAutoLoadOlderAfterRestore = false
     loadOlderMessages()
@@ -711,7 +956,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   const stalledOlder = createMemo(() => {
     geomTick()
     return !!opts.fetchingOlder?.() && !!opts.hasOlderMessages?.()
-      && !!messageListRef && messageListRef.scrollTop <= EDGE_INTENT_TOLERANCE_PX
+      && !!messageListRef && readLogicalScrollTop(messageListRef) <= EDGE_INTENT_TOLERANCE_PX
   })
   const stalledNewer = createMemo(() => {
     geomTick()
@@ -726,17 +971,23 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * as drift and the only kind that (re)arms the fling-end settle, so the two stay in
    * lockstep behind one predicate.
    */
-  const classifyScrollEvent = (): { programmaticEcho: boolean, isMomentumScroll: boolean } => {
+  const classifyScrollEvent = (forceUserScroll = false): {
+    programmaticEcho: boolean
+    isMomentumScroll: boolean
+    discretePage: boolean
+    discretePageTargetBefore: number | null
+  } => {
     // A scroll event landing at the exact pixel we last wrote is our own programmatic
     // scroll echoing back, not a user gesture -- so it has no momentum to protect and
     // must not suppress the re-pin.
-    const programmaticEcho = isProgrammaticEcho()
+    const programmaticEcho = !forceUserScroll && isProgrammaticEcho()
+    const discretePageTargetBefore = discretePageTarget
     // Is THIS event the in-flight keyboard PageUp/PageDown's own scroll? Match by
     // position (its clamped target), not "the next scroll event", so an unrelated
     // fling interleaving before the page's native event isn't mistaken for it. A
     // discrete page is a user gesture for direction/pagination but NOT a fling.
     const discretePage = discretePageTarget !== null && !!messageListRef
-      && Math.abs(messageListRef.scrollTop - clampScrollTop(messageListRef, discretePageTarget)) <= EDGE_INTENT_TOLERANCE_PX
+      && Math.abs(readLogicalScrollTop(messageListRef) - clampScrollTop(messageListRef, discretePageTarget)) <= EDGE_INTENT_TOLERANCE_PX
     // Consume the page target on the FIRST scroll event after scrollBy, whether or
     // not it matched. clampScrollTop tracks the browser's clamp, but a
     // measurement-induced scrollHeight shift between scrollBy and its native event
@@ -760,7 +1011,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // and not direct pointer/touch manipulation (a drag has no inertia to protect --
     // see isScrollInputActive).
     const isMomentumScroll = !programmaticEcho && !discretePage && !isScrollInputActive()
-    return { programmaticEcho, isMomentumScroll }
+    return { programmaticEcho, isMomentumScroll, discretePage, discretePageTargetBefore }
   }
 
   /**
@@ -829,6 +1080,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // freed it from) a loaded edge, which is invisible to them otherwise (scrollTop has
     // no signal). Cheap -- the memos short-circuit on the fetch flags before measuring.
     bumpGeomTick(t => t + 1)
+    const eventMarkersBefore = scrollPerfLog.isDebug() ? progGuard.debugMarkers() : undefined
+    // Snapshot THIS event's own echo marker BEFORE handling it: if checkAtBottom
+    // re-sticks below (a fresh programmatic write), it arms another marker whose echo is
+    // still pending, so we name this event's marker now and consume only it below.
+    const echoGen = progGuard.matchedEchoGen()
+    const staleNativeScrollTranslation = translateStaleNativeScrollAfterRepin()
     // Pin the anchor to the user's CURRENT scroll position BEFORE refreshViewport
     // mounts any newly-revealed row. That mount can measure a row far taller than
     // its estimate, which shifts the offset map and synchronously fires the
@@ -871,22 +1128,24 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       else
         captureAnchor()
     }
-    // Snapshot THIS event's own echo marker BEFORE handling it: if checkAtBottom
-    // re-sticks below (a fresh programmatic write), it arms another marker whose echo is
-    // still pending, so we name this event's marker now and consume only it below.
-    const echoGen = progGuard.matchedEchoGen()
+    const scrollTopAtStart = messageListRef ? readLogicalScrollTop(messageListRef) : undefined
+    const lastScrollTopBeforeEvent = lastScrollTopForDir
     // Genuine user scrolls mark the window so the synchronous re-pin (fired while
     // refreshViewport mounts+measures rows) suppresses its scrollTop write; an echo
     // or a discrete page leaves userScrolling false so it writes immediately rather
     // than deferring ~150ms into flingSettle.
-    const { programmaticEcho, isMomentumScroll } = classifyScrollEvent()
+    const { programmaticEcho, isMomentumScroll, discretePage, discretePageTargetBefore } = classifyScrollEvent(
+      staleNativeScrollTranslation !== undefined,
+    )
     // Defer the re-pin as fling drift only for a momentum scroll.
     userScrolling = isMomentumScroll
     // Render-ahead overscan for this scroll (undefined for echoes and idle), read
     // BEFORE refreshViewport / checkAtBottom can move scrollTop.
-    const viewportLead = messageListRef
-      ? computeViewportLead(messageListRef.scrollTop, programmaticEcho)
+    const viewportLead = scrollTopAtStart !== undefined
+      ? computeViewportLead(scrollTopAtStart, programmaticEcho)
       : undefined
+    if (isMomentumScroll && scrollVelocity.isFling())
+      virt.setVisibleMeasurementDeferral?.(true)
     try {
       refreshViewport(viewportLead)
     }
@@ -894,11 +1153,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       userScrolling = false
     }
     // For a genuine MOMENTUM scroll, (re)arm the fling-end settle: each event
-    // pushes the debounce out, so it fires once — once momentum stops — to undo
-    // the accumulated drift we deferred above. A programmatic echo has no fling to
-    // settle (and its own write would re-arm it in a loop); a discrete page and a
-    // direct pointer/touch drag both re-pinned immediately above (userScrolling
-    // false), so they deferred nothing to settle.
+    // pushes the debounce out, so it fires once momentum stops and re-anchors to
+    // the visual position the user actually reached. A programmatic echo has no
+    // fling to settle (and its own write would re-arm it in a loop); a discrete
+    // page and a direct pointer/touch drag both re-pinned immediately above
+    // (userScrolling false), so they deferred nothing to settle.
     if (isMomentumScroll)
       flingSettle.schedule()
     // checkAtBottom owns the stale-scroll-event re-stick that keeps sticky-bottom
@@ -920,13 +1179,48 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Recognize our write by position: a scroll event at the exact pixel we last
     // wrote is ours; one elsewhere is the user — even mid-write-burst, where a
     // frame-delayed flag would still be set and would swallow the gesture.
-    const stillEcho = isProgrammaticEcho()
+    const stillEcho = staleNativeScrollTranslation === undefined && isProgrammaticEcho()
     // This event has been fully handled. If it matched our marker (here or at the
     // read above), consume that marker so a LATER user gesture coincidentally
     // landing within 1px of the same pixel is treated as a real scroll, not a
     // second echo. Skipped when a re-stick armed a fresher marker (gen advanced).
     if (programmaticEcho || stillEcho)
       progGuard.consumeEcho(echoGen)
+    if (staleNativeScrollTranslation)
+      markProgrammaticScroll('stale-native-scroll-translate')
+    if (scrollPerfLog.isDebug() && messageListRef && scrollTopAtStart !== undefined) {
+      const deltaFromLast = scrollTopAtStart - lastScrollTopBeforeEvent
+      const largeDelta = Math.abs(deltaFromLast) > messageListRef.clientHeight / 2
+      const shouldLog = largeDelta || programmaticEcho || stillEcho || !!viewportLead || !!staleNativeScrollTranslation
+      if (shouldLog) {
+        const anchor = currentAnchor()
+        logScrollDebug('scroll event', {
+          scrollTop: scrollTopAtStart,
+          lastScrollTopBeforeEvent,
+          deltaFromLast,
+          programmaticEcho,
+          stillEcho,
+          echoGen,
+          markersBefore: eventMarkersBefore,
+          markersAfter: progGuard.debugMarkers(),
+          isMomentumScroll,
+          directInputActive: isScrollInputActive(),
+          discretePage,
+          discretePageTargetBefore,
+          viewportLead,
+          staleNativeScrollTranslation,
+          anchor: anchor
+            ? {
+                id: anchor.id,
+                seq: anchor.seq?.toString(),
+                offsetWithinRow: anchor.offsetWithinRow,
+                basisHeight: anchor.basisHeight,
+              }
+            : null,
+          after: scrollDomDebugSnapshot(),
+        })
+      }
+    }
     if (stillEcho)
       return
     // Top up the visible buffer for the new scroll position (scrolling toward an
@@ -942,7 +1236,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // Touch/pointer overscroll-at-top → load older history. Self-contained gesture
   // tracker; the drag math lives in createOverscrollDrag.
   const overscroll = createOverscrollDrag({
-    atTop: () => !!messageListRef && messageListRef.scrollTop <= EDGE_INTENT_TOLERANCE_PX,
+    atTop: () => !!messageListRef && readLogicalScrollTop(messageListRef) <= EDGE_INTENT_TOLERANCE_PX,
     onDragAtTop: tryLoadOlderOnExplicitTopIntent,
   })
 
@@ -1015,7 +1309,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // offset map, and totalHeight - that is the height BELOW it. (This also makes the old
     // fling-deferred-write correction unnecessary -- the offset reflects a prepend
     // regardless of a deferred scrollTop write.)
-    captureAnchor: () => messageListRef ? virt.anchorAt(messageListRef.scrollTop) : null,
+    captureAnchor: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
     contentAbove: anchor => virt.scrollTopForAnchor(anchor),
     contentBelow: (anchor) => {
       const above = virt.scrollTopForAnchor(anchor)
@@ -1032,14 +1326,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (!messageListRef || messageListRef.clientHeight === 0)
       return undefined
     const atBot = atBottom()
-    const a = atBot ? null : virt.anchorAt(messageListRef.scrollTop)
+    const scrollTop = readLogicalScrollTop(messageListRef)
+    const a = atBot ? null : virt.anchorAt(scrollTop)
     // Scrolled away from the bottom but no resolvable anchor means the virtual
     // list is empty (e.g. an all-hidden window). There is no estimated spacer
-    // here (totalHeight is 0), so a raw scrollTop carries no drift risk -- save
-    // it as a fallback rather than losing the position to bottom-follow on
-    // return. (A non-zero scrollTop comes from non-virtual content: a tall
+    // here (totalHeight is 0), so a clamped raw scrollTop carries no drift risk
+    // -- save it as a fallback rather than losing the position to bottom-follow
+    // on return. (A non-zero scrollTop comes from non-virtual content: a tall
     // streaming block or startup banner.)
-    const rawScrollTop = !atBot && a === null ? messageListRef.scrollTop : undefined
+    const rawScrollTop = !atBot && a === null ? scrollTop : undefined
     return {
       anchor: a ?? undefined,
       rawScrollTop,
@@ -1073,7 +1368,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // disconnect / RPC error) we restore the anchor and re-sync atBottom to
       // the real scroll position rather than stranding the view anchorless at a
       // tail it never reached. The rejection is swallowed (no unhandled promise).
-      const prevAnchor = currentAnchor()
+      const prevAnchorState = currentAnchorState()
       followTail()
       setAtBottom(true)
       void Promise.resolve(opts.onJumpToLatest?.())
@@ -1096,6 +1391,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
             stickToBottom()
         })
         .catch(() => {
+          // A mid-flight user scroll already captured the user's newer anchor and cleared
+          // atBottom. Do not restore the stale pre-jump anchor over it.
+          if (!untrack(atBottom)) {
+            checkAtBottom()
+            return
+          }
           // The jump failed and no scroll write landed, so we never reached the
           // tail. Restore the pre-jump anchor; if there wasn't one (we were
           // following), re-anchor to the CURRENT scroll position rather than
@@ -1103,7 +1404,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
           // checkAtBottom could leave atBottom true while hasMoreNewer stays set,
           // hiding the scroll-to-bottom affordance and stranding the user above
           // the live messages.
-          setAnchor(prevAnchor ?? (messageListRef ? virt.anchorAt(messageListRef.scrollTop) : null))
+          if (prevAnchorState)
+            setAnchor(prevAnchorState.anchor, undefined, prevAnchorState.viewportOffsetRatio)
+          else
+            setAnchor(messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null)
           checkAtBottom()
         })
       return
@@ -1117,6 +1421,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // helpers stay here too (other units / the API also use them) and are passed in.
   const { handleKeyDown, handleWheel, pageScroll } = createScrollInput(scrollCtx, {
     captureAnchor,
+    captureTopAnchor,
     checkAtBottom,
     forceScrollToBottom,
     cancelScrollAnimation,
@@ -1152,10 +1457,16 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // when a new tail message arrives in the same update. undefined (not 0n) for an
     // all-locals window keeps that case out of the comparison below.
     const firstSeq = firstServerSeq(msgs)
+    const newestSeq = lastServerSeq(msgs)
     const prependedOlderMessages = autoScrollFirstSeq !== undefined
       && firstSeq !== undefined
       && firstSeq < autoScrollFirstSeq
+    const newestEdgeAdvanced = autoScrollLastSeq !== undefined
+      && newestSeq !== undefined
+      && newestSeq > autoScrollLastSeq
+    const pureOlderPrepend = prependedOlderMessages && !newestEdgeAdvanced
     autoScrollFirstSeq = firstSeq
+    autoScrollLastSeq = newestSeq
     // Cheap signature over the inputs that drive auto-scroll, so wake-ups
     // from same-reference store re-emits short-circuit before reading
     // scrollHeight (which forces layout). agentStatus is included so a
@@ -1172,8 +1483,16 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       opts.agentStatus?.() ?? -1,
       opts.hasNewerMessages?.() ?? false,
     ]
-    if (prependedOlderMessages)
+    if (pureOlderPrepend) {
+      // Pure older prefetches are not live-tail growth. Record the new signature and
+      // row count before returning so a later streaming/status wake-up does not treat
+      // the prepended window as a fresh append and trim away the just-loaded older
+      // buffer. If the newest edge advanced in the same update, tail handling still
+      // runs below.
+      lastAutoScrollSig = sig
+      lastTrimMessageCount = msgs.length
       return
+    }
     if (shallowEqualArrays(sig, lastAutoScrollSig))
       return
     lastAutoScrollSig = sig
@@ -1193,14 +1512,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // cap -- the pagination trims fire only on overscroll, and the at-bottom
     // stick path below is skipped. Without this an active tab watched from a
     // scrolled-up position grows the in-memory set unbounded during a long
-    // stream. trimOldestEnd is a no-op once at the cap, so it can run every flush.
-    if (messageListRef) {
+    // stream. Only run the raw-row cap when the message count changed: streaming text,
+    // status, or message-version wake-ups can need sticky-bottom handling below, but
+    // they do not increase the number of rows and must not reap the older buffer.
+    const messageCountChanged = lastTrimMessageCount !== msgs.length
+    lastTrimMessageCount = msgs.length
+    if (messageCountChanged && messageListRef) {
       // Buffer-top anchor resolution reads the offset map (reactive) -- untrack it so
       // this auto-scroll effect doesn't subscribe to every geometry nudge. The rest of
       // the keep-newest derivation is pure; see computeBufferAwareKeepNewest.
       const keepNewest = computeBufferAwareKeepNewest(
         msgs,
-        messageListRef.scrollTop,
+        readLogicalScrollTop(messageListRef),
         messageListRef.clientHeight,
         bufferTargetPx(),
         bufTop => untrack(() => virt.anchorAt(bufTop)),
@@ -1334,7 +1657,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // recognized as ours -- not processed by handleScroll as a user gesture
       // (which would capture an anchor, infer a direction, and dispatch edge
       // pagination on every animation frame).
-      writeScrollTopProgrammatically(messageListRef.scrollTop + Math.ceil(step))
+      writeScrollTopProgrammatically(readLogicalScrollTop(messageListRef) + Math.ceil(step), 'scroll-bottom-animation')
       scrollAnimationId = requestAnimationFrame(animate)
     }
 
@@ -1383,7 +1706,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     pageScroll,
     handlers: {
       onScroll: handleScroll,
-      onWheel: handleWheel,
+      onWheel: (event) => {
+        if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0)
+          markMomentumInput()
+        handleWheel(event)
+      },
       onKeyDown: handleKeyDown,
       // Touch/pointer handlers also feed the direct-manipulation tracker
       // (isScrollInputActive) so a scroll during a drag re-pins immediately
@@ -1402,10 +1729,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         // event.touches is the set of STILL-active touches after this one lifted:
         // 0 for the last finger (-> inactive), >0 while another finger remains.
         touchActive = event.touches.length > 0
+        if (!touchActive)
+          markMomentumInput()
         overscroll.onTouchEnd()
       },
       onTouchCancel: (event) => {
         touchActive = event.touches.length > 0
+        if (!touchActive)
+          clearMomentumInput()
         overscroll.onTouchEnd()
       },
       onPointerDown: (event) => {

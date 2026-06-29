@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { expandedUiKeyFor, MESSAGE_UI_DEFAULTS, MESSAGE_UI_KEY, messageUiDefault, toolBodyExpandedKeyFor, uiFlagsConsumedBy } from './messageUiKeys'
+import { expandedUiKeyFor, MESSAGE_UI_DEFAULTS, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 
 describe('message_ui_defaults', () => {
   it('has a default entry for every MESSAGE_UI_KEY', () => {
@@ -55,58 +55,5 @@ describe('expandeduikeyfor', () => {
     // total -- it must not throw, and Codex still routes to its reasoning key.
     expect(expandedUiKeyFor('tool_result', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
     expect(expandedUiKeyFor('assistant_text', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
-  })
-})
-
-describe('uiflagsconsumedby', () => {
-  it('marks tool_result as collapse-consuming only', () => {
-    expect(uiFlagsConsumedBy('tool_result')).toEqual({ collapsed: true, expanded: false, toolBodyExpanded: false })
-  })
-
-  it('marks the expandable bubble kinds as expand-consuming only', () => {
-    for (const kind of ['assistant_thinking', 'plan_execution', 'agent_prompt']) {
-      expect(uiFlagsConsumedBy(kind)).toEqual({ collapsed: false, expanded: true, toolBodyExpanded: false })
-    }
-  })
-
-  it('marks a Bash OR ACP execute tool_use as toolBodyExpanded-consuming, by tool name', () => {
-    // The estimator passes the `tool_use:<name>` prefixed kind; the bare kind never
-    // matches the expanded set, so only the toolName checks fire. A Bash command
-    // summary has no result body (collapsed false); an ACP `execute` ALSO renders a
-    // collapsible result body (its output reads TOOL_RESULT_EXPANDED), so it consumes
-    // both flags.
-    expect(uiFlagsConsumedBy('tool_use:Bash', 'Bash')).toEqual({ collapsed: false, expanded: false, toolBodyExpanded: true })
-    expect(uiFlagsConsumedBy('tool_use:execute', 'execute')).toEqual({ collapsed: true, expanded: false, toolBodyExpanded: true })
-    expect(uiFlagsConsumedBy('tool_use:Read', 'Read')).toEqual({ collapsed: false, expanded: false, toolBodyExpanded: false })
-  })
-
-  it('marks Codex/ACP result-body tool rows as collapse-consuming, by tool name', () => {
-    // commandExecution (settled -> ToolResultMessage) and the ACP read/search/fetch
-    // bodies collapse on TOOL_RESULT_EXPANDED; a collab prompt on its own key. Codex
-    // webSearch (header-only in its settled form) consumes nothing here.
-    for (const tool of ['commandExecution', 'collabAgentToolCall', 'read', 'search', 'fetch']) {
-      expect(uiFlagsConsumedBy('tool_use', tool).collapsed).toBe(true)
-    }
-    expect(uiFlagsConsumedBy('tool_use', 'webSearch').collapsed).toBe(false)
-  })
-
-  it('consumes no flags for a plain row (assistant_text / user_content)', () => {
-    for (const kind of ['assistant_text', 'user_content', 'notification']) {
-      expect(uiFlagsConsumedBy(kind)).toEqual({ collapsed: false, expanded: false, toolBodyExpanded: false })
-    }
-  })
-})
-
-describe('toolbodyexpandedkeyfor', () => {
-  it('maps each provider command tool to the key its renderer toggles', () => {
-    // Claude/Pi Bash -> TOOL_USE_LAYOUT; ACP execute -> OPENCODE_TOOL_CALL_UPDATE.
-    expect(toolBodyExpandedKeyFor('Bash')).toBe(MESSAGE_UI_KEY.TOOL_USE_LAYOUT)
-    expect(toolBodyExpandedKeyFor('execute')).toBe(MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE)
-  })
-
-  it('returns undefined for a tool with no full-command/body toggle', () => {
-    expect(toolBodyExpandedKeyFor('Read')).toBeUndefined()
-    expect(toolBodyExpandedKeyFor('commandExecution')).toBeUndefined() // Codex renders a 1-line summary
-    expect(toolBodyExpandedKeyFor(undefined)).toBeUndefined()
   })
 })

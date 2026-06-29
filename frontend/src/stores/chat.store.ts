@@ -1,5 +1,5 @@
 import type { PendingOutboundMessage } from './chatPendingOutbound'
-import type { CommandStreamSegment, SavedViewportScroll } from './chatTypes'
+import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { toBinary } from '@bufbuild/protobuf'
@@ -253,6 +253,12 @@ export function createChatStore() {
   // the off-screen height estimate folds it into its key, both reading it reactively so
   // the bump wakes them to re-classify / re-estimate. See the slice for the full why.
   const contentVersions = createContentVersionStore()
+
+  function spanRevisionOf(message: AgentChatMessage | undefined): SpanMessageRevision | undefined {
+    return message === undefined
+      ? undefined
+      : { id: message.id, seq: message.seq, contentVersion: contentVersions.get(message.id) }
+  }
 
   /**
    * Reclaim the per-id UI side-state of rows leaving the window for good: their
@@ -727,9 +733,28 @@ export function createChatStore() {
       return openerId !== undefined ? contentVersions.get(openerId) : 0
     },
 
+    getToolUseRevisionBySpanId(agentId: string, spanId: string): SpanMessageRevision | undefined {
+      return spanRevisionOf(spanIdx.getOpenerMessage(agentId, spanId))
+    },
+
     /** Symmetric counterpart for the tool_result side. */
     getToolResultParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
       return spanIdx.getResultParsed(agentId, spanId)
+    },
+
+    /**
+     * The content version of the tool_result paired with `spanId` (0 when no
+     * result is indexed). Some tool_use rows render from hidden result data, so a
+     * result-side in-place body replacement must bust the opener row's cached
+     * classification and measured height.
+     */
+    getToolResultContentVersionBySpanId(agentId: string, spanId: string): number {
+      const resultId = spanIdx.getResultId(agentId, spanId)
+      return resultId !== undefined ? contentVersions.get(resultId) : 0
+    },
+
+    getToolResultRevisionBySpanId(agentId: string, spanId: string): SpanMessageRevision | undefined {
+      return spanRevisionOf(spanIdx.getResultMessage(agentId, spanId))
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {

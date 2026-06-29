@@ -4,6 +4,7 @@ import type { RenderContext } from './messageRenderers'
 import type { CommandResultSource } from './results/commandResult'
 import type { FileEditDiffSource } from './results/fileEditDiff'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { CachedToken } from '~/lib/tokenCache'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
@@ -14,7 +15,7 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
-import { createMemo, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
@@ -22,9 +23,13 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { escapeHtml } from '~/lib/renderAnsi'
 import { shikiHighlighter } from '~/lib/renderMarkdown'
+import { tokenizeAsync } from '~/lib/shikiWorkerClient'
+import { getCachedTokens } from '~/lib/tokenCache'
 import { inlineFlex } from '~/styles/shared.css'
-import { getToolResultExpanded } from './messageRenderers'
+import { getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
+import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from './messageRenderers'
 import { RelativeTime } from './RelativeTime'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './results/collapse'
 import { CollapsibleContent } from './results/CollapsibleContent'
 import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
@@ -74,9 +79,9 @@ export function EmptyTodoLayout(props: { toolName: string, context?: RenderConte
  *
  *  1. `title` — the header line, always visible. Identifies what the tool
  *     ran on (file path, command description, search pattern).
- *  2. `summary` — second line, also always visible when present. A brief
- *     preview that supplements the title (Bash command first line, Grep
- *     search path, etc.).
+ *  2. `summary` — content below the title, also always visible when present. A
+ *     preview that supplements the title (Bash command preview, Grep search
+ *     path, etc.).
  *  3. `children` — "the details": the full expanded body. Hidden by default
  *     until the user clicks the expand toggle, OR shown unconditionally when
  *     `alwaysVisible` is set (e.g. TodoList where the list IS the content).
@@ -125,7 +130,8 @@ export function ToolUseLayout(props: {
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
   const actions = () => props.headerActions
-  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
+  const hasActions = () =>
+    !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
   return (
     <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
@@ -318,7 +324,9 @@ export function ToolHeaderActions(props: {
   )
 }
 
-export function renderBashHighlight(code: string): string {
+export function renderBashHighlight(code: string, options?: { plain?: boolean }): string {
+  if (options?.plain)
+    return escapeHtml(code)
   try {
     return shikiHighlighter.codeToHtml(code, {
       lang: 'bash',
@@ -329,6 +337,189 @@ export function renderBashHighlight(code: string): string {
   catch {
     return `<pre><code>${escapeHtml(code)}</code></pre>`
   }
+}
+
+const DEFAULT_COMMAND_INPUT_HIGHLIGHT_LINE_LIMIT = 1000
+const DEFAULT_COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT = 20000
+
+interface CodeHighlightLimits {
+  maxChars?: number
+  maxLines?: number
+}
+
+function canHighlightCommandInput(code: string, limits: CodeHighlightLimits = {}): boolean {
+  return code.length <= (limits.maxChars ?? DEFAULT_COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT)
+    && !hasMoreLinesThan(code, limits.maxLines ?? DEFAULT_COMMAND_INPUT_HIGHLIGHT_LINE_LIMIT)
+}
+
+function shouldDeferTokenApplication(context: RenderContext | undefined): boolean {
+  return untrack(() => context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true)
+}
+
+function useAsyncCodeTokens(
+  lang: string,
+  code: () => string,
+  getContext: () => RenderContext | undefined,
+  getLimits: () => CodeHighlightLimits = () => ({}),
+) {
+  const [tokens, setTokens] = createSignal<CachedToken[][] | null>(null)
+  let tokenKey: string | undefined
+  let pendingTokens: { key: string, tokens: CachedToken[][] } | undefined
+
+  const currentKey = (): string | undefined => {
+    const text = code()
+    return text && canHighlightCommandInput(text, getLimits()) ? `${lang}\0${text}` : undefined
+  }
+
+  createEffect(() => {
+    const context = getContext()
+    if (context?.premeasureMode || context?.syntaxHighlightingPaused?.() || context?.textSelectionActive?.())
+      return
+    const key = currentKey()
+    if (!key || pendingTokens?.key !== key)
+      return
+    tokenKey = key
+    setTokens(pendingTokens.tokens)
+    pendingTokens = undefined
+  })
+
+  createEffect(on(
+    () => {
+      const context = getContext()
+      return [code(), context?.premeasureMode, context?.syntaxHighlightingPaused?.(), context?.textSelectionActive?.() === true] as const
+    },
+    ([text, premeasureMode, syntaxHighlightingPaused, textSelectionActive]) => {
+      const key = currentKey()
+      if (premeasureMode || !key) {
+        tokenKey = undefined
+        pendingTokens = undefined
+        setTokens(null)
+        return
+      }
+
+      if (syntaxHighlightingPaused || textSelectionActive) {
+        if (tokenKey !== key) {
+          tokenKey = undefined
+          pendingTokens = undefined
+          setTokens(null)
+        }
+        return
+      }
+
+      if (tokenKey === key)
+        return
+
+      tokenKey = undefined
+      pendingTokens = undefined
+      setTokens(null)
+
+      const cached = getCachedTokens(lang, text)
+      if (cached) {
+        tokenKey = key
+        setTokens(cached)
+        return
+      }
+
+      let cancelled = false
+      tokenizeAsync(lang, text).then((nextTokens) => {
+        if (cancelled)
+          return
+        if (!nextTokens) {
+          setTokens(null)
+          return
+        }
+        if (shouldDeferTokenApplication(getContext())) {
+          pendingTokens = { key, tokens: nextTokens }
+          return
+        }
+        tokenKey = key
+        setTokens(nextTokens)
+      })
+
+      onCleanup(() => {
+        cancelled = true
+      })
+    },
+  ))
+
+  return tokens
+}
+
+function TokenizedCode(props: {
+  code: string
+  tokens?: CachedToken[][] | null
+  class?: string
+  dataCommandInputCollapsed?: boolean
+  dataCommandInputOverflowing?: boolean
+  elementRef?: (el: HTMLDivElement) => void
+}): JSX.Element {
+  return (
+    <div
+      ref={el => props.elementRef?.(el)}
+      class={props.class}
+      data-command-input-collapsed={props.dataCommandInputCollapsed ? '' : undefined}
+      data-command-input-overflowing={props.dataCommandInputOverflowing ? '' : undefined}
+    >
+      <Show when={props.tokens} fallback={props.code}>
+        {lines => (
+          <For each={lines()}>
+            {(line, index) => (
+              <>
+                <For each={line}>
+                  {token => (
+                    <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>
+                      {token.content}
+                    </span>
+                  )}
+                </For>
+                <Show when={index() < lines().length - 1}>{'\n'}</Show>
+              </>
+            )}
+          </For>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+export function renderBashHighlightForContext(
+  code: string,
+  context: RenderContext | undefined,
+  namespace = 'bash',
+): string {
+  return renderHighlightForContext(code, context, namespace, {
+    cacheKind: 'bash',
+    render: renderBashHighlight,
+    premeasureFallback: escapeHtml,
+    pausedFallback: escapeHtml,
+  }) ?? ''
+}
+
+export function BashHighlightHtml(props: {
+  code: string
+  context?: RenderContext
+  namespace?: string
+  class?: string
+  maxHighlightChars?: number
+  maxHighlightLines?: number
+  dataCommandInputCollapsed?: boolean
+  dataCommandInputOverflowing?: boolean
+  elementRef?: (el: HTMLDivElement) => void
+}): JSX.Element {
+  const tokens = useAsyncCodeTokens('bash', () => props.code, () => props.context, () => ({
+    maxChars: props.maxHighlightChars,
+    maxLines: props.maxHighlightLines,
+  }))
+  return (
+    <TokenizedCode
+      class={props.class}
+      code={props.code}
+      dataCommandInputCollapsed={props.dataCommandInputCollapsed}
+      dataCommandInputOverflowing={props.dataCommandInputOverflowing}
+      elementRef={props.elementRef}
+      tokens={tokens()}
+    />
+  )
 }
 
 export function renderJsonHighlight(code: string): string {
@@ -344,8 +535,49 @@ export function renderJsonHighlight(code: string): string {
   }
 }
 
+export function renderJsonHighlightForContext(
+  code: string,
+  context: RenderContext | undefined,
+  namespace = 'json',
+): string | null {
+  return renderHighlightForContext(code, context, namespace, {
+    cacheKind: 'json',
+    render: renderJsonHighlight,
+    premeasureFallback: () => null,
+    pausedFallback: () => null,
+  })
+}
+
+function renderHighlightForContext(
+  code: string,
+  context: RenderContext | undefined,
+  namespace: string,
+  opts: {
+    cacheKind: 'bash' | 'json'
+    render: (code: string) => string
+    premeasureFallback: (code: string) => string | null
+    pausedFallback: (code: string) => string | null
+  },
+): string | null {
+  if (context?.premeasureMode)
+    return opts.premeasureFallback(code)
+  const displayedKey = `${opts.cacheKind}-displayed:${namespace}`
+  const highlightKey = `${opts.cacheKind}-highlight:${namespace}`
+  if (shouldPauseSyntaxHighlighting(context)) {
+    const displayed = getCachedRenderValueForString<string>(context, displayedKey, code)
+    if (displayed !== undefined)
+      return displayed
+    const cached = getCachedRenderValueForString<string>(context, highlightKey, code)
+    const html = cached ?? opts.pausedFallback(code)
+    return html === null ? null : setCachedRenderValueForString(context, displayedKey, code, html)
+  }
+  const html = opts.render(code)
+  setCachedRenderValueForString(context, highlightKey, code, html)
+  return setCachedRenderValueForString(context, displayedKey, code, html)
+}
+
 /** Number of lines/items shown when a tool result is collapsed (last row fades out). */
-export const COLLAPSED_RESULT_ROWS = 3
+export { COLLAPSED_RESULT_ROWS } from './results/collapse'
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
 
@@ -378,11 +610,13 @@ function renderReadOrPre(
   resultContent: string,
   readFilePath?: string,
   collapsed?: boolean,
+  context?: RenderContext,
 ): JSX.Element {
   const { leading, lines, trailing } = parseReadContent(resultContent)
   if (lines) {
     const isCollapsed = !!collapsed && lines.length > COLLAPSED_RESULT_ROWS
     const displayLines = isCollapsed ? lines.slice(0, COLLAPSED_RESULT_ROWS) : lines
+    const pauseSyntax = shouldPauseSyntaxHighlighting(context)
     // Reminder/tag alerts render only when expanded (mirroring ReadFileResultBody),
     // so a collapsed body keeps the body-only height the off-screen estimator assumes.
     return (
@@ -390,7 +624,13 @@ function renderReadOrPre(
         <Show when={!collapsed}>
           <For each={leading}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
         </Show>
-        <ReadResultView lines={displayLines} filePath={readFilePath} />
+        <ReadResultView
+          lines={displayLines}
+          filePath={readFilePath}
+          premeasureMode={context?.premeasureMode}
+          syntaxHighlightingPaused={pauseSyntax}
+          textSelectionActive={context?.textSelectionActive}
+        />
         <Show when={!collapsed}>
           <For each={trailing}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
         </Show>
@@ -468,18 +708,19 @@ export function ToolResultMessage(props: {
             when={renderableDiff()}
             fallback={
               props.displayKind === 'read'
-                ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded())
+                ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded(), props.context)
                 : (
                     <CollapsibleContent
                       kind={props.displayKind === 'markdown' ? 'markdown-tool-result' : 'ansi-or-pre'}
                       text={normalizedResultContent()}
                       display={displayContent()}
                       isCollapsed={isCollapsed()}
+                      context={props.context}
                     />
                   )
             }
           >
-            {src => <FileEditDiffBody source={src()} view={diffView()} />}
+            {src => <FileEditDiffBody source={src()} view={diffView()} context={props.context} />}
           </Show>
         </Show>
       </div>

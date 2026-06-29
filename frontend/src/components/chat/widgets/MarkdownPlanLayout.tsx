@@ -2,10 +2,10 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { renderMarkdown } from '~/lib/renderMarkdown'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
+import { renderMarkdownForContext } from '../messageRenderers'
 import { ToolUseLayout } from '../toolRenderers'
 
 export interface MarkdownPlanLayoutProps {
@@ -24,8 +24,12 @@ export interface MarkdownPlanLayoutProps {
  * `ExitPlanMode` tool_use blocks — they differ only in title/toolName/source.
  */
 export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element {
-  const { copied, copy } = useCopyButton(() => props.planText || undefined)
-  const handleReply = () => props.context?.onReply?.(props.planText)
+  const { copied, copy } = useCopyButton(() => props.context?.premeasureMode ? undefined : props.planText || undefined)
+  const handleReply = () => {
+    if (!props.context?.premeasureMode)
+      props.context?.onReply?.(props.planText)
+  }
+  const renderedPlan = createMemo(() => renderMarkdownForContext(props.planText, props.context))
 
   return (
     <ToolUseLayout
@@ -43,7 +47,7 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
     >
       <Show when={props.planText}>
         <hr />
-        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(props.planText)} />
+        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderedPlan()} />
       </Show>
     </ToolUseLayout>
   )

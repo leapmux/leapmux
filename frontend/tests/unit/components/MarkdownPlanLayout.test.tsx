@@ -1,4 +1,4 @@
-import { render } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MarkdownPlanLayout } from '~/components/chat/widgets/MarkdownPlanLayout'
 
@@ -38,5 +38,33 @@ describe('markdownPlanLayout', () => {
     // The reply button is rendered when both onReply and planText are present.
     // We don't assert on specific selectors — just that the component mounts cleanly.
     expect(container.firstElementChild).toBeInTheDocument()
+  })
+
+  it('keeps inert copy and reply action slots during premeasure', async () => {
+    const onReply = vi.fn()
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
+    const { container } = render(() => (
+      <MarkdownPlanLayout
+        toolName="Plan"
+        title="Proposed Plan"
+        planText="hello"
+        context={{ onReply, premeasureMode: true }}
+      />
+    ))
+
+    const quote = container.querySelector('[data-testid="message-quote"]')
+    const copy = container.querySelector('[data-testid="message-copy-markdown"]')
+    expect(quote).toBeInTheDocument()
+    expect(copy).toBeInTheDocument()
+
+    fireEvent.click(quote!)
+    fireEvent.click(copy!)
+    await Promise.resolve()
+
+    expect(onReply).not.toHaveBeenCalled()
+    expect(writeText).not.toHaveBeenCalled()
   })
 })

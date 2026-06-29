@@ -6,14 +6,12 @@ import MessageSquare from 'lucide-solid/icons/message-square'
 import { createMemo, untrack } from 'solid-js'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
-import { renderMarkdown } from '~/lib/renderMarkdown'
-import { useSharedExpandedState } from '../../messageRenderers'
+import { renderMarkdownForContext, useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { controlResponseRenderer } from '../../notificationRenderers'
-import { hasMoreLinesThan } from '../../results/useCollapsedLines'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
 import { taskNotificationRenderer } from '../../taskRenderers'
 import {
-  COLLAPSED_RESULT_ROWS,
   ToolUseLayout,
 } from '../../toolRenderers'
 import {
@@ -80,7 +78,7 @@ function AgentPromptView(props: {
   const stateKey = untrack(() => props.context?.expandUiKey ?? MESSAGE_UI_KEY.AGENT_PROMPT)
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
   const isCollapsed = () => !expanded() && hasMoreLinesThan(props.text, COLLAPSED_RESULT_ROWS)
-  const html = createMemo(() => renderMarkdown(props.text))
+  const html = createMemo(() => renderMarkdownForContext(props.text, props.context))
 
   return (
     <ToolUseLayout

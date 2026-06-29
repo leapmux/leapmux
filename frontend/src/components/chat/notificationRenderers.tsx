@@ -247,7 +247,7 @@ function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
 
 /** Handles control response messages: {"isSynthetic":true,"controlResponse":{"action":"approved"|"rejected","comment":"..."}} */
 export const controlResponseRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
+  render(parsed, context) {
     if (!isObject(parsed) || !isObject(parsed.controlResponse))
       return null
 
@@ -263,7 +263,7 @@ export const controlResponseRenderer: MessageContentRenderer = {
         <div class={controlResponseMessage}>
           <div>
             <div>Sent feedback:</div>
-            <MarkdownText text={comment} />
+            <MarkdownText text={comment} context={context} />
           </div>
         </div>
       )
@@ -369,9 +369,8 @@ function threadEntriesFor(
  * Pure: the ordered render entries (text + divider) a notification thread produces,
  * AFTER group coalescing (a run of same-key `group` entries collapses into one
  * `Prefix: a, b, c` text entry). The single source of truth for both
- * `renderNotificationThread` and the height estimator's body metrics
- * (`notificationThreadMetrics`), so the two can't drift on WHICH children render or
- * WHAT they say -- the height estimator sizes from exactly what the renderer emits.
+ * `renderNotificationThread` and `notificationThreadMetrics`, so the two can't
+ * drift on WHICH children render or WHAT they say.
  */
 export function notificationThreadEntries(messages: unknown[], agentProvider?: AgentProvider): RenderEntry[] {
   const entries: RenderEntry[] = []
@@ -417,13 +416,13 @@ export function notificationThreadEntries(messages: unknown[], agentProvider?: A
 }
 
 /**
- * Pure body metrics for the notification height estimate: the total rendered text
- * length and the number of laid-out BLOCKS the thread becomes. `renderNotificationThread`
+ * Pure body metrics for notification rendering: the total rendered text length and
+ * the number of laid-out BLOCKS the thread becomes. `renderNotificationThread`
  * coalesces a run of consecutive `text` entries into ONE comma-joined paragraph
  * `<div>` and renders each `divider` as its own block, so a many-child thread with a
  * short joined body lays out as a few wrapped lines -- NOT one line per child. Sizing
- * from this (vs the child count) is what keeps the estimate from inflating ~8x on a
- * coalesced thread, while staying biased up (the block count floors the wrapped rows).
+ * from this (vs the child count) is what keeps collapsed-row logic from treating a
+ * coalesced thread as one row per child.
  */
 export function notificationThreadMetrics(messages: unknown[], agentProvider?: AgentProvider): { textLength: number, blockCount: number } {
   const entries = notificationThreadEntries(messages, agentProvider)

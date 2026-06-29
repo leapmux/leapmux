@@ -70,7 +70,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     const top = savedAnchor ? ctx.virt.scrollTopForAnchor(savedAnchor) : null
     if (top == null)
       return false
-    ctx.writeScrollTop(top)
+    ctx.writeScrollTop(top, 'viewport-restore-anchor')
     // Capture from the LANDED scrollTop (post browser-clamp), not the pre-clamp
     // `top`, so repinToAnchor's stale-anchor check measures movement from where
     // the viewport actually is, not an unreachable target in a shrunk window.
@@ -101,7 +101,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     if (savedScroll.rawScrollTop == null || ctx.virt.totalHeight() > 0)
       return false
     const clamped = clampScrollTop(el, savedScroll.rawScrollTop)
-    ctx.writeScrollTop(clamped)
+    ctx.writeScrollTop(clamped, 'viewport-restore-raw-top')
     armSuppressIfNearTop(el.scrollTop)
     ctx.refreshViewport()
     ctx.setAtBottom(false)
@@ -121,7 +121,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     const top = savedAnchor ? ctx.virt.scrollTopNearAnchor(savedAnchor) : null
     if (top == null)
       return false
-    ctx.writeScrollTop(top)
+    ctx.writeScrollTop(top, 'viewport-restore-near-anchor')
     ctx.setAnchor(ctx.virt.anchorAt(el.scrollTop), el.scrollTop)
     ctx.refreshViewport()
     ctx.setAtBottom(false)
@@ -138,7 +138,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     // scroll -- poisoning the velocity tracker with a phantom fling, capturing a
     // spurious anchor/lastScrollDir, and deferring the next re-pin into flingSettle.
     // Mirrors the sibling restoreFromAnchor/restoreFromRawTop strategies.
-    ctx.writeScrollTop(0)
+    ctx.writeScrollTop(0, 'viewport-restore-top')
     extras.setSuppressOlder(true)
     ctx.refreshViewport()
     ctx.setAtBottom(false)

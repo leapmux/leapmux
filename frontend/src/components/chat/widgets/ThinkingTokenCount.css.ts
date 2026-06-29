@@ -1,4 +1,5 @@
 import { keyframes, style } from '@vanilla-extract/css'
+import { motion } from '~/styles/tokens'
 
 // Vertical size of one digit cell — also the per-digit roll distance. Tied to
 // the count's font-size (em) so the strip scales with the surrounding text.
@@ -7,7 +8,7 @@ const CELL = '1.3em'
 // Crossfade duration for a format change. Imported by the component (as
 // styles.SWAP_MS) for the fade-out layer's removal timer, so the timer and this
 // CSS animation share one source of truth.
-export const SWAP_MS = 180
+export const SWAP_MS = motion.medium
 
 // root is the baseline-aligned item inside the verb row.
 export const root = style({
@@ -96,7 +97,7 @@ export const starPower = style({
 // a digit, or every slot of the live layer when it is swapped for a unit
 // crossfade. Runs once on mount, so persisting (rolling) columns never re-fade.
 export const slotEnter = style({
-  'animation': `${fadeIn} ${SWAP_MS}ms ease-out`,
+  'animation': `${fadeIn} var(--transition)`,
   '@media': {
     '(prefers-reduced-motion: reduce)': { animation: 'none' },
   },
@@ -122,7 +123,7 @@ export const liveLayer = style({
 // A snapshot of the prior value — the live layer's layout plus a fade-out —
 // drawn over the live layer during a format change.
 export const exitingLayer = style([liveLayer, {
-  'animation': `${fadeOut} ${SWAP_MS}ms ease-out forwards`,
+  'animation': `${fadeOut} var(--transition) forwards`,
   '@media': {
     '(prefers-reduced-motion: reduce)': { animation: 'none', opacity: 0 },
   },

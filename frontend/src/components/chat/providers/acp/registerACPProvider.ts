@@ -7,7 +7,6 @@ import { ACPControlActions, ACPControlContent } from '../../controls/ACPControlR
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { acpBuildControlResponse, acpExtractQuotableText, buildACPInterruptContent, classifyACPMessage } from './classification'
-import { acpHeightMetrics } from './heightMetrics'
 import { acpResultDivider } from './renderers'
 import { renderACPMessage } from './rendering'
 
@@ -138,7 +137,6 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     ),
     renderMessage: renderACPMessage,
     resultDivider: acpResultDivider,
-    heightMetrics: acpHeightMetrics,
     extractQuotableText: acpExtractQuotableText,
     buildInterruptContent: buildACPInterruptContent,
     buildControlResponse: acpBuildControlResponse,

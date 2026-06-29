@@ -37,9 +37,13 @@ describe('containsAnsi', () => {
     expect(containsAnsi('\x1B[4munderline\x1B[0m')).toBe(true)
   })
 
-  it('does not match non-SGR escape sequences', () => {
-    // Cursor movement: ESC[H — not an SGR sequence (no 'm' terminator)
-    expect(containsAnsi('\x1B[H')).toBe(false)
+  it('detects non-SGR CSI escapes that fallback rendering strips', () => {
+    expect(containsAnsi('\x1B[H')).toBe(true)
+    expect(containsAnsi('\x1B[2K')).toBe(true)
+  })
+
+  it('detects OSC escapes that fallback rendering strips', () => {
+    expect(containsAnsi('\x1B]8;;https://example.com\x1B\\link\x1B]8;;\x1B\\')).toBe(true)
   })
 })
 
@@ -86,6 +90,21 @@ describe('renderAnsi', () => {
     expect(html).toContain('--shiki-dark-bg:')
   })
 
+  it('strips non-SGR CSI controls before rendering', () => {
+    const html = renderAnsi('before\x1B[2Kafter\x1B[A')
+    expect(html.includes('\x1B')).toBe(false)
+    expect(html).toContain('before')
+    expect(html).toContain('after')
+  })
+
+  it('strips OSC controls before rendering while preserving visible text', () => {
+    const html = renderAnsi('before\x1B]8;;https://example.com\x1B\\link\x1B]8;;\x1B\\after')
+    expect(html.includes('\x1B')).toBe(false)
+    expect(html).toContain('before')
+    expect(html).toContain('link')
+    expect(html).toContain('after')
+  })
+
   describe('fallback on shiki error', () => {
     afterEach(() => {
       vi.restoreAllMocks()
@@ -100,6 +119,16 @@ describe('renderAnsi', () => {
       expect(html).toContain('<pre><code>')
       expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;')
       expect(html).not.toContain('<b>')
+    })
+
+    it('strips terminal controls from fallback HTML', () => {
+      vi.spyOn(shikiHighlighter, 'codeToHtml').mockImplementation(() => {
+        throw new Error('regex engine failure')
+      })
+
+      const html = renderAnsi('before\x1B[2K<script>after</script>')
+      expect(html.includes('\x1B')).toBe(false)
+      expect(html).toContain('before&lt;script&gt;after&lt;/script&gt;')
     })
   })
 })

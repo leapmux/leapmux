@@ -155,8 +155,8 @@ export function piFallbackDiffSources(
 
 /**
  * The diff source(s) a Pi edit/write `tool_execution_end` row renders, shared by
- * `piToolResultMeta` (toolbar copyable/hasDiff) and the height estimator so both
- * size/format the same diff. Prefers the inline result diff
+ * `piToolResultMeta` (toolbar copyable/hasDiff) so both format the same diff.
+ * Prefers the inline result diff
  * (`resolvePiResultDiff`), else the tool_use-start fallback. Returns [] for a
  * non-edit/write tool, a failed execution (renders error text, not a diff), or
  * when no diff is present.
@@ -164,9 +164,8 @@ export function piFallbackDiffSources(
  * A PRESENT-but-unparseable result diff (`source` null, `rawDiff` non-empty) does
  * NOT fall through to the start-args fallback: the renderer (PiDiffToolResult)
  * draws the raw diff text as a single `<pre>` block in that case, NOT a structured
- * diff, so synthesizing one here would make the height estimate / `hasDiff` meta
- * model a multi-line diff the body never renders -- the exact estimate-vs-render
- * drift this shared resolver exists to prevent. Mirror the renderer's
+ * diff, so synthesizing one here would make `hasDiff` meta model a multi-line diff
+ * the body never renders. Mirror the renderer's
  * `isError() || resultDiff().rawDiff` guard.
  */
 export function piResolveDiffSources(

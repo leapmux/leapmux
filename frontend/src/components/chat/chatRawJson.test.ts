@@ -78,39 +78,14 @@ describe('buildRawJsonEnvelope', () => {
   })
 
   describe('geometry.height debug field', () => {
-    it('emits estimated, measured, and signed delta/delta_pct when both are present', () => {
+    it('emits the measured DOM height when present', () => {
       const out = JSON.parse(buildRawJsonEnvelope(
         msg(),
         parsed({ rawText: '{}' }),
         'agent',
-        { estimated: 184, measured: 203 },
+        { measured: 203 },
       ))
-      expect(out.geometry.height.estimated).toBe(184)
-      expect(out.geometry.height.measured).toBe(203)
-      expect(out.geometry.height.delta).toBe(19) // measured - estimated, positive => under-estimate
-      expect(out.geometry.height.delta_pct).toBeCloseTo(19 / 203, 6)
-    })
-
-    it('nulls the missing side and omits delta/delta_pct when only the estimate is known', () => {
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { estimated: 184 }))
-      expect(out.geometry.height).toEqual({ estimated: 184, measured: null })
-    })
-
-    it('nulls the missing side and omits delta/delta_pct when only the measurement is known', () => {
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { measured: 203 }))
-      expect(out.geometry.height).toEqual({ estimated: null, measured: 203 })
-    })
-
-    it('uses delta_pct 0 (not NaN/Infinity) when the measured height is 0', () => {
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { estimated: 50, measured: 0 }))
-      expect(out.geometry.height.delta).toBe(-50)
-      expect(out.geometry.height.delta_pct).toBe(0)
-    })
-
-    it('reports a negative delta/delta_pct for an over-estimate (estimated > measured)', () => {
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { estimated: 200, measured: 150 }))
-      expect(out.geometry.height.delta).toBe(-50)
-      expect(out.geometry.height.delta_pct).toBeCloseTo(-50 / 150, 6)
+      expect(out.geometry.height).toBe(203)
     })
 
     it('injects geometry on the wrapper/notification path too (not only the content path)', () => {
@@ -118,24 +93,12 @@ describe('buildRawJsonEnvelope', () => {
         msg(),
         parsed({ rawText: '{"ignored":true}', wrapper: { old_seqs: [], messages: [{ x: 1 }] } }),
         'leapmux',
-        { estimated: 184, measured: 203 },
+        { measured: 203 },
       ))
       // The geometry field sits before the early-returning wrapper branch, so it
       // coexists with messages and is not swallowed by the content-path return.
       expect(out.messages).toEqual([{ x: 1 }])
-      expect(out.geometry.height).toMatchObject({ estimated: 184, measured: 203, delta: 19 })
-    })
-
-    it('includes the estimate breakdown under geometry.height.breakdown when provided', () => {
-      const breakdown = { kind: 'tool_result', total: 54, terms: [{ label: 'collapsed body', value: 54 }], metrics: { collapsed: true } }
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { estimated: 54, measured: 80, breakdown }))
-      expect(out.geometry.height.breakdown).toEqual(breakdown)
-      expect(out.geometry.height.estimated).toBe(54)
-    })
-
-    it('omits breakdown when not provided', () => {
-      const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{}' }), 'agent', { estimated: 54, measured: 80 }))
-      expect('breakdown' in out.geometry.height).toBe(false)
+      expect(out.geometry.height).toBe(203)
     })
 
     it('omits geometry entirely when heights is undefined or empty', () => {

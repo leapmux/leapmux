@@ -8,6 +8,7 @@ import { useOrg } from '~/context/OrgContext'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
+import { motion } from '~/styles/tokens'
 import * as styles from './UserMenuItems.css'
 import {
   setShowAboutDialog,
@@ -34,13 +35,13 @@ export const UserMenuItems: Component = () => {
   const handleSwitchMode = async () => {
     const overlay = document.createElement('div')
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000'
-    overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity .3s ease`
+    overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity var(--transition)`
     document.body.appendChild(overlay)
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => {
         overlay.style.opacity = '1'
       })
-      const fallback = setTimeout(resolve, 400)
+      const fallback = setTimeout(resolve, motion.medium + 100)
       overlay.addEventListener('transitionend', () => {
         clearTimeout(fallback)
         resolve()

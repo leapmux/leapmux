@@ -15,6 +15,17 @@ export interface CommandStreamSegment {
 }
 
 /**
+ * Version token for a span-linked sibling message. A row can render from its paired
+ * tool_use/tool_result, so cache freshness must move when the paired side changes
+ * identity, seq, or same-seq content version.
+ */
+export interface SpanMessageRevision {
+  id: string
+  seq: bigint
+  contentVersion: number
+}
+
+/**
  * A scroll anchor: the message (by row id) the viewport top is pinned to, plus
  * the pixel offset from that row's top to the viewport top. The virtualizer
  * produces it (anchorAt) and resolves it back to a scrollTop (scrollTopForAnchor);

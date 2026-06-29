@@ -17,7 +17,7 @@ export const container = style({
   'paddingBlock': `calc(2rem - ${opticalCenterOffset}) calc(2rem + ${opticalCenterOffset})`,
   'paddingInline': '2rem',
   'gap': 'var(--container-gap)',
-  'transition': 'opacity 0.3s ease',
+  'transition': 'opacity var(--transition)',
 } as any)
 
 export const header = style({
@@ -154,7 +154,7 @@ export const connectBtn = style({
   fontSize: '0.95rem',
   fontWeight: 'var(--font-normal)',
   cursor: 'pointer',
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -226,7 +226,7 @@ export const fdaButton = style({
   'fontSize': '0.85rem',
   'fontWeight': 'var(--font-normal)',
   'cursor': 'pointer',
-  'transition': 'opacity 0.15s',
+  'transition': 'opacity var(--transition)',
   'whiteSpace': 'nowrap',
   ':hover': {
     opacity: 0.85,

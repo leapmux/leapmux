@@ -60,7 +60,7 @@ export const sectionActions = style({
 export const sectionCount = style({
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
   selectors: {
     [`${sectionHeader}:hover &.canToggle`]: {
       opacity: 0,
@@ -81,7 +81,7 @@ export const sectionAddButton = style({
   'cursor': 'pointer',
   'position': 'absolute',
   'opacity': 0,
-  'transition': 'opacity 0.15s',
+  'transition': 'opacity var(--transition)',
   ':hover': {
     color: 'var(--foreground)',
   },
