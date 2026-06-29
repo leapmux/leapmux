@@ -39,6 +39,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
 
 vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
+  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
 vi.mock('~/lib/renderAnsi', async (importOriginal) => {
@@ -289,7 +290,6 @@ describe('command summary syntax highlighting selection stability', () => {
         collapsed
         command={command}
         context={{}}
-        namespace="test.collapsedFullCommandSummary"
       />
     ))
 
@@ -306,7 +306,6 @@ describe('command summary syntax highlighting selection stability', () => {
         collapsed
         command={'\n\n  \necho real-command'}
         context={{}}
-        namespace="test.leadingBlankCommandSummary"
       />
     ))
 
@@ -326,7 +325,6 @@ describe('command summary syntax highlighting selection stability', () => {
           collapsed
           command="echo short"
           context={{}}
-          namespace="test.fittingCommandSummary"
         />
       ))
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -340,7 +338,6 @@ describe('command summary syntax highlighting selection stability', () => {
           collapsed
           command={'echo one\necho two\necho three\necho four'}
           context={{}}
-          namespace="test.overflowingCommandSummary"
         />
       ))
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -364,7 +361,6 @@ describe('command summary syntax highlighting selection stability', () => {
           collapsed
           command={'echo one\necho two\necho three\necho four'}
           context={{ premeasureMode: true }}
-          namespace="test.premeasureOverflowingCommandSummary"
         />
       ))
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -385,7 +381,6 @@ describe('command summary syntax highlighting selection stability', () => {
       <CommandInputBody
         command={command}
         context={{}}
-        namespace="test.longCommandBody"
       />
     ))
 
@@ -407,7 +402,6 @@ describe('command summary syntax highlighting selection stability', () => {
         context={{
           syntaxHighlightingPaused: () => true,
         }}
-        namespace="test.pausedCommandSummary"
       />
     ))
 
@@ -417,7 +411,11 @@ describe('command summary syntax highlighting selection stability', () => {
     expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
   })
 
-  it('does not apply in-flight command tokenization while syntax highlighting becomes paused', async () => {
+  it('defers an in-flight command tokenization that lands while paused, then applies it on resume (no re-dispatch)', async () => {
+    // A worker tokenization dispatched while UNpaused that resolves AFTER a scroll-pause
+    // came up is STASHED and applied once the pause lifts -- not discarded and recomputed.
+    // (A pause re-runs the dispatch effect; the hook keeps the in-flight dispatch live and
+    // stashes its result rather than cancel + re-dispatch the same work.)
     tokenizeAsyncCalls.mockClear()
     type TestTokens = Array<Array<{ content: string, htmlStyle: { '--shiki-light': string, '--shiki-dark': string } }>>
     let resolveTokens: ((tokens: TestTokens) => void) | undefined
@@ -435,12 +433,12 @@ describe('command summary syntax highlighting selection stability', () => {
         context={{
           syntaxHighlightingPaused: paused,
         }}
-        namespace="test.inflightPausedCommandSummary"
       />
     ))
 
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo paused')
 
+    // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied.
     setPaused(true)
     resolveTokens?.([[{
       content: 'echo paused',
@@ -453,12 +451,13 @@ describe('command summary syntax highlighting selection stability', () => {
 
     expect(container.querySelector('span[data-shiki-token]')).toBeNull()
 
+    // Resume: the STASHED result is applied, with no second worker dispatch.
     setPaused(false)
 
     await waitFor(() => {
-      expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(2)
       expect(container.querySelector('span[data-shiki-token]')).not.toBeNull()
     })
+    expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(1)
   })
 
   it('tokenizes command input after an initially active text selection clears', async () => {
@@ -470,7 +469,6 @@ describe('command summary syntax highlighting selection stability', () => {
         class="summary"
         code="echo selected"
         context={{ textSelectionActive: selectionActive }}
-        namespace="test.selectionClearsCommandSummary"
       />
     ))
 
@@ -602,7 +600,6 @@ describe('command summary syntax highlighting selection stability', () => {
         class="summary"
         code="echo highlighted"
         context={{}}
-        namespace="test.highlightedCommandSummary"
       />
     ))
 
@@ -626,7 +623,6 @@ describe('command summary syntax highlighting selection stability', () => {
           renderCache: cache,
           syntaxHighlightingPaused: paused,
         }}
-        namespace="test.commandSummary"
       />
     ))
     const summary = container.querySelector('.summary')!

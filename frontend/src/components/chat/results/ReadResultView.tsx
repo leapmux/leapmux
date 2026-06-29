@@ -1,17 +1,16 @@
 import type { JSX } from 'solid-js'
 import type { AlertVariant } from '~/components/common/Alert'
-import type { CachedToken } from '~/lib/tokenCache'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
+import { ansiSyncTokenize } from '~/lib/ansiTokenize'
 import { guessLanguage } from '~/lib/languageMap'
-import { shikiHighlighter } from '~/lib/renderMarkdown'
-import { tokenizeAsync } from '~/lib/shikiWorkerClient'
-import { getCachedTokens } from '~/lib/tokenCache'
 import {
   codeViewContainer,
   codeViewContent,
   codeViewLine,
   codeViewLineNumber,
 } from '../markdownEditor/codeViewStyles.css'
+import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
+import { HIGHLIGHT_LINE_LIMIT } from './collapse'
 
 /** A single parsed line from Read tool output. */
 export interface ParsedCatLine {
@@ -58,9 +57,6 @@ const SINGLE_LINE_TAG_RE = /^<([a-z][\w-]*)>(.*)<\/\1>\s*$/i
 const OPEN_TAG_RE = /^<([a-z][\w-]*)>\s*$/i
 /** A bare closing tag on its own line: `</tag>` (multi-line block). */
 const CLOSE_TAG_RE = /^<\/([a-z][\w-]*)>\s*$/i
-
-/** Skip syntax highlighting for files above this many lines. */
-const HIGHLIGHT_LINE_LIMIT = 1000
 
 /** Title-case a tag name: `system-reminder`/`other_tag` -> "System Reminder", `otherTag` -> "Other Tag". */
 function tagLabel(tag: string): string {
@@ -208,112 +204,30 @@ export function ReadResultView(props: {
   /** Active browser selection: keep existing tokens but avoid replacing text nodes. */
   textSelectionActive?: () => boolean
 }): JSX.Element {
-  const lang = () => props.filePath ? guessLanguage(props.filePath) : undefined
+  // Memoized (like useDiffTokens' `lang`) so the hook's 2-4 reads per reactive pass --
+  // both effects' currentKey(), the seed, and syncTokenize -- don't each re-run extname()
+  // + the EXT_TO_LANG lookup.
+  const lang = createMemo(() => props.filePath ? guessLanguage(props.filePath) : undefined)
+  // Memoized so the O(lines) join isn't rebuilt on every read -- the hook reads `code`
+  // from both effects' currentKey() plus syncTokenize (2-3x per reactive pass).
+  const code = createMemo(() => props.lines.map(line => line.text).join('\n'))
 
-  const [tokenizedLines, setTokenizedLines] = createSignal<CachedToken[][] | null>(null)
-  let tokenizedKey: string | undefined
-  let pendingTokenized: { key: string, tokens: CachedToken[][] } | undefined
-  const shouldDeferTokenApplication = () => untrack(() => props.syntaxHighlightingPaused === true || props.textSelectionActive?.() === true)
-  const currentTokenKey = (): string | undefined => {
-    const l = lang()
-    const lines = props.lines
-    if (!l || lines.length === 0 || lines.length > HIGHLIGHT_LINE_LIMIT)
-      return undefined
-    return `${l}\0${lines.map(line => line.text).join('\n')}`
-  }
-
-  createEffect(() => {
-    if (props.premeasureMode || props.syntaxHighlightingPaused || props.textSelectionActive?.())
-      return
-    const key = currentTokenKey()
-    if (!key || pendingTokenized?.key !== key)
-      return
-    tokenizedKey = key
-    setTokenizedLines(pendingTokenized.tokens)
-    pendingTokenized = undefined
+  const tokenizedLines = useAsyncCodeTokens({
+    lang,
+    code,
+    // Line-count gate (very large files skip highlighting); lang presence is checked
+    // by the hook before this runs.
+    eligible: () => props.lines.length > 0 && props.lines.length <= HIGHLIGHT_LINE_LIMIT,
+    gate: () => ({
+      premeasure: props.premeasureMode === true,
+      hold: props.syntaxHighlightingPaused === true || props.textSelectionActive?.() === true,
+    }),
+    // ANSI is a special Shiki built-in -- tokenize synchronously on the main thread
+    // (the worker's Oniguruma core has no `ansi` grammar). null falls through to the
+    // worker, which renders it plain. Shared with the diff sides / gap-context lines so
+    // a `.log` file highlights identically wherever it appears.
+    syncTokenize: ansiSyncTokenize,
   })
-
-  createEffect(on(
-    () => [lang(), props.lines, props.premeasureMode, props.syntaxHighlightingPaused, props.textSelectionActive?.() === true] as const,
-    ([l, lines, premeasureMode, syntaxHighlightingPaused, textSelectionActive]) => {
-      if (premeasureMode || !l || lines.length === 0 || lines.length > HIGHLIGHT_LINE_LIMIT) {
-        tokenizedKey = undefined
-        pendingTokenized = undefined
-        setTokenizedLines(null)
-        return
-      }
-
-      const code = lines.map(line => line.text).join('\n')
-      const key = `${l}\0${code}`
-
-      if (syntaxHighlightingPaused || textSelectionActive) {
-        if (tokenizedKey !== key) {
-          tokenizedKey = undefined
-          pendingTokenized = undefined
-          setTokenizedLines(null)
-        }
-        return
-      }
-
-      if (tokenizedKey === key)
-        return
-
-      tokenizedKey = undefined
-      pendingTokenized = undefined
-      setTokenizedLines(null)
-
-      // ANSI is a special Shiki built-in — tokenize synchronously on the main
-      // thread since the web worker's highlighter core may not support it.
-      if (l === 'ansi') {
-        try {
-          const result = shikiHighlighter.codeToTokens(code, {
-            lang: 'ansi',
-            themes: { light: 'github-light', dark: 'github-dark' },
-            defaultColor: false,
-          })
-          const tokens = result.tokens.map(line =>
-            line.map(t => ({ content: t.content, htmlStyle: t.htmlStyle })),
-          )
-          tokenizedKey = key
-          if (shouldDeferTokenApplication())
-            pendingTokenized = { key, tokens }
-          else
-            setTokenizedLines(tokens)
-        }
-        catch { /* fall through to plain text */ }
-        return
-      }
-
-      // Synchronous cache check — avoids flash of unstyled text on re-expand
-      const cached = getCachedTokens(l, code)
-      if (cached) {
-        tokenizedKey = key
-        setTokenizedLines(cached)
-        return
-      }
-
-      // Async: dispatch to Web Worker, render plain text until ready
-      let cancelled = false
-      tokenizeAsync(l, code).then((tokens) => {
-        if (cancelled || key !== untrack(currentTokenKey))
-          return
-        if (!tokens) {
-          setTokenizedLines(null)
-          return
-        }
-        if (shouldDeferTokenApplication()) {
-          pendingTokenized = { key, tokens }
-          return
-        }
-        tokenizedKey = key
-        setTokenizedLines(tokens)
-      })
-
-      onCleanup(() => {
-        cancelled = true
-      })
-    },
-  ))
 
   // Dynamic line number column width based on the largest line number
   const lineNumWidth = createMemo(() => {
@@ -346,7 +260,12 @@ export function ReadResultView(props: {
                 >
                   <For each={tokens()!}>
                     {token => (
-                      <span style={token.htmlStyle as JSX.CSSProperties}>{token.content}</span>
+                      // `data-shiki-token` marks THIS as a syntax token so the dual-theme
+                      // color rule targets it precisely -- not the line-number span, which
+                      // also carries an inline `style` (its width) and would otherwise match
+                      // a bare `span[style]` selector and lose its faint color. Mirrors the
+                      // Bash/JSON token markup (TokenizedCode).
+                      <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>{token.content}</span>
                     )}
                   </For>
                 </Show>

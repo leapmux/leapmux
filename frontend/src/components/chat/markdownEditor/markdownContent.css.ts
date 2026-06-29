@@ -1,6 +1,7 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
+import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
+import { shikiDualThemeColors } from '../shikiTokenColors.css'
 
 export const markdownContent = style({
   wordBreak: 'break-word',
@@ -9,23 +10,16 @@ export const markdownContent = style({
 // Code blocks: move scroll to <code> so the copy button stays fixed.
 globalStyle(`${markdownContent} pre`, codeBlockPre('hidden'))
 globalStyle(`${markdownContent} pre code`, codeBlockCode)
+// Rendered (read-only) markdown code blocks WRAP long lines like every other read-only
+// code surface (tool output, Read, diff) instead of scrolling horizontally, which is
+// awkward inside a chat message; the copy button preserves the exact source regardless.
+// Scoped to markdownContent so the Milkdown EDITOR (which shares codeBlockCode) keeps
+// horizontal scroll for a stable caret while typing.
+globalStyle(`${markdownContent} pre code`, codeWrap)
 
-// Shiki dual-theme support via CSS variables
-globalStyle(`${markdownContent} pre.shiki`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`${markdownContent} pre.shiki span`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki`, {
-  color: 'var(--shiki-dark)',
-})
-
-globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki span`, {
-  color: 'var(--shiki-dark)',
-})
+// Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg)
+shikiDualThemeColors(`${markdownContent} pre.shiki`)
+shikiDualThemeColors(`${markdownContent} pre.shiki span`)
 
 // Task list checkboxes
 globalStyle(`${markdownContent} li > input[type="checkbox"]`, {

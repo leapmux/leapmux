@@ -1,4 +1,5 @@
 import type { StructuredPatchHunk } from '.'
+import type { RenderContext } from '../messageRenderers'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
 import { createSignal } from 'solid-js'
@@ -233,6 +234,220 @@ describe('diffView rendering preserves whitespace', () => {
       expect(screen.getByText('new-token:new line 1')).toBeInTheDocument()
     })
     expect(screen.queryByText('old-token:old line 1')).not.toBeInTheDocument()
+  })
+
+  it('maps tokens to the correct lines when both the top and bottom of a gap are revealed', async () => {
+    // Reveal a NON-contiguous slice (top 10 + bottom 10) and confirm each revealed line
+    // gets ITS token. The migrated gap tokenizes the joined revealed slice through the
+    // shared useAsyncCodeTokens hook and indexes tokens by POSITION (top slice first, then
+    // bottom slice), so this guards the top/bottom index mapping -- the old incremental
+    // path keyed a per-line map by gap index, the new one maps position -> gap line, and
+    // only expand-all (top-only) was covered before.
+    const gapLines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`)
+    // Hunk at line 26 -> lines 1..25 form one leading gap (25 hidden, > GAP_EXPAND_STEP).
+    const hunk = { oldStart: 26, oldLines: 1, newStart: 26, newLines: 1, lines: [' line 26'] }
+    const originalFile = [...gapLines, 'line 26'].join('\n')
+
+    // "Expand down" reveals the top 10 (lines 1..10); "Expand up" reveals the bottom 10
+    // (lines 16..25). The hook then tokenizes exactly this joined slice -- seed the cache
+    // so it resolves synchronously (no Worker in jsdom).
+    const revealed = [...gapLines.slice(0, 10), ...gapLines.slice(15, 25)]
+    setCachedTokens('typescript', revealed.join('\n'), revealed.map(line => [{ content: `tok:${line}`, htmlStyle: {} }]))
+
+    render(() => <DiffView filePath="example.ts" originalFile={originalFile} hunks={[hunk]} view="unified" />)
+
+    fireEvent.click(screen.getByText('Expand down')) // top 10
+    fireEvent.click(screen.getByText('Expand up')) // bottom 10
+
+    await waitFor(() => {
+      expect(screen.getByText('tok:line 1')).toBeInTheDocument() // first top line
+      expect(screen.getByText('tok:line 10')).toBeInTheDocument() // last top line
+      expect(screen.getByText('tok:line 16')).toBeInTheDocument() // first bottom line
+      expect(screen.getByText('tok:line 25')).toBeInTheDocument() // last bottom line
+    })
+    // The still-hidden middle (lines 11..15) is never revealed, so it has no token span.
+    expect(screen.queryByText('tok:line 13')).not.toBeInTheDocument()
+  })
+})
+
+describe('diffView old/new-side syntax highlighting (useAsyncCodeTokens migration)', () => {
+  // A context line is tokenized from the OLD side; a bare added line from the NEW side.
+  // Pre-seed the shared token cache for both sides so the migrated useDiffTokens hook
+  // takes its synchronous cache-hit path (no Worker needed), proving both sides flow
+  // through the shared hook into buildUnifiedLines.
+  const hunks: StructuredPatchHunk[] = [{
+    oldStart: 1,
+    oldLines: 1,
+    newStart: 1,
+    newLines: 2,
+    lines: [' ctx', '+added'],
+  }]
+
+  function seedSides(): void {
+    // extractSidesFromHunks: oldCode = 'ctx'; newCode = 'ctx\nadded'.
+    setCachedTokens('typescript', 'ctx', [[{ content: 'CTXTOK', htmlStyle: {} }]])
+    setCachedTokens('typescript', 'ctx\nadded', [
+      [{ content: 'CTXTOK2', htmlStyle: {} }],
+      [{ content: 'ADDEDTOK', htmlStyle: {} }],
+    ])
+  }
+
+  it('tokenizes both sides via the shared hook when a filePath resolves a language', async () => {
+    seedSides()
+    render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" />)
+
+    // The context line carries the OLD-side token; the added line the NEW-side token.
+    await waitFor(() => {
+      expect(screen.getByText('CTXTOK')).toBeInTheDocument()
+      expect(screen.getByText('ADDEDTOK')).toBeInTheDocument()
+    })
+  })
+
+  it('applies seeded cache tokens on a fresh mount even while paused (no second-view flash)', () => {
+    // Switching the diff view (unified<->split) mounts a fresh subtree, and the toggle's
+    // pointerdown pauses syntax highlighting for a scroll-idle beat -- so the new view mounts
+    // with syntaxHighlightingPaused=true. A fresh mount's first paint is not a disruptive
+    // text-node swap, so the already-cached tokens must seed THROUGH the hold gate and paint
+    // on the first frame rather than flashing plain until the pause lifts. (The hold gate
+    // still defers tokens for an IN-PLACE content change on an already-mounted diff.)
+    seedSides()
+    const context = { syntaxHighlightingPaused: () => true } as unknown as RenderContext
+    render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" context={context} />)
+
+    // Present synchronously on the first render (the seed), not after a deferred effect.
+    expect(screen.getByText('CTXTOK')).toBeInTheDocument()
+    expect(screen.getByText('ADDEDTOK')).toBeInTheDocument()
+  })
+
+  it('renders plain when no filePath resolves a language (ineligible)', () => {
+    seedSides()
+    render(() => <DiffView hunks={hunks} view="unified" />)
+
+    // No filePath -> lang undefined -> the hook never tokenizes; raw text renders.
+    expect(screen.getByText('ctx')).toBeInTheDocument()
+    expect(screen.queryByText('CTXTOK')).not.toBeInTheDocument()
+  })
+})
+
+describe('diffView ansi (.log) highlighting', () => {
+  // The ANSI escape byte, built via fromCharCode so the source stays plain ASCII.
+  const ESC = String.fromCharCode(27)
+
+  // A `.log` file resolves to the `ansi` language, which the Oniguruma token WORKER
+  // cannot tokenize (ansi is a Shiki special, not a bundled grammar). The diff sides /
+  // gap-context lines must fall back to the shared synchronous ansi tokenizer instead of
+  // degrading to plain -- these guard against the regression where only the Read view
+  // carried that fallback and `.log` diffs lost their colors.
+
+  it('colors a `.log` diff context line via the synchronous ansi tokenizer (no worker)', () => {
+    // One unchanged context line carrying an ANSI color escape; jsdom has no Worker, so
+    // the only way this highlights is the syncTokenize ansi path wired into useDiffTokens.
+    const { container } = render(() => (
+      <DiffView
+        filePath="out.log"
+        view="unified"
+        hunks={[{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [` ${ESC}[32mgreen${ESC}[0m tail`] }]}
+      />
+    ))
+
+    // The escape sequences are consumed into per-token colors -- the visible text is clean.
+    // Target the inline-styled token span (its diffContent parent has the same textContent
+    // but no style), so this asserts a real Shiki token, not the wrapper.
+    const greenSpan = [...container.querySelectorAll('span[style]')].find(s => s.textContent === 'green')
+    expect(greenSpan).toBeTruthy()
+    expect(greenSpan!.getAttribute('style')).toContain('--shiki-light')
+    // The raw escape byte never reaches the DOM (it would if the line rendered plain).
+    expect(container.textContent).not.toContain(ESC)
+  })
+
+  it('colors a revealed `.log` gap-context line via the synchronous ansi tokenizer', () => {
+    // Leading gap of ansi-colored lines; expanding it must tokenize the revealed slice
+    // through the same syncTokenize path (the gap hook was the other diff surface missing it).
+    const originalFile = [
+      `${ESC}[31mred-one${ESC}[0m`,
+      `${ESC}[32mgreen-two${ESC}[0m`,
+      'line 3',
+    ].join('\n')
+    render(() => (
+      <DiffView
+        filePath="out.log"
+        view="unified"
+        originalFile={originalFile}
+        hunks={[{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: [' line 3'] }]}
+      />
+    ))
+
+    fireEvent.click(screen.getByText('2 lines hidden'))
+
+    // Revealed gap lines render colored (escapes stripped into token colors). Target the
+    // inline-styled token span rather than its unstyled diffContent parent.
+    const redSpan = [...document.querySelectorAll('span[style]')].find(s => s.textContent === 'red-one')
+    expect(redSpan).toBeTruthy()
+    expect(redSpan!.getAttribute('style')).toContain('--shiki-light')
+  })
+})
+
+describe('diffView shared gap scaffold (unified + split)', () => {
+  // Both views render through one DiffGapScaffold; these exercise the shared reveal path
+  // in the split view and the trailing-gap branch, which the unified leading-gap tests
+  // above don't cover -- guarding the unified/split -> scaffold extraction.
+
+  it('expands a leading gap in SPLIT view through the shared scaffold', async () => {
+    const originalFile = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
+    render(() => (
+      <DiffView
+        originalFile={originalFile}
+        hunks={[{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, lines: [' line 10'] }]}
+        view="split"
+      />
+    ))
+
+    // Leading gap: lines 1..9 hidden. Reveal them via the shared scaffold's expand-all.
+    fireEvent.click(screen.getByText('9 lines hidden'))
+    await Promise.resolve()
+
+    // Split renders each gap context line in BOTH gutters (left + right), so each hidden
+    // line appears exactly twice -- guards GapContextLine's split branch emitting both rows.
+    expect(screen.getAllByText('line 1')).toHaveLength(2)
+    expect(screen.getAllByText('line 9')).toHaveLength(2)
+  })
+
+  it('reveals a trailing gap in UNIFIED view through the shared scaffold', async () => {
+    // Hunk touches line 2 -> a 1-line leading gap (line 1) and a 9-line trailing gap
+    // (lines 3..11). The trailing branch lives only in the scaffold's real-gap path.
+    const originalFile = Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join('\n')
+    render(() => (
+      <DiffView
+        originalFile={originalFile}
+        hunks={[{ oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: [' line 2'] }]}
+        view="unified"
+      />
+    ))
+
+    // "9 lines hidden" is the trailing gap ("1 line hidden" is the leading one).
+    fireEvent.click(screen.getByText('9 lines hidden'))
+    await Promise.resolve()
+
+    expect(screen.getByText('line 3')).toBeInTheDocument() // first trailing line
+    expect(screen.getByText('line 11')).toBeInTheDocument() // last trailing line
+  })
+
+  it('reveals a trailing gap in SPLIT view through the shared scaffold', async () => {
+    const originalFile = Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join('\n')
+    render(() => (
+      <DiffView
+        originalFile={originalFile}
+        hunks={[{ oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: [' line 2'] }]}
+        view="split"
+      />
+    ))
+
+    fireEvent.click(screen.getByText('9 lines hidden'))
+    await Promise.resolve()
+
+    // Both gutters render each revealed line (split view), so each appears exactly twice.
+    expect(screen.getAllByText('line 3')).toHaveLength(2)
+    expect(screen.getAllByText('line 11')).toHaveLength(2)
   })
 })
 

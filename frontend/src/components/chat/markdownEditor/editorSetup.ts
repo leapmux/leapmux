@@ -2,11 +2,10 @@ import type { Ctx } from '@milkdown/ctx'
 import type { Setter } from 'solid-js'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
-import type { ActiveFormatting } from '~/lib/editor/toolbarState'
+import type { ActiveFormatting, CodeLangHandlers } from '~/lib/editor/toolbarState'
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
 import { clipboard } from '@milkdown/plugin-clipboard'
 import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
-import { createParser as createShikiParser } from '@milkdown/plugin-highlight/shiki'
 import { history } from '@milkdown/plugin-history'
 import { listener, listenerCtx } from '@milkdown/plugin-listener'
 import {
@@ -36,8 +35,18 @@ import {
   createSuppressTextSubstitutionPlugin,
   createTabKeyPlugin,
 } from '~/lib/editor/keyboardPlugins'
+import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin, createToolbarStatePlugin } from '~/lib/editor/toolbarState'
-import { shikiHighlighter } from '~/lib/renderMarkdown'
+import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+
+// One Oniguruma-backed highlighter shared across all editor mounts. Created
+// lazily (cheap closure here; the WASM engine + grammars load only when the
+// first code block is highlighted), so opening the composer isn't blocked.
+let editorHighlighter: ReturnType<typeof createLazyOnigurumaHighlighter> | undefined
+function getEditorHighlighter(): ReturnType<typeof createLazyOnigurumaHighlighter> {
+  editorHighlighter ??= createLazyOnigurumaHighlighter()
+  return editorHighlighter
+}
 
 /** Options for building the Milkdown editor. */
 export interface EditorSetupOptions {
@@ -51,12 +60,8 @@ export interface EditorSetupOptions {
   getOnTogglePlanMode: () => (() => void) | undefined
   /** Setter for the consolidated toolbar active-formatting state. */
   setActiveFormatting: (next: ActiveFormatting) => void
-  /** Code-language popover state setters. */
-  codeLangSetters: {
-    setCodeLangNodePos: Setter<number>
-    setCodeLangAnchorEl: Setter<HTMLElement | undefined>
-    setCodeLangPopoverOpen: Setter<boolean>
-  }
+  /** Code-language popover state setters + getters (getters enable toggle-on-reclick). */
+  codeLangHandlers: CodeLangHandlers
   /** Markdown signal setter (called on every document change). */
   setMarkdown: Setter<string>
   /** Optional callback when content changes (has content / empty). */
@@ -88,7 +93,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const suppressTextSubstitutionPlugin = createSuppressTextSubstitutionPlugin()
   const listItemEnterPlugin = createListItemEnterPlugin(opts.pluginRefs)
   const toolbarStatePlugin = createToolbarStatePlugin(opts.setActiveFormatting)
-  const codeLangPlugin = createCodeLangPlugin(opts.codeLangSetters)
+  const codeLangPlugin = createCodeLangPlugin(opts.codeLangHandlers)
   const listDeleteFixPlugin = createListDeleteFixPlugin()
   const codeSpanEscapePlugin = createCodeSpanEscapePlugin()
   const markdownPastePlugin = createMarkdownPastePlugin()
@@ -105,11 +110,8 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const inlineCodeInputRule = createInlineCodeInputRule()
   const strikethroughInputRule = createStrikethroughInputRule()
 
-  const shikiParser = createShikiParser(shikiHighlighter, {
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
-  const languageExtractor = createAutoDetectLanguageExtractor(shikiHighlighter)
+  const shikiParser = createLazyShikiParser(getEditorHighlighter())
+  const languageExtractor = createAutoDetectLanguageExtractor()
 
   return Editor.make()
     .config((ctx: Ctx) => {

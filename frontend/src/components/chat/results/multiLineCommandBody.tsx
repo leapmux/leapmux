@@ -54,7 +54,6 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
 export function CommandInputSummary(props: {
   command: string
   context?: RenderContext
-  namespace?: string
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): JSX.Element {
@@ -112,25 +111,18 @@ export function CommandInputSummary(props: {
         measureOverflow()
       }}
       maxHighlightChars={COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT}
-      namespace={props.namespace ?? 'commandInput.summary'}
     />
   )
 }
 
 /** Full command body shown after expanding a command input summary. */
-export function CommandInputBody(props: { command: string, context?: RenderContext, namespace?: string }): JSX.Element {
+export function CommandInputBody(props: { command: string, context?: RenderContext }): JSX.Element {
   return (
     <BashHighlightHtml
       class={toolResultContentAnsi}
       code={props.command}
       context={props.context}
       maxHighlightChars={COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT}
-      namespace={props.namespace ?? 'commandInput.body'}
     />
   )
-}
-
-/** Shiki-highlighted multi-line bash command body shared by Claude Bash and ACP execute renderers. */
-export function MultiLineCommandBody(props: { command: string, context?: RenderContext }): JSX.Element {
-  return <CommandInputBody command={props.command} context={props.context} namespace="multiLineCommandBody" />
 }

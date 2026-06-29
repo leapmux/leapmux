@@ -14,6 +14,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
 
 vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
+  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
 const { renderMessageContent } = await import('../messageRenderers')

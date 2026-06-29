@@ -1,12 +1,11 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { codeTypography, codeWrap } from '~/styles/codeBlock'
+import { shikiDualThemeColors } from '../shikiTokenColors.css'
 
 // Diff container
 export const diffContainer = style({
+  ...codeTypography,
   position: 'relative',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
   overflow: 'auto',
   borderRadius: 'var(--radius-small)',
   border: '1px solid var(--border)',
@@ -34,10 +33,9 @@ export const diffAddedInline = style({
 })
 
 export const diffLine = style({
+  ...codeWrap,
   display: 'flex',
   padding: '0 var(--space-2)',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
 })
 
 export const diffLineNumber = style({
@@ -76,39 +74,24 @@ export const diffContent = style({
 })
 
 // Shiki dual-theme support for diff token spans.
-// Only color is set here; backgroundColor is intentionally omitted so that
+// Only color is set here (no `bg`); backgroundColor is intentionally omitted so that
 // word-diff inline classes (diffRemovedInline, diffAddedInline) are not
 // overridden by a higher-specificity global rule.
-globalStyle(`${diffContainer} span[style]`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`html[data-theme="dark"] ${diffContainer} span[style]`, {
-  color: 'var(--shiki-dark)',
-})
+shikiDualThemeColors(`${diffContainer} span[style]`)
 
 // Split diff container (two columns side by side)
 export const diffSplitContainer = style({
+  ...codeTypography,
   position: 'relative',
   display: 'grid',
   gridTemplateColumns: '1fr 1fr',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
   overflow: 'auto',
   borderRadius: 'var(--radius-small)',
   border: '1px solid var(--border)',
   marginTop: 'var(--space-1)',
 })
 
-globalStyle(`${diffSplitContainer} span[style]`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`html[data-theme="dark"] ${diffSplitContainer} span[style]`, {
-  color: 'var(--shiki-dark)',
-})
+shikiDualThemeColors(`${diffSplitContainer} span[style]`)
 
 // Gap separator row between hunks (shows hidden line count + expand buttons)
 export const diffGapSeparator = style({

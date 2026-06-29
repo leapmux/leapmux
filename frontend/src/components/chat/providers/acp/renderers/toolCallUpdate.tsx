@@ -200,7 +200,6 @@ export function ToolCallUpdateMessage(props: {
         command={cmd}
         context={props.context}
         collapsed={collapsedSummary}
-        namespace="acp.toolCallUpdate.summary"
         onOverflowChange={setSummaryOverflows}
       />
     )
@@ -238,7 +237,7 @@ export function ToolCallUpdateMessage(props: {
     >
       {/* Execute: full command (when expanded) */}
       <Show when={kind() === ACP_TOOL_KIND.EXECUTE && expanded() && commandExpandable()}>
-        <CommandInputBody command={command()} context={props.context} namespace="acp.toolCallUpdate.body" />
+        <CommandInputBody command={command()} context={props.context} />
       </Show>
 
       <Show

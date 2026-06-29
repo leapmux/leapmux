@@ -71,7 +71,6 @@ defineCodexRenderer({
                   collapsed={!expanded()}
                   command={command()}
                   context={props.context}
-                  namespace="codex.commandExecution.summary"
                 />
                 <Show when={statusParts()}>
                   <div class={toolInputSummary}>{statusParts()}</div>

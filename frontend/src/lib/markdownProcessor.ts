@@ -1,81 +1,59 @@
 import type { Root } from 'hast'
+import type { Root as MdastRoot } from 'mdast'
 import type { HighlighterCore } from 'shiki/core'
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
-// Import themes
-import themeGithubDark from '@shikijs/themes/github-dark'
-import themeGithubLight from '@shikijs/themes/github-light'
 import rehypeStringify from 'rehype-stringify'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
-// Import bundled language grammars
-import langBash from 'shiki/langs/bash.mjs'
-import langC from 'shiki/langs/c.mjs'
-import langCpp from 'shiki/langs/cpp.mjs'
-import langCss from 'shiki/langs/css.mjs'
-import langDiff from 'shiki/langs/diff.mjs'
-import langGo from 'shiki/langs/go.mjs'
-import langHtml from 'shiki/langs/html.mjs'
-import langJava from 'shiki/langs/java.mjs'
-import langJavascript from 'shiki/langs/javascript.mjs'
-import langJson from 'shiki/langs/json.mjs'
-import langJsx from 'shiki/langs/jsx.mjs'
-import langMarkdown from 'shiki/langs/markdown.mjs'
-import langPython from 'shiki/langs/python.mjs'
-import langRust from 'shiki/langs/rust.mjs'
-import langSql from 'shiki/langs/sql.mjs'
-import langToml from 'shiki/langs/toml.mjs'
-import langTsx from 'shiki/langs/tsx.mjs'
-import langTypescript from 'shiki/langs/typescript.mjs'
-import langXml from 'shiki/langs/xml.mjs'
-import langYaml from 'shiki/langs/yaml.mjs'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
+import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
 
 /**
  * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
  * main-thread synchronous renderer (renderMarkdown.ts, which holds a
- * createHighlighterCoreSync instance) and the off-thread worker
- * (markdownWorker.ts, which holds a createHighlighterCore instance). Centralizing
- * the plugin chain + theme/lang set here is load-bearing: the worker's HTML output
- * MUST be byte-identical to the sync path's, because the same `markdownCache`
- * serves both and the CSS themes against the exact `pre.shiki` structure Shiki
- * emits (markdownContent.css.ts). A divergence would flash a differently-styled
- * block when the async result swaps in, or break theming outright.
+ * createHighlighterCoreSync instance on the JS regex engine) and the off-thread
+ * worker (markdownWorker.ts, which holds a createHighlighterCore instance on the
+ * Oniguruma WASM engine, lazily loading grammars). Centralizing the plugin chain +
+ * theme set here is load-bearing: both paths emit the same themed `pre.shiki`
+ * structure the CSS targets (markdownContent.css.ts), with `--shiki-light` /
+ * `--shiki-dark` dual-theme variables.
+ *
+ * The two paths may now use DIFFERENT engines, so their token boundaries can
+ * differ in edge cases -- but they never coexist in one runtime (the worker runs
+ * in the browser; the sync path runs only when `Worker` is undefined, i.e.
+ * tests/SSR), so the shared `markdownCache` is filled by exactly one of them per
+ * session and there is no flash from a sync->worker swap.
+ *
+ * The eager 20-grammar set the sync fallback needs lives with its sole consumer in
+ * renderMarkdown.ts (`shikiLangs`), NOT here -- so the lazy worker/editor paths that
+ * import this module for the pipeline factory don't drag in 20 eager grammar chunks
+ * they never use.
  */
-
-/**
- * Both Shiki themes with their `bg` overridden to `transparent`, so Shiki emits
- * `--shiki-light-bg`/`--shiki-dark-bg` as transparent and the surrounding
- * wrapper's background shows through instead of the theme's editor color.
- */
-export const transparentBgThemes = [themeGithubLight, themeGithubDark].map(t => ({ ...t, bg: 'transparent' }))
-
-/** The bundled Shiki language grammars, shared by the sync highlighter and the worker. */
-export const shikiLangs = [
-  langTypescript,
-  langJavascript,
-  langPython,
-  langRust,
-  langGo,
-  langJava,
-  langBash,
-  langJson,
-  langHtml,
-  langCss,
-  langYaml,
-  langToml,
-  langSql,
-  langMarkdown,
-  langDiff,
-  langC,
-  langCpp,
-  langJsx,
-  langTsx,
-  langXml,
-]
 
 const HTTP_URL_RE = /^https?:\/\//
+
+/**
+ * Remark plugin: lower-case fenced-code languages so a mixed-case fence (```JSON,
+ * ```Py) resolves to Shiki's all-lowercase grammar ids instead of degrading to a
+ * plain `text` block.
+ *
+ * Shiki's `codeToTokens`/`codeToHast` look the language up case-sensitively, so a
+ * `language-JSON` class throws "Language `JSON` not found" -- which `onError` +
+ * `fallbackLanguage` then silently render plain, even though the grammar IS loaded.
+ * The worker already lower-cases the fence languages it pre-loads (extractFenceLanguages),
+ * and the token worker / editor parser feed `codeToTokens` the lower-cased
+ * `resolveBundledLang` result; this keeps the markdown fence path consistent with both.
+ */
+function remarkLowercaseCodeLang() {
+  return (tree: MdastRoot) => {
+    visit(tree, 'code', (node) => {
+      if (node.lang)
+        node.lang = node.lang.toLowerCase()
+    })
+  }
+}
 
 /** Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s) links. */
 function rehypeExternalLinks() {
@@ -108,10 +86,23 @@ export function createMarkdownProcessor(highlighter: HighlighterCore) {
   return unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(remarkLowercaseCodeLang)
     .use(remarkRehype)
     .use(rehypeShikiFromHighlighter, highlighter as Parameters<typeof rehypeShikiFromHighlighter>[0], {
-      themes: { light: 'github-light', dark: 'github-dark' },
-      defaultColor: false,
+      ...DUAL_THEME_TOKEN_OPTIONS,
+      // A fence whose language isn't loaded (worker: lazy-load missed it; sync
+      // fallback: outside the 20-lang set) or that errors degrades to a plain
+      // `text` block instead of throwing the whole document to plain.
+      fallbackLanguage: 'text',
+      // An unknown/unloaded fence is handled by `fallbackLanguage` WITHOUT reaching
+      // here -- `onError` fires only when a LOADED grammar throws at tokenize time
+      // (an engine-version mismatch, a grammar that compiles but fails to tokenize,
+      // a Safari regex-engine blowup). That's a real regression, so surface it in
+      // development; production stays silent (the block already degraded to plain).
+      onError: (error) => {
+        if (import.meta.env.DEV)
+          console.warn('[markdownProcessor] Shiki failed to highlight a code block:', error)
+      },
     })
     .use(rehypeExternalLinks)
     .use(rehypeStringify)
@@ -147,4 +138,27 @@ export function renderWithPlainFallback(
   catch {
     return String(plainMarkdownProcessor.processSync(text))
   }
+}
+
+// Opening fence: any leading whitespace and blockquote markers, then >=3 backticks
+// or tildes, then the info string's first token (the language). Closing fences carry
+// no info string so they don't match. The leading `[ \t>]*` (rather than the
+// CommonMark-strict "<=3 spaces") is deliberate: remark parses fences nested in
+// blockquotes (`> ```py`) and in lists indented past 3 spaces (nested bullets, wide
+// ordered markers) as real code nodes with a language, and the worker must pre-load
+// those grammars too -- a miss renders that block plain. Over-matching is harmless (an
+// extra grammar load at worst); under-matching costs a block its highlight.
+const FENCE_LANG_RE = /^[ \t>]*(?:`{3,}|~{3,})[ \t]*([^\s`~]+)/gm
+
+/**
+ * Extract the distinct fenced-code-block languages declared in a markdown
+ * document, so the worker can lazily load their grammars BEFORE the synchronous
+ * `processSync` highlight (which cannot await). Returns raw info-string tokens
+ * (lowercased); the caller resolves aliases / unknowns via `ensureLanguage`.
+ */
+export function extractFenceLanguages(text: string): string[] {
+  const langs = new Set<string>()
+  for (const match of text.matchAll(FENCE_LANG_RE))
+    langs.add(match[1].toLowerCase())
+  return [...langs]
 }

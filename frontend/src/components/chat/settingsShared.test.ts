@@ -319,6 +319,82 @@ describe('searchableSelect', () => {
   })
 })
 
+describe('filterableListbox', () => {
+  it('wraps a row in the hover-tooltip span only when the row has tooltip text', () => {
+    render(() => FilterableListbox({
+      items: [
+        { label: 'With', value: 'w', tooltip: 'has tip' },
+        { label: 'Without', value: 'wo' },
+      ],
+      testIdPrefix: 'f',
+      onSelect: () => {},
+    }))
+
+    // Tooltip wraps its child in a display:contents span. A tooltip-less row is
+    // rendered directly into the listbox -- no idle Tooltip instance per row (the
+    // language picker has 235 tooltip-less rows, so this is the bulk of its cost).
+    const withTip = screen.getByTestId('f-w').parentElement!
+    expect(withTip.tagName).toBe('SPAN')
+    expect(withTip.getAttribute('style')).toContain('display:contents')
+    expect(screen.getByTestId('f-wo').parentElement!.tagName).not.toBe('SPAN')
+  })
+
+  it('uses a controlled filter when filter/setFilter props are provided', async () => {
+    const [filter, setFilter] = createSignal('')
+    render(() => FilterableListbox({
+      items: [
+        { label: 'Apple', value: 'apple' },
+        { label: 'Banana', value: 'banana' },
+      ],
+      testIdPrefix: 'f',
+      onSelect: () => {},
+      filter,
+      setFilter,
+    }))
+
+    // Typing routes through the caller's setter (so the caller can reset it across
+    // reuse, e.g. the always-mounted code-language popover resets it on open).
+    const input = screen.getByTestId('f-filter')
+    await fireEvent.input(input, { target: { value: 'ban' } })
+    expect(filter()).toBe('ban')
+
+    // ...and the controlled value drives which rows render.
+    setFilter('apple')
+    expect(screen.queryByTestId('f-apple')).not.toBeNull()
+    expect(screen.queryByTestId('f-banana')).toBeNull()
+  })
+
+  it('resets the keyboard highlight to the first row when resetKey changes', async () => {
+    // The always-mounted code-language popover passes its open signal as resetKey: a
+    // reopen must start at the top row, not a stale highlight left from a prior session
+    // (which Enter would mis-select). Drive it behaviorally via ArrowDown + Enter.
+    const [resetKey, setResetKey] = createSignal(0)
+    const onSelect = vi.fn()
+    render(() => FilterableListbox({
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+        { label: 'Bravo', value: 'bravo' },
+        { label: 'Charlie', value: 'charlie' },
+      ],
+      testIdPrefix: 'f',
+      onSelect,
+      resetKey,
+    }))
+
+    const input = screen.getByTestId('f-filter')
+    // Move the highlight down to the third row, then confirm Enter selects it.
+    await fireEvent.keyDown(input, { key: 'ArrowDown' })
+    await fireEvent.keyDown(input, { key: 'ArrowDown' })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSelect).toHaveBeenLastCalledWith('charlie')
+
+    // Changing resetKey (a reopen) snaps the highlight back to the first row.
+    setResetKey(1)
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSelect).toHaveBeenLastCalledWith('alpha')
+  })
+})
+
 describe('mergeStableOptionGroupRefs', () => {
   function group(id: string, currentValue: string): AvailableOptionGroup {
     return create(AvailableOptionGroupSchema, {

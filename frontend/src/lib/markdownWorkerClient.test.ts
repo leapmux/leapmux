@@ -116,7 +116,7 @@ describe('markdownWorkerClient', () => {
     expect(settled).toBe(false)
 
     const { id } = workers[1].messages[0]
-    workers[1].onmessage?.({ data: { id, html: '<p>second</p>' } } as MessageEvent)
-    await expect(second).resolves.toBe('<p>second</p>')
+    workers[1].onmessage?.({ data: { id, html: '<p>second</p>', retryable: false } } as MessageEvent)
+    await expect(second).resolves.toEqual({ html: '<p>second</p>', retryable: false })
   })
 })

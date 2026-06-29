@@ -45,7 +45,6 @@ export function PiBashRenderer(props: { payload: Record<string, unknown>, contex
                 collapsed={!expanded()}
                 command={command()}
                 context={props.context}
-                namespace="pi.toolExecution.summary"
                 onOverflowChange={setSummaryOverflows}
               />
             )
@@ -56,7 +55,7 @@ export function PiBashRenderer(props: { payload: Record<string, unknown>, contex
       expandLabel="Show full command"
     >
       <Show when={expanded() && commandExpandable()}>
-        <CommandInputBody command={command()} context={props.context} namespace="pi.toolExecution.body" />
+        <CommandInputBody command={command()} context={props.context} />
       </Show>
     </ToolUseLayout>
   )

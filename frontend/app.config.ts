@@ -97,6 +97,13 @@ export default defineConfig({
         // initial dep scan misses because they live behind lazy-loaded routes.
         'shiki/core',
         'shiki/engine/javascript',
+        // Oniguruma WASM engine (workers + editor) + inlined WASM + the lazily
+        // loaded bundled-languages map. The ~332 per-language grammar chunks are
+        // intentionally NOT listed: they must stay dynamic so Vite code-splits
+        // each into an on-demand chunk (lazy loading is the whole point).
+        'shiki/engine/oniguruma',
+        'shiki/wasm',
+        'shiki/langs',
         'shiki/langs/bash.mjs',
         'shiki/langs/c.mjs',
         'shiki/langs/cpp.mjs',
@@ -125,7 +132,6 @@ export default defineConfig({
         '@milkdown/ctx',
         '@milkdown/plugin-clipboard',
         '@milkdown/plugin-highlight',
-        '@milkdown/plugin-highlight/shiki',
         '@milkdown/plugin-history',
         '@milkdown/plugin-listener',
         '@milkdown/preset-commonmark',
