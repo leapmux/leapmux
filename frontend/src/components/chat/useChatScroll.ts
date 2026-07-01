@@ -375,6 +375,14 @@ export interface UseChatScrollResult {
   forceScrollToBottom: () => void
   /** Page-wise scroll for keyboard navigation. */
   pageScroll: (direction: -1 | 1) => void
+  /**
+   * Pin the given row's top at its current viewport position so a user toggle that
+   * changes THAT row's height (expand/collapse, diff-view switch) keeps it visually
+   * stationary instead of scrolling it. Call immediately BEFORE applying the toggle,
+   * while the DOM still reflects the pre-toggle geometry; the geometry re-pin the toggle
+   * triggers then holds the row in place. See createAnchorRepin.captureRowTopAnchor.
+   */
+  anchorRowForResize: (messageId: string) => void
   handlers: {
     onScroll: () => void
     onWheel: (event: WheelEvent) => void
@@ -576,6 +584,16 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // browser's momentum and reads as a jump. Idle/async re-pins (post-mount
   // growth, prepend, trim, restore) leave it false and write normally.
   let userScrolling = false
+  // Set by anchorRowForResize when a user toggle (expand/collapse, diff-view switch) pins a
+  // SPECIFIC row's top. While set, handleScroll must NOT re-capture the viewport-midpoint
+  // anchor: the toggle's own keep-position re-pin writes scrollTop, whose echo scroll event
+  // would otherwise land in handleScroll and replace the precise toggle-anchor with a
+  // midpoint one -- so the NEXT phase of the multi-step resize (estimate -> measured) re-pins
+  // against the midpoint and yanks the view (the large jump this hold fixes). Cleared the
+  // moment the user genuinely takes control (wheel/key/touch/pointer), after which normal
+  // midpoint anchoring resumes. A pure echo carries no user intent, so holding across it
+  // loses nothing.
+  let holdToggleAnchor = false
   // Direct-manipulation input tracking: pointers currently down + whether a touch
   // is active. A scroll WHILE input is down is a DRAG (scrollbar thumb or finger)
   // with no inertia, so its re-pin correction applies immediately; a scroll with
@@ -715,7 +733,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     isUserScrolling: () => userScrolling,
     readScrollTop: readLogicalScrollTop,
   })
-  const { currentAnchor, currentAnchorState, isFollowing, followTail, setAnchor, captureAnchor, captureTopAnchor, repinToAnchor } = anchorRepin
+  const { currentAnchor, currentAnchorState, isFollowing, followTail, setAnchor, captureAnchor, captureTopAnchor, captureRowTopAnchor, repinToAnchor } = anchorRepin
 
   const hasDeferredMeasurements = () => virt.hasDeferredMeasurements?.() ?? false
   const releaseDeferredMeasurements = () => {
@@ -1123,11 +1141,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // resting a few px above the tail keeps their position (no yank). The next
       // content GROW sticks to the bottom (shouldRestickToBottom fires within the band),
       // which is the "auto-scroll when sitting slightly above the bottom" behavior.
-      const atBottomForFollow = !opts.hasNewerMessages?.() && isAtBottom()
-      if (atBottomForFollow)
-        followTail()
-      else
-        captureAnchor()
+      // Hold an active toggle-anchor across its own re-pin's echo scroll events: a user
+      // toggle pinned a SPECIFIC row's top, and re-capturing the viewport-midpoint anchor
+      // here would discard it, so the resize's next phase re-pins against the midpoint and
+      // jumps (see holdToggleAnchor). This branch is only reached by an ECHO while holding --
+      // any genuine user gesture (wheel/key/touch/pointer) clears the flag first, below.
+      if (!holdToggleAnchor) {
+        const atBottomForFollow = !opts.hasNewerMessages?.() && isAtBottom()
+        if (atBottomForFollow)
+          followTail()
+        else
+          captureAnchor()
+      }
     }
     const scrollTopAtStart = messageListRef ? readLogicalScrollTop(messageListRef) : undefined
     const lastScrollTopBeforeEvent = lastScrollTopForDir
@@ -1685,6 +1710,19 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       scrollToBottomAnimated()
   }
 
+  // A user toggle (expand/collapse, diff-view switch) pins the toggled row's top; hold that
+  // anchor across the resize's own re-pin echoes so handleScroll's midpoint re-capture can't
+  // discard it mid-resize (see holdToggleAnchor). Only arm the hold when the anchor was
+  // actually set (the row is windowed and the pane has height).
+  const anchorRowForResize = (messageId: string) => {
+    holdToggleAnchor = captureRowTopAnchor(messageId)
+  }
+  // A genuine user gesture (wheel/key/touch/pointer) ends the hold: the user is taking
+  // control, so the next scroll event resumes normal midpoint anchoring.
+  const releaseToggleAnchorHold = () => {
+    holdToggleAnchor = false
+  }
+
   return {
     atBottom,
     isAtBottomFresh: isAtBottom,
@@ -1705,19 +1743,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     getScrollState,
     forceScrollToBottom,
     pageScroll,
+    anchorRowForResize,
     handlers: {
       onScroll: handleScroll,
       onWheel: (event) => {
+        releaseToggleAnchorHold()
         if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0)
           markMomentumInput()
         handleWheel(event)
       },
-      onKeyDown: handleKeyDown,
+      onKeyDown: (event) => {
+        releaseToggleAnchorHold()
+        handleKeyDown(event)
+      },
       // Touch/pointer handlers also feed the direct-manipulation tracker
       // (isScrollInputActive) so a scroll during a drag re-pins immediately
       // rather than deferring as fling drift; the overscroll unit owns the
       // drag-at-top-to-load-older gesture.
       onTouchStart: (event) => {
+        releaseToggleAnchorHold()
         // The user grabbed the surface -- stop any coasting programmatic scroll now.
         cancelPendingScroll()
         // Read the live touch list (authoritative) rather than latching a boolean,
@@ -1741,6 +1785,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         overscroll.onTouchEnd()
       },
       onPointerDown: (event) => {
+        releaseToggleAnchorHold()
         // A tap/press to stop a fling -- halt the deferred settle / animation now.
         cancelPendingScroll()
         // A primary pointer begins a fresh gesture with no sibling pointers down,

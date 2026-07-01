@@ -262,6 +262,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // useChatScroll, so no forward reference to a not-yet-declared const.
   let mountedRowIds: ReadonlySet<string> = new Set()
 
+  // Pin a row's top before a user toggle changes its height, so the toggled row stays
+  // visually stationary instead of being scrolled by the viewport-midpoint re-pin.
+  // Assigned once the scroll hook (which owns the anchor engine) is created below; a
+  // no-op until then, and only invoked on user clicks (well after first render), so the
+  // forward reference is never read before assignment -- same lazy-wire pattern as
+  // mountedRowIds. See useChatScroll.anchorRowForResize.
+  let anchorRowForResize: (messageId: string) => void = () => {}
+
   // Lifted per-message UI state (diff-view override + boolean flag map), keyed by
   // message id so a toggle survives <For> re-renders and a window trim. Owned by
   // createMessageUiState (its own tested unit); see that module for why it
@@ -510,9 +518,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     ...hostLookups(),
     commandStream: () => props.lookups?.getCommandStreamBySpanId?.(entry.msg.spanId),
     localDiffView: getLocalDiffView(entry.msg.id),
-    onSetLocalDiffView: view => setLocalDiffView(entry.msg.id, view),
+    // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
+    // being scrolled away by the geometry re-pin (which otherwise holds the viewport-
+    // midpoint row). Both a diff-view switch and an expand/collapse resize the row.
+    onSetLocalDiffView: (view) => {
+      anchorRowForResize(entry.msg.id)
+      setLocalDiffView(entry.msg.id, view)
+    },
     getMessageUiState: key => getMessageUiBool(entry.msg.id, key),
-    setMessageUiState: (key, value) => setMessageUiBool(entry.msg.id, key, value),
+    setMessageUiState: (key, value) => {
+      anchorRowForResize(entry.msg.id)
+      setMessageUiBool(entry.msg.id, key, value)
+    },
     getHeightDebug: () => virt.heightDebugOfId(entry.msg.id),
     renderCache: renderCacheStore.forRow(renderCacheKeyForEntry(entry)),
     syntaxHighlightingPaused,
@@ -800,6 +817,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
   })
+  // Now that the scroll hook (and its anchor engine) exists, point the toggle-time row
+  // pin at it (see the `let` declaration above and buildMessageHost).
+  anchorRowForResize = scroll.anchorRowForResize
 
   const pauseThen = <Args extends unknown[]>(handler: (...args: Args) => void): ((...args: Args) => void) =>
     (...args: Args) => {

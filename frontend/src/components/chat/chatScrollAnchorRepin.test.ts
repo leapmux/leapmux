@@ -92,6 +92,61 @@ describe('createanchorrepin state machine', () => {
     expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
   })
 
+  it('captureRowTopAnchor pins the given row TOP (offsetWithinRow 0) and rebases fling-settle', () => {
+    const { repin, el, virt, flingSettle } = setup({ clientHeight: 500 })
+    el.scrollTop = 100
+    virt.scrollTopForAnchor.mockReturnValue(300) // the toggled row's top sits at content-Y 300
+    repin.captureRowTopAnchor('m5')
+    // Resolved by ID at the row's own top, NOT the viewport midpoint (which would be 350).
+    expect(virt.scrollTopForAnchor).toHaveBeenCalledWith({ id: 'm5', offsetWithinRow: 0 })
+    expect(repin.currentAnchor()).toEqual({ id: 'm5', offsetWithinRow: 0 })
+    expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the toggled row stationary (no scroll) when its own height changes, even above the midpoint', () => {
+    // The bug: a row whose top sits ABOVE the viewport midpoint. A viewport-midpoint anchor
+    // (captureAnchor) lets the row scroll away as the re-pin compensates the growth that
+    // happened above the midpoint -- the sibling midpoint test above writes 200 for exactly
+    // this shape. Pinning the row's OWN top instead resolves to the same scrollTop -> no
+    // write, so the toggled row stays where the user clicked.
+    const { repin, el, writes, virt } = setup({ clientHeight: 500 })
+    el.scrollTop = 1000
+    virt.scrollTopForAnchor.mockReturnValue(1100) // the toggled row's top is 100px below the viewport top
+    repin.captureRowTopAnchor('tool-result')
+    // Expanding changes only THIS row's height; rows above don't move, so its top offset is
+    // unchanged -- scrollTopForAnchor still resolves to 1100. targetTop = 1100 - 500*0.2 = 1000.
+    repin.repinToAnchor()
+    expect(writes).toEqual([])
+  })
+
+  it('captureRowTopAnchor clamps the pin ratio to 0 when the row top sits above the viewport top', () => {
+    // Defensive clamp (the header holding the toggle button is non-sticky, so at click time
+    // the row top is normally on-screen). A row top ABOVE the viewport top -> ratio 0 pins
+    // the row top to the viewport top rather than storing a negative offset.
+    const { repin, el, writes, virt } = setup({ clientHeight: 500 })
+    el.scrollTop = 400
+    virt.scrollTopForAnchor.mockReturnValue(300) // 100px above the viewport top -> ratio clamps to 0
+    repin.captureRowTopAnchor('m1')
+    repin.repinToAnchor()
+    expect(writes).toEqual([300]) // targetTop = rowTop - clientHeight*0
+  })
+
+  it('captureRowTopAnchor is a no-op when the row is not in the offset map (trimmed away)', () => {
+    const { repin, flingSettle, virt } = setup()
+    virt.scrollTopForAnchor.mockReturnValue(null)
+    repin.captureRowTopAnchor('gone')
+    expect(repin.isFollowing()).toBe(true) // scroll mode untouched
+    expect(flingSettle.rebase).not.toHaveBeenCalled()
+  })
+
+  it('captureRowTopAnchor is a no-op when the viewport has no height', () => {
+    const { repin, virt, flingSettle } = setup({ clientHeight: 0 })
+    repin.captureRowTopAnchor('m1')
+    expect(repin.isFollowing()).toBe(true)
+    expect(virt.scrollTopForAnchor).not.toHaveBeenCalled() // bailed before reading the offset
+    expect(flingSettle.rebase).not.toHaveBeenCalled()
+  })
+
   it('captureAnchor pins the TOP row (ratio 0) at the very top edge, not the midpoint', () => {
     const { repin, el, writes, virt } = setup()
     el.scrollTop = 0 // at the very top edge (<= EDGE_INTENT_TOLERANCE_PX)

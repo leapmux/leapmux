@@ -186,6 +186,47 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     }
   }
 
+  /**
+   * Pin a SPECIFIC row's top edge at its CURRENT viewport line, so an imminent height
+   * change of THAT row (a user expand/collapse or diff-view toggle) grows/shrinks BELOW the
+   * pinned line and the row stays visually stationary.
+   *
+   * Unlike captureAnchor -- which pins whatever row sits at the viewport MIDPOINT, so a
+   * toggled row ABOVE the midpoint scrolls away as the re-pin compensates the growth that
+   * happened above the midpoint -- this pins the toggled row itself. The row's top offset is
+   * INVARIANT under its own height change (rows above it don't move), so the geometry re-pin
+   * the toggle triggers resolves to the same scrollTop and writes nothing: no scroll.
+   *
+   * Call while the DOM still reflects the PRE-toggle geometry (before applying the toggle),
+   * so scrollTop and the row's offset are read pristine. A no-op when the row isn't in the
+   * offset map (not currently windowed) or the viewport has no height -- both leave the
+   * current scroll mode untouched.
+   */
+  const captureRowTopAnchor = (id: string): boolean => {
+    const el = deps.getEl()
+    if (!el || el.clientHeight === 0)
+      return false
+    // Anchor the row's TOP edge (offsetWithinRow 0). scrollTopForAnchor of that anchor is
+    // the row's content-Y top -- resolved by id, so it pins THIS exact row (unlike
+    // anchorAt(offset), which walks back over zero-height siblings sharing the offset).
+    const rowAnchor: ScrollAnchor = { id, offsetWithinRow: 0 }
+    const rowTop = deps.virt.scrollTopForAnchor(rowAnchor)
+    if (rowTop == null)
+      return false
+    const scrollTop = readScrollTop(el)
+    // The row's top edge as a viewport-relative ratio -- the line to keep it pinned to.
+    // Clamped to [0,1]: the toggle button lives in the row's (non-sticky) header, so at
+    // click time the row's top is on-screen (ratio already in range); the clamp is a
+    // defensive floor/ceiling for a row whose top sits just off an edge.
+    const ratio = Math.max(0, Math.min(1, (rowTop - scrollTop) / el.clientHeight))
+    // setAnchor banks scrollTop as the capture position and the ratio as the viewport line,
+    // so repinToAnchor's targetTop = rowTop - clientHeight*ratio equals scrollTop now and
+    // stays there as rowTop is invariant under the row's OWN resize (rows above don't move).
+    setAnchor(rowAnchor, scrollTop, ratio)
+    deps.flingSettle().rebase()
+    return true
+  }
+
   // Re-anchor to the row now under the viewport midpoint and DROP any deferred fling
   // drift (the accumulated correction to keep the ABANDONED anchor stationary, which
   // would land as a jump if applied to the new one). Shared by repinToAnchor's two
@@ -370,6 +411,7 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     setAnchor,
     captureAnchor,
     captureTopAnchor,
+    captureRowTopAnchor,
     repinToAnchor,
     applyDeferredRepinOnCancel,
     resetDeferredRepin,
