@@ -913,7 +913,7 @@ describe('chatView', () => {
     // scrollHeight delta. In jsdom rows measure 0px, so the anchor resolves
     // back to the same offset — the key guarantee is that the view is NOT
     // snapped to the bottom. (The pixel-accurate offset math is unit-tested in
-    // useChatVirtualizer.test.ts / useChatScroll.test.ts.)
+    // the useChatVirtualizer.*.test.ts / useChatScroll.*.test.ts suites.)
     await waitFor(() => expect(view.container).toHaveTextContent('Older 1'))
     expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
 
