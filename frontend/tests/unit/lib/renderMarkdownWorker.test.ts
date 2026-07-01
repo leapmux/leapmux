@@ -47,7 +47,7 @@ describe('renderMarkdown off-thread highlight path', () => {
 
   it('caches the worker result so a later (reactive) re-render returns the highlighted HTML', async () => {
     const text = '```js\nconst y = 2\n```'
-    mockWorker.mockResolvedValue('<pre class="shiki">HIGHLIGHTED</pre>')
+    mockWorker.mockResolvedValue({ html: '<pre class="shiki">HIGHLIGHTED</pre>', retryable: false })
     const first = renderMarkdown(text)
     expect(first).not.toContain('shiki') // placeholder first
     await flushMicrotasks()
@@ -109,7 +109,7 @@ describe('renderMarkdown off-thread highlight path', () => {
 
   it('does not subscribe cached-or-plain renders to worker completion invalidations', async () => {
     const text = '```js\nconst paused = true\n```'
-    mockWorker.mockResolvedValue('<pre class="shiki">highlighted</pre>')
+    mockWorker.mockResolvedValue({ html: '<pre class="shiki">highlighted</pre>', retryable: false })
     let runs = 0
     let dispose: (() => void) | undefined
 
@@ -150,5 +150,74 @@ describe('renderMarkdown off-thread highlight path', () => {
     // A normal (non-skipCache) render DOES cache its placeholder while the worker runs.
     renderMarkdown('a real body')
     expect(_getPlaceholderCacheSize()).toBe(1)
+  })
+
+  it('does NOT cache a transiently-failed (retryable) render, so a later render re-dispatches', async () => {
+    // Unlike a worker CRASH (null -> cached plain, no retry), a retryable degrade (a
+    // grammar chunk load failed transiently) must not be cached: a later render should
+    // re-dispatch and pick up the recovered grammar.
+    const text = '```rust\nfn main() {}\n```'
+    mockWorker.mockResolvedValue({ html: '<pre>degraded</pre>', retryable: true })
+    renderMarkdown(text)
+    expect(mockWorker).toHaveBeenCalledTimes(1)
+    await flushMicrotasks()
+
+    mockWorker.mockClear()
+    renderMarkdown(text)
+    // Cache miss (the retryable render was not stored) -> re-dispatch, not a cache hit.
+    expect(mockWorker).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies the recovered highlight after a retryable render, in a reactive consumer', async () => {
+    const text = '```rust\nfn recover() {}\n```'
+    // First attempt degrades (retryable); the retry succeeds.
+    mockWorker
+      .mockResolvedValueOnce({ html: '<pre>degraded</pre>', retryable: true })
+      .mockResolvedValueOnce({ html: '<pre class="shiki">recovered</pre>', retryable: false })
+
+    let html = ''
+    let dispose: (() => void) | undefined
+    createRoot((d) => {
+      dispose = d
+      createEffect(() => {
+        html = renderMarkdown(text)
+      })
+    })
+    expect(mockWorker).toHaveBeenCalledTimes(1) // initial dispatch
+
+    // The retryable completion re-dispatches (via the version bump re-running the effect);
+    // the successful retry then caches and paints the highlighted HTML.
+    for (let i = 0; i < 6; i++)
+      await flushMicrotasks()
+
+    expect(mockWorker).toHaveBeenCalledTimes(2)
+    expect(html).toBe('<pre class="shiki">recovered</pre>')
+    dispose?.()
+  })
+
+  it('bounds retryable re-dispatch, then caches the plain render and stops (no infinite loop)', async () => {
+    const text = '```rust\nfn stuck() {}\n```'
+    // Every attempt keeps failing transiently.
+    mockWorker.mockResolvedValue({ html: '<pre>always degraded</pre>', retryable: true })
+
+    let dispose: (() => void) | undefined
+    createRoot((d) => {
+      dispose = d
+      createEffect(() => {
+        renderMarkdown(text)
+      })
+    })
+    // Drive the bounded retry loop to exhaustion.
+    for (let i = 0; i < 12; i++)
+      await flushMicrotasks()
+
+    // 1 initial dispatch + MAX_MARKDOWN_RENDER_RETRIES (3) retries, then it stops.
+    expect(mockWorker).toHaveBeenCalledTimes(4)
+
+    // The plain render is now cached, so further renders are cache hits (loop ended).
+    mockWorker.mockClear()
+    renderMarkdown(text)
+    expect(mockWorker).not.toHaveBeenCalled()
+    dispose?.()
   })
 })

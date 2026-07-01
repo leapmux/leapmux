@@ -227,12 +227,55 @@ test.describe('Code Language Label', () => {
     const langInput = page.locator('[data-testid="code-lang-filter"]')
     await expect(langInput).toBeVisible()
 
+    // The popover must be anchored to the label (just below it, or flipped just
+    // above it near the bottom of the viewport) -- NOT re-centered in the viewport.
+    // Regression guard for the missing `margin: 0` reset, which let the UA
+    // `margin: auto` recenter the popover and clip its bottom / leave a dead area.
+    const popover = page.locator('[data-testid="code-lang-popover"]')
+    await expect(popover).toBeVisible()
+    const labelBox = (await langLabel.boundingBox())!
+    const popBox = (await popover.boundingBox())!
+    const viewport = page.viewportSize()!
+    const anchoredBelow = Math.abs(popBox.y - (labelBox.y + labelBox.height)) <= 24
+    const anchoredAbove = Math.abs((popBox.y + popBox.height) - labelBox.y) <= 24
+    expect(anchoredBelow || anchoredAbove, 'popover anchored to the language label').toBe(true)
+    // ...and fully on-screen (no clipped bottom).
+    expect(popBox.x).toBeGreaterThanOrEqual(0)
+    expect(popBox.y).toBeGreaterThanOrEqual(0)
+    expect(popBox.x + popBox.width).toBeLessThanOrEqual(viewport.width + 1)
+    expect(popBox.y + popBox.height).toBeLessThanOrEqual(viewport.height + 1)
+    // The language list rendered (not an empty popover).
+    await expect(page.locator('[data-testid="code-lang-plaintext"]')).toBeVisible()
+
     // Type and select a language
     await langInput.fill('python')
     await page.keyboard.press('Enter')
 
     // The label should now show "python"
     await expect(langLabel).toHaveText('python')
+    // ...and the popover must fully close (no lingering empty popover).
+    await expect(popover).toBeHidden()
+  })
+
+  test('re-clicking the language label closes the popover instead of reopening it', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.locator('[data-testid="toolbar-codeblock"]').click()
+
+    const langLabel = editor.locator('.code-lang-label')
+    const popover = page.locator('[data-testid="code-lang-popover"]')
+    const langInput = page.locator('[data-testid="code-lang-filter"]')
+
+    // First click opens it.
+    await langLabel.click()
+    await expect(langInput).toBeVisible()
+
+    // Re-clicking the label toggles it closed -- it must NOT reopen (the
+    // pointerdown-captured open state prevents the click from re-opening after the
+    // popover's light-dismiss closes it).
+    await langLabel.click()
+    await expect(popover).toBeHidden()
   })
 })
 

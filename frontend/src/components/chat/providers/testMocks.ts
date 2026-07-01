@@ -19,5 +19,14 @@ vi.mock('~/lib/renderMarkdown', () => ({
   renderMarkdown: (text: string) => text,
   renderMarkdownCachedOrPlain: (text: string) => text,
   renderMarkdownPlain: (text: string) => text,
-  shikiHighlighter: { codeToHtml: (code: string) => `<pre><code>${code}</code></pre>` },
+  // ReadResultView's ANSI sync path calls codeToTokens (not codeToHtml); keep the
+  // stub faithful to the real interface so a .log Read result rendered through these
+  // mocks tokenizes (one token per line) instead of hitting a TypeError that the
+  // view's try/catch would silently swallow to plain.
+  shikiHighlighter: {
+    codeToHtml: (code: string) => `<pre><code>${code}</code></pre>`,
+    codeToTokens: (code: string) => ({
+      tokens: code.split('\n').map(line => [{ content: line, htmlStyle: {} }]),
+    }),
+  },
 }))

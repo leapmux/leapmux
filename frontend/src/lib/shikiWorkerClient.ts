@@ -1,46 +1,23 @@
 import type { TokenizeRequest, TokenizeResponse } from './shikiWorker'
 import type { CachedToken } from './tokenCache'
-import { getCachedTokens, setCachedTokens } from './tokenCache'
+import { getCachedTokens, makeKey, setCachedTokens } from './tokenCache'
+import { createWorkerClient } from './workerClient'
 
-let worker: Worker | null = null
-let nextId = 0
-const pending = new Map<number, {
-  resolve: (tokens: CachedToken[][] | null) => void
-}>()
+// The lazy worker lifecycle (spawn / dispatch-by-id / crash recovery) lives in the
+// shared factory; this client layers the token cache + in-flight coalescing on top.
+const client = createWorkerClient<TokenizeRequest, CachedToken[][] | null>({
+  spawn: () => new Worker(new URL('./shikiWorker.ts', import.meta.url), { type: 'module' }),
+  extract: (data: TokenizeResponse) => ({ id: data.id, value: data.tokens }),
+  failureValue: null,
+})
 
-function failWorker(failedWorker: Worker | null): void {
-  failedWorker?.terminate()
-  if (worker !== failedWorker)
-    return
-  for (const entry of pending.values())
-    entry.resolve(null)
-  pending.clear()
-  worker = null
-}
-
-function getWorker(): Worker {
-  if (!worker) {
-    const nextWorker = new Worker(
-      new URL('./shikiWorker.ts', import.meta.url),
-      { type: 'module' },
-    )
-    worker = nextWorker
-    nextWorker.onmessage = (e: MessageEvent<TokenizeResponse>) => {
-      const { id, tokens } = e.data
-      const entry = pending.get(id)
-      if (entry) {
-        pending.delete(id)
-        entry.resolve(tokens)
-      }
-    }
-    nextWorker.onerror = () => {
-      // On worker crash, reject all pending and recreate on next call. Terminate the
-      // dead worker first so its thread + Shiki highlighter aren't leaked across crashes.
-      failWorker(nextWorker)
-    }
-  }
-  return worker
-}
+// Concurrent identical requests share one in-flight promise so the SAME (lang, code)
+// isn't tokenized twice before the first reply caches it -- a virtualized chat row
+// re-mounts ~4-5x as it scrolls in/out (and the two diff sides may carry identical
+// text), so without this each re-mount dispatches a duplicate worker tokenization on
+// a cache miss. Mirrors renderMarkdown's `inFlight` dedup. Keyed identically to the
+// token cache (`${lang}\0${code}`); each entry is dropped when its promise settles.
+const inFlightByKey = new Map<string, Promise<CachedToken[][] | null>>()
 
 /**
  * Tokenize code asynchronously via the Web Worker.
@@ -57,31 +34,26 @@ export function tokenizeAsync(
   if (typeof Worker === 'undefined')
     return Promise.resolve(null)
 
-  const id = nextId++
-  let w: Worker
-  try {
-    w = getWorker()
-  }
-  catch {
-    worker = null
-    return Promise.resolve(null)
-  }
+  // Coalesce a concurrent identical request onto the existing in-flight promise.
+  const key = makeKey(lang, code)
+  const inFlight = inFlightByKey.get(key)
+  if (inFlight)
+    return inFlight
 
-  return new Promise((resolve) => {
-    pending.set(id, {
-      resolve: (tokens) => {
-        if (tokens) {
-          setCachedTokens(lang, code, tokens)
-        }
-        resolve(tokens)
-      },
+  const promise = client
+    .request(id => ({ type: 'tokenize', id, lang, code }))
+    .then((tokens) => {
+      // Cache before the value propagates to consumers (a `.then` runs before the awaiter's
+      // continuation), so a caller that reads the cache after awaiting sees it populated.
+      if (tokens)
+        setCachedTokens(lang, code, tokens)
+      return tokens
     })
-    const msg: TokenizeRequest = { type: 'tokenize', id, lang, code }
-    try {
-      w.postMessage(msg)
-    }
-    catch {
-      failWorker(w)
-    }
-  })
+    .finally(() => {
+      // Drop the in-flight entry once settled (resolved by the worker reply or by the
+      // factory's failure path) so a later request re-dispatches.
+      inFlightByKey.delete(key)
+    })
+  inFlightByKey.set(key, promise)
+  return promise
 }

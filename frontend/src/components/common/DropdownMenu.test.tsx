@@ -132,6 +132,27 @@ describe('dropdownMenu', () => {
     expect(popover.tagName).toBe('MENU')
   })
 
+  it('keeps the Escape + outside-click dismiss handlers on the as="div" popover (Dynamic swap)', () => {
+    // The menu/div branches were collapsed into a single <Dynamic>; the dismiss
+    // handlers must survive the swap on the non-default `div` tag, not just `menu`.
+    const hide = vi.spyOn(HTMLElement.prototype, 'hidePopover')
+    render(() => (
+      <DropdownMenu trigger={<button>Open</button>} as="div" data-testid="dyn-div">
+        <p>Info</p>
+      </DropdownMenu>
+    ))
+    const popover = screen.getByTestId('dyn-div')
+    expect(popover.tagName).toBe('DIV')
+
+    popover.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(hide).toHaveBeenCalled()
+    hide.mockClear()
+
+    popover.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(hide).toHaveBeenCalled()
+    hide.mockRestore()
+  })
+
   it('custom id is applied to the popover', () => {
     render(() => (
       <DropdownMenu

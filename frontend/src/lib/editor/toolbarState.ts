@@ -1,8 +1,8 @@
-import type { HighlighterCore } from 'shiki/core'
 import type { Setter } from 'solid-js'
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
+import { resolveBundledLang } from '~/lib/shikiLazyHighlighter'
 
 /** Active formatting state driven by the toolbar state plugin. */
 export interface ActiveFormatting {
@@ -103,6 +103,9 @@ export interface CodeLangHandlers {
   setCodeLangNodePos: Setter<number>
   setCodeLangAnchorEl: Setter<HTMLElement | undefined>
   setCodeLangPopoverOpen: Setter<boolean>
+  /** Current popover open state + anchored node position -- for toggle-on-reclick. */
+  getCodeLangPopoverOpen: () => boolean
+  getCodeLangNodePos: () => number
 }
 
 // Simple heuristic-based language detection patterns
@@ -126,12 +129,13 @@ const LANG_PATTERNS: [RegExp, string][] = [
 
 /**
  * Detect a programming language from code content using heuristics.
- * Returns a language ID string or null if no confident match.
+ * Returns a language ID string or null if no confident match. Only returns a
+ * language Shiki actually bundles a grammar for (the lazy highlighter loads it
+ * on demand); unsupported matches fall through to plain.
  */
-function detectLanguage(code: string, highlighter: HighlighterCore): string | null {
-  const loadedLangs = highlighter.getLoadedLanguages()
+function detectLanguage(code: string): string | null {
   for (const [pattern, lang] of LANG_PATTERNS) {
-    if (pattern.test(code) && loadedLangs.includes(lang)) {
+    if (pattern.test(code) && resolveBundledLang(lang)) {
       return lang
     }
   }
@@ -142,9 +146,11 @@ function detectLanguage(code: string, highlighter: HighlighterCore): string | nu
  * Creates a languageExtractor for prosemirror-highlight that auto-detects
  * the language of code blocks via heuristics when no explicit language is set.
  * This does NOT modify the code_block node's `language` attribute — it only
- * provides the detected language to the syntax highlighter.
+ * provides the detected language to the syntax highlighter. An explicit language
+ * is passed through verbatim; the lazy parser resolves/loads it (or renders
+ * plain when Shiki has no grammar for it).
  */
-export function createAutoDetectLanguageExtractor(highlighter: HighlighterCore) {
+export function createAutoDetectLanguageExtractor() {
   return (node: { attrs: Record<string, unknown>, textContent: string }): string | undefined => {
     const lang = node.attrs.language as string
     if (lang && lang !== 'plaintext')
@@ -152,7 +158,7 @@ export function createAutoDetectLanguageExtractor(highlighter: HighlighterCore) 
     const code = node.textContent
     if (code.length < 10)
       return undefined
-    return detectLanguage(code, highlighter) ?? undefined
+    return detectLanguage(code) ?? undefined
   }
 }
 
@@ -179,12 +185,27 @@ export function createCodeLangPlugin(handlers: CodeLangHandlers) {
                   span.textContent = label
                   span.setAttribute('data-testid', 'code-lang-label')
                   span.setAttribute('contenteditable', 'false')
+                  // Capture whether the popover was already open for THIS label on
+                  // pointerdown -- before the popover's light-dismiss (which runs on
+                  // pointerdown) closes it -- so the click toggles closed instead of
+                  // unconditionally reopening.
+                  let wasOpenForThisLabel = false
+                  span.addEventListener('pointerdown', () => {
+                    wasOpenForThisLabel = handlers.getCodeLangPopoverOpen()
+                      && handlers.getCodeLangNodePos() === pos
+                  })
                   span.addEventListener('click', (e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    handlers.setCodeLangNodePos(pos)
-                    handlers.setCodeLangAnchorEl(span)
-                    handlers.setCodeLangPopoverOpen(true)
+                    if (wasOpenForThisLabel) {
+                      handlers.setCodeLangPopoverOpen(false)
+                      handlers.setCodeLangNodePos(-1)
+                    }
+                    else {
+                      handlers.setCodeLangNodePos(pos)
+                      handlers.setCodeLangAnchorEl(span)
+                      handlers.setCodeLangPopoverOpen(true)
+                    }
                   })
                   return span
                 }, { side: -1, key: `lang-${pos}-${lang}` }),

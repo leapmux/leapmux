@@ -545,8 +545,8 @@ describe('messageBubble rawJson', () => {
     ))
 
     const content = screen.getByTestId('message-content')
-    // The raw-JSON <pre> rendered, not the ErrorBoundary's failure fallback.
-    expect(content.querySelector('pre')).toBeInTheDocument()
+    // The raw-JSON block rendered (as token spans), not the ErrorBoundary's failure fallback.
+    expect(content.querySelector(`.${chatStyles.hiddenMessageJson}`)).toBeInTheDocument()
     expect(content).not.toHaveTextContent('Failed to render message')
 
     // Copy Raw JSON keeps the unparseable span_lines as its raw string.
@@ -560,23 +560,22 @@ describe('messageBubble rawJson', () => {
       content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
     })
 
-    const view = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
     const content = screen.getByTestId('message-content')
-    expect(content.querySelector('pre')).toBeInTheDocument()
+    expect(content.querySelector(`.${chatStyles.hiddenMessageJson}`)).toBeInTheDocument()
 
     const toolbar = screen.getByTestId('message-toolbar')
     expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
-    expect(view.container.querySelector('[data-code-copy="false"]')).toBeInTheDocument()
 
-    // Copy-button injection is deferred to idle, so a synchronous "no button" check would
-    // pass regardless of whether the skip logic works. Advance PAST idle to prove the
-    // `data-code-copy="false"` skip actually runs: the <pre> gets neither a copy button
-    // nor the code-copy-host positioning marker.
+    // The raw JSON renders as token <span>s, not a <pre>, so the copy-button injector
+    // (which only targets <pre> elements) never augments it. Injection is deferred to
+    // idle, so advance PAST idle to prove no inline copy button or positioning marker
+    // appears on the JSON block.
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
     expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()

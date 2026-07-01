@@ -1,6 +1,7 @@
 import type { Accessor, JSX } from 'solid-js'
 import type { PopoverPositionOptions } from '~/lib/popoverPosition'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
+import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { menuItemContent, menuItemLabel, menuItemShortcut } from '~/styles/shared.css'
 
@@ -90,6 +91,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
   let triggerEl: HTMLElement | undefined
   let popoverEl: HTMLElement | undefined
+  // Reposition when the popover's content grows/shrinks while open. The initial
+  // reposition runs in one rAF, but content that populates or relayouts after
+  // that (e.g. a long, slowly-rendered language list, or the list shrinking as
+  // the filter narrows it) would otherwise leave the popover mispositioned --
+  // measured at the wrong height, so anchored/clamped against a stale size.
+  let resizeObserver: ResizeObserver | undefined
 
   // Whether the popover was open when the current pointer interaction started.
   // Captured on pointerdown so that the click handler knows whether the user
@@ -158,6 +165,17 @@ export function DropdownMenu(props: DropdownMenuProps) {
       })
       window.addEventListener('scroll', repositionOnExternalScroll, true)
 
+      // Re-anchor whenever the content's measured size settles after the initial
+      // rAF (a large list paints over multiple frames; the filter shrinks it).
+      // ResizeObserver fires once on observe() with the current size, then on
+      // every change -- reposition() only moves the popover, never resizes it,
+      // so this can't loop.
+      if (typeof ResizeObserver !== 'undefined' && popoverEl) {
+        resizeObserver?.disconnect()
+        resizeObserver = new ResizeObserver(() => reposition())
+        resizeObserver.observe(popoverEl)
+      }
+
       const anchor = getAnchor()
       if (anchor) {
         anchor.setAttribute('aria-expanded', 'true')
@@ -165,6 +183,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }
     else {
       window.removeEventListener('scroll', repositionOnExternalScroll, true)
+      resizeObserver?.disconnect()
+      resizeObserver = undefined
 
       const anchor = getAnchor()
       if (anchor) {
@@ -190,10 +210,23 @@ export function DropdownMenu(props: DropdownMenuProps) {
     createEffect(on(props.open, (shouldOpen) => { // eslint-disable-line solid/reactivity -- passing accessor to on() is correct
       if (!popoverEl)
         return
-      if (shouldOpen) {
+      // Guard against redundant show/hide: showPopover() on an already-open popover
+      // (or hidePopover() on a closed one) throws InvalidStateError, which would
+      // abort this effect and desync the `open` signal from the native popover
+      // state (re-clicks then reopen instead of closing). Read the native state
+      // directly (`:popover-open`) rather than the `isOpen()` signal mirror, which a
+      // dialog-driven auto-dismiss can leave stale.
+      const nativeOpen = popoverEl.matches(':popover-open')
+      if (shouldOpen && !nativeOpen) {
         popoverEl.showPopover()
+        // Position synchronously, before the browser paints this frame, so the
+        // popover never appears at the UA-default position and then jumps. The
+        // content is already in the DOM (rendered before this effect), so it
+        // measures at its real size here. The rAF reposition in handleToggle + the
+        // ResizeObserver then refine it for any late layout.
+        reposition()
       }
-      else {
+      else if (!shouldOpen && nativeOpen) {
         popoverEl.hidePopover()
       }
     }))
@@ -202,6 +235,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
   onCleanup(() => {
     popoverEl?.removeEventListener('toggle', handleToggle)
     window.removeEventListener('scroll', repositionOnExternalScroll, true)
+    resizeObserver?.disconnect()
   })
 
   const handleTriggerPointerDown = () => {
@@ -275,50 +309,30 @@ export function DropdownMenu(props: DropdownMenuProps) {
   return (
     <ot-dropdown>
       {renderTrigger()}
-      <Show
-        when={props.as === 'div'}
-        fallback={(
-          <menu
-            popover="auto"
-            id={menuId}
-            ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
-            class={props.class}
-            data-testid={props['data-testid']}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault()
-                popoverEl?.hidePopover()
-              }
-            }}
-            onClick={(e) => {
-              e.stopPropagation()
-              popoverEl?.hidePopover()
-            }}
-          >
-            {props.children}
-          </menu>
-        )}
-      >
-        <div
-          popover="auto"
-          id={menuId}
-          ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
-          class={props.class}
-          data-testid={props['data-testid']}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.preventDefault()
-              popoverEl?.hidePopover()
-            }
-          }}
-          onClick={(e) => {
-            e.stopPropagation()
+      {/* `menu` (default) and `div` popovers differ ONLY by tag; everything else (the
+          popover attr, id, ref, class, testid, and the Escape/outside-click dismiss
+          handlers) is identical, so render via Dynamic instead of two byte-identical
+          branches that could drift. */}
+      <Dynamic
+        component={props.as === 'div' ? 'div' : 'menu'}
+        popover="auto"
+        id={menuId}
+        ref={popoverRefCallback}
+        class={props.class}
+        data-testid={props['data-testid']}
+        onKeyDown={(e: KeyboardEvent) => {
+          if (e.key === 'Escape') {
+            e.preventDefault()
             popoverEl?.hidePopover()
-          }}
-        >
-          {props.children}
-        </div>
-      </Show>
+          }
+        }}
+        onClick={(e: MouseEvent) => {
+          e.stopPropagation()
+          popoverEl?.hidePopover()
+        }}
+      >
+        {props.children}
+      </Dynamic>
     </ot-dropdown>
   )
 }

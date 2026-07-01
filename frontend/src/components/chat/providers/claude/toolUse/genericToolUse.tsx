@@ -37,7 +37,6 @@ export function ToolUseMessage(props: {
           command={props.fullCommand}
           context={props.context}
           collapsed
-          namespace="claude.toolUse.summary"
           onOverflowChange={setSummaryOverflows}
         />
       )
@@ -60,7 +59,7 @@ export function ToolUseMessage(props: {
       }}
     >
       <Show when={commandExpandable() && expanded()}>
-        <CommandInputBody command={props.fullCommand!} context={props.context} namespace="claude.toolUse.body" />
+        <CommandInputBody command={props.fullCommand!} context={props.context} />
       </Show>
     </ToolUseLayout>
   )

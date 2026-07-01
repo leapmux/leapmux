@@ -1,6 +1,8 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
+import { popoverBase } from '~/styles/popover.css'
 import { iconSize } from '~/styles/tokens'
+import { shikiDualThemeColors } from '../shikiTokenColors.css'
 
 export const headingPreviewItem = style({
   margin: 0,
@@ -72,26 +74,25 @@ globalStyle(`${enterModeWrapper} > button:hover`, {
   backgroundColor: 'transparent',
 })
 
-export const linkPopover = style({
-  position: 'fixed',
-  margin: 0,
+export const linkPopover = style([popoverBase, {
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   padding: 'var(--space-1)',
   boxShadow: 'var(--shadow-large)',
-  // Opacity animation matching OAT dropdown pattern
+  // popoverBase supplies the UA-reset + the `:popover-open` `display: flex`; this adds the
+  // opacity/transform reveal animation (OAT dropdown pattern). The composed classes both
+  // carry a `&:popover-open` block, so display:flex and the reveal apply together.
   opacity: 0,
   transform: 'translateY(4px)',
   transition: 'opacity var(--transition), transform var(--transition), display var(--transition) allow-discrete, overlay var(--transition) allow-discrete',
   selectors: {
     '&:popover-open': {
-      display: 'flex',
       opacity: 1,
       transform: 'translateY(0)',
     },
   },
-})
+}])
 
 export const linkPopoverForm = style({
   display: 'flex',
@@ -116,15 +117,17 @@ export const linkPopoverInput = style({
   },
 })
 
-export const codeLangPopoverContent = style({
-  display: 'flex',
+export const codeLangPopoverContent = style([popoverBase, {
+  // popoverBase supplies the UA-reset (position:fixed; margin:0 -- so calcPopoverPosition's
+  // top/left place the popover at the trigger instead of margin:auto re-centering it) and
+  // the `:popover-open`-gated `display: flex`. This adds the picker's own box.
   flexDirection: 'column',
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   boxShadow: 'var(--shadow-large)',
   width: '280px',
-})
+}])
 
 export const comboboxControl = style({
   display: 'flex',
@@ -212,16 +215,10 @@ globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label:hover`, {
   color: 'var(--muted-foreground)',
 })
 
-// Shiki syntax highlighting in editor code blocks (via prosemirror-highlight)
-// Light theme: use --shiki-light CSS variables from inline decorations
-globalStyle(`${editorWrapper} .ProseMirror pre .shiki`, {
-  color: 'var(--shiki-light)',
-})
-
-// Dark theme: use --shiki-dark CSS variables
-globalStyle(`html[data-theme="dark"] ${editorWrapper} .ProseMirror pre .shiki`, {
-  color: 'var(--shiki-dark)',
-})
+// Shiki syntax highlighting in editor code blocks (via prosemirror-highlight):
+// the inline decorations carry --shiki-light / --shiki-dark CSS variables (color
+// only -- the wrapper owns the bg).
+shikiDualThemeColors(`${editorWrapper} .ProseMirror pre .shiki`)
 
 // Task list checkboxes (ProseMirror-specific)
 globalStyle(`${editorWrapper} .ProseMirror li[data-checked]`, {

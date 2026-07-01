@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import type { JSX } from 'solid-js'
+import type { Accessor, JSX } from 'solid-js'
 import type { SettingsItem } from './settingsGroups'
 import Check from 'lucide-solid/icons/check'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
@@ -214,6 +214,14 @@ export function FilterableListbox(props: {
   onEscape?: () => void
   /** Auto-focus the filter input on mount. */
   autoFocus?: boolean
+  /**
+   * Optional "fresh view" trigger. Whenever this accessor's value changes, the
+   * highlighted row and scroll position reset to the top. An always-mounted listbox
+   * (e.g. the code-language popover, kept mounted so it measures at its real size)
+   * used to get this reset for free from remounting; pass the open signal here so a
+   * reopen starts at the top instead of a stale row (which Enter would mis-select).
+   */
+  resetKey?: Accessor<unknown>
   /** CSS class overrides. */
   listboxClass?: string
   itemClass?: string
@@ -221,8 +229,19 @@ export function FilterableListbox(props: {
   itemSelectedClass?: string
   controlClass?: string
   inputClass?: string
-}): JSX.Element {
-  const [filter, setFilter] = createSignal('')
+} & (
+  // Controlled filter text: provide BOTH `filter` and `setFilter`, or NEITHER. When
+  // provided, the caller owns the filter so it can reset it across reuse (e.g. a popover
+  // that stays mounted between opens); otherwise the listbox manages it internally. The
+  // discriminated union makes "only one of the pair" a compile error -- passing just one
+  // would split-brain the input (it reads the controlled accessor but writes the internal
+  // signal, or vice versa, so typing does nothing).
+  | { filter?: undefined, setFilter?: undefined }
+  | { filter: Accessor<string>, setFilter: (value: string) => void }
+)): JSX.Element {
+  const [internalFilter, setInternalFilter] = createSignal('')
+  const filter = () => props.filter ? props.filter() : internalFilter()
+  const setFilter = (value: string) => (props.setFilter ?? setInternalFilter)(value)
   const [highlightedIndex, setHighlightedIndex] = createSignal(0)
   let listRef: HTMLDivElement | undefined
 
@@ -245,6 +264,16 @@ export function FilterableListbox(props: {
   createEffect(() => {
     const len = filtered().length
     setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
+  })
+
+  // Reset the highlighted row + scroll to the top whenever `resetKey` changes. The
+  // effect tracks only `resetKey` (the writes below create no self-dependency), so an
+  // uncontrolled caller that omits it just gets a one-time reset on mount.
+  createEffect(() => {
+    props.resetKey?.()
+    setHighlightedIndex(0)
+    if (listRef)
+      listRef.scrollTop = 0
   })
 
   const scrollHighlightedIntoView = () => {
@@ -292,11 +321,11 @@ export function FilterableListbox(props: {
     <>
       <div class={listboxCls()} ref={listRef}>
         <For each={filtered()}>
-          {(item, index) => (
-            <Tooltip text={item.tooltip}>
+          {(item, index) => {
+            const row = (
               <div
-                // The Tooltip wraps each row in a display:contents span, so keyboard-nav
-                // scrolling looks the row up by this marker instead of listRef.children.
+                // Keyboard-nav scrolling looks the row up by this marker (works whether
+                // or not the row is wrapped in a Tooltip's display:contents span).
                 data-listbox-item=""
                 class={`${itemCls()}${index() === highlightedIndex() ? ` ${itemHighlightCls()}` : ''}${props.current != null && item.value === props.current ? ` ${itemSelectedCls()}` : ''}`}
                 data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
@@ -313,8 +342,13 @@ export function FilterableListbox(props: {
                   <Icon icon={Check} size="xs" />
                 </Show>
               </div>
-            </Tooltip>
-          )}
+            )
+            // Only pay the Tooltip's per-row listeners + effects when there's
+            // actual tooltip text. A 235-language picker has none, so wrapping
+            // every row would be 235 idle Tooltip instances -- the bulk of the
+            // list's population cost.
+            return item.tooltip ? <Tooltip text={item.tooltip}>{row}</Tooltip> : row
+          }}
         </For>
       </div>
       <div class={controlCls()} onClick={e => e.stopPropagation()}>

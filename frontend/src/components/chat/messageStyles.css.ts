@@ -1,4 +1,6 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
+import { codeTypography, codeWrap } from '~/styles/codeBlock'
+import { shikiDualThemeColors } from './shikiTokenColors.css'
 import { toolHeaderActions, toolHeaderTimestamp } from './toolStyles.css'
 
 export const messageBubble = style({
@@ -138,13 +140,10 @@ export const resultErrorDetail = style({
 
 // Hidden message rendered as raw JSON (developer mode)
 export const hiddenMessageJson = style({
+  ...codeTypography,
+  ...codeWrap,
   margin: 0,
   padding: 'var(--space-2) var(--space-3)',
-  fontSize: 'var(--text-7)',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
   color: 'var(--muted-foreground)',
   backgroundColor: 'var(--card)',
   border: '1px dashed var(--border)',
@@ -153,36 +152,10 @@ export const hiddenMessageJson = style({
   overflow: 'auto',
 })
 
-// Reset Shiki's <pre>/<code> chrome so the wrapper's padding/border/scroll
-// remain authoritative; spans pick up dual-theme colors via CSS vars.
-globalStyle(`${hiddenMessageJson} pre.shiki`, {
-  margin: 0,
-  padding: 0,
-  border: 'none',
-  background: 'none',
-  backgroundColor: 'transparent',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
-  fontSize: 'inherit',
-  fontFamily: 'inherit',
-  lineHeight: 'inherit',
-})
-
-globalStyle(`${hiddenMessageJson} pre.shiki code`, {
-  padding: 0,
-  background: 'none',
-  backgroundColor: 'transparent',
-  fontSize: 'inherit',
-  fontFamily: 'inherit',
-})
-
-globalStyle(`${hiddenMessageJson} pre.shiki span`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`html[data-theme="dark"] ${hiddenMessageJson} pre.shiki span`, {
-  color: 'var(--shiki-dark)',
-})
+// JSON renders as token <span>s (data-shiki-token) directly inside this wrapper,
+// which already owns the mono font + pre-wrap + padding/border/scroll. The spans
+// pick up dual-theme colors via CSS vars.
+shikiDualThemeColors(`${hiddenMessageJson} span[data-shiki-token]`, { bg: true })
 
 // Control response message (compact)
 export const controlResponseMessage = style({

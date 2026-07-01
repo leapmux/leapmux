@@ -1,9 +1,58 @@
+import type { MarkdownRenderResult } from './markdownWorkerClient'
 import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
+// Eager grammars for the synchronous (no-Worker) fallback highlighter below. The
+// async worker/editor paths lazy-load grammars instead, so these imports live here
+// -- next to their only consumer -- rather than in the shared markdownProcessor.
+import langBash from 'shiki/langs/bash.mjs'
+import langC from 'shiki/langs/c.mjs'
+import langCpp from 'shiki/langs/cpp.mjs'
+import langCss from 'shiki/langs/css.mjs'
+import langDiff from 'shiki/langs/diff.mjs'
+import langGo from 'shiki/langs/go.mjs'
+import langHtml from 'shiki/langs/html.mjs'
+import langJava from 'shiki/langs/java.mjs'
+import langJavascript from 'shiki/langs/javascript.mjs'
+import langJson from 'shiki/langs/json.mjs'
+import langJsx from 'shiki/langs/jsx.mjs'
+import langMarkdown from 'shiki/langs/markdown.mjs'
+import langPython from 'shiki/langs/python.mjs'
+import langRust from 'shiki/langs/rust.mjs'
+import langSql from 'shiki/langs/sql.mjs'
+import langToml from 'shiki/langs/toml.mjs'
+import langTsx from 'shiki/langs/tsx.mjs'
+import langTypescript from 'shiki/langs/typescript.mjs'
+import langXml from 'shiki/langs/xml.mjs'
+import langYaml from 'shiki/langs/yaml.mjs'
 import { createSignal } from 'solid-js'
 import { capMapInsertionOrder } from '~/lib/mapLru'
-import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback, shikiLangs, transparentBgThemes } from './markdownProcessor'
+import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
+import { transparentBgThemes } from './shikiThemes'
+
+/** The bundled Shiki language grammars the synchronous fallback highlighter pre-loads. */
+const shikiLangs = [
+  langTypescript,
+  langJavascript,
+  langPython,
+  langRust,
+  langGo,
+  langJava,
+  langBash,
+  langJson,
+  langHtml,
+  langCss,
+  langYaml,
+  langToml,
+  langSql,
+  langMarkdown,
+  langDiff,
+  langC,
+  langCpp,
+  langJsx,
+  langTsx,
+  langXml,
+]
 
 // Synchronous Shiki highlighter, pre-loaded with the bundled languages. Still
 // exported for the OTHER synchronous highlighting call sites (renderAnsi,
@@ -50,6 +99,13 @@ const [markdownVersion, setMarkdownVersion] = createSignal(0)
 // Texts whose worker render is in flight, so concurrent/re-rendered consumers of the
 // same body don't each dispatch a duplicate render.
 const inFlight = new Set<string>()
+// Per-text count of transient-failure retries (a grammar chunk load / highlighter init
+// that failed and may recover). Bounds re-dispatch so a genuinely broken grammar
+// eventually caches its plain render instead of re-dispatching forever -- mirrors the
+// editor parser's MAX_LANG_LOAD_RETRIES budget, keeping the three Oniguruma consumers'
+// recovery policy consistent.
+const retryCount = new Map<string, number>()
+const MAX_MARKDOWN_RENDER_RETRIES = 3
 // Coalesce a burst of completions (a screenful of bodies finishing within a tick)
 // into a single version bump, so consumers re-render once rather than once per body.
 let bumpScheduled = false
@@ -78,6 +134,7 @@ export function _resetMarkdownCache(): void {
   // would otherwise be skipped forever by the dedup guard, so a clear-and-retry could
   // never actually retry -- and a text dispatched in one test would leak into the next.
   inFlight.clear()
+  retryCount.clear()
 }
 
 /** Visible for testing: number of cached entries. */
@@ -207,9 +264,32 @@ export function renderMarkdown(text: string, skipCache = false): string {
   let completedSynchronously = false
   if (!inFlight.has(text)) {
     inFlight.add(text)
-    const complete = (html: string | null): void => {
+    const complete = (result: MarkdownRenderResult | null): void => {
       inFlight.delete(text)
-      lruSet(markdownCache, text, html ?? plainRender(text))
+      // A transient degrade (a grammar chunk load or the highlighter init failed): the
+      // render is (partly) plain but a retry may recover it, so DON'T cache it. Bump the
+      // version so a re-render re-dispatches -- bounded, so a grammar that never loads
+      // still caches its plain render eventually instead of re-dispatching forever.
+      if (result?.retryable && (retryCount.get(text) ?? 0) < MAX_MARKDOWN_RENDER_RETRIES) {
+        // delete+set moves this actively-retrying text to the most-recently-used end BEFORE
+        // capping. A bare set() on an existing key keeps its original insertion position, so
+        // capMapInsertionOrder could evict the very entry still bouncing through the retry
+        // loop -- resetting its count and re-granting the full budget. Moving it to MRU means
+        // the cap evicts a genuinely idle entry instead, keeping the retry bound meaningful.
+        const next = (retryCount.get(text) ?? 0) + 1
+        retryCount.delete(text)
+        retryCount.set(text, next)
+        // Bound the map: entries are otherwise removed only on the terminal path below, so a
+        // text that degrades retryably and whose reactive consumer then unmounts (scrolled
+        // away before the version bump re-dispatches) would leak forever -- unlike the two
+        // LRU caches. Evicting the insertion-order-oldest entry at worst resets a long-idle
+        // text's retry count, which just grants it the full budget again on a later re-render.
+        capMapInsertionOrder(retryCount, CACHE_MAX_SIZE)
+        scheduleVersionBump()
+        return
+      }
+      retryCount.delete(text)
+      lruSet(markdownCache, text, result?.html ?? plainRender(text))
       // The highlighted (or fallback) result now serves from markdownCache, so the
       // plain placeholder for this text is dead -- drop it to bound the cache.
       placeholderCache.delete(text)

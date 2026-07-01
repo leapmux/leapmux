@@ -53,6 +53,20 @@ describe('collapsibleContent', () => {
     expect(container.textContent).toBe('plain')
   })
 
+  it('renders kind="json" as token content in the shared tool-result wrapper', () => {
+    const json = '{\n  "a": 1\n}'
+    const { container } = render(() => (
+      <CollapsibleContent kind="json" text={json} isCollapsed={false} />
+    ))
+    // jsdom has no Worker, so the async token path yields null and TokenizedCode
+    // shows the raw JSON text inside the shared toolResultContentAnsi wrapper
+    // (NOT the plain-pre fallback used by other kinds).
+    expect(container.textContent).toContain('"a": 1')
+    const div = container.firstElementChild as HTMLElement
+    expect(div.classList.contains(toolResultContentAnsi)).toBe(true)
+    expect(div.classList.contains(toolResultContentPre)).toBe(false)
+  })
+
   it('strips ANSI escape bytes from the plain fallback while syntax work is paused', () => {
     const { container } = render(() => (
       <CollapsibleContent

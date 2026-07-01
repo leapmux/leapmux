@@ -34,7 +34,7 @@ import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiK
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
 import { renderResultDivider } from './resultDividerRenderers'
-import { renderJsonHighlightForContext, ToolHeaderActions } from './toolRenderers'
+import { JsonHighlightHtml, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -82,10 +82,9 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
     // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
     if (pre.closest('[data-tool-message]'))
       continue
-    // Skip raw hidden-message JSON — copy is handled by the row's ToolHeaderActions.
-    // closest() walks ancestors so the marker can sit on a wrapper around a Shiki <pre>.
-    if (pre.closest('[data-code-copy="false"]'))
-      continue
+    // The raw hidden-message JSON needs no guard here: it now renders as token <span>s
+    // (JsonHighlightHtml), not a <pre>, so this querySelectorAll('pre') sweep never sees
+    // it. Copy for that block is handled by the row's ToolHeaderActions.
 
     const host = document.createElement('div')
     host.style.display = 'contents'
@@ -201,6 +200,18 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     buildRawJsonEnvelope(props.message, parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
   const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode ? undefined : prettifyJson(rawJson()))
+
+  // Reactive, memoized pretty raw JSON for the displayed block. Gated on the only two
+  // categories that render it (hidden / unsupported_provider) so the proto-envelope
+  // build + FracturedJson reformat stays lazy for every other bubble (matching rawJson's
+  // plain-function intent), while the rows that DO show it reformat once per change
+  // instead of on every TokenizedCode `props.code` read (2-3x per reactive pass).
+  const prettyRawJson = createMemo(() => {
+    const kind = category().kind
+    if (kind !== 'hidden' && kind !== 'unsupported_provider')
+      return ''
+    return prettifyJson(rawJson())
+  })
 
   // Look up the parsed sibling tool_use for tool_result bubbles.
   const toolUseParsed = createMemo(() => {
@@ -341,17 +352,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const renderContent = () =>
     renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider)
 
-  // The raw-JSON last-resort block (shiki-highlighted), shared by the `hidden`
-  // category and the unsupported-provider error surface so the shiki/innerHTML
-  // incantation and its lint-disable live in one place and can't drift.
-  const rawJsonBlock = () => {
-    const json = prettifyJson(rawJson())
-    const highlighted = renderJsonHighlightForContext(json, renderContext, 'rawJsonBlock')
-    if (highlighted === null)
-      return <div class={chatStyles.hiddenMessageJson} data-code-copy="false">{json}</div>
-    // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
-    return <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={highlighted} />
-  }
+  // The raw-JSON last-resort block (highlighted as token spans via the async
+  // token worker), shared by the `hidden` category and the unsupported-provider
+  // error surface so the rendering lives in one place and can't drift. Copy is
+  // handled by the row's ToolHeaderActions; rendering token <span>s (not a
+  // shiki <pre>) means the markdown copy-button injector never targets it.
+  const rawJsonBlock = () => (
+    <JsonHighlightHtml class={chatStyles.hiddenMessageJson} code={prettyRawJson()} context={renderContext} />
+  )
 
   // Loud surface for a message whose `agentProvider` is UNSPECIFIED or has no
   // registered plugin (classify returns `unsupported_provider`). We refuse to

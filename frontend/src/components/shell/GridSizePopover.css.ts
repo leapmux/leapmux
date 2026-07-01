@@ -1,13 +1,11 @@
 import { style } from '@vanilla-extract/css'
+import { popoverBase } from '~/styles/popover.css'
 
-// `display: flex` is gated on `:popover-open` so the UA stylesheet's
-// `[popover]:not(:popover-open) { display: none }` rule still hides the
-// element when no tile has requested it. Without the gate the singleton
-// popover stays mounted and (with `position: fixed`) covers the page,
-// intercepting clicks on the workspace tab tree behind it.
-export const popover = style({
-  position: 'fixed',
-  margin: 0,
+// popoverBase supplies the UA-reset (position:fixed; margin:0) and the
+// `:popover-open`-gated `display: flex` -- without the gate the singleton popover stays
+// mounted and (with position: fixed) covers the page, intercepting clicks on the
+// workspace tab tree behind it.
+export const popover = style([popoverBase, {
   padding: 'var(--space-3)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
@@ -16,12 +14,7 @@ export const popover = style({
   flexDirection: 'column',
   gap: 'var(--space-2)',
   zIndex: 'var(--z-dropdown)',
-  selectors: {
-    '&:popover-open': {
-      display: 'flex',
-    },
-  },
-})
+}])
 
 export const sizeLabel = style({
   textAlign: 'center',

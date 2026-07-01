@@ -1,4 +1,5 @@
 import { shikiHighlighter } from './renderMarkdown'
+import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
 
 const ESC = '\x1B'
 const BEL = '\x07'
@@ -112,8 +113,7 @@ export function renderAnsi(text: string): string {
   try {
     return shikiHighlighter.codeToHtml(sanitized, {
       lang: 'ansi',
-      themes: { light: 'github-light', dark: 'github-dark' },
-      defaultColor: false,
+      ...DUAL_THEME_TOKEN_OPTIONS,
     })
   }
   catch {
