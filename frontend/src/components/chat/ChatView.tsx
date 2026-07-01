@@ -26,7 +26,7 @@ import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
-import { TOOL_USE_KIND_PREFIX } from './chatRowGeometry'
+import { SCROLL_PHASE_STALL_WARN_MS } from './chatScrollGeometry'
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { markdownContent } from './markdownEditor/markdownContent.css'
@@ -40,36 +40,17 @@ import { bodySpanKey, SpanLines } from './widgets/SpanLines'
 import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
 import { ThinkingIndicator } from './widgets/ThinkingIndicator'
 
+// Shares the 'chatScroll' channel so a premeasure-phase stall sits with the refreshViewport
+// / geomRebuild phase warnings from the scroll hook and virtualizer.
+const scrollPhaseLog = createLogger('chatScroll')
+
 const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
-const SCROLL_PERF_SLOW_VIEWPORT_UPDATE_MS = 8
-const SCROLL_PERF_SLOW_ROW_ATTACH_MS = 8
-const SCROLL_PERF_ROW_BURST_COUNT = 8
-const scrollPerfLog = createLogger('chatScrollPerf')
-
-function classifiedEntryKind(entry: ClassifiedEntry | undefined): string | undefined {
-  if (!entry)
-    return undefined
-  return entry.category.kind === 'tool_use'
-    ? `${TOOL_USE_KIND_PREFIX}${entry.category.toolName}`
-    : entry.category.kind
-}
-
-function addedRangeRowKinds(
-  entries: readonly ClassifiedEntry[],
-  previousStart: number,
-  previousEnd: number,
-  nextStart: number,
-  nextEnd: number,
-): Record<string, number> {
-  const rowKinds: Record<string, number> = {}
-  for (let index = nextStart; index < nextEnd; index++) {
-    if (index >= previousStart && index < previousEnd)
-      continue
-    const kind = classifiedEntryKind(entries[index]) ?? 'unknown'
-    rowKinds[kind] = (rowKinds[kind] ?? 0) + 1
-  }
-  return rowKinds
-}
+// Rows to premeasure BEYOND the rendered range in each direction, so a row has its real
+// height before it scrolls into the anchor's neighborhood -- avoiding the estimate->measured
+// correction (and the blank-gap flash) at the moment it enters the window. Kept modest: the
+// whole band premeasures in one frame (measurement isn't chunked), so this bounds the burst.
+// A fast fling that outruns it falls back to the estimate slot (still no collapse-to-0).
+const LOOKAHEAD_PREMEASURE_ROWS = 12
 
 function heightKeyPart(value: string | undefined): string {
   return value === undefined ? '0:' : `${value.length}:${value}`
@@ -410,8 +391,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   )
 
   // Minimal per-row descriptors for the virtualizer. Unmeasured rows use only the
-  // virtualizer's generic running-mean fallback until visible or hidden DOM
-  // measurement commits a real height.
+  // virtualizer's per-kind median estimate (keyed by `kind` below) until visible or
+  // hidden DOM measurement commits a real height.
   const virtualItems = createMemo<VirtualItem[]>(
     () =>
       visibleEntries().map(e => ({
@@ -420,6 +401,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         // the survivors for the nearest-survivor restore (scrollTopNearAnchor).
         seq: e.msg.seq,
         hasSpanLines: e.parsedSpanLines.length > 0,
+        // Buckets the unmeasured-row height estimate by rendering kind (per-kind median),
+        // so a short user row isn't over-estimated by a mean inflated with tall tool/code
+        // rows. Reuses this entry's EXISTING classification -- the same category the row
+        // renderer consumes below -- so the message is classified once, not twice.
+        kind: e.category.kind,
         // The per-row measured-height cache key. heightKeyForEntry (chatEntryCache)
         // reads height-affecting freshness signals off the entry's own signature,
         // while layoutEpochKey covers width/global prefs. Reading getUiVersion HERE
@@ -448,48 +434,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     gapSmallPx,
     gapLargePx,
     overscanPx,
-    shouldReportPerf: () => scrollPerfLog.isDebug(),
-    onViewportUpdate: (stats) => {
-      if (!scrollPerfLog.isDebug())
-        return
-      const shouldLog = stats.totalMs >= SCROLL_PERF_SLOW_VIEWPORT_UPDATE_MS
-        || stats.addedRows >= SCROLL_PERF_ROW_BURST_COUNT
-        || !!stats.tallRow
-      if (!shouldLog)
-        return
-      const rowKinds = untrack(() =>
-        addedRangeRowKinds(
-          visibleEntries(),
-          stats.previousStart,
-          stats.previousEnd,
-          stats.nextStart,
-          stats.nextEnd,
-        ),
-      )
-      const tallRowKind = stats.tallRow
-        ? classifiedEntryKind(entries.getEntry(stats.tallRow.tallRowId)) ?? 'unknown'
-        : undefined
-      const payload = { ...stats, rowKinds }
-      if (stats.tallRow)
-        scrollPerfLog.debug('tall row range', { ...payload, tallRowKind })
-      else
-        scrollPerfLog.debug('viewport update', payload)
-    },
-    onRowAttachMeasure: (stats) => {
-      if (!scrollPerfLog.isDebug())
-        return
-      const rowKind = classifiedEntryKind(entries.getEntry(stats.id)) ?? 'unknown'
-      const isCommandExecution = rowKind === 'tool_use:commandExecution'
-      if (!isCommandExecution && stats.totalMs < SCROLL_PERF_SLOW_ROW_ATTACH_MS)
-        return
-      scrollPerfLog.debug('visible row attach', { ...stats, rowKind })
-    },
-    onTallRowMeasure: (stats) => {
-      if (!scrollPerfLog.isDebug())
-        return
-      const rowKind = classifiedEntryKind(entries.getEntry(stats.id)) ?? 'unknown'
-      scrollPerfLog.debug('tall row measure', { ...stats, rowKind })
-    },
   })
   // Point the UI-state cap's protect set at the virtualizer's live mounted rows
   // (a stable Set reference) now that `virt` exists.
@@ -557,6 +501,33 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     }
     return candidates
   })
+  // Look-ahead premeasure band: unmeasured rows just OUTSIDE the rendered range (within
+  // LOOKAHEAD_PREMEASURE_ROWS on each side). Entries exist for out-of-range rows because
+  // visibleEntries walks the whole window (chatEntryCache). These get a hidden premeasure
+  // render only -- they are NOT in the main <For>, so they need no visibility flag and are
+  // not added to collapsedPremeasureIds.
+  const lookAheadPremeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>(() => {
+    if (contentWidth() <= 0)
+      return []
+    const all = visibleEntries()
+    const items = virtualItems()
+    const len = Math.min(all.length, items.length)
+    const range = virt.range()
+    const rangeStart = Math.max(0, Math.min(range.start, len))
+    const rangeEnd = Math.max(rangeStart, Math.min(range.end, len))
+    const bandStart = Math.max(0, rangeStart - LOOKAHEAD_PREMEASURE_ROWS)
+    const bandEnd = Math.min(len, rangeEnd + LOOKAHEAD_PREMEASURE_ROWS)
+    const candidates: ChatDomPremeasureCandidate[] = []
+    for (let index = bandStart; index < bandEnd; index++) {
+      if (index >= rangeStart && index < rangeEnd)
+        continue // in-range rows are covered by rangedPremeasureCandidates
+      const entry = all[index]
+      const item = items[index]
+      if (entry && item && !virt.hasMeasuredHeight(item.id))
+        candidates.push({ entry, item })
+    }
+    return candidates
+  })
   const removeIdFromSet = (ids: ReadonlySet<string>, id: string): ReadonlySet<string> => {
     if (!ids.has(id))
       return ids
@@ -610,6 +581,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       if (candidate.item.id !== liveTailId)
         nextCollapsed.add(candidate.item.id)
     }
+    // Look-ahead band rows are premeasured (pending) but never marked invisible: they
+    // are not rendered in the main list, so they need no collapse entry.
+    for (const candidate of lookAheadPremeasureCandidates())
+      nextPending.add(candidate.item.id)
     if (liveTailId !== undefined)
       nextCollapsed.delete(liveTailId)
     for (const id of [...nextPending]) {
@@ -746,17 +721,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (streamReplacementTailId() !== undefined && streamReplacementTailId() !== tailId)
       setStreamReplacementTailId(undefined)
   })
-  createComputed(() => {
-    const collapsed = new Set(collapsedPremeasureIds())
-    const liveTailId = liveTailVisibleId()
-    const exemptTailId = streamReplacementTailId()
-    if (liveTailId !== undefined)
-      collapsed.delete(liveTailId)
-    if (exemptTailId !== undefined)
-      collapsed.delete(exemptTailId)
-    virt.setCollapsedUntilMeasuredIds(collapsed)
-  })
-
   let syntaxHighlightResumeTimer: ReturnType<typeof setTimeout> | undefined
   const pauseSyntaxHighlightingForScroll = () => {
     setSyntaxHighlightingPaused(true)
@@ -1120,7 +1084,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         candidates={premeasureCandidates()}
         contentWidthPx={effectiveContentWidth()}
         renderBubble={entry => renderMessageBubble(entry, { premeasureMode: true })}
-        onMeasure={(id, height, heightKey, _measureDurationMs, settled) => {
+        onMeasure={(id, height, heightKey, measureDurationMs, settled) => {
+          // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows
+          // premeasures in one frame, the FIRST getBoundingClientRect reflows the dirty DOM
+          // (expensive) and the rest are cheap -- so a slow duration here localizes a
+          // premeasure-driven main-thread stall (the batched catch-up scroll deltas Detector
+          // B reports). Only a slow measure logs (see SCROLL_PHASE_STALL_WARN_MS).
+          if (measureDurationMs >= SCROLL_PHASE_STALL_WARN_MS) {
+            scrollPhaseLog.warn('slow scroll phase', {
+              phase: 'premeasure',
+              ms: Math.round(measureDurationMs),
+              id,
+              kind: virtualItemById().get(id)?.kind,
+            })
+          }
           const accepted = virt.primeHeight(id, height, heightKey)
           const hasCommittedOrPendingHeight = accepted || virt.hasMeasuredHeight(id) || virt.hasPendingPremeasuredHeight(id)
           if (settled && hasCommittedOrPendingHeight) {

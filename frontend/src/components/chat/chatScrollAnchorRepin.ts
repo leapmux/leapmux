@@ -43,6 +43,47 @@ export interface AnchorRepinDeps {
    * corrections, because writing scrollTop against the native scroll event reads as a jump.
    */
   isUserScrolling: () => boolean
+  /**
+   * Reports an immediate keep-position write whose target CLAMPED against a scroll
+   * boundary, so the anchored row could not land on its captured viewport line and
+   * visibly moved by `clampPx` (= targetTop - idealTop; >0 clamped at the top, so the
+   * row was pushed up; <0 clamped at the bottom). Fired only on a real clamp
+   * (|clampPx| >= REPIN_MIN_DELTA_PX), never on the routine in-range write. The engine
+   * stays mechanical -- it reports THAT a clamp happened; the hook owns the policy
+   * (a visible-px floor, and whether more history exists that direction so the clamp
+   * was avoidable) and decides whether to WARN. Optional: unit tests omit it.
+   */
+  onRepinClamp?: (info: {
+    anchorId: string
+    clampPx: number
+    fromTop: number
+    idealTop: number
+    targetTop: number
+    clientHeight: number
+    maxScrollTop: number
+  }) => void
+  /**
+   * Reports a re-pin that deliberately did NOT correct the anchored row back to its
+   * captured viewport line, leaving it displaced on-screen by `residualPx` (the
+   * correction we withheld). This is the OUTCOME-based counterpart to onRepinClamp: it
+   * catches a content shift that produces NO scroll event, so the hook's scroll-event
+   * detector can't see it. Two reasons:
+   *  - 'absorbed': a small estimate->measure correction arrived during a slow/tailing
+   *    scroll and we re-anchored to the shifted position instead of snapping back (a
+   *    PERMANENT accepted shift, up to the small-absorb cap).
+   *  - 'deferred-fling': a correction was deferred mid-fling as drift (transient -- the
+   *    fling-settle re-anchors it when momentum stops).
+   * The engine stays mechanical; the hook owns the WARN policy (a visible-px floor, and
+   * ignoring the fast-fling frames where the shift blends into momentum). Optional: unit
+   * tests omit it.
+   */
+  onAnchorDrift?: (info: {
+    anchorId: string
+    residualPx: number
+    reason: 'absorbed' | 'deferred-fling'
+    fromTop: number
+    clientHeight: number
+  }) => void
 }
 
 /**
@@ -279,7 +320,11 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
       if (anchorState) {
         const top = deps.virt.scrollTopForAnchor(anchorState.anchor)
         if (top != null) {
-          const targetTop = clampScrollTop(el, top - viewportAnchorOffset(el, anchorState.viewportOffsetRatio))
+          // The scrollTop that keeps the anchored row on its captured viewport line,
+          // BEFORE clamping. A clamp against a scroll boundary means the row can't be
+          // held there and visibly moves by the clamp amount (see onRepinClamp).
+          const idealTop = top - viewportAnchorOffset(el, anchorState.viewportOffsetRatio)
+          const targetTop = clampScrollTop(el, idealTop)
           const fromTop = readScrollTop(el)
           const signed = targetTop - fromTop
           const delta = Math.abs(signed)
@@ -334,14 +379,42 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // shows up as a tiny backward/forward bounce. Absorb the correction by making
             // the current viewport row the new anchor; large structural shifts still fall
             // through and preserve the old anchor.
+            //
+            // The anchored row is `signed` off its captured line and we are NOT correcting
+            // it -- an on-screen content shift with no scroll event. Report it (BEFORE the
+            // re-anchor discards the old anchor's displacement) so the hook can WARN.
+            deps.onAnchorDrift?.({
+              anchorId: anchorState.anchor.id,
+              residualPx: signed,
+              reason: 'absorbed',
+              fromTop,
+              clientHeight: el.clientHeight,
+            })
             reanchorAndDropDrift()
           }
-          else if ((deps.isUserScrolling() ? flingLike : activeFling || (recentMomentumInput && flingLike)) && delta < flingSuppressPx) {
+          else if ((deps.isUserScrolling() ? flingLike : activeFling) && delta < flingSuppressPx) {
             // A small correction during a FAST scroll (real momentum): defer it, so the
-            // write doesn't cancel the fling. Some measurements land just AFTER
-            // handleScroll returns, so use the stricter "actively flinging" signal outside
-            // the handler instead of requiring isUserScrolling to still be true. Slow/manual
-            // scrolls absorbed by the branch above leave no deferred drift to recapture later.
+            // write doesn't cancel the fling. Some measurements land just AFTER handleScroll
+            // returns, so outside the handler we gate on `activeFling` -- isActivelyFlinging,
+            // which is TRUE only while momentum is genuinely moving the viewport (a write
+            // would cancel it) and FALSE once it has stopped. It is deliberately NOT the
+            // 750ms momentum-input grace: that grace outlasts the momentum by ~600ms, and
+            // deferring through it meant a look-ahead premeasure landing during the post-fling
+            // SETTLE (viewport already stationary) accumulated as drift instead of correcting
+            // -- the observed run of deferred-fling WARNs climbing to ~176px at a fixed
+            // scrollTop. Once momentum stops, the viewport is stationary, so the else branch
+            // below writes the (off-screen, invisible) correction immediately and the anchor
+            // never drifts. Slow/manual scrolls are absorbed by the branch above.
+            // The row is `signed` off its line this frame -- transient drift the settle
+            // re-anchors when momentum stops. Report it; the hook ignores the fast-fling
+            // frames (where it blends into momentum) and surfaces only a lingering shift.
+            deps.onAnchorDrift?.({
+              anchorId: anchorState.anchor.id,
+              residualPx: signed,
+              reason: 'deferred-fling',
+              fromTop,
+              clientHeight: el.clientHeight,
+            })
             deps.flingSettle().accumulate(signed)
           }
           else if (maxScrollTopOf(el) <= 0) {
@@ -358,6 +431,22 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // as scroll drift. Slow deliberate scrolls still land here for corrections above
             // the small-jump absorb threshold.
             deps.writeScrollTop(targetTop, 'anchor-repin')
+            // The write clamped against a scroll boundary: the anchored row could not reach
+            // its captured line and jumped by the clamp amount. Report it so the hook can
+            // WARN when the clamp was avoidable (more history exists that direction). A
+            // routine in-range write leaves clampPx ~0 and is not reported.
+            const clampPx = targetTop - idealTop
+            if (Math.abs(clampPx) >= REPIN_MIN_DELTA_PX) {
+              deps.onRepinClamp?.({
+                anchorId: anchorState.anchor.id,
+                clampPx,
+                fromTop,
+                idealTop,
+                targetTop,
+                clientHeight: el.clientHeight,
+                maxScrollTop: maxScrollTopOf(el),
+              })
+            }
             // The anchor now sits at its stored viewport line (we moved the viewport to keep
             // it there), so re-baseline the capture position; otherwise the next re-pin
             // would measure this intentional keep-position move as stale movement.

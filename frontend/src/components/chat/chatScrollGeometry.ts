@@ -20,6 +20,17 @@ export const REPIN_MIN_DELTA_PX = 1
  */
 export const EDGE_INTENT_TOLERANCE_PX = 1
 
+/**
+ * A synchronous scroll-pipeline phase (refreshViewport render cascade, a premeasure row's
+ * forced-layout measure, or an offset-map rebuild) that runs longer than this dropped
+ * multiple frames and is a main-thread STALL -- the cause of the batched catch-up scroll
+ * deltas Detector B reports as "unexpected jumps". Timing is always on (two clock reads per
+ * phase, negligible); only a phase OVER this budget logs, so normal scrolling is silent.
+ * ~3 frames at 60fps -- well clear of routine work (single-digit ms) but far below the
+ * hundreds-of-ms freezes we are hunting.
+ */
+export const SCROLL_PHASE_STALL_WARN_MS = 50
+
 /** High-res monotonic clock (perf.now), falling back to Date.now where absent. */
 export function monotonicNow(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()

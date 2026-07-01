@@ -15,7 +15,6 @@ const virtualizerState = vi.hoisted(() => ({
   attachedIds: [] as string[],
   measuredIds: new Set<string>(),
   currentHeightKeys: new Map<string, string | undefined>(),
-  collapsedIds: new Set<string>(),
 }))
 
 const hiddenPremeasureState = vi.hoisted(() => ({
@@ -140,9 +139,6 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
         return virtualizerState.measuredIds.has(id)
       },
       hasPendingPremeasuredHeight: () => false,
-      setCollapsedUntilMeasuredIds: (ids: ReadonlySet<string>) => {
-        virtualizerState.collapsedIds = new Set(ids)
-      },
       heightDebugOfId: () => ({}),
       attachRow: (id: string) => {
         virtualizerState.attachedIds.push(id)
@@ -189,7 +185,6 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set()
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
@@ -216,7 +211,6 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set()
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
@@ -249,7 +243,6 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set()
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
@@ -285,7 +278,6 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set()
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     hiddenPremeasureState.contentWidthPx = undefined
@@ -322,7 +314,6 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
@@ -349,14 +340,12 @@ describe('chat view virtualized visible slice', () => {
     expect(appendedRow).not.toBeNull()
     expect(appendedRow!.style.visibility).not.toBe('hidden')
     expect(appendedRow!.style.opacity).toBe('1')
-    expect(virtualizerState.collapsedIds.has('m1')).toBe(false)
   })
 
   it('keeps streaming text in flow until its replacement row is measured', async () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set()
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
@@ -396,16 +385,15 @@ describe('chat view virtualized visible slice', () => {
     expect(row.style.opacity).toBe('1')
   })
 
-  it('collapses a newly visible interior row before the next async turn', () => {
+  it('renders a newly visible interior row invisible until measured, but not the live tail', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
     virtualizerState.currentHeightKeys = new Map()
-    virtualizerState.collapsedIds = new Set()
     hiddenPremeasureState.candidates = []
     hiddenPremeasureState.onMeasure = undefined
     virtualizerState.setRange?.({ start: 0, end: 1 })
     const [messages, setMessages] = createSignal([message('m0', 1)])
-    render(() => (
+    const { container } = render(() => (
       <ChatView
         messages={messages()}
         streamingText=""
@@ -415,7 +403,38 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.setRange?.({ start: 0, end: 3 })
     setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
 
-    expect(virtualizerState.collapsedIds.has('m1')).toBe(true)
-    expect(virtualizerState.collapsedIds.has('m2')).toBe(false)
+    // Interior unmeasured rows are protected by INVISIBILITY (not a 0-height collapse):
+    // m1 (interior, unmeasured) renders hidden until its height commits; m2 (live tail)
+    // stays visible. This is applied synchronously (a createComputed), before any async turn.
+    const interior = container.querySelector('[data-seq="2"]') as HTMLElement | null
+    const tail = container.querySelector('[data-seq="3"]') as HTMLElement | null
+    expect(interior).not.toBeNull()
+    expect(interior!.style.visibility).toBe('hidden')
+    expect(tail).not.toBeNull()
+    expect(tail!.style.visibility).not.toBe('hidden')
+  })
+
+  it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set(['m0'])
+    virtualizerState.currentHeightKeys = new Map()
+    hiddenPremeasureState.candidates = []
+    hiddenPremeasureState.onMeasure = undefined
+    virtualizerState.setRange?.({ start: 0, end: 1 }) // only m0 is in the rendered range
+    const [messages, setMessages] = createSignal([message('m0', 1)])
+    render(() => (
+      <ChatView
+        messages={messages()}
+        streamingText=""
+      />
+    ))
+
+    // m1 and m2 sit BEYOND the rendered range but within LOOKAHEAD_PREMEASURE_ROWS, so they
+    // are premeasured ahead of scrolling into view (previously only in-range rows were).
+    setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+
+    await waitFor(() => {
+      expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id).sort()).toEqual(['m1', 'm2'])
+    })
   })
 })

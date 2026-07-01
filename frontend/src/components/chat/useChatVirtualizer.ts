@@ -4,11 +4,15 @@ import type { RowAttachMeasureStats } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createMemo, createSignal, onCleanup } from 'solid-js'
 import { clamp } from '~/lib/clamp'
+import { createLogger } from '~/lib/logger'
 import { capMapInsertionOrder } from '~/lib/mapLru'
-import { shallowEqualSets } from '~/lib/shallowEqual'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
-import { monotonicNow } from './chatScrollGeometry'
+import { monotonicNow, SCROLL_PHASE_STALL_WARN_MS } from './chatScrollGeometry'
 import { createRowMeasurer } from './createRowMeasurer'
+
+// Shares the 'chatScroll' channel with useChatScroll so a stall attributed to the offset-map
+// rebuild sits alongside the refreshViewport / premeasure phase warnings.
+const virtLog = createLogger('chatScroll')
 
 /**
  * Minimal per-row descriptor the virtualizer needs. `id` keys the height
@@ -35,6 +39,17 @@ export interface VirtualItem {
    * Absent -> id-only caching.
    */
   heightKey?: string
+  /**
+   * The message's rendering kind (category.kind: 'user_text', 'tool_result', ...), used
+   * to bucket the height ESTIMATE for an unmeasured row. A single global mean over the
+   * whole chat over-estimated short rows (user text) whenever the mean was inflated by
+   * tall code/diff rows, so scrolling such a row in above the anchor shrank content above
+   * it and drifted the pin; a per-kind median draws each row's estimate from its own
+   * height distribution. Reuses the entry's EXISTING classification (ChatView passes
+   * `category.kind`), never re-classifying. Absent -> a shared default bucket (falls back
+   * to the global median, i.e. the pre-per-kind behavior).
+   */
+  kind?: string
 }
 
 /**
@@ -50,6 +65,12 @@ const GEOMETRY_RELEVANCE: Record<keyof Required<VirtualItem>, boolean> = {
   hasSpanLines: true,
   heightKey: true,
   seq: false,
+  // Feeds the per-kind estimate bucket, so a kind change re-estimates an unmeasured row
+  // and shifts the offset map. In practice a kind flip also bumps heightKey (both track
+  // the same reclassification), so this rarely forces an extra rebuild on its own -- but
+  // classifying it as geometry keeps the offset map correct even if that coupling ever
+  // loosens.
+  kind: true,
 }
 
 /** The geometry-affecting VirtualItem keys, derived once (module load) from the above. */
@@ -58,9 +79,10 @@ const GEOMETRY_KEYS = (Object.keys(GEOMETRY_RELEVANCE) as (keyof VirtualItem)[])
 
 /**
  * Whether two virtual-item arrays are GEOMETRY-EQUIVALENT: same length and the same
- * geometry fields (GEOMETRY_KEYS = id, hasSpanLines, heightKey) at every index. The
- * virtualizer keys its offset map, inter-row gap, and measured-height cache on exactly those
- * fields, so a recompute that preserves them produces an identical offset map. Used as the
+ * geometry fields (GEOMETRY_KEYS = id, hasSpanLines, heightKey, kind) at every index. The
+ * virtualizer keys its offset map, inter-row gap, measured-height cache, and per-kind
+ * estimate bucket on exactly those fields, so a recompute that preserves them produces an
+ * identical offset map. Used as the
  * `virtualItems` memo's `equals` so a recompute that DOESN'T change the visible window's
  * rows -- a streaming text chunk or a command-stream delta that bumps the agent's message
  * version (and so re-walks the whole window in walkWindow) without adding/removing/
@@ -187,6 +209,33 @@ interface DeferredPremeasure {
   heightKey: string | undefined
 }
 
+/**
+ * The most recent height commit that changed the offset map -- diagnostic attribution for
+ * the scroll-anchor drift WARN. The re-pin fires off `totalHeight()` and only sees THAT the
+ * geometry moved, not which row moved it; this names the row and by how much, so a logged
+ * drift can be traced to its cause: `firstMeasure` (an estimate->real correction, i.e. the
+ * per-kind median was off for this row / it outran premeasure) vs a re-measure (a
+ * premeasured-vs-visible height mismatch or a chrome/content change), and `delta`
+ * (= newHeight - assumedHeight) against the drift's residualPx tells whether this single
+ * commit explains it or a batch did. `commitSeq` is monotonic, so two consecutive WARNs
+ * reveal how many commits fell between them.
+ */
+export interface MeasurementCommitInfo {
+  id: string
+  kind: string
+  source: 'visible' | 'premeasure'
+  firstMeasure: boolean
+  /**
+   * The height the offset map assumed before this commit: the estimate (first measure) or
+   * the previously cached height (re-measure).
+   */
+  assumedHeight: number
+  newHeight: number
+  /** newHeight - assumedHeight: how far this commit shifted the row's reserved height. */
+  delta: number
+  commitSeq: number
+}
+
 export interface UseChatVirtualizerOptions {
   /** Reactive list of rows to virtualize, in display order. */
   items: Accessor<VirtualItem[]>
@@ -230,7 +279,7 @@ export interface UseChatVirtualizerOptions {
 const DEFAULT_OVERSCAN_PX = 800
 /**
  * Seed/fallback row height (px) for a row that has not reached any DOM measurement
- * path yet. Once visible or hidden DOM measures rows, the running mean replaces it.
+ * path yet. Once visible or hidden DOM measures rows, the per-kind median replaces it.
  */
 export const DEFAULT_ESTIMATE_PX = 96
 const DEFAULT_GAP_SMALL_PX = 8 // --space-2
@@ -356,8 +405,10 @@ export interface UseChatVirtualizerResult {
    * it is not a row-specific analytical model.
    */
   heightDebugOfId: (id: string) => { measured?: number }
-  /** Current global running-mean estimate for rows that have not reached DOM measurement yet. */
+  /** Current global-median estimate for rows that have not reached DOM measurement yet. */
   estimateHeight: Accessor<number>
+  /** Diagnostic: the most recent geometry-changing height commit, for drift-WARN attribution. */
+  lastMeasurement: () => MeasurementCommitInfo | undefined
   /**
    * Compute (without committing) the visible slice for a given scroll position.
    * `lead` extends the overscan in its `dir` (the fling direction) so a fast
@@ -376,12 +427,6 @@ export interface UseChatVirtualizerResult {
   primeHeight: (id: string, height: number, heightKey?: string) => boolean
   /** Whether the current item for `id` has a fresh measured/pre-measured height. */
   hasMeasuredHeight: (id: string) => boolean
-  /**
-   * Rows in this set reserve zero geometry until a real height is measured.
-   * Used while hidden DOM premeasurement is in flight so unknown rows do not
-   * first take estimated space and then visibly resize to their real height.
-   */
-  setCollapsedUntilMeasuredIds: (ids: ReadonlySet<string>) => void
   /**
    * Whether a hidden premeasurement already produced a valid height but its
    * geometry commit is queued behind the momentum-scroll deferral gate.
@@ -408,12 +453,13 @@ export interface UseChatVirtualizerResult {
 }
 
 /**
- * Running mean of measured row heights -- the fallback estimate used when no
- * DOM measurement exists yet, and for out-of-range indices. Bundles the
- * sum/count pair behind add/replace/remove so the two can't drift: a forgotten
- * count decrement on eviction would poison every fallback estimate (and thus the
- * whole offset map). `value(seed)` returns the mean, or the seed when no row has
- * been measured yet.
+ * A measured height only feeds the estimate when it is within the plausible band; a
+ * pathological outlier (a giant unwindowed diff) is cached for its own row but kept out
+ * of the estimate so it can't distort what an UNMEASURED row is assumed to be. The median
+ * already resists outliers, but excluding them also bounds the histogram's key range and
+ * keeps the `fallbackExcluded` diagnostic meaningful. Returns the contribution height, or
+ * undefined when the row is an outlier (recorded on its cache entry so eviction removes
+ * exactly what was added).
  */
 function fallbackEstimateContribution(height: number): number | undefined {
   return height <= FALLBACK_ESTIMATE_OUTLIER_PX ? height : undefined
@@ -423,16 +469,22 @@ interface CachedMeasuredHeight {
   key: string | undefined
   height: number
   fallbackContribution?: number
+  /**
+   * The row's kind at measure time -- the estimate bucket its contribution lives in, so
+   * eviction/prune removes from the right one even after the row leaves the current list.
+   */
+  kind: string
 }
 
 function cachedMeasuredHeightEntry(
   key: string | undefined,
   height: number,
   fallbackContribution: number | undefined,
+  kind: string,
 ): CachedMeasuredHeight {
   return fallbackContribution === undefined
-    ? { key, height }
-    : { key, height, fallbackContribution }
+    ? { key, height, kind }
+    : { key, height, fallbackContribution, kind }
 }
 
 interface ComputedRange {
@@ -440,30 +492,118 @@ interface ComputedRange {
   tallRow?: TallRowRangeDiagnostics
 }
 
-function createRunningMean() {
-  let sum = 0
-  let count = 0
+/**
+ * A multiset of measured row heights that answers the MEDIAN cheaply. Stored as a small
+ * height->count histogram keyed by the exact measured px (no rounding -- an estimate that
+ * feeds the offset map should not inject sub-pixel error, and `remove` must key on the same
+ * value `add` used). `total` makes the median position O(1) and the sorted-key walk that
+ * finds it runs lazily, only on the first `value()` after a mutation. That matters because
+ * `value()` is read for every unmeasured row on every offset-map rebuild, while mutations
+ * (a measurement commit / eviction) are comparatively rare -- so the hot path is a cached
+ * O(1) read. add/remove/replace are paired so the count can't drift: a forgotten decrement
+ * on eviction would corrupt the median for every future estimate.
+ */
+function createHeightMedian() {
+  const counts = new Map<number, number>()
+  let total = 0
+  let cachedMedian: number | undefined
+  const add = (height: number) => {
+    counts.set(height, (counts.get(height) ?? 0) + 1)
+    total += 1
+    cachedMedian = undefined
+  }
+  const remove = (height: number) => {
+    const c = counts.get(height)
+    if (c === undefined)
+      return
+    if (c <= 1)
+      counts.delete(height)
+    else
+      counts.set(height, c - 1)
+    total -= 1
+    cachedMedian = undefined
+  }
   return {
-    /** Record a newly measured row's height. */
-    add(height: number) {
-      sum += height
-      count += 1
+    add,
+    remove,
+    /** Account for a re-measured row's changed height (same row, count unchanged). */
+    replace(prev: number, next: number) {
+      remove(prev)
+      add(next)
     },
-    /** Account for a re-measured row's changed height (count unchanged -- same row). */
-    replace(prev: number, height: number) {
-      sum += height - prev
-    },
-    /** Drop an evicted row's measured height from the mean. */
-    remove(height: number) {
-      sum -= height
-      count -= 1
-    },
-    /** The mean of measured heights, or `seed` when nothing has been measured. */
-    value(seed: number): number {
-      return count > 0 ? sum / count : seed
+    /** The (lower) median measured height, or undefined when nothing is recorded. */
+    value(): number | undefined {
+      if (total === 0)
+        return undefined
+      if (cachedMedian !== undefined)
+        return cachedMedian
+      // Lower median: the element at 0-indexed floor((n-1)/2), so an even count leans to
+      // the SHORTER side -- deliberate, since over-estimating a short row is what drifts
+      // the pin. Walk the sorted buckets, accumulating counts, to the bucket that contains
+      // that rank.
+      const rank = Math.floor((total - 1) / 2)
+      const keys = [...counts.keys()].sort((a, b) => a - b)
+      let acc = 0
+      let result = keys[keys.length - 1]
+      for (const k of keys) {
+        acc += counts.get(k) as number
+        if (acc > rank) {
+          result = k
+          break
+        }
+      }
+      cachedMedian = result
+      return result
     },
   }
 }
+
+/**
+ * The unmeasured-row height estimate, a per-kind median of measured heights. Keying by
+ * message kind (user_text vs tool_result, ...) gives each row an estimate from its own
+ * height distribution instead of one global mean that a few tall code/diff rows pull up --
+ * the over-estimate that shrank content above the anchor and drifted the scroll pin. Every
+ * measurement also feeds a kind-agnostic GLOBAL median, the fallback for a kind not yet
+ * seen (and the value the public `estimateHeight` exposes for out-of-range rows).
+ */
+function createPerKindHeightEstimate() {
+  const byKind = new Map<string, ReturnType<typeof createHeightMedian>>()
+  const global = createHeightMedian()
+  const kindBucket = (kind: string) => {
+    let bucket = byKind.get(kind)
+    if (bucket === undefined) {
+      bucket = createHeightMedian()
+      byKind.set(kind, bucket)
+    }
+    return bucket
+  }
+  return {
+    add(kind: string, height: number) {
+      kindBucket(kind).add(height)
+      global.add(height)
+    },
+    remove(kind: string, height: number) {
+      // Never auto-creates: you only remove what a prior add recorded under this kind.
+      byKind.get(kind)?.remove(height)
+      global.remove(height)
+    },
+    replace(kind: string, prev: number, next: number) {
+      kindBucket(kind).replace(prev, next)
+      global.replace(prev, next)
+    },
+    /** Estimate for a kind: its own median, else the global median, else `seed`. */
+    value(kind: string, seed: number): number {
+      return byKind.get(kind)?.value() ?? global.value() ?? seed
+    },
+    /** Kind-agnostic estimate (global median, else `seed`) for out-of-range/unknown rows. */
+    globalValue(seed: number): number {
+      return global.value() ?? seed
+    },
+  }
+}
+
+/** Estimate bucket for a row whose kind is absent (tests / non-classifying callers). */
+const DEFAULT_ESTIMATE_KIND = ''
 
 /**
  * Geometry engine for the virtualized chat list. Owns the per-row height cache,
@@ -490,15 +630,26 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const mountedIds = new Set<string>()
   let deferMeasurements = false
   const deferredPremeasures = new Map<string, DeferredPremeasure>()
-  let collapsedUntilMeasuredIds = new Set<string>()
-  // Global running mean of measured heights. Unmeasured rows use this generic
-  // fallback until visible or hidden DOM measurement commits their real height.
-  const measuredMean = createRunningMean()
-  const estimateHeight: Accessor<number> = () => measuredMean.value(seed)
+  // Diagnostic-only: the most recent geometry-changing height commit, so the scroll-anchor
+  // drift WARN can attribute a drift to the row that caused it (see MeasurementCommitInfo).
+  // Non-reactive -- read at WARN time, never a render input.
+  let lastMeasurement: MeasurementCommitInfo | undefined
+  let measurementCommitSeq = 0
+  // Per-kind median of measured heights. An unmeasured row uses the median for its OWN
+  // kind (falling back to the global median, then the seed) until visible or hidden DOM
+  // measurement commits its real height -- see createPerKindHeightEstimate.
+  const heightEstimate = createPerKindHeightEstimate()
+  const kindOf = (item: VirtualItem): string => item.kind ?? DEFAULT_ESTIMATE_KIND
+  // A single row's estimate, keyed by its kind. Read for every unmeasured row inside geom.
+  const estimateFor = (item: VirtualItem): number => heightEstimate.value(kindOf(item), seed)
+  // Kind-agnostic estimate: the generic fallback for out-of-range rows and the value the
+  // public accessor exposes. Not reactive on its own (the medians are plain state); reads
+  // inside geom() recompute via geomVersion when a measurement commits.
+  const estimateHeight: Accessor<number> = () => heightEstimate.globalValue(seed)
 
   const removeFallbackContribution = (entry: CachedMeasuredHeight | undefined): void => {
     if (entry?.fallbackContribution !== undefined)
-      measuredMean.remove(entry.fallbackContribution)
+      heightEstimate.remove(entry.kind, entry.fallbackContribution)
   }
 
   const pruneStaleKeyedHeights = (list: readonly VirtualItem[]): void => {
@@ -511,18 +662,19 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     }
   }
 
-  // A row's resolved height: its measured height when the height cache holds one,
-  // else zero while the row is actively waiting on hidden premeasurement, else the
-  // generic running-mean fallback. The single home for the "measured wins, else
-  // maybe collapsed, else fallback" rule the offset map and heightOfIndex apply.
+  // A row's resolved height: its measured height when the height cache holds one, else the
+  // per-kind median estimate. An UNMEASURED row reserves its estimate whether it is
+  // in the rendered window or not, so scrolling a row into the window causes no offset
+  // change -- only its later measurement shifts geometry (a small estimate->measured
+  // correction), instead of the estimate->0->measured bounce a collapse-to-0 caused. An
+  // in-window unmeasured row is rendered `visibility:hidden` (ChatView's hideUntilMeasured)
+  // until its height commits, so reserving space here can't paint over the next row.
   const cachedMeasuredHeight = (item: VirtualItem): number | undefined => {
     const cached = heightCache.get(item.id)
     return cached !== undefined && cached.key === item.heightKey ? cached.height : undefined
   }
-  const isCollapsedUntilMeasured = (item: VirtualItem): boolean =>
-    cachedMeasuredHeight(item) === undefined && collapsedUntilMeasuredIds.has(item.id)
   const resolvedHeight = (item: VirtualItem): number =>
-    cachedMeasuredHeight(item) ?? (collapsedUntilMeasuredIds.has(item.id) ? 0 : estimateHeight())
+    cachedMeasuredHeight(item) ?? estimateFor(item)
 
   // Bumped whenever a measurement changes the geometry, so the `geom` memo and
   // every reactive getter recompute. Plain caches stay non-reactive for speed.
@@ -535,8 +687,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const gapAfter = (list: VirtualItem[], i: number): number => {
     if (i >= list.length - 1)
       return 0
-    if (isCollapsedUntilMeasured(list[i]) || isCollapsedUntilMeasured(list[i + 1]))
-      return 0
     return list[i + 1].hasSpanLines
       ? resolve(opts.gapSmallPx, DEFAULT_GAP_SMALL_PX)
       : resolve(opts.gapLargePx, DEFAULT_GAP_LARGE_PX)
@@ -546,6 +696,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // Keyed by row id (unique) rather than seq (0n for every optimistic local), so
   // stacked locals each get their own offset instead of collapsing onto one.
   const geom = createMemo(() => {
+    const rebuildStart = monotonicNow()
     geomVersion()
     const list = opts.items()
     pruneStaleKeyedHeights(list)
@@ -557,6 +708,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       const h = resolvedHeight(list[i])
       offsets[i + 1] = offsets[i] + h + gapAfter(list, i)
     }
+    // Rebuilding the offset map is an O(n) array fill (microseconds for any real n), so this
+    // should never trip -- but instrumenting it rules the offset map IN or OUT as a stall
+    // source instead of leaving it a suspect. Only a slow rebuild logs.
+    const rebuildMs = monotonicNow() - rebuildStart
+    if (rebuildMs >= SCROLL_PHASE_STALL_WARN_MS)
+      virtLog.warn('slow scroll phase', { phase: 'geomRebuild', ms: Math.round(rebuildMs), rows: n })
     return { offsets, indexById, list, n }
   })
 
@@ -594,19 +751,20 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return index === undefined ? undefined : g.list[index].heightKey
   }
 
+  // The row's current estimate bucket -- used when recording its measurement so the
+  // contribution lands in (and later leaves) the right per-kind median.
+  const currentKind = (id: string): string => {
+    const g = geom()
+    const index = g.indexById.get(id)
+    return index === undefined ? DEFAULT_ESTIMATE_KIND : kindOf(g.list[index])
+  }
+
   const hasMeasuredHeight = (id: string): boolean => {
     const g = geom()
     const index = g.indexById.get(id)
     if (index === undefined)
       return false
     return cachedMeasuredHeight(g.list[index]) !== undefined
-  }
-
-  const setCollapsedUntilMeasuredIds = (ids: ReadonlySet<string>): void => {
-    if (shallowEqualSets(ids, collapsedUntilMeasuredIds))
-      return
-    collapsedUntilMeasuredIds = new Set(ids)
-    setGeomVersion(v => v + 1)
   }
 
   // Debug-only: surface the measured height without exposing the generic fallback
@@ -826,11 +984,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Ignore non-positive (or non-finite) heights: a row not yet laid out -- or one
     // under a display:none ancestor (an inactive TILE/workspace; an inactive tab
     // PANE is visibility:hidden and still measures its real height) -- reports 0,
-    // which would poison the height cache and drag the global-mean fallback toward
+    // which would poison the height cache and drag the median estimate toward
     // zero. The finite-positive guard rejects NaN (`NaN > 0` is false, so a stray
-    // NaN would otherwise flow into the running mean and turn every fallback
+    // NaN would otherwise flow into the median histogram and turn every fallback
     // estimate -- and thus the whole offset map -- into NaN) AND Infinity (which
-    // a bare `height > 0` lets through, then poisons the running mean the same
+    // a bare `height > 0` lets through, then poisons the estimate the same
     // way). Single chokepoint for both the immediate attachRow read and the
     // ResizeObserver flush.
     if (!isUsableHeight(height))
@@ -845,6 +1003,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     }
     const prevEntry = heightCache.get(id)
     const prev = prevEntry?.height
+    const kind = currentKind(id)
+    // The height the offset map reserved for this row BEFORE this commit -- the per-kind
+    // estimate for a first measure (read now, before this row's contribution is folded in)
+    // or the previously cached height for a re-measure. Its diff from the new height is
+    // exactly what shifts the offset map (and, if above the anchor, drifts the pin).
+    const assumedHeight = prevEntry !== undefined ? prevEntry.height : heightEstimate.value(kind, seed)
     const nextContribution = fallbackEstimateContribution(height)
     const shouldReportTallMeasure = !!opts.onTallRowMeasure
       && (opts.shouldReportPerf?.() ?? true)
@@ -875,25 +1039,27 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // insertion order; a plain set on an existing key would keep its old, stale
     // position and risk evicting a freshly-measured row).
     heightCache.delete(id)
-    heightCache.set(id, cachedMeasuredHeightEntry(heightKey, height, nextContribution))
+    heightCache.set(id, cachedMeasuredHeightEntry(heightKey, height, nextContribution, kind))
     if (prevEntry === undefined) {
       if (nextContribution !== undefined)
-        measuredMean.add(nextContribution)
+        heightEstimate.add(kind, nextContribution)
     }
     else {
+      // prevEntry survived the stale-key delete above, so its heightKey == this heightKey
+      // and thus its kind == this kind (a kind flip bumps heightKey) -- the same bucket.
       const prevContribution = prevEntry.fallbackContribution
       if (prevContribution === undefined && nextContribution !== undefined)
-        measuredMean.add(nextContribution)
+        heightEstimate.add(kind, nextContribution)
       else if (prevContribution !== undefined && nextContribution === undefined)
-        measuredMean.remove(prevContribution)
+        heightEstimate.remove(prevEntry.kind, prevContribution)
       else if (prevContribution !== undefined && nextContribution !== undefined)
-        measuredMean.replace(prevContribution, nextContribution)
+        heightEstimate.replace(kind, prevContribution, nextContribution)
     }
     // Evict the least-recently-measured rows once over the cap, keeping the
-    // global-mean fallback consistent (subtract each evicted height first) and
-    // never dropping a currently-MOUNTED row (the live mountedIds set, so a row
-    // still on screen keeps its measured height instead of falling back to the
-    // running mean).
+    // per-kind median estimate consistent (remove each evicted height from its
+    // bucket first) and never dropping a currently-MOUNTED row (the live mountedIds
+    // set, so a row still on screen keeps its measured height instead of falling
+    // back to the estimate).
     if (heightCache.size > HEIGHT_CACHE_MAX) {
       capMapInsertionOrder(heightCache, HEIGHT_CACHE_MAX, {
         protect: mountedIds,
@@ -901,6 +1067,19 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
           removeFallbackContribution(heightCache.get(oldest))
         },
       })
+    }
+    // Record the commit that is about to move the offset map, so a re-pin drift the
+    // resulting totalHeight change triggers can name its cause (see MeasurementCommitInfo).
+    measurementCommitSeq += 1
+    lastMeasurement = {
+      id,
+      kind,
+      source: optsForCommit.source,
+      firstMeasure: isFirst,
+      assumedHeight,
+      newHeight: height,
+      delta: height - assumedHeight,
+      commitSeq: measurementCommitSeq,
     }
     setGeomVersion(v => v + 1)
     if (shouldReportTallMeasure) {
@@ -1006,12 +1185,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightOfIndex,
     heightDebugOfId,
     estimateHeight,
+    lastMeasurement: () => lastMeasurement,
     computeRange,
     updateViewport,
     measure,
     primeHeight,
     hasMeasuredHeight,
-    setCollapsedUntilMeasuredIds,
     hasPendingPremeasuredHeight,
     setVisibleMeasurementDeferral: (defer: boolean) => {
       deferMeasurements = defer

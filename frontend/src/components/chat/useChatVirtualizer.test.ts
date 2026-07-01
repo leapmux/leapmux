@@ -71,25 +71,26 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('reserves zero geometry for collapsed-until-measured rows', () => {
+  it('reserves the estimate for an unmeasured row -- no collapse-to-0 (offset continuity)', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 100)
       virt.measure('m3', 100)
-      expect(virt.totalHeight()).toBe(340)
+      // m2 is unmeasured. It reserves the running-mean estimate (100), NOT 0 -- the same
+      // geometry it has whether or not it is in the rendered window. So scrolling m2 into
+      // the window causes no offset change; only its later measurement shifts geometry.
+      // (Previously an in-window unmeasured row collapsed to 0, which is what made content
+      // above the anchor shrink and drift when scrolling up.)
+      expect(virt.heightOfIndex(1)).toBe(100)
+      expect(virt.offsetOfIndex(1)).toBe(120) // m1(100) + large gap(20)
+      expect(virt.offsetOfIndex(2)).toBe(240) // + m2 estimate(100) + gap(20)
+      expect(virt.totalHeight()).toBe(340) // 3*100 + 2*20
 
-      virt.setCollapsedUntilMeasuredIds(new Set(['m2']))
-
-      expect(virt.heightOfIndex(1)).toBe(0)
-      expect(virt.offsetOfIndex(1)).toBe(100)
-      expect(virt.offsetOfIndex(2)).toBe(100)
-      expect(virt.totalHeight()).toBe(200)
-
+      // Measuring m2 taller is the only shift -- an estimate->measured correction.
       expect(virt.primeHeight('m2', 250)).toBe(true)
-
       expect(virt.heightOfIndex(1)).toBe(250)
       expect(virt.offsetOfIndex(1)).toBe(120)
-      expect(virt.offsetOfIndex(2)).toBe(390)
+      expect(virt.offsetOfIndex(2)).toBe(390) // 100 + 20 + 250 + 20
       expect(virt.totalHeight()).toBe(490)
       dispose()
     })
@@ -101,7 +102,7 @@ describe('usechatvirtualizer geometry', () => {
       virt.measure('m1', 200)
       expect(virt.estimateHeight()).toBe(200)
       // A row in a display:none tab reports height 0 — must be ignored so it
-      // doesn't poison the cache or drag the running-mean estimate to ~0.
+      // doesn't poison the cache or drag the median estimate to ~0.
       expect(virt.measure('m1', 0)).toBe(false)
       expect(virt.heightOfIndex(0)).toBe(200)
       expect(virt.estimateHeight()).toBe(200)
@@ -109,13 +110,13 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('ignores a NaN-height measurement so it cannot poison the running-mean estimate', () => {
+  it('ignores a NaN-height measurement so it cannot poison the median estimate', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 200)
       expect(virt.estimateHeight()).toBe(200)
       // A stray NaN height (`NaN <= 0` is false, so the old non-positive guard
-      // let it through) would flow into the running mean and turn estimateHeight — and
+      // let it through) would flow into the median histogram and turn estimateHeight — and
       // thus the whole offset map — into NaN. It must be rejected like a zero.
       expect(virt.measure('m2', Number.NaN)).toBe(false)
       expect(virt.estimateHeight()).toBe(200)
@@ -124,13 +125,13 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('ignores an Infinity-height measurement so it cannot poison the running-mean estimate', () => {
+  it('ignores an Infinity-height measurement so it cannot poison the median estimate', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 200)
       expect(virt.estimateHeight()).toBe(200)
       // A stray Infinity height passes a bare `height > 0` test (`Infinity > 0` is
-      // true), so it would flow into the running mean and turn estimateHeight — and the
+      // true), so it would flow into the median histogram and turn estimateHeight — and the
       // whole offset map — into NaN/Infinity. The finite-positive guard rejects it.
       expect(virt.measure('m2', Number.POSITIVE_INFINITY)).toBe(false)
       expect(virt.estimateHeight()).toBe(200)
@@ -139,14 +140,101 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('estimate is the running mean of measured rows', () => {
+  it('estimate is the median of measured rows -- robust to a tall outlier a mean would chase', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(4))
-      virt.measure('m1', 200)
-      virt.measure('m2', 100)
-      expect(virt.estimateHeight()).toBe(150) // (200+100)/2
-      // Unmeasured m3/m4 now use 150.
-      expect(virt.heightOfIndex(2)).toBe(150)
+      const { virt } = setup(plainItems(5))
+      virt.measure('m1', 100)
+      virt.measure('m2', 120)
+      // A tall code/diff row (still within the outlier band, so it counts): a MEAN would
+      // be dragged to ~473 and over-reserve every unmeasured row, shrinking content above
+      // the anchor when the real (shorter) height lands. The median ignores its magnitude.
+      virt.measure('m3', 1200)
+      expect(virt.estimateHeight()).toBe(120) // median of (100,120,1200), not the 473 mean
+      // Unmeasured m4/m5 now use 120.
+      expect(virt.heightOfIndex(3)).toBe(120)
+      dispose()
+    })
+  })
+
+  it('estimates a row from its OWN kind, falling back to the global median for an unseen kind', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [
+        { id: 'u1', hasSpanLines: false, kind: 'user_text' },
+        { id: 'u2', hasSpanLines: false, kind: 'user_text' },
+        { id: 't1', hasSpanLines: false, kind: 'tool_result' },
+        { id: 't2', hasSpanLines: false, kind: 'tool_result' },
+        { id: 'u3', hasSpanLines: false, kind: 'user_text' }, // unmeasured
+        { id: 't3', hasSpanLines: false, kind: 'tool_result' }, // unmeasured
+        { id: 'x1', hasSpanLines: false, kind: 'assistant_text' }, // unmeasured, unseen kind
+      ]
+      const [list] = createSignal(items)
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 999, // deliberately far off, to prove estimates aren't seed-derived
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      // Short user rows, tall tool rows.
+      virt.measure('u1', 40)
+      virt.measure('u2', 60)
+      virt.measure('t1', 400)
+      virt.measure('t2', 600)
+      // The unmeasured user row estimates from the USER median (40), not the ~275 mean a
+      // single global estimate blends across kinds -- the over-estimate that drifts the pin.
+      expect(virt.heightOfIndex(4)).toBe(40) // u3: lower median of (40,60)
+      // The unmeasured tool row estimates from the TOOL median (400).
+      expect(virt.heightOfIndex(5)).toBe(400) // t3: lower median of (400,600)
+      // A kind with no measurements falls back to the GLOBAL median across every row.
+      expect(virt.heightOfIndex(6)).toBe(60) // x1: lower median of (40,60,400,600)
+      dispose()
+    })
+  })
+
+  it('records the last commit for drift attribution -- first measure vs re-measure', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false, kind: 'user_text' },
+        { id: 'b', hasSpanLines: false, kind: 'user_text' },
+      ]
+      const [list] = createSignal(items)
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      expect(virt.lastMeasurement()).toBeUndefined()
+
+      // First measure: the map assumed the estimate (seed 100 -- no user_text measured yet),
+      // so delta = 40 - 100 = -60 -- content shrank vs what was reserved (a firstMeasure
+      // drift is the estimate being off / the row outrunning premeasure).
+      virt.measure('a', 40)
+      expect(virt.lastMeasurement()).toMatchObject({
+        id: 'a',
+        kind: 'user_text',
+        source: 'visible',
+        firstMeasure: true,
+        assumedHeight: 100,
+        newHeight: 40,
+        delta: -60,
+      })
+      const seqAfterFirst = virt.lastMeasurement()?.commitSeq ?? 0
+
+      // Re-measure: the map assumed the cached 40, so delta = 55 - 40 = 15 -- a re-measure
+      // drift points at a premeasured-vs-visible mismatch or a chrome/content change.
+      virt.measure('a', 55)
+      const reMeasure = virt.lastMeasurement()
+      expect(reMeasure).toMatchObject({
+        id: 'a',
+        firstMeasure: false,
+        assumedHeight: 40,
+        newHeight: 55,
+        delta: 15,
+      })
+      // commitSeq advances, so two consecutive drift WARNs reveal commits between them.
+      expect(reMeasure?.commitSeq ?? 0).toBeGreaterThan(seqAfterFirst)
       dispose()
     })
   })
@@ -532,7 +620,7 @@ describe('usechatvirtualizer geometry', () => {
       // Measured first -> the LRU tail and first eviction target.
       virt.measure('outlier', 500)
       // HEIGHT_CACHE_MAX more distinct rows pushes the cache one past the cap, so
-      // 'outlier' is evicted and its 500px no longer skews the running mean.
+      // 'outlier' is evicted and its 500px is removed from the median histogram.
       for (let i = 0; i < HEIGHT_CACHE_MAX; i++)
         virt.measure(`x${i}`, 100)
       expect(virt.estimateHeight()).toBe(100)
@@ -607,19 +695,18 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('keeps a collapsed hidden premeasure at zero until its deferred height flushes', () => {
+  it('queues a hidden premeasure while measurement is deferred and applies it on flush', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(2))
       virt.measure('m2', 100)
-      virt.setCollapsedUntilMeasuredIds(new Set(['m1']))
-
+      // m1 is unmeasured -> it reserves the estimate (100) throughout the deferral.
       virt.setVisibleMeasurementDeferral(true)
-      expect(virt.primeHeight('m1', 300)).toBe(false)
+      expect(virt.primeHeight('m1', 300)).toBe(false) // queued behind the deferral, not applied
 
       expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
-      expect(virt.heightOfIndex(0)).toBe(0)
-      expect(virt.offsetOfIndex(1)).toBe(0)
-      expect(virt.totalHeight()).toBe(100)
+      expect(virt.heightOfIndex(0)).toBe(100) // still the estimate -- the queued 300 hasn't applied
+      expect(virt.offsetOfIndex(1)).toBe(120) // m1 estimate(100) + gap(20)
+      expect(virt.totalHeight()).toBe(220) // 100 + 20 + 100
 
       virt.setVisibleMeasurementDeferral(false)
       expect(virt.flushDeferredMeasurements()).toBe(true)
@@ -985,7 +1072,7 @@ describe('usechatvirtualizer geometry', () => {
 })
 
 describe('samevirtualitems geometry equality', () => {
-  const base: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1', seq: 1n }
+  const base: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1', seq: 1n, kind: 'user_text' }
 
   it('is true for arrays equal on the geometry fields', () => {
     expect(sameVirtualItems([{ ...base }], [{ ...base }])).toBe(true)
@@ -1003,6 +1090,8 @@ describe('samevirtualitems geometry equality', () => {
     expect(sameVirtualItems([base], [{ ...base, id: 'm2' }])).toBe(false)
     expect(sameVirtualItems([base], [{ ...base, hasSpanLines: true }])).toBe(false)
     expect(sameVirtualItems([base], [{ ...base, heightKey: 'k2' }])).toBe(false)
+    // kind feeds the per-kind estimate bucket, so a kind change is geometry-relevant.
+    expect(sameVirtualItems([base], [{ ...base, kind: 'tool_result' }])).toBe(false)
   })
 
   it('is false for different lengths and true for the same reference', () => {

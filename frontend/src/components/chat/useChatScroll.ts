@@ -10,7 +10,7 @@ import { isOptimisticLocal } from '~/stores/chatReconcile'
 import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, monotonicNow, REPIN_MIN_DELTA_PX } from './chatScrollGeometry'
+import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, monotonicNow, REPIN_MIN_DELTA_PX, SCROLL_PHASE_STALL_WARN_MS } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
@@ -34,7 +34,7 @@ export type ChatScrollVirtualizer = Pick<
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
 > & Partial<Pick<
   UseChatVirtualizerResult,
-  'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements'
+  'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement'
 >>
 
 /**
@@ -195,19 +195,46 @@ const SCROLL_BUFFER_SCREENS = 3
  * hand off to sticky-bottom (~1s at 60fps) instead of chasing forever.
  */
 const SCROLL_TO_BOTTOM_MAX_FRAMES = 60
-const scrollPerfLog = createLogger('chatScrollPerf')
-
 // ---------------------------------------------------------------------------
-// Scroll-anomaly diagnostics (permanent WARN logging)
+// Scroll-anomaly diagnostics (always-on WARN logging)
 //
 // The virtualized list re-pins scrollTop to keep the anchored row stationary as
-// geometry changes. A correct re-pin is invisible. These thresholds flag the
-// re-pins that AREN'T -- a visible jump, a bounce, a lost anchor, a clamp, or a
-// pagination loop that can't make progress. They WARN (like the height-estimate
-// divergence WARN) so a user hitting a scroll glitch can copy the console and
-// report it. Tuned to stay quiet during normal scrolling: each fires only on a
-// genuinely unexpected state, not on the routine small estimate-vs-measured nudges.
+// geometry changes; a correct re-pin is invisible. Two WARNs flag the scrolls the
+// user actually PERCEIVES as a jump, so one can be copied from the console to report
+// a glitch. Both are tuned to stay silent during normal scrolling -- see each
+// detector's gate below. Unlike the old debug firehose, they fire without the
+// debug-logging preference (a jump is worth surfacing regardless).
 // ---------------------------------------------------------------------------
+const scrollLog = createLogger('chatScroll')
+/**
+ * Detector B threshold (px): a viewport move between two consecutive scroll events larger
+ * than this, with NO known cause, is an unexplained teleport (see handleScroll). An
+ * ABSOLUTE floor (not a fraction of the viewport) so it catches a SMALL jump the user
+ * perceives regardless of pane height. It stays quiet because every legitimate move is
+ * excluded BEFORE this threshold is consulted -- our own programmatic write (a fresh echo,
+ * or a delayed one whose baseline we already advanced at write time), a keyboard page, a
+ * wheel/touch fling, a scrollbar/finger drag, a stale-native translation, and the tail
+ * following a grow/shrink -- so what survives down at 32px is a genuinely unaccounted-for
+ * move. Deliberate scrolling never trips it: it always carries wheel/touch/pointer input.
+ */
+const UNEXPLAINED_JUMP_MIN_PX = 32
+/**
+ * Detector A floor: a keep-position re-pin that clamps against a scroll boundary moves
+ * the anchored row off its captured line by the clamp amount. Below this the shift is
+ * imperceptible; at or above it the row visibly jumps. Only reported when more history
+ * still exists that direction (the clamp was avoidable -- the loaded buffer ran short);
+ * a clamp at a genuinely exhausted edge is expected and stays silent.
+ */
+const VISIBLE_ANCHOR_JUMP_PX = 8
+/**
+ * Detector C floor: a re-pin that leaves the anchored row displaced on-screen instead of
+ * correcting it (an ABSORBED slow-scroll correction, or DEFERRED fling drift -- see
+ * onAnchorDrift) shifts content with no scroll event, so Detector B can't see it. Below
+ * this the shift is imperceptible; at or above it the reader notices content move. Kept
+ * quiet during a fast fling (where the shift blends into momentum and the settle re-anchors
+ * it); what's left is a shift while scrolling slowly or just after stopping.
+ */
+const ANCHOR_DRIFT_WARN_PX = 16
 
 /**
  * Rows the oldest-end trim must KEEP, counted from a given keep-from `anchor` (and its
@@ -483,6 +510,21 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // after large coordinate-space shifts.
   let lastScrollDir: 'older' | 'newer' = 'older'
 
+  // The scrollTop observed on the previous scroll event, so handleScroll can infer the
+  // direction from the position delta. handleWheel/handleKeyDown set lastScrollDir for
+  // wheel/key input, but a scrollbar drag, touch scroll, or momentum fling fires only
+  // `scroll` events -- this keeps lastScrollDir correct for those too. Kept in sync on our
+  // own programmatic writes: writeScrollTopProgrammatically advances it to the written
+  // position immediately (the write's echo event later re-affirms it without changing
+  // direction), so the next user delta -- and the scroll-anomaly WARN -- measures from the
+  // real current position, not a stale one, even when the echo is delivered late.
+  let lastScrollTopForDir = 0
+  // Timestamp (monotonicNow) of the previous scroll event, so Detector B can report the gap
+  // since it. A large gap means scroll events STALLED -- a heavy measurement pass blocking
+  // the main thread while momentum coasted -- after which the browser delivers one catch-up
+  // delta that reads as an isolated jump. undefined until the first event.
+  let lastScrollEventAt: number | undefined
+
   const scrollDomDebugSnapshot = () => {
     const el = messageListRef
     if (!el)
@@ -501,29 +543,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
   }
 
-  const logScrollDebug = (event: string, payload: Record<string, unknown>) => {
-    if (scrollPerfLog.isDebug())
-      scrollPerfLog.debug(event, payload)
-  }
-
   const markProgrammaticScroll = (source?: string) => {
-    const before = scrollPerfLog.isDebug() ? scrollDomDebugSnapshot() : undefined
     progGuard.mark(source)
-    if (scrollPerfLog.isDebug()) {
-      logScrollDebug('scroll marker', {
-        source,
-        before,
-        after: scrollDomDebugSnapshot(),
-        markers: progGuard.debugMarkers(),
-      })
-    }
   }
 
   const writeScrollTopProgrammatically = (top: number, source?: string) => {
     const el = messageListRef
     const beforeTop = el?.scrollTop
     const beforeClientHeight = el?.clientHeight ?? 0
-    const before = scrollPerfLog.isDebug() ? scrollDomDebugSnapshot() : undefined
     progGuard.write(top, source)
     const afterTop = el?.scrollTop
     if (
@@ -562,20 +589,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     else if (source !== 'stale-native-scroll-translate' && source !== 'anchor-repin') {
       recentAnchorRepinShift = undefined
     }
-    if (scrollPerfLog.isDebug()) {
-      const after = scrollDomDebugSnapshot()
-      const moved = before !== undefined && after !== undefined
-        ? after.scrollTop - before.scrollTop
-        : undefined
-      logScrollDebug('scroll write', {
-        source,
-        requestedTop: top,
-        moved,
-        before,
-        after,
-        markers: progGuard.debugMarkers(),
-      })
-    }
+    // Advance the direction / last-position baseline to where we just moved. handleScroll
+    // otherwise only re-syncs it from a programmatic write's ECHO scroll event -- but the
+    // browser can deliver that echo LATER than the programmatic guard's echo-marker TTL
+    // (~150ms) when the main thread is busy, e.g. a keep-position re-pin during a long
+    // older-page prepend re-measuring a huge list. A late echo is then no longer matched
+    // as ours, and measured against the stale pre-write baseline it reads as a large
+    // unexplained user jump: a spurious scroll-anomaly WARN and a mis-inferred scroll
+    // direction. Syncing at write time makes the baseline reflect our own move
+    // immediately, so a delayed echo shows ~0 delta and a genuine later user scroll
+    // measures from the real current position. The large-prepend case stays correct too:
+    // its stale-native momentum events are recognized via recentAnchorRepinShift (armed
+    // above) and translated in handleScroll, independent of this baseline.
+    if (afterTop !== undefined)
+      lastScrollTopForDir = afterTop
   }
   // True only while a USER scroll event is refreshing newly revealed rows (inside
   // handleScroll's refreshViewport). The geometry re-pin can fire synchronously
@@ -629,14 +656,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // interleaves before the page's own native scroll event can't consume it.
   let discretePageTarget: number | null = null
   let viewportRefreshRafId = 0
-  // The scrollTop observed on the previous scroll event, so handleScroll can
-  // infer the direction from the position delta. handleWheel/handleKeyDown set
-  // lastScrollDir for wheel/key input, but a scrollbar drag, touch scroll, or
-  // momentum fling fires only `scroll` events -- this keeps lastScrollDir correct
-  // for those too. Kept in sync on our own programmatic writes (their echo events
-  // update it without changing direction) so the next user delta measures from
-  // the real current position, not a stale one.
-  let lastScrollTopForDir = 0
   // Safari/WebKit rubber-band overscroll can expose transient negative/over-max
   // scrollTop values on read. Treat those as native edge physics, not list
   // coordinates: anchor resolution, viewport ranges, velocity, and saved state must
@@ -688,27 +707,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (Math.abs(translatedTop - staleTop) < REPIN_MIN_DELTA_PX)
       return undefined
 
-    const debug = scrollPerfLog.isDebug()
-    const before = debug ? scrollDomDebugSnapshot() : undefined
     // Write without arming the echo marker yet: this event is still a USER momentum
     // event and must flow through the normal anchor/velocity/range path. We mark the
     // post-write position after classification so the browser's follow-up scroll event
     // for this assignment is ignored without swallowing the current event.
     el.scrollTop = translatedTop
     lastScrollTopForDir = shift.afterTop
-    if (debug) {
-      const after = scrollDomDebugSnapshot()
-      logScrollDebug('stale native scroll translated', {
-        staleTop,
-        translatedTop,
-        shift,
-        ageMs,
-        moved: after !== undefined && before !== undefined ? after.scrollTop - before.scrollTop : undefined,
-        before,
-        after,
-        markers: progGuard.debugMarkers(),
-      })
-    }
     return { staleTop, translatedTop, shift, ageMs }
   }
 
@@ -732,6 +736,43 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
     readScrollTop: readLogicalScrollTop,
+    // Detector A: a keep-position re-pin clamped against a scroll boundary, so the
+    // anchored row jumped by the clamp amount. WARN only when the shift is visible AND
+    // more history still exists that direction (clampPx > 0 -> clamped at the top, so
+    // older content above would have held the row; < 0 -> clamped at the bottom, newer
+    // content below would have). A clamp at a genuinely exhausted edge is expected --
+    // there is nothing left to reveal, so the row MUST move -- and stays silent.
+    onRepinClamp: (info) => {
+      const hasHistoryThatDirection = info.clampPx > 0
+        ? !!opts.hasOlderMessages?.()
+        : !!opts.hasNewerMessages?.()
+      if (hasHistoryThatDirection && Math.abs(info.clampPx) >= VISIBLE_ANCHOR_JUMP_PX) {
+        scrollLog.warn('anchor re-pin clamped at a loaded edge -- anchored row jumped', {
+          ...info,
+          clampedAt: info.clampPx > 0 ? 'top' : 'bottom',
+          dom: scrollDomDebugSnapshot(),
+        })
+      }
+    },
+    // Detector C (outcome-based): the re-pin left the anchored row displaced by
+    // residualPx instead of correcting it -- a content shift that produces NO scroll
+    // event, so Detector B can't see it. Surface it above the visible floor, but skip the
+    // fast-fling frames (isActivelyFlinging): there the shift blends into momentum and the
+    // fling-settle re-anchors it, so per-frame warnings would be noise. What survives is a
+    // shift the reader perceives while scrolling slowly or just after stopping.
+    onAnchorDrift: (info) => {
+      if (Math.abs(info.residualPx) >= ANCHOR_DRIFT_WARN_PX && !scrollVelocity.isActivelyFlinging()) {
+        scrollLog.warn('anchored content drifted without correction', {
+          ...info,
+          // The measurement that moved the geometry this re-pin absorbed: firstMeasure +
+          // delta tell whether it was an estimate->real correction (per-kind median off /
+          // outran premeasure) or a re-measure (premeasured-vs-visible mismatch), and
+          // whether this single commit's delta accounts for residualPx or a batch did.
+          measurement: virt.lastMeasurement?.(),
+          dom: scrollDomDebugSnapshot(),
+        })
+      }
+    },
   })
   const { currentAnchor, currentAnchorState, isFollowing, followTail, setAnchor, captureAnchor, captureTopAnchor, captureRowTopAnchor, repinToAnchor } = anchorRepin
 
@@ -993,13 +1034,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     programmaticEcho: boolean
     isMomentumScroll: boolean
     discretePage: boolean
-    discretePageTargetBefore: number | null
   } => {
     // A scroll event landing at the exact pixel we last wrote is our own programmatic
     // scroll echoing back, not a user gesture -- so it has no momentum to protect and
     // must not suppress the re-pin.
     const programmaticEcho = !forceUserScroll && isProgrammaticEcho()
-    const discretePageTargetBefore = discretePageTarget
     // Is THIS event the in-flight keyboard PageUp/PageDown's own scroll? Match by
     // position (its clamped target), not "the next scroll event", so an unrelated
     // fling interleaving before the page's native event isn't mistaken for it. A
@@ -1029,7 +1068,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // and not direct pointer/touch manipulation (a drag has no inertia to protect --
     // see isScrollInputActive).
     const isMomentumScroll = !programmaticEcho && !discretePage && !isScrollInputActive()
-    return { programmaticEcho, isMomentumScroll, discretePage, discretePageTargetBefore }
+    return { programmaticEcho, isMomentumScroll, discretePage }
   }
 
   /**
@@ -1098,7 +1137,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // freed it from) a loaded edge, which is invisible to them otherwise (scrollTop has
     // no signal). Cheap -- the memos short-circuit on the fetch flags before measuring.
     bumpGeomTick(t => t + 1)
-    const eventMarkersBefore = scrollPerfLog.isDebug() ? progGuard.debugMarkers() : undefined
     // Snapshot THIS event's own echo marker BEFORE handling it: if checkAtBottom
     // re-sticks below (a fresh programmatic write), it arms another marker whose echo is
     // still pending, so we name this event's marker now and consume only it below.
@@ -1156,11 +1194,27 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
     const scrollTopAtStart = messageListRef ? readLogicalScrollTop(messageListRef) : undefined
     const lastScrollTopBeforeEvent = lastScrollTopForDir
+    // Whether a fling was ALREADY in progress as of the PREVIOUS scroll event -- captured
+    // before computeViewportLead (below) samples THIS event's velocity. A trackpad momentum
+    // coast fires scroll events with no fresh wheel input, so its input grace
+    // (hasRecentMomentumInput) lapses after 750ms even while it is still moving; the velocity
+    // tracker, fed by those scroll events, still knows it is flinging. Detector B uses this
+    // to excuse the coast. Read PRE-sample deliberately: a genuine teleport's OWN event
+    // samples a huge speed, so the post-sample isActivelyFlinging would mask the very jump we
+    // want -- but a teleport from rest was NOT flinging on the prior event, so this stays false.
+    const wasActivelyFlingingBeforeEvent = scrollVelocity.isActivelyFlinging()
+    // Diagnostic timing for the Detector B WARN: the gap since the previous scroll event
+    // (a stall vs a steady cadence) and the tracker's PRE-sample speed (0 once idle). Read
+    // before computeViewportLead samples this event, for the same reason as the fling flag.
+    const nowMs = monotonicNow()
+    const msSinceLastScrollEvent = lastScrollEventAt === undefined ? undefined : nowMs - lastScrollEventAt
+    lastScrollEventAt = nowMs
+    const speedBeforeEvent = scrollVelocity.speed()
     // Genuine user scrolls mark the window so the synchronous re-pin (fired while
     // refreshViewport mounts+measures rows) suppresses its scrollTop write; an echo
     // or a discrete page leaves userScrolling false so it writes immediately rather
     // than deferring ~150ms into flingSettle.
-    const { programmaticEcho, isMomentumScroll, discretePage, discretePageTargetBefore } = classifyScrollEvent(
+    const { programmaticEcho, isMomentumScroll, discretePage } = classifyScrollEvent(
       staleNativeScrollTranslation !== undefined,
     )
     // Defer the re-pin as fling drift only for a momentum scroll.
@@ -1172,11 +1226,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       : undefined
     if (isMomentumScroll && scrollVelocity.isFling())
       virt.setVisibleMeasurementDeferral?.(true)
+    // Time the synchronous render cascade this scroll triggers: setting the range mounts
+    // newly-visible rows AND runs the premeasure computed (rendering the hidden look-ahead
+    // rows) in the same flush. If that blows the frame budget, it stalls the scroll loop --
+    // the batched catch-up delta a later event reports as an unexplained jump. Only a slow
+    // pass logs (see SCROLL_PHASE_STALL_WARN_MS).
+    const refreshStart = monotonicNow()
     try {
       refreshViewport(viewportLead)
     }
     finally {
       userScrolling = false
+    }
+    const refreshMs = monotonicNow() - refreshStart
+    if (refreshMs >= SCROLL_PHASE_STALL_WARN_MS) {
+      scrollLog.warn('slow scroll phase', {
+        phase: 'refreshViewport',
+        ms: Math.round(refreshMs),
+        rows: opts.messages().length,
+      })
     }
     // For a genuine MOMENTUM scroll, (re)arm the fling-end settle: each event
     // pushes the debounce out, so it fires once momentum stops and re-anchors to
@@ -1214,36 +1282,60 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       progGuard.consumeEcho(echoGen)
     if (staleNativeScrollTranslation)
       markProgrammaticScroll('stale-native-scroll-translate')
-    if (scrollPerfLog.isDebug() && messageListRef && scrollTopAtStart !== undefined) {
+    // Detector B: the viewport moved more than UNEXPLAINED_JUMP_MIN_PX between two
+    // consecutive scroll events with NO known cause -- a teleport we can't account for
+    // (an unguarded scrollIntoView, browser scroll anchoring, or a programmatic write
+    // that forgot to mark itself). Every legitimate move is excluded: our own
+    // write (programmaticEcho/stillEcho), a keyboard PageUp/Down (discretePage), a
+    // scrollbar/finger drag (isScrollInputActive), a wheel/trackpad/touch fling
+    // (hasRecentMomentumInput -- every real fling marks momentum input on its wheel /
+    // touch event, and its fast large-delta events all land inside that window), a
+    // trackpad momentum coast that outlived that 750ms window but is still flinging
+    // (wasActivelyFlingingBeforeEvent -- the velocity tracker sees it via the scroll
+    // events even after the input grace lapses), and a stale-native momentum
+    // translation. Note: we deliberately do NOT exclude on THIS event's measured
+    // velocity -- a genuine teleport's OWN scroll event samples a huge instantaneous
+    // speed (computeViewportLead ran just above), so a post-sample isFling/
+    // isActivelyFlinging gate would suppress the very jump we want to surface. The
+    // pre-sample wasActivelyFlingingBeforeEvent avoids that: a teleport from rest was
+    // not flinging on the prior event, so it still surfaces.
+    if (messageListRef && scrollTopAtStart !== undefined) {
       const deltaFromLast = scrollTopAtStart - lastScrollTopBeforeEvent
-      const largeDelta = Math.abs(deltaFromLast) > messageListRef.clientHeight / 2
-      const shouldLog = largeDelta || programmaticEcho || stillEcho || !!viewportLead || !!staleNativeScrollTranslation
-      if (shouldLog) {
-        const anchor = currentAnchor()
-        logScrollDebug('scroll event', {
-          scrollTop: scrollTopAtStart,
-          lastScrollTopBeforeEvent,
+      const teleport = Math.abs(deltaFromLast) > UNEXPLAINED_JUMP_MIN_PX
+      // A large delta that lands at the clamped BOTTOM while the view is glued to the live
+      // tail is the tail following a geometry change, not a user teleport. Two shapes:
+      //  - Content GREW (a big block arrived): the restick moves scrollTop up to the new
+      //    bottom. Its echo can arrive past the programmatic-guard marker TTL under load.
+      //  - Content SHRANK (a row re-measured shorter, a streaming block finalized, an
+      //    indicator removed): maxScrollTop drops below the pinned position and the browser
+      //    force-clamps scrollTop DOWN to the new bottom (no marker at all -- see markers:[]
+      //    in the report). Recognizable because the prior position is now beyond the range.
+      // Gated on landing at the bottom AND (following the tail OR the prior position now
+      // exceeds the range) so it can't mask a mid-list teleport. A shrink under a
+      // scrolled-UP reader leaves scrollTop < maxScrollTop, so it never force-clamps here.
+      const maxTop = maxScrollTopOf(messageListRef)
+      const tailFollowToBottom = scrollTopAtStart >= maxTop - EDGE_INTENT_TOLERANCE_PX
+        && (isFollowing() || lastScrollTopBeforeEvent > maxTop)
+      const explained = programmaticEcho || stillEcho || discretePage
+        || isScrollInputActive() || hasRecentMomentumInput()
+        || wasActivelyFlingingBeforeEvent
+        || staleNativeScrollTranslation !== undefined
+        || tailFollowToBottom
+      if (teleport && !explained) {
+        scrollLog.warn('unexpected scroll jump (no known cause)', {
           deltaFromLast,
-          programmaticEcho,
-          stillEcho,
-          echoGen,
-          markersBefore: eventMarkersBefore,
-          markersAfter: progGuard.debugMarkers(),
-          isMomentumScroll,
-          directInputActive: isScrollInputActive(),
-          discretePage,
-          discretePageTargetBefore,
-          viewportLead,
-          staleNativeScrollTranslation,
-          anchor: anchor
-            ? {
-                id: anchor.id,
-                seq: anchor.seq?.toString(),
-                offsetWithinRow: anchor.offsetWithinRow,
-                basisHeight: anchor.basisHeight,
-              }
-            : null,
-          after: scrollDomDebugSnapshot(),
+          scrollTop: scrollTopAtStart,
+          lastScrollTop: lastScrollTopBeforeEvent,
+          // Timing/velocity context to tell a momentum-after-stall (large gap + a coast the
+          // input grace outlived) from a genuine teleport (small gap, no fling). measurement
+          // is the last geometry commit -- a coinciding one points at a render/shift cause
+          // (e.g. a focus-driven scrollIntoView) rather than pure momentum.
+          msSinceLastScrollEvent,
+          speedPxPerMs: speedBeforeEvent,
+          wasActivelyFlinging: wasActivelyFlingingBeforeEvent,
+          measurement: virt.lastMeasurement?.(),
+          markers: progGuard.debugMarkers(),
+          dom: scrollDomDebugSnapshot(),
         })
       }
     }

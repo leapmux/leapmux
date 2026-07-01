@@ -28,6 +28,8 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
   }
   let animating = false
   let userScrolling = false
+  const onRepinClamp = vi.fn()
+  const onAnchorDrift = vi.fn()
   const repin = createAnchorRepin({
     getEl: () => el,
     virt,
@@ -39,6 +41,8 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
     velocity,
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
+    onRepinClamp,
+    onAnchorDrift,
   })
   return {
     repin,
@@ -47,6 +51,8 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
     flingSettle,
     velocity,
     virt,
+    onRepinClamp,
+    onAnchorDrift,
     setAnimating: (v: boolean) => { animating = v },
     setUserScrolling: (v: boolean) => { userScrolling = v },
   }
@@ -266,6 +272,28 @@ describe('createanchorrepin repinToAnchor decision', () => {
     expect(flingSettle.accumulate).toHaveBeenCalledWith(-82)
   })
 
+  it('writes a small correction once momentum has stopped, even within the input-grace window', () => {
+    // The post-fling SETTLE: momentum is no longer moving the viewport (isActivelyFlinging
+    // false), but the 750ms momentum-input grace still holds and the velocity sample has
+    // gone stale (isFling's idle default -> true). A look-ahead premeasure lands here and
+    // shrinks content above the anchor. Because the viewport is STATIONARY, a scrollTop
+    // write cancels no momentum -- so correct it immediately (an off-screen, invisible
+    // shift) rather than deferring it into drift that accumulates across the settle burst
+    // (the observed run of deferred-fling WARNs climbing to ~176px at a fixed scrollTop).
+    const { repin, el, writes, virt, velocity, flingSettle } = setup({ clientHeight: 733, scrollHeight: 6000 })
+    velocity.isActivelyFlinging.mockReturnValue(false)
+    velocity.hasRecentMomentumInput.mockReturnValue(true)
+    velocity.isFling.mockReturnValue(true)
+    el.scrollTop = 4606
+    repin.setAnchor(anchorAt('m1')) // captured at the live position -> viewport stationary
+    virt.scrollTopForAnchor.mockReturnValue(4592) // a premeasure shrank content above by 14
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([4592])
+    expect(flingSettle.accumulate).not.toHaveBeenCalled()
+  })
+
   it('does not write a momentum-tail correction after the scroll handler returns', () => {
     const { repin, el, writes, virt, velocity, flingSettle } = setup({ clientHeight: 733 })
     velocity.hasRecentMomentumInput.mockReturnValue(true)
@@ -393,5 +421,111 @@ describe('createanchorrepin deferred-during-animation', () => {
     repin.resetDeferredRepin() // natural end (stuck to bottom) absorbed it
     repin.applyDeferredRepinOnCancel() // nothing left to apply
     expect(writes).toEqual([])
+  })
+})
+
+describe('createanchorrepin clamp reporting (onRepinClamp)', () => {
+  it('reports a top-edge clamp: the keep-position target went negative and the row jumped up', () => {
+    const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m1'), 200, 0.5) // pinned at the viewport midpoint, captured at scrollTop 200
+    virt.scrollTopForAnchor.mockReturnValue(100) // row top at content-Y 100 -> idealTop = 100 - 250 = -150
+    repin.repinToAnchor()
+    expect(writes).toEqual([0]) // clamped to the top edge
+    expect(onRepinClamp).toHaveBeenCalledTimes(1)
+    expect(onRepinClamp).toHaveBeenCalledWith(expect.objectContaining({
+      anchorId: 'm1',
+      clampPx: 150, // 0 - (-150): row pushed 150px up from its captured line
+      idealTop: -150,
+      targetTop: 0,
+      fromTop: 200,
+      clientHeight: 500,
+      maxScrollTop: 4500,
+    }))
+  })
+
+  it('reports a bottom-edge clamp: the target exceeded maxScrollTop and the row jumped down', () => {
+    const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
+    el.scrollTop = 4300
+    repin.setAnchor(anchorAt('m9'), 4300, 0.5)
+    virt.scrollTopForAnchor.mockReturnValue(5000) // idealTop = 5000 - 250 = 4750 > maxScrollTop 4500
+    repin.repinToAnchor()
+    expect(writes).toEqual([4500]) // clamped to the bottom edge
+    expect(onRepinClamp).toHaveBeenCalledTimes(1)
+    expect(onRepinClamp).toHaveBeenCalledWith(expect.objectContaining({
+      anchorId: 'm9',
+      clampPx: -250, // 4500 - 4750: row pushed 250px down from its captured line
+      idealTop: 4750,
+      targetTop: 4500,
+      maxScrollTop: 4500,
+    }))
+  })
+
+  it('does not report when the keep-position write lands unclamped', () => {
+    const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m1'), 200, 0.5)
+    virt.scrollTopForAnchor.mockReturnValue(1100) // idealTop = 1100 - 250 = 850, well within [0, 4500]
+    repin.repinToAnchor()
+    expect(writes).toEqual([850])
+    expect(onRepinClamp).not.toHaveBeenCalled()
+  })
+
+  it('does not report a sub-REPIN_MIN_DELTA_PX clamp (imperceptible boundary rounding)', () => {
+    const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m1'), 200, 0.5)
+    virt.scrollTopForAnchor.mockReturnValue(249.5) // idealTop = -0.5 -> clamps to 0, clampPx 0.5 < 1px
+    repin.repinToAnchor()
+    expect(writes).toEqual([0])
+    expect(onRepinClamp).not.toHaveBeenCalled()
+  })
+})
+
+describe('createanchorrepin drift reporting (onAnchorDrift)', () => {
+  it('reports an ABSORBED slow-scroll correction (uncorrected on-screen shift)', () => {
+    const { repin, el, writes, virt, onAnchorDrift, setUserScrolling } = setup({ clientHeight: 500 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m'), 200, 0) // captured at the viewport top (ratio 0)
+    virt.scrollTopForAnchor.mockReturnValue(250) // row top now 250 -> ideal 250, a +50px correction
+    setUserScrolling(true) // a slow user scroll is in progress
+    repin.repinToAnchor()
+    // The 50px correction (<= the small-absorb cap) is ABSORBED, not written: the anchored
+    // row is left displaced 50px on-screen, reported as drift.
+    expect(writes).toEqual([])
+    expect(onAnchorDrift).toHaveBeenCalledTimes(1)
+    expect(onAnchorDrift).toHaveBeenCalledWith(expect.objectContaining({
+      anchorId: 'm',
+      residualPx: 50,
+      reason: 'absorbed',
+      fromTop: 200,
+      clientHeight: 500,
+    }))
+  })
+
+  it('reports a DEFERRED fling correction as drift', () => {
+    const { repin, el, writes, virt, onAnchorDrift, flingSettle, velocity } = setup({ clientHeight: 500 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m'), 200, 0)
+    virt.scrollTopForAnchor.mockReturnValue(250) // +50px correction (< flingSuppressPx 250)
+    velocity.isActivelyFlinging.mockReturnValue(true) // a fast fling is running
+    velocity.isFling.mockReturnValue(true)
+    repin.repinToAnchor()
+    expect(writes).toEqual([]) // deferred, not written
+    expect(flingSettle.accumulate).toHaveBeenCalledWith(50)
+    expect(onAnchorDrift).toHaveBeenCalledWith(expect.objectContaining({
+      residualPx: 50,
+      reason: 'deferred-fling',
+    }))
+  })
+
+  it('does NOT report drift on an immediate keep-position write (idle: the correction is applied)', () => {
+    const { repin, el, writes, virt, onAnchorDrift } = setup({ clientHeight: 500 })
+    el.scrollTop = 200
+    repin.setAnchor(anchorAt('m'), 200, 0)
+    virt.scrollTopForAnchor.mockReturnValue(250) // +50px correction, idle -> written immediately
+    repin.repinToAnchor()
+    expect(writes).toEqual([250]) // corrected, so the row stays on its line -- no drift
+    expect(onAnchorDrift).not.toHaveBeenCalled()
   })
 })

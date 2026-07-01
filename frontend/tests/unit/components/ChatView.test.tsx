@@ -690,11 +690,15 @@ describe('chatView', () => {
     expect(tailRow).not.toBeNull()
     expect(tailRow!.style.visibility).toBe('')
     expect(tailRow!.style.opacity).toBe('1')
-    expect(spacer!.style.height).toBe('96px')
+    // Both rows are unmeasured and reserve the seed estimate (96) -- the interior row is
+    // hidden but still reserves space (no collapse-to-0), so the spacer is 96 + 20 gap + 96.
+    expect(spacer!.style.height).toBe('212px')
 
     vi.spyOn(tailRow!, 'getBoundingClientRect').mockImplementation(() => ({ height: 32 }) as DOMRect)
     await triggerResizeObserverFor(tailRow!)
-    await waitFor(() => expect(spacer!.style.height).toBe('32px'))
+    // Tail measures 32 -> the running-mean estimate is now 32, so the still-unmeasured
+    // interior row reserves 32: spacer = 32 (interior est) + 20 gap + 32 (tail).
+    await waitFor(() => expect(spacer!.style.height).toBe('84px'))
 
     vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 480 }) as DOMRect)
     await triggerResizeObserverFor(row)
