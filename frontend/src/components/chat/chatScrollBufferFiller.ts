@@ -56,11 +56,13 @@ export function createScrollBufferFiller(deps: {
   // Pause the pre-fetch (a forced stop halts loading until the next scroll). The
   // explicit wheel/key-at-edge loads bypass the filler, so the user can still page.
   paused: () => boolean
-  // Suppress ONLY the older-side auto-load (a viewport restore arms this so an
-  // immediate older prepend can't yank the just-restored position; cleared once the
-  // user explicitly scrolls to the very top). The newer side stays free -- an append
-  // lands below the viewport and never disturbs it -- so a quiescent thread scrolled
-  // toward its loaded bottom still pages forward instead of stalling.
+  // Suppress ONLY the older-side auto-load. The hook arms this for two reasons (see its
+  // wiring): a near-top viewport restore, so an immediate older prepend can't yank the
+  // just-restored position (cleared once the user explicitly scrolls to the very top);
+  // and being pinned at the live tail, where the older buffer is purely speculative until
+  // the reader scrolls up. The newer side stays free either way -- an append lands below
+  // the viewport and never disturbs it -- so a quiescent thread scrolled toward its loaded
+  // bottom still pages forward instead of stalling.
   suppressOlder: () => boolean
   // BOTH sides' progress is measured by how much content a load added on its side of a
   // STABLE reference row, NOT by raw scrollTop / distFromBottom growth. captureAnchor()

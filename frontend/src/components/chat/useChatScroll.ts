@@ -1308,6 +1308,32 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     refreshViewport()
   }, { defer: true }))
 
+  // Suppress the SPECULATIVE older-history pre-fetch while the viewport is pinned at the
+  // live tail. The older buffer only earns its keep once the reader scrolls UP into
+  // history; at the bottom it is pure speculation. Pre-fetching it there turned a fresh
+  // mount at the bottom (a page reload or an HMR remount) into a runaway: the filler saw
+  // scrollTop far below the older buffer target, paged older, prepended a page mid
+  // re-measure storm, and that prepend stream fought tail-follow and dragged the view
+  // up-list -- which kept scrollTop low, so the older side stayed "deficient" and it paged
+  // EVERY page to the window ceiling. Suppressing it holds the view at the bottom (the
+  // storm is then only the newest page's own row measurements, which tail-follow absorbs)
+  // and stops the every-page fetch. The reader's first genuine scroll-up leaves the tail
+  // (distFromBottom grows past the sticky band, so isAtBottom() goes false) and resumes
+  // the pre-fetch via handleScroll -> fillScrollBuffer; the NO-SKIP loaded-window bound
+  // turns that first page's latency into a one-time stall, never a skip.
+  //
+  // EXCEPTION: a NON-scrollable viewport (maxScrollTop <= 0 -- a hidden-heavy newest page
+  // whose few visible rows don't fill the pane) still needs the older fill to become
+  // scrollable at all. Without it that page stays stranded half-empty until a scroll or a
+  // new message -- the very bug the blanket dev-mount settle once reintroduced (see
+  // hmrRemount). So the suppression bites ONLY once the pane is already scrollable; a
+  // half-empty tail keeps filling until it is.
+  const suppressOlderPrefetchAtLiveTail = (): boolean =>
+    !opts.hasNewerMessages?.()
+    && !!messageListRef
+    && maxScrollTopOf(messageListRef) > 0
+    && isAtBottom()
+
   // Pre-fetch a VISIBLE-content buffer beyond the viewport so scrolling stays smooth
   // in hidden-heavy stretches (see createScrollBufferFiller). Self-contained reactive
   // unit; wired here so its createEffect runs AFTER the geometry re-pin /
@@ -1326,7 +1352,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     onLoadNewer: loadNewerMessages,
     lastScrollDir: () => lastScrollDir,
     paused: () => bufferFillPaused || bufferFillSettling,
-    suppressOlder: () => suppressAutoLoadOlderAfterRestore,
+    // Gate the older PRE-FETCH on either a near-top restore's one-shot arm OR being pinned
+    // at the live tail (where the older buffer is speculative -- see
+    // suppressOlderPrefetchAtLiveTail). Both leave the newer side free.
+    suppressOlder: () => suppressAutoLoadOlderAfterRestore || suppressOlderPrefetchAtLiveTail(),
     atCeiling: () => !!opts.atWindowCeiling?.(),
     // Both sides' progress is measured against a stable reference row, not raw
     // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a

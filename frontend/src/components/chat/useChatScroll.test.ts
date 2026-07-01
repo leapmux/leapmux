@@ -12,7 +12,7 @@ import {
 } from '../../../tests/unit/helpers/resizeObserverStub'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { FLING_SETTLE_MS } from './chatScrollFlingSettle'
-import { inferScrollDirection } from './chatScrollGeometry'
+import { inferScrollDirection, maxScrollTopOf } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createScrollVelocity } from './chatScrollVelocity'
 import { computeBufferAwareKeepNewest, computeKeepNewest, FLING_OVERSCAN_MAX_PX, useChatScroll } from './useChatScroll'
@@ -6225,16 +6225,20 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
       })
     }))
 
-  it('pre-fetches older pages AHEAD until the visible buffer above is filled, then stops', () =>
+  it('pre-fetches older pages AHEAD until the visible buffer above is filled, then stops (scrolled up)', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
           div.setClientHeight(500) // bufferTarget = 3 screens = 1500px; refill watermark = 2.5 screens = 1250px
-          let scrollHeight = 700
+          // A reader scrolled UP into history: 200px of visible buffer ABOVE the viewport
+          // and 200px BELOW (distFromBottom), so we are OFF the live tail (isAtBottom
+          // false) -- the older PRE-FETCH runs here (it is suppressed only while pinned at
+          // the bottom; see suppressOlderPrefetchAtLiveTail).
+          let scrollHeight = 900
           div.setScrollHeight(scrollHeight)
-          div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500
-          const [total, setTotal] = createSignal(700)
+          div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500; BELOW = 200
+          const [total, setTotal] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
             totalHeight: () => total(),
             geometryVersion: () => 0,
@@ -6282,6 +6286,190 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           expect(div.getScrollTop()).toBeLessThan(1500)
           expect(olderLoads).toBeGreaterThanOrEqual(3)
           expect(olderLoads).toBeLessThanOrEqual(5)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does NOT speculatively pre-fetch older history while pinned at the live tail', () =>
+    // Regression: a fresh mount at the bottom (page reload / HMR remount) must not page
+    // older history to build the speculative above-buffer. The old behavior pre-fetched
+    // it, and the prepend stream fought tail-follow during the re-measure storm, dragging
+    // the view up-list and paging EVERY page. At the tail the older buffer is suppressed.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500) // refill watermark = 2.5 screens = 1250px
+          div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
+          div.setScrollTop(500) // pinned at the bottom -- distFromBottom = 0
+          const virt: ChatScrollVirtualizer = {
+            totalHeight: () => 1000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: () => null,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true, // history exists AND the above-buffer (500px) is
+            hasNewerMessages: () => false, // deficient (< 1250) -- the OLD code would page it
+            fetchingOlder,
+            // A broken suppression would page every page: each async load appends a
+            // (still all-hidden) row and re-runs the fill, which stays deficient forever.
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                setMessages(prev => [...prev, {} as AgentChatMessage])
+                setFetchingOlder(false)
+              })
+            },
+          })
+          hook.attachListRef(div.el)
+          // Drain long enough that the old aggressive pre-fetch would have paged history.
+          for (let i = 0; i < 40; i++)
+            await Promise.resolve()
+
+          // Nothing pre-fetched, and the view stayed pinned at the bottom (no prepend
+          // storm to drag it up-list).
+          expect(olderLoads).toBe(0)
+          expect(div.getScrollTop()).toBe(500)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still fills a half-empty (non-scrollable) newest page at the tail until it is scrollable, then stops', () =>
+    // The at-tail suppression must NOT reintroduce the half-empty-on-refresh bug: a
+    // hidden-heavy newest page whose few visible rows do not fill the pane is
+    // non-scrollable, so the older fill still runs -- but only until the pane becomes
+    // scrollable, then it stops (it does not page every page).
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          let scrollHeight = 0 // half-empty: no visible content fills the pane
+          div.setScrollHeight(scrollHeight)
+          div.setScrollTop(0)
+          const [total, setTotal] = createSignal(0)
+          const virt: ChatScrollVirtualizer = {
+            totalHeight: () => total(),
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: () => null,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true, // unbounded history: any stop is the scrollable
+            hasNewerMessages: () => false, // gate, not exhaustion
+            fetchingOlder,
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                // A visible older page lands and the view resticks to the bottom.
+                scrollHeight += 300
+                div.setScrollHeight(scrollHeight)
+                div.setScrollTop(scrollHeight - 500) // clamped to the bottom -- still at the tail
+                setTotal(t => t + 300)
+                setMessages(prev => [...prev, {} as AgentChatMessage])
+                setFetchingOlder(false)
+              })
+            },
+          })
+          hook.attachListRef(div.el)
+          for (let i = 0; i < 40; i++)
+            await Promise.resolve()
+
+          // Filled the half-empty page (>= 1) but bounded (not every page); the pane is now
+          // scrollable, at which point the tail suppression takes over.
+          expect(olderLoads).toBeGreaterThanOrEqual(1)
+          expect(olderLoads).toBeLessThanOrEqual(5)
+          expect(maxScrollTopOf(div.el)).toBeGreaterThan(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still pre-fetches older at the loaded bottom of a window paged AWAY from the live tail', () =>
+    // The at-tail suppression is gated on being at the TRUE live tail (hasNewer false).
+    // A reader windowed away from the tail (hasNewer true) sits at the bottom of a
+    // MID-history window, not the live bottom -- the older buffer is genuine there, so the
+    // suppression must NOT bite. Guards the !hasNewerMessages condition against removal.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
+          div.setScrollTop(500) // at the loaded bottom -- distFromBottom = 0
+          const virt: ChatScrollVirtualizer = {
+            totalHeight: () => 1000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: () => null,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => true, // windowed away from the live tail
+            fetchingOlder,
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                setMessages(prev => [...prev, {} as AgentChatMessage])
+                setFetchingOlder(false)
+              })
+            },
+            onLoadNewerMessages: () => {},
+          })
+          hook.attachListRef(div.el)
+          for (let i = 0; i < 10; i++)
+            await Promise.resolve()
+
+          // The tail suppression does not apply off the live tail: older still pre-fetches.
+          expect(olderLoads).toBeGreaterThanOrEqual(1)
           dispose()
           resolve()
         }
@@ -6462,10 +6650,13 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
         try {
           const div = makeFakeScrollDiv()
           div.setClientHeight(500)
-          div.setScrollHeight(700)
+          // Scrolled UP off the live tail (200px buffer above AND below), so the older
+          // pre-fetch is eligible -- isolating the pause/resume behavior from the at-tail
+          // suppression (see suppressOlderPrefetchAtLiveTail).
+          div.setScrollHeight(900)
           div.setScrollTop(200) // buffer above 200 < 1500 -> deficient, would pre-fetch
           const virt: ChatScrollVirtualizer = {
-            totalHeight: () => 700,
+            totalHeight: () => 900,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => null,
@@ -6521,10 +6712,13 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
         try {
           const div = makeFakeScrollDiv()
           div.setClientHeight(500)
-          div.setScrollHeight(700)
-          div.setScrollTop(200) // at the bottom (maxScrollTop 200); older buffer deficient
+          // A half-empty (non-scrollable) newest page at the tail: the older fill stays
+          // eligible there (the exception to the at-tail suppression -- it fills the pane
+          // until scrollable), so it is the observable for the stop -> jump resume.
+          div.setScrollHeight(300)
+          div.setScrollTop(0) // non-scrollable (maxScrollTop 0); older buffer deficient
           const virt: ChatScrollVirtualizer = {
-            totalHeight: () => 700,
+            totalHeight: () => 300,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => null,
