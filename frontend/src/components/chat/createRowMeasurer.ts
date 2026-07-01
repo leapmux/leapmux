@@ -1,5 +1,4 @@
 import { batch } from 'solid-js'
-import { monotonicNow } from './chatScrollGeometry'
 
 // ---------------------------------------------------------------------------
 // Row measurer: the ResizeObserver / flush DOM glue for the virtualizer
@@ -84,10 +83,6 @@ export interface RowMeasurerDeps {
   shouldDeferMeasurement?: () => boolean
   /** Optional test/perf hook for ResizeObserver churn accounting. */
   onFlush?: (stats: RowMeasureFlushStats) => void
-  /** Whether the synchronous attach-measure perf hook should collect this row. */
-  shouldReportAttachMeasure?: () => boolean
-  /** Optional test/perf hook for synchronous visible-row mount measurement cost. */
-  onAttachMeasure?: (stats: RowAttachMeasureStats) => void
 }
 
 function defaultCreateObserver(onResize: (targets: Element[]) => void): ResizeObserverLike | undefined {
@@ -102,14 +97,6 @@ export interface RowMeasureFlushStats {
   committed: number
   skippedDetached: number
   skippedUnchanged: number
-}
-
-export interface RowAttachMeasureStats {
-  id: string
-  height: number
-  committed: boolean
-  readMs: number
-  totalMs: number
 }
 
 const DEFAULT_MEASURE_EPSILON_PX = 0.5
@@ -241,28 +228,12 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     // Measure immediately so a freshly-mounted row contributes its real height without
     // waiting for the first ResizeObserver tick. `measure` ignores a zero read and
     // bumps the reactive geomVersion, which drives the re-pin.
-    const onAttachMeasure = deps.onAttachMeasure
-    const reportAttachMeasure = !!onAttachMeasure && (deps.shouldReportAttachMeasure?.() ?? true)
-    const startedAt = reportAttachMeasure ? monotonicNow() : 0
     const height = el.getBoundingClientRect().height
-    const readMs = reportAttachMeasure ? monotonicNow() - startedAt : 0
-    let committed = false
-    if (shouldDeferMeasurement()) {
+    if (shouldDeferMeasurement())
       deferred.add(el)
-    }
-    else {
-      committed = commitReads([{ id, el, height, key: deps.currentMeasurementKey?.(id) }]) > 0
-    }
+    else
+      commitReads([{ id, el, height, key: deps.currentMeasurementKey?.(id) }])
     ro?.observe(el)
-    if (reportAttachMeasure) {
-      onAttachMeasure({
-        id,
-        height,
-        committed,
-        readMs,
-        totalMs: monotonicNow() - startedAt,
-      })
-    }
   }
 
   const detachRow = (el: HTMLElement) => {

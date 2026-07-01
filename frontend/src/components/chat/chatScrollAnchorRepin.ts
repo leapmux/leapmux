@@ -1,6 +1,7 @@
 import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { EDGE_INTENT_TOLERANCE_PX, maxScrollTopOf, REPIN_MIN_DELTA_PX } from './chatScrollGeometry'
+import { clamp } from '~/lib/clamp'
+import { clampScrollTop, EDGE_INTENT_TOLERANCE_PX, maxScrollTopOf, REPIN_MIN_DELTA_PX } from './chatScrollGeometry'
 
 /**
  * The fling-settle surface the re-pin engine drives: accumulate a deferred mid-fling
@@ -43,6 +44,13 @@ export interface AnchorRepinDeps {
    * corrections, because writing scrollTop against the native scroll event reads as a jump.
    */
   isUserScrolling: () => boolean
+  /**
+   * Whether newer messages exist beyond the loaded window (the reader is windowed AWAY from
+   * the live tail). Lets captureViewportAnchor pin the BOTTOM row at the loaded-window bottom
+   * (the mirror of the top-edge pin): at the LIVE tail this is false and the hook follows the
+   * tail instead of anchoring, so pinning the bottom row there would fight tail-follow.
+   */
+  hasNewerMessages: () => boolean
   /**
    * Reports an immediate keep-position write whose target CLAMPED against a scroll
    * boundary, so the anchored row could not land on its captured viewport line and
@@ -115,20 +123,24 @@ const VIEWPORT_MIDPOINT_RATIO = 0.5
 export function createAnchorRepin(deps: AnchorRepinDeps) {
   const readScrollTop = (el: HTMLDivElement) => deps.readScrollTop?.(el) ?? el.scrollTop
   const viewportAnchorOffset = (el: HTMLDivElement, ratio: number) => Math.max(0, el.clientHeight * ratio)
-  const clampScrollTop = (el: HTMLDivElement, top: number) => Math.min(Math.max(0, top), maxScrollTopOf(el))
   const captureViewportAnchor = (el: HTMLDivElement) => {
     const scrollTop = readScrollTop(el)
-    // Which viewport line to pin the captured row to. At the very TOP edge, pin the top
-    // ROW (ratio 0); anywhere below it, pin the viewport MIDPOINT for mid-scroll
-    // stability. Re-centering on the midpoint at the top lets a row ABOVE the midpoint
-    // measuring taller than its estimate (the collapsed-until-measured top rows growing
-    // once they mount) push scrollTop DOWN to re-center -- the "lands a few hundred px
-    // below the top" drift. This governs BOTH the live scroll-event capture (captureAnchor)
-    // AND the re-pin's recover-from-a-gone-anchor path (reanchorAndDropDrift), so a Home
-    // jump whose window replace / trim invalidates the anchored top row still recovers to
-    // the top rather than the midpoint. The symmetric bottom edge is handled by tail-follow
-    // (createStickyBottom), not here.
-    const ratio = scrollTop <= EDGE_INTENT_TOLERANCE_PX ? 0 : VIEWPORT_MIDPOINT_RATIO
+    // Which viewport line to pin the captured row to: the NEARER edge's row when at an edge,
+    // else the viewport MIDPOINT for mid-scroll stability. Pinning the midpoint at an edge
+    // lets an unmeasured row on the far side of the midpoint, once it measures taller than its
+    // estimate, push scrollTop to re-center -- the "lands a few hundred px off the edge" drift.
+    //  - TOP edge (ratio 0): a freshly-mounted top row growing would otherwise push scrollTop
+    //    DOWN ("lands a few hundred px below the top"). Governs BOTH the live scroll-event
+    //    capture (captureAnchor) AND the re-pin's recover-from-a-gone-anchor path
+    //    (reanchorAndDropDrift), so a Home jump whose window replace / trim invalidates the
+    //    anchored top row still recovers to the top rather than the midpoint.
+    //  - BOTTOM edge (ratio 1), ONLY when windowed AWAY from the live tail (hasNewerMessages):
+    //    a bottom row growing would otherwise slide the loaded-window bottom off-screen below
+    //    the viewport. At the LIVE tail the hook follows the tail instead of capturing here, so
+    //    this stays midpoint there (guarded on hasNewerMessages so it can never fight tail-follow).
+    const atTop = scrollTop <= EDGE_INTENT_TOLERANCE_PX
+    const atLoadedBottom = deps.hasNewerMessages() && maxScrollTopOf(el) - scrollTop <= EDGE_INTENT_TOLERANCE_PX
+    const ratio = atTop ? 0 : atLoadedBottom ? 1 : VIEWPORT_MIDPOINT_RATIO
     const offset = viewportAnchorOffset(el, ratio)
     return {
       anchor: deps.virt.anchorAt(scrollTop + offset),
@@ -150,9 +162,18 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
   // `userScrolling`/`repinning` (transient reentrancy guards that can BOTH be set while
   // anchored), and `suppressAutoLoadOlderAfterRestore` (a one-shot). Folding them into
   // this union would make illegal combinations representable.
+  // `origin` distinguishes a normal viewport capture from a toggle row-top pin
+  // (captureRowTopAnchor). A 'row-top' anchor must survive its own resize's echo scroll
+  // events -- while it is current, the hook skips its handleScroll midpoint re-capture so the
+  // multi-phase resize (estimate -> measured) keeps pinning the toggled row instead of yanking
+  // to the midpoint. It lives HERE, as a property of the anchor, rather than as a loose
+  // boolean: a fresh anchor is constructed with the default 'viewport', so every re-anchor
+  // (trim, gone anchor, capture) structurally supersedes a prior hold -- an "anchored+held
+  // while following" or "held after a viewport capture" state is unrepresentable, not merely
+  // cleared by discipline. A genuine user gesture downgrades it via releaseRowTopHold.
   type ScrollMode
     = | { kind: 'following' }
-      | { kind: 'anchored', anchor: ScrollAnchor, viewportOffsetRatio: number }
+      | { kind: 'anchored', anchor: ScrollAnchor, viewportOffsetRatio: number, origin: 'viewport' | 'row-top' }
   let scrollMode: ScrollMode = { kind: 'following' }
   // The scrollTop the current anchor was resolved FROM (the viewport position at
   // capture). repinToAnchor uses it to spot a STALE anchor: a keep-position write is only
@@ -183,6 +204,16 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
       : null
   /** True while following the live tail (not anchored to a row). */
   const isFollowing = () => scrollMode.kind === 'following'
+  /** True while the current anchor is a toggle row-top pin the hook must not re-capture over. */
+  const isHoldingRowTop = () => scrollMode.kind === 'anchored' && scrollMode.origin === 'row-top'
+  /** Drop the toggle row-top hold (a user gesture is taking control). */
+  const releaseRowTopHold = () => {
+    // Downgrade the origin, KEEPING the anchor: the pinned row stays put (a later async
+    // re-measure still re-pins it) until the next capture -- only handleScroll's midpoint
+    // re-capture is re-enabled. A full followTail() here would wrongly drop the anchor.
+    if (scrollMode.kind === 'anchored' && scrollMode.origin === 'row-top')
+      scrollMode = { ...scrollMode, origin: 'viewport' }
+  }
   /** Transition to following the live tail (drop any anchor). */
   const followTail = () => {
     scrollMode = { kind: 'following' }
@@ -194,10 +225,19 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
    * correct for every capture/re-anchor site, where the anchor IS resolved from the
    * current position; restoreSavedViewport passes the landed scrollTop explicitly because
    * it anchors around a programmatic write rather than the current position.
+   *
+   * `origin` defaults to 'viewport', so every capture/re-anchor/gone-anchor site
+   * structurally supersedes a prior toggle row-top hold (see ScrollMode.origin); only
+   * captureRowTopAnchor passes 'row-top'.
    */
-  const setAnchor = (a: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio = 0) => {
+  const setAnchor = (
+    a: ScrollAnchor | null,
+    captureTop?: number,
+    viewportOffsetRatio = 0,
+    origin: 'viewport' | 'row-top' = 'viewport',
+  ) => {
     scrollMode = a
-      ? { kind: 'anchored', anchor: a, viewportOffsetRatio: Math.max(0, Math.min(1, viewportOffsetRatio)) }
+      ? { kind: 'anchored', anchor: a, viewportOffsetRatio: clamp(viewportOffsetRatio, 0, 1), origin }
       : { kind: 'following' }
     if (a) {
       const el = deps.getEl()
@@ -239,9 +279,12 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
    * the toggle triggers resolves to the same scrollTop and writes nothing: no scroll.
    *
    * Call while the DOM still reflects the PRE-toggle geometry (before applying the toggle),
-   * so scrollTop and the row's offset are read pristine. A no-op when the row isn't in the
-   * offset map (not currently windowed) or the viewport has no height -- both leave the
-   * current scroll mode untouched.
+   * so scrollTop and the row's offset are read pristine. Returns whether a hold was armed.
+   * A no-op (returns false) when the row isn't in the offset map (not currently windowed) or
+   * the viewport has no height -- both leave the current scroll mode untouched. On success it
+   * anchors with origin 'row-top' (see ScrollMode.origin / isHoldingRowTop). The caller is
+   * responsible for NOT invoking this while following the live tail (where switching to
+   * 'anchored' would freeze auto-scroll) -- see useChatScroll's anchorRowForResize.
    */
   const captureRowTopAnchor = (id: string): boolean => {
     const el = deps.getEl()
@@ -256,14 +299,35 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
       return false
     const scrollTop = readScrollTop(el)
     // The row's top edge as a viewport-relative ratio -- the line to keep it pinned to.
-    // Clamped to [0,1]: the toggle button lives in the row's (non-sticky) header, so at
-    // click time the row's top is on-screen (ratio already in range); the clamp is a
-    // defensive floor/ceiling for a row whose top sits just off an edge.
-    const ratio = Math.max(0, Math.min(1, (rowTop - scrollTop) / el.clientHeight))
+    const rawRatio = (rowTop - scrollTop) / el.clientHeight
+    // The row's top must be ON-SCREEN for a top-edge pin to hold scrollTop invariant. The
+    // re-pin resolves the pinned line as clientHeight*ratio with ratio floored/capped to
+    // [0,1] (setAnchor clamps it, and viewportAnchorOffset does Math.max(0, ...)), so a row
+    // whose top sits ABOVE the viewport (ratio < 0) or BELOW it (ratio > 1) can't be
+    // represented -- clamping would move the row onto the nearest edge and JUMP the viewport
+    // by the clamp amount. Bail so the caller keeps the existing (midpoint) anchor, which
+    // holds a VISIBLE row stationary through the resize instead of jumping. Reachable when a
+    // message row is taller than the viewport and the user toggles an inner control (e.g. a
+    // tool-result expander) while the row's OWN top is scrolled off the top edge.
+    //
+    // Compared with SUB-PIXEL slack, not a strict bound: scrollTop is a device-pixel-
+    // quantized DOM read while rowTop is a Float64 offset-map sum, so a row whose top sits
+    // exactly at the viewport top routinely computes an epsilon-negative ratio -- a strict
+    // `< 0` would drop the pin at the single most common toggle position (the user clicked
+    // the row's header at the top of the pane) and fall back to the midpoint anchor, whose
+    // re-pin then scrolls the toggled row: the exact jump this function exists to prevent.
+    // A hair outside the edge clamps onto it (an error under EDGE_INTENT_TOLERANCE_PX, below
+    // the re-pin's no-op threshold); a genuinely off-screen top still bails.
+    const ratioTolerance = EDGE_INTENT_TOLERANCE_PX / el.clientHeight
+    if (rawRatio < -ratioTolerance || rawRatio > 1 + ratioTolerance)
+      return false
+    const ratio = clamp(rawRatio, 0, 1)
     // setAnchor banks scrollTop as the capture position and the ratio as the viewport line,
     // so repinToAnchor's targetTop = rowTop - clientHeight*ratio equals scrollTop now and
     // stays there as rowTop is invariant under the row's OWN resize (rows above don't move).
-    setAnchor(rowAnchor, scrollTop, ratio)
+    // Origin 'row-top' arms the hold as part of the anchor, so the resize's echo scroll events
+    // don't re-capture the midpoint over it (see ScrollMode.origin).
+    setAnchor(rowAnchor, scrollTop, ratio, 'row-top')
     deps.flingSettle().rebase()
     return true
   }
@@ -496,6 +560,8 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     currentAnchor,
     currentAnchorState,
     isFollowing,
+    isHoldingRowTop,
+    releaseRowTopHold,
     followTail,
     setAnchor,
     captureAnchor,

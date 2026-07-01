@@ -1,4 +1,4 @@
-import { monotonicNow } from './chatScrollGeometry'
+import { monotonicNow } from '~/lib/monotonicNow'
 
 /**
  * How long (ms) a programmatic-write marker stays eligible to match its echoing

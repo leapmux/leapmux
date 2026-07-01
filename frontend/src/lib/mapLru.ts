@@ -16,8 +16,8 @@
  * cap -- it is never returned above its own bound.
  *
  * `opts.onEvict` runs for each dropped key BEFORE its deletion (a measured-height
- * cache uses it to subtract the evicted value from a running mean). Deleting a key
- * mid-iteration is well-defined for a Map.
+ * cache uses it to remove the evicted value from its median histogram). Deleting a
+ * key mid-iteration is well-defined for a Map.
  */
 export function capMapInsertionOrder<K, V>(
   map: Map<K, V>,

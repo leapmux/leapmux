@@ -48,6 +48,14 @@ function defaultTarget(): ErrorEventTarget | undefined {
 }
 
 /**
+ * Rate limit for the suppressed-event debug line below. Chromium can emit the RO-loop
+ * error once per frame while a long transcript settles, so an unthrottled line would
+ * just move the noise from the overlay to the console; one line per window (with a
+ * count of what it absorbed) keeps the signal without the spam.
+ */
+const SUPPRESSED_DEBUG_LOG_INTERVAL_MS = 10_000
+
+/**
  * Install a capture-phase `error` listener that suppresses the benign
  * ResizeObserver loop warning. Returns a disposer that removes the listener.
  *
@@ -57,17 +65,33 @@ function defaultTarget(): ErrorEventTarget | undefined {
  * running first lets `stopImmediatePropagation()` keep the event from reaching
  * the overlay. `preventDefault()` additionally quiets the console line. No-op
  * outside a DOM (SSR / non-browser), where `target` resolves to undefined.
+ *
+ * The browser emits the SAME message for the benign deferred-delivery case and a
+ * genuine per-frame measure/write feedback loop, so full silence would also mask a
+ * real regression in the deferred-mount machinery that avoids the avoidable cases.
+ * A rate-limited `console.debug` keeps that signal observable (a healthy session
+ * logs it rarely; a feedback loop shows a rapidly climbing suppressed count)
+ * without reviving the overlay or the per-event console noise.
  */
 export function installResizeObserverLoopErrorSuppressor(
   target: ErrorEventTarget | undefined = defaultTarget(),
 ): () => void {
   if (!target)
     return () => {}
+  let suppressedCount = 0
+  let lastDebugLogAt = Number.NEGATIVE_INFINITY
   const onError = (event: Event) => {
     if (!isResizeObserverLoopError((event as ErrorEvent).message))
       return
     event.stopImmediatePropagation()
     event.preventDefault()
+    suppressedCount += 1
+    const now = Date.now()
+    if (now - lastDebugLogAt >= SUPPRESSED_DEBUG_LOG_INTERVAL_MS) {
+      lastDebugLogAt = now
+      // eslint-disable-next-line no-console -- deliberate dev-only diagnostic; the logger would re-enter the error path this suppressor guards
+      console.debug(`[leapmux] suppressed benign ResizeObserver loop error (x${suppressedCount} this session)`)
+    }
   }
   target.addEventListener('error', onError, true)
   return () => target.removeEventListener('error', onError, true)

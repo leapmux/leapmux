@@ -95,6 +95,64 @@ describe('chat hidden premeasure rendering', () => {
     }
   })
 
+  it('measures a whole band in ONE shared frame: all rect reads happen before any commit', () => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    }) as typeof requestAnimationFrame
+    globalThis.cancelAnimationFrame = vi.fn() as typeof cancelAnimationFrame
+    try {
+      const height1 = 10
+      let height2 = 20
+      const calls: Array<[string, number]> = []
+      const onMeasure = vi.fn((id: string, height: number) => {
+        calls.push([id, height])
+        // Simulate the commit dirtying layout (the offset-map rebuild + spacer write a
+        // real primeHeight triggers): if row 2's rect were read AFTER this commit -- the
+        // old per-row interleaving -- it would observe the dirtied 999, not its real 20.
+        height2 = 999
+        return true
+      })
+      const candidates = [
+        { entry: entryWithSpanLines(0), item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem },
+        {
+          entry: { ...entryWithSpanLines(0), msg: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage } as ClassifiedEntry,
+          item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as VirtualItem,
+        },
+      ]
+      const { container } = render(() => (
+        <ChatHiddenPremeasure
+          candidates={candidates}
+          contentWidthPx={400}
+          renderBubble={() => <div>bubble</div>}
+          onMeasure={onMeasure}
+        />
+      ))
+      const rowEls = Array.from(container.firstElementChild!.children) as HTMLElement[]
+      vi.spyOn(rowEls[0], 'getBoundingClientRect').mockImplementation(() => ({ height: height1 }) as DOMRect)
+      vi.spyOn(rowEls[1], 'getBoundingClientRect').mockImplementation(() => ({ height: height2 }) as DOMRect)
+
+      // Both rows share one frame (not one rAF per row), and both commits see the
+      // heights read against the SAME clean layout.
+      expect(frames).toHaveLength(1)
+      frames.shift()?.(0)
+      expect(calls).toEqual([['m1', 10], ['m2', 20]])
+    }
+    finally {
+      if (originalRaf)
+        globalThis.requestAnimationFrame = originalRaf
+      else
+        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
+      if (originalCancelRaf)
+        globalThis.cancelAnimationFrame = originalCancelRaf
+      else
+        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
+    }
+  })
+
   it('disconnects resize observation after an accepted unsettled image measurement', () => {
     const originalRaf = globalThis.requestAnimationFrame
     const originalCancelRaf = globalThis.cancelAnimationFrame

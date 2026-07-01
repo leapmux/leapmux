@@ -33,6 +33,21 @@ import {
 const logger = createLogger('messageRenderers')
 
 /**
+ * Options for a per-message UI-state write, so the host can tell a user gesture
+ * from a renderer-initiated write.
+ */
+export interface MessageUiWriteOptions {
+  /**
+   * The write was NOT initiated by a user gesture on the row (e.g. a stream-start
+   * auto-expand effect). The host must not treat it as a toggle whose row should be
+   * scroll-pinned: the reader's focus is wherever they are reading, so the default
+   * viewport-midpoint anchor — which keeps THAT stationary — must win over a
+   * row-top pin on the written row.
+   */
+  programmatic?: boolean
+}
+
+/**
  * Context passed to renderers from MessageBubble.
  *
  * Reactive UI state (`jsonCopied`, `diffView`) is exposed as getter functions
@@ -85,7 +100,7 @@ export interface RenderContext {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
   /**
    * Hidden premeasurement render pass. Renderers should keep layout-relevant
    * structure but skip non-geometry work such as timers, copy chrome, worker
@@ -194,16 +209,16 @@ export function useSharedExpandedState(
   // context's expandAgentThoughts pref); a renderer with a per-row default passes
   // its own thunk to override it.
   initial: () => boolean = () => messageUiDefault(key, { expandAgentThoughts: getContext()?.expandAgentThoughts }),
-): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
+): [() => boolean, (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
   const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? initial()
-  const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
+  const setExpanded = (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => {
     const ctx = getContext()
     const next = typeof value === 'function'
       ? (value as (prev: boolean) => boolean)(expanded())
       : value
     if (ctx?.setMessageUiState)
-      ctx.setMessageUiState(key, next)
+      ctx.setMessageUiState(key, next, opts)
     else
       setLocalExpanded(next)
   }

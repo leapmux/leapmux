@@ -28,6 +28,7 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
   }
   let animating = false
   let userScrolling = false
+  let hasNewer = false
   const onRepinClamp = vi.fn()
   const onAnchorDrift = vi.fn()
   const repin = createAnchorRepin({
@@ -41,6 +42,7 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
     velocity,
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
+    hasNewerMessages: () => hasNewer,
     onRepinClamp,
     onAnchorDrift,
   })
@@ -55,6 +57,7 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
     onAnchorDrift,
     setAnimating: (v: boolean) => { animating = v },
     setUserScrolling: (v: boolean) => { userScrolling = v },
+    setHasNewer: (v: boolean) => { hasNewer = v },
   }
 }
 
@@ -125,16 +128,77 @@ describe('createanchorrepin state machine', () => {
     expect(writes).toEqual([])
   })
 
-  it('captureRowTopAnchor clamps the pin ratio to 0 when the row top sits above the viewport top', () => {
-    // Defensive clamp (the header holding the toggle button is non-sticky, so at click time
-    // the row top is normally on-screen). A row top ABOVE the viewport top -> ratio 0 pins
-    // the row top to the viewport top rather than storing a negative offset.
-    const { repin, el, writes, virt } = setup({ clientHeight: 500 })
+  it('captureRowTopAnchor bails (keeping the existing anchor) when the row top is above the viewport top', () => {
+    // A row taller than the viewport whose OWN top is scrolled off the top edge (e.g. the user
+    // toggles an inner tool-result expander below the fold). A top-edge pin can't hold scrollTop
+    // invariant there -- the re-pin floors the pinned line at ratio 0, so clamping would JUMP
+    // the viewport up to the row top. Bail instead, leaving the existing anchor that already
+    // holds the resize (anchorRowForResize only pins a row while already anchored).
+    const { repin, el, virt, flingSettle } = setup({ clientHeight: 500 })
     el.scrollTop = 400
-    virt.scrollTopForAnchor.mockReturnValue(300) // 100px above the viewport top -> ratio clamps to 0
-    repin.captureRowTopAnchor('m1')
-    repin.repinToAnchor()
-    expect(writes).toEqual([300]) // targetTop = rowTop - clientHeight*0
+    repin.setAnchor(anchorAt('existing'), 400, 0.5) // an existing midpoint anchor
+    flingSettle.rebase.mockClear()
+    virt.scrollTopForAnchor.mockReturnValue(300) // row top 100px above the viewport top -> ratio -0.2
+    expect(repin.captureRowTopAnchor('m1')).toBe(false)
+    expect(repin.currentAnchor()).toEqual(anchorAt('existing')) // existing anchor untouched
+    expect(repin.isHoldingRowTop()).toBe(false)
+    expect(flingSettle.rebase).not.toHaveBeenCalled()
+  })
+
+  it('captureRowTopAnchor bails when the row top is below the viewport bottom (ratio > 1)', () => {
+    // The mirror case: the row's top sits below the viewport bottom, so ratio > 1 and a clamp
+    // to 1 would jump the row top down to the viewport bottom. Bail, leaving the mode untouched.
+    const { repin, el, virt, flingSettle } = setup({ clientHeight: 500 })
+    el.scrollTop = 100
+    virt.scrollTopForAnchor.mockReturnValue(700) // row top 600px below the viewport top -> ratio 1.2
+    expect(repin.captureRowTopAnchor('m1')).toBe(false)
+    expect(repin.isFollowing()).toBe(true) // was following; mode untouched
+    expect(repin.isHoldingRowTop()).toBe(false)
+    expect(flingSettle.rebase).not.toHaveBeenCalled()
+  })
+
+  it('captureRowTopAnchor still pins at the exact edges (ratio 0 and ratio 1 are in range)', () => {
+    // The bail is for STRICTLY off-screen tops; a row top exactly at the viewport top (ratio 0)
+    // or exactly at the viewport bottom (ratio 1) is on-screen and pins normally.
+    const atTop = setup({ clientHeight: 500 })
+    atTop.el.scrollTop = 300
+    atTop.virt.scrollTopForAnchor.mockReturnValue(300) // ratio (300-300)/500 = 0
+    expect(atTop.repin.captureRowTopAnchor('m1')).toBe(true)
+    expect(atTop.repin.currentAnchorState()?.viewportOffsetRatio).toBe(0)
+
+    const atBottom = setup({ clientHeight: 500 })
+    atBottom.el.scrollTop = 300
+    atBottom.virt.scrollTopForAnchor.mockReturnValue(800) // ratio (800-300)/500 = 1
+    expect(atBottom.repin.captureRowTopAnchor('m2')).toBe(true)
+    expect(atBottom.repin.currentAnchorState()?.viewportOffsetRatio).toBe(1)
+  })
+
+  it('captureRowTopAnchor tolerates a SUB-PIXEL mismatch at the viewport top (clamps onto the edge)', () => {
+    // scrollTop is a device-pixel-quantized DOM read while the row top is a Float64
+    // offset-map sum, so a row whose top sits exactly at the viewport top routinely
+    // computes an epsilon-NEGATIVE ratio. A strict `ratio < 0` bail here dropped the pin
+    // at the single most common toggle position (the user clicked the row's header at the
+    // top of the pane) and fell back to the midpoint anchor -- whose re-pin then scrolled
+    // the toggled row: the exact jump this function exists to prevent.
+    const { repin, el, virt } = setup({ clientHeight: 500 })
+    el.scrollTop = 300
+    virt.scrollTopForAnchor.mockReturnValue(299.7) // 0.3px above the top: within tolerance
+    expect(repin.captureRowTopAnchor('m1')).toBe(true)
+    expect(repin.isHoldingRowTop()).toBe(true)
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(0) // clamped onto the edge
+
+    // The mirror sub-pixel overshoot at the bottom edge clamps to 1.
+    const atBottom = setup({ clientHeight: 500 })
+    atBottom.el.scrollTop = 300
+    atBottom.virt.scrollTopForAnchor.mockReturnValue(800.4)
+    expect(atBottom.repin.captureRowTopAnchor('m2')).toBe(true)
+    expect(atBottom.repin.currentAnchorState()?.viewportOffsetRatio).toBe(1)
+
+    // Beyond the 1px tolerance is genuinely off-screen and still bails.
+    const offscreen = setup({ clientHeight: 500 })
+    offscreen.el.scrollTop = 300
+    offscreen.virt.scrollTopForAnchor.mockReturnValue(297)
+    expect(offscreen.repin.captureRowTopAnchor('m3')).toBe(false)
   })
 
   it('captureRowTopAnchor is a no-op when the row is not in the offset map (trimmed away)', () => {
@@ -188,6 +252,104 @@ describe('createanchorrepin state machine', () => {
     repin.repinToAnchor()
 
     expect(writes).toEqual([120])
+  })
+})
+
+describe('createanchorrepin edge-aware capture', () => {
+  // captureViewportAnchor pins the NEARER edge's row when at an edge, else the midpoint, so a
+  // far-side row growing past its estimate can't drift the pin off that edge. anchorAt returns
+  // `top@<offset>`, so the captured anchor id reveals which viewport line (scrollTop + ratio*ch)
+  // was pinned, and viewportOffsetRatio the ratio itself.
+  it('pins the TOP row (ratio 0) at the very top', () => {
+    const { repin } = setup({ scrollTop: 0, clientHeight: 500, scrollHeight: 5000 })
+    repin.captureAnchor()
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(0)
+    expect(repin.currentAnchorState()?.anchor.id).toBe('top@0')
+  })
+
+  it('pins the MIDPOINT (ratio 0.5) mid-scroll', () => {
+    const { repin } = setup({ scrollTop: 1000, clientHeight: 500, scrollHeight: 5000 })
+    repin.captureAnchor()
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(0.5)
+    expect(repin.currentAnchorState()?.anchor.id).toBe('top@1250') // anchorAt(1000 + 250)
+  })
+
+  it('pins the BOTTOM row (ratio 1) at the loaded-window bottom when windowed away from the tail', () => {
+    // scrollTop 4500 == maxScrollTop (5000 - 500), so the viewport is at the loaded bottom.
+    const { repin, setHasNewer } = setup({ scrollTop: 4500, clientHeight: 500, scrollHeight: 5000 })
+    setHasNewer(true) // newer messages exist beyond the loaded window
+    repin.captureAnchor()
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(1)
+    expect(repin.currentAnchorState()?.anchor.id).toBe('top@5000') // anchorAt(4500 + 500)
+  })
+
+  it('stays MIDPOINT at the loaded bottom when at the LIVE tail (no newer messages)', () => {
+    // At the live tail the hook follows the tail instead of anchoring, so pinning the bottom
+    // row here would fight tail-follow -- the hasNewerMessages guard keeps it at the midpoint.
+    const { repin } = setup({ scrollTop: 4500, clientHeight: 500, scrollHeight: 5000 })
+    repin.captureAnchor()
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(0.5)
+  })
+})
+
+describe('createanchorrepin row-top hold', () => {
+  it('captureRowTopAnchor arms the hold; releaseRowTopHold downgrades it but KEEPS the anchor', () => {
+    const { repin, el, virt } = setup({ clientHeight: 500 })
+    el.scrollTop = 100
+    virt.scrollTopForAnchor.mockReturnValue(300)
+    expect(repin.isHoldingRowTop()).toBe(false)
+    repin.captureRowTopAnchor('m5')
+    expect(repin.isHoldingRowTop()).toBe(true)
+    expect(repin.currentAnchor()).toEqual({ id: 'm5', offsetWithinRow: 0 })
+    repin.releaseRowTopHold()
+    // Release drops ONLY the row-top-ness; the anchor stays pinned to the same row so a later
+    // async re-measure still re-pins THIS row until the next capture. A naive followTail() here
+    // would wrongly drop the anchor to tail-follow.
+    expect(repin.isHoldingRowTop()).toBe(false)
+    expect(repin.isFollowing()).toBe(false)
+    expect(repin.currentAnchor()).toEqual({ id: 'm5', offsetWithinRow: 0 })
+  })
+
+  it('releaseRowTopHold is a no-op when the current anchor is a normal viewport capture', () => {
+    // A user gesture calls releaseRowTopHold on every wheel/key/touch/pointer; when the anchor
+    // is an ordinary viewport pin (origin 'viewport'), it must leave the mode -- including the
+    // viewport ratio -- untouched, never reconstructing it.
+    const { repin } = setup()
+    repin.setAnchor(anchorAt('m1'), 0, 0.5)
+    repin.releaseRowTopHold()
+    expect(repin.isFollowing()).toBe(false)
+    expect(repin.currentAnchor()).toEqual(anchorAt('m1'))
+    expect(repin.currentAnchorState()?.viewportOffsetRatio).toBe(0.5)
+  })
+
+  it('a no-op captureRowTopAnchor (row gone) does not arm the hold', () => {
+    const { repin, virt } = setup({ clientHeight: 500 })
+    virt.scrollTopForAnchor.mockReturnValue(null)
+    repin.captureRowTopAnchor('gone')
+    expect(repin.isHoldingRowTop()).toBe(false)
+  })
+
+  it('any anchor transition supersedes (clears) the hold', () => {
+    // The hold guards the CURRENT anchor, so a fresh capture / re-anchor / follow drops it --
+    // the hook can never leave a stale hold wedging its midpoint re-capture off.
+    const { repin, el, virt } = setup({ clientHeight: 500 })
+    el.scrollTop = 100
+    virt.scrollTopForAnchor.mockReturnValue(300)
+
+    repin.captureRowTopAnchor('m5')
+    expect(repin.isHoldingRowTop()).toBe(true)
+    repin.captureAnchor() // re-capturing the viewport anchor supersedes the toggle anchor
+    expect(repin.isHoldingRowTop()).toBe(false)
+
+    repin.captureRowTopAnchor('m6')
+    expect(repin.isHoldingRowTop()).toBe(true)
+    repin.followTail() // returning to the tail also drops the hold
+    expect(repin.isHoldingRowTop()).toBe(false)
+
+    repin.captureRowTopAnchor('m7')
+    expect(repin.isHoldingRowTop()).toBe(true)
+    repin.setAnchor(anchorAt('other')) // a plain setAnchor drops it too
+    expect(repin.isHoldingRowTop()).toBe(false)
   })
 })
 

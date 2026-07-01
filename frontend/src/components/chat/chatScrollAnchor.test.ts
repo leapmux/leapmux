@@ -60,10 +60,11 @@ describe('chatscrollanchor', () => {
     expect(top).toBe(170)
   })
 
-  describe('zero-height run at the anchor offset (collapsed-until-measured rows)', () => {
+  describe('zero-height run at the anchor offset (shared-offset tie-break)', () => {
     // A geometry over explicit per-row heights (gap 0), so a run of zero-height rows
-    // shares one cumulative offset -- the collapsed-until-measured stack the virtualizer
-    // builds for freshly-mounted rows.
+    // shares one cumulative offset. The production virtualizer now reserves a positive
+    // estimate for every row, so this exercises the pure anchor math's defensive tie-break
+    // for any caller (or geometry) that can still produce a shared-offset run.
     function varGeo(heights: number[]): AnchorOffsetGeometry {
       const offs = [0]
       for (const h of heights)
@@ -113,6 +114,20 @@ describe('chatscrollanchor', () => {
       const geo = varGeo([100, 100, 100])
       expect(anchorAtOffset(geo, 250)?.id).toBe('m2') // the row whose body contains 250
       expect(anchorAtOffset(geo, 100)?.id).toBe('m1') // exact boundary -> the row starting there
+    })
+
+    it('keeps the within-row offset when scrollTop sits INSIDE the terminal row of a run', () => {
+      // Same leading zero-height run, but the viewport top sits 50px INTO row 5's body
+      // (the run's terminal, visible row). Walking back to the zero-height run-top here
+      // would clamp `within` against m0's 0 basisHeight and DISCARD the 50px -- the
+      // resolve would land at 0, a 50px capture->resolve yank with no geometry change.
+      // The tie-break applies only AT the shared offset; strictly inside the body the
+      // containing row keeps its within-row offset and the round trip is the identity.
+      const geo = varGeo([0, 0, 0, 0, 0, 100, 100])
+      const anchor = anchorAtOffset(geo, 50)
+      expect(anchor?.id).toBe('m5')
+      expect(anchor?.offsetWithinRow).toBe(50)
+      expect(resolveAnchorScrollTop(geo, anchor!)).toBe(50)
     })
   })
 

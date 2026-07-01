@@ -5,7 +5,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -138,6 +138,7 @@ describe('usechatscroll scroll-anomaly warnings', () => {
     let rowTop = initialRowTop
     const [version, setVersion] = createSignal(0)
     const virt: ChatScrollVirtualizer = {
+      ...measurementDeferralNoOps(),
       totalHeight: () => 100000,
       geometryVersion: version,
       updateViewport: () => {},
@@ -249,6 +250,8 @@ describe('usechatscroll scroll-anomaly warnings', () => {
   it('warns on an unexplained large scroll jump with no known cause', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
           const div = makeFakeScrollDiv()
@@ -265,6 +268,11 @@ describe('usechatscroll scroll-anomaly warnings', () => {
           div.setScrollTop(0)
           hook.handlers.onScroll() // seed lastScrollTop = 0
           warn.mockClear()
+          // The mount-time restick advanced the baseline to the bottom, so the seed event
+          // above read as its own (harness-artifact) jump and opened a burst window. Step
+          // past it so the teleport below is judged as an isolated event, not folded into
+          // the seed's burst.
+          clock += 1500
 
           // The viewport teleports 3000px between two scroll events with no wheel/touch,
           // no drag, no keyboard page, and no programmatic write -- an unexplained jump.
@@ -284,10 +292,12 @@ describe('usechatscroll scroll-anomaly warnings', () => {
               msSinceLastScrollEvent: expect.any(Number),
             }),
           )
+          nowSpy.mockRestore()
           dispose()
           resolve()
         }
         catch (e) {
+          nowSpy.mockRestore()
           dispose()
           reject(e instanceof Error ? e : new Error(String(e)))
         }
@@ -297,6 +307,8 @@ describe('usechatscroll scroll-anomaly warnings', () => {
   it('warns on a small unexplained jump (~40px) that the old 0.3-screen floor would have missed', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
           const div = makeFakeScrollDiv()
@@ -315,6 +327,9 @@ describe('usechatscroll scroll-anomaly warnings', () => {
           div.setScrollTop(1000)
           hook.handlers.onScroll()
           warn.mockClear()
+          // Step past the burst window the seed event opened (the mount restick left the
+          // baseline at the bottom, so the seed read as a harness-artifact jump).
+          clock += 1500
 
           // A 40px jump with no input / echo / page. It is below the OLD 0.3-screen floor
           // (~150px on this 500px pane), so it used to slip through; the 32px absolute
@@ -327,10 +342,12 @@ describe('usechatscroll scroll-anomaly warnings', () => {
             expect.stringContaining('unexpected scroll jump'),
             expect.objectContaining({ deltaFromLast: 40 }),
           )
+          nowSpy.mockRestore()
           dispose()
           resolve()
         }
         catch (e) {
+          nowSpy.mockRestore()
           dispose()
           reject(e instanceof Error ? e : new Error(String(e)))
         }
@@ -449,6 +466,7 @@ describe('usechatscroll scroll-anomaly warnings', () => {
           // budget -- simulated by advancing the clock inside updateViewport (the synchronous
           // mount of entering rows + the premeasure computed run here in the real code).
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 60 },
           }
@@ -495,6 +513,7 @@ describe('usechatscroll scroll-anomaly warnings', () => {
           const [streamingText] = createSignal('')
           // A normal (fast, sub-budget) render cascade: 10ms, under the 50ms threshold.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 10 },
           }
@@ -507,7 +526,14 @@ describe('usechatscroll scroll-anomaly warnings', () => {
           div.setScrollTop(20)
           hook.handlers.onScroll()
 
-          expect(warn).not.toHaveBeenCalled()
+          // Only the SLOW-PHASE warn is under test here. The raw setScrollTop above is
+          // itself an input-less teleport off the restick baseline, so Detector B may
+          // legitimately report it -- assert specifically that no phase-budget warn fired.
+          expect(warn).not.toHaveBeenCalledWith(
+            '[chatScroll]',
+            expect.stringContaining('slow scroll phase'),
+            expect.anything(),
+          )
           nowSpy.mockRestore()
           dispose()
           resolve()
@@ -718,6 +744,7 @@ describe('usechatscroll scroll-anomaly warnings', () => {
     let shifted = false
     const [version, setVersion] = createSignal(0)
     const virt: ChatScrollVirtualizer = {
+      ...measurementDeferralNoOps(),
       totalHeight: () => {
         version()
         return shifted ? 8000 + shift : 8000
@@ -838,6 +865,343 @@ describe('usechatscroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           vi.useRealTimers()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not WARN on a native keyboard scroll (Space) -- the keydown is recorded as the cause', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(1000)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(1000)
+          hook.handlers.onScroll() // seed the baseline mid-list
+          warn.mockClear()
+          clock += 1500 // step past the seed artifact's burst window
+
+          // Space pages NATIVELY (~85% of the viewport): the input layer doesn't handle
+          // it, so its scroll event carries no echo/page/pointer signal. The keydown
+          // itself must be what excuses the jump.
+          hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key: ' ' }))
+          div.setScrollTop(1425)
+          hook.handlers.onScroll()
+
+          expect(warn).not.toHaveBeenCalledWith(
+            '[chatScroll]',
+            expect.stringContaining('unexpected scroll jump'),
+            expect.anything(),
+          )
+          nowSpy.mockRestore()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          nowSpy.mockRestore()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('suppresses a burst of unexplained jumps to ONE warn, reporting the folded count on the next', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(0)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(0)
+          hook.handlers.onScroll() // seed
+          warn.mockClear()
+
+          // Head of the burst: an isolated unexplained jump -- warns. (The 3100ms gap
+          // keeps the measured velocity below the fling threshold so the next event
+          // isn't excused as a momentum coast.)
+          clock += 3100
+          div.setScrollTop(3000)
+          hook.handlers.onScroll()
+          // A second unexplained jump 100ms later -- the same gesture/burst (a scrollbar
+          // drag fires only scroll events): folded into the head's warn, not re-warned.
+          clock += 100
+          div.setScrollTop(500)
+          hook.handlers.onScroll()
+
+          const jumpWarns = () => warn.mock.calls.filter(c => String(c[1]).includes('unexpected scroll jump'))
+          expect(jumpWarns()).toHaveLength(1)
+
+          // A later, isolated jump (past the burst window) warns again and carries the
+          // count of what the window folded.
+          clock += 1500
+          div.setScrollTop(2000)
+          hook.handlers.onScroll()
+          expect(jumpWarns()).toHaveLength(2)
+          expect(jumpWarns()[1][2]).toMatchObject({ suppressedSinceLastWarn: 1 })
+          nowSpy.mockRestore()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          nowSpy.mockRestore()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still warns on a teleport that LANDS at the bottom from an anchored mid-list position', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(1000)
+          const { virt } = makeAnchorVirtualizer(990)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Park mid-list: the scroll event captures a real anchor (mode 'anchored').
+          div.setScrollTop(1000)
+          hook.handlers.onScroll()
+          expect(hook.atBottom()).toBe(false)
+          warn.mockClear()
+          clock += 1500
+
+          // An unguarded scrollIntoView-style teleport straight to the clamped bottom.
+          // Landing inside the sticky band re-engages tail-follow INSIDE this very
+          // handler -- the detector must classify against the PRE-event mode (anchored),
+          // or the exact teleport class it exists to catch excuses itself.
+          div.setScrollTop(4500)
+          hook.handlers.onScroll()
+
+          expect(warn).toHaveBeenCalledWith(
+            '[chatScroll]',
+            expect.stringContaining('unexpected scroll jump'),
+            expect.objectContaining({ deltaFromLast: 3500 }),
+          )
+          nowSpy.mockRestore()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          nowSpy.mockRestore()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('rate-limits absorbed-drift warns to one per window and aggregates the folded residuals', () =>
+    new Promise<void>((resolve, reject) => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      createRoot(async (dispose) => {
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          // Like makeAbsorbingVirtualizer, but re-armable: each arm() shifts the anchored
+          // row once more on the next updateViewport, so consecutive scroll events each
+          // absorb a fresh 100px correction (a slow scroll through mis-estimated rows).
+          let rowBase = 290
+          let armed = false
+          const [version, setVersion] = createSignal(0)
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => {
+              version()
+              return 8000 + (rowBase - 290)
+            },
+            geometryVersion: version,
+            updateViewport: () => {
+              if (armed) {
+                armed = false
+                rowBase += 100
+                setVersion(v => v + 1)
+              }
+            },
+            anchorAt: (scrollTop: number): ScrollAnchor => ({ id: 'row', offsetWithinRow: scrollTop - rowBase }),
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: (a: ScrollAnchor): number => rowBase + a.offsetWithinRow,
+          }
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(300)
+          hook.handlers.onScroll() // seed a slow cadence
+          await Promise.resolve()
+          warn.mockClear()
+
+          const driftWarns = () => warn.mock.calls.filter(c => String(c[1]).includes('anchored content drifted'))
+
+          // Absorb #1: warns (the window opens here).
+          vi.advanceTimersByTime(100)
+          armed = true
+          div.setScrollTop(310)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+          expect(driftWarns()).toHaveLength(1)
+
+          // Absorb #2, 100ms later: inside the window -- folded, not re-warned.
+          vi.advanceTimersByTime(100)
+          armed = true
+          div.setScrollTop(320)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+          expect(driftWarns()).toHaveLength(1)
+
+          // Absorb #3, past the window: warns again, carrying the folded aggregate.
+          vi.advanceTimersByTime(1100)
+          armed = true
+          div.setScrollTop(330)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+          expect(driftWarns()).toHaveLength(2)
+          expect(driftWarns()[1][2]).toMatchObject({
+            suppressedSinceLastWarn: 1,
+            suppressedResidualPxSum: 100,
+          })
+          vi.useRealTimers()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          vi.useRealTimers()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('advances the direction baseline AT WRITE TIME for a restick, without waiting for its echo', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        let clock = 1000
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(0)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(0)
+          hook.handlers.onScroll() // baseline at 0
+          warn.mockClear()
+          clock += 1500
+
+          // The restick (jumpToBottom -> stickToBottom) routes through the shared
+          // programmatic write, which must advance the direction baseline to the clamped
+          // bottom AT WRITE TIME -- its echo scroll event never fires here (the fake div
+          // dispatches nothing), exactly like a late echo dropped past the marker TTL.
+          hook.jumpToBottom()
+          expect(div.getScrollTop()).toBe(4500)
+          clock += 1500
+
+          // The next input-less user move is measured from the RESTICK position, not the
+          // stale pre-restick baseline: -40 from 4500, not +4460 from 0. (The 40px jump
+          // still warns -- it carries no input -- which is what exposes both fields.)
+          div.setScrollTop(4460)
+          hook.handlers.onScroll()
+
+          expect(warn).toHaveBeenCalledWith(
+            '[chatScroll]',
+            expect.stringContaining('unexpected scroll jump'),
+            expect.objectContaining({ deltaFromLast: -40, lastScrollTop: 4500 }),
+          )
+          nowSpy.mockRestore()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          nowSpy.mockRestore()
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not warn deferred-fling drift on a gesture\'s first event (cold velocity seed)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const { virt, arm } = makeAbsorbingVirtualizer(100)
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+          warn.mockClear()
+
+          // The FIRST-EVER scroll event: the velocity tracker still holds its Infinity
+          // seed, so the engine presumes a fling and DEFERS the 100px correction. That
+          // transient, settle-re-anchored deferral must not be reported as drift -- the
+          // old gate (!isActivelyFlinging, false on the seed) warned on exactly this.
+          arm()
+          div.setScrollTop(310)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(310) // deferred, not corrected
+          expect(warn).not.toHaveBeenCalledWith(
+            '[chatScroll]',
+            expect.stringContaining('anchored content drifted'),
+            expect.anything(),
+          )
+          dispose()
+          resolve()
+        }
+        catch (e) {
           dispose()
           reject(e instanceof Error ? e : new Error(String(e)))
         }

@@ -696,8 +696,9 @@ describe('chatView', () => {
 
     vi.spyOn(tailRow!, 'getBoundingClientRect').mockImplementation(() => ({ height: 32 }) as DOMRect)
     await triggerResizeObserverFor(tailRow!)
-    // Tail measures 32 -> the running-mean estimate is now 32, so the still-unmeasured
-    // interior row reserves 32: spacer = 32 (interior est) + 20 gap + 32 (tail).
+    // Tail measures 32 -> the median estimate (one 32px sample) is now 32, so the
+    // still-unmeasured interior row reserves 32: spacer = 32 (interior est) + 20 gap
+    // + 32 (tail).
     await waitFor(() => expect(spacer!.style.height).toBe('84px'))
 
     vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 480 }) as DOMRect)

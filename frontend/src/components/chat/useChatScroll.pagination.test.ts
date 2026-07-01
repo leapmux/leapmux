@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -335,6 +335,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500; BELOW = 200
           const [total, setTotal] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -404,6 +405,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
           div.setScrollTop(500) // pinned at the bottom -- distFromBottom = 0
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 1000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -467,6 +469,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(0)
           const [total, setTotal] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -518,6 +521,74 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
       })
     }))
 
+  it('still fills a BARELY-scrollable newest page (maxScrollTop inside the sticky band)', () =>
+    // The 1-31px wedge: with 0 < maxScrollTop < the 32px sticky band, isAtBottom() is
+    // true at EVERY scroll position, so the "first scroll-up leaves the tail and resumes
+    // the fill" escape is mathematically unreachable -- a suppression gated on
+    // maxScrollTop > 0 wedged older history off for good (a scrollbar-drag user fires
+    // no wheel/key edge-intent loads either). Such a pane must keep filling, exactly
+    // like the non-scrollable case, until it can genuinely leave the band.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          let scrollHeight = 520 // maxScrollTop 20: scrollable, but only inside the band
+          div.setScrollHeight(scrollHeight)
+          div.setScrollTop(20)
+          const [total, setTotal] = createSignal(520)
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => total(),
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: () => null,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => false,
+            fetchingOlder,
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                scrollHeight += 300
+                div.setScrollHeight(scrollHeight)
+                div.setScrollTop(scrollHeight - 500) // restick keeps the view at the tail
+                setTotal(t => t + 300)
+                setMessages(prev => [...prev, {} as AgentChatMessage])
+                setFetchingOlder(false)
+              })
+            },
+          })
+          hook.attachListRef(div.el)
+          for (let i = 0; i < 40; i++)
+            await Promise.resolve()
+
+          // At least one older page loaded (the wedge would have loaded ZERO), and the
+          // fill stopped once the pane could leave the sticky band (bounded, not runaway).
+          expect(olderLoads).toBeGreaterThanOrEqual(1)
+          expect(olderLoads).toBeLessThanOrEqual(5)
+          expect(maxScrollTopOf(div.el)).toBeGreaterThan(32)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('still pre-fetches older at the loaded bottom of a window paged AWAY from the live tail', () =>
     // The at-tail suppression is gated on being at the TRUE live tail (hasNewer false).
     // A reader windowed away from the tail (hasNewer true) sits at the bottom of a
@@ -531,6 +602,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
           div.setScrollTop(500) // at the loaded bottom -- distFromBottom = 0
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 1000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -584,6 +656,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(700)
           div.setScrollTop(200) // a deficient above-buffer were the tab visible
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 700,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -631,6 +704,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(1600) // buffer ABOVE = 1600 (>= 1500, satisfied); BELOW = 100
           const [total, setTotal] = createSignal(2200)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -695,6 +769,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           // totalHeight never grows: every older page is hidden (no visible height).
           const [total] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -751,6 +826,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(900)
           div.setScrollTop(200) // buffer above 200 < 1500 -> deficient, would pre-fetch
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 900,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -813,6 +889,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(300)
           div.setScrollTop(0) // non-scrollable (maxScrollTop 0); older buffer deficient
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 300,
             geometryVersion: () => 0,
             updateViewport: () => {},

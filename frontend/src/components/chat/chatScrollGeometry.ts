@@ -8,6 +8,9 @@
 // formulas live in exactly one place.
 // ---------------------------------------------------------------------------
 
+import { clamp } from '~/lib/clamp'
+import { createLogger } from '~/lib/logger'
+
 /** Below this, a re-pin's scrollTop correction is a no-op not worth a write (which can interrupt momentum). */
 export const REPIN_MIN_DELTA_PX = 1
 /**
@@ -29,11 +32,23 @@ export const EDGE_INTENT_TOLERANCE_PX = 1
  * ~3 frames at 60fps -- well clear of routine work (single-digit ms) but far below the
  * hundreds-of-ms freezes we are hunting.
  */
-export const SCROLL_PHASE_STALL_WARN_MS = 50
+const SCROLL_PHASE_STALL_WARN_MS = 50
 
-/** High-res monotonic clock (perf.now), falling back to Date.now where absent. */
-export function monotonicNow(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+// The shared 'chatScroll' diagnostic channel for the always-on stall WARN. useChatScroll
+// creates its own same-named logger for the scroll-anomaly WARNs (Detector A/B/C).
+const scrollPhaseLog = createLogger('chatScroll')
+
+/**
+ * Emit the shared "slow scroll phase" WARN when a synchronous scroll-pipeline phase ran over
+ * SCROLL_PHASE_STALL_WARN_MS. The single home for the threshold gate + Math.round + the
+ * 'chatScroll' channel, so the refreshViewport (useChatScroll), premeasure (ChatView), and
+ * geomRebuild (useChatVirtualizer) reports can't drift in shape. `extra` (the small per-phase
+ * context) is cheap to build at every call site, so it is passed eagerly.
+ */
+export function warnSlowScrollPhase(phase: string, ms: number, extra?: Record<string, unknown>): void {
+  if (ms < SCROLL_PHASE_STALL_WARN_MS)
+    return
+  scrollPhaseLog.warn('slow scroll phase', { phase, ms: Math.round(ms), ...extra })
 }
 
 /**
@@ -70,7 +85,7 @@ export function maxScrollTopOf(el: HTMLDivElement): number {
  * overscroll can be negative; an upper-bound-only min would have written it back).
  */
 export function clampScrollTop(el: HTMLDivElement, top: number): number {
-  return Math.min(Math.max(0, top), maxScrollTopOf(el))
+  return clamp(top, 0, maxScrollTopOf(el))
 }
 
 /**
@@ -85,7 +100,7 @@ export function distFromBottom(el: HTMLDivElement): number {
 }
 
 /** Fraction of the viewport height that counts as the "near the top" band. */
-export const NEAR_TOP_BAND_RATIO = 0.5
+const NEAR_TOP_BAND_RATIO = 0.5
 
 /**
  * True when `pos` (a scrollTop) sits in the top-half "near the top" band. The

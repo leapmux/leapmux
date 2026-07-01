@@ -4,20 +4,25 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
-import { FLING_OVERSCAN_MAX_PX, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer } from './useChatScroll.testkit'
+import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
 describe('usechatscroll render-ahead overscan', () => {
-  it('keeps the fling lead cap below the multi-screen mount burst budget', () => {
+  it('keeps the fling lead cap in screens of the pane, bounded against the mount-burst budget', () => {
     // A 1200px cap left only ~2.3k px of forward coverage on a 733px pane once base
     // overscan was included, which can still expose blank spacer under coalesced
     // momentum. A 4000px cap mounted 30+ rows in one observed 732px-pane scroll commit.
-    // Keep the cap in the middle: enough coverage for a delayed compositor frame, but
-    // reject any return toward the old multi-screen mount burst.
-    expect(FLING_OVERSCAN_MAX_PX).toBeGreaterThanOrEqual(1800)
-    expect(FLING_OVERSCAN_MAX_PX).toBeLessThanOrEqual(2400)
+    // The cap is now derived in SCREENS: on the ~733px calibration pane it must land in
+    // the same middle band the fixed 1800px was tuned to, a taller pane keeps the same
+    // screens of coverage instead of degrading toward one screen, and the hard ceiling
+    // rejects any return toward the old multi-screen mount burst on extreme panes.
+    expect(flingOverscanCapPx(733)).toBeGreaterThanOrEqual(1800)
+    expect(flingOverscanCapPx(733)).toBeLessThanOrEqual(2400)
+    expect(flingOverscanCapPx(1200)).toBeCloseTo(flingOverscanCapPx(733) * (1200 / 733), 0)
+    expect(flingOverscanCapPx(10000)).toBe(FLING_OVERSCAN_HARD_CAP_PX)
+    expect(FLING_OVERSCAN_HARD_CAP_PX).toBeLessThanOrEqual(4000)
   })
 
   it('extends the rendered slice ahead in the fling direction during a fast scroll', () =>
@@ -36,6 +41,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'newer'
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -68,8 +74,8 @@ describe('usechatscroll render-ahead overscan', () => {
           const flungLeadDir = lastLeadDir
           expect(flungLeadDir).toBe('older')
           // A ~38000px jump over ~20ms is far past the cap (velocity * look-ahead >>
-          // FLING_OVERSCAN_MAX_PX), so the lead clamps to the ceiling deterministically.
-          expect(flungLeadPx).toBe(FLING_OVERSCAN_MAX_PX)
+          // flingOverscanCapPx(500)), so the lead clamps to the ceiling deterministically.
+          expect(flungLeadPx).toBe(flingOverscanCapPx(500))
 
           dispose()
           resolve()
@@ -94,6 +100,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'older'
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -122,7 +129,7 @@ describe('usechatscroll render-ahead overscan', () => {
           const flungLeadPx = lastLeadPx
           const flungLeadDir = lastLeadDir
           expect(flungLeadDir).toBe('newer')
-          expect(flungLeadPx).toBe(FLING_OVERSCAN_MAX_PX)
+          expect(flungLeadPx).toBe(flingOverscanCapPx(500))
 
           dispose()
           resolve()
@@ -152,6 +159,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -174,7 +182,7 @@ describe('usechatscroll render-ahead overscan', () => {
           div.setScrollTop(1000)
           hook.handlers.onScroll()
           expect(lastLeadDir).toBe('older')
-          expect(lastLeadPx).toBe(FLING_OVERSCAN_MAX_PX)
+          expect(lastLeadPx).toBe(flingOverscanCapPx(500))
 
           // A coalesced same-tick event at the SAME scrollTop (no time advance): speed()
           // still reads the fling value (dt=0 kept it), but the direction is now
@@ -440,6 +448,7 @@ describe('usechatscroll windowing trim', () => {
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -500,6 +509,7 @@ describe('usechatscroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkMsgs(MAX_LOADED_CHAT_MESSAGES))
           const [streamingText] = createSignal('')
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -557,6 +567,7 @@ describe('usechatscroll windowing trim', () => {
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -614,6 +625,7 @@ describe('usechatscroll windowing trim', () => {
           // MIDDLE row m10 once m1 is gone -- modelling an optimistic local that
           // reconciled to a server echo under a new id between capture and trim.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -679,6 +691,7 @@ describe('usechatscroll windowing trim', () => {
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
           // viewport top) resolves to a row STRICTLY above the viewport anchor.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 40000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -741,6 +754,7 @@ describe('usechatscroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           const [streamingText] = createSignal('')
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},

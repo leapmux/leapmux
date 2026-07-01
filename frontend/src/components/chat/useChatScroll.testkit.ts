@@ -13,6 +13,26 @@ import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop }
  */
 
 /**
+ * The measurement-deferral half of the virtualizer surface, defaulted to no-ops.
+ * ChatScrollVirtualizer requires these members (an optional surface let a caller
+ * silently disable the fling deferral machinery); the stubs spread this so each
+ * builder stays focused on the geometry it fakes. Tests that exercise the deferral
+ * or the row-top hold release override the members they assert on.
+ */
+export function measurementDeferralNoOps(): Pick<
+  ChatScrollVirtualizer,
+  'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
+> {
+  return {
+    setVisibleMeasurementDeferral: () => {},
+    hasDeferredMeasurements: () => false,
+    flushDeferredMeasurements: () => false,
+    lastMeasurement: () => undefined,
+    hasMeasuredHeight: () => false,
+  }
+}
+
+/**
  * Minimal virtualizer stub. `totalHeight` is a constant so the geometry re-pin
  * effect never fires — these tests exercise the sticky-bottom / resize / scroll
  * logic, which is independent of the offset map. Tests that need anchoring
@@ -26,6 +46,7 @@ export function makeStubVirtualizer(): ChatScrollVirtualizer {
     anchorAt: () => null,
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: () => null,
+    ...measurementDeferralNoOps(),
   }
 }
 
@@ -46,7 +67,6 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
     followTail: () => {},
     refreshViewport: () => {},
     writeScrollTop: () => {},
-    markProgrammaticScroll: () => {},
     syncVelocityToProgrammatic: () => {},
     setAnchor: () => {},
     ...overrides,
@@ -67,6 +87,7 @@ export function makeGrowableVirtualizer() {
     anchorAt: () => null,
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: () => null,
+    ...measurementDeferralNoOps(),
   }
   return { virt, setTotal }
 }
@@ -77,9 +98,9 @@ export function makeGrowableVirtualizer() {
  * `anchorAt` / `scrollTopForAnchor` resolve against the current heights, exactly
  * like the production virtualizer. Row ids are `g${gen}_${index}`; `seq` mirrors
  * the index. `setRowHeight` mutates one row and bumps `geometryVersion`,
- * reproducing a DOM measurement landing after the row mounted (the
- * collapsed-until-measured rows the DOM-measurement pipeline grows once they
- * become visible). `replaceWindow` swaps in a fresh row set under a NEW generation
+ * reproducing a DOM measurement landing after the row mounted (a freshly-mounted
+ * row settling from its estimate to its real height once the pipeline measures it).
+ * `replaceWindow` swaps in a fresh row set under a NEW generation
  * -- so every prior anchor id stops resolving -- modeling jumpToOldest/jumpToLatest
  * replacing the loaded window (`chatHistoryPaginator`), which is what leaves the
  * pre-jump anchor stale for the re-pin to recover from.
@@ -89,8 +110,9 @@ export function makeRowVirtualizer(initialHeights: number[]) {
   const [gen, setGen] = createSignal(0)
   const [geometryVersion, setGeometryVersion] = createSignal(0)
   // Cumulative offsets, length n+1: cumOffsets[i] is the top of row i; cumOffsets[n] the
-  // total. Zero-height rows share the offset of their successor, exactly reproducing the
-  // collapsed-until-measured stack the real virtualizer builds.
+  // total. Zero-height rows share the offset of their successor, so these tests exercise the
+  // pure anchor math's shared-offset tie-break (a caller can produce zero-height runs even
+  // though the production virtualizer now reserves a positive estimate for every row).
   const cumOffsets = () => {
     const out = [0]
     for (const h of heights())
@@ -117,7 +139,13 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     const hs = heights()
     const offs = cumOffsets()
     return {
-      list: hs.map((_, i) => ({ id: `g${gen()}_${i}`, seq: BigInt(i) })),
+      // seq is 1-based: 0n is the OPTIMISTIC-LOCAL sentinel, which the nearest-anchor
+      // recovery deliberately treats as unorderable (resolveNearestAnchorScrollTop bails
+      // on an anchor with seq 0n and skips 0n survivors). Stamping row 0 with 0n would
+      // silently route every head-of-list recovery test through the local-fallback path
+      // instead of the nearest-survivor path it means to exercise -- and models a state
+      // production can't produce (server rows never carry seq 0n).
+      list: hs.map((_, i) => ({ id: `g${gen()}_${i}`, seq: BigInt(i + 1) })),
       // Largest index whose top offset <= y (the row containing y), clamped to [0, n-1].
       indexAtOffset: (y) => {
         let idx = 0
@@ -142,6 +170,7 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     anchorAt: (y: number): ScrollAnchor | null => anchorAtOffset(geometry(), y),
     scrollTopNearAnchor: (anchor: ScrollAnchor): number | null => resolveNearestAnchorScrollTop(geometry(), anchor),
     scrollTopForAnchor: (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor),
+    ...measurementDeferralNoOps(),
   }
   const setRowHeight = (idx: number, h: number) => {
     setHeights((prev) => {
@@ -206,8 +235,11 @@ export function makeFakeScrollDiv(): FakeScrollDiv {
     configurable: true,
   })
   // jsdom's scrollBy is a no-op; apply the vertical delta so pageScroll moves.
-  el.scrollBy = ((opts?: ScrollToOptions | number) => {
-    const top = typeof opts === 'number' ? 0 : (opts?.top ?? 0)
+  // Both overloads are honored -- scrollBy(x, y) reads the SECOND argument as the
+  // vertical delta, like a real browser -- so a call-form refactor in production
+  // can't silently turn every page jump into a no-op that trips the at-edge branch.
+  el.scrollBy = ((opts?: ScrollToOptions | number, y?: number) => {
+    const top = typeof opts === 'number' ? (y ?? 0) : (opts?.top ?? 0)
     scrollTop = clamp(scrollTop + top)
   }) as typeof el.scrollBy
   return {
@@ -247,12 +279,28 @@ export function installScrollTestEnv(): void {
   beforeAll(() => {
     installControllableResizeObserver()
     // Run rAF synchronously on a microtask so tests can `await Promise.resolve()`
-    // to flush scheduled scroll writes from the resize handler.
+    // to flush scheduled scroll writes from the resize handler. Handles are real and
+    // CANCELABLE: cancelAnimationFrame before the microtask fires drops the callback,
+    // matching browser semantics -- with the old no-op cancel, every cancel path in the
+    // hook (cancelScrollAnimation, the coalesced viewport refresh, onCleanup) was
+    // unobservable, so a regression that dropped a cancel call still passed the suite.
+    let nextRafHandle = 1
+    const pendingRafCallbacks = new Map<number, FrameRequestCallback>()
     globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      queueMicrotask(() => cb(performance.now()))
-      return 0
+      const handle = nextRafHandle++
+      pendingRafCallbacks.set(handle, cb)
+      queueMicrotask(() => {
+        const pending = pendingRafCallbacks.get(handle)
+        if (pending) {
+          pendingRafCallbacks.delete(handle)
+          pending(performance.now())
+        }
+      })
+      return handle
     }) as typeof requestAnimationFrame
-    globalThis.cancelAnimationFrame = (() => {}) as typeof cancelAnimationFrame
+    globalThis.cancelAnimationFrame = ((handle: number) => {
+      pendingRafCallbacks.delete(handle)
+    }) as typeof cancelAnimationFrame
   })
 
   // Backstop: many tests install fake timers and restore them only inside their own

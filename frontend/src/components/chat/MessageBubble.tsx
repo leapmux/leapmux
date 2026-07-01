@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { MessageRenderCache } from './messageRenderCache'
-import type { RenderContext } from './messageRenderers'
+import type { MessageUiWriteOptions, RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
@@ -141,7 +141,7 @@ export interface MessageBubbleHost {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
   /** Debug: this row's measured DOM height, for the raw-JSON surface. */
   getHeightDebug?: () => { measured?: number }
   /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */

@@ -274,6 +274,233 @@ describe('usechatscroll toggle row stability', () => {
       })
     }))
 
+  it('releases the hold once the toggled row re-measures (resize settled), so a scrollbar drag is not frozen', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          // A scrollbar-thumb drag fires only `scroll` events -- no wheel/key/touch/pointer to
+          // release the toggle hold. If the hold lingered past the resize, a later geometry
+          // change would yank the view back to the toggled row. So the hold releases on RESIZE
+          // COMPLETION: once the toggled row's real height commits again (hasMeasuredHeight
+          // true after the estimate phase), normal midpoint anchoring resumes.
+          const div = makeFakeScrollDiv()
+          const base = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          // All rows start measured; a toggle takes the row unmeasured (estimate phase) then
+          // measured again. hasMeasuredHeight drives the completion-based release.
+          const measured = new Set(Array.from({ length: 20 }, (_, i) => `g0_${i}`))
+          const virt = { ...base.virt, hasMeasuredHeight: (id: string) => measured.has(id) }
+          const { setRowHeight, total } = base
+          div.setClientHeight(500)
+          div.setScrollTop(800)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(800) // viewport [800,1300]; row 8's top (offset 800) sits at the viewport top
+          hook.handlers.onScroll()
+          hook.anchorRowForResize('g0_8') // pin row 8's top (ratio 0), arm the hold
+
+          // Estimate phase: the toggle takes row 8 unmeasured. The geometry change fires the
+          // re-pin, but the hold must STAY armed (hasMeasuredHeight false) -- releasing here
+          // would drop the pin mid-resize.
+          measured.delete('g0_8')
+          setRowHeight(8, 100) // geomVersion bump; still the estimate slot (height unchanged)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Measured phase: row 8's real (expanded) height commits. The re-pin holds row 8's
+          // top at offset 800 (scrollTop stays 800), and the hold now RELEASES.
+          measured.add('g0_8')
+          setRowHeight(8, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(800) // toggled row stayed stationary through the resize
+
+          // A scrollbar-thumb drag: only a `scroll` event, no gesture. With the hold released,
+          // handleScroll re-captures the live midpoint anchor (row 8, within 350 at ratio 0.5).
+          div.setScrollTop(900)
+          hook.handlers.onScroll()
+
+          // A large grow above the new midpoint. Released -> the RE-CAPTURED midpoint anchor
+          // holds (scrollTop 900 -> 1300). Had the hold lingered, the stale row-8-top pin would
+          // have yanked scrollTop to 1200 instead.
+          setRowHeight(3, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(1300)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('re-pins the held row at its NEW line when a scroll-only drag moves the viewport mid-hold', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(800)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(800)
+          hook.handlers.onScroll()
+          hook.anchorRowForResize('g0_8') // hold armed: row 8's top (800) at the viewport top
+
+          // A scrollbar-thumb drag fires ONLY `scroll` events (no wheel/pointer input in
+          // Firefox), so nothing releases the hold before this event. The hold must
+          // re-pin the SAME row at its NEW viewport line (row 8's top now 200px below
+          // the viewport top) instead of freezing the toggle-time capture.
+          div.setScrollTop(600)
+          hook.handlers.onScroll()
+
+          // The toggled row's resize lands. Row 8's own growth doesn't move its top
+          // (800), so holding it at the re-captured line keeps scrollTop at 600 -- the
+          // stale toggle-time pin would have yanked the drag back up to 800.
+          setRowHeight(8, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(600)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('releases the hold when a scroll-only move takes the held row off-screen (falls back to midpoint capture)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(800)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(800)
+          hook.handlers.onScroll()
+          hook.anchorRowForResize('g0_8')
+
+          // The drag moves a full viewport down: row 8's top (800) is now ABOVE the
+          // viewport [1400,1900], so a row-top pin is unrepresentable -- the hold must
+          // release and normal midpoint anchoring resume (row 16 at offset 1600).
+          div.setScrollTop(1400)
+          hook.handlers.onScroll()
+
+          // Row 8 (now far above the midpoint anchor) grows +400: the keep-position
+          // re-pin absorbs the growth above the anchor by scrolling down 400 -- midpoint
+          // behavior, NOT a yank back to the stale row-8 pin (which would land at 800).
+          setRowHeight(8, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(1800)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('releases the hold on the public pageScroll API (shell hotkey), matching the container onKeyDown', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(800)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(800)
+          hook.handlers.onScroll()
+          hook.anchorRowForResize('g0_8')
+
+          // TileRenderer's focus hotkey calls the API's pageScroll directly (not the
+          // container's onKeyDown wrapper). It must release the hold the same way, so
+          // the page's own scroll event re-captures normally instead of leaving the
+          // stale row-top pin for the next geometry commit to yank a full page back.
+          hook.pageScroll(1) // scrollBy +452 (viewport minus overlap) -> 1252
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(1252)
+
+          // Row 8 grows +400 ABOVE the (midpoint-anchored) viewport: keep-position
+          // scrolls down by the growth. A surviving row-top hold would have written
+          // scrollTop back toward 800 instead.
+          setRowHeight(8, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(1652)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('does NOT arm the hold when the toggled row is not in the window (re-capture stays live)', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -321,6 +548,112 @@ describe('usechatscroll toggle row stability', () => {
           await Promise.resolve()
 
           expect(div.getScrollTop()).toBe(1600)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('keeps auto-scrolling at the live tail when a row is toggled there (does not freeze on the anchor)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          // Regression: toggling a row while FOLLOWING the live tail must NOT switch to
+          // 'anchored' mode. If it did, sticky-bottom (which requires isFollowing()) would
+          // stop re-sticking, so new streamed/appended content would stop auto-scrolling and
+          // the view would fall off the tail until the user next scrolled.
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // The hook auto-sticks to the bottom on mount: pinned to the live tail (following).
+          // 2000px of content in a 500px pane -> maxScrollTop 1500.
+          div.setScrollTop(1500)
+          hook.handlers.onScroll()
+          expect(hook.atBottom()).toBe(true)
+
+          // The user expands the last row while sitting at the tail. Because the view is
+          // following, anchorRowForResize is a no-op (it does not capture a row anchor).
+          hook.anchorRowForResize('g0_19')
+          // The expansion grows row 19 by 200px (content 2000 -> 2200, maxScrollTop 1700).
+          setRowHeight(19, 300)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Sticky-bottom re-stuck to the grown bottom. Had the toggle captured a row anchor
+          // (mode 'anchored'), the re-pin would have frozen scrollTop at 1500 -- off the tail.
+          expect(div.getScrollTop()).toBe(1700)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+})
+
+describe('usechatscroll edge-aware bottom anchoring', () => {
+  it('keeps the loaded-window bottom stationary when a below-midpoint row grows (windowed away from the tail)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          // Mirror of the top-edge fix: parked at the loaded-window bottom while NEWER content
+          // is windowed away (hasNewerMessages true), captureViewportAnchor pins the BOTTOM row
+          // (ratio 1). A below-midpoint row measuring taller then keeps the bottom content in
+          // view (scrollTop follows it) instead of sliding it off-screen below a midpoint pin.
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(1500) // loaded bottom: 2000px content, maxScrollTop 1500
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => true, // windowed away from the live tail
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Park at the loaded bottom; captureAnchor pins the bottom row (ratio 1), NOT tail-
+          // follow (hasNewerMessages is true, so atBottomForFollow is false). The capture does
+          // not move scrollTop.
+          div.setScrollTop(1500)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(1500)
+
+          // Row 18 (top 1800, below the midpoint 1750) measures 200px taller.
+          setRowHeight(18, 300)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // The bottom row stays pinned to the viewport bottom, so scrollTop follows to the new
+          // bottom (2200 - 500 = 1700). A midpoint pin (the pre-fix behavior) would have left
+          // scrollTop at 1500 and slid the grown bottom rows off-screen below the viewport.
+          expect(div.getScrollTop()).toBe(1700)
           dispose()
           resolve()
         }

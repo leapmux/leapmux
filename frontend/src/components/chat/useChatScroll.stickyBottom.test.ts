@@ -7,7 +7,7 @@ import {
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -306,6 +306,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           // totalHeight()===0) stays out of this test; we want only the explicit
           // scroll events to dispatch pagination.
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -371,6 +372,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           const [streamingText] = createSignal('')
           let newerLoads = 0
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000.4,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -424,6 +426,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           const [streamingText] = createSignal('')
           let updateViewportCalls = 0
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 0,
             geometryVersion: () => 0,
             updateViewport: () => { updateViewportCalls += 1 },
@@ -818,6 +821,50 @@ describe('usechatscroll scroll-to-bottom animation', () => {
           expect(frames).toBeLessThanOrEqual(65)
           expect(hook.isAtBottomFresh()).toBe(true)
 
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('a tap (pointerdown) mid-animation stops the coasting scroll immediately', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(10000)
+          div.setScrollTop(0)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Park at the top AFTER the mount restick settles, so the animation genuinely
+          // has 9500px to travel.
+          div.setScrollTop(0)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(0)
+
+          // Start the animation and grab the surface BEFORE its first frame delivers
+          // (the testkit rAF fires on a microtask, so nothing has run yet). The grab's
+          // cancelPendingScroll must cancel that queued frame so the view never moves.
+          // (The testkit's rAF is cancelable for exactly this: with a no-op
+          // cancelAnimationFrame the "cancelled" frame still fired, kept writing
+          // scrollTop, and this regression was unobservable.)
+          hook.scrollToBottomAnimated()
+          hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(0) // the queued frame never ran
           dispose()
           resolve()
         }

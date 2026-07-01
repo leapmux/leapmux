@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { FLING_SETTLE_MS } from './chatScrollFlingSettle'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -23,6 +23,7 @@ describe('usechatscroll scroll coordinate normalization', () => {
           const updateViewport = vi.fn()
           const anchorAt = vi.fn((top: number): ScrollAnchor => ({ id: `top@${top}`, offsetWithinRow: 0 }))
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport,
@@ -71,6 +72,7 @@ describe('usechatscroll anchor re-pin', () => {
     let rowOffset = 90
     const [version, setVersion] = createSignal(0)
     const virt: ChatScrollVirtualizer = {
+      ...measurementDeferralNoOps(),
       totalHeight: () => {
         version()
         return total
@@ -1011,6 +1013,7 @@ describe('usechatscroll anchor re-pin', () => {
           let rowOffset = 290
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return 5000
@@ -1088,6 +1091,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1158,6 +1162,7 @@ describe('usechatscroll anchor re-pin', () => {
           // A measurement below the midpoint anchor: scrollTopForAnchor resolves to within
           // a sub-pixel of the current viewport midpoint (the anchor didn't move).
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return 5000
@@ -1213,6 +1218,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1277,6 +1283,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1353,6 +1360,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1423,6 +1431,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1493,6 +1502,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1557,6 +1567,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1629,6 +1640,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1693,6 +1705,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1757,6 +1770,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1830,6 +1844,7 @@ describe('usechatscroll anchor re-pin', () => {
             return true
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 8000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -1887,6 +1902,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -1954,6 +1970,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -2026,6 +2043,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -2099,6 +2117,7 @@ describe('usechatscroll anchor re-pin', () => {
           let trimmed = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -2181,6 +2200,7 @@ describe('usechatscroll anchor re-pin', () => {
           const SMALL = 100
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return 40000
@@ -2247,6 +2267,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shifted = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return shifted ? 8000 + SHIFT : 8000
@@ -2324,6 +2345,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shiftLevel = 0
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return 8000 + shiftLevel * SHIFT
@@ -2395,6 +2417,7 @@ describe('usechatscroll anchor re-pin', () => {
           let shiftB = false
           const [version, setVersion] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => {
               version()
               return 8000 + (shiftA ? 50 : 0) + (shiftB ? 30 : 0)

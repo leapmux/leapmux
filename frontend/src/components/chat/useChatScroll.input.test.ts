@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -432,6 +432,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
     let rowOffset = rowOffset0
     const [version, setVersion] = createSignal(0)
     const virt: ChatScrollVirtualizer = {
+      ...measurementDeferralNoOps(),
       totalHeight: () => {
         version()
         return total
@@ -506,16 +507,20 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
           div.setScrollTop(500) // at the bottom (the live tail, initially)
 
           // Growable total + a real anchor, so dropping follow yields ANCHORED (not
-          // following). scrollTopForAnchor returns the captured midpoint, so the re-pin is
-          // a no-op when newer appends BELOW the anchor -- isolating the follow path.
+          // following). At the loaded-window bottom with newer content windowed away,
+          // captureViewportAnchor pins the BOTTOM row (ratio 1), so the anchor sits at the
+          // viewport-bottom line scrollTop + clientHeight (600 + 500 = 1100); returning that
+          // as scrollTopForAnchor makes the re-pin a no-op when newer appends BELOW the anchor
+          // -- isolating the follow path.
           const [total, setTotal] = createSignal(1000)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'row', offsetWithinRow: 0 }),
             scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 850,
+            scrollTopForAnchor: () => 1100,
           }
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [streamingText] = createSignal('')

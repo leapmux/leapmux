@@ -42,8 +42,13 @@ defineCodexRenderer({
 
     const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION)
     createEffect(() => {
+      // Auto-expand once the live stream starts. PROGRAMMATIC: this is not a user
+      // toggle, so the host must not pin this row's scroll position over the reader's
+      // midpoint anchor -- and this effect re-runs on every stream chunk, so a
+      // gesture-style write would re-assert that pin continuously while the user is
+      // anchored scrolled-up with the streaming row on-screen.
       if (hasLiveStream())
-        setExpanded(true)
+        setExpanded(true, { programmatic: true })
     })
 
     const title = createMemo(() => renderBashTitle('Run command', command()) || 'Run command')

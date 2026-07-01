@@ -1,4 +1,4 @@
-import type { TallRowMeasureStats, ViewportUpdateStats, VirtualItem } from './useChatVirtualizer'
+import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { HEIGHT_CACHE_MAX, useChatVirtualizer } from './useChatVirtualizer'
@@ -195,7 +195,7 @@ describe('usechatvirtualizer geometry', () => {
       virt.attachRow('m1', fakeRow(333))
       // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with other, UNMOUNTED
       // rows. Without the mounted-row protection m1 (oldest) would be evicted and
-      // fall back to the running-mean estimate; mounted, it keeps its 333px.
+      // fall back to the median estimate; mounted, it keeps its 333px.
       for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
         virt.measure(`x${i}`, 100)
       expect(virt.heightOfIndex(0)).toBe(333)
@@ -371,92 +371,6 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  it('reports range diagnostics when the overscan band fits inside a tall row', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(plainItems(5))
-      let reported: ViewportUpdateStats | undefined
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 1200,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        shouldReportPerf: () => true,
-        onViewportUpdate: stats => reported = stats,
-      })
-
-      expect(virt.measure('m2', 5000)).toBe(true)
-      virt.updateViewport(2500, 500)
-
-      expect(reported?.nextStart).toBe(0)
-      expect(reported?.nextEnd).toBe(3)
-      expect(reported?.tallRow).toMatchObject({
-        reason: 'single-row-window',
-        rowCount: 5,
-        totalHeight: 5480,
-        maxScrollTop: 4980,
-        clampedScrollTop: 2500,
-        scrollTopWasClamped: false,
-        overscanPx: 1200,
-        overTop: 1200,
-        overBottom: 1200,
-        guardBandPx: 1200,
-        overscanTop: 1300,
-        overscanBottom: 4200,
-        rawStart: 1,
-        rawEnd: 2,
-        expandedForTallRow: true,
-        tallRowIndex: 1,
-        tallRowId: 'm2',
-        tallRowHeight: 5000,
-        tallRowHeightSource: 'measured',
-        tallRowTop: 120,
-        tallRowBottom: 5120,
-        viewportTopOffsetInTallRow: 2380,
-        viewportBottomOffsetInTallRow: 2880,
-      })
-      dispose()
-    })
-  })
-
-  it('reports tall-row measurement diagnostics without changing the fallback estimate', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(plainItems(5))
-      let reported: TallRowMeasureStats | undefined
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 1200,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        shouldReportPerf: () => true,
-        onTallRowMeasure: stats => reported = stats,
-      })
-
-      expect(virt.measure('m2', 5000)).toBe(true)
-
-      expect(reported).toMatchObject({
-        id: 'm2',
-        source: 'visible',
-        height: 5000,
-        firstMeasure: true,
-        fallbackExcluded: true,
-        previousFallbackExcluded: false,
-        fallbackEstimateBefore: 100,
-        fallbackEstimateAfter: 100,
-        geometryVersionBefore: 0,
-        geometryVersionAfter: 1,
-        indexBefore: 1,
-        indexAfter: 1,
-        rowTopBefore: 120,
-        rowTopAfter: 120,
-        totalHeightBefore: 580,
-        totalHeightAfter: 5480,
-      })
-      dispose()
-    })
-  })
-
   it('updates fallback contribution when an epsilon re-measure crosses the outlier threshold', () => {
     createRoot((dispose) => {
       const [list] = createSignal(plainItems(2))
@@ -505,86 +419,6 @@ describe('usechatvirtualizer geometry', () => {
       // A tiny scroll that doesn't change the slice keeps the same object.
       virt.updateViewport(205, 200)
       expect(virt.range()).toBe(first)
-      dispose()
-    })
-  })
-
-  it('reports viewport update stats for changed and unchanged slices', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(plainItems(5))
-      const updates: ViewportUpdateStats[] = []
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        onViewportUpdate: stats => updates.push(stats),
-      })
-
-      virt.updateViewport(200, 200)
-      expect(updates[0]).toMatchObject({
-        scrollTop: 200,
-        clientHeight: 200,
-        leadDir: undefined,
-        leadPx: 0,
-        previousStart: 0,
-        previousEnd: 0,
-        nextStart: 1,
-        nextEnd: 4,
-        previousRows: 0,
-        nextRows: 3,
-        addedRows: 3,
-        removedRows: 0,
-        rangeChanged: true,
-      })
-      expect(updates[0].computeMs).toBeGreaterThanOrEqual(0)
-      expect(updates[0].totalMs).toBeGreaterThanOrEqual(updates[0].computeMs)
-
-      virt.updateViewport(205, 200, { dir: 'newer', px: 50 })
-      expect(updates[1]).toMatchObject({
-        scrollTop: 205,
-        clientHeight: 200,
-        leadDir: 'newer',
-        leadPx: 50,
-        previousStart: 1,
-        previousEnd: 4,
-        nextStart: 1,
-        nextEnd: 4,
-        previousRows: 3,
-        nextRows: 3,
-        addedRows: 0,
-        removedRows: 0,
-        rangeChanged: false,
-      })
-      expect(virt.range()).toEqual({ start: 1, end: 4 })
-      dispose()
-    })
-  })
-
-  it('does not collect perf hook stats when the runtime gate is closed', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(plainItems(5))
-      const viewportUpdates: ViewportUpdateStats[] = []
-      const attachStats: unknown[] = []
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-        shouldReportPerf: () => false,
-        onViewportUpdate: stats => viewportUpdates.push(stats),
-        onRowAttachMeasure: stats => attachStats.push(stats),
-      })
-
-      virt.updateViewport(200, 200)
-      virt.attachRow('m1', fakeRow(120))
-
-      expect(viewportUpdates).toEqual([])
-      expect(attachStats).toEqual([])
-      expect(virt.range()).toEqual({ start: 1, end: 4 })
-      expect(virt.heightOfIndex(0)).toBe(120)
       dispose()
     })
   })

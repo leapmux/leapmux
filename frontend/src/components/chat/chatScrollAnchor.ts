@@ -47,17 +47,28 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   if (n === 0)
     return null
   let idx = geo.indexAtOffset(scrollTop)
-  // Prefer the FIRST row of a zero-height run at this offset. Collapsed-until-measured
-  // rows have height 0, so several consecutive rows share one cumulative offset;
-  // indexAtOffset returns the LAST of them (the first row with real height). Anchoring
-  // to that row means that as the collapsed rows ABOVE it measure and grow, they push it
-  // down and the re-pin drags the viewport with it -- e.g. a Home jump to the top, where
-  // the freshly-loaded top rows are all collapsed, lands a few hundred px BELOW the true
-  // top once they measure. Walking back to the first row sharing this offset pins the
-  // topmost row, so the growth lands BELOW the anchor and the viewport stays put.
+  // Prefer the FIRST row of any run that shares this cumulative offset. Rows whose reserved
+  // height + gap is 0 collapse onto a single offset, and indexAtOffset returns the LAST of
+  // them (the first row with real height below). Anchoring to that lower row would let the
+  // zero-height rows ABOVE it, once they grow, push it down and drag the viewport with it.
+  // Walking back to the topmost row sharing this offset pins that one instead, so the growth
+  // lands BELOW the anchor and the viewport stays put. This is a defensive invariant of the
+  // pure anchor math: the live virtualizer now reserves a strictly-positive estimate for
+  // every unmeasured row (no zero-height runs reach here), so in production the loop finds
+  // distinct offsets and never steps -- but it keeps the tie-break correct for any caller
+  // (and the unit tests' synthetic geometry) that can produce a shared-offset run.
+  //
+  // Only when scrollTop sits AT the shared offset, though: with the viewport top strictly
+  // INSIDE the terminal row's body (scrollTop > the run's offset), walking back to a
+  // zero-height run-top would clamp `within` against that row's 0 basisHeight and DISCARD
+  // the within-row offset -- the anchor would resolve to the run's offset, yanking the
+  // capture->resolve round trip up by the discarded pixels with no geometry change at all.
+  // At the exact offset `within` is 0 either way, so the tie-break costs nothing there.
   const anchorOffset = geo.offsetOfIndex(idx)
-  while (idx > 0 && geo.offsetOfIndex(idx - 1) === anchorOffset)
-    idx--
+  if (scrollTop <= anchorOffset) {
+    while (idx > 0 && geo.offsetOfIndex(idx - 1) === anchorOffset)
+      idx--
+  }
   // Floor at 0 for a transient NEGATIVE scrollTop -- some browsers report one
   // during elastic/rubber-band overscroll at the top, which indexAtOffset floors
   // to row 0, yielding a negative `within` that would store a negative offset and

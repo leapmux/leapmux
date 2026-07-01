@@ -99,6 +99,30 @@ describe('installResizeObserverLoopErrorSuppressor', () => {
     expect(overlayListener).toHaveBeenCalledTimes(1)
   })
 
+  it('logs one rate-limited debug line per window with a running suppressed count', () => {
+    // Full silence would also mask a GENUINE per-frame feedback loop (the browser
+    // emits the same message for both); the suppressor keeps that signal observable
+    // as at most one console.debug per window, with a count a real loop makes climb.
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const nowSpy = vi.spyOn(Date, 'now')
+    nowSpy.mockReturnValue(100_000)
+    install()
+
+    dispatchError('ResizeObserver loop limit exceeded')
+    dispatchError('ResizeObserver loop limit exceeded')
+    dispatchError('ResizeObserver loop limit exceeded')
+    expect(debug).toHaveBeenCalledTimes(1) // burst inside the window -> one line
+    expect(String(debug.mock.calls[0][0])).toContain('x1')
+
+    nowSpy.mockReturnValue(115_000) // past the 10s window
+    dispatchError('ResizeObserver loop limit exceeded')
+    expect(debug).toHaveBeenCalledTimes(2)
+    expect(String(debug.mock.calls[1][0])).toContain('x4') // count kept climbing
+
+    dispatchError('nope') // unrelated errors never log
+    expect(debug).toHaveBeenCalledTimes(2)
+  })
+
   it('is a no-op when there is no DOM (SSR)', () => {
     // Stub the global so defaultTarget() resolves to undefined (typeof window ===
     // 'undefined'). Calling with no argument then hits the no-op branch. Passing

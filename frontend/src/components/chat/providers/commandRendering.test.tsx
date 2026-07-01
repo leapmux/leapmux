@@ -803,7 +803,9 @@ describe('command result scroll-critical rendering', () => {
 
     await Promise.resolve()
 
-    expect(setMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION, true)
+    // PROGRAMMATIC: the stream-start auto-expand is not a user toggle, so the host
+    // must not arm the row-top scroll pin for it (see ChatView's setMessageUiState).
+    expect(setMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION, true, { programmatic: true })
   })
 })
 

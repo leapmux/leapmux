@@ -1,18 +1,13 @@
 import type { Accessor } from 'solid-js'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
-import type { RowAttachMeasureStats } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createMemo, createSignal, onCleanup } from 'solid-js'
 import { clamp } from '~/lib/clamp'
-import { createLogger } from '~/lib/logger'
 import { capMapInsertionOrder } from '~/lib/mapLru'
+import { monotonicNow } from '~/lib/monotonicNow'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
-import { monotonicNow, SCROLL_PHASE_STALL_WARN_MS } from './chatScrollGeometry'
+import { warnSlowScrollPhase } from './chatScrollGeometry'
 import { createRowMeasurer } from './createRowMeasurer'
-
-// Shares the 'chatScroll' channel with useChatScroll so a stall attributed to the offset-map
-// rebuild sits alongside the refreshViewport / premeasure phase warnings.
-const virtLog = createLogger('chatScroll')
 
 /**
  * Minimal per-row descriptor the virtualizer needs. `id` keys the height
@@ -137,72 +132,6 @@ export interface ViewportLead {
   px: number
 }
 
-export interface ViewportUpdateStats {
-  scrollTop: number
-  clientHeight: number
-  leadDir: ViewportLeadDir | undefined
-  leadPx: number
-  previousStart: number
-  previousEnd: number
-  nextStart: number
-  nextEnd: number
-  previousRows: number
-  nextRows: number
-  addedRows: number
-  removedRows: number
-  rangeChanged: boolean
-  computeMs: number
-  totalMs: number
-  tallRow?: TallRowRangeDiagnostics
-}
-
-export interface TallRowRangeDiagnostics {
-  reason: 'single-row-window' | 'tall-row-in-range'
-  rowCount: number
-  totalHeight: number
-  maxScrollTop: number
-  clampedScrollTop: number
-  scrollTopWasClamped: boolean
-  overscanPx: number
-  overTop: number
-  overBottom: number
-  guardBandPx: number
-  overscanTop: number
-  overscanBottom: number
-  rawStart: number
-  rawEnd: number
-  expandedForTallRow: boolean
-  tallRowIndex: number
-  tallRowId: string
-  tallRowHeight: number
-  tallRowHeightSource: 'measured' | 'estimated'
-  tallRowTop: number
-  tallRowBottom: number
-  viewportTopOffsetInTallRow: number
-  viewportBottomOffsetInTallRow: number
-}
-
-export interface TallRowMeasureStats {
-  id: string
-  source: 'visible' | 'premeasure'
-  height: number
-  previousHeight?: number
-  deltaHeight?: number
-  firstMeasure: boolean
-  fallbackExcluded: boolean
-  previousFallbackExcluded: boolean
-  fallbackEstimateBefore: number
-  fallbackEstimateAfter: number
-  geometryVersionBefore: number
-  geometryVersionAfter: number
-  indexBefore: number
-  indexAfter: number
-  rowTopBefore: number
-  rowTopAfter: number
-  totalHeightBefore: number
-  totalHeightAfter: number
-}
-
 interface DeferredPremeasure {
   id: string
   height: number
@@ -247,33 +176,6 @@ export interface UseChatVirtualizerOptions {
   gapSmallPx?: Accessor<number> | number
   /** Inter-row gap (px) for all other adjacent rows (~--space-5). */
   gapLargePx?: Accessor<number> | number
-  /**
-   * Fired once, on a row's FIRST visible-DOM measurement with its real height. Not
-   * fired on re-measures or `primeHeight` premeasure commits.
-   */
-  onFirstMeasure?: (id: string, measuredHeight: number) => void
-  /**
-   * Runtime gate for debug/perf hooks. Defaults to enabled when a hook is present;
-   * ChatView wires this to the debug-logging flag so normal scrolling does not
-   * allocate timing payloads.
-   */
-  shouldReportPerf?: () => boolean
-  /**
-   * Debug/perf hook for synchronous viewport range commits. It must not write
-   * virtualizer-owned reactive state; ChatView uses it only for debug logging.
-   */
-  onViewportUpdate?: (stats: ViewportUpdateStats) => void
-  /**
-   * Debug/perf hook for the immediate layout read on visible row mount. It must not
-   * write virtualizer-owned reactive state; ChatView uses it only for debug logging.
-   */
-  onRowAttachMeasure?: (stats: RowAttachMeasureStats) => void
-  /**
-   * Debug/perf hook for measurements whose row is taller than the normal unknown-row
-   * fallback band. It is deliberately separate from `onRowAttachMeasure` because
-   * hidden premeasurement can also commit the geometry delta that later affects scroll.
-   */
-  onTallRowMeasure?: (stats: TallRowMeasureStats) => void
 }
 
 const DEFAULT_OVERSCAN_PX = 800
@@ -281,7 +183,7 @@ const DEFAULT_OVERSCAN_PX = 800
  * Seed/fallback row height (px) for a row that has not reached any DOM measurement
  * path yet. Once visible or hidden DOM measures rows, the per-kind median replaces it.
  */
-export const DEFAULT_ESTIMATE_PX = 96
+const DEFAULT_ESTIMATE_PX = 96
 const DEFAULT_GAP_SMALL_PX = 8 // --space-2
 const DEFAULT_GAP_LARGE_PX = 20 // --space-5
 /** Ignore sub-pixel measurement jitter below this threshold. */
@@ -421,8 +323,8 @@ export interface UseChatVirtualizerResult {
   measure: (id: string, height: number) => boolean
   /**
    * Prime the measured-height cache from an offscreen DOM pre-measurement. This
-   * updates geometry like `measure`, but intentionally does not fire
-   * `onFirstMeasure`: hidden premeasurement is cache warm-up, not a visible mount.
+   * updates geometry like `measure`, but is recorded with source 'premeasure':
+   * hidden premeasurement is cache warm-up, not a visible mount.
    */
   primeHeight: (id: string, height: number, heightKey?: string) => boolean
   /** Whether the current item for `id` has a fresh measured/pre-measured height. */
@@ -476,22 +378,6 @@ interface CachedMeasuredHeight {
   kind: string
 }
 
-function cachedMeasuredHeightEntry(
-  key: string | undefined,
-  height: number,
-  fallbackContribution: number | undefined,
-  kind: string,
-): CachedMeasuredHeight {
-  return fallbackContribution === undefined
-    ? { key, height, kind }
-    : { key, height, fallbackContribution, kind }
-}
-
-interface ComputedRange {
-  range: ChatVirtualizerRange
-  tallRow?: TallRowRangeDiagnostics
-}
-
 /**
  * A multiset of measured row heights that answers the MEDIAN cheaply. Stored as a small
  * height->count histogram keyed by the exact measured px (no rounding -- an estimate that
@@ -500,8 +386,9 @@ interface ComputedRange {
  * finds it runs lazily, only on the first `value()` after a mutation. That matters because
  * `value()` is read for every unmeasured row on every offset-map rebuild, while mutations
  * (a measurement commit / eviction) are comparatively rare -- so the hot path is a cached
- * O(1) read. add/remove/replace are paired so the count can't drift: a forgotten decrement
- * on eviction would corrupt the median for every future estimate.
+ * O(1) read. add/remove are paired (`remove` decrements `total` in lockstep and deletes a
+ * bucket that hits zero) so the count can't drift: a forgotten decrement on eviction would
+ * corrupt the median for every future estimate.
  */
 function createHeightMedian() {
   const counts = new Map<number, number>()
@@ -526,11 +413,6 @@ function createHeightMedian() {
   return {
     add,
     remove,
-    /** Account for a re-measured row's changed height (same row, count unchanged). */
-    replace(prev: number, next: number) {
-      remove(prev)
-      add(next)
-    },
     /** The (lower) median measured height, or undefined when nothing is recorded. */
     value(): number | undefined {
       if (total === 0)
@@ -586,10 +468,6 @@ function createPerKindHeightEstimate() {
       // Never auto-creates: you only remove what a prior add recorded under this kind.
       byKind.get(kind)?.remove(height)
       global.remove(height)
-    },
-    replace(kind: string, prev: number, next: number) {
-      kindBucket(kind).replace(prev, next)
-      global.replace(prev, next)
     },
     /** Estimate for a kind: its own median, else the global median, else `seed`. */
     value(kind: string, seed: number): number {
@@ -711,9 +589,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Rebuilding the offset map is an O(n) array fill (microseconds for any real n), so this
     // should never trip -- but instrumenting it rules the offset map IN or OUT as a stall
     // source instead of leaving it a suspect. Only a slow rebuild logs.
-    const rebuildMs = monotonicNow() - rebuildStart
-    if (rebuildMs >= SCROLL_PHASE_STALL_WARN_MS)
-      virtLog.warn('slow scroll phase', { phase: 'geomRebuild', ms: Math.round(rebuildMs), rows: n })
+    warnSlowScrollPhase('geomRebuild', monotonicNow() - rebuildStart, { rows: n })
     return { offsets, indexById, list, n }
   })
 
@@ -808,16 +684,15 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const scrollTopNearAnchor = (anchor: ScrollAnchor): number | null =>
     resolveNearestAnchorScrollTop(anchorGeometry(), anchor)
 
-  const computeRangeInternal = (
+  const computeRange = (
     scrollTop: number,
     clientHeight: number,
-    lead: ViewportLead | undefined,
-    includeDiagnostics: boolean,
-  ): ComputedRange => {
+    lead?: ViewportLead,
+  ): ChatVirtualizerRange => {
     const g = geom()
     const n = g.n
     if (n === 0)
-      return { range: { start: 0, end: 0 } }
+      return { start: 0, end: 0 }
     const over = resolve(opts.overscanPx, DEFAULT_OVERSCAN_PX)
     // Render-ahead: extend the overscan by `lead.px` on the side the gesture is
     // heading toward, so a fast fling paints the rows it is ABOUT to reach. The
@@ -851,8 +726,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       end = start + 1
     if (end > n)
       end = n
-    const rawStart = start
-    const rawEnd = end
     // A row taller than the pixel overscan can legitimately contain the whole
     // viewport+overscan band, collapsing the slice to that one row. Keep one
     // neighbor on each side in that case so a slow scroll across either edge has
@@ -860,77 +733,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Normal rows keep the pure pixel window; this adds at most two rows, only for
     // the oversized-row case.
     const guardBandPx = Math.max(overTop, overBottom)
-    let expandedForTallRow = false
     if (guardBandPx > 0 && end === start + 1 && resolvedHeight(g.list[start]) > guardBandPx) {
       start = Math.max(0, start - 1)
       end = Math.min(n, end + 1)
-      expandedForTallRow = true
     }
-    const range = { start, end }
-    if (!includeDiagnostics || guardBandPx <= 0)
-      return { range }
-
-    let tallRowIndex = -1
-    let tallRowHeight = guardBandPx
-    let reason: TallRowRangeDiagnostics['reason'] = 'tall-row-in-range'
-    if (rawEnd === rawStart + 1) {
-      const singleHeight = resolvedHeight(g.list[rawStart])
-      if (singleHeight > guardBandPx) {
-        tallRowIndex = rawStart
-        tallRowHeight = singleHeight
-        reason = 'single-row-window'
-      }
-    }
-    if (tallRowIndex < 0) {
-      for (let i = start; i < end; i++) {
-        const h = resolvedHeight(g.list[i])
-        if (h > tallRowHeight) {
-          tallRowHeight = h
-          tallRowIndex = i
-        }
-      }
-    }
-    if (tallRowIndex < 0)
-      return { range }
-
-    const tallRow = g.list[tallRowIndex]
-    const tallRowTop = g.offsets[tallRowIndex]
-    const tallRowBottom = tallRowTop + tallRowHeight
-    return {
-      range,
-      tallRow: {
-        reason,
-        rowCount: n,
-        totalHeight: total,
-        maxScrollTop,
-        clampedScrollTop: clampedTop,
-        scrollTopWasClamped: clampedTop !== scrollTop,
-        overscanPx: over,
-        overTop,
-        overBottom,
-        guardBandPx,
-        overscanTop: top,
-        overscanBottom: bottom,
-        rawStart,
-        rawEnd,
-        expandedForTallRow,
-        tallRowIndex,
-        tallRowId: tallRow.id,
-        tallRowHeight,
-        tallRowHeightSource: cachedMeasuredHeight(tallRow) === undefined ? 'estimated' : 'measured',
-        tallRowTop,
-        tallRowBottom,
-        viewportTopOffsetInTallRow: clampedTop - tallRowTop,
-        viewportBottomOffsetInTallRow: clampedTop + clientHeight - tallRowTop,
-      },
-    }
+    return { start, end }
   }
-
-  const computeRange = (
-    scrollTop: number,
-    clientHeight: number,
-    lead?: ViewportLead,
-  ): ChatVirtualizerRange => computeRangeInternal(scrollTop, clientHeight, lead, false).range
 
   const [range, setRange] = createSignal<ChatVirtualizerRange>({ start: 0, end: 0 })
 
@@ -939,47 +747,17 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     clientHeight: number,
     lead?: ViewportLead,
   ) => {
-    const reportPerf = !!opts.onViewportUpdate && (opts.shouldReportPerf?.() ?? true)
-    const startedAt = reportPerf ? monotonicNow() : 0
-    const computed = computeRangeInternal(scrollTop, clientHeight, lead, reportPerf)
-    const next = computed.range
-    const computeMs = reportPerf ? monotonicNow() - startedAt : 0
+    const next = computeRange(scrollTop, clientHeight, lead)
     const cur = range()
-    const rangeChanged = cur.start !== next.start || cur.end !== next.end
-    if (rangeChanged)
+    if (cur.start !== next.start || cur.end !== next.end)
       setRange(next)
-    if (reportPerf) {
-      const previousRows = Math.max(0, cur.end - cur.start)
-      const nextRows = Math.max(0, next.end - next.start)
-      const overlapRows = Math.max(0, Math.min(cur.end, next.end) - Math.max(cur.start, next.start))
-      const stats: ViewportUpdateStats = {
-        scrollTop,
-        clientHeight,
-        leadDir: lead?.dir,
-        leadPx: lead?.px ?? 0,
-        previousStart: cur.start,
-        previousEnd: cur.end,
-        nextStart: next.start,
-        nextEnd: next.end,
-        previousRows,
-        nextRows,
-        addedRows: rangeChanged ? nextRows - overlapRows : 0,
-        removedRows: rangeChanged ? previousRows - overlapRows : 0,
-        rangeChanged,
-        computeMs,
-        totalMs: monotonicNow() - startedAt,
-      }
-      if (computed.tallRow)
-        stats.tallRow = computed.tallRow
-      opts.onViewportUpdate?.(stats)
-    }
   }
 
   const commitMeasuredHeight = (
     id: string,
     height: number,
     heightKey: string | undefined,
-    optsForCommit: { notifyFirstMeasure: boolean, source: TallRowMeasureStats['source'] },
+    source: MeasurementCommitInfo['source'],
   ): boolean => {
     // Ignore non-positive (or non-finite) heights: a row not yet laid out -- or one
     // under a display:none ancestor (an inactive TILE/workspace; an inactive tab
@@ -1010,14 +788,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // exactly what shifts the offset map (and, if above the anchor, drifts the pin).
     const assumedHeight = prevEntry !== undefined ? prevEntry.height : heightEstimate.value(kind, seed)
     const nextContribution = fallbackEstimateContribution(height)
-    const shouldReportTallMeasure = !!opts.onTallRowMeasure
-      && (opts.shouldReportPerf?.() ?? true)
-      && (nextContribution === undefined || (prevEntry !== undefined && prevEntry.fallbackContribution === undefined))
-    const fallbackEstimateBefore = shouldReportTallMeasure ? estimateHeight() : 0
-    const geometryVersionBefore = shouldReportTallMeasure ? geomVersion() : 0
-    const indexBefore = shouldReportTallMeasure ? indexOfId(id) : -1
-    const rowTopBefore = shouldReportTallMeasure ? (offsetOfId(id) ?? 0) : 0
-    const totalHeightBefore = shouldReportTallMeasure ? totalHeight() : 0
     // A re-measure within epsilon of the prior measured height is noise: the
     // offset map doesn't change. Still refresh the row's LRU recency (delete +
     // re-set moves it to the most-recently-used end) so a row that stays mounted
@@ -1033,27 +803,30 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       }
     }
     // A row's FIRST measurement is the first DOM height for that row; re-measures
-    // (async highlight growth) are geometry updates but not first-visible callbacks.
+    // (async highlight growth) are geometry updates, distinguished in the commit info.
     const isFirst = prev === undefined
     // Re-insert so this row becomes the most-recently-used entry (Map preserves
     // insertion order; a plain set on an existing key would keep its old, stale
     // position and risk evicting a freshly-measured row).
     heightCache.delete(id)
-    heightCache.set(id, cachedMeasuredHeightEntry(heightKey, height, nextContribution, kind))
+    heightCache.set(id, { key: heightKey, height, fallbackContribution: nextContribution, kind })
     if (prevEntry === undefined) {
       if (nextContribution !== undefined)
         heightEstimate.add(kind, nextContribution)
     }
     else {
-      // prevEntry survived the stale-key delete above, so its heightKey == this heightKey
-      // and thus its kind == this kind (a kind flip bumps heightKey) -- the same bucket.
+      // A re-measure. Route each contribution to its OWN bucket: the previous one lives in
+      // prevEntry.kind (where a prior add recorded it), the new one belongs to THIS commit's
+      // kind. These are normally the same bucket -- a reclassification that changes kind also
+      // changes a heightKey input, so prevEntry would not have survived the stale-key delete
+      // above -- but keying `remove` on prevEntry.kind and `add` on the current kind keeps the
+      // per-kind medians correct even if that coupling ever loosens, instead of stranding a
+      // phantom count in the old bucket. (The global median nets out to the same remove+add.)
       const prevContribution = prevEntry.fallbackContribution
-      if (prevContribution === undefined && nextContribution !== undefined)
-        heightEstimate.add(kind, nextContribution)
-      else if (prevContribution !== undefined && nextContribution === undefined)
+      if (prevContribution !== undefined)
         heightEstimate.remove(prevEntry.kind, prevContribution)
-      else if (prevContribution !== undefined && nextContribution !== undefined)
-        heightEstimate.replace(kind, prevContribution, nextContribution)
+      if (nextContribution !== undefined)
+        heightEstimate.add(kind, nextContribution)
     }
     // Evict the least-recently-measured rows once over the cap, keeping the
     // per-kind median estimate consistent (remove each evicted height from its
@@ -1074,7 +847,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     lastMeasurement = {
       id,
       kind,
-      source: optsForCommit.source,
+      source,
       firstMeasure: isFirst,
       assumedHeight,
       newHeight: height,
@@ -1082,44 +855,17 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       commitSeq: measurementCommitSeq,
     }
     setGeomVersion(v => v + 1)
-    if (shouldReportTallMeasure) {
-      const indexAfter = indexOfId(id)
-      opts.onTallRowMeasure?.({
-        id,
-        source: optsForCommit.source,
-        height,
-        previousHeight: prev,
-        deltaHeight: prev === undefined ? undefined : height - prev,
-        firstMeasure: isFirst,
-        fallbackExcluded: nextContribution === undefined,
-        previousFallbackExcluded: prevEntry !== undefined && prevEntry.fallbackContribution === undefined,
-        fallbackEstimateBefore,
-        fallbackEstimateAfter: estimateHeight(),
-        geometryVersionBefore,
-        geometryVersionAfter: geomVersion(),
-        indexBefore,
-        indexAfter,
-        rowTopBefore,
-        rowTopAfter: offsetOfId(id) ?? 0,
-        totalHeightBefore,
-        totalHeightAfter: totalHeight(),
-      })
-    }
-    // Outside the batch: a read-only callback for consumers that need a first
-    // visible-measure notification. It must not write reactive state here.
-    if (isFirst && optsForCommit.notifyFirstMeasure)
-      opts.onFirstMeasure?.(id, height)
     return true
   }
   const measure = (id: string, height: number): boolean =>
-    commitMeasuredHeight(id, height, currentHeightKey(id), { notifyFirstMeasure: true, source: 'visible' })
+    commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
   const commitPremeasureHeight = (id: string, height: number, heightKey?: string): boolean => {
     // Once a visible row has committed a measurement, the live DOM is the
     // authoritative geometry. A hidden premeasure queued before mount can finish
     // later; don't let that hidden-layout read replace the visible height.
     if (mountedIds.has(id) && hasMeasuredHeight(id))
       return false
-    return commitMeasuredHeight(id, height, heightKey, { notifyFirstMeasure: false, source: 'premeasure' })
+    return commitMeasuredHeight(id, height, heightKey, 'premeasure')
   }
   const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
     if (mountedIds.has(id) && hasMeasuredHeight(id))
@@ -1141,14 +887,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // (its only coupling here is `measure` + the shared mountedIds set), keeping this
   // file the offset engine. The default scheduler/observer are the production ones; a
   // unit test injects fakes to drive the flush timing deterministically.
-  const shouldReportPerf = (): boolean => opts.shouldReportPerf?.() ?? true
   const measurer = createRowMeasurer({
     measure,
     mountedIds,
     currentMeasurementKey: currentHeightKey,
     shouldDeferMeasurement: () => deferMeasurements,
-    shouldReportAttachMeasure: shouldReportPerf,
-    onAttachMeasure: opts.onRowAttachMeasure,
   })
   const { attachRow, detachRow } = measurer
   onCleanup(measurer.dispose)

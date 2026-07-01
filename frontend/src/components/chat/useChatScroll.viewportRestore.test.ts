@@ -6,7 +6,7 @@ import {
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -135,6 +135,7 @@ describe('usechatscroll viewport restore', () => {
             hasMoreNewer: false,
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -200,6 +201,7 @@ describe('usechatscroll viewport restore', () => {
             hasMoreNewer: true,
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 1000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -266,6 +268,7 @@ describe('usechatscroll viewport restore', () => {
             hasMoreNewer: false,
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -331,6 +334,7 @@ describe('usechatscroll viewport restore', () => {
             hasMoreNewer: false,
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -398,6 +402,7 @@ describe('usechatscroll viewport restore', () => {
           const [total, setTotal] = createSignal(5000)
           const [geom, setGeom] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => geom(),
             updateViewport: () => {},
@@ -475,6 +480,7 @@ describe('usechatscroll viewport restore', () => {
             hasMoreNewer: false,
           })
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -592,6 +598,7 @@ describe('usechatscroll viewport restore', () => {
           })
           let olderLoads = 0
           const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
             totalHeight: () => 3000, // virtual rows exist now
             geometryVersion: () => 0,
             updateViewport: () => {},

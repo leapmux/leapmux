@@ -90,48 +90,6 @@ describe('createrowmeasurer', () => {
     expect(measure).toHaveBeenCalledWith('r1', 140)
   })
 
-  it('reports the synchronous visible-row attach measurement cost', () => {
-    const measure = vi.fn(() => true)
-    const onAttachMeasure = vi.fn()
-    const obs = fakeObserver()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      onAttachMeasure,
-    })
-    m.attachRow('r1', fakeEl(120))
-
-    expect(onAttachMeasure).toHaveBeenCalledTimes(1)
-    expect(onAttachMeasure).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'r1',
-      height: 120,
-      committed: true,
-    }))
-    const stats = onAttachMeasure.mock.calls[0][0]
-    expect(stats.readMs).toBeGreaterThanOrEqual(0)
-    expect(stats.totalMs).toBeGreaterThanOrEqual(stats.readMs)
-  })
-
-  it('does not collect attach measurement stats when the perf gate is closed', () => {
-    const measure = vi.fn(() => true)
-    const onAttachMeasure = vi.fn()
-    const obs = fakeObserver()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      shouldReportAttachMeasure: () => false,
-      onAttachMeasure,
-    })
-    const el = fakeEl(120)
-    m.attachRow('r1', el)
-
-    expect(measure).toHaveBeenCalledWith('r1', 120)
-    expect(obs.observed.has(el)).toBe(true)
-    expect(onAttachMeasure).not.toHaveBeenCalled()
-  })
-
   it('coalesces resize ticks into ONE scheduled flush that commits each measurement', () => {
     const measure = vi.fn(() => true)
     const obs = fakeObserver()

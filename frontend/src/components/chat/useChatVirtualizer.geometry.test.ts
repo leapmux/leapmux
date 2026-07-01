@@ -47,7 +47,8 @@ describe('usechatvirtualizer geometry', () => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 100)
       virt.measure('m3', 100)
-      // m2 is unmeasured. It reserves the running-mean estimate (100), NOT 0 -- the same
+      // m2 is unmeasured. It reserves the median estimate (100, from the two 100px
+      // measurements), NOT 0 -- the same
       // geometry it has whether or not it is in the rendered window. So scrolling m2 into
       // the window causes no offset change; only its later measurement shifts geometry.
       // (Previously an in-window unmeasured row collapsed to 0, which is what made content
@@ -162,6 +163,48 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('re-routes a re-measure contribution to the right kind bucket when kind flips but heightKey does not', () => {
+    createRoot((dispose) => {
+      // A reclassification normally bumps a heightKey input too, so this is defensive -- but the
+      // per-kind median must survive a kind flip that leaves heightKey unchanged: the previous
+      // contribution has to LEAVE its old bucket and the new one ENTER the current bucket, or a
+      // phantom count strands in the old bucket and skews every future estimate for that kind.
+      const [list, setList] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'k1', kind: 'user_text' },
+        { id: 'probeUser', hasSpanLines: false, kind: 'user_text' }, // unmeasured
+        { id: 'probeTool', hasSpanLines: false, kind: 'tool_result' }, // unmeasured
+      ])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 999, // far off, so a phantom bucket entry would be plainly visible
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      // 'a' measured as user_text: 40 enters the user_text bucket (and the global median).
+      virt.measure('a', 40)
+      expect(virt.heightOfIndex(1)).toBe(40) // probeUser estimates from the user_text bucket
+
+      // Flip 'a' to tool_result but keep heightKey 'k1', so the cache entry survives the
+      // stale-key delete and the commit hits the re-measure branch with
+      // prevEntry.kind ('user_text') != kind ('tool_result').
+      setList([
+        { id: 'a', hasSpanLines: false, heightKey: 'k1', kind: 'tool_result' },
+        { id: 'probeUser', hasSpanLines: false, kind: 'user_text' },
+        { id: 'probeTool', hasSpanLines: false, kind: 'tool_result' },
+      ])
+      virt.measure('a', 400)
+
+      // The 40 left the user_text bucket (now empty -> probeUser falls back to the global
+      // median, whose sole remaining sample is 400). The old replace(kind, 40, 400) removed 40
+      // from tool_result (a no-op) and stranded it in user_text, so probeUser would read 40.
+      expect(virt.heightOfIndex(1)).toBe(400) // probeUser: user_text empty -> global median 400
+      // The 400 entered the tool_result bucket.
+      expect(virt.heightOfIndex(2)).toBe(400) // probeTool: tool_result median 400
+      dispose()
+    })
+  })
+
   it('records the last commit for drift attribution -- first measure vs re-measure', () => {
     createRoot((dispose) => {
       const items: VirtualItem[] = [
@@ -216,47 +259,57 @@ describe('usechatvirtualizer geometry', () => {
     expect(HEIGHT_CACHE_MAX).toBeGreaterThan(MAX_LOADED_CHAT_MESSAGES_CEILING)
   })
 
-  it('fires onFirstMeasure once on first measurement, not on re-measure', () => {
+  it('records firstMeasure on the first commit only, not on a re-measure', () => {
     createRoot((dispose) => {
       const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false }]
       const [list] = createSignal(items)
-      const calls: Array<[string, number]> = []
       const virt = useChatVirtualizer({
         items: list,
         overscanPx: 0,
         estimateHeight: 100,
         gapSmallPx: 10,
         gapLargePx: 20,
-        onFirstMeasure: (id, h) => calls.push([id, h]),
       })
       virt.measure('a', 200)
-      expect(calls).toEqual([['a', 200]]) // first measurement reported
-      virt.measure('a', 260) // re-measure (async growth) — carries no fresh estimate
-      expect(calls).toEqual([['a', 200]]) // not reported again
+      // First DOM height for the row: the commit info attributes it as a first
+      // measure whose assumed height was the estimate (the drift WARN reads this).
+      expect(virt.lastMeasurement()).toMatchObject({
+        id: 'a',
+        source: 'visible',
+        firstMeasure: true,
+        assumedHeight: 100,
+        newHeight: 200,
+        delta: 100,
+      })
+      virt.measure('a', 260) // re-measure (async growth) — the prior height is the baseline
+      expect(virt.lastMeasurement()).toMatchObject({
+        id: 'a',
+        firstMeasure: false,
+        assumedHeight: 200,
+        newHeight: 260,
+        delta: 60,
+      })
       dispose()
     })
   })
 
-  it('primes a measured height without firing the first visible-measure callback', () => {
+  it('primes a measured height and records it as a premeasure commit', () => {
     createRoot((dispose) => {
       const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false, heightKey: 'k1' }]
       const [list] = createSignal(items)
-      const calls: Array<[string, number]> = []
       const virt = useChatVirtualizer({
         items: list,
         overscanPx: 0,
         estimateHeight: 100,
         gapSmallPx: 10,
         gapLargePx: 20,
-        onFirstMeasure: (id, h) => calls.push([id, h]),
       })
       expect(virt.primeHeight('a', 275, 'k1')).toBe(true)
       expect(virt.heightOfIndex(0)).toBe(275)
       expect(virt.hasMeasuredHeight('a')).toBe(true)
-      expect(calls).toEqual([])
-
-      virt.measure('a', 280)
-      expect(calls).toEqual([])
+      // Hidden premeasurement is cache warm-up, not a visible mount — the commit is
+      // attributed to 'premeasure' so drift diagnostics can tell the sources apart.
+      expect(virt.lastMeasurement()).toMatchObject({ id: 'a', source: 'premeasure', firstMeasure: true })
       dispose()
     })
   })

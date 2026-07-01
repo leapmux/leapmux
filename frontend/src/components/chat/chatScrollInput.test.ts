@@ -24,7 +24,6 @@ function setup() {
       writes.push(top)
       el.scrollTop = top
     },
-    markProgrammaticScroll: vi.fn(),
     syncVelocityToProgrammatic: vi.fn(),
     setAnchor: vi.fn(),
   }

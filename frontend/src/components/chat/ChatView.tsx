@@ -11,22 +11,20 @@ import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTyp
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createComputed, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
-import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
-import { shallowEqualSets } from '~/lib/shallowEqual'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
-import { SCROLL_PHASE_STALL_WARN_MS } from './chatScrollGeometry'
+import { createPremeasureQueue } from './chatPremeasureQueue'
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { markdownContent } from './markdownEditor/markdownContent.css'
@@ -39,10 +37,6 @@ import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { bodySpanKey, SpanLines } from './widgets/SpanLines'
 import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
 import { ThinkingIndicator } from './widgets/ThinkingIndicator'
-
-// Shares the 'chatScroll' channel so a premeasure-phase stall sits with the refreshViewport
-// / geomRebuild phase warnings from the scroll hook and virtualizer.
-const scrollPhaseLog = createLogger('chatScroll')
 
 const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
 // Rows to premeasure BEYOND the rendered range in each direction, so a row has its real
@@ -465,13 +459,22 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
     // being scrolled away by the geometry re-pin (which otherwise holds the viewport-
     // midpoint row). Both a diff-view switch and an expand/collapse resize the row.
+    // Armed ONLY when the write will actually CHANGE state (mirroring the store's own
+    // setIfChanged dedupe): a same-value write causes no resize, so arming would leave a
+    // stale hold with nothing to release it until the next geometry commit yanks the
+    // viewport back to the toggle-time line. And only for USER gestures: a programmatic
+    // write (opts.programmatic -- e.g. a stream-start auto-expand re-asserted per chunk)
+    // is not the reader's focus, so the default midpoint anchor -- which keeps what they
+    // are READING stationary -- must win over pinning the written row.
     onSetLocalDiffView: (view) => {
-      anchorRowForResize(entry.msg.id)
+      if (getLocalDiffView(entry.msg.id) !== view)
+        anchorRowForResize(entry.msg.id)
       setLocalDiffView(entry.msg.id, view)
     },
     getMessageUiState: key => getMessageUiBool(entry.msg.id, key),
-    setMessageUiState: (key, value) => {
-      anchorRowForResize(entry.msg.id)
+    setMessageUiState: (key, value, opts) => {
+      if (!opts?.programmatic && getMessageUiBool(entry.msg.id, key) !== value)
+        anchorRowForResize(entry.msg.id)
       setMessageUiBool(entry.msg.id, key, value)
     },
     getHeightDebug: () => virt.heightDebugOfId(entry.msg.id),
@@ -480,6 +483,49 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     textSelectionActive,
   })
 
+  // Collect the unmeasured premeasure candidates over the half-open index range [from, to),
+  // skipping the inner [skipFrom, skipTo) sub-range (the rows another band already covers;
+  // default empty). The single home for the "row is present AND still unmeasured" predicate
+  // and the collection loop the two bands below share, so they can't drift on what counts as
+  // premeasurable. Reads the current entry/item arrays; each caller wraps it in a memo.
+  const collectUnmeasuredCandidates = (
+    all: readonly ClassifiedEntry[],
+    items: readonly VirtualItem[],
+    from: number,
+    to: number,
+    skipFrom = to,
+    skipTo = to,
+  ): ChatDomPremeasureCandidate[] => {
+    const candidates: ChatDomPremeasureCandidate[] = []
+    for (let index = from; index < to; index++) {
+      if (index >= skipFrom && index < skipTo)
+        continue
+      const entry = all[index]
+      const item = items[index]
+      if (entry && item && !virt.hasMeasuredHeight(item.id))
+        candidates.push({ entry, item })
+    }
+    return candidates
+  }
+  // The current entry/item arrays plus the virtualizer range clamped to their common length
+  // -- the shared preamble of the two premeasure bands below. Both derive their window from
+  // this identical [start, end), so the look-ahead band's skipped sub-range can never drift
+  // from the in-range band's coverage (the same reason collectUnmeasuredCandidates is shared).
+  const clampedPremeasureWindow = (): {
+    all: readonly ClassifiedEntry[]
+    items: readonly VirtualItem[]
+    len: number
+    start: number
+    end: number
+  } => {
+    const all = visibleEntries()
+    const items = virtualItems()
+    const len = Math.min(all.length, items.length)
+    const range = virt.range()
+    const start = Math.max(0, Math.min(range.start, len))
+    const end = Math.max(start, Math.min(range.end, len))
+    return { all, items, len, start, end }
+  }
   // Hidden DOM premeasurement now mirrors the bounded rendered window: every
   // unmeasured row currently selected by the virtualizer gets a hidden render.
   // There is deliberately no idle delay, scroll cancellation, cost model, or batch
@@ -487,64 +533,23 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const rangedPremeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>(() => {
     if (contentWidth() <= 0)
       return []
-    const all = visibleEntries()
-    const items = virtualItems()
-    const range = virt.range()
-    const start = Math.max(0, Math.min(range.start, all.length, items.length))
-    const end = Math.max(start, Math.min(range.end, all.length, items.length))
-    const candidates: ChatDomPremeasureCandidate[] = []
-    for (let index = start; index < end; index++) {
-      const entry = all[index]
-      const item = items[index]
-      if (entry && item && !virt.hasMeasuredHeight(item.id))
-        candidates.push({ entry, item })
-    }
-    return candidates
+    const { all, items, start, end } = clampedPremeasureWindow()
+    return collectUnmeasuredCandidates(all, items, start, end)
   })
   // Look-ahead premeasure band: unmeasured rows just OUTSIDE the rendered range (within
   // LOOKAHEAD_PREMEASURE_ROWS on each side). Entries exist for out-of-range rows because
   // visibleEntries walks the whole window (chatEntryCache). These get a hidden premeasure
   // render only -- they are NOT in the main <For>, so they need no visibility flag and are
-  // not added to collapsedPremeasureIds.
+  // not added to collapsedPremeasureIds. The in-range rows (skipped here) are covered by
+  // rangedPremeasureCandidates.
   const lookAheadPremeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>(() => {
     if (contentWidth() <= 0)
       return []
-    const all = visibleEntries()
-    const items = virtualItems()
-    const len = Math.min(all.length, items.length)
-    const range = virt.range()
-    const rangeStart = Math.max(0, Math.min(range.start, len))
-    const rangeEnd = Math.max(rangeStart, Math.min(range.end, len))
-    const bandStart = Math.max(0, rangeStart - LOOKAHEAD_PREMEASURE_ROWS)
-    const bandEnd = Math.min(len, rangeEnd + LOOKAHEAD_PREMEASURE_ROWS)
-    const candidates: ChatDomPremeasureCandidate[] = []
-    for (let index = bandStart; index < bandEnd; index++) {
-      if (index >= rangeStart && index < rangeEnd)
-        continue // in-range rows are covered by rangedPremeasureCandidates
-      const entry = all[index]
-      const item = items[index]
-      if (entry && item && !virt.hasMeasuredHeight(item.id))
-        candidates.push({ entry, item })
-    }
-    return candidates
+    const { all, items, len, start, end } = clampedPremeasureWindow()
+    const bandStart = Math.max(0, start - LOOKAHEAD_PREMEASURE_ROWS)
+    const bandEnd = Math.min(len, end + LOOKAHEAD_PREMEASURE_ROWS)
+    return collectUnmeasuredCandidates(all, items, bandStart, bandEnd, start, end)
   })
-  const removeIdFromSet = (ids: ReadonlySet<string>, id: string): ReadonlySet<string> => {
-    if (!ids.has(id))
-      return ids
-    const next = new Set(ids)
-    next.delete(id)
-    return next
-  }
-  const removeIdFromMap = <V,>(items: ReadonlyMap<string, V>, id: string): ReadonlyMap<string, V> => {
-    if (!items.has(id))
-      return items
-    const next = new Map(items)
-    next.delete(id)
-    return next
-  }
-  const [pendingPremeasureIds, setPendingPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
-  const [collapsedPremeasureIds, setCollapsedPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
-  const [unsettledPremeasureKeys, setUnsettledPremeasureKeys] = createSignal<ReadonlyMap<string, string | undefined>>(new Map())
   const virtualItemById = createMemo(() => {
     const result = new Map<string, VirtualItem>()
     for (const item of virtualItems())
@@ -568,73 +573,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const liveTailVisibleId = createMemo(() => (
     props.pagination?.hasNewerMessages ? undefined : tailVisibleEntry()?.msg.id
   ))
-  createComputed(() => {
-    const entries = visibleEntryById()
-    const items = virtualItemById()
-    const liveTailId = liveTailVisibleId()
-    const unsettled = untrack(unsettledPremeasureKeys)
-    const nextPending = new Set(untrack(pendingPremeasureIds))
-    const nextCollapsed = new Set(untrack(collapsedPremeasureIds))
-    const nextUnsettled = new Map(unsettled)
-    for (const candidate of rangedPremeasureCandidates()) {
-      nextPending.add(candidate.item.id)
-      if (candidate.item.id !== liveTailId)
-        nextCollapsed.add(candidate.item.id)
-    }
-    // Look-ahead band rows are premeasured (pending) but never marked invisible: they
-    // are not rendered in the main list, so they need no collapse entry.
-    for (const candidate of lookAheadPremeasureCandidates())
-      nextPending.add(candidate.item.id)
-    if (liveTailId !== undefined)
-      nextCollapsed.delete(liveTailId)
-    for (const id of [...nextPending]) {
-      const item = items.get(id)
-      if (!entries.has(id) || !item) {
-        nextPending.delete(id)
-        nextUnsettled.delete(id)
-        continue
-      }
-      const unsettledKeyMatches = nextUnsettled.has(id) && nextUnsettled.get(id) === item.heightKey
-      if ((virt.hasMeasuredHeight(id) || virt.hasPendingPremeasuredHeight(id)) && !unsettledKeyMatches)
-        nextPending.delete(id)
-    }
-    for (const id of [...nextCollapsed]) {
-      if (!entries.has(id) || !items.has(id) || virt.hasMeasuredHeight(id))
-        nextCollapsed.delete(id)
-    }
-    for (const [id, heightKey] of [...nextUnsettled]) {
-      const item = items.get(id)
-      if (!entries.has(id) || !item || item.heightKey !== heightKey)
-        nextUnsettled.delete(id)
-    }
-
-    const prevPending = untrack(pendingPremeasureIds)
-    if (!shallowEqualSets(prevPending, nextPending))
-      setPendingPremeasureIds(nextPending)
-    const prevCollapsed = untrack(collapsedPremeasureIds)
-    if (!shallowEqualSets(prevCollapsed, nextCollapsed))
-      setCollapsedPremeasureIds(nextCollapsed)
-    const prevUnsettled = untrack(unsettledPremeasureKeys)
-    if (prevUnsettled.size !== nextUnsettled.size || [...prevUnsettled].some(([id, heightKey]) => nextUnsettled.get(id) !== heightKey))
-      setUnsettledPremeasureKeys(nextUnsettled)
+  // The pending/collapsed/unsettled premeasure coherence lives in its own unit (see
+  // createPremeasureQueue); this component supplies the candidate bands + lookups and
+  // renders ChatHiddenPremeasure from the returned accessors.
+  const premeasureQueue = createPremeasureQueue({
+    virt,
+    visibleEntryById,
+    virtualItemById,
+    virtualItems,
+    liveTailVisibleId,
+    rangedCandidates: rangedPremeasureCandidates,
+    lookAheadCandidates: lookAheadPremeasureCandidates,
   })
-  const premeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>(() => {
-    const ids = pendingPremeasureIds()
-    if (ids.size === 0)
-      return []
-    const entries = visibleEntryById()
-    const unsettled = unsettledPremeasureKeys()
-    const candidates: ChatDomPremeasureCandidate[] = []
-    for (const item of virtualItems()) {
-      const unsettledKeyMatches = unsettled.has(item.id) && unsettled.get(item.id) === item.heightKey
-      if (!ids.has(item.id) || (virt.hasMeasuredHeight(item.id) && !unsettledKeyMatches))
-        continue
-      const entry = entries.get(item.id)
-      if (entry)
-        candidates.push({ entry, item })
-    }
-    return candidates
-  })
+  const { premeasureCandidates, collapsedPremeasureIds } = premeasureQueue
   const [streamReplacementTailId, setStreamReplacementTailId] = createSignal<string | undefined>()
   let streamingTailWasVisible = false
   let streamReplacementBaselineTailId: string | undefined
@@ -1084,37 +1035,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         candidates={premeasureCandidates()}
         contentWidthPx={effectiveContentWidth()}
         renderBubble={entry => renderMessageBubble(entry, { premeasureMode: true })}
-        onMeasure={(id, height, heightKey, measureDurationMs, settled) => {
-          // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows
-          // premeasures in one frame, the FIRST getBoundingClientRect reflows the dirty DOM
-          // (expensive) and the rest are cheap -- so a slow duration here localizes a
-          // premeasure-driven main-thread stall (the batched catch-up scroll deltas Detector
-          // B reports). Only a slow measure logs (see SCROLL_PHASE_STALL_WARN_MS).
-          if (measureDurationMs >= SCROLL_PHASE_STALL_WARN_MS) {
-            scrollPhaseLog.warn('slow scroll phase', {
-              phase: 'premeasure',
-              ms: Math.round(measureDurationMs),
-              id,
-              kind: virtualItemById().get(id)?.kind,
-            })
-          }
-          const accepted = virt.primeHeight(id, height, heightKey)
-          const hasCommittedOrPendingHeight = accepted || virt.hasMeasuredHeight(id) || virt.hasPendingPremeasuredHeight(id)
-          if (settled && hasCommittedOrPendingHeight) {
-            setPendingPremeasureIds(ids => removeIdFromSet(ids, id))
-            setUnsettledPremeasureKeys(keys => removeIdFromMap(keys, id))
-          }
-          else if (!settled && hasCommittedOrPendingHeight) {
-            setUnsettledPremeasureKeys((keys) => {
-              if (keys.has(id) && keys.get(id) === heightKey)
-                return keys
-              const next = new Map(keys)
-              next.set(id, heightKey)
-              return next
-            })
-          }
-          return hasCommittedOrPendingHeight
-        }}
+        onMeasure={premeasureQueue.onMeasure}
       />
     </div>
   )
