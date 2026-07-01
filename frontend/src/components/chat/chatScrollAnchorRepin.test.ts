@@ -92,6 +92,21 @@ describe('createanchorrepin state machine', () => {
     expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
   })
 
+  it('captureAnchor pins the TOP row (ratio 0) at the very top edge, not the midpoint', () => {
+    const { repin, el, writes, virt } = setup()
+    el.scrollTop = 0 // at the very top edge (<= EDGE_INTENT_TOLERANCE_PX)
+    repin.captureAnchor()
+    // The top ROW (offset 0), not the viewport-midpoint row (which would be 250).
+    expect(virt.anchorAt).toHaveBeenCalledWith(0)
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@0'))
+    // Held at ratio 0: resolving the row writes scrollTop to its exact offset with no
+    // midpoint subtraction (a midpoint anchor would write 300 - 250 = 50), so a taller
+    // top-row measurement can't drift the view down off the top.
+    virt.scrollTopForAnchor.mockReturnValue(300)
+    repin.repinToAnchor()
+    expect(writes).toEqual([300])
+  })
+
   it('keeps a captured viewport-midpoint row stationary when it re-pins', () => {
     const { repin, el, writes, virt } = setup()
     el.scrollTop = 100
@@ -269,6 +284,28 @@ describe('createanchorrepin repinToAnchor decision', () => {
     expect(writes).toEqual([])
     expect(repin.currentAnchor()).toEqual(anchorAt('top@300')) // re-anchored to the surviving viewport-midpoint row
     expect(flingSettle.reset).toHaveBeenCalled()
+  })
+
+  it('re-anchors to the TOP row (ratio 0) at the top edge when the pinned row no longer resolves', () => {
+    // A Home jump replaces the loaded window; the anchored top row no longer resolves.
+    // Recovery at the top edge must land on the TOP row, not the viewport midpoint --
+    // otherwise a taller top-row measurement re-centers the midpoint and drifts the view
+    // a viewport-fraction below the top (the long-transcript Home symptom).
+    const { repin, el, writes, virt, flingSettle } = setup()
+    el.scrollTop = 0 // parked at the very top edge
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(null) // the pinned row was trimmed / re-fetched away
+    repin.repinToAnchor()
+    expect(writes).toEqual([])
+    expect(virt.anchorAt).toHaveBeenLastCalledWith(0) // top row, not the midpoint (250)
+    expect(repin.currentAnchor()).toEqual(anchorAt('top@0'))
+    expect(flingSettle.reset).toHaveBeenCalled()
+
+    // Held at ratio 0: the recovered row resolves straight to its offset (no midpoint
+    // subtraction, which would have written 50).
+    virt.scrollTopForAnchor.mockReturnValue(300)
+    repin.repinToAnchor()
+    expect(writes).toEqual([300])
   })
 })
 

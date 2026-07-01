@@ -1,7 +1,8 @@
+import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { ChatScrollState, ChatScrollVirtualizer, ScrollContext } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { createRoot, createSignal } from 'solid-js'
+import { createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -9,6 +10,7 @@ import {
   installControllableResizeObserver,
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
+import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { FLING_SETTLE_MS } from './chatScrollFlingSettle'
 import { inferScrollDirection } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
@@ -72,6 +74,94 @@ function makeGrowableVirtualizer() {
     scrollTopForAnchor: () => null,
   }
   return { virt, setTotal }
+}
+
+/**
+ * Virtualizer stub backed by a mutable per-row height map, so a measurement that
+ * grows or shrinks a row drives the geometry re-pin through a REAL offset map --
+ * `anchorAt` / `scrollTopForAnchor` resolve against the current heights, exactly
+ * like the production virtualizer. Row ids are `g${gen}_${index}`; `seq` mirrors
+ * the index. `setRowHeight` mutates one row and bumps `geometryVersion`,
+ * reproducing a DOM measurement landing after the row mounted (the
+ * collapsed-until-measured rows the DOM-measurement pipeline grows once they
+ * become visible). `replaceWindow` swaps in a fresh row set under a NEW generation
+ * -- so every prior anchor id stops resolving -- modeling jumpToOldest/jumpToLatest
+ * replacing the loaded window (`chatHistoryPaginator`), which is what leaves the
+ * pre-jump anchor stale for the re-pin to recover from.
+ */
+function makeRowVirtualizer(initialHeights: number[]) {
+  const [heights, setHeights] = createSignal<number[]>(initialHeights)
+  const [gen, setGen] = createSignal(0)
+  const [geometryVersion, setGeometryVersion] = createSignal(0)
+  // Cumulative offsets, length n+1: cumOffsets[i] is the top of row i; cumOffsets[n] the
+  // total. Zero-height rows share the offset of their successor, exactly reproducing the
+  // collapsed-until-measured stack the real virtualizer builds.
+  const cumOffsets = () => {
+    const out = [0]
+    for (const h of heights())
+      out.push(out[out.length - 1] + h)
+    return out
+  }
+  const total = () => {
+    const o = cumOffsets()
+    return o[o.length - 1]
+  }
+  // Row id encodes the window GENERATION so a replaced window's ids stop resolving (the
+  // real virtualizer keys the offset map by row id; a re-fetched window has fresh rows).
+  const indexOfId = (id: string): number => {
+    const m = new RegExp(`^g${gen()}_(\\d+)$`).exec(id)
+    if (!m)
+      return -1
+    const idx = Number(m[1])
+    return idx >= 0 && idx < heights().length ? idx : -1
+  }
+  // Delegate the anchor math to the REAL pure functions over this geometry, so these
+  // tests exercise the production capture/resolve (including the zero-height-run
+  // tie-break) rather than a re-implementation that could drift from it.
+  const geometry = (): AnchorOffsetGeometry => {
+    const hs = heights()
+    const offs = cumOffsets()
+    return {
+      list: hs.map((_, i) => ({ id: `g${gen()}_${i}`, seq: BigInt(i) })),
+      // Largest index whose top offset <= y (the row containing y), clamped to [0, n-1].
+      indexAtOffset: (y) => {
+        let idx = 0
+        for (let i = 0; i < hs.length; i++) {
+          if (offs[i] <= y)
+            idx = i
+          else
+            break
+        }
+        return idx
+      },
+      indexOfId,
+      offsetOfIndex: i => offs[Math.max(0, Math.min(i, hs.length))],
+      heightOfIndex: i => hs[i] ?? 0,
+      gapAfter: () => 0,
+    }
+  }
+  const virt: ChatScrollVirtualizer = {
+    totalHeight: total,
+    geometryVersion: () => geometryVersion(),
+    updateViewport: () => {},
+    anchorAt: (y: number): ScrollAnchor | null => anchorAtOffset(geometry(), y),
+    scrollTopNearAnchor: (anchor: ScrollAnchor): number | null => resolveNearestAnchorScrollTop(geometry(), anchor),
+    scrollTopForAnchor: (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor),
+  }
+  const setRowHeight = (idx: number, h: number) => {
+    setHeights((prev) => {
+      const next = [...prev]
+      next[idx] = h
+      return next
+    })
+    setGeometryVersion(v => v + 1)
+  }
+  const replaceWindow = (newHeights: number[]) => {
+    setGen(g => g + 1)
+    setHeights(newHeights)
+    setGeometryVersion(v => v + 1)
+  }
+  return { virt, setRowHeight, replaceWindow, total }
 }
 
 beforeAll(() => {
@@ -1874,7 +1964,10 @@ describe('usechatscroll scroll coordinate normalization', () => {
 
           hook.handlers.onScroll()
 
-          expect(anchorAt).toHaveBeenCalledWith(250)
+          // At the very top edge the top-ROW anchor is captured, so anchorAt reads the
+          // clamped logical top (0), NOT the raw -12 overscroll value -- proving the
+          // anchor logic operates in clamped scroll coordinates.
+          expect(anchorAt).toHaveBeenCalledWith(0)
           expect(updateViewport).toHaveBeenCalledWith(0, 500, undefined)
           expect(hook.atBottom()).toBe(false)
           dispose()
@@ -4469,6 +4562,212 @@ describe('usechatscroll keyboard navigation', () => {
       expect(jumped).toBe(true)
       expect(ev.defaultPrevented).toBe(true)
       dispose()
+    }))
+
+  it('keeps the viewport pinned to the very top after Home when the top rows measure taller', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          // 20 rows x 100px = 2000px of content in a 500px viewport, parked mid-list.
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(1000)
+          // Mirror ChatView's spacer: div.scrollHeight tracks virt.totalHeight() in a
+          // RENDER effect, so it flushes before the geometry re-pin createEffect reads
+          // it (exactly the ordering useChatScroll relies on -- see repinToAnchor).
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Home pins to the very top.
+          press(hook, 'Home')
+          expect(div.getScrollTop()).toBe(0)
+          // The programmatic scrollTop=0 write echoes a native scroll event, which
+          // re-captures the viewport anchor. It must NOT re-anchor to the viewport
+          // MIDPOINT here -- at the top edge the top row must stay pinned to the top.
+          hook.handlers.onScroll()
+
+          // The collapsed-until-measured top rows now measure taller: rows 0 and 1
+          // grow from 100 to 400 (content above the viewport midpoint grows 600px).
+          setRowHeight(0, 400)
+          setRowHeight(1, 400)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // A midpoint anchor would keep the mid row centered and push scrollTop down
+          // ~half a viewport plus the growth; the top pin must hold scrollTop at 0.
+          expect(div.getScrollTop()).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('keeps the viewport pinned to the true bottom after End when the bottom rows measure taller', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(1000)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // End sticks to the loaded bottom (2000 - 500 = 1500).
+          press(hook, 'End')
+          expect(div.getScrollTop()).toBe(1500)
+          hook.handlers.onScroll()
+
+          // The bottom rows measure taller after mounting; the view must follow the
+          // growing tail to the NEW true bottom, not lag a viewport-fraction behind.
+          setRowHeight(18, 400)
+          setRowHeight(19, 400)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(total() - 500)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('stays pinned to the top when a window replace invalidates the anchor at the top edge (long-transcript Home)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const { virt, setRowHeight, replaceWindow, total } = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          div.setClientHeight(500)
+          div.setScrollTop(0) // parked at the very top, as after a Home jump lands
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          // A long (windowed) transcript: Home re-fetches the earliest page and REPLACES
+          // the loaded window, so newer history still exists beyond it.
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => true,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // At the top edge the top-row anchor is captured (the state Home lands in).
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(0)
+
+          // The window is replaced under a new generation (jumpToOldest's re-fetch, or a
+          // trim), so the anchored top row no longer resolves. The geometry re-pin must
+          // recover by re-anchoring to the NEW top row -- NOT the viewport midpoint.
+          replaceWindow(Array.from<number>({ length: 20 }).fill(100))
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // The fresh collapsed-until-measured top rows now measure taller. A midpoint
+          // re-anchor would drift the view a viewport-fraction below the top; the top
+          // pin must hold scrollTop at 0.
+          setRowHeight(0, 400)
+          setRowHeight(1, 400)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('stays pinned to the very top when leading collapsed rows measure taller (long-transcript Home)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          // Freshly-loaded page: the visible top rows are collapsed-until-measured
+          // (height 0) and stack at offset 0; only the rows below carry an estimate.
+          const { virt, setRowHeight, total } = makeRowVirtualizer([0, 0, 0, 0, 0, ...Array.from<number>({ length: 15 }).fill(100)])
+          div.setClientHeight(500)
+          div.setScrollTop(0)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Home jumps to the top and captures the top anchor. With collapsed rows
+          // stacked at offset 0, this must pin the FIRST row -- not the last row at
+          // offset 0 (the first VISIBLE row), which would be pushed down as the
+          // collapsed rows measure and grow.
+          press(hook, 'Home')
+          expect(div.getScrollTop()).toBe(0)
+          // The programmatic scrollTop=0 write echoes a native scroll event.
+          hook.handlers.onScroll()
+
+          // The collapsed top rows measure to their real heights (0 -> 100 each).
+          setRowHeight(0, 100)
+          setRowHeight(1, 100)
+          setRowHeight(2, 100)
+          setRowHeight(3, 100)
+          setRowHeight(4, 100)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
     }))
 
   it('pages down by a page minus the overlap and prevents the native scroll', () =>

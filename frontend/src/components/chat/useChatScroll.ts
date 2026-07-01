@@ -1098,8 +1098,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     //
     // Captured on EVERY scroll event (including our own programmatic writes) so a
     // fast scroll-up whose events land inside the programmatic-write window
-    // doesn't leave a stale anchor for the next re-pin to yank back. At the
-    // bottom we follow the tail (sticky) instead of anchoring.
+    // doesn't leave a stale anchor for the next re-pin to yank back. At the bottom we
+    // follow the tail (sticky) instead of anchoring; captureAnchor itself is edge-aware
+    // and pins the top row (not the midpoint) at the very top (see captureViewportAnchor).
     if (messageListRef) {
       // Re-engage tail-follow whenever the viewport is within the 32px sticky band of
       // the live tail -- the SAME band the `atBottom` signal uses -- so `atBottom`

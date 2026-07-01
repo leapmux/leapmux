@@ -46,7 +46,18 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   const n = geo.list.length
   if (n === 0)
     return null
-  const idx = geo.indexAtOffset(scrollTop)
+  let idx = geo.indexAtOffset(scrollTop)
+  // Prefer the FIRST row of a zero-height run at this offset. Collapsed-until-measured
+  // rows have height 0, so several consecutive rows share one cumulative offset;
+  // indexAtOffset returns the LAST of them (the first row with real height). Anchoring
+  // to that row means that as the collapsed rows ABOVE it measure and grow, they push it
+  // down and the re-pin drags the viewport with it -- e.g. a Home jump to the top, where
+  // the freshly-loaded top rows are all collapsed, lands a few hundred px BELOW the true
+  // top once they measure. Walking back to the first row sharing this offset pins the
+  // topmost row, so the growth lands BELOW the anchor and the viewport stays put.
+  const anchorOffset = geo.offsetOfIndex(idx)
+  while (idx > 0 && geo.offsetOfIndex(idx - 1) === anchorOffset)
+    idx--
   // Floor at 0 for a transient NEGATIVE scrollTop -- some browsers report one
   // during elastic/rubber-band overscroll at the top, which indexAtOffset floors
   // to row 0, yielding a negative `within` that would store a negative offset and

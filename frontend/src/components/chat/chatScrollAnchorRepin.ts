@@ -1,6 +1,6 @@
 import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { maxScrollTopOf, REPIN_MIN_DELTA_PX } from './chatScrollGeometry'
+import { EDGE_INTENT_TOLERANCE_PX, maxScrollTopOf, REPIN_MIN_DELTA_PX } from './chatScrollGeometry'
 
 /**
  * The fling-settle surface the re-pin engine drives: accumulate a deferred mid-fling
@@ -77,11 +77,22 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
   const clampScrollTop = (el: HTMLDivElement, top: number) => Math.min(Math.max(0, top), maxScrollTopOf(el))
   const captureViewportAnchor = (el: HTMLDivElement) => {
     const scrollTop = readScrollTop(el)
-    const offset = viewportAnchorOffset(el, VIEWPORT_MIDPOINT_RATIO)
+    // Which viewport line to pin the captured row to. At the very TOP edge, pin the top
+    // ROW (ratio 0); anywhere below it, pin the viewport MIDPOINT for mid-scroll
+    // stability. Re-centering on the midpoint at the top lets a row ABOVE the midpoint
+    // measuring taller than its estimate (the collapsed-until-measured top rows growing
+    // once they mount) push scrollTop DOWN to re-center -- the "lands a few hundred px
+    // below the top" drift. This governs BOTH the live scroll-event capture (captureAnchor)
+    // AND the re-pin's recover-from-a-gone-anchor path (reanchorAndDropDrift), so a Home
+    // jump whose window replace / trim invalidates the anchored top row still recovers to
+    // the top rather than the midpoint. The symmetric bottom edge is handled by tail-follow
+    // (createStickyBottom), not here.
+    const ratio = scrollTop <= EDGE_INTENT_TOLERANCE_PX ? 0 : VIEWPORT_MIDPOINT_RATIO
+    const offset = viewportAnchorOffset(el, ratio)
     return {
       anchor: deps.virt.anchorAt(scrollTop + offset),
       captureTop: scrollTop,
-      viewportOffsetRatio: VIEWPORT_MIDPOINT_RATIO,
+      viewportOffsetRatio: ratio,
     }
   }
 
