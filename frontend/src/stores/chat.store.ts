@@ -1437,5 +1437,25 @@ export function createChatStore() {
     streamingText: streaming,
     pendingOutbound,
     viewportScroll,
+    /**
+     * Persist an agent's viewport scroll for the NEXT mount of the same chat window (a
+     * tile split/merge or workspace switch recreates ChatView over the still-live store
+     * -- see ChatView.onSaveViewportScroll -> restoreOnMount), but ONLY while the agent's
+     * chat window is still live. The unmount-save fires AFTER forgetAgent on an agent
+     * close (handleAgentClose reaps the store, removes the tab, THEN the tile teardown
+     * unmounts ChatView), so an unguarded set would resurrect a viewportScroll entry for
+     * a dead agent -- the very per-agent leak forgetAgent exists to prevent.
+     *
+     * Gate on the SAME store's load-state (initialLoadComplete, which forgetAgent
+     * clears) rather than a tabStore-liveness check: the tab is scoped OUT of state.tabs
+     * on a WORKSPACE SWITCH (getAgentTab would read undefined) even though forgetAgent
+     * never ran and the chat window survives -- so a tab check would wrongly drop the
+     * switch-away save and strand the reader at the tail on switch-back. The load-state
+     * stays true across that switch, so the reading position round-trips.
+     */
+    saveViewportScrollForRemount(agentId: string, scroll: SavedViewportScroll) {
+      if (state.initialLoadComplete[agentId])
+        viewportScroll.set(agentId, scroll)
+    },
   })
 }

@@ -1010,6 +1010,58 @@ describe('createChatStore', () => {
           dispose()
         })
       })
+
+      it('saveViewportScrollForRemount persists while the chat window is live', () => {
+        createRoot((dispose) => {
+          const store = createChatStore()
+          // A loaded window marks the agent's chat as live (initialLoadComplete).
+          store.setMessages('a1', [makeMessage('m1', 1n)], true)
+          const scroll = { anchor: { id: 'm1', offsetWithinRow: 40 }, atBottom: false, hasMoreNewer: false }
+          store.saveViewportScrollForRemount('a1', scroll)
+          expect(store.viewportScroll.get('a1')).toEqual(scroll)
+          dispose()
+        })
+      })
+
+      it('saveViewportScrollForRemount skips a window that never finished its initial load', () => {
+        createRoot((dispose) => {
+          const store = createChatStore()
+          // No setMessages: initialLoadComplete is ABSENT (not merely deleted). A cold
+          // window with no anchorable history has no reader position worth persisting, so
+          // the gate skips it -- the falsy branch reached via a missing flag, not a reap.
+          store.saveViewportScrollForRemount('a1', { atBottom: true, hasMoreNewer: false })
+          expect(store.viewportScroll.get('a1')).toBeUndefined()
+          dispose()
+        })
+      })
+
+      it('saveViewportScrollForRemount does NOT resurrect an entry for a reaped agent', () => {
+        createRoot((dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', [makeMessage('m1', 1n)], true)
+          // Agent close reaps the whole per-agent state first (forgetAgent), and the
+          // ChatView unmount-save fires AFTER it -- the save must not leak an entry back.
+          store.forgetAgent('a1')
+          store.saveViewportScrollForRemount('a1', { atBottom: true, hasMoreNewer: false })
+          expect(store.viewportScroll.get('a1')).toBeUndefined()
+          expect(store.viewportScroll.byAgent.a1).toBeUndefined()
+          dispose()
+        })
+      })
+
+      it('saveViewportScrollForRemount saves a live window whose TAB was scoped out (workspace switch)', () => {
+        createRoot((dispose) => {
+          const store = createChatStore()
+          // A workspace switch removes the tab (a tabStore concern) but never calls
+          // forgetAgent, so the chat window stays live and the switch-away position must
+          // survive for the switch-back restore -- the case a tabStore-liveness guard drops.
+          store.setMessages('a1', [makeMessage('m1', 1n)], true)
+          const scroll = { anchor: { id: 'm1', offsetWithinRow: 8 }, atBottom: false, hasMoreNewer: false }
+          store.saveViewportScrollForRemount('a1', scroll)
+          expect(store.viewportScroll.get('a1')).toEqual(scroll)
+          dispose()
+        })
+      })
     })
 
     describe('loadInitialMessages', () => {

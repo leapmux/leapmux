@@ -636,6 +636,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     }}
                     savedViewportScroll={chatStore.viewportScroll.get(agentId)}
                     onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
+                    // Unmount save (tile split/merge, workspace switch): keep the
+                    // reading position for the remount's restoreOnMount. The store gates
+                    // the write on the agent's chat window still being live, so an
+                    // agent-close unmount (which reaps the store first) can't leak an
+                    // entry back for a dead agent, while a workspace switch-away (which
+                    // only scopes the tab out) still saves. See saveViewportScrollForRemount.
+                    onSaveViewportScroll={state => chatStore.saveViewportScrollForRemount(agentId, state)}
                     onScrollApiReady={(api) => {
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)

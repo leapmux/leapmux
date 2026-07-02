@@ -1,12 +1,13 @@
 import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { createRoot, createSignal } from 'solid-js'
+import { createRoot, createSignal, onCleanup } from 'solid-js'
+import { insert } from 'solid-js/web'
 import { describe, expect, it } from 'vitest'
 import {
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -640,4 +641,273 @@ describe('usechatscroll viewport restore', () => {
         }
       })
     }))
+})
+
+describe('usechatscroll unmount save + visible-mount restore', () => {
+  // A tile split/merge or workspace switch REMOUNTS ChatView over a still-populated
+  // store: the old instance saves its final viewport state from onCleanup
+  // (onSaveViewportScroll) and the fresh instance -- which mounts VISIBLE, so the
+  // hidden->visible RO path can never fire -- restores it at mount (restoreOnMount),
+  // beating the default tail-stick placement.
+  it('round-trips a scrolled-up reading position across unmount and visible remount', () =>
+    new Promise<void>((resolve, reject) => {
+      let savedState: ChatScrollState | undefined
+      createRoot(async (disposeA) => {
+        try {
+          const divA = makeFakeScrollDiv()
+          divA.setClientHeight(500)
+          divA.setScrollHeight(3000)
+          const { virt: virtA } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          const hookA = useChatScroll({
+            virtualizer: virtA,
+            messages,
+            streamingText,
+            onSaveViewportScroll: (state) => { savedState = state },
+          })
+          hookA.attachListRef(divA.el)
+          // Mount placement sticks the populated fresh mount to the tail...
+          await Promise.resolve()
+          expect(divA.getScrollTop()).toBe(2500)
+          // ...then the reader scrolls up into history (a genuine scroll event).
+          divA.setScrollTop(1000)
+          hookA.handlers.onScroll()
+          disposeA()
+
+          // The unmount saved the final position, anchored to the viewport-top row.
+          expect(savedState).toBeDefined()
+          expect(savedState!.atBottom).toBe(false)
+          expect(savedState!.anchor?.id).toBe('g0_2')
+        }
+        catch (e) {
+          disposeA()
+          reject(e instanceof Error ? e : new Error(String(e)))
+          return
+        }
+
+        createRoot(async (disposeB) => {
+          try {
+            // The remount: a FRESH container at scrollTop 0 over the same window
+            // (same row ids -> the saved anchor resolves against the new offset map).
+            const divB = makeFakeScrollDiv()
+            divB.setClientHeight(500)
+            divB.setScrollHeight(3000)
+            const { virt: virtB } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+            const [messagesB] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+            const [streamingTextB] = createSignal('')
+            let cleared = false
+            const hookB = useChatScroll({
+              virtualizer: virtB,
+              messages: messagesB,
+              streamingText: streamingTextB,
+              savedViewportScroll: () => savedState,
+              onClearSavedViewportScroll: () => { cleared = true },
+            })
+            hookB.attachListRef(divB.el)
+            await Promise.resolve()
+            await Promise.resolve()
+
+            // Restored to the saved row -- NOT the default tail stick -- and consumed.
+            expect(divB.getScrollTop()).toBe(1000)
+            expect(hookB.atBottom()).toBe(false)
+            expect(cleared).toBe(true)
+            disposeB()
+            resolve()
+          }
+          catch (e) {
+            disposeB()
+            reject(e instanceof Error ? e : new Error(String(e)))
+          }
+        })
+      })
+    }))
+
+  it('does not save on unmount when the pane is hidden (a tab-switch save must survive)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(0) // hidden tab
+          div.setScrollHeight(3000)
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          let saves = 0
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+            streamingText,
+            onSaveViewportScroll: () => { saves++ },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          dispose()
+
+          // An unmeasurable pane carries no position: the host's existing saved
+          // entry (written when the tab was switched away) must not be clobbered.
+          expect(saves).toBe(0)
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('consumes an at-bottom save on a visible mount (stick + clear)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000)
+          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: false })
+          let cleared = false
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            savedViewportScroll: saved,
+            onClearSavedViewportScroll: () => { cleared = true },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(2500)
+          expect(hook.atBottom()).toBe(true)
+          // The mount restore CONSUMED the save (vs the default placement, which
+          // would leave it lingering for a later hidden->visible to misapply).
+          expect(cleared).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('jumps to the live tail on a visible mount of an at-bottom save that was windowed away', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000)
+          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: true })
+          let jumped = false
+          let cleared = false
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasNewerMessages: () => true,
+            onJumpToLatest: () => { jumped = true },
+            savedViewportScroll: saved,
+            onClearSavedViewportScroll: () => { cleared = true },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // The saved in-memory bottom is NOT the live tail: re-fetch the tail
+          // (forceScrollToBottom jumps when hasNewerMessages) instead of sticking
+          // to the stale loaded bottom.
+          expect(jumped).toBe(true)
+          expect(cleared).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('leaves a saved state for the hidden->visible path when the mount is hidden', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(0) // hidden tab: the RO hidden->visible path owns the restore
+          div.setScrollHeight(3000)
+          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          const [saved] = createSignal<ChatScrollState | undefined>({
+            anchor: { id: 'g0_2', seq: 3n, offsetWithinRow: 0 },
+            atBottom: false,
+            hasMoreNewer: false,
+          })
+          let cleared = false
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            savedViewportScroll: saved,
+            onClearSavedViewportScroll: () => { cleared = true },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Not consumed at mount; the tab-switch (hidden->visible) restore -- covered
+          // by the suite above -- picks it up when the pane becomes visible.
+          expect(cleared).toBe(false)
+          expect(div.getScrollTop()).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('framework contract: onCleanup runs while the unmounting DOM is still connected', () => {
+    // The unmount save reads clientHeight/scrollTop from onCleanup, which only works
+    // if Solid disposes owners BEFORE detaching their DOM. Pin that contract: if a
+    // Solid upgrade ever flips the order, the save would silently degrade to a no-op
+    // (clientHeight 0 -> getScrollState undefined), and this test names the cause.
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    try {
+      const [show, setShow] = createSignal(true)
+      let connectedAtCleanup: boolean | undefined
+      const Inner = () => {
+        const el = document.createElement('div')
+        el.textContent = 'content'
+        onCleanup(() => {
+          connectedAtCleanup = el.isConnected
+        })
+        return el
+      }
+      // The same reactive insert a compiled <Show>/component boundary lowers to:
+      // toggling the accessor disposes the branch owner, then swaps the DOM. The
+      // toggle happens OUTSIDE the root body -- createRoot batches writes made
+      // inside it, deferring the re-run past these assertions.
+      const dispose = createRoot((d) => {
+        insert(host, () => (show() ? Inner() : null))
+        return d
+      })
+      expect(host.textContent).toContain('content')
+      setShow(false)
+      expect(connectedAtCleanup).toBe(true)
+      expect(host.textContent).not.toContain('content')
+      dispose()
+    }
+    finally {
+      host.remove()
+    }
+  })
 })

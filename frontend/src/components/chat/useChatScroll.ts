@@ -318,6 +318,16 @@ export interface UseChatScrollOptions extends PaginationCallbacks {
   virtualizer: ChatScrollVirtualizer
   savedViewportScroll?: Accessor<ChatScrollState | undefined>
   onClearSavedViewportScroll?: () => void
+  /**
+   * Called on unmount with the final viewport scroll state so the host can persist it
+   * for the NEXT mount of the same agent -- a tile split/merge or workspace switch
+   * recreates ChatView over a still-populated store, and the fresh instance restores
+   * through savedViewportScroll (restoreOnMount for a visible remount, the RO
+   * hidden->visible path otherwise). NOT called when the pane is unmeasurable at
+   * cleanup (hidden pane, detached ref): an unmeasurable unmount carries no position,
+   * and clobbering an existing save (e.g. from a tab switch-away) would lose one.
+   */
+  onSaveViewportScroll?: (state: ChatScrollState) => void
 }
 
 export interface UseChatScrollResult {
@@ -420,11 +430,16 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let resizeObserver: ResizeObserver | undefined
   // resizeRafId / prevClientHeight now live inside createViewportRestore.
   // The scroll-buffer filler's fill(), assigned where the unit is created (after the
-  // geometry re-pin effect, so its reactive pass runs once the re-pin has settled
-  // scrollTop). handleScroll calls it through this forward ref to top up the buffer
-  // for the new scroll position. A no-op until wired, so an early scroll event is
-  // simply ignored.
+  // geometry re-pin AND auto-scroll effects, so its reactive pass runs once the re-pin
+  // has settled scrollTop and the mount placement / tail stick has run -- see the
+  // wiring comment at the creation site). handleScroll calls it through this forward
+  // ref to top up the buffer for the new scroll position. A no-op until wired, so an
+  // early scroll event is simply ignored.
   let fillScrollBuffer: () => void = () => {}
+  // The filler's rearm(), through the same forward ref pattern: forceScrollToBottom and
+  // the jump-to-oldest wrapper (both declared BEFORE the filler unit) drop the old
+  // window's per-side filler state when a jump replaces the message window.
+  let rearmScrollBufferFiller: () => void = () => {}
   // The fling-settle unit, assigned below. The anchor engine (createAnchorRepin, created
   // earlier) and createStickyBottom reference it lazily through thunks; flingSettle in turn
   // closes over the anchor engine's captureAnchor/currentAnchor -- a genuine definition
@@ -1397,79 +1412,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     refreshViewport()
   }, { defer: true }))
 
-  // Suppress the SPECULATIVE older-history pre-fetch while the viewport is pinned at the
-  // live tail. The older buffer only earns its keep once the reader scrolls UP into
-  // history; at the bottom it is pure speculation. Pre-fetching it there turned a fresh
-  // mount at the bottom (a page reload or an HMR remount) into a runaway: the filler saw
-  // scrollTop far below the older buffer target, paged older, prepended a page mid
-  // re-measure storm, and that prepend stream fought tail-follow and dragged the view
-  // up-list -- which kept scrollTop low, so the older side stayed "deficient" and it paged
-  // EVERY page to the window ceiling. Suppressing it holds the view at the bottom (the
-  // storm is then only the newest page's own row measurements, which tail-follow absorbs)
-  // and stops the every-page fetch. The reader's first genuine scroll-up leaves the tail
-  // (distFromBottom grows past the sticky band, so isAtBottom() goes false) and resumes
-  // the pre-fetch via handleScroll -> fillScrollBuffer; the NO-SKIP loaded-window bound
-  // turns that first page's latency into a one-time stall, never a skip.
-  //
-  // EXCEPTION: a viewport that can't scroll OUT of the sticky band (maxScrollTop <=
-  // STICKY_BOTTOM_THRESHOLD_PX -- a hidden-heavy newest page whose few visible rows
-  // barely fill the pane, or don't fill it at all) still needs the older fill to become
-  // genuinely scrollable. Without it that page stays stranded half-empty until a new
-  // message -- the very bug the blanket dev-mount settle once reintroduced (see
-  // hmrRemount). The bound is the STICKY BAND, not 0: with 0 < maxScrollTop <= the band,
-  // isAtBottom() is true at EVERY scroll position, so the "first scroll-up leaves the
-  // tail and resumes the fill" escape above is mathematically unreachable and the older
-  // history would be wedged off for good (a scrollbar-thumb drag to the very top fires
-  // only `scroll` events, so the explicit wheel/key edge-intent loaders never run
-  // either). Only once the pane can actually LEAVE the band does the suppression bite.
-  const suppressOlderPrefetchAtLiveTail = (): boolean =>
-    !!messageListRef
-    && maxScrollTopOf(messageListRef) > STICKY_BOTTOM_THRESHOLD_PX
-    && isAtLiveTail()
-
-  // Pre-fetch a VISIBLE-content buffer beyond the viewport so scrolling stays smooth
-  // in hidden-heavy stretches (see createScrollBufferFiller). Self-contained reactive
-  // unit; wired here so its createEffect runs AFTER the geometry re-pin /
-  // messages-refresh effects above (it reads the post-re-pin scrollTop / distFromBottom).
-  const bufferFiller = createScrollBufferFiller({
-    getEl: () => messageListRef,
-    messages: opts.messages,
-    bufferTargetPx,
-    hasOlder: () => !!opts.hasOlderMessages?.(),
-    hasNewer: () => !!opts.hasNewerMessages?.(),
-    fetchingOlder: () => !!opts.fetchingOlder?.(),
-    fetchingNewer: () => !!opts.fetchingNewer?.(),
-    // The filler's own loads go through loadOlderMessages/loadNewerMessages so they
-    // share preserveBrowsingPosition, not the raw store callbacks.
-    onLoadOlder: loadOlderMessages,
-    onLoadNewer: loadNewerMessages,
-    lastScrollDir: () => lastScrollDir,
-    paused: () => bufferFillPaused || bufferFillSettling,
-    // Gate the older PRE-FETCH on either a near-top restore's one-shot arm OR being pinned
-    // at the live tail (where the older buffer is speculative -- see
-    // suppressOlderPrefetchAtLiveTail). Both leave the newer side free.
-    suppressOlder: () => suppressAutoLoadOlderAfterRestore || suppressOlderPrefetchAtLiveTail(),
-    atCeiling: () => !!opts.atWindowCeiling?.(),
-    // Both sides' progress is measured against a stable reference row, not raw
-    // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a
-    // productive load (see captureAnchor). anchorAt(scrollTop) is the viewport-top row;
-    // scrollTopForAnchor reads its content-coordinate offset (= height ABOVE it) from the
-    // offset map, and totalHeight - that is the height BELOW it. (This also makes the old
-    // fling-deferred-write correction unnecessary -- the offset reflects a prepend
-    // regardless of a deferred scrollTop write.)
-    captureAnchor: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
-    contentAbove: anchor => virt.scrollTopForAnchor(anchor),
-    contentBelow: (anchor) => {
-      const above = virt.scrollTopForAnchor(anchor)
-      return above == null ? null : virt.totalHeight() - above
-    },
-  })
-  // handleScroll tops up the buffer for the new scroll position through this ref.
-  fillScrollBuffer = bufferFiller.fill
-
-  // Expose scroll state for viewport save on tab switch. Anchored to the
-  // viewport-top row (by seq) so restoration survives the spacer's estimated
-  // height — a raw distance-from-bottom would resolve to the wrong place.
+  // Expose scroll state for viewport save on tab switch and on unmount (the
+  // onSaveViewportScroll cleanup). Anchored to the viewport-top row (by seq) so
+  // restoration survives the spacer's estimated height — a raw distance-from-bottom
+  // would resolve to the wrong place.
   const getScrollState = (): ChatScrollState | undefined => {
     if (!messageListRef || messageListRef.clientHeight === 0)
       return undefined
@@ -1502,7 +1448,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // A jump-to-bottom also abandons any near-top restore landing, so its older-load
     // suppression no longer applies -- clear it (a window REPLACE on the hasNewer path
     // below invalidates it outright; even a same-window stick is a deliberate move off
-    // the protected top). Mirrors the bufferFiller.rearm() below for per-window state.
+    // the protected top). Mirrors the rearmScrollBufferFiller() below for per-window state.
     suppressAutoLoadOlderAfterRestore = false
     // Scrolled away from the live tail: re-fetch the latest page first, then
     // snap. jumpToLatest replaces the window; the totalHeight re-pin effect and
@@ -1510,7 +1456,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (opts.hasNewerMessages?.()) {
       // The jump REPLACES the window, so drop any per-window filler state the old
       // window accumulated.
-      bufferFiller.rearm()
+      rearmScrollBufferFiller()
       // Optimistically follow the tail, but remember the pre-jump anchor: no
       // scroll write happens until the jump resolves, so on failure (worker
       // disconnect / RPC error) we restore the anchor and re-sync atBottom to
@@ -1585,15 +1531,46 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // jump-to-latest handling.
     onJumpToOldest: opts.onJumpToOldest
       ? () => {
-          bufferFiller.rearm()
+          rearmScrollBufferFiller()
           suppressAutoLoadOlderAfterRestore = false
           return opts.onJumpToOldest!()
         }
       : undefined,
   })
 
+  // Saved-viewport restore + resize handling, extracted into createViewportRestore
+  // (a factory like createStickyBottom / createFlingSettle). The hook keeps owning the
+  // mutable state the restore writes -- suppressAutoLoadOlderAfterRestore (the buffer
+  // filler reads it) and lastScrollTopForDir (trackUserScrollAndComputeLead reads it) -- and
+  // passes setters; the factory owns only the resize bookkeeping (prevClientHeight,
+  // the pending rAF).
+  const viewportRestore = createViewportRestore(scrollCtx, {
+    checkAtBottom,
+    repinToAnchor,
+    stickToBottom,
+    forceScrollToBottom,
+    clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
+    savedViewportScroll: () => opts.savedViewportScroll?.(),
+    setSuppressOlder: (v) => { suppressAutoLoadOlderAfterRestore = v },
+    setLastScrollTopForDir: (v) => { lastScrollTopForDir = v },
+    onGeometrySettled: () => bumpGeomTick(t => t + 1),
+  })
+
+  // Mount placement, part 1 of 2: restore a SAVED viewport on a visible (re)mount --
+  // a tile split/merge or workspace switch saved the reading position at unmount (see
+  // onSaveViewportScroll). Registered BEFORE the auto-scroll effect below (onMount is
+  // an effect, and effects flush in creation order), so within the mount flush the
+  // restore lands first: it consumes the saved state and drops atBottom, which part 2
+  // (the auto-scroll effect's creation run, the default tail stick for a populated
+  // fresh mount) then respects. With no saved state -- or a hidden mount, which the
+  // RO hidden->visible path owns -- this is a no-op and the tail stick stands.
+  onMount(() => viewportRestore.restoreOnMount())
+
   // Auto-scroll the message list to the bottom when new content arrives
-  // and the user is already at (or near) the bottom.
+  // and the user is already at (or near) the bottom. Its CREATION run doubles as
+  // mount placement part 2: over an already-populated window with no saved viewport
+  // (or an at-bottom one, already consumed above), it performs the initial tail
+  // stick that moves a fresh container off its unplaced scrollTop 0.
   // messageVersion covers thread merges (tool_use_result merged into an
   // existing tool_use) which don't change messages.length.
   createEffect(() => {
@@ -1700,10 +1677,120 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
   })
 
+  // Suppress the SPECULATIVE older-history pre-fetch while the viewport is pinned at
+  // (or the scroll-mode machine is FOLLOWING) the live tail. The older buffer only
+  // earns its keep once the reader scrolls UP into history; at the bottom it is pure
+  // speculation. Pre-fetching it there turned a fresh mount at the bottom (a page
+  // reload or an HMR remount) into a runaway: the filler saw scrollTop far below the
+  // older buffer target, paged older, prepended a page mid re-measure storm, and that
+  // prepend stream fought tail-follow and dragged the view up-list -- which kept
+  // scrollTop low, so the older side stayed "deficient" and it paged EVERY page to the
+  // window ceiling. Suppressing it holds the view at the bottom (the storm is then only
+  // the newest page's own row measurements, which tail-follow absorbs) and stops the
+  // every-page fetch. The reader's first genuine scroll-up leaves the tail
+  // (handleScroll captures an anchor, so isFollowing() goes false along with
+  // isAtBottom()) and resumes the pre-fetch via handleScroll -> fillScrollBuffer; the
+  // NO-SKIP loaded-window bound turns that first page's latency into a one-time stall,
+  // never a skip.
+  //
+  // The FOLLOW-MODE arm covers follow mode with the viewport NOT at the live tail's
+  // bottom band: a fresh mount's pre-placement scrollTop 0 (including one whose window
+  // is paged AWAY from the live tail, which the placement stick skips), a transient
+  // strand mid restick, or an in-flight jump-to-latest. In all of those the machinery
+  // -- not the reader -- owns the position: an older prepend fetched off such a reading
+  // is the seed of the reload runaway above (the viewport parks at the top, every page
+  // lands in-view, and the deficit re-arms forever). Only a genuine user scroll-up
+  // (which captures an anchor and leaves follow mode) makes the older buffer real.
+  //
+  // The arm is guarded on the viewport-top row being ANCHORABLE: setAnchor(null)
+  // aliases an UNANCHORABLE window (all-hidden pages, an empty offset map) into
+  // 'following', and those windows legitimately auto-advance older pages to surface
+  // content -- but when a real row sits at the viewport top, a genuine scroll-up would
+  // have anchored to it, so follow mode there is never a reader position. untracked:
+  // this read must not subscribe the filler's effect to every offset-map nudge.
+  //
+  // EXCEPTION: a viewport that can't scroll OUT of the sticky band (maxScrollTop <=
+  // STICKY_BOTTOM_THRESHOLD_PX -- a hidden-heavy newest page whose few visible rows
+  // barely fill the pane, or don't fill it at all) still needs the older fill to become
+  // genuinely scrollable. Without it that page stays stranded half-empty until a new
+  // message -- the very bug the blanket dev-mount settle once reintroduced (see
+  // hmrRemount). The bound is the STICKY BAND, not 0: with 0 < maxScrollTop <= the band,
+  // isAtBottom() is true at EVERY scroll position, so the "first scroll-up leaves the
+  // tail and resumes the fill" escape above is mathematically unreachable and the older
+  // history would be wedged off for good (a scrollbar-thumb drag to the very top fires
+  // only `scroll` events, so the explicit wheel/key edge-intent loaders never run
+  // either). Only once the pane can actually LEAVE the band does the suppression bite.
+  const suppressOlderPrefetchAtLiveTail = (): boolean => {
+    const el = messageListRef
+    if (!el || maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX)
+      return false
+    // Pinned at the LIVE tail (the tail is loaded and the viewport sits in its sticky
+    // band): the older buffer is pure speculation until the reader scrolls up.
+    if (!opts.hasNewerMessages?.() && isAtBottom())
+      return true
+    return isFollowing() && untrack(() => virt.anchorAt(readLogicalScrollTop(el))) !== null
+  }
+
+  // Pre-fetch a VISIBLE-content buffer beyond the viewport so scrolling stays smooth
+  // in hidden-heavy stretches (see createScrollBufferFiller). Self-contained reactive
+  // unit; wired here so its createEffect runs AFTER the geometry re-pin /
+  // messages-refresh / auto-scroll effects above. The re-pin ordering means it reads
+  // the post-re-pin scrollTop / distFromBottom; the AUTO-SCROLL ordering is the mount
+  // placement invariant: within one flush, the initial stick-to-bottom (the auto-scroll
+  // effect's creation run over an already-populated window -- a tile-split remount or a
+  // reload that mounted after the replay landed) runs BEFORE the filler's first fill.
+  // Created before the auto-scroll effect, the filler's creation pass read the
+  // UNPLACED container (scrollTop 0) as an older-buffer deficit and fired a fetch whose
+  // preserveBrowsingPosition then cancelled that initial stick -- stranding the view at
+  // the top and paging older history to exhaustion (the reload climb-to-top runaway).
+  const bufferFiller = createScrollBufferFiller({
+    getEl: () => messageListRef,
+    messages: opts.messages,
+    bufferTargetPx,
+    hasOlder: () => !!opts.hasOlderMessages?.(),
+    hasNewer: () => !!opts.hasNewerMessages?.(),
+    fetchingOlder: () => !!opts.fetchingOlder?.(),
+    fetchingNewer: () => !!opts.fetchingNewer?.(),
+    // The filler's own loads go through loadOlderMessages/loadNewerMessages so they
+    // share preserveBrowsingPosition, not the raw store callbacks.
+    onLoadOlder: loadOlderMessages,
+    onLoadNewer: loadNewerMessages,
+    lastScrollDir: () => lastScrollDir,
+    paused: () => bufferFillPaused || bufferFillSettling,
+    // Gate the older PRE-FETCH on either a near-top restore's one-shot arm OR being pinned
+    // at / following the live tail (where the older buffer is speculative -- see
+    // suppressOlderPrefetchAtLiveTail). Both leave the newer side free.
+    suppressOlder: () => suppressAutoLoadOlderAfterRestore || suppressOlderPrefetchAtLiveTail(),
+    atCeiling: () => !!opts.atWindowCeiling?.(),
+    // Both sides' progress is measured against a stable reference row, not raw
+    // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a
+    // productive load (see captureAnchor). anchorAt(scrollTop) is the viewport-top row;
+    // scrollTopForAnchor reads its content-coordinate offset (= height ABOVE it) from the
+    // offset map, and totalHeight - that is the height BELOW it. (This also makes the old
+    // fling-deferred-write correction unnecessary -- the offset reflects a prepend
+    // regardless of a deferred scrollTop write.)
+    captureAnchor: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    contentAbove: anchor => virt.scrollTopForAnchor(anchor),
+    contentBelow: (anchor) => {
+      const above = virt.scrollTopForAnchor(anchor)
+      return above == null ? null : virt.totalHeight() - above
+    },
+  })
+  // handleScroll tops up the buffer for the new scroll position through this ref; the
+  // jump paths (forceScrollToBottom, jump-to-oldest -- both declared before this unit)
+  // drop per-window filler state through the rearm ref. See the forward-ref comments
+  // where both are declared.
+  fillScrollBuffer = bufferFiller.fill
+  rearmScrollBufferFiller = bufferFiller.rearm
+
   // Re-check atBottom after the parent clears saved scroll state.
   // Restoration itself is handled exclusively by the ResizeObserver's
   // hidden→visible path so that we avoid a race where this effect runs
   // before the tab is actually hidden (clearing saved state too early).
+  // `defer: true`: this effect exists for the CLEAR transition only. Its creation run
+  // (saved undefined on a fresh mount) would schedule a checkAtBottom rAF that reads
+  // the container BEFORE the mount placement has moved it off scrollTop 0, dropping
+  // the atBottom signal and disabling the restick machinery for the initial landing.
   let savedScrollRecheckRaf = 0
   createEffect(on(
     () => opts.savedViewportScroll?.(),
@@ -1716,6 +1803,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         savedScrollRecheckRaf = requestAnimationFrame(() => checkAtBottom())
       }
     },
+    { defer: true },
   ))
 
   onCleanup(() => {
@@ -1723,24 +1811,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     cancelAnimationFrame(viewportRefreshRafId)
     cancelAnimationFrame(savedScrollRecheckRaf)
     flingSettle.cancel()
-  })
-
-  // Saved-viewport restore + resize handling, extracted into createViewportRestore
-  // (a factory like createStickyBottom / createFlingSettle). The hook keeps owning the
-  // mutable state the restore writes -- suppressAutoLoadOlderAfterRestore (the buffer
-  // filler reads it) and lastScrollTopForDir (trackUserScrollAndComputeLead reads it) -- and
-  // passes setters; the factory owns only the resize bookkeeping (prevClientHeight,
-  // the pending rAF).
-  const viewportRestore = createViewportRestore(scrollCtx, {
-    checkAtBottom,
-    repinToAnchor,
-    stickToBottom,
-    forceScrollToBottom,
-    clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
-    savedViewportScroll: () => opts.savedViewportScroll?.(),
-    setSuppressOlder: (v) => { suppressAutoLoadOlderAfterRestore = v },
-    setLastScrollTopForDir: (v) => { lastScrollTopForDir = v },
-    onGeometrySettled: () => bumpGeomTick(t => t + 1),
+    // Save the final reading position for the next mount of this agent (a tile
+    // split/merge or workspace switch remounts ChatView over the same store; see
+    // restoreOnMount). Owner cleanups run before the DOM detaches, so the geometry
+    // is still readable. An unmeasurable pane (hidden tab, clientHeight 0) yields
+    // undefined and is skipped -- its tab-switch save must not be clobbered.
+    const finalScrollState = getScrollState()
+    if (finalScrollState)
+      opts.onSaveViewportScroll?.(finalScrollState)
   })
 
   // Observe ONLY the scroll container (editor/window/keyboard resize, and

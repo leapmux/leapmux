@@ -1,11 +1,11 @@
 import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { createRoot, createSignal } from 'solid-js'
+import { batch, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 
 import { maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -370,6 +370,11 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
             },
           })
           hook.attachListRef(div.el)
+          // Establish the reader's scrolled-up position with a GENUINE scroll event, as
+          // production always does -- without it, the mount placement (the auto-scroll
+          // effect's creation run over a populated window) would read the pre-set
+          // scrollTop as an unplaced fresh container and stick it to the live tail.
+          hook.handlers.onScroll()
           // Drain the microtask-paced fill until the buffer above reaches the refill
           // watermark. Hysteresis intentionally stops short of the ideal 3-screen target
           // so a tiny post-trim deficit does not fetch a full page and re-pin again.
@@ -800,6 +805,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
             },
           })
           hook.attachListRef(div.el)
+          // A genuine scroll event pins the reader's scrolled-up position (see the
+          // pre-fetch-ahead test above -- the mount placement would otherwise stick
+          // this pre-positioned viewport to the live tail).
+          hook.handlers.onScroll()
           for (let i = 0; i < 100; i++)
             await Promise.resolve()
 
@@ -925,6 +934,261 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           for (let i = 0; i < 30; i++)
             await Promise.resolve()
           expect(olderLoads).toBeGreaterThan(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+})
+
+describe('usechatscroll fresh-mount placement vs older prefetch', () => {
+  // A FRESH hook mount over an ALREADY-POPULATED window models both production
+  // remount paths: a tile SPLIT (the layout-tree change recreates the leaf subtree,
+  // remounting ChatView) and a page reload whose WatchEvents replay landed before the
+  // view mounted. The scroll container starts at scrollTop 0 -- the browser's initial
+  // position, NOT the reader's -- so the mount flush must PLACE the viewport (the
+  // initial stick to the live tail) BEFORE the buffer filler is allowed to read the
+  // geometry. The old order ran the filler's creation pass first: it read the
+  // unplaced scrollTop 0 as "no older buffer above the viewport" and fired an older
+  // fetch, whose preserveBrowsingPosition side effect then cancelled the initial
+  // stick -- stranding the view at the top ('following' mode never re-pins a
+  // prepend), where every landed page re-armed the deficit and paged history to
+  // exhaustion ("climbs to the top, loading older messages the whole way").
+  it('places a populated fresh mount at the live tail without firing an older prefetch', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000) // the spacer is already sized from the populated window
+          div.setScrollTop(0) // a fresh container mounts at the top, wherever the reader was
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          setTotal(3000)
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage, {} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => false,
+            onLoadOlderMessages: () => { olderLoads++ },
+          })
+          hook.attachListRef(div.el)
+          // Flush the creation effects (placement + filler) and the mount rAFs.
+          for (let i = 0; i < 10; i++)
+            await Promise.resolve()
+
+          // Placed at the live tail; the speculative older buffer stayed un-fetched.
+          expect(div.getScrollTop()).toBe(2500)
+          expect(olderLoads).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not runaway-page older history after a fresh populated mount (reload climb-to-top)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000)
+          div.setScrollTop(0)
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          setTotal(3000)
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [hasOlder, setHasOlder] = createSignal(true)
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          let remainingOlderPages = 30
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => hasOlder(),
+            hasNewerMessages: () => false,
+            fetchingOlder,
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                // An older page PREPENDS: the spacer grows but the browser leaves
+                // scrollTop where it was -- any keep-position correction must come
+                // from the hook itself (deliberately NOT simulated here, unlike the
+                // scrolled-up pre-fetch test above, so a stranded viewport stays at
+                // the top exactly as in production).
+                const grow = 800
+                div.setScrollHeight(div.el.scrollHeight + grow)
+                setTotal(t => t + grow)
+                remainingOlderPages--
+                if (remainingOlderPages <= 0)
+                  setHasOlder(false)
+                setMessages(prev => [{} as AgentChatMessage, ...prev])
+                setFetchingOlder(false)
+              })
+            },
+          })
+          hook.attachListRef(div.el)
+          // Drain long enough for a runaway to page many times (each load completes on
+          // a microtask and re-arms the fill).
+          for (let i = 0; i < 200; i++)
+            await Promise.resolve()
+
+          // No runaway: nothing fetched, and the view sits at the live tail.
+          expect(olderLoads).toBe(0)
+          expect(div.getScrollTop()).toBe(maxScrollTopOf(div.el))
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('does not seed an older prefetch on a fresh mount of a window paged AWAY from the live tail', () =>
+    // The placement stick skips a windowed-away mount (sticking to a non-tail loaded
+    // bottom would be wrong), so the container stays at its pre-placement scrollTop 0
+    // in follow mode. The filler must read that as machinery-owned -- follow mode over
+    // an anchorABLE row is never a reader position -- not as an older-buffer deficit:
+    // the seed fetch would prepend in-view at the top and re-arm itself exactly like
+    // the reload runaway.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000)
+          div.setScrollTop(0)
+          // Real anchor math: the viewport-top row resolves, unlike the all-hidden
+          // stubs whose null anchor must keep the auto-advance UN-suppressed.
+          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          let newerLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => true,
+            onLoadOlderMessages: () => { olderLoads++ },
+            onLoadNewerMessages: () => { newerLoads++ },
+          })
+          hook.attachListRef(div.el)
+          for (let i = 0; i < 10; i++)
+            await Promise.resolve()
+
+          expect(olderLoads).toBe(0)
+          expect(newerLoads).toBe(0)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still pre-fetches older for a scrolled-up reader whose scroll event ANCHORED (anchorable rows)', () =>
+    // The counterpart to the windowed-away suppression above: the follow-mode arm
+    // gates on isFollowing(), so a genuine scroll-up -- whose handleScroll capture
+    // RESOLVES an anchor over real rows and leaves follow mode -- must keep the
+    // older pre-fetch live. The scrolled-up pre-fetch tests elsewhere in this file
+    // run with null-anchor stubs (the unanchorable follow ALIAS); this one pins the
+    // anchored path through real anchor math.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(3000)
+          div.setScrollTop(0)
+          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => false,
+            onLoadOlderMessages: () => { olderLoads++ },
+          })
+          hook.attachListRef(div.el)
+          // Mount placement lands at the live tail; the older buffer stays suppressed.
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(2500)
+          expect(olderLoads).toBe(0)
+
+          // A genuine scroll-up: the capture resolves a real row (mode -> anchored),
+          // so the buffer filler pages older for the deficient buffer above.
+          div.setScrollTop(1000)
+          hook.handlers.onScroll()
+          expect(olderLoads).toBeGreaterThanOrEqual(1)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('still sticks to the bottom when the first page lands AFTER an empty mount (cold load, slow replay)', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(0) // nothing loaded yet
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
+          const [hasOlder, setHasOlder] = createSignal(false)
+          const [streamingText] = createSignal('')
+          let olderLoads = 0
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            hasOlderMessages: () => hasOlder(),
+            hasNewerMessages: () => false,
+            onLoadOlderMessages: () => { olderLoads++ },
+          })
+          hook.attachListRef(div.el)
+          for (let i = 0; i < 10; i++)
+            await Promise.resolve()
+
+          // The newest page lands in one store commit (spacer + flags + rows together).
+          batch(() => {
+            div.setScrollHeight(3000)
+            setTotal(3000)
+            setHasOlder(true)
+            setMessages([{} as AgentChatMessage, {} as AgentChatMessage])
+          })
+          for (let i = 0; i < 10; i++)
+            await Promise.resolve()
+
+          // The landing stuck to the live tail and no speculative older fetch fired.
+          expect(div.getScrollTop()).toBe(2500)
+          expect(olderLoads).toBe(0)
           dispose()
           resolve()
         }

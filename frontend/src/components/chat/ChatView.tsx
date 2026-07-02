@@ -208,6 +208,13 @@ interface ChatViewProps {
   /** Called when saved scroll state should be cleared after restoration. */
   onClearSavedViewportScroll?: () => void
   /**
+   * Called on unmount with the final viewport scroll state, so a remount over the
+   * same store (tile split/merge, workspace switch) can restore the reading
+   * position through savedViewportScroll. Not called when the pane is hidden at
+   * unmount (its tab-switch save must survive).
+   */
+  onSaveViewportScroll?: (state: ChatScrollState) => void
+  /**
    * Receives the imperative scroll API once the chat viewport mounts.
    * The host (TileRenderer) needs this for tab-switch viewport save,
    * send-message scroll-to-bottom, and keyboard PageUp/PageDown.
@@ -872,6 +879,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     virtualizer: virt,
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
+    onSaveViewportScroll: state => props.onSaveViewportScroll?.(state),
   })
   // Now that the scroll hook (and its anchor engine) exists, point the toggle-time row
   // pin at it (see the `let` declaration above and buildMessageHost).
