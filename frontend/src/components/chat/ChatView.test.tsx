@@ -132,8 +132,12 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
         version()
         return virtualizerState.range
       },
+      geometryVersion: version,
       totalHeight: () => 10_000,
       offsetOfId: (id: string) => Number(id.slice(1)) * 100,
+      indexOfId: (id: string) => Number(id.slice(1)),
+      offsetOfIndex: (index: number) => index * 100,
+      heightOfIndex: () => 100,
       hasMeasuredHeight: (id: string) => {
         version()
         return virtualizerState.measuredIds.has(id)
@@ -150,6 +154,8 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
         virtualizerState.measuredIds.add(id)
         return true
       }),
+      primeHeights: vi.fn(() => 0),
+      snapshotHeights: () => [],
     }),
   }
 })

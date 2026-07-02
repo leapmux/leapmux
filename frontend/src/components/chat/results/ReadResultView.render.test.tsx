@@ -56,7 +56,7 @@ describe('readresultview syntax highlighting', () => {
 
     setSelectionActive(false)
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
   })
 
   it('enqueues tokenization when syntax highlighting is not paused', async () => {
@@ -69,7 +69,7 @@ describe('readresultview syntax highlighting', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
   })
 
   it('falls back to plain text when worker tokenization returns null', async () => {
@@ -84,7 +84,7 @@ describe('readresultview syntax highlighting', () => {
     ))
 
     await waitFor(() => {
-      expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+      expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
     })
     await Promise.resolve()
 
@@ -153,7 +153,7 @@ describe('readresultview syntax highlighting', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
 
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied
     // (replacing text nodes mid-scroll is what the pause guards against).

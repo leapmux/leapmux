@@ -139,6 +139,17 @@ interface DeferredPremeasure {
 }
 
 /**
+ * One measured row height in transportable form — what `snapshotHeights`
+ * exports and `primeHeights` re-imports (the reload warm-start round trip,
+ * see chatRowHeightPersistence).
+ */
+export interface PersistableRowHeight {
+  id: string
+  heightKey: string | undefined
+  height: number
+}
+
+/**
  * The most recent height commit that changed the offset map -- diagnostic attribution for
  * the scroll-anchor drift WARN. The re-pin fires off `totalHeight()` and only sees THAT the
  * geometry moved, not which row moved it; this names the row and by how much, so a logged
@@ -327,6 +338,19 @@ export interface UseChatVirtualizerResult {
    * hidden premeasurement is cache warm-up, not a visible mount.
    */
   primeHeight: (id: string, height: number, heightKey?: string) => boolean
+  /**
+   * Bulk variant of `primeHeight` for reload warm-start hydration: commits
+   * every valid entry with the same guards, but bumps geometryVersion ONCE
+   * for the whole batch — one offset-map rebuild instead of one per row.
+   * Returns the number of entries adopted.
+   */
+  primeHeights: (entries: readonly PersistableRowHeight[]) => number
+  /**
+   * The measured-height cache as persistable entries, in LRU order (least
+   * recently measured first) — a consumer that caps the persisted set
+   * should keep the TAIL, the most recently measured rows.
+   */
+  snapshotHeights: () => PersistableRowHeight[]
   /** Whether the current item for `id` has a fresh measured/pre-measured height. */
   hasMeasuredHeight: (id: string) => boolean
   /**
@@ -753,11 +777,22 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       setRange(next)
   }
 
-  const commitMeasuredHeight = (
+  /**
+   * The commit core shared by the single-row paths (which bump
+   * geometryVersion per commit) and the bulk hydration path (which bumps it
+   * once per batch): validates, updates the cache + estimate medians +
+   * eviction, and records the commit diagnostic. `currentKey`/`kind` are
+   * passed in so a bulk caller can resolve them from ONE geom() snapshot
+   * instead of re-reading geometry per row. Returns whether the offset map
+   * changed (the caller owes a geometryVersion bump when it did).
+   */
+  const applyHeightCommit = (
     id: string,
     height: number,
     heightKey: string | undefined,
     source: MeasurementCommitInfo['source'],
+    currentKey: string | undefined,
+    kind: string,
   ): boolean => {
     // Ignore non-positive (or non-finite) heights: a row not yet laid out -- or one
     // under a display:none ancestor (an inactive TILE/workspace; an inactive tab
@@ -771,7 +806,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // ResizeObserver flush.
     if (!isUsableHeight(height))
       return false
-    const currentKey = currentHeightKey(id)
     if (heightKey !== currentKey)
       return false
     const stalePrev = heightCache.get(id)
@@ -781,7 +815,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     }
     const prevEntry = heightCache.get(id)
     const prev = prevEntry?.height
-    const kind = currentKind(id)
     // The height the offset map reserved for this row BEFORE this commit -- the per-kind
     // estimate for a first measure (read now, before this row's contribution is folded in)
     // or the previously cached height for a re-measure. Its diff from the new height is
@@ -854,8 +887,18 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       delta: height - assumedHeight,
       commitSeq: measurementCommitSeq,
     }
-    setGeomVersion(v => v + 1)
     return true
+  }
+  const commitMeasuredHeight = (
+    id: string,
+    height: number,
+    heightKey: string | undefined,
+    source: MeasurementCommitInfo['source'],
+  ): boolean => {
+    const changed = applyHeightCommit(id, height, heightKey, source, currentHeightKey(id), currentKind(id))
+    if (changed)
+      setGeomVersion(v => v + 1)
+    return changed
   }
   const measure = (id: string, height: number): boolean =>
     commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
@@ -881,6 +924,43 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const hasPendingPremeasuredHeight = (id: string): boolean => {
     const pending = deferredPremeasures.get(id)
     return pending !== undefined && pending.heightKey === currentHeightKey(id)
+  }
+  const primeHeights = (entries: readonly PersistableRowHeight[]): number => {
+    if (entries.length === 0)
+      return 0
+    // ONE geometry snapshot for the whole batch. applyHeightCommit never
+    // bumps geomVersion itself, so `g` stays valid (and cheap) across the
+    // loop; per-entry commitMeasuredHeight calls would instead re-derive
+    // geometry per row and rebuild the offset map once per entry.
+    const g = geom()
+    let adopted = 0
+    for (const entry of entries) {
+      const index = g.indexById.get(entry.id)
+      if (index === undefined)
+        continue
+      const item = g.list[index]
+      // Mirror primeHeight's guards: a live visible measurement is
+      // authoritative, and the momentum-scroll deferral gate queues instead
+      // of committing.
+      if (mountedIds.has(entry.id) && cachedMeasuredHeight(item) !== undefined)
+        continue
+      if (deferMeasurements) {
+        if (isUsableHeight(entry.height) && entry.heightKey === item.heightKey)
+          deferredPremeasures.set(entry.id, { id: entry.id, height: entry.height, heightKey: entry.heightKey })
+        continue
+      }
+      if (applyHeightCommit(entry.id, entry.height, entry.heightKey, 'premeasure', item.heightKey, kindOf(item)))
+        adopted += 1
+    }
+    if (adopted > 0)
+      setGeomVersion(v => v + 1)
+    return adopted
+  }
+  const snapshotHeights = (): PersistableRowHeight[] => {
+    const out: PersistableRowHeight[] = []
+    for (const [id, cached] of heightCache)
+      out.push({ id, heightKey: cached.key, height: cached.height })
+    return out
   }
 
   // The ResizeObserver / batched-microtask-flush DOM glue lives in createRowMeasurer
@@ -933,6 +1013,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     updateViewport,
     measure,
     primeHeight,
+    primeHeights,
+    snapshotHeights,
     hasMeasuredHeight,
     hasPendingPremeasuredHeight,
     setVisibleMeasurementDeferral: (defer: boolean) => {

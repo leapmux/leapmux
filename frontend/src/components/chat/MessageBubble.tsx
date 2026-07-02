@@ -150,6 +150,8 @@ export interface MessageBubbleHost {
   syntaxHighlightingPaused?: () => boolean
   /** True while the user has a live document selection inside the chat content. */
   textSelectionActive?: () => boolean
+  /** True while this row sits outside the near-viewport band (see RenderContext.rowOffscreen). */
+  rowOffscreen?: () => boolean
 }
 
 interface MessageBubbleProps {
@@ -305,6 +307,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
+    get rowOffscreen() { return props.host?.rowOffscreen },
   }
 
   // Quotable text dispatch: each provider plugin reads its own wire format

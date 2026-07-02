@@ -1,9 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 import type { CachedToken } from '~/lib/tokenCache'
-import { diffWordsWithSpace } from 'diff'
 import { For } from 'solid-js'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
+import { pairedWordDiff } from './wordDiffCache'
 
 /**
  * Render a line's text using Shiki tokens when available.
@@ -99,18 +99,18 @@ function renderTokenizedWordDiff(
   ) as JSX.Element
 }
 
-/** Render inline word-level highlights for a removed line. */
+/**
+ * Render inline word-level highlights for a removed line. The word diff is
+ * computed via pairedWordDiff (see wordDiffCache): memoized, so the added-
+ * side renderer's identical call and every later re-render (premeasure +
+ * visible double mount, token arrival, view toggles) reuse it.
+ */
 function renderRemovedInline(
   oldLine: string,
   newLine: string,
   oldTokens: CachedToken[] | null,
 ): JSX.Element {
-  // Use diffWordsWithSpace instead of diffWords so that whitespace runs
-  // are preserved as separate tokens. diffWords ignores whitespace during
-  // comparison and attaches it to adjacent word tokens from an arbitrary
-  // side, which corrupts leading indentation when the two lines differ in
-  // indentation level.
-  const parts = diffWordsWithSpace(oldLine, newLine)
+  const parts = pairedWordDiff(oldLine, newLine)
   return renderTokenizedWordDiff(
     parts,
     oldTokens,
@@ -125,7 +125,7 @@ function renderAddedInline(
   newLine: string,
   newTokens: CachedToken[] | null,
 ): JSX.Element {
-  const parts = diffWordsWithSpace(oldLine, newLine)
+  const parts = pairedWordDiff(oldLine, newLine)
   return renderTokenizedWordDiff(
     parts,
     newTokens,

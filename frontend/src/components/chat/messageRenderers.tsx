@@ -117,6 +117,14 @@ export interface RenderContext {
    * replace selected text nodes while this is true; doing so clears selection.
    */
   textSelectionActive?: () => boolean
+  /**
+   * Whether this row currently sits OUTSIDE the near-viewport band (overscan-
+   * only). Re-read at worker-dispatch time: renderers pass it as the
+   * low-priority thunk for markdown/highlight jobs, so viewport rows' upgrades
+   * preempt offscreen ones and an offscreen row upgrades automatically once
+   * scrolled in (see createWorkerPriorityGate).
+   */
+  rowOffscreen?: () => boolean
 }
 
 export interface MessageContentRenderer {
@@ -193,7 +201,7 @@ export function renderMarkdownForContext(text: string, context: RenderContext | 
   const rowCached = getCachedRenderValueForString<string>(context, 'markdown-html', text)
   if (rowCached !== undefined)
     return rememberDisplayedMarkdown(context, text, rowCached)
-  const html = renderMarkdown(text)
+  const html = renderMarkdown(text, false, context?.rowOffscreen)
   const cached = getCachedMarkdownHtml(text)
   return rememberDisplayedMarkdown(
     context,

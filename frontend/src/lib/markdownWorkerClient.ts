@@ -1,5 +1,6 @@
 import type { MarkdownRenderRequest, MarkdownRenderResponse } from './markdownWorker'
 import { createWorkerClient } from './workerClient'
+import { createWorkerPriorityGate } from './workerPriorityGate'
 
 // ---------------------------------------------------------------------------
 // Markdown render worker client
@@ -26,13 +27,22 @@ const client = createWorkerClient<MarkdownRenderRequest, MarkdownRenderResult | 
   failureValue: null,
 })
 
+// Dispatch order gate: viewport rows' renders preempt overscan rows' (see
+// createWorkerPriorityGate). Without it a mount burst posts every body FIFO
+// and the visible rows' highlighted upgrades wait behind offscreen ones.
+const gate = createWorkerPriorityGate()
+
 /**
  * Render markdown to highlighted HTML off the main thread. Resolves to the render
  * result (HTML + a `retryable` flag), or null if the worker crashed (the caller
  * keeps its plain placeholder).
+ *
+ * `isLowPriority` (re-read at each dispatch opportunity) deprioritizes this
+ * render behind currently-high ones — used for rows outside the near-viewport
+ * band, which upgrade automatically once scrolled in.
  */
-export function renderMarkdownInWorker(text: string): Promise<MarkdownRenderResult | null> {
+export function renderMarkdownInWorker(text: string, isLowPriority?: () => boolean): Promise<MarkdownRenderResult | null> {
   if (typeof Worker === 'undefined')
     return Promise.resolve(null)
-  return client.request(id => ({ type: 'render', id, text }))
+  return gate.enqueue(() => client.request(id => ({ type: 'render', id, text })), isLowPriority)
 }

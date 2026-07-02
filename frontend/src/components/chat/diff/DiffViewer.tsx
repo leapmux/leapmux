@@ -123,6 +123,7 @@ function DiffGapSeparator(props: {
     // `ansi` (a `.log` file) has no worker grammar -- tokenize it on the main thread so a
     // `.log` diff's gap-context lines highlight like the rest of the file.
     syncTokenize: ansiSyncTokenize,
+    rowOffscreen: () => props.context?.rowOffscreen?.() === true,
   })
 
   // The hook indexes tokens by POSITION within revealedGapLines (top slice, then bottom
@@ -262,8 +263,9 @@ function useDiffTokens(
   // syncTokenize handles `ansi` (a `.log` file's language) on the main thread -- the
   // worker's Oniguruma core has no `ansi` grammar, so without this a `.log` diff would
   // degrade to plain. Same tokenizer the Read view uses.
-  const oldTokens = useAsyncCodeTokens({ lang, code: () => sides().oldCode, eligible, gate, syncTokenize: ansiSyncTokenize })
-  const newTokens = useAsyncCodeTokens({ lang, code: () => sides().newCode, eligible, gate, syncTokenize: ansiSyncTokenize })
+  const rowOffscreen = (): boolean => context()?.rowOffscreen?.() === true
+  const oldTokens = useAsyncCodeTokens({ lang, code: () => sides().oldCode, eligible, gate, syncTokenize: ansiSyncTokenize, rowOffscreen })
+  const newTokens = useAsyncCodeTokens({ lang, code: () => sides().newCode, eligible, gate, syncTokenize: ansiSyncTokenize, rowOffscreen })
   return { oldTokens, newTokens }
 }
 

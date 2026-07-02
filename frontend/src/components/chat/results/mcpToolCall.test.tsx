@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { imageRenderInfo, mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
+import { imageRenderInfo, imageReservationStyle, mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
 
 describe('mcpToolCallDisplayName', () => {
   it('returns "server / tool" when server is set', () => {
@@ -9,6 +9,33 @@ describe('mcpToolCallDisplayName', () => {
 
   it('returns just the tool when server is empty', () => {
     expect(mcpToolCallDisplayName({ server: '', tool: 'orphan' })).toBe('orphan')
+  })
+})
+
+describe('imageReservationStyle', () => {
+  // The width formula must reproduce exactly what auto layout yields after
+  // the image decodes: height = min(h, h/w * containerWidth, MAX_HEIGHT).
+  it('clamps by natural width for images that fit', () => {
+    expect(imageReservationStyle({ width: 100, height: 50 })).toEqual({
+      'aspect-ratio': '100 / 50',
+      'width': 'min(100px, 100%, 640.00px)', // natural 100px wins
+    })
+  })
+
+  it('clamps by width-at-max-height for tall images', () => {
+    // 800x1600 hits the 320px max height at width 160 — the reserved box
+    // stops at the visible image edge instead of spanning the container.
+    expect(imageReservationStyle({ width: 800, height: 1600 })).toEqual({
+      'aspect-ratio': '800 / 1600',
+      'width': 'min(800px, 100%, 160.00px)',
+    })
+  })
+
+  it('leaves wide images to the container clamp', () => {
+    expect(imageReservationStyle({ width: 640, height: 480 })).toEqual({
+      'aspect-ratio': '640 / 480',
+      'width': 'min(640px, 100%, 426.67px)',
+    })
   })
 })
 

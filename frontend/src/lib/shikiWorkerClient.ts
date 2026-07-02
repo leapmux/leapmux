@@ -2,6 +2,7 @@ import type { TokenizeRequest, TokenizeResponse } from './shikiWorker'
 import type { CachedToken } from './tokenCache'
 import { getCachedTokens, makeKey, setCachedTokens } from './tokenCache'
 import { createWorkerClient } from './workerClient'
+import { createWorkerPriorityGate } from './workerPriorityGate'
 
 // The lazy worker lifecycle (spawn / dispatch-by-id / crash recovery) lives in the
 // shared factory; this client layers the token cache + in-flight coalescing on top.
@@ -19,13 +20,23 @@ const client = createWorkerClient<TokenizeRequest, CachedToken[][] | null>({
 // token cache (`${lang}\0${code}`); each entry is dropped when its promise settles.
 const inFlightByKey = new Map<string, Promise<CachedToken[][] | null>>()
 
+// Dispatch order gate shared by all tokenize requests: viewport code surfaces
+// preempt overscan ones (see createWorkerPriorityGate).
+const gate = createWorkerPriorityGate()
+
 /**
  * Tokenize code asynchronously via the Web Worker.
  * Checks the cache first and populates it on completion.
+ *
+ * `isLowPriority` (re-read at each dispatch opportunity) deprioritizes the
+ * request behind currently-high ones. A coalesced duplicate keeps the FIRST
+ * caller's priority — acceptable staleness: identical (lang, code) in two
+ * rows at different priorities is rare, and the result caches for both.
  */
 export function tokenizeAsync(
   lang: string,
   code: string,
+  isLowPriority?: () => boolean,
 ): Promise<CachedToken[][] | null> {
   const cached = getCachedTokens(lang, code)
   if (cached)
@@ -40,8 +51,8 @@ export function tokenizeAsync(
   if (inFlight)
     return inFlight
 
-  const promise = client
-    .request(id => ({ type: 'tokenize', id, lang, code }))
+  const promise = gate
+    .enqueue(() => client.request(id => ({ type: 'tokenize', id, lang, code })), isLowPriority)
     .then((tokens) => {
       // Cache before the value propagates to consumers (a `.then` runs before the awaiter's
       // continuation), so a caller that reads the cache after awaiting sees it populated.

@@ -292,10 +292,13 @@ export const webSearchLinkDomain = style({
 
 // MCP image content. Constrained so a 4K screenshot doesn't take over the
 // chat layout; the image keeps its aspect ratio and shrinks to fit.
+// Exported so the renderer can reserve the exact final box (via inline
+// aspect-ratio/width) for images whose intrinsic size it can sniff.
+export const MCP_IMAGE_MAX_HEIGHT_PX = 320
 export const mcpImage = style({
   display: 'block',
   maxWidth: '100%',
-  maxHeight: '320px',
+  maxHeight: `${MCP_IMAGE_MAX_HEIGHT_PX}px`,
   width: 'auto',
   height: 'auto',
   objectFit: 'contain',

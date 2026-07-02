@@ -35,6 +35,12 @@ export interface AsyncCodeTokensOptions {
    * cached), or null to fall through to the async worker path.
    */
   syncTokenize?: (lang: string, code: string) => CachedToken[][] | null
+  /**
+   * Whether this surface's row currently sits outside the near-viewport band —
+   * passed to the tokenize worker gate as the low-priority thunk, so viewport
+   * code surfaces upgrade first (see RenderContext.rowOffscreen).
+   */
+  rowOffscreen?: () => boolean
 }
 
 /**
@@ -238,7 +244,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
       if (inFlightKey === key)
         return
       inFlightKey = key
-      tokenizeAsync(resolvedLang, code).then((next) => {
+      tokenizeAsync(resolvedLang, code, opts.rowOffscreen).then((next) => {
         // Untrack this dispatch only if it is still the live one (a later key change may
         // have superseded inFlightKey with a newer dispatch we must not clear).
         if (inFlightKey === key)

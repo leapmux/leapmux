@@ -14,6 +14,7 @@ describe('chatpremeasurequeue', () => {
     const candidate = (id: string): ChatDomPremeasureCandidate => ({ entry: entries.get(id)!, item: itemById.get(id)! })
     const [ranged, setRanged] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [lookAhead, setLookAhead] = createSignal<ChatDomPremeasureCandidate[]>([])
+    const [warmup, setWarmup] = createSignal<ChatDomPremeasureCandidate[]>([])
     const queue = createPremeasureQueue({
       virt: {
         hasMeasuredHeight: id => measured.has(id),
@@ -29,8 +30,9 @@ describe('chatpremeasurequeue', () => {
       liveTailVisibleId: () => liveTailId,
       rangedCandidates: ranged,
       lookAheadCandidates: lookAhead,
+      warmupCandidates: warmup,
     })
-    return { queue, candidate, setRanged, setLookAhead, itemById, measured }
+    return { queue, candidate, setRanged, setLookAhead, setWarmup, itemById, measured }
   }
 
   it('queues ranged candidates as pending+collapsed (live tail exempt) and look-ahead as pending only', () => {
@@ -45,6 +47,22 @@ describe('chatpremeasurequeue', () => {
       // main <For> (nothing to overlap) and collapsing the live tail would flash a
       // blank slot with no following row to protect.
       expect([...h.queue.collapsedPremeasureIds()]).toEqual(['a'])
+      dispose()
+    })
+  })
+
+  it('queues warm-up candidates as pending-only, like look-ahead rows', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['a', 'b'])
+      h.setWarmup([h.candidate('b')])
+
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
+      // Warm-up rows are not in the main <For>, so they must never collapse.
+      expect([...h.queue.collapsedPremeasureIds()]).toEqual([])
+
+      // A settled measurement retires the warm-up row like any other.
+      expect(h.queue.onMeasure('b', 60, 'k-b', 0, true)).toBe(true)
+      expect(h.queue.premeasureCandidates()).toEqual([])
       dispose()
     })
   })

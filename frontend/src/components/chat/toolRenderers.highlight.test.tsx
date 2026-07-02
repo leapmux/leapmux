@@ -27,7 +27,7 @@ describe('json/bash async token highlighting', () => {
     const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} />)
 
     await waitFor(() => {
-      expect(tokenizeAsync).toHaveBeenCalledWith('json', '{"a":1}')
+      expect(tokenizeAsync).toHaveBeenCalledWith('json', '{"a":1}', expect.any(Function))
       expect(container.querySelector('[data-shiki-token]')).not.toBeNull()
     })
     expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
@@ -39,7 +39,7 @@ describe('json/bash async token highlighting', () => {
 
     render(() => <BashHighlightHtml code="echo hi" />)
 
-    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi'))
+    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
   })
 
   it('serves cached tokens synchronously without dispatching to the worker', async () => {
@@ -90,7 +90,7 @@ describe('json/bash async token highlighting', () => {
 
     const { container } = render(() => <BashHighlightHtml code="echo hi" />)
 
-    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi'))
+    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
     await Promise.resolve()
     expect(container.querySelector('[data-shiki-token]')).toBeNull()
     expect(container.textContent).toContain('echo hi')

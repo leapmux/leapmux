@@ -1,4 +1,4 @@
-import type { Component, JSX } from 'solid-js'
+import type { Component } from 'solid-js'
 import { Index, Show } from 'solid-js'
 import {
   PALETTE_SIZE,
@@ -13,11 +13,15 @@ import {
   spanLinesContainerSpanOpener,
   spanPassthroughColors,
 } from './SpanLines.css'
-import { ROW_GAP } from './SpanLines.geometry'
 
 /** Map a 1-based server color index to the corresponding CSS class key. */
 export function spanColorKey(colorIndex: number): string {
   return `color${(colorIndex - 1) % PALETTE_SIZE}`
+}
+
+/** The palette class that sets --span-line-color for a 1-based color index (or '' for none). */
+export function spanColorClassFor(color: number | undefined): string {
+  return color !== undefined && color > 0 ? spanLineColors[spanColorKey(color)] : ''
 }
 
 export interface SpanLine {
@@ -29,8 +33,6 @@ export interface SpanLine {
 
 interface SpanLinesProps {
   lines: (SpanLine | null)[]
-  previousLines?: (SpanLine | null)[]
-  previousBodySpanKey?: string
   spanOpener?: boolean
 }
 
@@ -47,10 +49,7 @@ function classFor(line: SpanLine | null): string {
   if (line === null)
     return spanLineEmpty
   const baseClass = TYPE_STYLES[line.type] || spanLineActive
-  const color = line.color ?? 0
-  const colorClass = color > 0
-    ? spanLineColors[spanColorKey(color)]
-    : ''
+  const colorClass = spanColorClassFor(line.color)
   const ptClass = line.passthrough_color != null && line.passthrough_color > 0
     ? spanPassthroughColors[spanColorKey(line.passthrough_color)]
     : ''
@@ -87,6 +86,12 @@ export function bodySpanKey(spanId: string | undefined, spanColor: number | unde
   return spanColor !== undefined && spanColor > 0 ? `color:${spanColor}` : undefined
 }
 
+/**
+ * Whether a column's vertical rail continues from the row above — i.e. the
+ * inter-row gap needs a bridge segment for this column. Consumed by the
+ * gap-bridge overlay (SpanLineGapBridges); the in-row columns themselves
+ * stay strictly inside the row box so rows can paint-contain.
+ */
 export function shouldConnectSpanLineTop(line: SpanLine | null, previousLine: SpanLine | null, previousBodySpanKey?: string): boolean {
   if (!hasVerticalTop(line))
     return false
@@ -98,12 +103,6 @@ export function shouldConnectSpanLineTop(line: SpanLine | null, previousLine: Sp
   if (!hasVerticalBottom(previousLine))
     return false
   return lineKey === verticalSpanKey(previousLine)
-}
-
-function columnStyle(line: SpanLine | null, previousLine: SpanLine | null, previousBodySpanKey: string | undefined): JSX.CSSProperties {
-  return {
-    '--span-row-top-overhang': shouldConnectSpanLineTop(line, previousLine, previousBodySpanKey) ? ROW_GAP : '0px',
-  }
 }
 
 export const SpanLines: Component<SpanLinesProps> = (props) => {
@@ -118,12 +117,7 @@ export const SpanLines: Component<SpanLinesProps> = (props) => {
           of recreating every column div the way reference-keyed <For> would.
         */}
         <Index each={props.lines}>
-          {(line, index) => (
-            <div
-              class={classFor(line())}
-              style={columnStyle(line(), props.previousLines?.[index] ?? null, props.previousBodySpanKey)}
-            />
-          )}
+          {line => <div class={classFor(line())} />}
         </Index>
       </div>
     </Show>

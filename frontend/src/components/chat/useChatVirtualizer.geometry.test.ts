@@ -540,3 +540,85 @@ describe('samevirtualitems geometry equality', () => {
     expect(sameVirtualItems(arr, arr)).toBe(true)
   })
 })
+
+describe('primeheights bulk hydration and snapshotheights', () => {
+  it('commits a whole batch with ONE geometryVersion bump', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(4))
+      const before = virt.geometryVersion()
+      const adopted = virt.primeHeights([
+        { id: 'm1', heightKey: undefined, height: 50 },
+        { id: 'm2', heightKey: undefined, height: 60 },
+        { id: 'm3', heightKey: undefined, height: 70 },
+      ])
+      expect(adopted).toBe(3)
+      expect(virt.geometryVersion()).toBe(before + 1)
+      expect(virt.heightOfIndex(0)).toBe(50)
+      expect(virt.heightOfIndex(1)).toBe(60)
+      expect(virt.heightOfIndex(2)).toBe(70)
+      // m4 stays on the estimate (median of 50/60/70 = 60).
+      expect(virt.heightOfIndex(3)).toBe(60)
+      dispose()
+    })
+  })
+
+  it('skips unknown ids, stale keys, and unusable heights without bumping geometry', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [
+        { id: 'm1', hasSpanLines: false, heightKey: 'k-live' },
+        { id: 'm2', hasSpanLines: false, heightKey: 'k-live' },
+      ]
+      const { virt } = setup(items)
+      const before = virt.geometryVersion()
+      const adopted = virt.primeHeights([
+        { id: 'ghost', heightKey: 'k-live', height: 50 }, // not in the list
+        { id: 'm1', heightKey: 'k-stale', height: 50 }, // wrong layout epoch
+        { id: 'm2', heightKey: 'k-live', height: 0 }, // unusable height
+      ])
+      expect(adopted).toBe(0)
+      expect(virt.geometryVersion()).toBe(before)
+      expect(virt.hasMeasuredHeight('m1')).toBe(false)
+      dispose()
+    })
+  })
+
+  it('never overwrites a mounted row\'s live visible measurement', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(2))
+      virt.attachRow('m1', fakeRow(150))
+      virt.measure('m1', 150)
+      const adopted = virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 999 }])
+      expect(adopted).toBe(0)
+      expect(virt.heightOfIndex(0)).toBe(150)
+      dispose()
+    })
+  })
+
+  it('queues behind the momentum-scroll deferral gate instead of committing', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(2))
+      virt.setVisibleMeasurementDeferral(true)
+      expect(virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 220 }])).toBe(0)
+      expect(virt.hasMeasuredHeight('m1')).toBe(false)
+      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
+      virt.setVisibleMeasurementDeferral(false)
+      expect(virt.flushDeferredMeasurements()).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(220)
+      dispose()
+    })
+  })
+
+  it('snapshotHeights exports the cache in LRU order (oldest measurement first)', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(3))
+      virt.measure('m1', 100)
+      virt.measure('m2', 110)
+      virt.measure('m1', 120) // re-measure refreshes m1 to most-recent
+      expect(virt.snapshotHeights()).toEqual([
+        { id: 'm2', heightKey: undefined, height: 110 },
+        { id: 'm1', heightKey: undefined, height: 120 },
+      ])
+      dispose()
+    })
+  })
+})

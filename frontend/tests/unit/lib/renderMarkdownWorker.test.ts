@@ -42,7 +42,7 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(html).toContain('language-js')
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
-    expect(mockWorker).toHaveBeenCalledWith('```js\nconst x = 1\n```')
+    expect(mockWorker).toHaveBeenCalledWith('```js\nconst x = 1\n```', undefined)
   })
 
   it('caches the worker result so a later (reactive) re-render returns the highlighted HTML', async () => {

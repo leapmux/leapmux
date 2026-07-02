@@ -104,7 +104,11 @@ function PremeasureRow(props: {
     const root = rowEl
     if (!root)
       return false
-    return Array.from(root.querySelectorAll('img')).some(img => !img.complete)
+    // Images whose box was reserved up front (data-size-reserved, see
+    // McpImageView) are layout-neutral while they decode: their height is
+    // already final, so they don't hold the row's measurement unsettled.
+    return Array.from(root.querySelectorAll('img'))
+      .some(img => !img.complete && img.getAttribute('data-size-reserved') !== '1')
   }
   const scheduleMeasure = (id: string, heightKey: string | undefined, onMeasure: typeof props.onMeasure): void => {
     // Keyed by row id, so a re-schedule for the same row (heightKey churn, an image

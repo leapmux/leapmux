@@ -110,6 +110,87 @@ describe('claude MCP tool_result rendering', () => {
     expect(img?.getAttribute('loading')).toBe('eager')
   })
 
+  /** Minimal PNG header (signature + IHDR) declaring the given dimensions. */
+  function pngBase64(width: number, height: number): string {
+    const u32 = (v: number) => [(v >>> 24) & 0xFF, (v >>> 16) & 0xFF, (v >>> 8) & 0xFF, v & 0xFF]
+    const bytes = [
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+      ...u32(13),
+      0x49,
+      0x48,
+      0x44,
+      0x52,
+      ...u32(width),
+      ...u32(height),
+    ]
+    return btoa(String.fromCharCode(...bytes))
+  }
+
+  // NOTE: jsdom's CSS engine drops `min()` widths and `aspect-ratio`
+  // declarations, so these tests assert the reservation lifecycle via the
+  // data attribute; the exact style formula is unit-tested in
+  // results/mcpToolCall.test.tsx (imageReservationStyle).
+  it('reserves the intrinsic box for images with a sniffable header', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+    ])
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'mcp__playwright__screenshot',
+    })
+    const img = container.querySelector('img')!
+    expect(img.getAttribute('data-size-reserved')).toBe('1')
+  })
+
+  it('leaves unsniffable images unreserved (truncated header)', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+    ])
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'mcp__playwright__screenshot',
+    })
+    const img = container.querySelector('img')!
+    expect(img.getAttribute('data-size-reserved')).toBeNull()
+    expect(img.getAttribute('style')).toBeNull()
+  })
+
+  it('drops the reservation when the decoded image disagrees with the sniffed ratio', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+    ])
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'mcp__playwright__screenshot',
+    })
+    const img = container.querySelector('img')!
+    expect(img.getAttribute('data-size-reserved')).toBe('1')
+    // Decoded dimensions that contradict the header (sniffer bug / exotic
+    // file): the reservation must self-heal back to natural sizing.
+    Object.defineProperty(img, 'naturalWidth', { value: 100, configurable: true })
+    Object.defineProperty(img, 'naturalHeight', { value: 100, configurable: true })
+    img.dispatchEvent(new Event('load'))
+    expect(img.getAttribute('data-size-reserved')).toBeNull()
+  })
+
+  it('keeps the reservation when the decoded image matches (within rounding slack)', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+    ])
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'mcp__playwright__screenshot',
+    })
+    const img = container.querySelector('img')!
+    Object.defineProperty(img, 'naturalWidth', { value: 640, configurable: true })
+    Object.defineProperty(img, 'naturalHeight', { value: 480, configurable: true })
+    img.dispatchEvent(new Event('load'))
+    expect(img.getAttribute('data-size-reserved')).toBe('1')
+  })
+
   it('renders external image URLs as a link (not inlined)', () => {
     const parsed = makeMcpToolResult([
       { type: 'image', url: 'https://example.com/screenshot.png' },

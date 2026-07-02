@@ -394,6 +394,7 @@ function AsyncHighlightedCode(props: {
     code: () => props.code,
     eligible,
     gate: () => tokenGateFromContext(props.context),
+    rowOffscreen: () => props.context?.rowOffscreen?.() === true,
   })
   return (
     <TokenizedCode
@@ -502,6 +503,7 @@ function renderReadOrPre(
           premeasureMode={context?.premeasureMode}
           syntaxHighlightingPaused={pauseSyntax}
           textSelectionActive={context?.textSelectionActive}
+          rowOffscreen={context?.rowOffscreen}
         />
         <Show when={!collapsed}>
           <For each={trailing}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>

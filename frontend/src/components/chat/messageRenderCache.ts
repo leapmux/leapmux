@@ -1,3 +1,5 @@
+import { fnv1a32Hex } from '~/lib/stringDigest'
+
 export interface MessageRenderCache {
   get: <T>(key: string) => T | undefined
   set: <T>(key: string, value: T) => T
@@ -132,14 +134,5 @@ export function cachedRenderValueForStrings<T>(
 }
 
 export function stableStringCacheKey(namespace: string, input: string): string {
-  return `${namespace}:${input.length}:${fnv1a32(input)}`
-}
-
-function fnv1a32(input: string): string {
-  let hash = 0x811C9DC5
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(36)
+  return `${namespace}:${input.length}:${fnv1a32Hex(input)}`
 }

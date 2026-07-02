@@ -42,6 +42,12 @@ export interface PremeasureQueueDeps {
   rangedCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
   /** Unmeasured rows just outside the range (premeasured, never collapsed). */
   lookAheadCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /**
+   * Idle warm-up rows from deeper in the window (see createPremeasureWarmup).
+   * Treated exactly like look-ahead rows: premeasured, never collapsed.
+   * Optional so tests and non-warming callers can omit the band.
+   */
+  warmupCandidates?: Accessor<readonly ChatDomPremeasureCandidate[]>
 }
 
 /**
@@ -82,9 +88,11 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       if (candidate.item.id !== liveTailId)
         nextCollapsed.add(candidate.item.id)
     }
-    // Look-ahead band rows are premeasured (pending) but never marked invisible: they
-    // are not rendered in the main list, so they need no collapse entry.
+    // Look-ahead and warm-up band rows are premeasured (pending) but never marked
+    // invisible: they are not rendered in the main list, so they need no collapse entry.
     for (const candidate of deps.lookAheadCandidates())
+      nextPending.add(candidate.item.id)
+    for (const candidate of deps.warmupCandidates?.() ?? [])
       nextPending.add(candidate.item.id)
     if (liveTailId !== undefined)
       nextCollapsed.delete(liveTailId)

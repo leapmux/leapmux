@@ -234,8 +234,12 @@ function renderHighlightedSync(text: string): string {
  * (the text changes every frame, so highlighting it would thrash AND caching each
  * distinct frame would churn the placeholder cache the on-screen bodies rely on);
  * under tests it renders synchronously highlighted.
+ *
+ * `isLowPriority` (re-read at each dispatch opportunity) orders this body's
+ * worker render behind currently-high ones — rows outside the near-viewport
+ * band pass it so viewport rows upgrade first (see createWorkerPriorityGate).
  */
-export function renderMarkdown(text: string, skipCache = false): string {
+export function renderMarkdown(text: string, skipCache = false, isLowPriority?: () => boolean): string {
   if (skipCache)
     return canUseWorker() ? plainRender(text) : renderHighlightedSync(text)
 
@@ -296,7 +300,7 @@ export function renderMarkdown(text: string, skipCache = false): string {
       scheduleVersionBump()
     }
     try {
-      renderMarkdownInWorker(text)
+      renderMarkdownInWorker(text, isLowPriority)
         .then(complete)
         .catch(() => complete(null))
     }

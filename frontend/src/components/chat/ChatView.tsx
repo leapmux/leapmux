@@ -25,6 +25,8 @@ import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createPremeasureQueue } from './chatPremeasureQueue'
+import { createPremeasureWarmup } from './chatPremeasureWarmup'
+import { createRowHeightPersistence } from './chatRowHeightPersistence'
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { markdownContent } from './markdownEditor/markdownContent.css'
@@ -34,7 +36,8 @@ import { assistantMessage } from './messageStyles.css'
 import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
-import { bodySpanKey, SpanLines } from './widgets/SpanLines'
+import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
+import { SpanLines } from './widgets/SpanLines'
 import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
 import { ThinkingIndicator } from './widgets/ThinkingIndicator'
 
@@ -303,6 +306,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onCleanup(() => streamCoalescer.abort())
 
   let contentRef: HTMLDivElement | undefined
+  // The scroll container (also handed to scroll.attachListRef below). Read
+  // non-reactively by isRowNearViewport at worker-dispatch time.
+  let listEl: HTMLElement | undefined
 
   // Classify + cache the window's messages by id so <For> receives stable object
   // references for unchanged rows. createClassifiedEntryCache owns the cache, the
@@ -433,8 +439,37 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // (a stable Set reference) now that `virt` exists.
   mountedRowIds = virt.mountedIds
 
+  // Reload warm-start: hydrate persisted measured heights (keyed by height-
+  // key digest, so content/width changes self-invalidate) and keep the
+  // stored snapshot fresh. See chatRowHeightPersistence for the model.
+  createRowHeightPersistence({
+    storageId: () => props.agentId,
+    virtualItems,
+    virt,
+  })
+
   const renderCacheKeyForEntry = (entry: ClassifiedEntry): string =>
     `${entry.msg.id}|${heightKeyForEntry(entry, getUiVersion(entry.msg.id))}`
+
+  /**
+   * Whether a row currently intersects the viewport plus half a screen of
+   * slack — the priority band for worker dispatch (RenderContext.rowOffscreen):
+   * rows outside it dispatch their markdown/highlight jobs at low priority.
+   * Deliberately non-reactive: the worker gate re-reads it at each dispatch
+   * opportunity, so it needs the CURRENT scroll position, not a subscription.
+   */
+  const isRowNearViewport = (id: string): boolean => {
+    const el = listEl
+    if (!el)
+      return true // no DOM yet: don't deprioritize anything
+    const index = virt.indexOfId(id)
+    if (index < 0)
+      return false // windowed away: nothing to paint
+    const rowTop = virt.offsetOfIndex(index)
+    const rowBottom = rowTop + virt.heightOfIndex(index)
+    const slack = el.clientHeight / 2
+    return rowBottom >= el.scrollTop - slack && rowTop <= el.scrollTop + el.clientHeight + slack
+  }
 
   createEffect(() => {
     renderCacheStore.prune(visibleEntries().map(renderCacheKeyForEntry))
@@ -481,6 +516,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     renderCache: renderCacheStore.forRow(renderCacheKeyForEntry(entry)),
     syntaxHighlightingPaused,
     textSelectionActive,
+    rowOffscreen: () => !isRowNearViewport(entry.msg.id),
   })
 
   // Collect the unmeasured premeasure candidates over the half-open index range [from, to),
@@ -573,6 +609,22 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const liveTailVisibleId = createMemo(() => (
     props.pagination?.hasNewerMessages ? undefined : tailVisibleEntry()?.msg.id
   ))
+  // Idle warm-up: while the pane is visible, sized, quiet (no scroll, no
+  // stream), drain the rest of the window's unmeasured rows in small batches
+  // so a later fling anywhere in the window lands on real geometry.
+  // syntaxHighlightingPaused doubles as the "scroll recently active" gate —
+  // it is set on every scroll and clears after the same idle window.
+  const premeasureWarmup = createPremeasureWarmup({
+    enabled: () => (props.tabActive ?? true)
+      && contentWidth() > 0
+      && !props.streamingText
+      && !syntaxHighlightingPaused(),
+    visibleEntries,
+    virtualItems,
+    range: virt.range,
+    hasMeasuredHeight: virt.hasMeasuredHeight,
+    excludedBandRows: LOOKAHEAD_PREMEASURE_ROWS,
+  })
   // The pending/collapsed/unsettled premeasure coherence lives in its own unit (see
   // createPremeasureQueue); this component supplies the candidate bands + lookups and
   // renders ChatHiddenPremeasure from the returned accessors.
@@ -584,6 +636,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     liveTailVisibleId,
     rangedCandidates: rangedPremeasureCandidates,
     lookAheadCandidates: lookAheadPremeasureCandidates,
+    warmupCandidates: premeasureWarmup.warmupCandidates,
   })
   const { premeasureCandidates, collapsedPremeasureIds } = premeasureQueue
   const [streamReplacementTailId, setStreamReplacementTailId] = createSignal<string | undefined>()
@@ -687,6 +740,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (syntaxHighlightResumeTimer !== undefined)
       clearTimeout(syntaxHighlightResumeTimer)
   })
+
+  // Hide-until-measured, shared by the row itself and its gap-bridge overlay
+  // entry: an actively premeasured unknown-height row stays invisible until
+  // its DOM height commits, so a tall row can't paint beyond its estimated
+  // slot and overlap rows already on screen. Rows with no active premeasure
+  // stay visible so a zero attach read cannot hide content forever.
+  const rowHiddenUntilMeasured = (id: string): boolean => (
+    isStreamReplacementCoveredByInFlowTail(id)
+    || (
+      !virt.hasMeasuredHeight(id)
+      && collapsedPremeasureIds().has(id)
+      && streamReplacementTailId() !== id
+      && liveTailVisibleId() !== id
+    )
+  )
 
   const renderMessageBubble = (entry: ClassifiedEntry, opts: { premeasureMode?: boolean } = {}) => (
     <MessageBubble
@@ -803,6 +871,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       <div class={styles.messageListWrapper}>
         <div
           ref={(el) => {
+            listEl = el
             scroll.attachListRef(el)
             viewportSizeObserver.observe(el)
           }}
@@ -860,8 +929,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   -- it stalls there until the buffer filler loads more, never skips.
                 */}
                 <div class={styles.virtualSpacer} style={{ height: `${virt.totalHeight()}px` }}>
+                  {/* Inter-row rail segments, outside the paint-contained rows
+                      (before the <For>, so rows paint over any overlap). Keyed
+                      on the same stable entry references as the row <For>, so
+                      geometry changes move anchors in place instead of
+                      recreating the overlay DOM. */}
+                  <SpanLineGapBridges
+                    entries={visibleSlice()}
+                    precedingEntry={visibleEntries()[virt.range().start - 1]}
+                    topOf={id => virt.offsetOfId(id) ?? 0}
+                    hiddenOf={rowHiddenUntilMeasured}
+                  />
                   <For each={visibleSlice()}>
-                    {(entry, index) => {
+                    {(entry) => {
                       const { msg, parsedSpanLines } = entry
                       // Offset is resolved by the row's own id, not by
                       // range().start + localIndex(): the id is the stable,
@@ -869,26 +949,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       // optimistic local), so it can't transiently disagree with
                       // the slice bounds during a scroll/measure flush.
                       const top = () => virt.offsetOfId(msg.id) ?? 0
-                      const hideUntilMeasured = () => (
-                        isStreamReplacementCoveredByInFlowTail(msg.id)
-                        || (
-                          !virt.hasMeasuredHeight(msg.id)
-                          && collapsedPremeasureIds().has(msg.id)
-                          && streamReplacementTailId() !== msg.id
-                          && liveTailVisibleId() !== msg.id
-                        )
-                      )
-                      const previousSpanLines = () => {
-                        const previousIndex = virt.range().start + index() - 1
-                        return visibleEntries()[previousIndex]?.parsedSpanLines ?? []
-                      }
-                      const previousBodySpanKey = () => {
-                        const previousIndex = virt.range().start + index() - 1
-                        const previous = visibleEntries()[previousIndex]
-                        if (previous?.category.kind !== 'tool_use')
-                          return undefined
-                        return bodySpanKey(previous.msg.spanId, previous.msg.spanColor)
-                      }
                       const bubble = renderMessageBubble(entry)
 
                       return (
@@ -896,14 +956,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           class={`${styles.virtualRow} ${styles.virtualRowAppear}`}
                           style={{
                             transform: `translateY(${top()}px)`,
-                            // Absolute rows do not reserve flow height for siblings.
-                            // Keep an actively premeasured unknown-height row invisible
-                            // until its DOM height has committed. Otherwise a tall row
-                            // can paint beyond its estimated slot and overlap rows that
-                            // are already on screen. Rows with no active premeasure stay
-                            // visible so a zero attach read cannot hide content forever.
-                            visibility: hideUntilMeasured() ? 'hidden' : undefined,
-                            opacity: hideUntilMeasured() ? '0' : '1',
+                            // Absolute rows do not reserve flow height for
+                            // siblings — see rowHiddenUntilMeasured for why an
+                            // unmeasured premeasuring row stays invisible.
+                            visibility: rowHiddenUntilMeasured(msg.id) ? 'hidden' : undefined,
+                            opacity: rowHiddenUntilMeasured(msg.id) ? '0' : '1',
                           }}
                           data-seq={msg.seq.toString()}
                           ref={(el) => {
@@ -918,8 +975,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                             <div class={styles.messageRow}>
                               <SpanLines
                                 lines={parsedSpanLines}
-                                previousBodySpanKey={previousBodySpanKey()}
-                                previousLines={previousSpanLines()}
                                 spanOpener={!!msg.spanId}
                               />
                               <div class={styles.messageRowContent}>

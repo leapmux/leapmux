@@ -22,6 +22,18 @@ export default createHandler(() => (
           <link rel="apple-touch-icon" href="/icons/leapmux-icon-square-apple-touch.png" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+          {/*
+            Preload the Hack NF faces so code blocks lay out with the real font
+            on first paint. Without this the woff2 fetch starts only when the
+            first code block matches the @font-face, and the late swap changes
+            code-block heights — every one of which the chat virtualizer must
+            re-measure and re-anchor. `crossorigin` is required: font preloads
+            without it use a different fetch mode and the browser re-downloads.
+          */}
+          <link rel="preload" href="/fonts/HackNerdFont-3.003-Regular.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+          <link rel="preload" href="/fonts/HackNerdFont-3.003-Bold.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+          <link rel="preload" href="/fonts/HackNerdFont-3.003-Italic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+          <link rel="preload" href="/fonts/HackNerdFont-3.003-BoldItalic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
           {assets}
         </head>
         <body>

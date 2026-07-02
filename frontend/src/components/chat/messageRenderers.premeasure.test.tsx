@@ -75,6 +75,15 @@ describe('markdown text premeasure mode', () => {
     expect(renderMarkdown).not.toHaveBeenCalled()
   })
 
+  it('passes the context rowOffscreen thunk through as the dispatch priority', () => {
+    // The worker gate re-reads this thunk at dequeue time; the render path
+    // must hand the SAME function through, not a snapshot of its value.
+    const rowOffscreen = () => true
+    render(() => <MarkdownText text="**x**" context={{ rowOffscreen }} />)
+
+    expect(renderMarkdown).toHaveBeenCalledWith('**x**', false, rowOffscreen)
+  })
+
   it('renders highlighted markdown after an initially active text selection clears', () => {
     const [selectionActive, setSelectionActive] = createSignal(true)
     const { container } = render(() => (
@@ -90,7 +99,7 @@ describe('markdown text premeasure mode', () => {
     setSelectionActive(false)
 
     expect(container.innerHTML).toContain('<p>highlighted</p>')
-    expect(renderMarkdown).toHaveBeenCalledWith('**x**')
+    expect(renderMarkdown).toHaveBeenCalledWith('**x**', false, undefined)
   })
 
   it('uses cached highlighted markdown when available and does not dispatch highlighted rendering while visible scrolling is busy', () => {
@@ -131,7 +140,7 @@ describe('markdown text premeasure mode', () => {
     const { container } = render(() => <MarkdownText text="**x**" />)
 
     expect(container.innerHTML).toContain('<p>highlighted</p>')
-    expect(renderMarkdown).toHaveBeenCalledWith('**x**')
+    expect(renderMarkdown).toHaveBeenCalledWith('**x**', false, undefined)
     expect(renderMarkdownPlain).not.toHaveBeenCalled()
   })
 
@@ -140,7 +149,7 @@ describe('markdown text premeasure mode', () => {
 
     render(() => <MarkdownText text="**x**" context={{ renderCache: cache }} />)
 
-    expect(renderMarkdown).toHaveBeenCalledWith('**x**')
+    expect(renderMarkdown).toHaveBeenCalledWith('**x**', false, undefined)
     expect(getCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**')).toBeUndefined()
   })
 

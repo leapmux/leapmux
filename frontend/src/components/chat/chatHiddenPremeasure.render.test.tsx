@@ -95,6 +95,53 @@ describe('chat hidden premeasure rendering', () => {
     }
   })
 
+  it('treats a size-reserved image as settled while it decodes', () => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    }) as typeof requestAnimationFrame
+    globalThis.cancelAnimationFrame = vi.fn() as typeof cancelAnimationFrame
+    try {
+      const onMeasure = vi.fn()
+      const entry = entryWithSpanLines(0)
+      const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
+      const { container } = render(() => (
+        <ChatHiddenPremeasure
+          candidates={[{ entry, item }]}
+          contentWidthPx={400}
+          renderBubble={() => (
+            <img alt="reserved" data-size-reserved="1" src="data:image/png;base64,iVBORw0KGgo=" />
+          )}
+          onMeasure={onMeasure}
+        />
+      ))
+      const row = container.firstElementChild?.firstElementChild as HTMLElement
+      vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 24 }) as DOMRect)
+      // Still decoding — but the box is reserved, so the height is already
+      // final and the measurement must commit settled (no re-measure hold).
+      Object.defineProperty(container.querySelector('img')!, 'complete', {
+        configurable: true,
+        get: () => false,
+      })
+
+      frames.shift()?.(0)
+      expect(onMeasure).toHaveBeenCalledWith('m1', 24, 'k1', expect.any(Number), true)
+    }
+    finally {
+      if (originalRaf)
+        globalThis.requestAnimationFrame = originalRaf
+      else
+        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
+      if (originalCancelRaf)
+        globalThis.cancelAnimationFrame = originalCancelRaf
+      else
+        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
+    }
+  })
+
   it('measures a whole band in ONE shared frame: all rect reads happen before any commit', () => {
     const originalRaf = globalThis.requestAnimationFrame
     const originalCancelRaf = globalThis.cancelAnimationFrame

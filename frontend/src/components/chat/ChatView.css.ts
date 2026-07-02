@@ -461,8 +461,9 @@ export const messageRowContent = style({
   flex: 1,
   minWidth: 0,
   // Isolate the bubble's layout/paint so an internal change (e.g. a tool card
-  // expanding) doesn't invalidate siblings. Kept off the row itself so it never
-  // clips the span-line bridge pseudo-elements that overflow each row.
+  // expanding) doesn't invalidate the span columns beside it. The row itself
+  // is also contained (see virtualRow); this inner boundary keeps bubble
+  // churn from re-laying-out the sibling SpanLines flex column.
   contain: 'layout paint',
 })
 
@@ -477,14 +478,21 @@ export const virtualSpacer = style({
   overflowAnchor: 'none',
 })
 
-// A single virtualized message row, positioned by translateY. Must NOT set
-// `contain: paint` / `content-visibility` — that would clip the span-line
-// bridges that intentionally overflow the row to connect adjacent rails.
+// A single virtualized message row, positioned by translateY. Rows own no
+// out-of-box decorations — the span-line segments that cross the inter-row
+// gap render in the SpanLineGapBridges overlay, a SIBLING of the rows — so
+// each row can contain its layout and paint: a tool card expanding, a
+// highlight landing, or any other in-row change invalidates that row alone
+// instead of leaking into sibling layout. (`contain: size` must stay OFF:
+// rows size to content, which is what the height measurement reads. And no
+// `content-visibility`: skipping offscreen rendering would collapse the very
+// heights the premeasure pipeline exists to capture.)
 export const virtualRow = style({
   'position': 'absolute',
   'top': 0,
   'left': 0,
   'right': 0,
+  'contain': 'layout paint',
   'transition': 'opacity var(--transition)',
   '@media': {
     '(prefers-reduced-motion: reduce)': {
