@@ -1,4 +1,4 @@
-import { capMapInsertionOrder } from './mapLru'
+import { lruGet, lruSet } from './mapLru'
 import { recordShikiStyle, shikiStyleDecl } from './shikiStyleClass'
 
 /**
@@ -198,27 +198,15 @@ export function makeKey(lang: string, code: string): string {
 }
 
 export function getCachedTokens(lang: string, code: string): CachedToken[][] | undefined {
-  const key = makeKey(lang, code)
-  const cached = cache.get(key)
-  if (cached !== undefined) {
-    // LRU: move to end (most recently used)
-    cache.delete(key)
-    cache.set(key, cached)
-    return cached
-  }
-  return undefined
+  // lruGet re-fronts the entry on a hit (shared touch-on-read; see mapLru).
+  return lruGet(cache, makeKey(lang, code))
 }
 
 export function setCachedTokens(lang: string, code: string, tokens: CachedToken[][]): void {
-  const key = makeKey(lang, code)
-  // delete+set moves an existing key to the most-recently-used end (and inserts a fresh
-  // key there); capMapInsertionOrder then drops the oldest entries past the bound.
-  // Sharing the tested LRU util keeps this cache's eviction identical to the markdown
-  // cache's and avoids the bespoke path's needless eviction when OVERWRITING an existing
-  // key at capacity (size never grew, yet the old code dropped an unrelated live entry).
-  cache.delete(key)
-  cache.set(key, tokens)
-  capMapInsertionOrder(cache, CACHE_MAX_SIZE)
+  // Shared delete+set+cap (see mapLru.lruSet): overwriting an existing key at capacity
+  // re-fronts it rather than dropping an unrelated live entry, and the eviction bound
+  // stays identical to the markdown / fragment / word-diff caches'.
+  lruSet(cache, makeKey(lang, code), tokens, CACHE_MAX_SIZE)
 }
 
 /** Visible for testing: the capacity bound, and a hook to clear the shared cache. */

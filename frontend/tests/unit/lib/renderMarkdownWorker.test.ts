@@ -21,7 +21,7 @@ async function flushMicrotasks() {
   await Promise.resolve()
 }
 
-describe('renderMarkdown off-thread highlight path', () => {
+describe('rendermarkdown off-thread highlight path', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()
@@ -224,7 +224,7 @@ describe('renderMarkdown off-thread highlight path', () => {
   })
 })
 
-describe('renderMarkdown persisted artifacts (IndexedDB warm-start)', () => {
+describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()
@@ -252,6 +252,27 @@ describe('renderMarkdown persisted artifacts (IndexedDB warm-start)', () => {
       expect(renderMarkdown(text)).toBe('<pre class="shiki">PERSISTED</pre>')
     })
     expect(mockWorker).not.toHaveBeenCalled()
+  })
+
+  it('ignores malformed persisted renders and falls back to the worker', async () => {
+    const text = '```js\nconst fallback = 1\n```'
+    await artifactStore.putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+      h: '<pre class="shiki">CORRUPT</pre>',
+      s: { 'not a generated class': 42 },
+    })
+    mockWorker.mockResolvedValue({
+      html: '<pre class="shiki">WORKER</pre>',
+      retryable: false,
+      styles: {},
+    })
+
+    const first = renderMarkdown(text)
+    expect(first).not.toContain('WORKER')
+
+    await vi.waitFor(() => {
+      expect(renderMarkdown(text)).toBe('<pre class="shiki">WORKER</pre>')
+    })
+    expect(mockWorker).toHaveBeenCalledTimes(1)
   })
 
   it('persists a clean worker render (HTML + style dictionary) for the next session', async () => {

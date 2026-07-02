@@ -515,7 +515,7 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  describe('heightDebugOfId (raw-JSON debug surface)', () => {
+  describe('heightdebugofid (raw-json debug surface)', () => {
     it('returns measured undefined before the row is measured', () => {
       createRoot((dispose) => {
         const { virt } = setup(plainItems(2))

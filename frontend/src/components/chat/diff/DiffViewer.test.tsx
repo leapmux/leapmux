@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
 import { setCachedTokens } from '~/lib/tokenCache'
 import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk, rawDiffToHunks } from '.'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
@@ -358,7 +359,7 @@ describe('diffView ansi (.log) highlighting', () => {
     expect(greenSpan).toBeTruthy()
     // The token's shared style class defines the dual-theme variables (shikiStyleClass).
     expect(greenSpan!.className).toMatch(/^sk-/)
-    expect(document.querySelector('style[data-shiki-style-classes]')!.textContent)
+    expect(readInjectedShikiRules())
       .toContain(`.${greenSpan!.className}{`)
     // The raw escape byte never reaches the DOM (it would if the line rendered plain).
     expect(container.textContent).not.toContain(ESC)

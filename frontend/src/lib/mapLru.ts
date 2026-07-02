@@ -40,3 +40,42 @@ export function capMapInsertionOrder<K, V>(
   }
   return map
 }
+
+/**
+ * LRU read: on a hit, move `key` to the most-recently-used (insertion-order) end so a
+ * later `lruSet` / `capMapInsertionOrder` sheds genuinely-idle keys first. Returns the
+ * stored value, or undefined on a miss (which leaves the map untouched). `map.has` is
+ * consulted so a legitimately-stored `undefined` value is still treated as a hit.
+ *
+ * The single home for the "on hit, delete + re-set to re-front the entry" idiom the
+ * render/token/word-diff caches all share, so the touch-on-read contract can't drift.
+ */
+export function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
+  if (!map.has(key))
+    return undefined
+  const value = map.get(key) as V
+  map.delete(key)
+  map.set(key, value)
+  return value
+}
+
+/**
+ * LRU write: (re-)insert `key` at the most-recently-used end -- delete + set moves an
+ * existing key there, so overwriting at capacity never drops an unrelated live entry --
+ * then shed insertion-order-oldest entries past `max`. `opts` (protect / onEvict) is
+ * forwarded to `capMapInsertionOrder`. Mutates `map`.
+ *
+ * The single home for the "delete + set + cap" idiom the render/token/fragment/word-diff
+ * caches all share, so their bound + eviction can't drift apart.
+ */
+export function lruSet<K, V>(
+  map: Map<K, V>,
+  key: K,
+  value: V,
+  max: number,
+  opts?: { protect?: ReadonlySet<K>, onEvict?: (key: K) => void },
+): void {
+  map.delete(key)
+  map.set(key, value)
+  capMapInsertionOrder(map, max, opts)
+}

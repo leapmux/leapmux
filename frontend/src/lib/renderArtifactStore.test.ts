@@ -1,4 +1,4 @@
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetArtifactStoreForTest,
@@ -94,11 +94,47 @@ describe('renderartifactstore', () => {
     await putArtifact('ns', 'first', 'a', 1000)
     await putArtifact('ns', 'second', 'b', 2000)
     // Touch 'first' AFTER 'second' was written: it becomes the most recent.
-    await expect(getArtifact('ns', 'first', 3000)).resolves.toBe('a')
+    // touchIntervalMs 0 forces the touch regardless of how recent the stamp is.
+    await expect(getArtifact('ns', 'first', 3000, 0)).resolves.toBe('a')
     const deleted = await sweepArtifacts({ maxEntries: 1, now: 3000 })
     expect(deleted).toBe(1)
     await expect(getArtifact('ns', 'first')).resolves.toBe('a')
     await expect(getArtifact('ns', 'second')).resolves.toBeUndefined()
+  })
+
+  it('skips the recency touch-write while the stored stamp is still fresh', async () => {
+    await putArtifact('ns', 's', 'v', 1000)
+    const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put')
+    try {
+      // Read within touchIntervalMs of the stamp: the payload must NOT be
+      // re-serialized/re-written just to bump `at` by a hair.
+      await expect(getArtifact('ns', 's', 1000 + 60_000, 3_600_000)).resolves.toBe('v')
+      expect(putSpy).not.toHaveBeenCalled()
+      // Read past the interval: the stamp is refreshed with one write.
+      await expect(getArtifact('ns', 's', 1000 + 4_000_000, 3_600_000)).resolves.toBe('v')
+      expect(putSpy).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      putSpy.mockRestore()
+    }
+  })
+
+  it('still serves a valid hit when the recency-touch write fails', async () => {
+    await putArtifact('ns', 'source-text', '<p>html</p>', 1000)
+    // A failing recency refresh (quota / blocked write) must NOT turn a valid
+    // read into a miss: the artifact was already read before the touch runs.
+    // touchIntervalMs 0 forces the touch so the failing write is exercised.
+    const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => {
+      throw new Error('QuotaExceededError')
+    })
+    try {
+      await expect(getArtifact('ns', 'source-text', 5000, 0)).resolves.toBe('<p>html</p>')
+    }
+    finally {
+      putSpy.mockRestore()
+    }
+    // The store is intact and still serves the value after the failed touch.
+    await expect(getArtifact('ns', 'source-text')).resolves.toBe('<p>html</p>')
   })
 
   it('degrades to no-ops without indexedDB', async () => {

@@ -95,7 +95,7 @@ describe('chat hidden premeasure rendering', () => {
     }
   })
 
-  it('treats a size-reserved image as settled while it decodes', () => {
+  it('keeps a size-reserved image unsettled while it decodes', () => {
     const originalRaf = globalThis.requestAnimationFrame
     const originalCancelRaf = globalThis.cancelAnimationFrame
     const frames: FrameRequestCallback[] = []
@@ -120,15 +120,15 @@ describe('chat hidden premeasure rendering', () => {
       ))
       const row = container.firstElementChild?.firstElementChild as HTMLElement
       vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 24 }) as DOMRect)
-      // Still decoding — but the box is reserved, so the height is already
-      // final and the measurement must commit settled (no re-measure hold).
+      // Still decoding: the reservation might be revoked by the decode-time
+      // verifier, so the hidden row cannot commit as settled yet.
       Object.defineProperty(container.querySelector('img')!, 'complete', {
         configurable: true,
         get: () => false,
       })
 
       frames.shift()?.(0)
-      expect(onMeasure).toHaveBeenCalledWith('m1', 24, 'k1', expect.any(Number), true)
+      expect(onMeasure).toHaveBeenCalledWith('m1', 24, 'k1', expect.any(Number), false)
     }
     finally {
       if (originalRaf)

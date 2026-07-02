@@ -733,7 +733,7 @@ describe('usechatscroll resize sticky-bottom', () => {
     }))
 })
 
-describe('usechatscroll getScrollState', () => {
+describe('usechatscroll getscrollstate', () => {
   it('saves a raw scrollTop fallback when scrolled away but no anchor resolves', () => {
     createRoot((dispose) => {
       const div = makeFakeScrollDiv()

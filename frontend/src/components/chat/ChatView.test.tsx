@@ -143,6 +143,7 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
       indexOfId: (id: string) => Number(id.slice(1)),
       offsetOfIndex: (index: number) => index * 100,
       heightOfIndex: () => 100,
+      heightOfId: () => 100,
       hasMeasuredHeight: (id: string) => {
         version()
         return virtualizerState.measuredIds.has(id)

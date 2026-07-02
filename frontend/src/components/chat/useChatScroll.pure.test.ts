@@ -185,7 +185,7 @@ describe('createscrollvelocity', () => {
   })
 })
 
-describe('inferScrollDirection', () => {
+describe('inferscrolldirection', () => {
   it('returns older when scrollTop moved up (toward older history)', () => {
     expect(inferScrollDirection(500, 300)).toBe('older')
   })

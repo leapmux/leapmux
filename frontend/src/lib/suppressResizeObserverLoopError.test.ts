@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installResizeObserverLoopErrorSuppressor, isResizeObserverLoopError } from './suppressResizeObserverLoopError'
 
-describe('isResizeObserverLoopError', () => {
+describe('isresizeobserverlooperror', () => {
   it('matches both known ResizeObserver loop messages', () => {
     expect(isResizeObserverLoopError('ResizeObserver loop completed with undelivered notifications')).toBe(true)
     expect(isResizeObserverLoopError('ResizeObserver loop completed with undelivered notifications.')).toBe(true)
@@ -22,7 +22,7 @@ describe('isResizeObserverLoopError', () => {
   })
 })
 
-describe('installResizeObserverLoopErrorSuppressor', () => {
+describe('installresizeobserverlooperrorsuppressor', () => {
   const disposers: Array<() => void> = []
 
   afterEach(() => {

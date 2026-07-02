@@ -1,5 +1,5 @@
 import type { ChatScrollState, ScrollContext } from './useChatScroll'
-import { clampScrollTop, isNearTopBand, maxScrollTopOf } from './chatScrollGeometry'
+import { clampScrollTop, isNearTopBand, maxScrollTopOf, STICKY_BOTTOM_THRESHOLD_PX } from './chatScrollGeometry'
 
 /**
  * The hidden->visible context captured once at the top of handleResize (before
@@ -253,17 +253,21 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
 
   // Shared tail for both restore entry points (the resize flush and restoreOnMount):
   // once a restore/stick has PLACED the viewport, (1) drop the near-top older-load
-  // suppression if the content now FITS -- a non-scrollable viewport emits no scroll
-  // events, so an armed suppression would otherwise wedge older-history pre-fetch off
-  // forever (the flag is cleared elsewhere only by a deliberate scroll into the top
-  // band, and with everything visible a prepend re-pins around a stable anchor rather
-  // than yanking the reader); and (2) re-arm the geometry-derived memos, since a
-  // programmatic placement / edge clamp fires no scroll event they could react to.
-  // Reads the element fresh so a flush that detached it between placement and here is a
-  // no-op.
+  // suppression if the content now FITS -- or shrank to a barely-scrollable page the
+  // reader can't scroll out of -- since such a viewport emits no scroll events the
+  // suppression's deliberate-scroll-to-top clear could ever fire, so an armed suppression
+  // would otherwise wedge older-history pre-fetch off forever (the flag is cleared
+  // elsewhere only by a deliberate scroll into the top band, and with everything visible a
+  // prepend re-pins around a stable anchor rather than yanking the reader); and (2) re-arm
+  // the geometry-derived memos, since a programmatic placement / edge clamp fires no scroll
+  // event they could react to. The bound is the STICKY BAND, not 0: with 0 < maxScrollTop
+  // <= the band, every scroll position is inside the tail's sticky band, so the fill can
+  // never be reached -- the same wedge suppressOlderPrefetchAtLiveTail avoids with this
+  // bound. Reads the element fresh so a flush that detached it between placement and here
+  // is a no-op.
   const settleGeometryAfterPlacement = () => {
     const el = ctx.getEl()
-    if (el && maxScrollTopOf(el) <= 0)
+    if (el && maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX)
       extras.setSuppressOlder(false)
     extras.onGeometrySettled()
   }

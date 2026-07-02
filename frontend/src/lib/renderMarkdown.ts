@@ -25,7 +25,7 @@ import langTypescript from 'shiki/langs/typescript.mjs'
 import langXml from 'shiki/langs/xml.mjs'
 import langYaml from 'shiki/langs/yaml.mjs'
 import { createSignal } from 'solid-js'
-import { capMapInsertionOrder } from '~/lib/mapLru'
+import { capMapInsertionOrder, lruGet, lruSet } from '~/lib/mapLru'
 import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
 import { getArtifact, isArtifactStoreAvailable, putArtifact, RENDER_ARTIFACT_CACHE_VERSION } from './renderArtifactStore'
@@ -140,6 +140,7 @@ export const MARKDOWN_ARTIFACT_NS = `md@${RENDER_ARTIFACT_CACHE_VERSION}|${DUAL_
 // Per-entry bounds: one pathological body must not dominate the store.
 const PERSIST_MAX_TEXT_LENGTH = 256 * 1024
 const PERSIST_MAX_HTML_LENGTH = 512 * 1024
+const RE_SHIKI_STYLE_CLASS = /^sk-[0-9a-f]{8}-[0-9a-z]+$/
 
 /**
  * Persisted artifact value: the highlighted HTML plus the className ->
@@ -150,6 +151,18 @@ const PERSIST_MAX_HTML_LENGTH = 512 * 1024
 interface PersistedMarkdownArtifact {
   h: string
   s: Record<string, string>
+}
+
+function isPersistedMarkdownArtifact(value: unknown): value is PersistedMarkdownArtifact {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return false
+  const { h, s } = value as { h?: unknown, s?: unknown }
+  if (typeof h !== 'string' || h.length > PERSIST_MAX_HTML_LENGTH)
+    return false
+  if (s === null || typeof s !== 'object' || Array.isArray(s))
+    return false
+  return Object.entries(s).every(([className, decl]) =>
+    RE_SHIKI_STYLE_CLASS.test(className) && typeof decl === 'string')
 }
 
 /**
@@ -163,7 +176,7 @@ function getPersistedMarkdownRender(text: string): Promise<MarkdownRenderResult 
     return undefined
   return getArtifact<PersistedMarkdownArtifact>(MARKDOWN_ARTIFACT_NS, text)
     .then((value) => {
-      if (typeof value?.h !== 'string' || typeof value.s !== 'object' || value.s === null)
+      if (!isPersistedMarkdownArtifact(value))
         return undefined
       return { html: value.h, retryable: false, styles: value.s }
     })
@@ -196,15 +209,6 @@ export function _getPlaceholderCacheSize(): number {
   return placeholderCache.size
 }
 
-// Insert/refresh `key` in an LRU `map` (delete+set moves it to the most-recently-used
-// end) and evict insertion-order-oldest entries past CACHE_MAX_SIZE. Shared by the
-// highlighted and placeholder caches so their bound + eviction can't drift apart.
-function lruSet(map: Map<string, string>, key: string, value: string): void {
-  map.delete(key)
-  map.set(key, value)
-  capMapInsertionOrder(map, CACHE_MAX_SIZE)
-}
-
 /** Raw plain (no-Shiki) render, NOT cached -- for transient/streaming text that never repeats. */
 function plainRender(text: string): string {
   return String(plainMarkdownProcessor.processSync(text))
@@ -212,13 +216,11 @@ function plainRender(text: string): string {
 
 /** Cached plain placeholder -- shown while the worker's highlighted result is in flight. */
 function renderPlain(text: string): string {
-  const cached = placeholderCache.get(text)
-  if (cached !== undefined) {
-    lruSet(placeholderCache, text, cached) // move to MRU end
+  const cached = lruGet(placeholderCache, text) // hit re-fronts to MRU end
+  if (cached !== undefined)
     return cached
-  }
   const result = plainRender(text)
-  lruSet(placeholderCache, text, result)
+  lruSet(placeholderCache, text, result, CACHE_MAX_SIZE)
   return result
 }
 
@@ -241,10 +243,7 @@ export function renderMarkdownPlain(text: string): string {
  * plain→highlighted swap that would clear the browser selection.
  */
 export function getCachedMarkdownHtml(text: string): string | undefined {
-  const cached = markdownCache.get(text)
-  if (cached !== undefined)
-    lruSet(markdownCache, text, cached)
-  return cached
+  return lruGet(markdownCache, text) // hit re-fronts to MRU end
 }
 
 /**
@@ -297,16 +296,14 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
   // registered, including on the cache-hit path.
   markdownVersion()
 
-  const cached = markdownCache.get(text)
-  if (cached !== undefined) {
-    lruSet(markdownCache, text, cached) // move to MRU end
+  const cached = lruGet(markdownCache, text) // hit re-fronts to MRU end
+  if (cached !== undefined)
     return cached
-  }
 
   if (!canUseWorker()) {
     // No worker: render synchronously and cache.
     const html = renderHighlightedSync(text)
-    lruSet(markdownCache, text, html)
+    lruSet(markdownCache, text, html, CACHE_MAX_SIZE)
     return html
   }
 
@@ -346,7 +343,7 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
       // worker minted the class names but has no document (see shikiStyleClass).
       if (result)
         ensureShikiStyleRules(result.styles)
-      lruSet(markdownCache, text, result?.html ?? plainRender(text))
+      lruSet(markdownCache, text, result?.html ?? plainRender(text), CACHE_MAX_SIZE)
       // The highlighted (or fallback) result now serves from markdownCache, so the
       // plain placeholder for this text is dead -- drop it to bound the cache.
       placeholderCache.delete(text)

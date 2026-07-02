@@ -146,6 +146,10 @@ function readU16LE(b: Uint8Array, at: number): number {
   return b[at] | (b[at + 1] << 8)
 }
 
+function readU32LE(b: Uint8Array, at: number): number {
+  return (b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)) >>> 0
+}
+
 function readU32BE(b: Uint8Array, at: number): number {
   // >>> 0 keeps the top bit unsigned.
   return ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
@@ -162,6 +166,8 @@ function parsePng(b: Uint8Array): ImageDimensions | null {
   }
   // Bytes 12-15 must be the IHDR chunk type; a PNG's first chunk is always IHDR.
   if (b[12] !== 0x49 || b[13] !== 0x48 || b[14] !== 0x44 || b[15] !== 0x52)
+    return null
+  if (readU32BE(b, 8) !== 13)
     return null
   return { width: readU32BE(b, 16), height: readU32BE(b, 20) }
 }
@@ -184,7 +190,7 @@ function parseGif(b: Uint8Array): ImageDimensions | null {
  *   - VP8L (lossless): signature 2F at 20, then a bit-packed LE14 pair.
  */
 function parseWebp(b: Uint8Array): ImageDimensions | null {
-  if (b.length < 30)
+  if (b.length < 20)
     return null
   // "RIFF" .... "WEBP"
   if (b[0] !== 0x52 || b[1] !== 0x49 || b[2] !== 0x46 || b[3] !== 0x46)
@@ -192,17 +198,27 @@ function parseWebp(b: Uint8Array): ImageDimensions | null {
   if (b[8] !== 0x57 || b[9] !== 0x45 || b[10] !== 0x42 || b[11] !== 0x50)
     return null
   const chunk = String.fromCharCode(b[12], b[13], b[14], b[15])
+  const chunkPayloadStart = 20
+  const chunkPayloadEnd = chunkPayloadStart + readU32LE(b, 16)
+  const canReadChunkBytes = (at: number, len: number) =>
+    at >= chunkPayloadStart && at + len <= b.length && at + len <= chunkPayloadEnd
   if (chunk === 'VP8X') {
+    if (!canReadChunkBytes(24, 6))
+      return null
     const width = 1 + (b[24] | (b[25] << 8) | (b[26] << 16))
     const height = 1 + (b[27] | (b[28] << 8) | (b[29] << 16))
     return { width, height }
   }
   if (chunk === 'VP8 ') {
+    if (!canReadChunkBytes(20, 10))
+      return null
     if (b[23] !== 0x9D || b[24] !== 0x01 || b[25] !== 0x2A)
       return null
     return { width: readU16LE(b, 26) & 0x3FFF, height: readU16LE(b, 28) & 0x3FFF }
   }
   if (chunk === 'VP8L') {
+    if (!canReadChunkBytes(20, 5))
+      return null
     if (b[20] !== 0x2F)
       return null
     const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24)
@@ -246,10 +262,13 @@ function parseJpeg(b: Uint8Array): ImageDimensions | null {
     const segmentLen = readU16BE(b, markerAt + 2)
     if (segmentLen < 2)
       return null
+    const segmentEnd = markerAt + 2 + segmentLen
+    if (segmentEnd > b.length)
+      return null
     const isSof = marker >= 0xC0 && marker <= 0xCF
       && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC
     if (isSof) {
-      if (markerAt + 9 > b.length)
+      if (markerAt + 9 > segmentEnd)
         return null
       const height = readU16BE(b, markerAt + 5)
       const width = readU16BE(b, markerAt + 7)
@@ -259,10 +278,9 @@ function parseJpeg(b: Uint8Array): ImageDimensions | null {
     }
     if (marker === 0xE1) {
       const payloadStart = markerAt + 4
-      const payloadEnd = Math.min(markerAt + 2 + segmentLen, b.length)
-      orientation = parseExifOrientation(b, payloadStart, payloadEnd) ?? orientation
+      orientation = parseExifOrientation(b, payloadStart, segmentEnd) ?? orientation
     }
-    pos = markerAt + 2 + segmentLen
+    pos = segmentEnd
   }
   return null
 }
@@ -308,6 +326,8 @@ function walkBoxes(b: Uint8Array, start: number, end: number): IsobmffBox[] {
     }
     if (boxEnd < pos + headerLen)
       break
+    if (boxEnd > limit)
+      break
     boxes.push({ type, start: pos, payload: pos + headerLen, end: boxEnd })
     if (boxEnd <= pos)
       break
@@ -341,6 +361,8 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
   const meta = topLevel.find(box => box.type === 'meta')
   if (!meta)
     return null
+  if (meta.payload + 4 > meta.end)
+    return null
   // meta is a FullBox: 4 bytes of version/flags precede its children.
   const metaChildren = walkBoxes(b, meta.payload + 4, meta.end)
   const iprp = metaChildren.find(box => box.type === 'iprp')
@@ -355,17 +377,17 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
 
   const readIspe = (box: IsobmffBox): ImageDimensions | null => {
     // FullBox: version/flags, then width/height as u32.
-    if (box.payload + 12 > b.length)
+    if (box.payload + 12 > Math.min(box.end, b.length))
       return null
     return { width: readU32BE(b, box.payload + 4), height: readU32BE(b, box.payload + 8) }
   }
   const irotSwaps = (box: IsobmffBox): boolean | null => {
-    if (box.payload + 1 > b.length)
+    if (box.payload + 1 > Math.min(box.end, b.length))
       return null
     return ((b[box.payload] & 0x03) & 1) === 1
   }
 
-  const associated = resolvePrimaryItemProperties(b, metaChildren, properties)
+  const associated = resolvePrimaryItemProperties(b, metaChildren, iprp, properties)
   const candidates = associated
     // Fallback: no resolvable associations — trust a sole ispe.
     ?? (properties.filter(p => p.type === 'ispe').length === 1
@@ -398,21 +420,22 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
 function resolvePrimaryItemProperties(
   b: Uint8Array,
   metaChildren: IsobmffBox[],
+  iprp: IsobmffBox,
   properties: IsobmffBox[],
 ): IsobmffBox[] | null {
   const pitm = metaChildren.find(box => box.type === 'pitm')
-  if (!pitm || pitm.payload + 6 > b.length)
+  if (!pitm || pitm.payload + 6 > Math.min(pitm.end, b.length))
     return null
   const pitmVersion = b[pitm.payload]
-  if (pitmVersion >= 1 && pitm.payload + 8 > b.length)
+  if (pitmVersion >= 1 && pitm.payload + 8 > Math.min(pitm.end, b.length))
     return null
   const primaryId = pitmVersion === 0 ? readU16BE(b, pitm.payload + 4) : readU32BE(b, pitm.payload + 4)
 
-  const iprp = metaChildren.find(box => box.type === 'iprp')!
   for (const ipma of walkBoxes(b, iprp.payload, iprp.end)) {
     if (ipma.type !== 'ipma')
       continue
-    if (ipma.payload + 8 > b.length)
+    const ipmaEnd = Math.min(ipma.end, b.length)
+    if (ipma.payload + 8 > ipmaEnd)
       return null
     const version = b[ipma.payload]
     const flags = (b[ipma.payload + 1] << 16) | (b[ipma.payload + 2] << 8) | b[ipma.payload + 3]
@@ -421,7 +444,7 @@ function resolvePrimaryItemProperties(
     let at = ipma.payload + 8
     for (let entry = 0; entry < entryCount; entry++) {
       const idLen = version < 1 ? 2 : 4
-      if (at + idLen + 1 > b.length)
+      if (at + idLen + 1 > ipmaEnd)
         return null
       const itemId = version < 1 ? readU16BE(b, at) : readU32BE(b, at)
       at += idLen
@@ -430,7 +453,7 @@ function resolvePrimaryItemProperties(
       const indices: number[] = []
       for (let assoc = 0; assoc < associationCount; assoc++) {
         const assocLen = wideIndices ? 2 : 1
-        if (at + assocLen > b.length)
+        if (at + assocLen > ipmaEnd)
           return null
         indices.push(wideIndices ? readU16BE(b, at) & 0x7FFF : b[at] & 0x7F)
         at += assocLen

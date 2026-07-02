@@ -183,11 +183,15 @@ export function imageRenderInfo(item: { type: 'image', mimeType?: string, urlOrD
   // Already a complete data: URL — accept iff its MIME is allowlisted.
   const DATA_URL_PREFIX = 'data:'
   if (data.startsWith(DATA_URL_PREFIX)) {
-    const semi = data.indexOf(';')
-    const mime = semi > DATA_URL_PREFIX.length ? data.slice(DATA_URL_PREFIX.length, semi).toLowerCase() : ''
+    const comma = data.indexOf(',')
+    if (comma < 0)
+      return { reason: 'unknown-shape' }
+    const meta = data.slice(DATA_URL_PREFIX.length, comma).toLowerCase()
+    const semi = meta.indexOf(';')
+    const mime = (semi < 0 ? meta : meta.slice(0, semi)).toLowerCase()
     if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
       return { reason: 'unsupported-mime' }
-    if (data.length > MAX_INLINE_IMAGE_BASE64_LEN)
+    if (data.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
       return { reason: 'too-large' }
     return { src: data, via: 'inline' }
   }
@@ -219,6 +223,13 @@ export function imageReservationStyle(dims: { width: number, height: number }): 
   }
 }
 
+export function imageReservationMatchesDecoded(
+  dims: { width: number, height: number },
+  decoded: { naturalWidth: number, naturalHeight: number },
+): boolean {
+  return decoded.naturalWidth === dims.width && decoded.naturalHeight === dims.height
+}
+
 function McpImageView(props: {
   item: { type: 'image', mimeType?: string, urlOrData?: string }
   premeasureMode?: boolean
@@ -246,9 +257,8 @@ function McpImageView(props: {
       return
     const { naturalWidth: nw, naturalHeight: nh } = img
     // naturalWidth/naturalHeight are post-EXIF-orientation in modern
-    // browsers, matching the sniffer's own orientation handling. Allow 1%
-    // ratio slack for rounding in odd encoders.
-    if (nw > 0 && nh > 0 && Math.abs(nw * d.height - nh * d.width) > 0.01 * nh * d.width)
+    // browsers, matching the sniffer's own orientation handling.
+    if (nw > 0 && nh > 0 && !imageReservationMatchesDecoded(d, { naturalWidth: nw, naturalHeight: nh }))
       setReservationBroken(true)
   }
 

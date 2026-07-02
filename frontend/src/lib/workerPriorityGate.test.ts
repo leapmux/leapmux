@@ -83,6 +83,29 @@ describe('workerprioritygate', () => {
     await Promise.all(all)
   })
 
+  it('does not wedge the queue when a priority thunk throws -- treats it as high priority', async () => {
+    // isLow() is read inside pump()'s synchronous dispatch loop; a throwing thunk (e.g. it
+    // reads a torn-down owner) must be caught, or the throw abandons the loop with a slot
+    // half-claimed and inFlight never released -- stalling every future job on this client.
+    const gate = createWorkerPriorityGate(1)
+    const started: string[] = []
+    const first = makeJob(started, 'first')
+    const second = makeJob(started, 'second')
+    const pFirst = gate.enqueue(first.work) // occupies the sole slot
+    const pSecond = gate.enqueue(second.work, () => {
+      throw new Error('priority thunk boom')
+    })
+    expect(started).toEqual(['first'])
+    first.release()
+    await pFirst
+    // The throwing thunk was caught (treated as high priority), so the second job
+    // dispatched instead of the queue wedging.
+    expect(started).toEqual(['first', 'second'])
+    second.release()
+    await expect(pSecond).resolves.toBe('second')
+    expect(gate.queuedCount()).toBe(0)
+  })
+
   it('passes through resolutions, rejections, and synchronous throws, releasing the slot', async () => {
     const gate = createWorkerPriorityGate(1)
     await expect(gate.enqueue(() => Promise.resolve(42))).resolves.toBe(42)

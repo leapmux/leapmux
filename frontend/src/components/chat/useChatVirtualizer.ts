@@ -313,6 +313,12 @@ export interface UseChatVirtualizerResult {
   /** Measured-or-estimated height (px) of a row by index (excludes the gap). */
   heightOfIndex: (index: number) => number
   /**
+   * Measured-or-estimated height (px) of a row by id (excludes the gap); the
+   * global estimate for an absent row. Composes indexOfId + heightOfIndex so a
+   * caller never has to thread a possibly-stale index between the two.
+   */
+  heightOfId: (id: string) => number
+  /**
    * Debug accessor: a row's measured DOM height when the cache holds one. The
    * generic fallback estimate is deliberately omitted from the raw-JSON surface;
    * it is not a row-specific analytical model.
@@ -675,6 +681,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return resolvedHeight(g.list[index])
   }
 
+  const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
+
   const currentHeightKey = (id: string): string | undefined => {
     const g = geom()
     const index = g.indexById.get(id)
@@ -1036,6 +1044,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     scrollTopForAnchor,
     scrollTopNearAnchor,
     heightOfIndex,
+    heightOfId,
     heightDebugOfId,
     estimateHeight,
     lastMeasurement: () => lastMeasurement,

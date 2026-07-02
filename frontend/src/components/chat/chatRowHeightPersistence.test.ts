@@ -1,7 +1,7 @@
 import type { PersistableRowHeight, VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { localStorageGet, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS } from './chatRowHeightPersistence'
 
@@ -21,18 +21,19 @@ function storedRow(id: string, heightKey: string, height: number): [string, stri
 describe('chatrowheightpersistence', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    localStorage.clear()
+    localStorageRemove(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    localStorage.clear()
+    localStorageRemove(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
   })
 
   function makeHarness(opts: {
     storageId?: string
     items?: VirtualItem[]
     measured?: Set<string>
+    primeHeights?: (entries: readonly PersistableRowHeight[], measured: Set<string>) => number
   } = {}) {
     const [items, setItems] = createSignal<VirtualItem[]>(opts.items ?? [])
     const [geomVersion, setGeomVersion] = createSignal(0)
@@ -49,6 +50,8 @@ describe('chatrowheightpersistence', () => {
         virt: {
           primeHeights: (entries) => {
             primed.push([...entries])
+            if (opts.primeHeights)
+              return opts.primeHeights(entries, measured)
             for (const e of entries)
               measured.add(e.id)
             return entries.length
@@ -86,6 +89,75 @@ describe('chatrowheightpersistence', () => {
     expect(h.primed).toEqual([])
     h.setItems([item('a', 'k-a|w800')])
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a|w800', height: 120 }]])
+    h.dispose()
+  })
+
+  it('keeps a pending row when the virtualizer defers prime-height adoption', () => {
+    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: 1,
+      rows: [storedRow('a', 'k-a', 120)],
+    })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [item('a', 'k-a')],
+      primeHeights: () => 0,
+    })
+    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+
+    h.snapshot.push({ id: 'b', heightKey: 'k-b', height: 80 })
+    h.setGeomVersion(1)
+    vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+
+    expect(localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)?.rows)
+      .toEqual([storedRow('a', 'k-a', 120), storedRow('b', 'k-b', 80)])
+    h.dispose()
+  })
+
+  it('re-attempts a deferred prime after the fling settles and the key still matches', () => {
+    // A momentum fling is in flight when the row's warm-start is first
+    // attempted: the virtualizer DEFERS the prime (queues it, commits nothing,
+    // returns 0). The row's live heightKey then drifts (a transient UI/chrome
+    // toggle) and reverts to the SAME digest-matching key. Because the deferred
+    // commit was rejected at flush time (key had drifted), the warm-start height
+    // is still not in the cache -- so the persistence layer MUST re-attempt the
+    // prime when the key matches again. It must not permanently bar the row.
+    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: 1,
+      rows: [storedRow('a', 'k-a', 120)],
+    })
+    let deferring = true
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [item('a', 'k-a')],
+      // While the fling is active the prime is deferred: nothing commits and the
+      // row stays UNMEASURED. Once the fling settles it commits normally.
+      primeHeights: (entries, measured) => {
+        if (deferring)
+          return 0
+        for (const e of entries)
+          measured.add(e.id)
+        return entries.length
+      },
+    })
+    // First attempt on load: deferred (commits nothing, row stays unmeasured).
+    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+
+    // Key drifts mid-fling (a chrome/UI toggle rewrote it): digest no longer
+    // matches, so nothing is attempted for the transient key.
+    h.setItems([item('a', 'k-a-transient')])
+    expect(h.primed).toHaveLength(1)
+
+    // Fling has settled; the key reverts to its original digest-matching value.
+    deferring = false
+    h.setItems([item('a', 'k-a')])
+
+    // The warm-start height MUST be adopted now -- the earlier deferral was
+    // transient, not a permanent rejection.
+    expect(h.primed).toEqual([
+      [{ id: 'a', heightKey: 'k-a', height: 120 }],
+      [{ id: 'a', heightKey: 'k-a', height: 120 }],
+    ])
+    expect(h.measured.has('a')).toBe(true)
     h.dispose()
   })
 
@@ -162,7 +234,7 @@ describe('chatrowheightpersistence', () => {
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     expect(h.primed).toEqual([])
-    expect(localStorage.length).toBe(0)
+    expect(localStorageGet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)).toBeUndefined()
     h.dispose()
   })
 
@@ -196,6 +268,33 @@ describe('chatrowheightpersistence', () => {
     expect(stored?.rows).toHaveLength(PERSISTED_ROW_HEIGHTS_MAX)
     expect(stored?.rows[0][0]).toBe('r0') // 'stale' (inserted first) was shed
     expect(stored?.rows.some(([id]) => id === 'stale')).toBe(false)
+    h.dispose()
+  })
+
+  it('places a still-pending row that got measured at the fresh (most-recent) end', () => {
+    // 'a' loads as pending under an OLD layout epoch (digest mismatch keeps it
+    // pending), then gets measured under its live key before the item-list
+    // change that would retire it. When the save fires it is in BOTH pending and
+    // the snapshot -- and its fresh measurement must land at the recent end, not
+    // inherit 'a's early pending slot (which the cap would shed first).
+    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: 1,
+      rows: [storedRow('a', 'k-a-old', 120)],
+    })
+    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a-new')] })
+    // snapshotHeights is LRU-ordered oldest-first: 'z' measured before 'a'.
+    h.snapshot.push({ id: 'z', heightKey: 'k-z', height: 40 })
+    h.snapshot.push({ id: 'a', heightKey: 'k-a-new', height: 200 })
+    h.setGeomVersion(1)
+    vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+
+    const stored = localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    // 'a' at the END (freshly-measured position), carrying its measured height +
+    // live-key digest -- not stranded at the front where the over-cap slice bites.
+    expect(stored?.rows).toEqual([
+      ['z', fnv1a32Hex('k-z'), 40],
+      ['a', fnv1a32Hex('k-a-new'), 200],
+    ])
     h.dispose()
   })
 

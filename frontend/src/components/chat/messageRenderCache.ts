@@ -1,3 +1,4 @@
+import { lruGet, lruSet } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 
 export interface MessageRenderCache {
@@ -18,20 +19,13 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
   const rowCaches = new Map<string, Map<string, unknown>>()
 
   const touch = (rowVersionKey: string): Map<string, unknown> => {
-    let cache = rowCaches.get(rowVersionKey)
-    if (cache) {
-      rowCaches.delete(rowVersionKey)
-      rowCaches.set(rowVersionKey, cache)
-      return cache
-    }
-    cache = new Map<string, unknown>()
-    rowCaches.set(rowVersionKey, cache)
-    while (rowCaches.size > maxRows) {
-      const oldest = rowCaches.keys().next().value
-      if (oldest === undefined)
-        break
-      rowCaches.delete(oldest)
-    }
+    // Shared LRU (mapLru): a hit re-fronts to the MRU end; a miss inserts a fresh
+    // per-row cache and sheds the insertion-order-oldest rows past `maxRows`.
+    const existing = lruGet(rowCaches, rowVersionKey)
+    if (existing !== undefined)
+      return existing
+    const cache = new Map<string, unknown>()
+    lruSet(rowCaches, rowVersionKey, cache, maxRows)
     return cache
   }
 

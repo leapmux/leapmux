@@ -1,6 +1,7 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
 import { ReadResultView } from './ReadResultView'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -224,7 +225,7 @@ describe('readresultview syntax highlighting', () => {
     expect(container.textContent).toContain('red')
     const tokenSpan = container.querySelector('[data-shiki-token][class^="sk-"]')
     expect(tokenSpan).not.toBeNull()
-    const rules = document.querySelector('style[data-shiki-style-classes]')!.textContent!
+    const rules = readInjectedShikiRules()
     expect(rules).toContain(`.${tokenSpan!.className}{`)
     expect(rules).toContain('--shiki-light')
   })

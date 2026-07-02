@@ -56,6 +56,18 @@ export const RENDER_ARTIFACT_CACHE_VERSION = 2
 /** Entries older than this are dropped by the sweep (TTL since last use). */
 export const ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
+/**
+ * A read only rewrites the record's recency stamp when the stored `at` is at
+ * least this stale. The stamp feeds only the 7-day TTL and the oldest-first cap
+ * -- both indifferent to sub-hour precision -- so refreshing an already-recent
+ * entry buys nothing but re-serializes and re-writes the WHOLE payload (up to
+ * ~512 KB of HTML / a large token array) to IndexedDB on every hit. On a warm
+ * reload that is one redundant full-payload write per restored row; gating it on
+ * a coarse interval (1h << the TTL) keeps "hot entries outlive the sweep" while
+ * eliminating the per-read write in the common case.
+ */
+export const ARTIFACT_TOUCH_INTERVAL_MS = 60 * 60 * 1000
+
 /** Global entry cap across all namespaces, enforced oldest-first by the sweep. */
 export const ARTIFACT_MAX_ENTRIES = 2000
 
@@ -135,9 +147,17 @@ function putRecord(db: IDBDatabase, record: ArtifactRecord): Promise<void> {
 
 /**
  * Read an artifact. Resolves undefined on any miss, mismatch, or failure. A hit
- * refreshes the record's recency stamp so hot entries outlive the TTL sweep.
+ * refreshes the record's recency stamp so hot entries outlive the TTL sweep --
+ * but only when the stored stamp is already at least `touchIntervalMs` stale, so
+ * a hot entry read repeatedly isn't rewritten (full payload and all) on every
+ * access (see ARTIFACT_TOUCH_INTERVAL_MS).
  */
-export async function getArtifact<V>(ns: string, source: string, now = Date.now()): Promise<V | undefined> {
+export async function getArtifact<V>(
+  ns: string,
+  source: string,
+  now = Date.now(),
+  touchIntervalMs = ARTIFACT_TOUCH_INTERVAL_MS,
+): Promise<V | undefined> {
   if (!isArtifactStoreAvailable())
     return undefined
   try {
@@ -149,9 +169,22 @@ export async function getArtifact<V>(ns: string, source: string, now = Date.now(
     // or the artifact belongs to some other input — a miss, never a serve.
     if (record === undefined || record.source !== source)
       return undefined
-    // Touch: refresh recency so hot entries outlive the TTL sweep. Awaited so
-    // a sweep issued after this resolves is guaranteed to see the new stamp.
-    await putRecord(db, { ...record, at: now })
+    // Touch: refresh recency so hot entries outlive the TTL sweep. Skipped while
+    // the stored stamp is still fresh (< touchIntervalMs old) -- rewriting the
+    // whole payload just to move `at` by minutes is pure waste against a 7-day
+    // TTL. Awaited when it does run so a sweep issued after this resolves sees the
+    // new stamp -- but a FAILED refresh (quota, a blocked write) must not turn
+    // this valid hit into a miss, so its rejection is swallowed here and the read
+    // still serves the artifact read above. (A dropped touch only risks the entry
+    // aging out sooner.)
+    if (now - record.at >= touchIntervalMs) {
+      try {
+        await putRecord(db, { ...record, at: now })
+      }
+      catch {
+        // Recency refresh is best-effort; the artifact was already read successfully.
+      }
+    }
     return record.value as V
   }
   catch {

@@ -3,16 +3,15 @@ import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualize
 import type { AgentChatMessage, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
-import { createLogger } from '~/lib/logger'
 import { monotonicNow } from '~/lib/monotonicNow'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstServerSeq, lastServerSeq } from '~/stores/chatMessageOrder'
 import { isOptimisticLocal } from '~/stores/chatReconcile'
 import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
-import { ANCHOR_DRIFT_REWARN_MS, ANCHOR_DRIFT_WARN_PX, classifyUnexplainedJump, KEYBOARD_SCROLL_GRACE_MS, UNEXPLAINED_JUMP_REWARN_MS, VISIBLE_ANCHOR_JUMP_PX } from './chatScrollDiagnostics'
+import { classifyUnexplainedJump, createScrollDiagnostics, KEYBOARD_SCROLL_GRACE_MS } from './chatScrollDiagnostics'
 import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, warnSlowScrollPhase } from './chatScrollGeometry'
+import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
@@ -79,7 +78,6 @@ export interface ScrollContext {
   setAnchor: (a: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio?: number) => void
 }
 
-const STICKY_BOTTOM_THRESHOLD_PX = 32
 /**
  * DEV-SERVER-ONLY: how long after a genuine HMR remount the buffer fill stays paused so
  * it doesn't pile onto the hot-reload's whole-list re-measure storm (see
@@ -192,11 +190,6 @@ const SCROLL_BUFFER_SCREENS = 3
  * hand off to sticky-bottom (~1s at 60fps) instead of chasing forever.
  */
 const SCROLL_TO_BOTTOM_MAX_FRAMES = 60
-// Scroll-anomaly diagnostics: the detector thresholds and the pure Detector B
-// classification live in chatScrollDiagnostics; this hook owns only the emission
-// policy around them (payload assembly, burst suppression, rate limiting) and the
-// shared 'chatScroll' channel they log to.
-const scrollLog = createLogger('chatScroll')
 
 /**
  * Rows the oldest-end trim must KEEP, counted from a given keep-from `anchor` (and its
@@ -493,18 +486,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // the main thread while momentum coasted -- after which the browser delivers one catch-up
   // delta that reads as an isolated jump. undefined until the first event.
   let lastScrollEventAt: number | undefined
-  // The most recent native-scroll keydown (Space / arrows -- see KEYBOARD_SCROLL_GRACE_MS)
-  // and Detector B's burst-suppression bookkeeping (see UNEXPLAINED_JUMP_REWARN_MS).
-  // NEGATIVE_INFINITY so the first real event can't fall inside a grace window measured
-  // from a zero epoch (performance.now() starts near 0 at page load).
+  // The most recent native-scroll keydown (Space / arrows -- see KEYBOARD_SCROLL_GRACE_MS),
+  // consulted by Detector B's exclusion list. NEGATIVE_INFINITY so the first real event
+  // can't fall inside a grace window measured from a zero epoch (performance.now() starts
+  // near 0 at page load). Detector B/C's suppression bookkeeping now lives in the emitter
+  // (createScrollDiagnostics).
   let lastNativeKeyScrollAt = Number.NEGATIVE_INFINITY
   const hasRecentKeyboardScroll = () => monotonicNow() - lastNativeKeyScrollAt <= KEYBOARD_SCROLL_GRACE_MS
-  let lastUnexplainedJumpAt = Number.NEGATIVE_INFINITY
-  let unexplainedJumpsSuppressed = 0
-  // Detector C's rate-limit bookkeeping (see ANCHOR_DRIFT_REWARN_MS).
-  let lastAnchorDriftWarnAt = Number.NEGATIVE_INFINITY
-  let anchorDriftWarnsSuppressed = 0
-  let anchorDriftSuppressedPxSum = 0
 
   const scrollDomDebugSnapshot = () => {
     const el = messageListRef
@@ -523,6 +511,19 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       fetchingNewer: !!opts.fetchingNewer?.(),
     }
   }
+
+  // Scroll-anomaly WARN emitter: owns the three detectors' payload assembly, burst
+  // suppression, and rate limiting (see createScrollDiagnostics). The hook samples the
+  // scroll state below (in the re-pin clamp/drift callbacks and Detector B) and forwards
+  // it here; the emitter reads its DOM/measurement/marker context through these thunks.
+  const diagnostics = createScrollDiagnostics({
+    domSnapshot: scrollDomDebugSnapshot,
+    lastMeasurement: () => virt.lastMeasurement(),
+    debugMarkers: () => progGuard.debugMarkers(),
+    hasOlderMessages: () => !!opts.hasOlderMessages?.(),
+    hasNewerMessages: () => !!opts.hasNewerMessages?.(),
+    isActivelyFlinging: () => scrollVelocity.isActivelyFlinging(),
+  })
 
   // True only while a USER scroll event is refreshing newly revealed rows (inside
   // handleScroll's refreshViewport). The geometry re-pin can fire synchronously
@@ -638,66 +639,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     isUserScrolling: () => userScrolling,
     hasNewerMessages: () => !!opts.hasNewerMessages?.(),
     readScrollTop: readLogicalScrollTop,
-    // Detector A: a keep-position re-pin clamped against a scroll boundary, so the
-    // anchored row jumped by the clamp amount. WARN only when the shift is visible AND
-    // more history still exists that direction (clampPx > 0 -> clamped at the top, so
-    // older content above would have held the row; < 0 -> clamped at the bottom, newer
-    // content below would have). A clamp at a genuinely exhausted edge is expected --
-    // there is nothing left to reveal, so the row MUST move -- and stays silent.
-    onRepinClamp: (info) => {
-      const hasHistoryThatDirection = info.clampPx > 0
-        ? !!opts.hasOlderMessages?.()
-        : !!opts.hasNewerMessages?.()
-      if (hasHistoryThatDirection && Math.abs(info.clampPx) >= VISIBLE_ANCHOR_JUMP_PX) {
-        scrollLog.warn('anchor re-pin clamped at a loaded edge -- anchored row jumped', {
-          ...info,
-          clampedAt: info.clampPx > 0 ? 'top' : 'bottom',
-          dom: scrollDomDebugSnapshot(),
-        })
-      }
-    },
-    // Detector C (outcome-based): the re-pin left the anchored row displaced by
-    // residualPx instead of correcting it -- a content shift that produces NO scroll
-    // event, so Detector B can't see it. Only an ABSORBED shift is reported: it is a
-    // permanent, user-visible displacement. A 'deferred-fling' shift is transient by
-    // construction -- the engine defers only under a live (or cold-seed presumed) fling
-    // and the fling-settle re-anchors it once momentum stops -- and warning on it
-    // produced ONLY cold-start false positives: on a gesture's first-ever event the
-    // velocity tracker's Infinity seed makes the engine defer (isFling true) while
-    // isActivelyFlinging still reads false, so every such benign one-shot warned.
-    // Surface absorbed shifts above the visible floor, skip the fast-fling frames
-    // (isActivelyFlinging -- the shift blends into momentum there), and rate-limit the
-    // rest (see ANCHOR_DRIFT_REWARN_MS): what survives is an aggregate of the shifts
-    // the reader perceives while scrolling slowly or just after stopping.
-    onAnchorDrift: (info) => {
-      if (info.reason !== 'absorbed'
-        || Math.abs(info.residualPx) < ANCHOR_DRIFT_WARN_PX
-        || scrollVelocity.isActivelyFlinging()) {
-        return
-      }
-      const now = monotonicNow()
-      if (now - lastAnchorDriftWarnAt <= ANCHOR_DRIFT_REWARN_MS) {
-        anchorDriftWarnsSuppressed += 1
-        anchorDriftSuppressedPxSum += info.residualPx
-        return
-      }
-      lastAnchorDriftWarnAt = now
-      scrollLog.warn('anchored content drifted without correction', {
-        ...info,
-        // Absorbed shifts rate-limited away since the previous WARN (count + signed sum),
-        // so the aggregate drift is still visible in the emitted stream.
-        suppressedSinceLastWarn: anchorDriftWarnsSuppressed,
-        suppressedResidualPxSum: Math.round(anchorDriftSuppressedPxSum),
-        // The measurement that moved the geometry this re-pin absorbed: firstMeasure +
-        // delta tell whether it was an estimate->real correction (per-kind median off /
-        // outran premeasure) or a re-measure (premeasured-vs-visible mismatch), and
-        // whether this single commit's delta accounts for residualPx or a batch did.
-        measurement: virt.lastMeasurement(),
-        dom: scrollDomDebugSnapshot(),
-      })
-      anchorDriftWarnsSuppressed = 0
-      anchorDriftSuppressedPxSum = 0
-    },
+    // Detectors A and C: the engine reports THAT a clamp/drift happened; the emission
+    // policy (visible-px floor, whether history exists that direction, fast-fling skip,
+    // rate limiting, payload assembly) lives in createScrollDiagnostics.
+    onRepinClamp: info => diagnostics.emitRepinClamp(info),
+    onAnchorDrift: info => diagnostics.emitAnchorDrift(info, monotonicNow()),
   })
   const { currentAnchor, currentAnchorState, isFollowing, isHoldingRowTop, releaseRowTopHold, followTail, setAnchor, captureAnchor, captureTopAnchor, captureRowTopAnchor, repinToAnchor } = anchorRepin
 
@@ -1305,35 +1251,17 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         recentKeyboardScroll: hasRecentKeyboardScroll(),
       })
       if (isUnexplained) {
-        // Burst suppression (sliding window): consecutive unexplained deltas within
-        // UNEXPLAINED_JUMP_REWARN_MS of each other are one gesture (a scrollbar drag,
-        // which fires only `scroll` events and cannot be excluded by input state) or one
-        // pathological storm -- WARN once at the head with a count of what followed.
-        const withinBurst = nowMs - lastUnexplainedJumpAt <= UNEXPLAINED_JUMP_REWARN_MS
-        lastUnexplainedJumpAt = nowMs
-        if (withinBurst) {
-          unexplainedJumpsSuppressed += 1
-        }
-        else {
-          scrollLog.warn('unexpected scroll jump (no known cause)', {
-            deltaFromLast,
-            scrollTop: scrollTopAtStart,
-            lastScrollTop: lastScrollTopBeforeEvent,
-            // Timing/velocity context to tell a momentum-after-stall (large gap + a coast the
-            // input grace outlived) from a genuine teleport (small gap, no fling). measurement
-            // is the last geometry commit -- a coinciding one points at a render/shift cause
-            // (e.g. a focus-driven scrollIntoView) rather than pure momentum.
-            msSinceLastScrollEvent,
-            speedPxPerMs: speedBeforeEvent,
-            wasActivelyFlinging: wasActivelyFlingingBeforeEvent,
-            // Unexplained events burst-suppressed since the previous emitted WARN.
-            suppressedSinceLastWarn: unexplainedJumpsSuppressed,
-            measurement: virt.lastMeasurement(),
-            markers: progGuard.debugMarkers(),
-            dom: scrollDomDebugSnapshot(),
-          })
-          unexplainedJumpsSuppressed = 0
-        }
+        // The emitter owns the burst suppression (sliding window) and payload assembly.
+        // nowMs is this scroll event's timestamp -- the same clock the suppression window
+        // and lastScrollEventAt share above.
+        diagnostics.emitUnexplainedJump({
+          deltaFromLast,
+          scrollTop: scrollTopAtStart,
+          lastScrollTop: lastScrollTopBeforeEvent,
+          msSinceLastScrollEvent,
+          speedPxPerMs: speedBeforeEvent,
+          wasActivelyFlinging: wasActivelyFlingingBeforeEvent,
+        }, nowMs)
       }
     }
     if (stillEcho)
@@ -1392,14 +1320,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
     restickIfAtBottom()
     // Clear the post-restore older-load suppression once a trim or a measurement
-    // shrink has made the content fit (no scrollable range). The same clear lives in
-    // createViewportRestore's resize flush, but a window trim / row re-measure changes
-    // virt.totalHeight()/geometryVersion() WITHOUT resizing the container box or
-    // emitting a scroll event, so neither handleResize nor handleScroll would otherwise
-    // run -- wedging older-history pre-fetch off forever (hasOlderMessages stays true but
-    // the unscrollable viewport never pages up). Guarded on the flag so this fires only
-    // when something is actually suppressed.
-    if (messageListRef && suppressAutoLoadOlderAfterRestore && maxScrollTopOf(messageListRef) <= 0)
+    // shrink has made the content fit (or shrunk to a barely-scrollable page the reader
+    // can't scroll out of). The same clear lives in createViewportRestore's resize flush,
+    // but a window trim / row re-measure changes virt.totalHeight()/geometryVersion()
+    // WITHOUT resizing the container box or emitting a scroll event, so neither
+    // handleResize nor handleScroll would otherwise run -- wedging older-history pre-fetch
+    // off forever (hasOlderMessages stays true but the unscrollable viewport never pages
+    // up). The bound is the STICKY BAND, not 0: with 0 < maxScrollTop <= the band, every
+    // scroll position is inside the tail's sticky band, so the reader can never scroll up
+    // to trigger the fill -- exactly the wedge suppressOlderPrefetchAtLiveTail avoids with
+    // the same bound (a strict `<= 0` here re-introduced it for the restore path). Guarded
+    // on the flag so this fires only when something is actually suppressed.
+    if (messageListRef && suppressAutoLoadOlderAfterRestore && maxScrollTopOf(messageListRef) <= STICKY_BOTTOM_THRESHOLD_PX)
       suppressAutoLoadOlderAfterRestore = false
     scheduleViewportRefresh()
   }, { defer: true }))

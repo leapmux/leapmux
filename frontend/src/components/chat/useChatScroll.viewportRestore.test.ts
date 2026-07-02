@@ -641,6 +641,93 @@ describe('usechatscroll viewport restore', () => {
         }
       })
     }))
+
+  it('clears the restore suppression for a BARELY-scrollable page so older history still fills', () =>
+    // A clamp-to-top restore arms the one-shot older-load suppression. If the restored
+    // window is only barely scrollable (0 < maxScrollTop <= the 32px sticky band), the
+    // reader can NEVER scroll up to trigger the older fill, so the suppression MUST clear
+    // once placed -- exactly like suppressOlderPrefetchAtLiveTail's own band handling. A
+    // strict `<= 0` clear wedged older history off for good for this restore path.
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(0) // hidden tab
+          let scrollHeight = 520 // maxScrollTop 20 once visible: inside the sticky band
+          div.setScrollHeight(scrollHeight)
+          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+          const [streamingText] = createSignal('')
+          const [total, setTotal] = createSignal(520)
+          const [fetchingOlder, setFetchingOlder] = createSignal(false)
+          // Saved all-hidden (raw fallback, no anchor); by restore time totalHeight > 0
+          // discards the stale raw offset -> the clamp-to-top strategy arms suppression.
+          const [saved] = createSignal<ChatScrollState | undefined>({
+            rawScrollTop: 1200,
+            atBottom: false,
+            hasMoreNewer: false,
+          })
+          let olderLoads = 0
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => total(),
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: () => null,
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: () => null,
+          }
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            streamingText,
+            savedViewportScroll: saved,
+            onClearSavedViewportScroll: () => {},
+            hasOlderMessages: () => true,
+            hasNewerMessages: () => false,
+            fetchingOlder,
+            onLoadOlderMessages: () => {
+              olderLoads++
+              setFetchingOlder(true)
+              queueMicrotask(() => {
+                scrollHeight += 300
+                div.setScrollHeight(scrollHeight)
+                div.setScrollTop(scrollHeight - 500) // restick keeps the view at the tail
+                setTotal(t => t + 300)
+                setMessages(prev => [...prev, {} as AgentChatMessage])
+                setFetchingOlder(false)
+              })
+            },
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Tab becomes visible: clamp-to-top restore arms suppression, but the
+          // barely-scrollable page clears it on placement so the fill can proceed.
+          div.setClientHeight(500)
+          triggerResizeObserversSync()
+          await Promise.resolve()
+          await Promise.resolve()
+          // A new message arrives -- re-runs the buffer filler (its effect tracks
+          // messages()). The reader can't scroll up out of the 20px band to trigger the
+          // fill by hand, so this is the only path that reaches it. With the wedge the
+          // still-armed suppression blocks the older prefetch here; the fix lets it run.
+          setMessages(prev => [...prev, {} as AgentChatMessage])
+          setTotal(t => t + 4)
+          for (let i = 0; i < 40; i++)
+            await Promise.resolve()
+
+          // The wedge would have loaded ZERO older pages; the fix fills at least one.
+          expect(olderLoads).toBeGreaterThanOrEqual(1)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
 })
 
 describe('usechatscroll unmount save + visible-mount restore', () => {

@@ -17,6 +17,10 @@ function u16le(v: number): number[] {
   return [v & 0xFF, (v >>> 8) & 0xFF]
 }
 
+function u32le(v: number): number[] {
+  return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]
+}
+
 function u32be(v: number): number[] {
   return [(v >>> 24) & 0xFF, (v >>> 16) & 0xFF, (v >>> 8) & 0xFF, v & 0xFF]
 }
@@ -226,6 +230,12 @@ describe('sniffimagedimensions', () => {
     expect(sniffImageDimensionsFromBase64(b64(pngBytes(640, 480)))).toEqual({ width: 640, height: 480 })
   })
 
+  it('rejects PNG dimensions outside the declared IHDR chunk', () => {
+    const bytes = pngBytes(640, 480)
+    bytes.splice(8, 4, ...u32be(4))
+    expect(sniffImageDimensionsFromBase64(b64(bytes))).toBeNull()
+  })
+
   it('parses GIF logical screen dimensions', () => {
     expect(sniffImageDimensionsFromBase64(b64(gifBytes(320, 200)))).toEqual({ width: 320, height: 200 })
   })
@@ -236,9 +246,21 @@ describe('sniffimagedimensions', () => {
     expect(sniffImageDimensionsFromBase64(b64(webpExtendedBytes(1024, 768)))).toEqual({ width: 1024, height: 768 })
   })
 
+  it('rejects WebP dimensions outside the declared first chunk', () => {
+    const bytes = webpExtendedBytes(1024, 768)
+    bytes.splice(16, 4, ...u32le(4))
+    expect(sniffImageDimensionsFromBase64(b64(bytes))).toBeNull()
+  })
+
   it('parses baseline JPEG SOF dimensions, skipping leading segments', () => {
     const dqt = [0xFF, 0xDB, ...u16be(4), 0x00, 0x00]
     expect(sniffImageDimensionsFromBase64(b64(jpegBytes(320, 240, dqt)))).toEqual({ width: 320, height: 240 })
+  })
+
+  it('rejects JPEG SOF dimensions outside the declared segment length', () => {
+    const bytes = jpegBytes(320, 240)
+    bytes.splice(4, 2, ...u16be(6))
+    expect(sniffImageDimensionsFromBase64(b64(bytes))).toBeNull()
   })
 
   it('swaps JPEG dimensions for the rotated EXIF orientations (5-8)', () => {
@@ -301,6 +323,18 @@ describe('sniffimagedimensions', () => {
       associations: [1],
     })
     expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width: 160, height: 90 })
+  })
+
+  it('rejects AVIF properties whose declared boxes do not cover the reads', () => {
+    const truncatedIspe = fullBox('ispe', 0, 0, u32be(160))
+    expect(sniffImageDimensionsFromBase64(b64(avifBytes({ ipco: [truncatedIspe] })))).toBeNull()
+
+    const truncatedIrot = box('irot')
+    expect(sniffImageDimensionsFromBase64(b64(avifBytes({
+      pitm: 1,
+      ipco: [ispeBox(160, 90), truncatedIrot],
+      associations: [1, 2],
+    })))).toBeNull()
   })
 
   it('refuses ambiguous AVIF shapes: multiple ispes without associations, or an associated clap crop', () => {

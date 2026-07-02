@@ -45,6 +45,33 @@ export const TOKEN_ARTIFACT_NS = `tok@${RENDER_ARTIFACT_CACHE_VERSION}|${DUAL_TH
 /** One pathological body must not dominate the store (key embeds the code). */
 const PERSIST_MAX_KEY_LENGTH = 256 * 1024
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return false
+  return Object.values(value).every(v => typeof v === 'string')
+}
+
+function isPersistedStyle(value: unknown): value is string | Record<string, string> {
+  return typeof value === 'string' || isStringRecord(value)
+}
+
+function isInternedTokenLines(value: unknown): value is InternedTokenLines {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return false
+  const { styles, lines } = value as { styles?: unknown, lines?: unknown }
+  if (!Array.isArray(styles) || !styles.every(isPersistedStyle) || !Array.isArray(lines))
+    return false
+  return lines.every(line => Array.isArray(line) && line.every((token) => {
+    if (!Array.isArray(token) || token.length !== 2)
+      return false
+    const [styleIndex, content] = token
+    return Number.isInteger(styleIndex)
+      && styleIndex >= -1
+      && styleIndex < styles.length
+      && typeof content === 'string'
+  }))
+}
+
 /**
  * Look up persisted tokens. Returns undefined SYNCHRONOUSLY when the store
  * can't serve here (no indexedDB, oversized code), so the caller dispatches the
@@ -53,10 +80,15 @@ const PERSIST_MAX_KEY_LENGTH = 256 * 1024
 function getPersistedTokens(key: string): Promise<CachedToken[][] | undefined> | undefined {
   if (!isArtifactStoreAvailable() || key.length > PERSIST_MAX_KEY_LENGTH)
     return undefined
-  return getArtifact<InternedTokenLines>(TOKEN_ARTIFACT_NS, key).then((stored) => {
-    if (!stored || !Array.isArray(stored.styles) || !Array.isArray(stored.lines))
+  return getArtifact<unknown>(TOKEN_ARTIFACT_NS, key).then((stored) => {
+    if (!isInternedTokenLines(stored))
       return undefined
-    return expandInternedTokenLines(stored)
+    try {
+      return expandInternedTokenLines(stored)
+    }
+    catch {
+      return undefined
+    }
   })
 }
 

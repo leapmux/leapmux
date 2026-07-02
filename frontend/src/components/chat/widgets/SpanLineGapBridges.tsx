@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { SpanLine } from './SpanLines'
-import { For, Index, Show } from 'solid-js'
+import { createMemo, For, Index, Show } from 'solid-js'
 import { bodySpanKey, shouldConnectSpanLineTop, spanColorClassFor } from './SpanLines'
 import { spanGapBridge, spanGapBridgeRow } from './SpanLines.css'
 import { LINE_THICKNESS, spanColumnCenterX } from './SpanLines.geometry'
@@ -43,16 +43,17 @@ export interface SpanLineGapBridgesProps {
 export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
   <For each={props.entries}>
     {(entry, index) => {
-      const previous = () => (index() > 0 ? props.entries[index() - 1] : props.precedingEntry)
-      const previousLines = () => previous()?.parsedSpanLines ?? []
-      const previousBodyKey = () => {
+      const previous = createMemo(() => (index() > 0 ? props.entries[index() - 1] : props.precedingEntry))
+      const previousLines = createMemo(() => previous()?.parsedSpanLines ?? [])
+      const previousBodyKey = createMemo(() => {
         const p = previous()
         return p?.category.kind === 'tool_use' ? bodySpanKey(p.msg.spanId, p.msg.spanColor) : undefined
-      }
-      // Per column: does its vertical rail continue from the row above?
-      const connecting = () => entry.parsedSpanLines.map(
+      })
+      // Per column: does its vertical rail continue from the row above? Memoized
+      // because both the <Show> gate and the <Index> below read it each render.
+      const connecting = createMemo(() => entry.parsedSpanLines.map(
         (line, col) => shouldConnectSpanLineTop(line, previousLines()[col] ?? null, previousBodyKey()),
-      )
+      ))
       return (
         <Show when={entry.parsedSpanLines.length > 0 && connecting().some(Boolean)}>
           <div

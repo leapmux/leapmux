@@ -3,6 +3,7 @@ import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from
 import { createEffect, onCleanup, untrack } from 'solid-js'
 import { localStorageGet, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
+import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 
 /**
  * Reload warm-start for the virtualizer's measured-height cache.
@@ -42,7 +43,7 @@ interface StoredRowHeights {
  * (MAX_LOADED_CHAT_MESSAGES_CEILING): persisting more than the window can
  * ever hold buys nothing.
  */
-export const PERSISTED_ROW_HEIGHTS_MAX = 1200
+export const PERSISTED_ROW_HEIGHTS_MAX = MAX_LOADED_CHAT_MESSAGES_CEILING
 
 /**
  * Save debounce. Measurements arrive in bursts (a premeasure band, a resize
@@ -92,15 +93,24 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   // mismatch keeps it pending, because the layout epoch it was measured
   // under may still arrive (width settling, pagination).
   const pending = new Map<string, { digest: string, height: number }>()
+  // De-dup guard for the CURRENT (id, digest) prime attempt: a row primed while
+  // the virtualizer defers premeasures (momentum fling) stays pending, and every
+  // item-list change during that fling would otherwise re-prime it. The guard is
+  // keyed by digest and CLEARED the moment the row's live key drifts off that
+  // digest (see the mismatch branch below), so it only suppresses re-priming
+  // within one stable-key deferral epoch -- a genuine key change, then a revert
+  // to this digest, re-attempts adoption instead of being permanently barred.
+  const attemptedAdoptions = new Set<string>()
   let loaded = false
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
   const storageKey = (id: string) => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
+  const adoptionAttemptKey = (id: string, digest: string) => `${id}\0${digest}`
 
   const tryAdopt = (items: readonly VirtualItem[]): void => {
     if (pending.size === 0)
       return
-    const adoptable: PersistableRowHeight[] = []
+    const adoptable: Array<PersistableRowHeight & { digest: string }> = []
     for (const item of items) {
       const entry = pending.get(item.id)
       if (entry === undefined)
@@ -109,15 +119,40 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
       // warm-start value — retire the entry instead of re-priming.
       if (deps.virt.hasMeasuredHeight(item.id)) {
         pending.delete(item.id)
+        attemptedAdoptions.delete(adoptionAttemptKey(item.id, entry.digest))
         continue
       }
-      if (fnv1a32Hex(item.heightKey ?? '') !== entry.digest)
+      if (fnv1a32Hex(item.heightKey ?? '') !== entry.digest) {
+        // Live key drifted off the stored digest (width/UI/chrome epoch changed).
+        // Drop any prior attempt marker so a later revert to this digest re-primes
+        // rather than being permanently suppressed by a deferral that never
+        // committed.
+        attemptedAdoptions.delete(adoptionAttemptKey(item.id, entry.digest))
         continue
-      adoptable.push({ id: item.id, heightKey: item.heightKey, height: entry.height })
-      pending.delete(item.id)
+      }
+      if (attemptedAdoptions.has(adoptionAttemptKey(item.id, entry.digest)))
+        continue
+      adoptable.push({ id: item.id, heightKey: item.heightKey, height: entry.height, digest: entry.digest })
     }
-    if (adoptable.length > 0)
-      deps.virt.primeHeights(adoptable)
+    if (adoptable.length === 0)
+      return
+    for (const entry of adoptable)
+      attemptedAdoptions.add(adoptionAttemptKey(entry.id, entry.digest))
+    const adopted = deps.virt.primeHeights(adoptable.map(entry => ({
+      id: entry.id,
+      heightKey: entry.heightKey,
+      height: entry.height,
+    })))
+    for (const entry of adoptable) {
+      if (adopted === adoptable.length || deps.virt.hasMeasuredHeight(entry.id)) {
+        pending.delete(entry.id)
+        // The row has left `pending` and can never be re-primed (pending is loaded once),
+        // so its attempt marker is now dead weight -- drop it too. Left behind, the set
+        // would grow one entry per adopted (id, digest) for the whole component lifetime,
+        // an unbounded leak on a long session that paginates/scrolls many rows.
+        attemptedAdoptions.delete(adoptionAttemptKey(entry.id, entry.digest))
+      }
+    }
   }
 
   const saveNow = (id: string): void => {
@@ -128,8 +163,14 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     const merged = new Map<string, StoredRow>()
     for (const [rowId, entry] of pending)
       merged.set(rowId, [rowId, entry.digest, entry.height])
-    for (const row of deps.virt.snapshotHeights())
+    for (const row of deps.virt.snapshotHeights()) {
+      // delete+set (not a bare set) so a row that is ALSO still pending moves to
+      // the freshly-measured end: a bare set on an existing key keeps its early
+      // pending insertion position, which the over-cap slice below would shed
+      // BEFORE older measurements -- dropping the newest real geometry.
+      merged.delete(row.id)
       merged.set(row.id, [row.id, fnv1a32Hex(row.heightKey ?? ''), Math.round(row.height * 100) / 100])
+    }
     if (merged.size === 0)
       return // never replace stored data with nothing
     let rows = [...merged.values()]

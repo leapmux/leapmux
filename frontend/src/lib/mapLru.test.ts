@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capMapInsertionOrder } from './mapLru'
+import { capMapInsertionOrder, lruGet, lruSet } from './mapLru'
 
 describe('capmapinsertionorder', () => {
   it('returns the same map untouched while within the cap', () => {
@@ -64,5 +64,55 @@ describe('capmapinsertionorder', () => {
     capMapInsertionOrder(map, 2, { protect: new Set(['a', 'b', 'c']) })
     expect(map.size).toBe(3)
     expect([...map.keys()]).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('lruget', () => {
+  it('returns undefined and leaves the map untouched on a miss', () => {
+    const map = new Map<string, number>([['a', 1], ['b', 2]])
+    expect(lruGet(map, 'z')).toBeUndefined()
+    expect([...map.keys()]).toEqual(['a', 'b'])
+  })
+
+  it('re-fronts a hit to the most-recently-used end', () => {
+    const map = new Map<string, number>([['a', 1], ['b', 2], ['c', 3]])
+    expect(lruGet(map, 'a')).toBe(1)
+    // 'a' moves to the end; a subsequent over-cap trim now sheds 'b' (oldest) first.
+    expect([...map.keys()]).toEqual(['b', 'c', 'a'])
+  })
+
+  it('treats a legitimately-stored undefined value as a hit (re-fronts it)', () => {
+    const map = new Map<string, number | undefined>([['a', undefined], ['b', 2]])
+    expect(lruGet(map, 'a')).toBeUndefined()
+    expect([...map.keys()]).toEqual(['b', 'a']) // moved, not treated as a miss
+  })
+})
+
+describe('lruset', () => {
+  it('inserts a new key at the MRU end and caps oldest-first', () => {
+    const map = new Map<string, number>()
+    for (let i = 0; i < 4; i++)
+      lruSet(map, `k${i}`, i, 3)
+    expect(map.size).toBe(3)
+    expect([...map.keys()]).toEqual(['k1', 'k2', 'k3']) // k0 (oldest) shed
+  })
+
+  it('re-fronts an overwritten key instead of dropping an unrelated live entry', () => {
+    const map = new Map<string, number>([['a', 1], ['b', 2], ['c', 3]])
+    // Overwrite the oldest key at capacity: size never grows, so nothing is evicted,
+    // and 'a' moves to the MRU end (a bare set would have kept it at the front).
+    lruSet(map, 'a', 10, 3)
+    expect(map.size).toBe(3)
+    expect([...map.entries()]).toEqual([['b', 2], ['c', 3], ['a', 10]])
+  })
+
+  it('forwards protect/onEvict to the cap', () => {
+    const map = new Map<string, number>([['a', 1], ['b', 2]])
+    const evicted: string[] = []
+    lruSet(map, 'c', 3, 2, { protect: new Set(['a']), onEvict: k => evicted.push(k) })
+    // After inserting 'c' (size 3) the cap (2) trims one: 'a' is protected and 'b' is
+    // the oldest un-protected key, so 'b' is evicted while 'a' and the new 'c' survive.
+    expect(evicted).toEqual(['b'])
+    expect([...map.keys()]).toEqual(['a', 'c'])
   })
 })

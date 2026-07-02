@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { containsAnsi, escapeHtml, renderAnsi, stripAnsi } from './renderAnsi'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
+import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 
 const ESC = '\x1B'
 const RED = `${ESC}[31m`
 const GREEN = `${ESC}[32m`
 const RESET = `${ESC}[0m`
 
-describe('containsAnsi', () => {
+describe('containsansi', () => {
   it('detects a foreground color escape', () => {
     expect(containsAnsi(`${RED}hello${RESET}`)).toBe(true)
   })
@@ -38,7 +39,7 @@ describe('containsAnsi', () => {
   })
 })
 
-describe('renderAnsi', () => {
+describe('renderansi', () => {
   it('produces a <pre><code> wrapper for ANSI-bearing input', () => {
     const html = renderAnsi(`${RED}error${RESET}`)
     expect(html).toMatch(/<pre[^>]*>/)
@@ -80,7 +81,7 @@ describe('renderAnsi', () => {
   })
 })
 
-describe('renderAnsi shared token-style classes', () => {
+describe('renderansi shared token-style classes', () => {
   beforeEach(() => {
     _resetShikiStyleClassesForTest()
   })
@@ -92,7 +93,7 @@ describe('renderAnsi shared token-style classes', () => {
     expect(html).not.toContain('<span style=')
     // Every referenced class has an injected dual-theme rule (this path runs on
     // the main thread, so the transformer injects directly -- see shikiStyleClass).
-    const rules = document.querySelector('style[data-shiki-style-classes]')!.textContent!
+    const rules = readInjectedShikiRules()
     const classes = [...html.matchAll(/class="(sk-[0-9a-z-]+)"/g)].map(m => m[1])
     expect(classes.length).toBeGreaterThan(0)
     for (const className of new Set(classes))
@@ -108,7 +109,7 @@ describe('renderAnsi shared token-style classes', () => {
   })
 })
 
-describe('stripAnsi', () => {
+describe('stripansi', () => {
   it('strips CSI controls beyond SGR while preserving printable text', () => {
     expect(stripAnsi(`${GREEN}ok${RESET}${ESC}[2K\rnext${ESC}[A`)).toBe('ok\rnext')
   })
@@ -118,7 +119,7 @@ describe('stripAnsi', () => {
   })
 })
 
-describe('escapeHtml', () => {
+describe('escapehtml', () => {
   it('escapes & < > so user-supplied text is safe to inject into HTML', () => {
     expect(escapeHtml('a & b')).toBe('a &amp; b')
     expect(escapeHtml('<script>')).toBe('&lt;script&gt;')

@@ -37,9 +37,26 @@ export function createWorkerPriorityGate(maxInFlight = 2): WorkerPriorityGate {
   const queue: GateJob[] = []
   let inFlight = 0
 
+  // A priority thunk that THROWS (e.g. it reads a torn-down reactive owner / disposed
+  // virtualizer) must not wedge the gate: this runs inside pump()'s synchronous dispatch
+  // loop, so an uncaught throw would abandon the loop with a slot half-claimed and
+  // `inFlight` never released, stalling every future job on this client. Treat a throwing
+  // (or absent) thunk as high priority so the job dispatches and its slot is freed via the
+  // work() path.
+  const isLowSafe = (job: GateJob): boolean => {
+    if (job.isLow === undefined)
+      return false
+    try {
+      return job.isLow()
+    }
+    catch {
+      return false
+    }
+  }
+
   const pickNextIndex = (): number => {
     for (let i = 0; i < queue.length; i++) {
-      if (!(queue[i].isLow?.() ?? false))
+      if (!isLowSafe(queue[i]))
         return i
     }
     return 0

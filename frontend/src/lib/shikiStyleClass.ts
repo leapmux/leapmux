@@ -54,24 +54,56 @@ const declByClassName = new Map<string, string>()
 const injectedClassNames = new Set<string>()
 let styleEl: HTMLStyleElement | null = null
 
-function injectRule(className: string, decl: string): void {
-  // Worker / SSR: no document to inject into. The declarations still travel
-  // (via collectShikiStyles) to the main thread, which injects them.
-  if (typeof document === 'undefined' || injectedClassNames.has(className))
-    return
-  injectedClassNames.add(className)
+/**
+ * The dedicated <style> element for this thread's shared token-style rules, created lazily
+ * on first use and appended to <head> so its live CSSOM sheet is available for insertRule.
+ * Returns null when there is no document (worker / SSR) -- there the declarations still
+ * travel (via collectShikiStyles) to the main thread, which injects them.
+ */
+function ensureStyleEl(): HTMLStyleElement | null {
+  if (typeof document === 'undefined')
+    return null
   if (!styleEl) {
     styleEl = document.createElement('style')
     styleEl.setAttribute('data-shiki-style-classes', '')
     document.head.appendChild(styleEl)
   }
-  // textContent accumulation re-parses the sheet per addition, but the total
-  // rule count is the number of DISTINCT token styles the themes can produce
-  // (a few dozen), so the sheet stays tiny and additions stop once the
-  // palette is saturated. Unlike insertRule it can't desync from textContent
-  // and never throws on a declaration the CSS parser balks at (an unparsable
-  // rule is inert, not fatal).
-  styleEl.textContent += `.${className}{${decl}}`
+  return styleEl
+}
+
+/**
+ * Append ONE `.class{decl}` rule via CSSOM insertRule -- an O(1) append that does NOT
+ * re-parse the accumulated sheet. A `textContent +=` per rule re-parsed the WHOLE sheet, so
+ * injecting N distinct declarations one at a time was quadratic in N: cheap for the dual-theme
+ * SYNTAX palette (a few dozen, saturating quickly) but NOT for ANSI/truecolor tool output,
+ * which can mint hundreds-to-thousands of distinct fg/bg/decoration declarations over a
+ * session. insertRule throws SyntaxError on a declaration the CSS parser rejects, so the
+ * insert is guarded: an unparsable rule is dropped and left inert, exactly as the browser
+ * dropped an invalid rule under the old textContent write. No-op when the element exposes no
+ * live sheet (defensive; a <style> connected to the document always does).
+ */
+function insertStyleRule(el: HTMLStyleElement, className: string, decl: string): void {
+  const sheet = el.sheet
+  if (!sheet)
+    return
+  try {
+    sheet.insertRule(`.${className}{${decl}}`, sheet.cssRules.length)
+  }
+  catch {
+    // Unparsable declaration -- inert, skip (matches the browser dropping an invalid rule).
+  }
+}
+
+function injectRule(className: string, decl: string): void {
+  if (injectedClassNames.has(className))
+    return
+  // Worker / SSR: no document to inject into (ensureStyleEl returns null). The declarations
+  // still travel (via collectShikiStyles) to the main thread, which injects them.
+  const el = ensureStyleEl()
+  if (!el)
+    return
+  injectedClassNames.add(className)
+  insertStyleRule(el, className, decl)
 }
 
 /**
@@ -96,12 +128,20 @@ export function recordShikiStyle(decl: string): string | undefined {
 
 /**
  * Inject rules for a worker-shipped {className: declaration} dictionary.
- * Idempotent per class, so shipping the worker's FULL accumulated dictionary
- * with every response is cheap.
+ * Idempotent per class. Each not-yet-injected rule is appended via insertRule
+ * (see insertStyleRule) -- an O(1) CSSOM append, so injecting a response's whole
+ * dictionary is linear in the number of NEW classes with no full-sheet re-parse.
  */
 export function ensureShikiStyleRules(styles: Record<string, string>): void {
-  for (const [className, decl] of Object.entries(styles))
-    injectRule(className, decl)
+  const el = ensureStyleEl()
+  if (!el)
+    return
+  for (const [className, decl] of Object.entries(styles)) {
+    if (injectedClassNames.has(className))
+      continue
+    injectedClassNames.add(className)
+    insertStyleRule(el, className, decl)
+  }
 }
 
 /**

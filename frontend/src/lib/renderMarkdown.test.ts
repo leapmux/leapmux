@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
 import { _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
+import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 
 const originalWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
 
@@ -52,10 +53,10 @@ function dispatchesFor(text: string): Array<{ worker: CapturedWorker, id: number
 }
 
 function injectedRules(): string {
-  return document.querySelector('style[data-shiki-style-classes]')?.textContent ?? ''
+  return readInjectedShikiRules()
 }
 
-describe('renderMarkdown shared token-style classes', () => {
+describe('rendermarkdown shared token-style classes', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     _resetShikiStyleClassesForTest()
@@ -92,7 +93,7 @@ describe('renderMarkdown shared token-style classes', () => {
     const text = 'persisted warm start body'
     await putArtifact(MARKDOWN_ARTIFACT_NS, text, {
       h: '<p data-persisted="">persisted warm start body</p>',
-      s: { 'sk-test-9': '--shiki-light:#123;--shiki-dark:#456' },
+      s: { 'sk-00000000-1s': '--shiki-light:#123;--shiki-dark:#456' },
     })
 
     // First call returns the plain placeholder and starts the async warm-start.
@@ -102,7 +103,7 @@ describe('renderMarkdown shared token-style classes', () => {
       expect(renderMarkdown(text)).toBe('<p data-persisted="">persisted warm start body</p>')
     })
     // The dictionary's rules were injected before the HTML could render.
-    expect(injectedRules()).toContain('.sk-test-9{--shiki-light:#123;--shiki-dark:#456}')
+    expect(injectedRules()).toContain('.sk-00000000-1s{--shiki-light:#123;--shiki-dark:#456}')
     // The warm-start never dispatched this text to a worker.
     expect(dispatchesFor(text)).toHaveLength(0)
   })
@@ -120,6 +121,36 @@ describe('renderMarkdown shared token-style classes', () => {
     await vi.waitFor(() => {
       expect(dispatchesFor(text)).toHaveLength(1)
     })
+    const [{ worker, id }] = dispatchesFor(text)
+    worker.onmessage?.({
+      data: { id, html: '<p>legacy fallback</p>', retryable: false, styles: {} },
+    } as MessageEvent)
+    await vi.waitFor(() => {
+      expect(renderMarkdown(text)).toBe('<p>legacy fallback</p>')
+    })
+  })
+
+  it('rejects an oversized persisted html artifact and falls through to the worker', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    installCapturingWorker()
+    const text = 'oversized artifact body'
+    await putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+      h: `<p>${'x'.repeat(512 * 1024)}</p>`,
+      s: {},
+    })
+
+    renderMarkdown(text)
+
+    await vi.waitFor(() => {
+      expect(dispatchesFor(text)).toHaveLength(1)
+    })
+    const [{ worker, id }] = dispatchesFor(text)
+    worker.onmessage?.({
+      data: { id, html: '<p>oversized fallback</p>', retryable: false, styles: {} },
+    } as MessageEvent)
+    await vi.waitFor(() => {
+      expect(renderMarkdown(text)).toBe('<p>oversized fallback</p>')
+    })
   })
 
   it('injects a worker result\'s style dictionary and persists {html, styles}', async () => {
@@ -134,22 +165,22 @@ describe('renderMarkdown shared token-style classes', () => {
     worker.onmessage?.({
       data: {
         id,
-        html: '<pre class="shiki"><code><span class="sk-worker-7">x</span></code></pre>',
+        html: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
         retryable: false,
-        styles: { 'sk-worker-7': '--shiki-light:#aaa' },
+        styles: { 'sk-00000001-13': '--shiki-light:#aaa' },
       },
     } as MessageEvent)
 
     await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toContain('sk-worker-7')
+      expect(renderMarkdown(text)).toContain('sk-00000001-13')
     })
     // The worker has no document; the main thread injected the shipped rules.
-    expect(injectedRules()).toContain('.sk-worker-7{--shiki-light:#aaa}')
+    expect(injectedRules()).toContain('.sk-00000001-13{--shiki-light:#aaa}')
     // Persisted for the next session's warm start, dictionary included.
     await vi.waitFor(async () => {
       await expect(getArtifact(MARKDOWN_ARTIFACT_NS, text)).resolves.toEqual({
-        h: '<pre class="shiki"><code><span class="sk-worker-7">x</span></code></pre>',
-        s: { 'sk-worker-7': '--shiki-light:#aaa' },
+        h: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
+        s: { 'sk-00000001-13': '--shiki-light:#aaa' },
       })
     })
   })

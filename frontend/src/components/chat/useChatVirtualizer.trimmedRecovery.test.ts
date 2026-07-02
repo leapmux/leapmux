@@ -5,7 +5,7 @@ import { HEIGHT_CACHE_MAX, useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
 describe('usechatvirtualizer geometry', () => {
-  describe('scrollTopNearAnchor (trimmed-row recovery)', () => {
+  describe('scrolltopnearanchor (trimmed-row recovery)', () => {
     // 5 plain rows (100px, 20px gaps) -> offsets 0,120,240,360,480 -- plus a trailing
     // optimistic local (seq 0n) the nearest-survivor scan must SKIP.
     function seqItems(): VirtualItem[] {
@@ -119,8 +119,12 @@ describe('usechatvirtualizer geometry', () => {
       const { virt } = setup(plainItems(5, 10)) // ids m10..m14
       expect(virt.indexOfId('m12')).toBe(2)
       expect(virt.offsetOfId('m12')).toBe(240)
+      expect(virt.heightOfId('m12')).toBe(100)
+      expect(virt.measure('m12', 225)).toBe(true)
+      expect(virt.heightOfId('m12')).toBe(225)
       expect(virt.indexOfId('m999')).toBe(-1)
       expect(virt.offsetOfId('m999')).toBeUndefined()
+      expect(virt.heightOfId('m999')).toBe(225) // absent rows use the current fallback estimate.
       dispose()
     })
   })

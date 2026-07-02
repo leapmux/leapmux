@@ -18,7 +18,7 @@ async function importClient() {
   return await import('./shikiWorkerClient')
 }
 
-describe('shikiWorkerClient', () => {
+describe('shikiworkerclient', () => {
   afterEach(() => {
     restoreWorker()
   })
@@ -237,6 +237,51 @@ describe('shikiWorkerClient', () => {
         [[{ content: 'echo persisted', className: shikiStyleClassName('color:red') }]],
       )
       expect(workers).toHaveLength(0) // the reload warm-start never touched a worker
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('ignores malformed persisted tokens and falls back to the worker', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const workers: Array<{
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, lang: string, code: string }>
+    }> = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class CapturingWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        messages: Array<{ id: number, lang: string, code: string }> = []
+        terminate = vi.fn()
+
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage(message: { id: number, lang: string, code: string }) {
+          this.messages.push(message)
+        }
+      },
+    })
+    try {
+      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const store = await import('./renderArtifactStore')
+      const { makeKey } = await import('./tokenCache')
+      await store.putArtifact(
+        TOKEN_ARTIFACT_NS,
+        makeKey('bash', 'echo fallback'),
+        { styles: [], lines: [[null]] },
+      )
+
+      const pending = tokenizeAsync('bash', 'echo fallback')
+      await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
+      const wire = { styles: [], lines: [[[-1, 'echo fallback']]] }
+      workers[0].onmessage?.({ data: { id: workers[0].messages[0].id, tokens: wire } } as MessageEvent)
+      await expect(pending).resolves.toEqual([[{ content: 'echo fallback' }]])
     }
     finally {
       vi.unstubAllGlobals()

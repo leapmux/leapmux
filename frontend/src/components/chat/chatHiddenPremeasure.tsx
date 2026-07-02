@@ -91,6 +91,10 @@ function createSharedPremeasureFrame() {
 
 type SharedPremeasureFrame = ReturnType<typeof createSharedPremeasureFrame>
 
+function premeasureTaskKey(id: string, heightKey: string | undefined): string {
+  return `${id}\0${heightKey ?? ''}`
+}
+
 function PremeasureRow(props: {
   candidate: ChatDomPremeasureCandidate
   renderBubble: (entry: ClassifiedEntry) => JSX.Element
@@ -98,22 +102,27 @@ function PremeasureRow(props: {
   frame: SharedPremeasureFrame
 }): JSX.Element {
   let rowEl: HTMLDivElement | undefined
+  let scheduledMeasureKey: string | undefined
   const [resizeObservationEnabled, setResizeObservationEnabled] = createSignal(true)
   const observationKey = () => `${props.candidate.item.id}\0${props.candidate.item.heightKey ?? ''}`
   const hasPendingImages = (): boolean => {
     const root = rowEl
     if (!root)
       return false
-    // Images whose box was reserved up front (data-size-reserved, see
-    // McpImageView) are layout-neutral while they decode: their height is
-    // already final, so they don't hold the row's measurement unsettled.
+    // A reserved box can still be revoked by the image's decode-time verifier
+    // if the sniffed dimensions were wrong, so every incomplete image keeps
+    // the hidden measurement unsettled until load/error fires.
     return Array.from(root.querySelectorAll('img'))
-      .some(img => !img.complete && img.getAttribute('data-size-reserved') !== '1')
+      .some(img => !img.complete)
   }
   const scheduleMeasure = (id: string, heightKey: string | undefined, onMeasure: typeof props.onMeasure): void => {
-    // Keyed by row id, so a re-schedule for the same row (heightKey churn, an image
-    // settling) replaces its pending task instead of measuring twice in one frame.
-    props.frame.schedule(id, {
+    const key = premeasureTaskKey(id, heightKey)
+    if (scheduledMeasureKey !== undefined && scheduledMeasureKey !== key)
+      props.frame.cancel(scheduledMeasureKey)
+    scheduledMeasureKey = key
+    // Keyed by row id + heightKey, so stale cleanup from an older row epoch
+    // cannot cancel a newer task for the same message under a different layout.
+    props.frame.schedule(key, {
       read: () => {
         const started = monotonicNow()
         const height = rowEl?.getBoundingClientRect().height ?? 0
@@ -166,7 +175,10 @@ function PremeasureRow(props: {
       }
     })
   })
-  onCleanup(() => props.frame.cancel(props.candidate.item.id))
+  onCleanup(() => {
+    if (scheduledMeasureKey !== undefined)
+      props.frame.cancel(scheduledMeasureKey)
+  })
 
   const reservedLeftPx = () => spanLinesReservedWidth(props.candidate.entry.parsedSpanLines.length)
 

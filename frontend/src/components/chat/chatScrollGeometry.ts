@@ -14,6 +14,16 @@ import { createLogger } from '~/lib/logger'
 /** Below this, a re-pin's scrollTop correction is a no-op not worth a write (which can interrupt momentum). */
 export const REPIN_MIN_DELTA_PX = 1
 /**
+ * Distance-from-bottom (px) within which the viewport is treated as "stuck to the live
+ * tail" and auto-follows growth. Also the floor below which a scrollable range is
+ * effectively unscrollable: with 0 < maxScrollTop <= this, EVERY scroll position is inside
+ * the sticky band, so a reader can never scroll OUT of it -- the older-history pre-fetch
+ * suppressions clear at this bound, not at a strict 0, or a barely-scrollable hidden-heavy
+ * page would wedge older loads off for good (see useChatScroll.suppressOlderPrefetchAtLiveTail
+ * and the restore-suppression clears).
+ */
+export const STICKY_BOTTOM_THRESHOLD_PX = 32
+/**
  * Slack (px) for "is the viewport at the very top / bottom edge?" when deciding an
  * explicit page-older / page-newer intent. A re-pin or clamp can leave scrollTop a
  * sub-pixel off the edge (fractional DPI / browser zoom report non-integer

@@ -1,5 +1,5 @@
 import { diffWordsWithSpace } from 'diff'
-import { capMapInsertionOrder } from '~/lib/mapLru'
+import { lruGet, lruSet } from '~/lib/mapLru'
 
 /** One word-diff segment, as the `diff` package emits it. */
 export interface WordDiffPart {
@@ -39,17 +39,12 @@ export function pairedWordDiff(oldLine: string, newLine: string): WordDiffPart[]
   // The length prefix keeps the key injective even if a line contained the
   // separator character.
   const key = `${oldLine.length}\0${oldLine}\0${newLine}`
-  const cached = cache.get(key)
-  if (cached !== undefined) {
-    // Re-set so the entry becomes most-recently-used (Map insertion order).
-    cache.delete(key)
-    cache.set(key, cached)
+  // lruGet re-fronts a hit (shared touch-on-read; see mapLru).
+  const cached = lruGet(cache, key)
+  if (cached !== undefined)
     return cached
-  }
   const parts = diffWordsWithSpace(oldLine, newLine)
-  cache.set(key, parts)
-  if (cache.size > CACHE_MAX_SIZE)
-    capMapInsertionOrder(cache, CACHE_MAX_SIZE)
+  lruSet(cache, key, parts, CACHE_MAX_SIZE)
   return parts
 }
 

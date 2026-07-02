@@ -1,5 +1,5 @@
 import { createRenderEffect } from 'solid-js'
-import { capMapInsertionOrder } from './mapLru'
+import { lruSet } from './mapLru'
 
 // ---------------------------------------------------------------------------
 // Parsed-DOM fragment cache for rendered markdown/tool HTML
@@ -58,11 +58,9 @@ export function applyCachedHtml(el: HTMLElement, html: string): void {
     tpl = document.createElement('template')
     tpl.innerHTML = html
   }
-  // delete+set moves a hit to the most-recently-used end (and inserts a miss
-  // there); the cap then drops the insertion-order-oldest entries.
-  cache.delete(html)
-  cache.set(html, tpl)
-  capMapInsertionOrder(cache, FRAGMENT_CACHE_MAX)
+  // Shared LRU write (mapLru.lruSet): moves a hit to the most-recently-used end
+  // (and inserts a miss there), then drops the insertion-order-oldest entries.
+  lruSet(cache, html, tpl, FRAGMENT_CACHE_MAX)
   el.replaceChildren(tpl.content.cloneNode(true))
 }
 

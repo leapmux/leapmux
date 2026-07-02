@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { _resetShikiStyleClassesForTest, shikiStyleClassName } from './shikiStyleClass'
+import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 import { _resetTokenCache, _TOKEN_CACHE_MAX_SIZE, expandInternedTokenLines, getCachedTokens, internTokenLines, makeKey, mergeLineTokens, setCachedTokens, toCachedTokens } from './tokenCache'
 
 beforeEach(() => {
   _resetShikiStyleClassesForTest()
 })
 
-describe('makeKey', () => {
+describe('makekey', () => {
   // The NUL separator, built via fromCharCode so this source file stays plain ASCII.
   const NUL = String.fromCharCode(0)
 
@@ -30,7 +31,7 @@ describe('makeKey', () => {
   })
 })
 
-describe('toCachedTokens', () => {
+describe('tocachedtokens', () => {
   it('projects each token to content + a shared style class, dropping other fields', () => {
     // Shiki ThemedTokens carry extra fields (offset, color, fontStyle, ...) the
     // renderer never reads. The projection keeps ONLY content + the minted
@@ -68,11 +69,11 @@ describe('toCachedTokens', () => {
       { content: 'b', htmlStyle: { '--shiki-light': '#a1', '--shiki-dark': '#b2' } },
       { content: 'c', htmlStyle: { '--shiki-light': '#c3' } },
     ]])
-    const styleEl = document.querySelector('style[data-shiki-style-classes]')!
-    expect(styleEl.textContent).toContain(`.${shikiStyleClassName('--shiki-light:#a1;--shiki-dark:#b2')}{--shiki-light:#a1;--shiki-dark:#b2}`)
-    expect(styleEl.textContent).toContain(`.${shikiStyleClassName('--shiki-light:#c3')}{--shiki-light:#c3}`)
+    const rules = readInjectedShikiRules()
+    expect(rules).toContain(`.${shikiStyleClassName('--shiki-light:#a1;--shiki-dark:#b2')}{--shiki-light:#a1;--shiki-dark:#b2}`)
+    expect(rules).toContain(`.${shikiStyleClassName('--shiki-light:#c3')}{--shiki-light:#c3}`)
     // The duplicate style minted no second rule.
-    expect(styleEl.textContent!.match(/\.sk-/g)).toHaveLength(2)
+    expect(rules.match(/\.sk-/g)).toHaveLength(2)
   })
 
   it('leaves unstyled and empty-style tokens class-free', () => {
@@ -90,7 +91,7 @@ describe('toCachedTokens', () => {
   })
 })
 
-describe('mergeLineTokens', () => {
+describe('mergelinetokens', () => {
   const light = (color: string) => ({ '--shiki-light': color })
 
   it('folds a leading whitespace-only token into the next token', () => {
@@ -216,7 +217,7 @@ describe('mergeLineTokens', () => {
   })
 })
 
-describe('token cache LRU eviction', () => {
+describe('token cache lru eviction', () => {
   const tok = (s: string) => toCachedTokens([[{ content: s }]])
 
   beforeEach(() => {

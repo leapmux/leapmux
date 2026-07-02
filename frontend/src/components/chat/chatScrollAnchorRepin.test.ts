@@ -353,7 +353,7 @@ describe('createanchorrepin row-top hold', () => {
   })
 })
 
-describe('createanchorrepin repinToAnchor decision', () => {
+describe('createanchorrepin repintoanchor decision', () => {
   it('does nothing while following the tail (no anchor to pin)', () => {
     const { repin, writes, virt } = setup()
     repin.repinToAnchor()
@@ -586,7 +586,7 @@ describe('createanchorrepin deferred-during-animation', () => {
   })
 })
 
-describe('createanchorrepin clamp reporting (onRepinClamp)', () => {
+describe('createanchorrepin clamp reporting (onrepinclamp)', () => {
   it('reports a top-edge clamp: the keep-position target went negative and the row jumped up', () => {
     const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
     el.scrollTop = 200
@@ -644,7 +644,7 @@ describe('createanchorrepin clamp reporting (onRepinClamp)', () => {
   })
 })
 
-describe('createanchorrepin drift reporting (onAnchorDrift)', () => {
+describe('createanchorrepin drift reporting (onanchordrift)', () => {
   it('reports an ABSORBED slow-scroll correction (uncorrected on-screen shift)', () => {
     const { repin, el, writes, virt, onAnchorDrift, setUserScrolling } = setup({ clientHeight: 500 })
     el.scrollTop = 200
