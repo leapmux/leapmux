@@ -6,6 +6,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { batch, createEffect, createSignal, For } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { rowSkeletonClosing } from './ChatView.css'
 
 type HiddenPremeasureOnMeasure = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean
 
@@ -15,6 +16,7 @@ const virtualizerState = vi.hoisted(() => ({
   attachedIds: [] as string[],
   measuredIds: new Set<string>(),
   currentHeightKeys: new Map<string, string | undefined>(),
+  setDeferred: undefined as undefined | ((deferred: boolean) => void),
 }))
 
 const hiddenPremeasureState = vi.hoisted(() => ({
@@ -120,14 +122,17 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./useChatVirtualizer')>()
   const { createSignal } = await import('solid-js')
   const [version, setVersion] = createSignal(0)
+  const [deferred, setDeferred] = createSignal(false)
   virtualizerState.setRange = (range: ChatVirtualizerRange) => {
     virtualizerState.range = range
     setVersion(v => v + 1)
   }
+  virtualizerState.setDeferred = setDeferred
   return {
     ...actual,
     useChatVirtualizer: () => ({
       mountedIds: new Set<string>(),
+      fastScrollActive: deferred,
       range: () => {
         version()
         return virtualizerState.range
@@ -420,6 +425,50 @@ describe('chat view virtualized visible slice', () => {
     expect(tail!.style.visibility).not.toBe('hidden')
   })
 
+  it('paints a loading skeleton over a premeasure-hidden row\'s reserved slot, but not the live tail', async () => {
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set(['m0'])
+    virtualizerState.currentHeightKeys = new Map()
+    virtualizerState.setDeferred?.(false)
+    hiddenPremeasureState.candidates = []
+    hiddenPremeasureState.onMeasure = undefined
+    virtualizerState.setRange?.({ start: 0, end: 1 })
+    const [messages, setMessages] = createSignal([message('m0', 1)])
+    const { container } = render(() => (
+      <ChatView
+        messages={messages()}
+        streamingText=""
+      />
+    ))
+
+    virtualizerState.setRange?.({ start: 0, end: 3 })
+    setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+
+    // m1 (interior, unmeasured, premeasure-hidden) gets its reserved slot
+    // painted by the skeleton overlay; m0 (measured) and m2 (live tail, never
+    // hidden) do not.
+    const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    expect(skeletons).toHaveLength(1)
+    expect(skeletons[0].style.height).toBe('100px') // stub heightOfIndex (the reserved estimate)
+    expect(skeletons[0].parentElement!.style.transform).toBe('translateY(100px)') // stub offset of m1
+
+    // Once m1's height commits, the real row shows and the overlay CROSSFADES
+    // out: it lingers for one SKELETON_CROSSFADE_MS beat in the fading-out
+    // wrapper instead of popping away.
+    virtualizerState.measuredIds.add('m1')
+    virtualizerState.setRange?.({ start: 0, end: 3 }) // bump the stub's version signal
+    const interior = container.querySelector('[data-seq="2"]') as HTMLElement
+    expect(interior.style.visibility).not.toBe('hidden')
+    const lingering = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    expect(lingering).toHaveLength(1)
+    expect(lingering[0].parentElement!.classList.contains(rowSkeletonClosing)).toBe(true)
+
+    // After the crossfade beat the skeleton unmounts for good.
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
+    })
+  })
+
   it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
@@ -442,5 +491,102 @@ describe('chat view virtualized visible slice', () => {
     await waitFor(() => {
       expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id).sort()).toEqual(['m1', 'm2'])
     })
+  })
+
+  it('mounts a fling skeleton for a MEASURED row entering mid-fling, upgrading on settle', async () => {
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set(['m0', 'm8', 'm9'])
+    virtualizerState.currentHeightKeys = new Map()
+    virtualizerState.setRange?.({ start: 0, end: 1 })
+    virtualizerState.setDeferred?.(false)
+    const messages = Array.from({ length: 12 }, (_, index) => message(`m${index}`, index + 1))
+    const { container } = render(() => (
+      <ChatView
+        messages={messages}
+        streamingText=""
+      />
+    ))
+    await Promise.resolve()
+    // m0 mounted BEFORE the fling: it must stay a real bubble when the fling
+    // starts (no downgrade — that would tear its DOM down mid-scroll).
+    expect(visibleBubbleIds(container)).toEqual(['m0'])
+
+    virtualizerState.setDeferred?.(true) // momentum fling in flight
+    virtualizerState.setRange?.({ start: 0, end: 10 })
+    await Promise.resolve()
+
+    // Measured rows that ENTERED mid-fling render IN-ROW skeletons instead of
+    // bubbles; the unmeasured ones mount real-but-hidden bubbles (so
+    // measurement proceeds) with OVERLAY loading skeletons painting their
+    // reserved slots. In-row skeletons sit inside the data-seq row; overlays
+    // sit in their own positioned wrapper.
+    const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    const inRow = skeletons.filter(s => s.parentElement?.hasAttribute('data-seq'))
+    const overlay = skeletons.filter(s => !s.parentElement?.hasAttribute('data-seq'))
+    expect(inRow).toHaveLength(2) // m8, m9 (m0 was already real)
+    expect(overlay).toHaveLength(7) // m1..m7 (unmeasured, premeasure-hidden)
+    expect(inRow[0].style.height).toBe('100px') // stub heightOfIndex
+    // The body is ONE masked Oat fill block; its role="status" is what Oat's
+    // `[role=status].skeleton` selector REQUIRES for the styles to apply.
+    const fills = [...inRow[0].querySelectorAll('.skeleton.line')] as HTMLElement[]
+    expect(fills).toHaveLength(1)
+    expect(fills[0].getAttribute('role')).toBe('status')
+    expect(visibleBubbleIds(container)).toEqual(
+      ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'],
+    )
+
+    virtualizerState.setDeferred?.(false) // fling settled
+    await Promise.resolve()
+
+    // Every IN-ROW skeleton upgraded to a real bubble, with a fading-out
+    // skeleton COPY on top for the crossfade beat (inside the row but wrapped,
+    // so no longer a direct data-seq child).
+    expect(visibleBubbleIds(container)).toEqual(
+      ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9'],
+    )
+    const during = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    expect(during.filter(s => s.parentElement?.hasAttribute('data-seq'))).toHaveLength(0)
+    const crossfading = during.filter(s => s.closest('[data-seq]') !== null)
+    expect(crossfading).toHaveLength(2) // m8, m9 fading out over their bubbles
+    expect(crossfading[0].parentElement!.classList.contains(rowSkeletonClosing)).toBe(true)
+
+    // After the crossfade beat, only the 7 loading overlays (unmeasured rows)
+    // remain.
+    await waitFor(() => {
+      const remaining = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+      expect(remaining.filter(s => s.closest('[data-seq]') !== null)).toHaveLength(0)
+      expect(remaining).toHaveLength(7)
+    })
+  })
+
+  it('attaches wheel and touch listeners as passive on the scroll container', () => {
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set()
+    virtualizerState.currentHeightKeys = new Map()
+    // Non-passive wheel/touch listeners force the compositor to wait on the main
+    // thread before starting a scroll; nothing in these handlers calls
+    // preventDefault, so they must register passive (see
+    // attachPassiveScrollListeners in ChatView).
+    const spy = vi.spyOn(HTMLElement.prototype, 'addEventListener')
+    try {
+      const { container } = render(() => (
+        <ChatView
+          messages={[message('m0', 1)]}
+          streamingText=""
+        />
+      ))
+      const scroller = container.querySelector('[data-chat-scroll-container]')
+      expect(scroller).toBeTruthy()
+      const optionsByType = new Map<string, unknown>()
+      spy.mock.calls.forEach((call, i) => {
+        if (spy.mock.instances[i] === scroller)
+          optionsByType.set(call[0], call[2])
+      })
+      for (const type of ['wheel', 'touchstart', 'touchmove', 'touchend', 'touchcancel'])
+        expect(optionsByType.get(type), `${type} listener`).toEqual({ passive: true })
+    }
+    finally {
+      spy.mockRestore()
+    }
   })
 })

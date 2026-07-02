@@ -15,7 +15,10 @@ export function renderTokenizedLine(text: string, tokens: CachedToken[] | null):
   return (
     <For each={tokens}>
       {token => (
-        <span style={token.htmlStyle as JSX.CSSProperties}>{token.content}</span>
+        // `data-shiki-token` marks the span as a syntax token so the diff
+        // surfaces' dual-theme color rule targets it (see diffStyles.css.ts);
+        // the token's style lives in the shared class (shikiStyleClass).
+        <span data-shiki-token class={token.className}>{token.content}</span>
       )}
     </For>
   ) as JSX.Element
@@ -38,24 +41,26 @@ function renderTokenizedWordDiff(
   const filteredParts = wordDiffParts.filter(filterFn)
 
   if (!tokens) {
-    // No syntax tokens — fall back to plain word-diff rendering
+    // No syntax tokens — fall back to plain word-diff rendering. `undefined`
+    // (not '') for the unchanged parts, so Solid omits the class attribute
+    // instead of stamping an empty class="".
     return (
       <For each={filteredParts}>
         {p => (
-          <span class={(p.added || p.removed) ? highlightClass : ''}>{p.value}</span>
+          <span class={(p.added || p.removed) ? highlightClass : undefined}>{p.value}</span>
         )}
       </For>
     ) as JSX.Element
   }
 
-  // Build a flat list of fragments: each fragment has Shiki style + optional diff class
-  const fragments: Array<{ text: string, style?: CachedToken['htmlStyle'], className: string }> = []
+  // Build a flat list of fragments: each fragment has the Shiki style class + optional diff class
+  const fragments: Array<{ text: string, tokenClass: string | undefined, diffClass: string | undefined }> = []
 
   let tokenIdx = 0
   let tokenOffset = 0 // char offset within current token
 
   for (const part of filteredParts) {
-    const className = (part.added || part.removed) ? highlightClass : ''
+    const diffClass = (part.added || part.removed) ? highlightClass : undefined
     let remaining = part.value.length
     let partPos = 0
 
@@ -66,8 +71,8 @@ function renderTokenizedWordDiff(
 
       fragments.push({
         text: part.value.slice(partPos, partPos + take),
-        style: token.htmlStyle,
-        className,
+        tokenClass: token.className,
+        diffClass,
       })
 
       partPos += take
@@ -84,8 +89,8 @@ function renderTokenizedWordDiff(
     if (remaining > 0) {
       fragments.push({
         text: part.value.slice(partPos),
-        style: undefined,
-        className,
+        tokenClass: undefined,
+        diffClass,
       })
     }
   }
@@ -93,10 +98,21 @@ function renderTokenizedWordDiff(
   return (
     <For each={fragments}>
       {f => (
-        <span class={f.className} style={f.style as JSX.CSSProperties}>{f.text}</span>
+        // `data-shiki-token` scopes the diff surfaces' dual-theme color rule to
+        // these fragments (see renderTokenizedLine). The class composes the
+        // shared Shiki style class with the word-diff highlight; `undefined`
+        // omits the attribute entirely when neither applies.
+        <span data-shiki-token class={joinClasses(f.tokenClass, f.diffClass)}>{f.text}</span>
       )}
     </For>
   ) as JSX.Element
+}
+
+/** Join optional class names, or undefined so Solid omits the attribute. */
+function joinClasses(a: string | undefined, b: string | undefined): string | undefined {
+  if (a && b)
+    return `${a} ${b}`
+  return a || b || undefined
 }
 
 /**

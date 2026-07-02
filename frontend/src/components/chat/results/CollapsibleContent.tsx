@@ -1,7 +1,7 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via renderAnsi/renderMarkdown, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import { createMemo, Match, Switch } from 'solid-js'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
@@ -93,12 +93,12 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
   return (
     <Switch>
       <Match when={props.kind === 'markdown'}>
-        <div class={`${markdownContent}${collapsedClass()}`} innerHTML={markdownSliceHtml()} />
+        <div class={`${markdownContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownSliceHtml)} />
       </Match>
       <Match when={props.kind === 'markdown-tool-result'}>
         {/* Markdown bodies don't truncate by lines (would slice mid-block); the
             full text is rendered and only the fade class differs by `isCollapsed`. */}
-        <div class={`${toolResultContent}${collapsedClass()}`} innerHTML={markdownFullHtml()} />
+        <div class={`${toolResultContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownFullHtml)} />
       </Match>
       <Match when={props.kind === 'json'}>
         {/* Same as 'markdown-tool-result': render full shiki HTML; visual clip via fade. */}
@@ -108,7 +108,7 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
         <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
       </Match>
       <Match when={renderedAnsiHtml()}>
-        {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={html()} />}
+        {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} ref={cachedInnerHtml(html)} />}
       </Match>
       <Match when={props.kind === 'ansi-or-pre'}>
         <div class={`${toolResultContentPre}${collapsedClass()}`}>{ansiPlainText()}</div>

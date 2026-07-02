@@ -1,7 +1,7 @@
 import type { CachedToken } from './tokenCache'
 import { shikiHighlighter } from './renderMarkdown'
 import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
-import { toCachedTokens } from './tokenCache'
+import { mergeLineTokens, toCachedTokens } from './tokenCache'
 
 /**
  * Synchronous main-thread tokenizer for ANSI escape output, shaped as a
@@ -24,7 +24,10 @@ export function ansiSyncTokenize(lang: string, code: string): CachedToken[][] | 
   if (lang !== 'ansi')
     return null
   try {
-    return toCachedTokens(shikiHighlighter.codeToTokens(code, { lang: 'ansi', ...DUAL_THEME_TOKEN_OPTIONS }).tokens)
+    // mergeLineTokens folds whitespace-only and same-style neighbors (guarding
+    // ANSI background bars, which ARE visible on whitespace) — Shiki applies
+    // these merges only on its codeToHast path, not codeToTokens.
+    return toCachedTokens(mergeLineTokens(shikiHighlighter.codeToTokens(code, { lang: 'ansi', ...DUAL_THEME_TOKEN_OPTIONS }).tokens))
   }
   catch {
     return null

@@ -22,9 +22,11 @@ import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop }
 export function measurementDeferralNoOps(): Pick<
   ChatScrollVirtualizer,
   'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
+  | 'setFastScrollActive'
 > {
   return {
     setVisibleMeasurementDeferral: () => {},
+    setFastScrollActive: () => {},
     hasDeferredMeasurements: () => false,
     flushDeferredMeasurements: () => false,
     lastMeasurement: () => undefined,

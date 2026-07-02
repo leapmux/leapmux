@@ -73,11 +73,13 @@ export const diffContent = style({
   minWidth: 0,
 })
 
-// Shiki dual-theme support for diff token spans.
+// Shiki dual-theme support for diff token spans (the renderers stamp
+// `data-shiki-token` on every syntax fragment; the `--shiki-*` variables come
+// from the shared style classes -- see shikiStyleClass).
 // Only color is set here (no `bg`); backgroundColor is intentionally omitted so that
 // word-diff inline classes (diffRemovedInline, diffAddedInline) are not
 // overridden by a higher-specificity global rule.
-shikiDualThemeColors(`${diffContainer} span[style]`)
+shikiDualThemeColors(`${diffContainer} span[data-shiki-token]`)
 
 // Split diff container (two columns side by side)
 export const diffSplitContainer = style({
@@ -91,7 +93,7 @@ export const diffSplitContainer = style({
   marginTop: 'var(--space-1)',
 })
 
-shikiDualThemeColors(`${diffSplitContainer} span[style]`)
+shikiDualThemeColors(`${diffSplitContainer} span[data-shiki-token]`)
 
 // Gap separator row between hunks (shows hidden line count + expand buttons)
 export const diffGapSeparator = style({

@@ -351,7 +351,7 @@ function TokenizedCode(props: {
               <>
                 <For each={line}>
                   {token => (
-                    <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>
+                    <span data-shiki-token class={token.className}>
                       {token.content}
                     </span>
                   )}

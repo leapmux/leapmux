@@ -8,6 +8,7 @@ import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
+import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
 
 /**
@@ -90,6 +91,13 @@ export function createMarkdownProcessor(highlighter: HighlighterCore) {
     .use(remarkRehype)
     .use(rehypeShikiFromHighlighter, highlighter as Parameters<typeof rehypeShikiFromHighlighter>[0], {
       ...DUAL_THEME_TOKEN_OPTIONS,
+      // Fewer token spans: adjacent same-style tokens collapse into one (an
+      // upstream merge that is OFF by default), and each remaining span carries
+      // a shared style class instead of a ~50-byte inline declaration (see
+      // shikiStyleClass — the worker ships the class->declaration dictionary
+      // alongside the HTML for main-thread rule injection).
+      mergeSameStyleTokens: true,
+      transformers: [shikiStyleClassTransformer()],
       // A fence whose language isn't loaded (worker: lazy-load missed it; sync
       // fallback: outside the 20-lang set) or that errors degrades to a plain
       // `text` block instead of throwing the whole document to plain.

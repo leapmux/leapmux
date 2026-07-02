@@ -1,8 +1,8 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createMemo, Show } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { pickString } from '~/lib/jsonPick'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
@@ -73,7 +73,7 @@ defineCodexRenderer({
       if (expanded())
         return undefined
       if (hasCollapsiblePrompt())
-        return <div class={`${toolResultContent} ${toolResultCollapsed} ${markdownContent}`} innerHTML={promptHtml()} />
+        return <div class={`${toolResultContent} ${toolResultCollapsed} ${markdownContent}`} ref={cachedInnerHtml(promptHtml)} />
       if (isWaitInProgress() || isTerminalWait() || isSpawnAgent() || !status())
         return undefined
       return <div class={toolInputSummary}>{status()}</div>
@@ -90,7 +90,7 @@ defineCodexRenderer({
         onToggleExpand={hasCollapsiblePrompt() ? () => setExpanded(v => !v) : undefined}
       >
         <Show when={hasCollapsiblePrompt()}>
-          <div class={`${toolResultContent} ${markdownContent}`} innerHTML={promptHtml()} />
+          <div class={`${toolResultContent} ${markdownContent}`} ref={cachedInnerHtml(promptHtml)} />
         </Show>
       </ToolUseLayout>
     )

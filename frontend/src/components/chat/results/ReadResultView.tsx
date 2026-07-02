@@ -264,11 +264,10 @@ export function ReadResultView(props: {
                   <For each={tokens()!}>
                     {token => (
                       // `data-shiki-token` marks THIS as a syntax token so the dual-theme
-                      // color rule targets it precisely -- not the line-number span, which
-                      // also carries an inline `style` (its width) and would otherwise match
-                      // a bare `span[style]` selector and lose its faint color. Mirrors the
-                      // Bash/JSON token markup (TokenizedCode).
-                      <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>{token.content}</span>
+                      // color rule targets it precisely -- not the line-number span. The
+                      // token's style lives in the shared class (shikiStyleClass). Mirrors
+                      // the Bash/JSON token markup (TokenizedCode).
+                      <span data-shiki-token class={token.className}>{token.content}</span>
                     )}
                   </For>
                 </Show>

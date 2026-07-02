@@ -1,7 +1,7 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickFirstString, pickString } from '~/lib/jsonPick'
@@ -142,7 +142,7 @@ function McpContentItemView(props: { item: McpContentItem, context?: RenderConte
       <Match when={props.item.type === 'text'}>
         <div
           class={toolResultContent}
-          innerHTML={markdownHtml((props.item as { type: 'text', text: string }).text)}
+          ref={cachedInnerHtml(() => markdownHtml((props.item as { type: 'text', text: string }).text))}
         />
       </Match>
       <Match when={props.item.type === 'image'}>

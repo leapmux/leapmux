@@ -16,6 +16,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
@@ -235,14 +236,14 @@ export function useSharedExpandedState(
 
 /**
  * Render markdown text via the shared remark pipeline. The HTML is produced
- * via remark + sanitizer, never arbitrary user input — `solid/no-innerhtml`
- * is intentionally disabled at the call site here so every consumer doesn't
- * have to repeat the disable comment.
+ * via remark + sanitizer, never arbitrary user input. It is applied through
+ * the parsed-fragment cache (~/lib/htmlFragmentCache) rather than an
+ * `innerHTML` binding, so a re-mounting row clones the already-parsed
+ * template instead of making the browser re-parse the same markup.
  */
 export function MarkdownText(props: { text: string, context?: RenderContext }): JSX.Element {
   const html = createMemo(() => renderMarkdownForContext(props.text, props.context))
-  // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input
-  return <div class={markdownContent} innerHTML={html()} />
+  return <div class={markdownContent} ref={cachedInnerHtml(html)} />
 }
 
 /** Shared assistant thinking/reasoning bubble with chevron-controlled body. */

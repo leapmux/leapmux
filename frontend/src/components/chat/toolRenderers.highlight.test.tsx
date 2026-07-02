@@ -22,7 +22,7 @@ describe('json/bash async token highlighting', () => {
 
   it('dispatches eligible JSON to the worker and renders token spans', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: '{', htmlStyle: { color: 'rgb(1, 2, 3)' } }]])
+    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: '{', className: 'sk-json-test' }]])
 
     const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} />)
 
@@ -30,12 +30,13 @@ describe('json/bash async token highlighting', () => {
       expect(tokenizeAsync).toHaveBeenCalledWith('json', '{"a":1}', expect.any(Function))
       expect(container.querySelector('[data-shiki-token]')).not.toBeNull()
     })
-    expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
+    // The token span carries its shared style class (see shikiStyleClass).
+    expect(container.querySelector('.sk-json-test')).not.toBeNull()
   })
 
   it('dispatches eligible Bash with the bash language', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: 'echo', htmlStyle: { color: 'rgb(7, 8, 9)' } }]])
+    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: 'echo', className: 'sk-bash-test' }]])
 
     render(() => <BashHighlightHtml code="echo hi" />)
 
@@ -44,11 +45,13 @@ describe('json/bash async token highlighting', () => {
 
   it('serves cached tokens synchronously without dispatching to the worker', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    setCachedTokens('json', '{"a":1}', toCachedTokens([[{ content: '{', htmlStyle: { color: 'rgb(4, 5, 6)' } }]]))
+    const cached = toCachedTokens([[{ content: '{', htmlStyle: { color: 'rgb(4, 5, 6)' } }]])
+
+    setCachedTokens('json', '{"a":1}', cached)
 
     const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} />)
 
-    expect(container.querySelector('[style*="rgb(4, 5, 6)"]')).not.toBeNull()
+    expect(container.querySelector(`.${cached[0][0].className}`)).not.toBeNull()
     expect(tokenizeAsync).not.toHaveBeenCalled()
   })
 

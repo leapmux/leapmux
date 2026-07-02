@@ -360,6 +360,14 @@ export interface UseChatVirtualizerResult {
   hasPendingPremeasuredHeight: (id: string) => boolean
   /** Gate DOM measurement commits while native momentum owns scrollTop. */
   setVisibleMeasurementDeferral: (defer: boolean) => void
+  /**
+   * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
+   * scrollbar/touch drag. Set by the scroll hook; rows entering the window
+   * read it to decide skeleton-vs-full mount (ChatView's fling skeletons).
+   * Broader than the momentum-only measurement deferral above.
+   */
+  fastScrollActive: Accessor<boolean>
+  setFastScrollActive: (active: boolean) => void
   /** Whether row measurements are waiting behind the deferral gate. */
   hasDeferredMeasurements: () => boolean
   /** Commit queued row measurements in one batch. */
@@ -531,6 +539,13 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // same frame it measured.
   const mountedIds = new Set<string>()
   let deferMeasurements = false
+  // Reactive "fast user scroll in flight" flag, set by the scroll hook for ANY
+  // genuine user scroll at fling velocity — momentum flings AND direct drags
+  // (scrollbar thumb, touch). Rows entering the window read it to decide
+  // skeleton-vs-full mount (ChatView's fling skeletons). Deliberately BROADER
+  // than the measurement deferral above, which stays momentum-only: a drag
+  // re-pins immediately by design, but its mount cost is the same.
+  const [fastScrollActive, setFastScrollActive] = createSignal(false)
   const deferredPremeasures = new Map<string, DeferredPremeasure>()
   // Diagnostic-only: the most recent geometry-changing height commit, so the scroll-anchor
   // drift WARN can attribute a drift to the row that caused it (see MeasurementCommitInfo).
@@ -594,22 +609,37 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : resolve(opts.gapLargePx, DEFAULT_GAP_LARGE_PX)
   }
 
-  // Cumulative offsets + lookup maps, recomputed when items or measurements change.
-  // Keyed by row id (unique) rather than seq (0n for every optimistic local), so
-  // stacked locals each get their own offset instead of collapsing onto one.
-  const geom = createMemo(() => {
-    const rebuildStart = monotonicNow()
-    geomVersion()
+  // Row identity map, rebuilt only when the item LIST changes (append, trim,
+  // heightKey change) -- NOT on every measurement commit. Keyed by row id (unique)
+  // rather than seq (0n for every optimistic local), so stacked locals each get
+  // their own offset instead of collapsing onto one. A height commit bumps only
+  // geomVersion, which rebuilds the offsets below; re-running the n string-keyed
+  // Map.set calls per commit rebuilt a map that could not have changed (dozens of
+  // commits per fling through unmeasured history made that the dominant rebuild
+  // cost). Stale-keyed height pruning lives here for the same reason: a cached
+  // height goes stale only when its item's heightKey changes, which changes the
+  // list identity -- and resolvedHeight key-checks anyway, so a commit-time skip
+  // of the prune can never serve a stale height.
+  const rowIndex = createMemo(() => {
     const list = opts.items()
     pruneStaleKeyedHeights(list)
     const n = list.length
-    const offsets = new Float64Array(n + 1)
     const indexById = new Map<string, number>()
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n; i++)
       indexById.set(list[i].id, i)
-      const h = resolvedHeight(list[i])
-      offsets[i + 1] = offsets[i] + h + gapAfter(list, i)
-    }
+    return { list, indexById, n }
+  })
+
+  // Cumulative offsets, recomputed when items or measurements change. The identity
+  // map rides along from rowIndex so every consumer keeps its one-stop
+  // { offsets, indexById, list, n } read.
+  const geom = createMemo(() => {
+    const rebuildStart = monotonicNow()
+    geomVersion()
+    const { list, indexById, n } = rowIndex()
+    const offsets = new Float64Array(n + 1)
+    for (let i = 0; i < n; i++)
+      offsets[i + 1] = offsets[i] + resolvedHeight(list[i]) + gapAfter(list, i)
     // Rebuilding the offset map is an O(n) array fill (microseconds for any real n), so this
     // should never trip -- but instrumenting it rules the offset map IN or OUT as a stall
     // source instead of leaving it a suspect. Only a slow rebuild logs.
@@ -1020,6 +1050,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     setVisibleMeasurementDeferral: (defer: boolean) => {
       deferMeasurements = defer
     },
+    fastScrollActive,
+    setFastScrollActive,
     hasDeferredMeasurements,
     flushDeferredMeasurements,
     attachRow,

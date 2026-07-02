@@ -1,10 +1,10 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import { createMemo, untrack } from 'solid-js'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { renderMarkdownForContext, useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
@@ -89,7 +89,7 @@ function AgentPromptView(props: {
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}
     >
-      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={html()} />
+      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} ref={cachedInnerHtml(html)} />
     </ToolUseLayout>
   )
 }

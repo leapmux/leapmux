@@ -11,7 +11,7 @@ import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTyp
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
@@ -20,6 +20,7 @@ import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
+import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
@@ -36,6 +37,7 @@ import { assistantMessage } from './messageStyles.css'
 import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
+import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
 import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
 import { SpanLines } from './widgets/SpanLines'
 import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
@@ -48,6 +50,11 @@ const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
 // whole band premeasures in one frame (measurement isn't chunked), so this bounds the burst.
 // A fast fling that outruns it falls back to the estimate slot (still no collapse-to-0).
 const LOOKAHEAD_PREMEASURE_ROWS = 12
+// How long an outgoing skeleton lingers (fading via rowSkeletonClosing) after
+// its real content takes over, so the swap reads as a crossfade instead of a
+// pop. The shared motion token keeps this unmount timer and the CSS fade
+// duration in lockstep (see tokens.ts).
+export const SKELETON_CROSSFADE_MS = motion.medium
 
 function heightKeyPart(value: string | undefined): string {
   return value === undefined ? '0:' : `${value.length}:${value}`
@@ -741,19 +748,26 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       clearTimeout(syntaxHighlightResumeTimer)
   })
 
+  // An actively premeasured unknown-height row awaiting its DOM height commit.
+  // While true the row renders INVISIBLE (see rowHiddenUntilMeasured) and its
+  // reserved slot is painted by the loading-skeleton overlay instead of blank
+  // space. Distinct from the stream-covered tail below, whose content is
+  // already painted by the in-flow streaming bubble (a skeleton there would
+  // double-paint over live text).
+  const rowAwaitingMeasurement = (id: string): boolean => (
+    !virt.hasMeasuredHeight(id)
+    && collapsedPremeasureIds().has(id)
+    && streamReplacementTailId() !== id
+    && liveTailVisibleId() !== id
+  )
+
   // Hide-until-measured, shared by the row itself and its gap-bridge overlay
   // entry: an actively premeasured unknown-height row stays invisible until
   // its DOM height commits, so a tall row can't paint beyond its estimated
   // slot and overlap rows already on screen. Rows with no active premeasure
   // stay visible so a zero attach read cannot hide content forever.
   const rowHiddenUntilMeasured = (id: string): boolean => (
-    isStreamReplacementCoveredByInFlowTail(id)
-    || (
-      !virt.hasMeasuredHeight(id)
-      && collapsedPremeasureIds().has(id)
-      && streamReplacementTailId() !== id
-      && liveTailVisibleId() !== id
-    )
+    isStreamReplacementCoveredByInFlowTail(id) || rowAwaitingMeasurement(id)
   )
 
   const renderMessageBubble = (entry: ClassifiedEntry, opts: { premeasureMode?: boolean } = {}) => (
@@ -778,6 +792,65 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     const all = visibleEntries()
     const r = virt.range()
     return all.slice(r.start, r.end)
+  })
+
+  // Rows currently premeasure-hidden (blank until their height commits): the
+  // loading-skeleton overlay paints their reserved slots. Filter preserves the
+  // stable entry references, so the overlay <For> only mounts/unmounts on
+  // membership changes.
+  const awaitingMeasurementSlice = createMemo(() =>
+    visibleSlice().filter(entry => rowAwaitingMeasurement(entry.msg.id)))
+
+  // Crossfade for the loading skeletons: when a row leaves awaiting-measurement
+  // (its height committed, the real row starts its opacity fade-in), its
+  // skeleton lingers for one SKELETON_CROSSFADE_MS beat in a fading-out
+  // wrapper instead of popping away. A row that re-enters awaiting (heightKey
+  // churn) cancels its linger — the live overlay covers it again.
+  const [lingeringSkeletonIds, setLingeringSkeletonIds] = createSignal<ReadonlySet<string>>(new Set())
+  const skeletonLingerTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  onCleanup(() => {
+    for (const timer of skeletonLingerTimers.values())
+      clearTimeout(timer)
+  })
+  const cancelSkeletonLinger = (id: string): void => {
+    const timer = skeletonLingerTimers.get(id)
+    if (timer === undefined)
+      return
+    clearTimeout(timer)
+    skeletonLingerTimers.delete(id)
+    setLingeringSkeletonIds((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }
+  let previousAwaitingIds: ReadonlySet<string> = new Set()
+  createEffect(() => {
+    const current = new Set(awaitingMeasurementSlice().map(entry => entry.msg.id))
+    for (const id of previousAwaitingIds) {
+      if (current.has(id) || skeletonLingerTimers.has(id))
+        continue
+      setLingeringSkeletonIds(prev => new Set(prev).add(id))
+      skeletonLingerTimers.set(id, setTimeout(() => {
+        skeletonLingerTimers.delete(id)
+        setLingeringSkeletonIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }, SKELETON_CROSSFADE_MS))
+    }
+    for (const id of current)
+      cancelSkeletonLinger(id)
+    previousAwaitingIds = current
+  })
+  // Lingering ids resolved back to entries (stable references, so the fade-out
+  // <For> keys correctly); a row windowed away mid-linger simply drops out.
+  const lingeringSkeletonSlice = createMemo(() => {
+    const byId = visibleEntryById()
+    return [...lingeringSkeletonIds()]
+      .map(id => byId.get(id))
+      .filter((entry): entry is ClassifiedEntry => entry !== undefined)
   })
 
   const scroll = useChatScroll({
@@ -812,7 +885,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   const scrollHandlers = {
     onScroll: pauseThen(scroll.handlers.onScroll),
-    onWheel: pauseThen(scroll.handlers.onWheel),
     onKeyDown: (event: KeyboardEvent) => {
       if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
         || event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
@@ -820,16 +892,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       }
       scroll.handlers.onKeyDown(event)
     },
-    onTouchStart: pauseThen(scroll.handlers.onTouchStart),
-    onTouchMove: pauseThen(scroll.handlers.onTouchMove),
-    onTouchEnd: pauseThen(scroll.handlers.onTouchEnd),
-    onTouchCancel: pauseThen(scroll.handlers.onTouchCancel),
     onPointerDown: pauseThen(scroll.handlers.onPointerDown),
     onPointerMove: (event: PointerEvent) => {
       scroll.handlers.onPointerMove(event)
     },
     onPointerUp: pauseThen(scroll.handlers.onPointerUp),
     onPointerCancel: pauseThen(scroll.handlers.onPointerCancel),
+  }
+
+  // Wheel and touch listeners attach PASSIVE, imperatively: nothing in their
+  // path calls preventDefault (createScrollInput's wheel policy only steers
+  // pagination; the overscroll drag never cancels), but as JSX props they
+  // register as non-passive listeners, which forces the compositor to block on
+  // the main thread before starting the scroll — precisely the inputs where
+  // scroll-start latency is felt. Solid's JSX prop syntax has no per-listener
+  // options, so the container ref wires these. `scroll` (not cancelable —
+  // passive is moot), keydown (NEEDS preventDefault: Home/End/Page keys own
+  // their scroll), and the pointer handlers (never scroll-blocking) stay JSX
+  // props above.
+  const attachPassiveScrollListeners = (el: HTMLElement): void => {
+    const passive = { passive: true } as const
+    el.addEventListener('wheel', pauseThen(scroll.handlers.onWheel), passive)
+    el.addEventListener('touchstart', pauseThen(scroll.handlers.onTouchStart), passive)
+    el.addEventListener('touchmove', pauseThen(scroll.handlers.onTouchMove), passive)
+    el.addEventListener('touchend', pauseThen(scroll.handlers.onTouchEnd), passive)
+    el.addEventListener('touchcancel', pauseThen(scroll.handlers.onTouchCancel), passive)
   }
 
   // Re-stick to the bottom after a TAIL SIBLING of the virtual spacer grows. These
@@ -874,6 +961,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             listEl = el
             scroll.attachListRef(el)
             viewportSizeObserver.observe(el)
+            attachPassiveScrollListeners(el)
           }}
           class={styles.messageList}
           data-chat-scroll-container="true"
@@ -940,6 +1028,45 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     topOf={id => virt.offsetOfId(id) ?? 0}
                     hiddenOf={rowHiddenUntilMeasured}
                   />
+                  {/*
+                    Loading skeletons: a premeasure-hidden row paints its
+                    reserved slot as shimmer lines instead of blank space while
+                    its height settles. Rendered OUTSIDE the rows — a hidden
+                    row's opacity:0 would swallow any child — and positioned by
+                    the same offsets, so they vanish seamlessly the moment the
+                    real row's measurement commits and it fades in.
+                  */}
+                  <For each={awaitingMeasurementSlice()}>
+                    {entry => (
+                      <div
+                        class={styles.virtualRow}
+                        style={{ transform: `translateY(${virt.offsetOfId(entry.msg.id) ?? 0}px)` }}
+                      >
+                        <ChatRowSkeleton
+                          height={virt.heightOfIndex(virt.indexOfId(entry.msg.id))}
+                          seed={entry.msg.id}
+                        />
+                      </div>
+                    )}
+                  </For>
+                  {/*
+                    Crossfade tail: skeletons whose row just measured fade OUT
+                    here while the real row's opacity fades in — the two
+                    overlap for one beat, so the swap never pops.
+                  */}
+                  <For each={lingeringSkeletonSlice()}>
+                    {entry => (
+                      <div
+                        class={`${styles.virtualRow} ${styles.rowSkeletonClosing}`}
+                        style={{ transform: `translateY(${virt.offsetOfId(entry.msg.id) ?? 0}px)` }}
+                      >
+                        <ChatRowSkeleton
+                          height={virt.heightOfIndex(virt.indexOfId(entry.msg.id))}
+                          seed={entry.msg.id}
+                        />
+                      </div>
+                    )}
+                  </For>
                   <For each={visibleSlice()}>
                     {(entry) => {
                       const { msg, parsedSpanLines } = entry
@@ -949,11 +1076,39 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       // optimistic local), so it can't transiently disagree with
                       // the slice bounds during a scroll/measure flush.
                       const top = () => virt.offsetOfId(msg.id) ?? 0
-                      const bubble = renderMessageBubble(entry)
+                      // Fling skeleton: a MEASURED row entering the window
+                      // during a FAST user scroll (momentum fling or a fast
+                      // scrollbar/touch drag — see setFastScrollActive) mounts
+                      // as line placeholders at its known height instead of
+                      // paying full bubble construction on the scroll-critical
+                      // path, then upgrades in place once the scroll settles.
+                      // Decided ONCE at row creation — an already-real row
+                      // never downgrades (that would tear its DOM down
+                      // mid-scroll) — and only for measured rows: an unmeasured
+                      // row must mount for real so measurement and
+                      // hide-until-measured proceed. The upgrade passes
+                      // through a 'crossfade' beat: the real bubble mounts
+                      // beneath a fading-out skeleton copy, so the swap never
+                      // pops (see rowSkeletonUpgradeOverlay).
+                      const skeletonAtMount = untrack(() =>
+                        virt.fastScrollActive() && virt.hasMeasuredHeight(msg.id))
+                      const [upgradePhase, setUpgradePhase] = createSignal<'skeleton' | 'crossfade' | 'real'>(
+                        skeletonAtMount ? 'skeleton' : 'real',
+                      )
+                      if (skeletonAtMount) {
+                        createEffect(() => {
+                          // One-way: skeleton -> crossfade -> real, never back.
+                          if (!virt.fastScrollActive() && untrack(upgradePhase) === 'skeleton') {
+                            setUpgradePhase('crossfade')
+                            const timer = setTimeout(setUpgradePhase, SKELETON_CROSSFADE_MS, 'real')
+                            onCleanup(() => clearTimeout(timer))
+                          }
+                        })
+                      }
 
                       return (
                         <div
-                          class={`${styles.virtualRow} ${styles.virtualRowAppear}`}
+                          class={styles.virtualRow}
                           style={{
                             transform: `translateY(${top()}px)`,
                             // Absolute rows do not reserve flow height for
@@ -969,18 +1124,46 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           }}
                         >
                           <Show
-                            when={parsedSpanLines.length > 0}
-                            fallback={<div style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
-                          >
-                            <div class={styles.messageRow}>
-                              <SpanLines
-                                lines={parsedSpanLines}
-                                spanOpener={!!msg.spanId}
+                            when={upgradePhase() !== 'skeleton'}
+                            fallback={(
+                              <ChatRowSkeleton
+                                height={virt.heightOfIndex(virt.indexOfId(msg.id))}
+                                seed={msg.id}
                               />
-                              <div class={styles.messageRowContent}>
-                                {bubble}
-                              </div>
-                            </div>
+                            )}
+                          >
+                            {(() => {
+                              // Constructed lazily: while the skeleton shows,
+                              // the bubble (markdown, tokens, toolbars) is
+                              // never built for this row.
+                              const bubble = renderMessageBubble(entry)
+                              return (
+                                <>
+                                  <Show
+                                    when={parsedSpanLines.length > 0}
+                                    fallback={<div style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
+                                  >
+                                    <div class={styles.messageRow}>
+                                      <SpanLines
+                                        lines={parsedSpanLines}
+                                        spanOpener={!!msg.spanId}
+                                      />
+                                      <div class={styles.messageRowContent}>
+                                        {bubble}
+                                      </div>
+                                    </div>
+                                  </Show>
+                                  <Show when={upgradePhase() === 'crossfade'}>
+                                    <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
+                                      <ChatRowSkeleton
+                                        height={virt.heightOfIndex(virt.indexOfId(msg.id))}
+                                        seed={msg.id}
+                                      />
+                                    </div>
+                                  </Show>
+                                </>
+                              )
+                            })()}
                           </Show>
                         </div>
                       )

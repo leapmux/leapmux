@@ -1,5 +1,6 @@
 // @refresh reload
 import { mount, StartClient } from '@solidjs/start/client'
+import { scheduleRenderPipelineWarmup } from '~/lib/renderPipelineWarmup'
 import { installResizeObserverLoopErrorSuppressor } from '~/lib/suppressResizeObserverLoopError'
 
 // Suppress the benign "ResizeObserver loop ..." window error before mount(), so
@@ -20,3 +21,8 @@ export default function EntryClient(): null {
 }
 
 mount(() => <StartClient />, document.getElementById('app')!)
+
+// Warm the render workers (WASM engine, first grammar, remark processor) and
+// sweep the persisted render-artifact store once the browser is idle, so the
+// first visible code block doesn't pay the cold-start bill.
+scheduleRenderPipelineWarmup()

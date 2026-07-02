@@ -1885,6 +1885,65 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
+  it('flags fast-scroll for the skeletons on a direct DRAG and clears it after the settle window', () =>
+    new Promise<void>((resolve, reject) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const setFastScrollActive = vi.fn()
+          const setVisibleMeasurementDeferral = vi.fn()
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => 8000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: scrollTop => ({ id: 'anchored-row', offsetWithinRow: scrollTop }),
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: anchor => anchor.offsetWithinRow,
+            setFastScrollActive,
+            setVisibleMeasurementDeferral,
+          }
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // A scrollbar-thumb drag: pointer down, then a fast scroll event with
+          // NO wheel/momentum input — the momentum-only deferral must stay off,
+          // but rows entering during the drag pay the same mount cost as during
+          // a fling, so the skeleton gate must still engage.
+          hook.handlers.onPointerDown({ isPrimary: true, pointerId: 7 } as PointerEvent)
+          div.setScrollTop(900)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+
+          expect(setFastScrollActive).toHaveBeenLastCalledWith(true)
+          expect(setVisibleMeasurementDeferral).not.toHaveBeenCalledWith(true)
+
+          // A drag has no fling-settle to clear the flag; the trailing debounce
+          // (same window as the velocity tracker's idle) drops it.
+          vi.advanceTimersByTime(FLING_SETTLE_MS)
+          await Promise.resolve()
+          expect(setFastScrollActive).toHaveBeenLastCalledWith(false)
+
+          dispose()
+          vi.useRealTimers()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          vi.useRealTimers()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('cancels the deferred fling-settle when the user grabs to stop (no coast-on write)', () =>
     new Promise<void>((resolve, reject) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

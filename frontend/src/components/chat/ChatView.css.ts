@@ -1,6 +1,6 @@
 import { keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
-import { breakpoints } from '~/styles/tokens'
+import { breakpoints, motion } from '~/styles/tokens'
 
 export const editorResizeHandle = style({
   height: '4px',
@@ -501,18 +501,36 @@ export const virtualRow = style({
   },
 })
 
-const virtualRowFadeIn = keyframes({
-  from: { opacity: 0 },
-  to: { opacity: 1 },
+const skeletonFadeOut = keyframes({
+  from: { opacity: 1 },
+  to: { opacity: 0 },
 })
 
-export const virtualRowAppear = style({
-  'animation': `${virtualRowFadeIn} var(--transition)`,
+// A skeleton on its way out: mounted fresh for the crossfade beat, so it must
+// ANIMATE to transparent (a transition would need a prior styled state).
+// `motion.medium` on both sides — this duration and ChatView's
+// SKELETON_CROSSFADE_MS linger timer — so the fade and the unmount can't
+// drift apart; `forwards` holds opacity 0 for any scheduling slack.
+export const rowSkeletonClosing = style({
+  'animation': `${skeletonFadeOut} ${motion.medium}ms ease forwards`,
   '@media': {
     '(prefers-reduced-motion: reduce)': {
       animation: 'none',
+      opacity: 0,
     },
   },
+})
+
+// The in-row crossfade copy: when a fling skeleton upgrades to the real
+// bubble, a fading-out skeleton copy sits absolutely on top of the fresh
+// content for one transition beat. Inert — it must never intercept clicks on
+// the content beneath.
+export const rowSkeletonUpgradeOverlay = style({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  pointerEvents: 'none',
 })
 
 export const premeasureRoot = style({

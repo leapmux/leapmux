@@ -376,6 +376,50 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
+  it('exposes the fast-scroll flag reactively for the fling-skeleton gate', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(1))
+      expect(virt.fastScrollActive()).toBe(false)
+      virt.setFastScrollActive(true)
+      expect(virt.fastScrollActive()).toBe(true)
+      virt.setFastScrollActive(false)
+      expect(virt.fastScrollActive()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('drops a stale-keyed height\'s median contribution on an items change alone (no commit)', () => {
+    createRoot((dispose) => {
+      // The prune now runs in the items-keyed rowIndex memo, not per geometry
+      // commit. A heightKey change with NO subsequent measurement must still
+      // remove the stale row's contribution from the estimate median -- if the
+      // prune stopped firing on items changes, the dead 300px measurement would
+      // keep inflating every unmeasured row's estimate.
+      const [list, setList] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'old' },
+        { id: 'b', hasSpanLines: false },
+      ])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      expect(virt.primeHeight('a', 300, 'old')).toBe(true)
+      expect(virt.estimateHeight()).toBe(300) // sole contribution -> median 300
+      expect(virt.heightOfIndex(1)).toBe(300) // unmeasured b estimates off it
+      setList([
+        { id: 'a', hasSpanLines: false, heightKey: 'new' },
+        { id: 'b', hasSpanLines: false },
+      ])
+      expect(virt.heightOfIndex(0)).toBe(100) // stale height not served...
+      expect(virt.estimateHeight()).toBe(100) // ...and its contribution pruned
+      expect(virt.heightOfIndex(1)).toBe(100)
+      dispose()
+    })
+  })
+
   it('keeps stacked same-seq optimistic locals distinct (keyed by id, not seq)', () => {
     createRoot((dispose) => {
       // Two unsent locals (both seq 0n on the wire) plus a server row. The

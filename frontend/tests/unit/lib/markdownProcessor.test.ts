@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMarkdownProcessor, extractFenceLanguages, renderWithPlainFallback } from '~/lib/markdownProcessor'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+import { collectShikiStyles } from '~/lib/shikiStyleClass'
 
 type Processor = Parameters<typeof renderWithPlainFallback>[0]
 
@@ -117,11 +118,14 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     const processor = createMarkdownProcessor(highlighter)
 
     const html = renderWithPlainFallback(processor, md)
-    // The ansi green (#28a745 light) lands on the `green` token -- proof the fence is
-    // tokenized, not rendered plain, and the escape sequences are consumed into colors.
+    // The ansi green (#28a745 light) lands on the `green` token's shared style
+    // class (see shikiStyleClass) -- proof the fence is tokenized, not rendered
+    // plain, and the escape sequences are consumed into colors.
     expect(html).toContain('class="shiki')
-    expect(html).toContain('#28a745')
     expect(html).toContain('>green<')
+    const greenClass = html.match(/<span class="(sk-[0-9a-z-]+)">green</)?.[1]
+    expect(greenClass).toBeDefined()
+    expect(collectShikiStyles()[greenClass!]).toContain('#28a745')
   })
 
   it('highlights a mixed-CASE fence by lower-casing the language', async () => {

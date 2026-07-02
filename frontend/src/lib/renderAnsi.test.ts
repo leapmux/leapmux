@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { containsAnsi, escapeHtml, renderAnsi, stripAnsi } from './renderAnsi'
+import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 
 const ESC = '\x1B'
 const RED = `${ESC}[31m`
@@ -76,6 +77,34 @@ describe('renderAnsi', () => {
     expect(html).toContain('before')
     expect(html).toContain('link')
     expect(html).toContain('after')
+  })
+})
+
+describe('renderAnsi shared token-style classes', () => {
+  beforeEach(() => {
+    _resetShikiStyleClassesForTest()
+  })
+
+  it('emits class-based token spans (no inline span styles) and injects the rules', () => {
+    const html = renderAnsi(`${GREEN}green${RESET} plain`)
+    // Token spans carry shared classes; only the <pre> keeps its rootStyle.
+    expect(html).toContain('class="sk-')
+    expect(html).not.toContain('<span style=')
+    // Every referenced class has an injected dual-theme rule (this path runs on
+    // the main thread, so the transformer injects directly -- see shikiStyleClass).
+    const rules = document.querySelector('style[data-shiki-style-classes]')!.textContent!
+    const classes = [...html.matchAll(/class="(sk-[0-9a-z-]+)"/g)].map(m => m[1])
+    expect(classes.length).toBeGreaterThan(0)
+    for (const className of new Set(classes))
+      expect(rules).toContain(`.${className}{`)
+    expect(rules).toContain('--shiki-light')
+  })
+
+  it('keeps the visible payload intact across the class conversion', () => {
+    const raw = `${RED}red${RESET} tail`
+    const html = renderAnsi(raw)
+    const textOnly = html.replace(/<[^>]+>/g, '')
+    expect(textOnly).toBe(stripAnsi(raw))
   })
 })
 

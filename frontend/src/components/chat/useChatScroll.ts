@@ -40,6 +40,7 @@ export type ChatScrollVirtualizer = Pick<
   UseChatVirtualizerResult,
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
   | 'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
+  | 'setFastScrollActive'
 >
 
 /**
@@ -685,10 +686,36 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   })
   const { currentAnchor, currentAnchorState, isFollowing, isHoldingRowTop, releaseRowTopHold, followTail, setAnchor, captureAnchor, captureTopAnchor, captureRowTopAnchor, repinToAnchor } = anchorRepin
 
+  // Fast-scroll flag for the fling skeletons (virt.setFastScrollActive): set on
+  // any genuine user scroll at fling velocity — momentum AND direct drags — and
+  // cleared by this trailing debounce, because a scrollbar/touch drag has no
+  // fling-settle to clear it (the settle is armed for momentum scrolls only).
+  // FLING_SETTLE_MS matches the velocity tracker's own idle window, so the flag
+  // drops as soon as the tracker would stop reporting a fling anyway.
+  let fastScrollResetTimer: ReturnType<typeof setTimeout> | undefined
+  const clearFastScrollReset = () => {
+    if (fastScrollResetTimer !== undefined) {
+      clearTimeout(fastScrollResetTimer)
+      fastScrollResetTimer = undefined
+    }
+  }
+  const armFastScrollReset = () => {
+    clearFastScrollReset()
+    fastScrollResetTimer = setTimeout(() => {
+      fastScrollResetTimer = undefined
+      virt.setFastScrollActive(false)
+    }, FLING_SETTLE_MS)
+  }
+  onCleanup(clearFastScrollReset)
+
   const hasDeferredMeasurements = () => virt.hasDeferredMeasurements()
   const releaseDeferredMeasurements = () => {
     clearMomentumInput()
     virt.setVisibleMeasurementDeferral(false)
+    // The fast scroll is over (fling settled, or the user took manual control):
+    // upgrade any skeleton rows now instead of waiting out the debounce.
+    clearFastScrollReset()
+    virt.setFastScrollActive(false)
     virt.flushDeferredMeasurements()
   }
   const acceptDeferredMeasurementsAtCurrentViewport = () => {
@@ -1186,6 +1213,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     const viewportLead = scrollTopAtStart !== undefined
       ? trackUserScrollAndComputeLead(scrollTopAtStart, programmaticEcho)
       : undefined
+    // Fling-skeleton gate: unlike the measurement deferral below (momentum-only
+    // — a drag re-pins immediately by design), rows entering during ANY fast
+    // user scroll mount as skeletons, scrollbar/touch drags included.
+    if (!programmaticEcho && scrollVelocity.isFling()) {
+      virt.setFastScrollActive(true)
+      armFastScrollReset()
+    }
     if (isMomentumScroll && scrollVelocity.isFling())
       virt.setVisibleMeasurementDeferral(true)
     // Time the synchronous render cascade this scroll triggers: setting the range mounts

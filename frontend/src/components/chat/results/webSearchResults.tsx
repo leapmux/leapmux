@@ -1,8 +1,8 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import type { WebSearchLink } from './webSearchExtract'
 import { For, Show } from 'solid-js'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { pluralize } from '~/lib/plural'
 import { extractDomain } from '~/lib/url'
 import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
@@ -55,7 +55,7 @@ export function WebSearchResultsBody(props: {
         </div>
       </Show>
       <Show when={expanded() && props.source.summary}>
-        <div class={toolResultContent} innerHTML={renderMarkdownForContext(props.source.summary, props.context)} />
+        <div class={toolResultContent} ref={cachedInnerHtml(() => renderMarkdownForContext(props.source.summary, props.context))} />
       </Show>
     </div>
   )

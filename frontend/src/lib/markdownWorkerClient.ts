@@ -12,17 +12,23 @@ import { createWorkerPriorityGate } from './workerPriorityGate'
 // owns that dedup (its module-level `inFlight` Set).
 // ---------------------------------------------------------------------------
 
-/** A completed worker render: the HTML plus whether it degraded transiently (retry may recover). */
+/**
+ * A completed worker render: the HTML, whether it degraded transiently (retry
+ * may recover), and the worker's className -> declaration dictionary for the
+ * shared token-style classes the HTML references (the caller must inject the
+ * rules via ensureShikiStyleRules before the HTML renders — see shikiStyleClass).
+ */
 export interface MarkdownRenderResult {
   html: string
   retryable: boolean
+  styles: Record<string, string>
 }
 
 const client = createWorkerClient<MarkdownRenderRequest, MarkdownRenderResult | null>({
   spawn: () => new Worker(new URL('./markdownWorker.ts', import.meta.url), { type: 'module' }),
   extract: (data: MarkdownRenderResponse) => ({
     id: data.id,
-    value: { html: data.html, retryable: data.retryable ?? false },
+    value: { html: data.html, retryable: data.retryable ?? false, styles: data.styles ?? {} },
   }),
   failureValue: null,
 })
