@@ -17,12 +17,19 @@ export interface PlatformCapabilities {
   localSolo: boolean
 }
 
+/**
+ * Mutually-exclusive top-level window display state. `window_width`/`height`
+ * always hold the last *windowed* geometry, so exiting maximized/fullscreen
+ * returns to a sensible size.
+ */
+export type WindowMode = 'normal' | 'maximized' | 'fullscreen'
+
 export interface DesktopConfig {
   mode: '' | 'solo' | 'distributed'
   hub_url: string
   window_width: number
   window_height: number
-  window_maximized: boolean
+  window_mode: WindowMode
 }
 
 export interface StartupInfo {
@@ -334,15 +341,39 @@ export async function refreshRuntimeState(): Promise<DesktopRuntimeState> {
   return getRuntimeState()
 }
 
+/** Minimal shape of the Tauri window needed to derive the display mode. */
+interface WindowModeQueryable {
+  isFullscreen: () => Promise<boolean>
+  isMaximized: () => Promise<boolean>
+}
+
 /**
- * Restore the window to the saved geometry on startup and install a
+ * Derive the current mutually-exclusive window mode. Fullscreen takes
+ * precedence over maximized (a native-fullscreen window may also report
+ * zoomed, but fullscreen is the state that matters for save/restore).
+ */
+async function readWindowMode(win: WindowModeQueryable): Promise<WindowMode> {
+  const [fullscreen, maximized] = await Promise.all([win.isFullscreen(), win.isMaximized()])
+  return fullscreen ? 'fullscreen' : maximized ? 'maximized' : 'normal'
+}
+
+// Disposes the resize saver installed by the most recent restoreWindowGeometry
+// call. The saver must outlive the launcher (geometry keeps saving after the
+// user connects), so it can't be tied to a component's lifecycle — but the
+// launcher can remount (switching connection mode returns to it), which re-runs
+// restoreWindowGeometry. Tracking it here lets each restore replace the prior
+// saver instead of stacking another resize listener + debounce timer.
+let removeGeometrySaver: (() => void) | null = null
+
+/**
+ * Restore the window to the saved geometry + mode on startup and install a
  * resize listener that debounces and saves via the Rust sidecar.
  *
  * Uses `window.innerWidth/Height` (CSS viewport) which matches what
  * Tauri's `setSize()` expects — this avoids the GTK CSD offset issue
  * where `appWindow.innerSize()` includes shadow + header bar.
  */
-export async function restoreWindowGeometry(width: number, height: number, maximized: boolean): Promise<void> {
+export async function restoreWindowGeometry(width: number, height: number, mode: WindowMode): Promise<void> {
   if (!isTauriApp())
     return
 
@@ -351,33 +382,48 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
     const { getCurrentWindow } = await loadTauriWindow()
     const appWindow = getCurrentWindow()
 
-    if (maximized) {
-      await appWindow.maximize()
-    }
-    else if (width > 0 && height > 0) {
+    // Establish the windowed size first so exiting maximized/fullscreen
+    // returns to the saved geometry.
+    if (width > 0 && height > 0)
       await appWindow.setSize(new LogicalSize(width, height))
-    }
 
-    // Show the window now that it's at the correct size.
-    // The window starts hidden (visible: false in tauri.conf.json) so
-    // the Wayland compositor sees the final size at first map.
+    if (mode === 'maximized')
+      await appWindow.maximize()
+
+    // Show the window now that it's at the correct size. The window starts
+    // hidden (visible: false in tauri.conf.json) so the Wayland compositor
+    // sees the final size at first map. macOS only performs the fullscreen
+    // transition on a visible window, so show before entering fullscreen.
     await appWindow.show()
 
-    // Save window geometry on resize / maximize / unmaximize, debounced.
+    if (mode === 'fullscreen')
+      await appWindow.setFullscreen(true)
+
+    // Save window geometry + mode on resize / maximize / fullscreen, debounced.
     const saveGeometry = trailingDebounce(async () => {
       try {
-        const isMax = await appWindow.isMaximized()
+        const nextMode = await readWindowMode(appWindow)
+        // innerWidth/Height report the screen size while maximized/fullscreen;
+        // send 0 so the sidecar preserves the last windowed dimensions.
+        const windowed = nextMode === 'normal'
         tauriInvoke('save_window_geometry', {
-          width: window.innerWidth,
-          height: window.innerHeight,
-          maximized: isMax,
+          width: windowed ? window.innerWidth : 0,
+          height: windowed ? window.innerHeight : 0,
+          mode: nextMode,
         }).catch(err => log.warn('save_window_geometry failed', err))
       }
       catch (err) {
         log.warn('save_window_geometry failed', err)
       }
     }, 500)
+    // Replace the saver from any previous restore so remounts don't leak a
+    // resize listener + debounce timer (each closure also pins `appWindow`).
+    removeGeometrySaver?.()
     window.addEventListener('resize', saveGeometry)
+    removeGeometrySaver = () => {
+      window.removeEventListener('resize', saveGeometry)
+      saveGeometry.cancel()
+    }
   }
   catch (err) {
     log.warn('restoreWindowGeometry failed', err)
@@ -574,23 +620,28 @@ export async function revealInFileManager(path: string): Promise<void> {
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
+// Leave native fullscreen. The custom titlebar (Linux/Windows) offers no other
+// exit affordance once a window is restored into fullscreen, so this backs the
+// "Exit Full Screen" control.
+export const windowExitFullscreen = () => tauriWindowOp(w => w.setFullscreen(false))
 
 /**
- * Subscribe to window maximize-state changes. Invokes `onChange` with the
- * current state on attach and whenever Tauri reports a resize — but only
- * when the state actually flips, so drag-resize doesn't fire an IPC storm.
+ * Subscribe to window display-mode changes (normal / maximized / fullscreen).
+ * Invokes `onChange` with the current mode on attach and whenever Tauri reports
+ * a resize — but only when the mode actually changes, so drag-resize doesn't
+ * fire an IPC storm. Native fullscreen enter/exit also surfaces as a resize.
  * Returns an unlisten function.
  */
-export function observeWindowMaximized(onChange: (maximized: boolean) => void): () => void {
+export function observeWindowMode(onChange: (mode: WindowMode) => void): () => void {
   if (!isTauriApp())
     return () => {}
 
   let disposed = false
   let unlisten: (() => void) | undefined
-  let last: boolean | undefined
+  let last: WindowMode | undefined
   let refresh: TrailingDebounced | undefined
 
-  const push = (next: boolean) => {
+  const push = (next: WindowMode) => {
     if (disposed || next === last)
       return
     last = next
@@ -603,7 +654,7 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
       return
     const win = getCurrentWindow()
     try {
-      push(await win.isMaximized())
+      push(await readWindowMode(win))
     }
     catch { /* best-effort */ }
     if (disposed)
@@ -611,7 +662,7 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
     try {
       refresh = trailingDebounce(async () => {
         try {
-          push(await win.isMaximized())
+          push(await readWindowMode(win))
         }
         catch { /* best-effort */ }
       }, 150)

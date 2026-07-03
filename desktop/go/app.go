@@ -109,14 +109,17 @@ func (a *App) GetConfig() *DesktopConfig {
 	return a.config
 }
 
-func (a *App) SetWindowSize(width, height int, maximized bool) error {
+// SetWindowSize persists the window geometry and display mode. width/height of
+// 0 leave the stored windowed size untouched -- the frontend sends 0 while
+// maximized or fullscreen so the last windowed dimensions survive.
+func (a *App) SetWindowSize(width, height int, mode string) error {
 	if width > 0 {
 		a.config.WindowWidth = width
 	}
 	if height > 0 {
 		a.config.WindowHeight = height
 	}
-	a.config.WindowMaximized = maximized
+	a.config.WindowMode = mode
 	return SaveConfig(a.config)
 }
 

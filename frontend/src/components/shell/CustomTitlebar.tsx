@@ -1,9 +1,10 @@
 import type { Component } from 'solid-js'
+import type { WindowMode } from '~/api/platformBridge'
 import MenuIcon from 'lucide-solid/icons/menu'
 import PanelLeft from 'lucide-solid/icons/panel-left'
 import PanelRight from 'lucide-solid/icons/panel-right'
 import { createSignal, onCleanup, Show } from 'solid-js'
-import { observeWindowMaximized, openWebInspector, quitApp, windowClose, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { observeWindowMode, openWebInspector, quitApp, windowClose, windowExitFullscreen, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
 import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
@@ -20,8 +21,8 @@ const desktop = isDesktopApp()
 // Linux and Windows run with `decorations: false`, so the app renders its own
 // min/max/close buttons. macOS keeps native traffic lights.
 const showCustomWindowControls = desktop && (platform === 'linux' || platform === 'windows')
+const isMacDesktop = desktop && platform === 'mac'
 const MAC_TRAFFIC_LIGHT_INSET_PX = 78
-const macPadding = desktop && platform === 'mac' ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined
 
 interface WorkspaceCustomTitlebarProps {
   variant?: 'workspace'
@@ -61,16 +62,25 @@ const WorkspaceActions: Component<WorkspaceCustomTitlebarProps> = props => (
 )
 
 export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
-  const [isMaximized, setIsMaximized] = createSignal(false)
-  onCleanup(observeWindowMaximized(setIsMaximized))
+  const [windowMode, setWindowMode] = createSignal<WindowMode>('normal')
+  onCleanup(observeWindowMode(setWindowMode))
 
-  const maximizeLabel = () => (isMaximized() ? 'Restore' : 'Maximize')
+  const isMaximized = () => windowMode() === 'maximized'
+  const isFullscreen = () => windowMode() === 'fullscreen'
+  // In fullscreen the maximize control becomes the only in-titlebar way out, so
+  // it relabels and routes to setFullscreen(false) instead of toggleMaximize
+  // (which can't leave fullscreen).
+  const maximizeLabel = () => (isFullscreen() ? 'Exit Full Screen' : isMaximized() ? 'Restore' : 'Maximize')
+  const onMaximizeControl = () => (isFullscreen() ? void windowExitFullscreen() : void windowToggleMaximize())
+  // Reserve space for the macOS native traffic lights, except in fullscreen
+  // where they are hidden — otherwise the menu is stranded past an empty gap.
+  const macPadding = () => (isMacDesktop && !isFullscreen() ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined)
 
   return (
     <div
       class={styles.titlebar}
       style={{
-        'padding-left': macPadding,
+        'padding-left': macPadding(),
       }}
     >
       <DropdownMenu
@@ -95,7 +105,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
           <button role="menuitem" onClick={() => void windowMinimize()}>
             <DropdownMenuItemContent label="Minimize" />
           </button>
-          <button role="menuitem" onClick={() => void windowToggleMaximize()}>
+          <button role="menuitem" onClick={onMaximizeControl}>
             <DropdownMenuItemContent label={maximizeLabel()} />
           </button>
           <button role="menuitem" onClick={() => openWebInspector()}>
@@ -123,11 +133,11 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             onClick={() => void windowMinimize()}
           />
           <IconButton
-            icon={isMaximized() ? WindowRestoreIcon : WindowMaximizeIcon}
+            icon={isMaximized() || isFullscreen() ? WindowRestoreIcon : WindowMaximizeIcon}
             iconSize="lg"
             size="md"
             title={maximizeLabel()}
-            onClick={() => void windowToggleMaximize()}
+            onClick={onMaximizeControl}
           />
           <IconButton
             icon={WindowCloseIcon}

@@ -173,7 +173,7 @@ struct DesktopConfigResponse {
     hub_url: String,
     window_width: i32,
     window_height: i32,
-    window_maximized: bool,
+    window_mode: String,
 }
 
 #[derive(Serialize)]
@@ -1093,14 +1093,14 @@ impl DesktopShell {
         &self,
         width: u32,
         height: u32,
-        maximized: bool,
+        mode: String,
     ) -> Result<(), String> {
         let _ = self
             .send_request_async(proto::request::Method::SetWindowSize(
                 proto::SetWindowSizeRequest {
                     width: width as i32,
                     height: height as i32,
-                    maximized,
+                    mode: window_mode_to_proto(&mode) as i32,
                 },
             ))
             .await?;
@@ -1173,6 +1173,32 @@ fn shell_mode_from_proto(info: &proto::SidecarInfo) -> ShellMode {
         proto::SidecarShellMode::Distributed => ShellMode::Distributed,
         _ => ShellMode::Launcher,
     }
+}
+
+// The JSON string spellings of each window display mode, shared with the
+// frontend and the persisted config. Mirrors the Go constants in
+// desktop/go/config.go so the vocabulary is single-sourced within each binary.
+const WINDOW_MODE_NORMAL: &str = "normal";
+const WINDOW_MODE_MAXIMIZED: &str = "maximized";
+const WINDOW_MODE_FULLSCREEN: &str = "fullscreen";
+
+// Bridge the persisted window mode between the JSON string used with the
+// frontend and the proto enum on the sidecar wire. Empty/unknown -> normal.
+fn window_mode_to_proto(mode: &str) -> proto::WindowMode {
+    match mode {
+        WINDOW_MODE_MAXIMIZED => proto::WindowMode::Maximized,
+        WINDOW_MODE_FULLSCREEN => proto::WindowMode::Fullscreen,
+        _ => proto::WindowMode::Normal,
+    }
+}
+
+fn window_mode_from_proto(mode: proto::WindowMode) -> String {
+    match mode {
+        proto::WindowMode::Maximized => WINDOW_MODE_MAXIMIZED,
+        proto::WindowMode::Fullscreen => WINDOW_MODE_FULLSCREEN,
+        _ => WINDOW_MODE_NORMAL,
+    }
+    .to_string()
 }
 
 fn apply_sidecar_info(state: &Mutex<ShellState>, info: proto::SidecarInfo) {
@@ -1358,11 +1384,11 @@ async fn get_startup_info(
             let build = info.build_info.unwrap_or_default();
             Ok(StartupInfoResponse {
                 config: DesktopConfigResponse {
+                    window_mode: window_mode_from_proto(cfg.window_mode()),
                     mode: cfg.mode,
                     hub_url: cfg.hub_url,
                     window_width: cfg.window_width,
                     window_height: cfg.window_height,
-                    window_maximized: cfg.window_maximized,
                 },
                 build_info: BuildInfoResponse {
                     version: build.version,
@@ -2313,9 +2339,9 @@ async fn save_window_geometry(
     shell: State<'_, Arc<DesktopShell>>,
     width: u32,
     height: u32,
-    maximized: bool,
+    mode: String,
 ) -> Result<(), String> {
-    shell.save_window_size(width, height, maximized).await
+    shell.save_window_size(width, height, mode).await
 }
 
 #[tauri::command]
@@ -3277,6 +3303,31 @@ mod tests {
         // not silently flip the shell into Solo/Distributed.
         let info = sidecar_info(proto::SidecarShellMode::Unspecified, true, "https://hub");
         assert_eq!(shell_mode_from_proto(&info), ShellMode::Launcher);
+    }
+
+    #[test]
+    fn window_mode_proto_round_trips_every_state() {
+        for mode in ["normal", "maximized", "fullscreen"] {
+            assert_eq!(window_mode_from_proto(window_mode_to_proto(mode)), mode);
+        }
+    }
+
+    #[test]
+    fn window_mode_to_proto_defaults_unknown_to_normal() {
+        // The JSON string from the frontend is untrusted; empty or unexpected
+        // values must land on Normal rather than a stray enum.
+        assert_eq!(window_mode_to_proto(""), proto::WindowMode::Normal);
+        assert_eq!(window_mode_to_proto("bogus"), proto::WindowMode::Normal);
+    }
+
+    #[test]
+    fn window_mode_from_proto_maps_unspecified_to_normal() {
+        // A fresh config or an older sidecar sends UNSPECIFIED; it must read
+        // back as the windowed default, not an empty string.
+        assert_eq!(
+            window_mode_from_proto(proto::WindowMode::Unspecified),
+            "normal",
+        );
     }
 
     #[test]
