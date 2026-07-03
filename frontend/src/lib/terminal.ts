@@ -8,6 +8,7 @@ import { Terminal } from '@xterm/xterm'
 import { loadBrowserPrefs } from './browserStorage'
 import { copyTextToClipboard } from './clipboard'
 import { createLogger } from './logger'
+import { sleep } from './sleep'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 const log = createLogger('terminal')
@@ -45,6 +46,26 @@ export interface TerminalInstance {
   serializeAddon: SerializeAddon
   /** When true, onData responses are suppressed (e.g. during snapshot replay). */
   suppressInput: boolean
+  /**
+   * Whether this terminal is allowed to use the WebGL renderer at all
+   * (renderer preference resolves to 'webgl'). When false the terminal stays
+   * on the DOM renderer for its whole life and the pool never grants it a
+   * context.
+   */
+  webglAllowed: boolean
+  /**
+   * Resolves once every (weight, style) variant of the current font family
+   * has loaded. The WebGL renderer is only ever attached after this settles,
+   * so its glyph atlas is always rasterized with the real font -- never a
+   * fallback glyph. Re-assigned by refreshTerminalFont on a font-family swap.
+   */
+  fontsReady: Promise<void>
+  /**
+   * The live WebGL addon while this terminal holds a pooled context, else
+   * undefined (DOM renderer). Managed exclusively by attachWebgl/detachWebgl
+   * driven by the WebGL terminal pool.
+   */
+  webglAddon?: WebglAddon
   /** Send raw input data to the PTY backing this terminal. */
   sendInput?: (data: Uint8Array) => void
   dispose: () => void
@@ -67,7 +88,7 @@ export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
   return new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength)
 }
 
-const DEFAULT_FONT_SIZE = 13
+export const DEFAULT_FONT_SIZE = 13
 
 export const darkTerminalTheme: ITheme = {
   background: '#1a1917', // --background
@@ -275,33 +296,28 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   const serializeAddon = new SerializeAddon()
   terminal.loadAddon(serializeAddon)
 
+  // Renderer selection is deferred: terminals start on xterm's DOM renderer
+  // and the WebGL terminal pool lazily attaches a bounded number of WebGL
+  // contexts to the on-screen terminals that most need one (see
+  // webglTerminalPool). `webglAllowed` records whether this terminal may ever
+  // receive a context; the DOM renderer is the fallback for everyone else.
   const preference = getTerminalRendererPreference(prefs)
-  if (resolveTerminalRendererPreference(preference) === 'canvas') {
-    log.debug('terminal_renderer', { renderer: 'canvas', preference })
-  }
-  else {
-    try {
-      const webglAddon = new WebglAddon()
-      terminal.loadAddon(webglAddon)
-      webglAddon.onContextLoss(() => {
-        log.warn('terminal_renderer_webgl_context_lost')
-        webglAddon.dispose()
-      })
-      log.debug('terminal_renderer', { renderer: 'webgl', preference })
-    }
-    catch (error) {
-      log.warn('terminal_renderer', { renderer: 'canvas', preference, reason: 'webgl_unavailable', error })
-    }
-  }
+  const webglAllowed = resolveTerminalRendererPreference(preference) === 'webgl'
 
   // Web fonts (e.g. Hack NF) are declared with font-display: swap and load
-  // asynchronously. xterm's WebGL/canvas renderer rasterizes glyphs into a
-  // texture atlas as cells paint — if a given (weight, style) variant
-  // hasn't loaded yet, those cells are filled with fallback-font glyphs
-  // and never refreshed once the real font arrives. Trigger explicit
-  // fetches for every variant, then clear the atlas once they settle so
-  // the next paint re-rasterizes with the now-loaded font.
-  reloadFontsAndClearAtlas(terminal, fontFamily, fontSize)
+  // asynchronously. The WebGL renderer rasterizes glyphs into a texture atlas
+  // as cells paint, caching fallback-font glyphs for any (weight, style)
+  // variant that hasn't loaded yet. Kick off fetches for every variant now and
+  // expose the promise so the pool can hold WebGL attach until the real font
+  // is ready — the atlas is then always built from the loaded font.
+  //
+  // Only terminals that may receive a WebGL context need this gate: the DOM
+  // renderer has no atlas and paints via CSS font-family, so a WebGL-ineligible
+  // terminal would fetch four variants (and arm their cold-start retry timers)
+  // whose readiness `fontsReady` nobody ever awaits. Skip the fan-out for them.
+  const fontsReady = webglAllowed
+    ? loadTerminalFonts(terminal, fontFamily, fontSize)
+    : Promise.resolve()
 
   // Auto-copy the selection so users don't have to press Cmd/Ctrl+C
   // (mirrors iTerm2's "Copy on Select" behavior). Empty selections
@@ -316,9 +332,73 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     fitAddon,
     serializeAddon,
     suppressInput: false,
+    webglAllowed,
+    fontsReady,
+    webglAddon: undefined,
     dispose() {
       terminal.dispose()
     },
+  }
+}
+
+/**
+ * Attach the WebGL renderer to a terminal, wiring context-loss handling.
+ *
+ * Called only by the WebGL terminal pool, which has already awaited the
+ * instance's `fontsReady` and verified the terminal is on-screen and within
+ * the context budget. The pool-supplied `onContextLoss` lets the pool free the
+ * slot and re-attach elsewhere when the browser force-drops the GPU context.
+ *
+ * Returns whether the renderer attached. A false return (WebGL unavailable,
+ * e.g. jsdom or a lost driver) leaves the terminal on the DOM renderer, which
+ * is fully correct.
+ */
+export function attachWebgl(instance: TerminalInstance, onContextLoss: () => void): boolean {
+  if (!instance.webglAllowed)
+    return false
+  if (instance.webglAddon)
+    return true
+  try {
+    const addon = new WebglAddon()
+    instance.terminal.loadAddon(addon)
+    addon.onContextLoss(() => {
+      log.warn('terminal_renderer_webgl_context_lost')
+      // Drop our reference before disposing so a re-entrant detach is a no-op,
+      // then notify the pool so it can re-attach if the terminal is still on
+      // screen and within budget.
+      if (instance.webglAddon === addon)
+        instance.webglAddon = undefined
+      try {
+        addon.dispose()
+      }
+      catch {
+        // Already torn down by the context loss itself.
+      }
+      onContextLoss()
+    })
+    instance.webglAddon = addon
+    return true
+  }
+  catch (error) {
+    log.warn('terminal_renderer', { renderer: 'canvas', reason: 'webgl_unavailable', error })
+    return false
+  }
+}
+
+/**
+ * Detach the WebGL renderer, reverting the terminal to the DOM renderer.
+ * Idempotent: a no-op when no WebGL addon is attached.
+ */
+export function detachWebgl(instance: TerminalInstance): void {
+  const addon = instance.webglAddon
+  if (!addon)
+    return
+  instance.webglAddon = undefined
+  try {
+    addon.dispose()
+  }
+  catch {
+    // Terminal (and its addons) may already have been disposed.
   }
 }
 
@@ -332,28 +412,92 @@ const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
   { weight: 'bold', style: 'italic' },
 ]
 
-/**
- * Initiate font-face fetches for every (weight, style) variant xterm
- * rasterizes into its glyph atlas. More reliable than waiting on
- * `document.fonts.ready`: that promise only awaits loads already in
- * flight, and at the moment a terminal is constructed the renderer may
- * not have referenced the font yet — so `.ready` can resolve before any
- * fetch has even started.
- */
-function loadMonoFontVariants(fontFamily: string, fontSize: number): Promise<void> {
-  if (typeof document === 'undefined' || !document.fonts?.load)
-    return Promise.resolve()
-  return Promise.all(
-    FONT_VARIANTS.map(({ weight, style }) =>
-      document.fonts.load(`${style} ${weight} ${fontSize}px ${fontFamily}`).catch(() => []),
-    ),
-  ).then(() => {})
+// Cold-start font fetches can fail transiently -- e.g. Tauri's static-file
+// server is briefly unavailable right after launch. Retry a failed variant a
+// bounded number of times with exponential backoff, then give up so a
+// genuinely-missing font doesn't spin forever.
+const FONT_LOAD_MAX_RETRIES = 4
+const FONT_LOAD_RETRY_BASE_MS = 300
+
+/** Load one font variant, resolving to whether it settled without a fetch error. */
+function tryLoadFontVariant(spec: string): Promise<boolean> {
+  // A resolve (even with zero matched faces, e.g. a pure system-font family)
+  // means "nothing failed"; only a reject signals a matched @font-face whose
+  // fetch failed and is worth retrying.
+  //
+  // `document.fonts.load` throws a SyntaxError *synchronously* when `spec` is
+  // not a parseable CSS font shorthand (e.g. a malformed custom family from a
+  // corrupted preference). Catch it so a bad spec degrades to a failed variant
+  // rather than rejecting `fontsReady` -- which would throw into the pool's
+  // attach and, at construction, out of createTerminalInstance itself.
+  try {
+    return document.fonts.load(spec).then(() => true, () => false)
+  }
+  catch {
+    return Promise.resolve(false)
+  }
 }
 
 /**
- * Trigger explicit fetches for every (weight, style) variant, then clear
- * the terminal's glyph atlas so the next paint re-rasterizes with the
- * now-loaded font.
+ * Fetch every (weight, style) variant xterm rasterizes into its glyph atlas
+ * and keep `terminal`'s atlas honest across cold-start fetch failures.
+ *
+ * The returned promise (assigned to `fontsReady`) resolves as soon as the
+ * FIRST attempt settles -- success or failure -- so the pool's WebGL attach is
+ * never blocked on a slow or failing fetch. Kicking off explicit fetches is
+ * more reliable than waiting on `document.fonts.ready`: that promise only
+ * awaits loads already in flight, and at construction the renderer may not have
+ * referenced the font yet, so `.ready` can resolve before any fetch starts.
+ *
+ * If a variant fails on the first attempt (a matched @font-face rejected), it
+ * is retried in the background with backoff; once it finally loads, the glyph
+ * atlas is cleared so a WebGL renderer that cached fallback glyphs re-paints
+ * with the real font. Without this, a terminal that attached WebGL during the
+ * outage would show fallback glyphs until the next font-family change or a
+ * reload. `clearTextureAtlas()` is a no-op on the DOM renderer, so the retry
+ * clear is harmless for terminals without a WebGL context.
+ */
+export function loadTerminalFonts(terminal: Terminal, fontFamily: string, fontSize: number): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts?.load)
+    return Promise.resolve()
+  const specs = FONT_VARIANTS.map(({ weight, style }) => `${style} ${weight} ${fontSize}px ${fontFamily}`)
+  return Promise.all(specs.map(tryLoadFontVariant)).then((settled) => {
+    const failed = specs.filter((_, i) => !settled[i])
+    if (failed.length > 0)
+      void retryFontVariants(terminal, failed)
+  })
+}
+
+/**
+ * Retry the given font-variant specs with exponential backoff until they load
+ * or the attempt budget is exhausted, clearing `terminal`'s atlas whenever a
+ * batch makes progress so an attached WebGL renderer drops its cached fallback
+ * glyphs.
+ */
+async function retryFontVariants(terminal: Terminal, specs: string[]): Promise<void> {
+  let pending = specs
+  for (let attempt = 0; attempt < FONT_LOAD_MAX_RETRIES && pending.length > 0; attempt++) {
+    await sleep(FONT_LOAD_RETRY_BASE_MS * 2 ** attempt)
+    // The document (and its FontFaceSet) can go away mid-retry during teardown;
+    // stop rather than throw into this floating promise.
+    if (typeof document === 'undefined' || !document.fonts?.load)
+      return
+    const settled = await Promise.all(pending.map(tryLoadFontVariant))
+    if (settled.some(Boolean))
+      scheduleAtlasClear(terminal)
+    pending = pending.filter((_, i) => !settled[i])
+  }
+}
+
+/**
+ * React to a font-family change on a live terminal instance: point xterm at
+ * the new family, re-arm `fontsReady` for the new variants, and — once they
+ * load — clear the glyph atlas so an attached WebGL renderer re-rasterizes
+ * with the new font.
+ *
+ * Re-arming `fontsReady` is what keeps the atlas correct across a swap: a
+ * later (or in-flight) pool attach awaits the *current* `fontsReady`, so it
+ * never builds the atlas from the outgoing font.
  *
  * Why a promise-based clear and not a `FontFaceSet` `loadingdone` listener:
  * when the first fetch attempt fails (e.g. Tauri's static-file server is
@@ -361,21 +505,49 @@ function loadMonoFontVariants(fontFamily: string, fontSize: number): Promise<voi
  * transition `error → loaded` and Chromium does not emit `loadingdone`.
  * `document.fonts.load(...)` resolves cleanly in that case.
  *
- * Two passes — once after our `load()` promises settle, once on the next
- * animation frame — cover the case where xterm's first paint rasterized
- * fallback glyphs in the brief window between the load completing and
- * our `.then()` callback running.
+ * Two clear passes — once after our `load()` promises settle, once on the
+ * next animation frame — cover the case where the renderer's first paint
+ * rasterized fallback glyphs in the brief window between the load completing
+ * and our `.then()` callback running. `clearTextureAtlas()` is a no-op on the
+ * DOM renderer, so this is harmless for terminals without a WebGL context.
+ *
+ * Returns whether the family actually changed, so callers can gate follow-up
+ * work (e.g. re-fitting) on a real swap: because every mounted TerminalView
+ * iterates the shared `instances` map, the first view to see a swap does the
+ * work and the rest get `false` and skip it, avoiding N-views x M-terminals
+ * redundant reflows on a single font change.
  */
-export function reloadFontsAndClearAtlas(
-  terminal: Terminal,
+export function refreshTerminalFont(
+  instance: TerminalInstance,
   fontFamily: string,
   fontSize: number,
-): Promise<void> {
-  return loadMonoFontVariants(fontFamily, fontSize).then(() => {
-    clearAtlas(terminal)
-    if (typeof requestAnimationFrame !== 'undefined')
-      requestAnimationFrame(() => clearAtlas(terminal))
-  })
+): boolean {
+  // Skip when the family is unchanged. The font-preference effect re-fires
+  // whenever the preferences store hydrates -- a fresh `monoFonts` array is a
+  // new signal value even when the resolved family string is byte-identical --
+  // and re-arming `fontsReady` with a new unsettled promise on every such fire
+  // would needlessly delay the pool's WebGL attach (which awaits it) and
+  // re-fetch every font variant.
+  if (instance.terminal.options.fontFamily === fontFamily)
+    return false
+  instance.terminal.options.fontFamily = fontFamily
+  const ready = loadTerminalFonts(instance.terminal, fontFamily, fontSize)
+  instance.fontsReady = ready
+  void ready.then(() => scheduleAtlasClear(instance.terminal))
+  return true
+}
+
+/**
+ * Clear the glyph atlas now and once more on the next animation frame. The
+ * second pass covers the window where the renderer's first paint rasterized
+ * fallback glyphs between a font load completing and this callback running.
+ * Shared by the font-swap path and the cold-start retry so both drop stale
+ * fallback glyphs identically. A no-op on the DOM renderer (which has no atlas).
+ */
+function scheduleAtlasClear(terminal: Terminal): void {
+  clearAtlas(terminal)
+  if (typeof requestAnimationFrame !== 'undefined')
+    requestAnimationFrame(() => clearAtlas(terminal))
 }
 
 function clearAtlas(terminal: Terminal): void {

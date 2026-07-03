@@ -9,7 +9,8 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
-import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, reloadFontsAndClearAtlas, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
+import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
+import { webglPool } from '~/lib/webglTerminalPool'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -44,6 +45,10 @@ export function disposeTerminalInstance(id: string): void {
   const instance = instances.get(id)
   if (!instance)
     return
+  // Relinquish any pooled WebGL context first so the slot frees up for
+  // another terminal. This is the single teardown chokepoint reached by every
+  // path — explicit close, HMR dispose, and the unmount microtask below.
+  webglPool.release(id)
   instance.dispose()
   instances.delete(id)
   screenApplied.delete(id)
@@ -137,6 +142,10 @@ if (typeof window !== 'undefined') {
     instance.sendInput(new TextEncoder().encode(text))
     return true
   }
+  // E2E hooks for the WebGL context pool: assert that the number of live
+  // contexts stays bounded and that hidden tabs hold none.
+  ;(window as any).__webglTerminalCount = () => webglPool.size()
+  ;(window as any).__terminalRendererFor = (id: string) => (instances.get(id)?.webglAddon ? 'webgl' : 'dom')
 }
 
 /**
@@ -316,6 +325,32 @@ const TerminalContainer: Component<{
     }
   })
 
+  // Grant or relinquish a pooled WebGL context as this terminal moves on and
+  // off screen. Only the visible terminal in a tile (`active && visible`)
+  // competes for the bounded WebGL pool; hidden tabs and any overflow beyond
+  // the pool's capacity render via xterm's DOM renderer. `focused` is passed
+  // synchronously so the terminal the user is typing in always wins a slot,
+  // even on an initial multi-tile render where mount order would otherwise
+  // decide. Deliberately no `onCleanup(release)`: a cross-tile move unmounts
+  // this container and mounts another for the same id, and the pool's
+  // coalesced reconcile already keeps that transient safe — unmount-driven
+  // release is owned solely by disposeTerminalInstance (guarded by the
+  // element-`isConnected` check below), so a move never releases.
+  //
+  // `instances.get` is read non-reactively: the entry is created by `onMount`
+  // above, which — being registered before this effect — always runs first, so
+  // the instance is present on this effect's first (and every) run while the
+  // container is mounted. The only removal is disposeTerminalInstance, which
+  // unmounts the container (disposing this effect) in the same breath.
+  createEffect(() => {
+    const onScreen = props.active && props.visible
+    const instance = instances.get(props.terminalId)
+    if (onScreen && instance)
+      webglPool.acquire(props.terminalId, instance, { focused: props.tileFocused })
+    else
+      webglPool.release(props.terminalId)
+  })
+
   return (
     <div
       class={styles.terminalWrapper}
@@ -351,15 +386,30 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
   }
 
   // React to font preference changes and update existing terminal instances.
-  // After the new family's variants finish loading, clear each terminal's
-  // atlas so the WebGL renderer drops any fallback glyphs it rasterized
-  // before the swap.
+  // refreshTerminalFont re-arms each instance's `fontsReady` for the new
+  // family (so a later or in-flight pool attach builds the atlas from the new
+  // font) and, once the variants load, clears the atlas of any terminal that
+  // currently holds a WebGL context (a no-op on DOM-rendered ones).
+  //
+  // Guard on a real family change: `monoFontFamily()` re-emits whenever the
+  // preferences store hydrates (a fresh `monoFonts` array is a new signal
+  // value even when the resolved string is identical), and re-fitting every
+  // instance on each spurious re-fire is wasted layout/reflow work.
+  //
+  // `instances` is the module-level map shared by every mounted TerminalView,
+  // so each tile's copy of this effect iterates all instances. Fit only the
+  // instances refreshTerminalFont actually re-armed (it returns `false` once a
+  // sibling view already applied the swap), so a font change costs M reflows,
+  // not tiles x M.
+  let lastFontFamily: string | undefined
   createEffect(() => {
     const family = preferences.monoFontFamily()
+    if (family === lastFontFamily)
+      return
+    lastFontFamily = family
     for (const [, instance] of instances) {
-      instance.terminal.options.fontFamily = family
-      instance.fitAddon.fit()
-      reloadFontsAndClearAtlas(instance.terminal, family, 13)
+      if (refreshTerminalFont(instance, family, DEFAULT_FONT_SIZE))
+        instance.fitAddon.fit()
     }
   })
 
@@ -380,14 +430,36 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
 
   // React to terminal/UI theme preference and OS-theme changes — all
   // three feed into the resolved theme when the user picks `match-ui`.
+  //
+  // Guard on a real theme change, mirroring the font effect above:
+  // `resolveTerminalTheme` returns one of two module-level ITheme constants,
+  // so a reference compare cheaply skips redundant re-applies when a
+  // theme-adjacent signal fires without changing the resolved theme (e.g.
+  // prefers-color-scheme flips while the terminal theme is pinned to
+  // light/dark). Because `instances` is the module-level map shared by every
+  // mounted TerminalView, an unguarded re-fire costs tiles x instances xterm
+  // palette rebuilds — each `options.theme` write recomputes the color table.
+  let lastTheme: ITheme | undefined
   createEffect(() => {
     const theme = resolveTerminalTheme(
       preferences.terminalTheme(),
       preferences.theme(),
       prefersDark(),
     )
+    if (theme === lastTheme)
+      return
+    lastTheme = theme
     for (const [, instance] of instances) {
-      instance.terminal.options.theme = theme
+      // Skip instances already on this theme. `instances` is the shared
+      // module-level map, so every mounted TerminalView (one per tile) runs
+      // this effect; without the per-instance guard a theme flip costs
+      // tiles x instances palette rebuilds instead of one per instance, since
+      // each write recomputes xterm's color table. `options.theme` returns the
+      // stored reference and `resolveTerminalTheme` yields stable constants, so
+      // the compare is exact. Mirrors refreshTerminalFont's per-instance guard
+      // in the font effect above.
+      if (instance.terminal.options.theme !== theme)
+        instance.terminal.options.theme = theme
     }
   })
 
@@ -466,7 +538,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   cols={terminal.cols}
                   rows={terminal.rows}
                   fontFamily={preferences.monoFontFamily()}
-                  fontSize={13}
+                  fontSize={DEFAULT_FONT_SIZE}
                   theme={terminalTheme()}
                   contentReady={(terminal.contentReady ?? false)
                     || terminal.status === TerminalStatus.EXITED

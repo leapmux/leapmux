@@ -20,6 +20,9 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
     fitAddon: { fit: vi.fn() } as any,
     serializeAddon: { serialize: vi.fn(() => '') } as any,
     suppressInput: false,
+    webglAllowed: false,
+    fontsReady: Promise.resolve(),
+    webglAddon: undefined,
     dispose: vi.fn(),
     _log: log,
   }

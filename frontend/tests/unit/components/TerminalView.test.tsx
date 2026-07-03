@@ -7,6 +7,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
+import { webglPool } from '~/lib/webglTerminalPool'
 
 const mockCreateTerminalInstance = vi.fn()
 
@@ -53,6 +55,8 @@ function makeMockTerminalInstance(): TerminalInstance {
     }),
     focus: vi.fn(),
     scrollPages: vi.fn(),
+    loadAddon: vi.fn(),
+    clearTextureAtlas: vi.fn(),
     options: {},
     buffer: {
       active: {
@@ -70,6 +74,12 @@ function makeMockTerminalInstance(): TerminalInstance {
     fitAddon: { fit: vi.fn() } as any,
     serializeAddon: { serialize: vi.fn() } as any,
     suppressInput: false,
+    // WebGL-ineligible so the shared pool never tries to attach a real context
+    // to this mock during the on-screen effect; the acquire/release wiring is
+    // still exercised and spyable.
+    webglAllowed: false,
+    fontsReady: Promise.resolve(),
+    webglAddon: undefined,
     dispose: vi.fn(),
   }
 }
@@ -77,6 +87,50 @@ function makeMockTerminalInstance(): TerminalInstance {
 describe('terminalView', () => {
   beforeEach(() => {
     mockCreateTerminalInstance.mockReset()
+    // Reset shared pool state between tests (module-level singleton).
+    webglPool.disposeAll()
+  })
+
+  it('acquires a pooled WebGL context only for the visible terminal', async () => {
+    const instanceA = makeMockTerminalInstance()
+    const instanceB = makeMockTerminalInstance()
+    mockCreateTerminalInstance
+      .mockReturnValueOnce(instanceA)
+      .mockReturnValueOnce(instanceB)
+    const acquireSpy = vi.spyOn(webglPool, 'acquire')
+    const releaseSpy = vi.spyOn(webglPool, 'release')
+
+    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[
+            { id: 'vis-A', ...baseTab },
+            { id: 'hid-B', ...baseTab },
+          ]}
+          activeTerminalId="vis-A"
+          visible
+          tileFocused
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    // The active + visible terminal claims a slot with focus priority.
+    await waitFor(() => {
+      expect(acquireSpy).toHaveBeenCalledWith('vis-A', instanceA, { focused: true })
+    })
+    // The hidden sibling never acquires; it releases instead.
+    const acquiredIds = acquireSpy.mock.calls.map(call => call[0])
+    expect(acquiredIds).not.toContain('hid-B')
+    expect(releaseSpy).toHaveBeenCalledWith('hid-B')
+
+    acquireSpy.mockRestore()
+    releaseSpy.mockRestore()
   })
 
   it('does not forward bell notifications during snapshot replay', async () => {
@@ -253,14 +307,231 @@ describe('terminalView', () => {
     // Mirror the production close path: explicit dispose, then drop the
     // tab from the prop list. With per-view ownership tracking, removing
     // alone does not auto-dispose (the id may have moved to another tile).
+    const releaseSpy = vi.spyOn(webglPool, 'release')
     disposeTerminalInstance('dispose-test-A')
     setTerminals([{ id: 'dispose-test-B', ...baseTab }])
 
     expect(getTerminalInstance('dispose-test-A')).toBeUndefined()
     expect(instanceA.dispose).toHaveBeenCalledTimes(1)
+    // Disposal must also relinquish the pool's WebGL slot for that id.
+    expect(releaseSpy).toHaveBeenCalledWith('dispose-test-A')
     // B stays live — only the closed tab's instance should be disposed.
     expect(getTerminalInstance('dispose-test-B')).toBe(instanceB)
     expect(instanceB.dispose).not.toHaveBeenCalled()
+    releaseSpy.mockRestore()
+  })
+
+  it('moves the pooled WebGL context when the active terminal changes', async () => {
+    const instanceA = makeMockTerminalInstance()
+    const instanceB = makeMockTerminalInstance()
+    mockCreateTerminalInstance
+      .mockReturnValueOnce(instanceA)
+      .mockReturnValueOnce(instanceB)
+
+    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    const [activeId, setActiveId] = createSignal('switch-A')
+    const acquireSpy = vi.spyOn(webglPool, 'acquire')
+    const releaseSpy = vi.spyOn(webglPool, 'release')
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[
+            { id: 'switch-A', ...baseTab },
+            { id: 'switch-B', ...baseTab },
+          ]}
+          activeTerminalId={activeId()}
+          visible
+          tileFocused
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    // Initially A is the visible tab and claims the slot.
+    await waitFor(() => {
+      expect(acquireSpy).toHaveBeenCalledWith('switch-A', instanceA, { focused: true })
+    })
+
+    // Switch the active tab to B: A must relinquish its slot, B must claim one.
+    setActiveId('switch-B')
+    await waitFor(() => {
+      expect(acquireSpy).toHaveBeenCalledWith('switch-B', instanceB, { focused: true })
+    })
+    expect(releaseSpy).toHaveBeenCalledWith('switch-A')
+
+    acquireSpy.mockRestore()
+    releaseSpy.mockRestore()
+  })
+
+  it('re-applies a genuine terminal-theme change to every live instance', async () => {
+    localStorage.clear()
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    // Drive an OS prefers-color-scheme flip through the change handler the view
+    // registers. With the default match-ui terminal theme + system UI theme the
+    // resolved theme follows the OS, so this exercises the (guarded) theme
+    // effect end to end. matchMedia starts in light.
+    const originalMatchMedia = window.matchMedia
+    let colorSchemeHandler: ((e: { matches: boolean }) => void) | undefined
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => {
+        colorSchemeHandler = cb
+      },
+      removeEventListener: vi.fn(),
+    }) as any
+
+    try {
+      const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+      render(() => (
+        <PreferencesProvider>
+          <TerminalView
+            terminals={[{ id: 'theme-A', ...baseTab }]}
+            activeTerminalId="theme-A"
+            visible
+            tileFocused
+            onInput={vi.fn()}
+            onResize={vi.fn()}
+            onTitleChange={vi.fn()}
+            onBell={vi.fn()}
+            onContentReady={vi.fn()}
+          />
+        </PreferencesProvider>
+      ))
+
+      await waitFor(() => expect(colorSchemeHandler).toBeDefined())
+
+      // Flip the OS to dark: the effect's change guard must let a genuine
+      // change through and re-apply the dark theme to the live instance.
+      colorSchemeHandler!({ matches: true })
+      await waitFor(() => {
+        expect(instance.terminal.options.theme).toBe(darkTerminalTheme)
+      })
+
+      // Flip back to light: a second genuine change must also propagate,
+      // proving the guard updates its last-applied theme rather than latching
+      // on the first one it saw.
+      colorSchemeHandler!({ matches: false })
+      await waitFor(() => {
+        expect(instance.terminal.options.theme).toBe(lightTerminalTheme)
+      })
+    }
+    finally {
+      window.matchMedia = originalMatchMedia
+    }
+  })
+
+  it('writes each instance theme once on a change, not once per mounted view', async () => {
+    localStorage.clear()
+
+    // Two tiles (two TerminalView instances) share the module-level `instances`
+    // map, so BOTH views' theme effects iterate BOTH instances on a theme flip.
+    // The per-instance guard must collapse that to one write per instance
+    // instead of tiles x instances writes (each xterm theme write rebuilds the
+    // color table). Count writes via a defined accessor on each mock.
+    function withThemeCounter(inst: TerminalInstance): () => number {
+      let stored: unknown
+      let writes = 0
+      Object.defineProperty(inst.terminal, 'options', {
+        configurable: true,
+        value: Object.defineProperties({} as Record<string, unknown>, {
+          theme: {
+            configurable: true,
+            get: () => stored,
+            set: (v: unknown) => {
+              stored = v
+              writes++
+            },
+          },
+        }),
+      })
+      return () => writes
+    }
+
+    const instanceA = makeMockTerminalInstance()
+    const instanceB = makeMockTerminalInstance()
+    const writesA = withThemeCounter(instanceA)
+    const writesB = withThemeCounter(instanceB)
+    mockCreateTerminalInstance
+      .mockReturnValueOnce(instanceA)
+      .mockReturnValueOnce(instanceB)
+
+    // Collect every view's prefers-color-scheme handler so we can flip both.
+    const originalMatchMedia = window.matchMedia
+    const colorSchemeHandlers: Array<(e: { matches: boolean }) => void> = []
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => {
+        colorSchemeHandlers.push(cb)
+      },
+      removeEventListener: vi.fn(),
+    }) as any
+
+    try {
+      const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+      render(() => (
+        <PreferencesProvider>
+          <TerminalView
+            terminals={[{ id: 'themed-A', ...baseTab }]}
+            activeTerminalId="themed-A"
+            visible
+            tileFocused
+            onInput={vi.fn()}
+            onResize={vi.fn()}
+            onTitleChange={vi.fn()}
+            onBell={vi.fn()}
+            onContentReady={vi.fn()}
+          />
+          <TerminalView
+            terminals={[{ id: 'themed-B', ...baseTab }]}
+            activeTerminalId="themed-B"
+            visible
+            tileFocused
+            onInput={vi.fn()}
+            onResize={vi.fn()}
+            onTitleChange={vi.fn()}
+            onBell={vi.fn()}
+            onContentReady={vi.fn()}
+          />
+        </PreferencesProvider>
+      ))
+
+      // Both views mount, both register a handler, both instances exist.
+      await waitFor(() => {
+        expect(colorSchemeHandlers.length).toBe(2)
+        expect(getTerminalInstance('themed-A')).toBe(instanceA)
+        expect(getTerminalInstance('themed-B')).toBe(instanceB)
+      })
+
+      // The mount-time application (light) already exercised the guard across
+      // both views; zero the counters so we measure only the flip below.
+      const baselineA = writesA()
+      const baselineB = writesB()
+
+      // Flip the OS to dark and drive every view's handler.
+      for (const handler of colorSchemeHandlers)
+        handler({ matches: true })
+
+      await waitFor(() => {
+        expect(instanceA.terminal.options.theme).toBe(darkTerminalTheme)
+        expect(instanceB.terminal.options.theme).toBe(darkTerminalTheme)
+      })
+
+      // Exactly one write per instance for the flip — the second view finds the
+      // theme already applied and skips. Without the guard each instance would
+      // be written twice (once per view).
+      expect(writesA() - baselineA).toBe(1)
+      expect(writesB() - baselineB).toBe(1)
+    }
+    finally {
+      window.matchMedia = originalMatchMedia
+    }
   })
 
   it('scrolls the active terminal by one page', async () => {
