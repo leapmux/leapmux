@@ -3,9 +3,11 @@ import type { RenderContext } from '../messageRenderers'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
 import { createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
 import { setCachedTokens } from '~/lib/tokenCache'
 import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk, rawDiffToHunks } from '.'
+import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
 import { buildUnifiedLines } from './diffTokenRender'
 
 /**
@@ -285,10 +287,10 @@ describe('diffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
 
   function seedSides(): void {
     // extractSidesFromHunks: oldCode = 'ctx'; newCode = 'ctx\nadded'.
-    setCachedTokens('typescript', 'ctx', [[{ content: 'CTXTOK', htmlStyle: {} }]])
+    setCachedTokens('typescript', 'ctx', [[{ content: 'CTXTOK' }]])
     setCachedTokens('typescript', 'ctx\nadded', [
-      [{ content: 'CTXTOK2', htmlStyle: {} }],
-      [{ content: 'ADDEDTOK', htmlStyle: {} }],
+      [{ content: 'CTXTOK2' }],
+      [{ content: 'ADDEDTOK' }],
     ])
   }
 
@@ -351,11 +353,14 @@ describe('diffView ansi (.log) highlighting', () => {
     ))
 
     // The escape sequences are consumed into per-token colors -- the visible text is clean.
-    // Target the inline-styled token span (its diffContent parent has the same textContent
-    // but no style), so this asserts a real Shiki token, not the wrapper.
-    const greenSpan = [...container.querySelectorAll('span[style]')].find(s => s.textContent === 'green')
+    // Target the marked token span (its diffContent parent has the same textContent but no
+    // marker), so this asserts a real Shiki token, not the wrapper.
+    const greenSpan = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'green')
     expect(greenSpan).toBeTruthy()
-    expect(greenSpan!.getAttribute('style')).toContain('--shiki-light')
+    // The token's shared style class defines the dual-theme variables (shikiStyleClass).
+    expect(greenSpan!.className).toMatch(/^sk-/)
+    expect(readInjectedShikiRules())
+      .toContain(`.${greenSpan!.className}{`)
     // The raw escape byte never reaches the DOM (it would if the line rendered plain).
     expect(container.textContent).not.toContain(ESC)
   })
@@ -380,10 +385,10 @@ describe('diffView ansi (.log) highlighting', () => {
     fireEvent.click(screen.getByText('2 lines hidden'))
 
     // Revealed gap lines render colored (escapes stripped into token colors). Target the
-    // inline-styled token span rather than its unstyled diffContent parent.
-    const redSpan = [...document.querySelectorAll('span[style]')].find(s => s.textContent === 'red-one')
+    // marked token span rather than its unmarked diffContent parent.
+    const redSpan = [...document.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'red-one')
     expect(redSpan).toBeTruthy()
-    expect(redSpan!.getAttribute('style')).toContain('--shiki-light')
+    expect(redSpan!.className).toMatch(/^sk-/)
   })
 })
 
@@ -757,5 +762,142 @@ describe('diffView gap rendering without original file', () => {
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
     expect(queryByRole('button', { name: EXPAND_RE })).not.toBeInTheDocument()
     expect(queryByRole('button', { name: COLLAPSE_RE })).not.toBeInTheDocument()
+  })
+})
+
+describe('dual-side tokenization dedup', () => {
+  it('coalesces identical old/new side code into ONE worker dispatch shared by both hooks', async () => {
+    // A context-only hunk makes extractSidesFromHunks produce byte-identical
+    // oldCode/newCode. Both per-side useAsyncCodeTokens instances then resolve the
+    // same `${lang}\0${code}` key, so the in-flight coalescer in tokenizeAsync must
+    // collapse their concurrent dispatches into a single worker tokenization -- the
+    // dedup lives in the key construction (shared lang memo + shared sides memo),
+    // and this pins that the two sides cannot drift onto different keys.
+    const workers: Array<{
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, lang: string, code: string }>
+    }> = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class CapturingWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        messages: Array<{ id: number, lang: string, code: string }> = []
+        terminate = vi.fn()
+
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage(message: { id: number, lang: string, code: string }) {
+          this.messages.push(message)
+        }
+      },
+    })
+    try {
+      // Unique content so earlier tests' token-cache seeds can't satisfy this key.
+      const hunks: StructuredPatchHunk[] = [{
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: [' const dedupSideA = 1', ' const dedupSideB = 2'],
+      }]
+      const { container } = render(() => <DiffView filePath="dedup-sides.ts" hunks={hunks} view="split" />)
+
+      // Two hook instances (old side + new side), ONE spawned worker, ONE dispatch.
+      expect(workers).toHaveLength(1)
+      expect(workers[0].messages).toHaveLength(1)
+      expect(workers[0].messages[0].lang).toBe('typescript')
+      expect(workers[0].messages[0].code).toBe('const dedupSideA = 1\nconst dedupSideB = 2')
+
+      // Resolve the single dispatch (interned wire shape — see internTokenLines);
+      // BOTH sides of the split view apply the shared tokens (each context line
+      // renders left + right).
+      workers[0].onmessage?.({
+        data: {
+          id: workers[0].messages[0].id,
+          tokens: {
+            styles: [],
+            lines: [
+              [[-1, 'const dedupSideA = 1']],
+              [[-1, 'const dedupSideB = 2']],
+            ],
+          },
+        },
+      } as MessageEvent)
+      await waitFor(() => {
+        // The diff renderer marks token spans with data-shiki-token; the
+        // diffContent wrapper shares the textContent, so target the marker.
+        const tokenSpans = [...container.querySelectorAll('span[data-shiki-token]')]
+          .filter(s => s.textContent === 'const dedupSideA = 1')
+        expect(tokenSpans).toHaveLength(2) // left column + right column
+      })
+      // Applying to the second side never re-dispatched.
+      expect(workers[0].messages).toHaveLength(1)
+    }
+    finally {
+      // jsdom defines no Worker; restore that so later tests keep the no-worker path.
+      delete (globalThis as { Worker?: unknown }).Worker
+    }
+  })
+})
+
+describe('diff token span classes (shared style class + word-diff composition)', () => {
+  it('composes the token style class with the word-diff highlight on changed fragments only', () => {
+    // One whole-line token per side carrying a shared style class, so the
+    // word-diff splitter must carry that class onto every fragment it cuts.
+    setCachedTokens('typescript', 'const wdValue = 1', [[{ content: 'const wdValue = 1', className: 'sk-wd-old' }]])
+    setCachedTokens('typescript', 'const wdNewValue = 1', [[{ content: 'const wdNewValue = 1', className: 'sk-wd-new' }]])
+    const hunks: StructuredPatchHunk[] = [{
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-const wdValue = 1', '+const wdNewValue = 1'],
+    }]
+    const { container } = render(() => <DiffView filePath="wd.ts" hunks={hunks} view="unified" />)
+
+    // The changed word carries BOTH the token's shared style class and the
+    // word-diff highlight...
+    const removed = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'wdValue')!
+    expect(removed).toBeTruthy()
+    expect(removed.classList.contains('sk-wd-old')).toBe(true)
+    expect(removed.classList.contains(diffRemovedInline)).toBe(true)
+    const added = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'wdNewValue')!
+    expect(added).toBeTruthy()
+    expect(added.classList.contains('sk-wd-new')).toBe(true)
+    expect(added.classList.contains(diffAddedInline)).toBe(true)
+
+    // ...while the unchanged fragments of the same tokens keep only the style class.
+    const unchanged = [...container.querySelectorAll('span[data-shiki-token]')].filter(s => s.textContent === 'const ')
+    expect(unchanged.length).toBeGreaterThan(0)
+    for (const fragment of unchanged) {
+      expect(fragment.classList.contains('sk-wd-old') || fragment.classList.contains('sk-wd-new')).toBe(true)
+      expect(fragment.classList.contains(diffRemovedInline)).toBe(false)
+      expect(fragment.classList.contains(diffAddedInline)).toBe(false)
+    }
+  })
+
+  it('never stamps an empty class attribute on unstyled token or plain fallback spans', () => {
+    // Unstyled tokens (no className) exercise the fragment path...
+    setCachedTokens('typescript', 'plain wd old line', [[{ content: 'plain wd old line' }]])
+    setCachedTokens('typescript', 'plain wd new line', [[{ content: 'plain wd new line' }]])
+    const hunks: StructuredPatchHunk[] = [{
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-plain wd old line', '+plain wd new line'],
+    }]
+    const withTokens = render(() => <DiffView filePath="empty-class.ts" hunks={hunks} view="unified" />)
+    expect(withTokens.container.querySelector('[class=""]')).toBeNull()
+
+    // ...and a token-less diff (no filePath -> no language) exercises the
+    // plain word-diff fallback, whose unchanged parts must omit the class
+    // attribute rather than stamp class="".
+    const plain = render(() => <DiffView hunks={hunks} view="unified" />)
+    expect(plain.container.querySelector('[class=""]')).toBeNull()
   })
 })

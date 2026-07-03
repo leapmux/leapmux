@@ -1,19 +1,15 @@
+import { monotonicNow } from './monotonicNow'
+
 export interface RafResizeObserver {
   observe: (target: Element, options?: ResizeObserverOptions) => void
   unobserve: (target: Element) => void
   disconnect: () => void
 }
 
-function frameTimestamp(): DOMHighResTimeStamp {
-  return typeof performance !== 'undefined' && typeof performance.now === 'function'
-    ? performance.now()
-    : Date.now()
-}
-
 function requestFrame(cb: FrameRequestCallback): number {
   if (typeof requestAnimationFrame === 'function')
     return requestAnimationFrame(cb)
-  return setTimeout(() => cb(frameTimestamp()), 0) as unknown as number
+  return setTimeout(() => cb(monotonicNow()), 0) as unknown as number
 }
 
 function cancelFrame(id: number): void {

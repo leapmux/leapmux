@@ -11,7 +11,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn(() => new Promise<CachedToken[][] | null>(() => {})),
 }))
 
-const TOKENS: CachedToken[][] = [[{ content: '{', htmlStyle: { color: 'rgb(1, 2, 3)' } }]]
+const TOKENS: CachedToken[][] = [[{ content: '{', className: 'sk-test' }]]
 
 // Read the hook's value in the SAME synchronous tick as its creation -- before any
 // createEffect has run -- which is exactly what a component commits on its first render.

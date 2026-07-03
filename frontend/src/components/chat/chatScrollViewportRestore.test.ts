@@ -27,7 +27,6 @@ function makeScrollContext(overrides: Partial<ScrollContext> = {}): ScrollContex
     followTail: vi.fn(),
     refreshViewport: vi.fn(),
     writeScrollTop: vi.fn(),
-    markProgrammaticScroll: vi.fn(),
     syncVelocityToProgrammatic: vi.fn(),
     setAnchor: vi.fn(),
     ...overrides,

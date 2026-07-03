@@ -690,11 +690,16 @@ describe('chatView', () => {
     expect(tailRow).not.toBeNull()
     expect(tailRow!.style.visibility).toBe('')
     expect(tailRow!.style.opacity).toBe('1')
-    expect(spacer!.style.height).toBe('96px')
+    // Both rows are unmeasured and reserve the seed estimate (96) -- the interior row is
+    // hidden but still reserves space (no collapse-to-0), so the spacer is 96 + 20 gap + 96.
+    expect(spacer!.style.height).toBe('212px')
 
     vi.spyOn(tailRow!, 'getBoundingClientRect').mockImplementation(() => ({ height: 32 }) as DOMRect)
     await triggerResizeObserverFor(tailRow!)
-    await waitFor(() => expect(spacer!.style.height).toBe('32px'))
+    // Tail measures 32 -> the median estimate (one 32px sample) is now 32, so the
+    // still-unmeasured interior row reserves 32: spacer = 32 (interior est) + 20 gap
+    // + 32 (tail).
+    await waitFor(() => expect(spacer!.style.height).toBe('84px'))
 
     vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 480 }) as DOMRect)
     await triggerResizeObserverFor(row)
@@ -909,7 +914,7 @@ describe('chatView', () => {
     // scrollHeight delta. In jsdom rows measure 0px, so the anchor resolves
     // back to the same offset — the key guarantee is that the view is NOT
     // snapped to the bottom. (The pixel-accurate offset math is unit-tested in
-    // useChatVirtualizer.test.ts / useChatScroll.test.ts.)
+    // the useChatVirtualizer.*.test.ts / useChatScroll.*.test.ts suites.)
     await waitFor(() => expect(view.container).toHaveTextContent('Older 1'))
     expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
 

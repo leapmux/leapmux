@@ -1,11 +1,13 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
-import { createMemo, For, Match, Show, Switch } from 'solid-js'
+import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
+import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickFirstString, pickString } from '~/lib/jsonPick'
 import { renderMarkdownForContext } from '../messageRenderers'
 import {
+  MCP_IMAGE_MAX_HEIGHT_PX,
   mcpImage,
   mcpImageRow,
   toolInputSummary,
@@ -140,7 +142,7 @@ function McpContentItemView(props: { item: McpContentItem, context?: RenderConte
       <Match when={props.item.type === 'text'}>
         <div
           class={toolResultContent}
-          innerHTML={markdownHtml((props.item as { type: 'text', text: string }).text)}
+          ref={cachedInnerHtml(() => markdownHtml((props.item as { type: 'text', text: string }).text))}
         />
       </Match>
       <Match when={props.item.type === 'image'}>
@@ -181,11 +183,15 @@ export function imageRenderInfo(item: { type: 'image', mimeType?: string, urlOrD
   // Already a complete data: URL — accept iff its MIME is allowlisted.
   const DATA_URL_PREFIX = 'data:'
   if (data.startsWith(DATA_URL_PREFIX)) {
-    const semi = data.indexOf(';')
-    const mime = semi > DATA_URL_PREFIX.length ? data.slice(DATA_URL_PREFIX.length, semi).toLowerCase() : ''
+    const comma = data.indexOf(',')
+    if (comma < 0)
+      return { reason: 'unknown-shape' }
+    const meta = data.slice(DATA_URL_PREFIX.length, comma).toLowerCase()
+    const semi = meta.indexOf(';')
+    const mime = (semi < 0 ? meta : meta.slice(0, semi)).toLowerCase()
     if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
       return { reason: 'unsupported-mime' }
-    if (data.length > MAX_INLINE_IMAGE_BASE64_LEN)
+    if (data.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
       return { reason: 'too-large' }
     return { src: data, via: 'inline' }
   }
@@ -203,11 +209,58 @@ export function imageRenderInfo(item: { type: 'image', mimeType?: string, urlOrD
   return { src: `data:${mime};base64,${data}`, via: 'inline' }
 }
 
+/**
+ * Inline style reserving an image's exact final box before it decodes, so
+ * the decode is layout-neutral and the row's measured height never changes:
+ *   height = min(h, h/w * containerWidth, MAX) is what auto layout yields
+ *   after load; `aspect-ratio` + this width reproduces it exactly.
+ */
+export function imageReservationStyle(dims: { width: number, height: number }): Record<string, string> {
+  const widthAtMaxHeight = (MCP_IMAGE_MAX_HEIGHT_PX * dims.width / dims.height).toFixed(2)
+  return {
+    'aspect-ratio': `${dims.width} / ${dims.height}`,
+    'width': `min(${dims.width}px, 100%, ${widthAtMaxHeight}px)`,
+  }
+}
+
+export function imageReservationMatchesDecoded(
+  dims: { width: number, height: number },
+  decoded: { naturalWidth: number, naturalHeight: number },
+): boolean {
+  return decoded.naturalWidth === dims.width && decoded.naturalHeight === dims.height
+}
+
 function McpImageView(props: {
   item: { type: 'image', mimeType?: string, urlOrData?: string }
   premeasureMode?: boolean
 }): JSX.Element {
   const info = createMemo(() => imageRenderInfo(props.item))
+  const dims = createMemo(() => {
+    const src = info().src
+    return src ? sniffImageDimensionsFromDataUrl(src) : null
+  })
+  // Flips when the decoded image disagrees with the sniffed dimensions
+  // (sniffer bug / exotic file): the reservation is dropped and layout falls
+  // back to natural sizing, so a wrong sniff can never permanently distort
+  // the box — it just degrades to today's measure-on-load behavior.
+  const [reservationBroken, setReservationBroken] = createSignal(false)
+  const reserved = () => (reservationBroken() ? null : dims())
+
+  const sizeStyle = () => {
+    const d = reserved()
+    return d ? imageReservationStyle(d) : undefined
+  }
+
+  const verifyReservation = (img: HTMLImageElement) => {
+    const d = dims()
+    if (!d || reservationBroken())
+      return
+    const { naturalWidth: nw, naturalHeight: nh } = img
+    // naturalWidth/naturalHeight are post-EXIF-orientation in modern
+    // browsers, matching the sniffer's own orientation handling.
+    if (nw > 0 && nh > 0 && !imageReservationMatchesDecoded(d, { naturalWidth: nw, naturalHeight: nh }))
+      setReservationBroken(true)
+  }
 
   return (
     <Show
@@ -217,11 +270,14 @@ function McpImageView(props: {
       <div class={mcpImageRow}>
         <img
           class={mcpImage}
+          style={sizeStyle()}
           src={info().src}
           alt={props.item.mimeType ?? 'image'}
           loading={props.premeasureMode ? 'eager' : 'lazy'}
           decoding="async"
           referrerpolicy="no-referrer"
+          data-size-reserved={reserved() ? '1' : undefined}
+          onLoad={e => verifyReservation(e.currentTarget)}
         />
       </div>
     </Show>

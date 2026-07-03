@@ -34,11 +34,18 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     const el = ctx.getEl()
     if (!el || el.clientHeight === 0)
       return false
-    // Writing scrollHeight relies on browser clamping to the real maximum.
-    // Read scrollTop back afterward so the sticky record stores the clamped
-    // visual bottom, not the unclamped scrollHeight assignment.
-    const before = el.scrollTop
-    el.scrollTop = el.scrollHeight
+    // Route through the SHARED programmatic write so its write-time bookkeeping runs for
+    // the restick too -- the highest-frequency programmatic write during streaming: the
+    // direction/last-position baseline advances at write time (a user wheel interleaving
+    // before the echo would otherwise measure from the stale pre-stick baseline and
+    // mis-infer its direction), and a stale-native repin shift is disarmed. Writing
+    // scrollHeight relies on browser clamping to the real maximum; the guard behind
+    // writeScrollTop arms an echo marker only when the write actually MOVED scrollTop
+    // (see createProgrammaticScrollGuard.write), so a stick that lands on the current
+    // bottom still leaves no stale marker to swallow a later near-bottom user scroll.
+    // Read scrollTop back afterward so the sticky record stores the clamped visual
+    // bottom, not the unclamped scrollHeight assignment.
+    ctx.writeScrollTop(el.scrollHeight, 'stick-bottom')
     stickyScrollTop = el.scrollTop
     stickyScrollHeight = el.scrollHeight
     ctx.setAtBottom(true)
@@ -51,12 +58,6 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     // let this gesture's stale drift land on the new anchor (a jump). Resetting
     // here closes that window.
     extras.dropDeferredFlingDrift()
-    // The clamped bottom is our write; recognize its scroll event as ours -- but only
-    // when the write actually MOVED scrollTop. A stick that lands on the current bottom
-    // (already pinned) fires no scroll event, so marking it would leave a stale marker
-    // that swallows a real user scroll to within 1px of the bottom for the marker TTL.
-    if (el.scrollTop !== before)
-      ctx.markProgrammaticScroll('stick-bottom')
     return true
   }
 

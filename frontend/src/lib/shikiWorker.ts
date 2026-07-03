@@ -1,7 +1,7 @@
-import type { CachedToken } from './tokenCache'
+import type { InternedTokenLines } from './tokenCache'
 import { createLazyOnigurumaHighlighter, resolveBundledLang } from './shikiLazyHighlighter'
 import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
-import { toCachedTokens } from './tokenCache'
+import { internTokenLines, mergeLineTokens } from './tokenCache'
 
 export interface TokenizeRequest {
   type: 'tokenize'
@@ -13,7 +13,8 @@ export interface TokenizeRequest {
 export interface TokenizeResponse {
   type: 'tokenize-result'
   id: number
-  tokens: CachedToken[][] | null
+  /** Interned wire shape; the client expands it back to CachedToken[][]. */
+  tokens: InternedTokenLines | null
 }
 
 // One Oniguruma-backed highlighter per worker thread. Grammars load lazily on
@@ -42,7 +43,10 @@ globalThis.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
       return
     }
     const result = hl.getHighlighter()!.codeToTokens(msg.code, { lang, ...DUAL_THEME_TOKEN_OPTIONS })
-    const tokens: CachedToken[][] = toCachedTokens(result.tokens)
+    // Merge whitespace-only and same-style neighbors BEFORE interning: Shiki
+    // only applies these merges on its codeToHast path, so the raw codeToTokens
+    // output carries one extra span per indented line (see mergeLineTokens).
+    const tokens: InternedTokenLines = internTokenLines(mergeLineTokens(result.tokens))
     const response: TokenizeResponse = { type: 'tokenize-result', id: msg.id, tokens }
     globalThis.postMessage(response)
   }

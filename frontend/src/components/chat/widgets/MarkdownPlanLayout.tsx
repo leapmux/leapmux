@@ -1,9 +1,9 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { renderMarkdownForContext } from '../messageRenderers'
 import { ToolUseLayout } from '../toolRenderers'
@@ -47,7 +47,7 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
     >
       <Show when={props.planText}>
         <hr />
-        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderedPlan()} />
+        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} ref={cachedInnerHtml(renderedPlan)} />
       </Show>
     </ToolUseLayout>
   )

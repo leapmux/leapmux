@@ -1,3 +1,5 @@
+import { monotonicNow } from './monotonicNow'
+
 type TimeoutHandle = ReturnType<typeof setTimeout>
 
 export interface DeadlineSchedulerClock {
@@ -12,7 +14,7 @@ export interface DeadlineScheduler {
 }
 
 const DEFAULT_CLOCK: DeadlineSchedulerClock = {
-  now: () => (typeof performance === 'undefined' ? Date.now() : performance.now()),
+  now: monotonicNow,
   setTimeout: (handler, delayMs) => setTimeout(handler, delayMs),
   clearTimeout: handle => clearTimeout(handle),
 }

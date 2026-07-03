@@ -1,5 +1,5 @@
 import type { ChatScrollState, ScrollContext } from './useChatScroll'
-import { clampScrollTop, isNearTopBand, maxScrollTopOf } from './chatScrollGeometry'
+import { cannotLeaveStickyBand, clampScrollTop, isNearTopBand } from './chatScrollGeometry'
 
 /**
  * The hidden->visible context captured once at the top of handleResize (before
@@ -251,6 +251,27 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     }
   }
 
+  // Shared tail for both restore entry points (the resize flush and restoreOnMount):
+  // once a restore/stick has PLACED the viewport, (1) drop the near-top older-load
+  // suppression if the content now FITS -- or shrank to a barely-scrollable page the
+  // reader can't scroll out of -- since such a viewport emits no scroll events the
+  // suppression's deliberate-scroll-to-top clear could ever fire, so an armed suppression
+  // would otherwise wedge older-history pre-fetch off forever (the flag is cleared
+  // elsewhere only by a deliberate scroll into the top band, and with everything visible a
+  // prepend re-pins around a stable anchor rather than yanking the reader); and (2) re-arm
+  // the geometry-derived memos, since a programmatic placement / edge clamp fires no scroll
+  // event they could react to. The bound is the STICKY BAND, not 0: with 0 < maxScrollTop
+  // <= the band, every scroll position is inside the tail's sticky band, so the fill can
+  // never be reached -- the same wedge suppressOlderPrefetchAtLiveTail avoids with this
+  // bound. Reads the element fresh so a flush that detached it between placement and here
+  // is a no-op.
+  const settleGeometryAfterPlacement = () => {
+    const el = ctx.getEl()
+    if (el && cannotLeaveStickyBand(el))
+      extras.setSuppressOlder(false)
+    extras.onGeometrySettled()
+  }
+
   const handleResize = () => {
     cancelAnimationFrame(resizeRafId)
     // Capture hidden→visible state and atBottom NOW (in the ResizeObserver
@@ -291,25 +312,52 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
       // prevent.
       if (!tryRestoreHidden(rc) && !tryStickOnShow(rc))
         recheckOnResize(rc)
-      // EXCEPTION: clear the suppression once the viewport can no longer scroll (its
-      // content now fits). The flag is cleared otherwise only by a scroll to the top
-      // band, but a non-scrollable viewport emits NO scroll events, so a near-top
-      // restore that armed it would wedge older-history pre-fetch off forever (older
-      // history never background-loads, even with hasMoreOlder true). The arming only
-      // mattered while the content was scrollable; with everything visible a prepend
-      // re-pins around a stable anchor rather than yanking the reader.
-      const settledEl = ctx.getEl()
-      if (settledEl && maxScrollTopOf(settledEl) <= 0)
-        extras.setSuppressOlder(false)
-      // Re-arm geometry-derived memos against the settled viewport: a resize that
-      // clamped scrollTop to an edge fired no scroll event.
-      extras.onGeometrySettled()
+      settleGeometryAfterPlacement()
     }
     resizeRafId = requestAnimationFrame(flush)
   }
 
+  /**
+   * Mount-time restore for a VISIBLE (re)mount. A tile split/merge or a workspace
+   * switch recreates ChatView over a still-populated store: the fresh scroll
+   * container mounts at scrollTop 0 with the reader's position saved by the previous
+   * instance's unmount (see UseChatScrollOptions.onSaveViewportScroll). The RO
+   * hidden->visible path can never see that remount -- the pane is visible from its
+   * first layout, so wasHidden stays false -- so the restore must run at mount.
+   *
+   * Reuses the exact hidden->visible outcome pair (restore a non-bottom save;
+   * stick / jump-to-latest for an at-bottom one) through a synthetic wasHidden
+   * context, so the two restore entry points cannot drift. Every branch consumes
+   * (clears) the saved state. A HIDDEN mount (inactive tab, clientHeight 0)
+   * declines and leaves the saved state for the RO path; with no saved state the
+   * default mount placement (the auto-scroll effect's tail stick) stands.
+   */
+  const restoreOnMount = () => {
+    const el = ctx.getEl()
+    if (!el || el.clientHeight === 0)
+      return
+    const savedScroll = extras.savedViewportScroll()
+    if (!savedScroll)
+      return
+    // savedAtBottom is FALSE, not ctx.atBottom(): the resize path captures the live
+    // pre-RO atBottom because a resize with no saved scroll must still re-stick an
+    // at-bottom pane, but a mount always HAS a saved scroll (early return above), so
+    // the outcome must derive solely from savedScroll.atBottom. Feeding the fresh
+    // signal (which seeds true at mount) would make tryStickOnShow's `savedAtBottom ||
+    // ...` first clause always true -- harmless only because tryRestoreHidden already
+    // claims every non-bottom save, but a latent trap if that routing ever changes.
+    const rc: ResizeContext = { wasHidden: true, savedScroll, savedAtBottom: false }
+    // tryRestoreHidden owns every non-bottom save; an at-bottom save always takes
+    // tryStickOnShow's wasHidden branch (stick, or jump-to-latest when the saved
+    // window was paged away from the live tail).
+    if (!tryRestoreHidden(rc))
+      tryStickOnShow(rc)
+    settleGeometryAfterPlacement()
+  }
+
   return {
     handleResize,
+    restoreOnMount,
     /** Seed prevClientHeight from the freshly-measured viewport on mount. */
     initClientHeight() {
       prevClientHeight = ctx.getEl()?.clientHeight ?? 0

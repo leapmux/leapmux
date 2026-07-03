@@ -1,5 +1,6 @@
 import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
 import { createLazyOnigurumaHighlighter } from './shikiLazyHighlighter'
+import { collectShikiStyles } from './shikiStyleClass'
 
 // ---------------------------------------------------------------------------
 // Markdown render worker
@@ -36,6 +37,15 @@ export interface MarkdownRenderResponse {
    * permanent; a later re-dispatch may highlight it once the load recovers.
    */
   retryable: boolean
+  /**
+   * className -> CSS declaration for every shared token-style class the worker
+   * has minted (see shikiStyleClass) -- a SUPERSET of the classes in `html`,
+   * accumulated across this worker's lifetime. The worker has no document to
+   * inject rules into, so the main thread must (ensureShikiStyleRules) before
+   * the HTML renders. Idempotent and tiny (one entry per distinct theme style),
+   * so shipping the full dictionary per response beats delta bookkeeping.
+   */
+  styles: Record<string, string>
 }
 
 const hl = createLazyOnigurumaHighlighter()
@@ -78,6 +88,6 @@ globalThis.onmessage = async (e: MessageEvent<MarkdownRenderRequest>) => {
     html = String(plainMarkdownProcessor.processSync(msg.text))
     retryable = true
   }
-  const response: MarkdownRenderResponse = { type: 'render-result', id: msg.id, html, retryable }
+  const response: MarkdownRenderResponse = { type: 'render-result', id: msg.id, html, retryable, styles: collectShikiStyles() }
   globalThis.postMessage(response)
 }

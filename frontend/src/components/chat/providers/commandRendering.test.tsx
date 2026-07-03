@@ -25,10 +25,7 @@ const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: stri
   tokenizeAsyncCalls(lang, code)
   return code.split('\n').map(line => [{
     content: line,
-    htmlStyle: {
-      '--shiki-light': 'rgb(1, 2, 3)',
-      '--shiki-dark': 'rgb(4, 5, 6)',
-    },
+    className: 'sk-cmd-test',
   }])
 }))
 const renderAnsiCalls = vi.hoisted(() => vi.fn())
@@ -417,7 +414,7 @@ describe('command summary syntax highlighting selection stability', () => {
     // (A pause re-runs the dispatch effect; the hook keeps the in-flight dispatch live and
     // stashes its result rather than cancel + re-dispatch the same work.)
     tokenizeAsyncCalls.mockClear()
-    type TestTokens = Array<Array<{ content: string, htmlStyle: { '--shiki-light': string, '--shiki-dark': string } }>>
+    type TestTokens = Array<Array<{ content: string, className: string }>>
     let resolveTokens: ((tokens: TestTokens) => void) | undefined
     tokenizeAsyncMock.mockImplementationOnce((lang: string, code: string) => {
       tokenizeAsyncCalls(lang, code)
@@ -442,10 +439,7 @@ describe('command summary syntax highlighting selection stability', () => {
     setPaused(true)
     resolveTokens?.([[{
       content: 'echo paused',
-      htmlStyle: {
-        '--shiki-light': 'rgb(9, 8, 7)',
-        '--shiki-dark': 'rgb(7, 8, 9)',
-      },
+      className: 'sk-cmd-stash',
     }]])
     await Promise.resolve()
 
@@ -609,7 +603,8 @@ describe('command summary syntax highlighting selection stability', () => {
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo highlighted')
     const token = container.querySelector('span[data-shiki-token]') as HTMLElement | null
     expect(token).not.toBeNull()
-    expect(token?.style.getPropertyValue('--shiki-light')).toBeTruthy()
+    // The token's style rides in its shared class (see shikiStyleClass), not an inline style.
+    expect(token?.classList.contains('sk-cmd-test')).toBe(true)
   })
 
   it('does not rewrite highlighted command DOM when syntax highlighting is paused', async () => {
@@ -803,7 +798,9 @@ describe('command result scroll-critical rendering', () => {
 
     await Promise.resolve()
 
-    expect(setMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION, true)
+    // PROGRAMMATIC: the stream-start auto-expand is not a user toggle, so the host
+    // must not arm the row-top scroll pin for it (see ChatView's setMessageUiState).
+    expect(setMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION, true, { programmatic: true })
   })
 })
 

@@ -12,6 +12,7 @@ import {
   CONNECTOR_Y,
   CONTAINER_PAD_RIGHT,
   LINE_THICKNESS,
+  ROW_GAP,
 } from './SpanLines.geometry'
 
 // ─── Span Column Geometry ───────────────────────────────────────────
@@ -70,7 +71,7 @@ export const spanLineActive = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: 'calc(-1 * var(--span-row-top-overhang, 0px))',
+    top: 0,
     bottom: 0,
     width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
@@ -87,7 +88,7 @@ export const spanLineConnector = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: 'calc(-1 * var(--span-row-top-overhang, 0px))',
+    top: 0,
     bottom: 0,
     width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
@@ -110,8 +111,8 @@ export const spanLineConnectorEnd = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: 'calc(-1 * var(--span-row-top-overhang, 0px))',
-    height: `calc(${CONNECTOR_Y + LINE_THICKNESS}px + var(--span-row-top-overhang, 0px))`,
+    top: 0,
+    height: `${CONNECTOR_Y + LINE_THICKNESS}px`,
     width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
     backgroundColor: 'var(--span-line-color, var(--border))',
@@ -148,7 +149,7 @@ export const spanLineActivePassthrough = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: 'calc(-1 * var(--span-row-top-overhang, 0px))',
+    top: 0,
     bottom: 0,
     width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
@@ -227,6 +228,40 @@ globalStyle('[data-theme="dark"]', {
 export const spanLineColors = styleVariants(
   Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-line-color': `var(--span-palette-${i})` } }])),
 )
+
+// ─── Gap-bridge overlay ─────────────────────────────────────────────
+//
+// The rail segments that cross the inter-row gap live OUTSIDE the rows, in
+// one absolutely-positioned overlay (SpanLineGapBridges) inside the virtual
+// spacer. Keeping them out of the rows is what lets every virtualized row
+// take `contain: layout paint` — with the old in-row top-overhang, paint
+// containment would have clipped the bridges at the row edge.
+
+/**
+ * Zero-height anchor positioned at a row's top offset (translateY, like the
+ * row itself); its bridge children extend upward into the gap.
+ */
+export const spanGapBridgeRow = style({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  height: 0,
+  pointerEvents: 'none',
+})
+
+/**
+ * One vertical rail segment across the inter-row gap. Overlaps the row below
+ * by BRIDGE_SEAM so a fractional translateY can't show a hairline seam where
+ * the in-row line takes over (same trick the bridge arc uses).
+ */
+export const spanGapBridge = style({
+  position: 'absolute',
+  top: `calc(-1 * ${ROW_GAP})`,
+  height: `calc(${ROW_GAP} + ${BRIDGE_SEAM}px)`,
+  width: `${LINE_THICKNESS}px`,
+  backgroundColor: 'var(--span-line-color, var(--border))',
+})
 
 export const spanPassthroughColors = styleVariants(
   Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-passthrough-color': `var(--span-palette-${i})` } }])),

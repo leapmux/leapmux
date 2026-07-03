@@ -1,4 +1,6 @@
+import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { shikiStyleClassName } from './shikiStyleClass'
 
 const originalWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
 
@@ -16,7 +18,7 @@ async function importClient() {
   return await import('./shikiWorkerClient')
 }
 
-describe('shikiWorkerClient', () => {
+describe('shikiworkerclient', () => {
   afterEach(() => {
     restoreWorker()
   })
@@ -101,7 +103,10 @@ describe('shikiWorkerClient', () => {
   })
 
   it('coalesces concurrent identical requests onto one worker dispatch, then re-dispatches after it settles', async () => {
-    const tokens = [[{ content: 'echo', htmlStyle: {} }]]
+    // The wire carries the interned shape; the client expands it, minting the
+    // shared style class per distinct style (see tokenCache / shikiStyleClass).
+    const wireTokens = { styles: [{ color: 'red' }], lines: [[[0, 'echo']]] }
+    const tokens = [[{ content: 'echo', className: shikiStyleClassName('color:red') }]]
     const workers: Array<{
       onmessage: ((event: MessageEvent) => void) | null
       onerror: (() => void) | null
@@ -135,7 +140,7 @@ describe('shikiWorkerClient', () => {
 
     // Resolving the single dispatch resolves BOTH callers with the same tokens.
     const { id } = workers[0].messages[0]
-    workers[0].onmessage?.({ data: { id, tokens } } as MessageEvent)
+    workers[0].onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
     await expect(a).resolves.toEqual(tokens)
     await expect(b).resolves.toEqual(tokens)
 
@@ -156,7 +161,8 @@ describe('shikiWorkerClient', () => {
   })
 
   it('ignores a stale error event from a replaced worker', async () => {
-    const tokens = [[{ content: 'second', htmlStyle: {} }]]
+    const wireTokens = { styles: [], lines: [[[-1, 'second']]] }
+    const tokens = [[{ content: 'second' }]]
     const workers: Array<{
       onmessage: ((event: MessageEvent) => void) | null
       onerror: (() => void) | null
@@ -197,7 +203,138 @@ describe('shikiWorkerClient', () => {
     expect(settled).toBe(false)
 
     const { id } = workers[1].messages[0]
-    workers[1].onmessage?.({ data: { id, tokens } } as MessageEvent)
+    workers[1].onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
     await expect(second).resolves.toEqual(tokens)
+  })
+
+  it('serves persisted tokens from the artifact store without spawning a worker', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const workers: unknown[] = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class NeverNeededWorker {
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage() {}
+        terminate() {}
+      },
+    })
+    try {
+      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      // Fresh module registry: this store instance is the one the client uses.
+      const store = await import('./renderArtifactStore')
+      const { makeKey } = await import('./tokenCache')
+      await store.putArtifact(
+        TOKEN_ARTIFACT_NS,
+        makeKey('bash', 'echo persisted'),
+        { styles: [{ color: 'red' }], lines: [[[0, 'echo persisted']]] },
+      )
+
+      await expect(tokenizeAsync('bash', 'echo persisted')).resolves.toEqual(
+        [[{ content: 'echo persisted', className: shikiStyleClassName('color:red') }]],
+      )
+      expect(workers).toHaveLength(0) // the reload warm-start never touched a worker
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('ignores malformed persisted tokens and falls back to the worker', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const workers: Array<{
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, lang: string, code: string }>
+    }> = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class CapturingWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        messages: Array<{ id: number, lang: string, code: string }> = []
+        terminate = vi.fn()
+
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage(message: { id: number, lang: string, code: string }) {
+          this.messages.push(message)
+        }
+      },
+    })
+    try {
+      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const store = await import('./renderArtifactStore')
+      const { makeKey } = await import('./tokenCache')
+      await store.putArtifact(
+        TOKEN_ARTIFACT_NS,
+        makeKey('bash', 'echo fallback'),
+        { styles: [], lines: [[null]] },
+      )
+
+      const pending = tokenizeAsync('bash', 'echo fallback')
+      await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
+      const wire = { styles: [], lines: [[[-1, 'echo fallback']]] }
+      workers[0].onmessage?.({ data: { id: workers[0].messages[0].id, tokens: wire } } as MessageEvent)
+      await expect(pending).resolves.toEqual([[{ content: 'echo fallback' }]])
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('persists a successful tokenization for the next session', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const workers: Array<{
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, lang: string, code: string }>
+    }> = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class CapturingWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        messages: Array<{ id: number, lang: string, code: string }> = []
+        terminate = vi.fn()
+
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage(message: { id: number, lang: string, code: string }) {
+          this.messages.push(message)
+        }
+      },
+    })
+    try {
+      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const store = await import('./renderArtifactStore')
+      const { makeKey } = await import('./tokenCache')
+
+      const pending = tokenizeAsync('bash', 'echo save-me')
+      // The dispatch sits behind the store miss, so wait for the message.
+      await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
+      const wire = { styles: [], lines: [[[-1, 'echo save-me']]] }
+      workers[0].onmessage?.({ data: { id: workers[0].messages[0].id, tokens: wire } } as MessageEvent)
+      await expect(pending).resolves.toEqual([[{ content: 'echo save-me' }]])
+
+      // The result landed in the persistent store VERBATIM in the wire shape —
+      // the interned form carries the declarations a later session needs to
+      // re-mint the style classes (the expanded form only has class names).
+      await vi.waitFor(async () => {
+        await expect(store.getArtifact(TOKEN_ARTIFACT_NS, makeKey('bash', 'echo save-me')))
+          .resolves
+          .toEqual(wire)
+      })
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

@@ -25,10 +25,12 @@ import langTypescript from 'shiki/langs/typescript.mjs'
 import langXml from 'shiki/langs/xml.mjs'
 import langYaml from 'shiki/langs/yaml.mjs'
 import { createSignal } from 'solid-js'
-import { capMapInsertionOrder } from '~/lib/mapLru'
+import { capMapInsertionOrder, lruGet, lruSet } from '~/lib/mapLru'
 import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
-import { transparentBgThemes } from './shikiThemes'
+import { getArtifact, isArtifactStoreAvailable, putArtifact, RENDER_ARTIFACT_CACHE_VERSION } from './renderArtifactStore'
+import { ensureShikiStyleRules } from './shikiStyleClass'
+import { DUAL_THEME_TOKEN_OPTIONS, transparentBgThemes } from './shikiThemes'
 
 /** The bundled Shiki language grammars the synchronous fallback highlighter pre-loads. */
 const shikiLangs = [
@@ -126,6 +128,66 @@ function canUseWorker(): boolean {
   return typeof Worker !== 'undefined'
 }
 
+// --- persisted highlighted-markdown artifacts (IndexedDB) -------------------
+// Reload warm-start: a clean worker render is persisted and served on the next
+// session without re-highlighting. The namespace folds in the cache version +
+// the Shiki theme names because persisted HTML outlives the BUNDLE that
+// produced it — any change to the rendered markup's contract (pipeline,
+// sanitizer, themes, or a build-hashed class leaking into the HTML) must
+// orphan old entries rather than serve them (see RENDER_ARTIFACT_CACHE_VERSION).
+export const MARKDOWN_ARTIFACT_NS = `md@${RENDER_ARTIFACT_CACHE_VERSION}|${DUAL_THEME_TOKEN_OPTIONS.themes.light},${DUAL_THEME_TOKEN_OPTIONS.themes.dark}`
+
+// Per-entry bounds: one pathological body must not dominate the store.
+const PERSIST_MAX_TEXT_LENGTH = 256 * 1024
+const PERSIST_MAX_HTML_LENGTH = 512 * 1024
+const RE_SHIKI_STYLE_CLASS = /^sk-[0-9a-f]{8}-[0-9a-z]+$/
+
+/**
+ * Persisted artifact value: the highlighted HTML plus the className ->
+ * declaration dictionary for the shared token-style classes it references
+ * (see shikiStyleClass). The HTML is useless without the dictionary — a later
+ * session must re-inject the rules before the class names mean anything.
+ */
+interface PersistedMarkdownArtifact {
+  h: string
+  s: Record<string, string>
+}
+
+function isPersistedMarkdownArtifact(value: unknown): value is PersistedMarkdownArtifact {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return false
+  const { h, s } = value as { h?: unknown, s?: unknown }
+  if (typeof h !== 'string' || h.length > PERSIST_MAX_HTML_LENGTH)
+    return false
+  if (s === null || typeof s !== 'object' || Array.isArray(s))
+    return false
+  return Object.entries(s).every(([className, decl]) =>
+    RE_SHIKI_STYLE_CLASS.test(className) && typeof decl === 'string')
+}
+
+/**
+ * Look up a persisted highlighted render. Returns undefined SYNCHRONOUSLY when
+ * the store can't serve here (no indexedDB, oversized text) so the caller
+ * dispatches the worker in the same frame — the async hop exists only where a
+ * store actually does.
+ */
+function getPersistedMarkdownRender(text: string): Promise<MarkdownRenderResult | undefined> | undefined {
+  if (!isArtifactStoreAvailable() || text.length > PERSIST_MAX_TEXT_LENGTH)
+    return undefined
+  return getArtifact<PersistedMarkdownArtifact>(MARKDOWN_ARTIFACT_NS, text)
+    .then((value) => {
+      if (!isPersistedMarkdownArtifact(value))
+        return undefined
+      return { html: value.h, retryable: false, styles: value.s }
+    })
+}
+
+function persistMarkdownRender(text: string, html: string, styles: Record<string, string>): void {
+  if (!isArtifactStoreAvailable() || text.length > PERSIST_MAX_TEXT_LENGTH || html.length > PERSIST_MAX_HTML_LENGTH)
+    return
+  void putArtifact(MARKDOWN_ARTIFACT_NS, text, { h: html, s: styles } satisfies PersistedMarkdownArtifact)
+}
+
 /** Visible for testing: drop all cached entries and in-flight tracking. */
 export function _resetMarkdownCache(): void {
   markdownCache.clear()
@@ -147,15 +209,6 @@ export function _getPlaceholderCacheSize(): number {
   return placeholderCache.size
 }
 
-// Insert/refresh `key` in an LRU `map` (delete+set moves it to the most-recently-used
-// end) and evict insertion-order-oldest entries past CACHE_MAX_SIZE. Shared by the
-// highlighted and placeholder caches so their bound + eviction can't drift apart.
-function lruSet(map: Map<string, string>, key: string, value: string): void {
-  map.delete(key)
-  map.set(key, value)
-  capMapInsertionOrder(map, CACHE_MAX_SIZE)
-}
-
 /** Raw plain (no-Shiki) render, NOT cached -- for transient/streaming text that never repeats. */
 function plainRender(text: string): string {
   return String(plainMarkdownProcessor.processSync(text))
@@ -163,13 +216,11 @@ function plainRender(text: string): string {
 
 /** Cached plain placeholder -- shown while the worker's highlighted result is in flight. */
 function renderPlain(text: string): string {
-  const cached = placeholderCache.get(text)
-  if (cached !== undefined) {
-    lruSet(placeholderCache, text, cached) // move to MRU end
+  const cached = lruGet(placeholderCache, text) // hit re-fronts to MRU end
+  if (cached !== undefined)
     return cached
-  }
   const result = plainRender(text)
-  lruSet(placeholderCache, text, result)
+  lruSet(placeholderCache, text, result, CACHE_MAX_SIZE)
   return result
 }
 
@@ -192,10 +243,7 @@ export function renderMarkdownPlain(text: string): string {
  * plain→highlighted swap that would clear the browser selection.
  */
 export function getCachedMarkdownHtml(text: string): string | undefined {
-  const cached = markdownCache.get(text)
-  if (cached !== undefined)
-    lruSet(markdownCache, text, cached)
-  return cached
+  return lruGet(markdownCache, text) // hit re-fronts to MRU end
 }
 
 /**
@@ -234,8 +282,12 @@ function renderHighlightedSync(text: string): string {
  * (the text changes every frame, so highlighting it would thrash AND caching each
  * distinct frame would churn the placeholder cache the on-screen bodies rely on);
  * under tests it renders synchronously highlighted.
+ *
+ * `isLowPriority` (re-read at each dispatch opportunity) orders this body's
+ * worker render behind currently-high ones — rows outside the near-viewport
+ * band pass it so viewport rows upgrade first (see createWorkerPriorityGate).
  */
-export function renderMarkdown(text: string, skipCache = false): string {
+export function renderMarkdown(text: string, skipCache = false, isLowPriority?: () => boolean): string {
   if (skipCache)
     return canUseWorker() ? plainRender(text) : renderHighlightedSync(text)
 
@@ -244,16 +296,14 @@ export function renderMarkdown(text: string, skipCache = false): string {
   // registered, including on the cache-hit path.
   markdownVersion()
 
-  const cached = markdownCache.get(text)
-  if (cached !== undefined) {
-    lruSet(markdownCache, text, cached) // move to MRU end
+  const cached = lruGet(markdownCache, text) // hit re-fronts to MRU end
+  if (cached !== undefined)
     return cached
-  }
 
   if (!canUseWorker()) {
     // No worker: render synchronously and cache.
     const html = renderHighlightedSync(text)
-    lruSet(markdownCache, text, html)
+    lruSet(markdownCache, text, html, CACHE_MAX_SIZE)
     return html
   }
 
@@ -289,20 +339,47 @@ export function renderMarkdown(text: string, skipCache = false): string {
         return
       }
       retryCount.delete(text)
-      lruSet(markdownCache, text, result?.html ?? plainRender(text))
+      // Inject the shared token-style rules BEFORE the HTML can render: the
+      // worker minted the class names but has no document (see shikiStyleClass).
+      if (result)
+        ensureShikiStyleRules(result.styles)
+      lruSet(markdownCache, text, result?.html ?? plainRender(text), CACHE_MAX_SIZE)
       // The highlighted (or fallback) result now serves from markdownCache, so the
       // plain placeholder for this text is dead -- drop it to bound the cache.
       placeholderCache.delete(text)
       scheduleVersionBump()
     }
-    try {
-      renderMarkdownInWorker(text)
-        .then(complete)
-        .catch(() => complete(null))
+    const dispatchToWorker = (): void => {
+      try {
+        renderMarkdownInWorker(text, isLowPriority)
+          .then((result) => {
+            // Persist only a CLEAN highlighted render for the reload warm-start:
+            // a retryable degrade or a crash (null) is not a durable result.
+            if (result && !result.retryable)
+              persistMarkdownRender(text, result.html, result.styles)
+            complete(result)
+          })
+          .catch(() => complete(null))
+      }
+      catch {
+        complete(null)
+        completedSynchronously = true
+      }
     }
-    catch {
-      complete(null)
-      completedSynchronously = true
+    // Reload warm-start: serve the persisted highlighted render when one exists,
+    // else dispatch. Without a store this is a SYNCHRONOUS undefined, so the
+    // dispatch keeps its same-frame timing.
+    const persisted = getPersistedMarkdownRender(text)
+    if (persisted === undefined) {
+      dispatchToWorker()
+    }
+    else {
+      void persisted.then((result) => {
+        if (result !== undefined)
+          complete(result)
+        else
+          dispatchToWorker()
+      })
     }
   }
   return completedSynchronously ? markdownCache.get(text)! : renderPlain(text)

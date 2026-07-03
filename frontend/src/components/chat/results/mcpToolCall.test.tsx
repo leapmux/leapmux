@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { imageRenderInfo, mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
+import { imageRenderInfo, imageReservationMatchesDecoded, imageReservationStyle, mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
 
-describe('mcpToolCallDisplayName', () => {
+describe('mcptoolcalldisplayname', () => {
   it('returns "server / tool" when server is set', () => {
     expect(mcpToolCallDisplayName({ server: 'Tavily', tool: 'tavily_search' }))
       .toBe('Tavily / tavily_search')
@@ -12,7 +12,50 @@ describe('mcpToolCallDisplayName', () => {
   })
 })
 
-describe('parseMcpContentItem', () => {
+describe('imagereservationstyle', () => {
+  // The width formula must reproduce exactly what auto layout yields after
+  // the image decodes: height = min(h, h/w * containerWidth, MAX_HEIGHT).
+  it('clamps by natural width for images that fit', () => {
+    expect(imageReservationStyle({ width: 100, height: 50 })).toEqual({
+      'aspect-ratio': '100 / 50',
+      'width': 'min(100px, 100%, 640.00px)', // natural 100px wins
+    })
+  })
+
+  it('clamps by width-at-max-height for tall images', () => {
+    // 800x1600 hits the 320px max height at width 160 — the reserved box
+    // stops at the visible image edge instead of spanning the container.
+    expect(imageReservationStyle({ width: 800, height: 1600 })).toEqual({
+      'aspect-ratio': '800 / 1600',
+      'width': 'min(800px, 100%, 160.00px)',
+    })
+  })
+
+  it('leaves wide images to the container clamp', () => {
+    expect(imageReservationStyle({ width: 640, height: 480 })).toEqual({
+      'aspect-ratio': '640 / 480',
+      'width': 'min(640px, 100%, 426.67px)',
+    })
+  })
+})
+
+describe('imagereservationmatchesdecoded', () => {
+  it('rejects decoded dimensions that preserve ratio but not absolute size', () => {
+    expect(imageReservationMatchesDecoded(
+      { width: 100, height: 50 },
+      { naturalWidth: 200, naturalHeight: 100 },
+    )).toBe(false)
+  })
+
+  it('accepts exactly matching decoded dimensions', () => {
+    expect(imageReservationMatchesDecoded(
+      { width: 100, height: 50 },
+      { naturalWidth: 100, naturalHeight: 50 },
+    )).toBe(true)
+  })
+})
+
+describe('parsemcpcontentitem', () => {
   it('parses text blocks', () => {
     expect(parseMcpContentItem({ type: 'text', text: 'hello' }))
       .toEqual({ type: 'text', text: 'hello' })
@@ -52,7 +95,7 @@ describe('parseMcpContentItem', () => {
   })
 })
 
-describe('imageRenderInfo', () => {
+describe('imagerenderinfo', () => {
   it('returns no-data when urlOrData is missing', () => {
     expect(imageRenderInfo({ type: 'image' })).toEqual({ reason: 'no-data' })
   })
@@ -82,6 +125,24 @@ describe('imageRenderInfo', () => {
   it('refuses base64 over the size cap', () => {
     const huge = 'A'.repeat(7 * 1024 * 1024 + 1)
     expect(imageRenderInfo({ type: 'image', mimeType: 'image/png', urlOrData: huge }))
+      .toEqual({ reason: 'too-large' })
+  })
+
+  it('caps pre-formed data: URLs by payload size, not metadata prefix length', () => {
+    const payload = 'A'.repeat(7 * 1024 * 1024)
+    const data = `data:image/png;base64,${payload}`
+    expect(imageRenderInfo({ type: 'image', urlOrData: data })).toEqual({
+      src: data,
+      via: 'inline',
+    })
+  })
+
+  it('rejects pre-formed data: URLs whose payload exceeds the cap', () => {
+    // The over-cap side of the payload-size boundary (one byte past MAX): the
+    // `data.length - comma - 1 > MAX` true branch, not otherwise exercised.
+    const payload = 'A'.repeat(7 * 1024 * 1024 + 1)
+    const data = `data:image/png;base64,${payload}`
+    expect(imageRenderInfo({ type: 'image', urlOrData: data }))
       .toEqual({ reason: 'too-large' })
   })
 

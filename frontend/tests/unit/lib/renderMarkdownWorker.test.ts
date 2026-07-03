@@ -1,3 +1,4 @@
+import { IDBFactory } from 'fake-indexeddb'
 import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +9,8 @@ vi.mock('~/lib/markdownWorkerClient', () => ({
 }))
 
 const { renderMarkdownInWorker } = await import('~/lib/markdownWorkerClient')
-const { _getPlaceholderCacheSize, _resetMarkdownCache, renderMarkdown, renderMarkdownCachedOrPlain } = await import('~/lib/renderMarkdown')
+const { _getPlaceholderCacheSize, _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown, renderMarkdownCachedOrPlain } = await import('~/lib/renderMarkdown')
+const artifactStore = await import('~/lib/renderArtifactStore')
 
 const mockWorker = renderMarkdownInWorker as unknown as ReturnType<typeof vi.fn>
 
@@ -19,7 +21,7 @@ async function flushMicrotasks() {
   await Promise.resolve()
 }
 
-describe('renderMarkdown off-thread highlight path', () => {
+describe('rendermarkdown off-thread highlight path', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()
@@ -42,12 +44,12 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(html).toContain('language-js')
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
-    expect(mockWorker).toHaveBeenCalledWith('```js\nconst x = 1\n```')
+    expect(mockWorker).toHaveBeenCalledWith('```js\nconst x = 1\n```', undefined)
   })
 
   it('caches the worker result so a later (reactive) re-render returns the highlighted HTML', async () => {
     const text = '```js\nconst y = 2\n```'
-    mockWorker.mockResolvedValue({ html: '<pre class="shiki">HIGHLIGHTED</pre>', retryable: false })
+    mockWorker.mockResolvedValue({ html: '<pre class="shiki">HIGHLIGHTED</pre>', retryable: false, styles: {} })
     const first = renderMarkdown(text)
     expect(first).not.toContain('shiki') // placeholder first
     await flushMicrotasks()
@@ -109,7 +111,7 @@ describe('renderMarkdown off-thread highlight path', () => {
 
   it('does not subscribe cached-or-plain renders to worker completion invalidations', async () => {
     const text = '```js\nconst paused = true\n```'
-    mockWorker.mockResolvedValue({ html: '<pre class="shiki">highlighted</pre>', retryable: false })
+    mockWorker.mockResolvedValue({ html: '<pre class="shiki">highlighted</pre>', retryable: false, styles: {} })
     let runs = 0
     let dispose: (() => void) | undefined
 
@@ -157,7 +159,7 @@ describe('renderMarkdown off-thread highlight path', () => {
     // grammar chunk load failed transiently) must not be cached: a later render should
     // re-dispatch and pick up the recovered grammar.
     const text = '```rust\nfn main() {}\n```'
-    mockWorker.mockResolvedValue({ html: '<pre>degraded</pre>', retryable: true })
+    mockWorker.mockResolvedValue({ html: '<pre>degraded</pre>', retryable: true, styles: {} })
     renderMarkdown(text)
     expect(mockWorker).toHaveBeenCalledTimes(1)
     await flushMicrotasks()
@@ -172,8 +174,8 @@ describe('renderMarkdown off-thread highlight path', () => {
     const text = '```rust\nfn recover() {}\n```'
     // First attempt degrades (retryable); the retry succeeds.
     mockWorker
-      .mockResolvedValueOnce({ html: '<pre>degraded</pre>', retryable: true })
-      .mockResolvedValueOnce({ html: '<pre class="shiki">recovered</pre>', retryable: false })
+      .mockResolvedValueOnce({ html: '<pre>degraded</pre>', retryable: true, styles: {} })
+      .mockResolvedValueOnce({ html: '<pre class="shiki">recovered</pre>', retryable: false, styles: {} })
 
     let html = ''
     let dispose: (() => void) | undefined
@@ -198,7 +200,7 @@ describe('renderMarkdown off-thread highlight path', () => {
   it('bounds retryable re-dispatch, then caches the plain render and stops (no infinite loop)', async () => {
     const text = '```rust\nfn stuck() {}\n```'
     // Every attempt keeps failing transiently.
-    mockWorker.mockResolvedValue({ html: '<pre>always degraded</pre>', retryable: true })
+    mockWorker.mockResolvedValue({ html: '<pre>always degraded</pre>', retryable: true, styles: {} })
 
     let dispose: (() => void) | undefined
     createRoot((d) => {
@@ -218,6 +220,90 @@ describe('renderMarkdown off-thread highlight path', () => {
     mockWorker.mockClear()
     renderMarkdown(text)
     expect(mockWorker).not.toHaveBeenCalled()
+    dispose?.()
+  })
+})
+
+describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
+  beforeEach(() => {
+    _resetMarkdownCache()
+    mockWorker.mockReset()
+    ;(globalThis as unknown as { Worker: unknown }).Worker = class {}
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    artifactStore._resetArtifactStoreForTest()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { Worker?: unknown }).Worker
+    artifactStore._resetArtifactStoreForTest()
+    vi.unstubAllGlobals()
+  })
+
+  it('serves a persisted highlighted render without dispatching the worker', async () => {
+    const text = '```js\nconst persisted = 1\n```'
+    // The persisted shape is {h: html, s: styles}: the shared token-style class
+    // dictionary must travel with the HTML (see shikiStyleClass).
+    await artifactStore.putArtifact(MARKDOWN_ARTIFACT_NS, text, { h: '<pre class="shiki">PERSISTED</pre>', s: {} })
+
+    const first = renderMarkdown(text)
+    expect(first).not.toContain('shiki') // plain placeholder while the store resolves
+
+    await vi.waitFor(() => {
+      expect(renderMarkdown(text)).toBe('<pre class="shiki">PERSISTED</pre>')
+    })
+    expect(mockWorker).not.toHaveBeenCalled()
+  })
+
+  it('ignores malformed persisted renders and falls back to the worker', async () => {
+    const text = '```js\nconst fallback = 1\n```'
+    await artifactStore.putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+      h: '<pre class="shiki">CORRUPT</pre>',
+      s: { 'not a generated class': 42 },
+    })
+    mockWorker.mockResolvedValue({
+      html: '<pre class="shiki">WORKER</pre>',
+      retryable: false,
+      styles: {},
+    })
+
+    const first = renderMarkdown(text)
+    expect(first).not.toContain('WORKER')
+
+    await vi.waitFor(() => {
+      expect(renderMarkdown(text)).toBe('<pre class="shiki">WORKER</pre>')
+    })
+    expect(mockWorker).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists a clean worker render (HTML + style dictionary) for the next session', async () => {
+    const text = 'persist this body'
+    mockWorker.mockResolvedValue({ html: '<pre class="shiki">CLEAN</pre>', retryable: false, styles: { 'sk-a-3': '--shiki-light:#111' } })
+    renderMarkdown(text)
+
+    await vi.waitFor(async () => {
+      await expect(artifactStore.getArtifact(MARKDOWN_ARTIFACT_NS, text))
+        .resolves
+        .toEqual({ h: '<pre class="shiki">CLEAN</pre>', s: { 'sk-a-3': '--shiki-light:#111' } })
+    })
+  })
+
+  it('never persists a retryable (transiently degraded) render', async () => {
+    const text = '```rust\nfn degraded() {}\n```'
+    mockWorker.mockResolvedValue({ html: '<pre>degraded</pre>', retryable: true, styles: {} })
+
+    let dispose: (() => void) | undefined
+    createRoot((d) => {
+      dispose = d
+      createEffect(() => {
+        renderMarkdown(text)
+      })
+    })
+    // Drive the bounded retry loop to exhaustion; every attempt stays retryable.
+    await vi.waitFor(() => {
+      expect(mockWorker.mock.calls.length).toBeGreaterThanOrEqual(4)
+    })
+    // Exhaustion caches the degraded HTML in MEMORY only — nothing durable.
+    await expect(artifactStore.getArtifact(MARKDOWN_ARTIFACT_NS, text)).resolves.toBeUndefined()
     dispose?.()
   })
 })

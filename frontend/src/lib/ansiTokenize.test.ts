@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ansiSyncTokenize } from './ansiTokenize'
+import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 
 // The ANSI escape byte (0x1B), built via fromCharCode so the source file stays plain ASCII.
 const ESC = String.fromCharCode(27)
@@ -14,9 +15,14 @@ describe('ansiSyncTokenize', () => {
     expect(tokens).toHaveLength(1)
     const line = tokens![0]
     expect(line.map(t => t.content).join('')).toBe('green plain')
-    // The colored segment carries the dual-theme CSS variables the wrapper themes.
+    // The colored segment carries a shared style class whose rule defines the
+    // dual-theme CSS variables the wrapper themes (see shikiStyleClass).
     const colored = line.find(t => t.content === 'green')!
-    expect(colored.htmlStyle).toMatchObject({ '--shiki-light': expect.any(String), '--shiki-dark': expect.any(String) })
+    expect(colored.className).toMatch(/^sk-/)
+    const rules = readInjectedShikiRules()
+    expect(rules).toContain(`.${colored.className}{`)
+    expect(rules).toMatch(new RegExp(`\\.${colored.className}\\{[^}]*--shiki-light:`))
+    expect(rules).toMatch(new RegExp(`\\.${colored.className}\\{[^}]*--shiki-dark:`))
   })
 
   it('returns null for a non-ansi language so the caller falls through to the worker', () => {

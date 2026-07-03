@@ -1,10 +1,11 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
 import { ReadResultView } from './ReadResultView'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', htmlStyle: { color: 'rgb(1, 2, 3)' } }]]),
+  tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', className: 'sk-read-test' }]]),
 }))
 
 describe('readresultview syntax highlighting', () => {
@@ -56,7 +57,7 @@ describe('readresultview syntax highlighting', () => {
 
     setSelectionActive(false)
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
   })
 
   it('enqueues tokenization when syntax highlighting is not paused', async () => {
@@ -69,7 +70,7 @@ describe('readresultview syntax highlighting', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
   })
 
   it('falls back to plain text when worker tokenization returns null', async () => {
@@ -84,12 +85,12 @@ describe('readresultview syntax highlighting', () => {
     ))
 
     await waitFor(() => {
-      expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+      expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
     })
     await Promise.resolve()
 
     expect(container.textContent).toContain('const x = 1')
-    expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).toBeNull()
+    expect(container.querySelector('.sk-read-test')).toBeNull()
   })
 
   it('keeps existing tokens when syntax highlighting is paused after highlight completes', async () => {
@@ -103,13 +104,13 @@ describe('readresultview syntax highlighting', () => {
     ))
 
     await waitFor(() => {
-      expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
+      expect(container.querySelector('.sk-read-test')).not.toBeNull()
     })
 
     setPaused(true)
 
     await waitFor(() => {
-      expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
+      expect(container.querySelector('.sk-read-test')).not.toBeNull()
     })
   })
 
@@ -124,13 +125,13 @@ describe('readresultview syntax highlighting', () => {
     ))
 
     await waitFor(() => {
-      expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
+      expect(container.querySelector('.sk-read-test')).not.toBeNull()
     })
 
     setSelectionActive(true)
 
     await waitFor(() => {
-      expect(container.querySelector('[style*="rgb(1, 2, 3)"]')).not.toBeNull()
+      expect(container.querySelector('.sk-read-test')).not.toBeNull()
     })
   })
 
@@ -153,21 +154,21 @@ describe('readresultview syntax highlighting', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
 
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied
     // (replacing text nodes mid-scroll is what the pause guards against).
     setPaused(true)
-    resolveTokens?.([[{ content: 'const x = 1', htmlStyle: { color: 'rgb(9, 8, 7)' } }]])
+    resolveTokens?.([[{ content: 'const x = 1', className: 'sk-read-stash' }]])
     await Promise.resolve()
 
-    expect(container.querySelector('[style*="rgb(9, 8, 7)"]')).toBeNull()
+    expect(container.querySelector('.sk-read-stash')).toBeNull()
 
-    // Resume: the STASHED result (rgb(9, 8, 7)) is applied, with no second worker dispatch.
+    // Resume: the STASHED result (sk-read-stash) is applied, with no second worker dispatch.
     setPaused(false)
 
     await waitFor(() => {
-      expect(container.querySelector('[style*="rgb(9, 8, 7)"]')).not.toBeNull()
+      expect(container.querySelector('.sk-read-stash')).not.toBeNull()
     })
     expect(tokenizeAsync).toHaveBeenCalledTimes(1)
   })
@@ -189,7 +190,7 @@ describe('readresultview syntax highlighting', () => {
     })
 
     // The colored token span carries the marker.
-    const tokenSpan = container.querySelector('[style*="rgb(1, 2, 3)"]')
+    const tokenSpan = container.querySelector('.sk-read-test')
     expect(tokenSpan).not.toBeNull()
     expect(tokenSpan!.hasAttribute('data-shiki-token')).toBe(true)
 
@@ -219,8 +220,13 @@ describe('readresultview syntax highlighting', () => {
     // No worker round-trip: ANSI tokenized synchronously, terminal.
     expect(tokenizeAsync).not.toHaveBeenCalled()
     // The visible payload is the ANSI-stripped text, split into themed token spans
-    // carrying the dual-theme CSS variables (proving tokenization ran, not plain fallback).
+    // whose shared style classes define the dual-theme CSS variables (proving
+    // tokenization ran, not plain fallback — see shikiStyleClass).
     expect(container.textContent).toContain('red')
-    expect(container.querySelector('[style*="--shiki"]')).not.toBeNull()
+    const tokenSpan = container.querySelector('[data-shiki-token][class^="sk-"]')
+    expect(tokenSpan).not.toBeNull()
+    const rules = readInjectedShikiRules()
+    expect(rules).toContain(`.${tokenSpan!.className}{`)
+    expect(rules).toContain('--shiki-light')
   })
 })

@@ -203,6 +203,8 @@ export function ReadResultView(props: {
   syntaxHighlightingPaused?: boolean
   /** Active browser selection: keep existing tokens but avoid replacing text nodes. */
   textSelectionActive?: () => boolean
+  /** Row outside the near-viewport band: tokenize at low worker priority. */
+  rowOffscreen?: () => boolean
 }): JSX.Element {
   // Memoized (like useDiffTokens' `lang`) so the hook's 2-4 reads per reactive pass --
   // both effects' currentKey(), the seed, and syncTokenize -- don't each re-run extname()
@@ -227,6 +229,7 @@ export function ReadResultView(props: {
     // worker, which renders it plain. Shared with the diff sides / gap-context lines so
     // a `.log` file highlights identically wherever it appears.
     syncTokenize: ansiSyncTokenize,
+    rowOffscreen: () => props.rowOffscreen?.() === true,
   })
 
   // Dynamic line number column width based on the largest line number
@@ -261,11 +264,10 @@ export function ReadResultView(props: {
                   <For each={tokens()!}>
                     {token => (
                       // `data-shiki-token` marks THIS as a syntax token so the dual-theme
-                      // color rule targets it precisely -- not the line-number span, which
-                      // also carries an inline `style` (its width) and would otherwise match
-                      // a bare `span[style]` selector and lose its faint color. Mirrors the
-                      // Bash/JSON token markup (TokenizedCode).
-                      <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>{token.content}</span>
+                      // color rule targets it precisely -- not the line-number span. The
+                      // token's style lives in the shared class (shikiStyleClass). Mirrors
+                      // the Bash/JSON token markup (TokenizedCode).
+                      <span data-shiki-token class={token.className}>{token.content}</span>
                     )}
                   </For>
                 </Show>

@@ -16,6 +16,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
@@ -31,6 +32,21 @@ import {
 } from './toolStyles.css'
 
 const logger = createLogger('messageRenderers')
+
+/**
+ * Options for a per-message UI-state write, so the host can tell a user gesture
+ * from a renderer-initiated write.
+ */
+export interface MessageUiWriteOptions {
+  /**
+   * The write was NOT initiated by a user gesture on the row (e.g. a stream-start
+   * auto-expand effect). The host must not treat it as a toggle whose row should be
+   * scroll-pinned: the reader's focus is wherever they are reading, so the default
+   * viewport-midpoint anchor — which keeps THAT stationary — must win over a
+   * row-top pin on the written row.
+   */
+  programmatic?: boolean
+}
 
 /**
  * Context passed to renderers from MessageBubble.
@@ -85,7 +101,7 @@ export interface RenderContext {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
   /**
    * Hidden premeasurement render pass. Renderers should keep layout-relevant
    * structure but skip non-geometry work such as timers, copy chrome, worker
@@ -102,6 +118,14 @@ export interface RenderContext {
    * replace selected text nodes while this is true; doing so clears selection.
    */
   textSelectionActive?: () => boolean
+  /**
+   * Whether this row currently sits OUTSIDE the near-viewport band (overscan-
+   * only). Re-read at worker-dispatch time: renderers pass it as the
+   * low-priority thunk for markdown/highlight jobs, so viewport rows' upgrades
+   * preempt offscreen ones and an offscreen row upgrades automatically once
+   * scrolled in (see createWorkerPriorityGate).
+   */
+  rowOffscreen?: () => boolean
 }
 
 export interface MessageContentRenderer {
@@ -178,7 +202,7 @@ export function renderMarkdownForContext(text: string, context: RenderContext | 
   const rowCached = getCachedRenderValueForString<string>(context, 'markdown-html', text)
   if (rowCached !== undefined)
     return rememberDisplayedMarkdown(context, text, rowCached)
-  const html = renderMarkdown(text)
+  const html = renderMarkdown(text, false, context?.rowOffscreen)
   const cached = getCachedMarkdownHtml(text)
   return rememberDisplayedMarkdown(
     context,
@@ -194,16 +218,16 @@ export function useSharedExpandedState(
   // context's expandAgentThoughts pref); a renderer with a per-row default passes
   // its own thunk to override it.
   initial: () => boolean = () => messageUiDefault(key, { expandAgentThoughts: getContext()?.expandAgentThoughts }),
-): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
+): [() => boolean, (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
   const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? initial()
-  const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
+  const setExpanded = (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => {
     const ctx = getContext()
     const next = typeof value === 'function'
       ? (value as (prev: boolean) => boolean)(expanded())
       : value
     if (ctx?.setMessageUiState)
-      ctx.setMessageUiState(key, next)
+      ctx.setMessageUiState(key, next, opts)
     else
       setLocalExpanded(next)
   }
@@ -212,14 +236,14 @@ export function useSharedExpandedState(
 
 /**
  * Render markdown text via the shared remark pipeline. The HTML is produced
- * via remark + sanitizer, never arbitrary user input — `solid/no-innerhtml`
- * is intentionally disabled at the call site here so every consumer doesn't
- * have to repeat the disable comment.
+ * via remark + sanitizer, never arbitrary user input. It is applied through
+ * the parsed-fragment cache (~/lib/htmlFragmentCache) rather than an
+ * `innerHTML` binding, so a re-mounting row clones the already-parsed
+ * template instead of making the browser re-parse the same markup.
  */
 export function MarkdownText(props: { text: string, context?: RenderContext }): JSX.Element {
   const html = createMemo(() => renderMarkdownForContext(props.text, props.context))
-  // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input
-  return <div class={markdownContent} innerHTML={html()} />
+  return <div class={markdownContent} ref={cachedInnerHtml(html)} />
 }
 
 /** Shared assistant thinking/reasoning bubble with chevron-controlled body. */

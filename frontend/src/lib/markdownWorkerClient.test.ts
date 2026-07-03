@@ -116,7 +116,38 @@ describe('markdownWorkerClient', () => {
     expect(settled).toBe(false)
 
     const { id } = workers[1].messages[0]
-    workers[1].onmessage?.({ data: { id, html: '<p>second</p>', retryable: false } } as MessageEvent)
-    await expect(second).resolves.toEqual({ html: '<p>second</p>', retryable: false })
+    workers[1].onmessage?.({ data: { id, html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } } } as MessageEvent)
+    await expect(second).resolves.toEqual({ html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } })
+  })
+
+  it('defaults a missing styles dictionary to empty (older worker response shape)', async () => {
+    const workers: Array<{
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, text: string }>
+    }> = []
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class CapturingWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        messages: Array<{ id: number, text: string }> = []
+        terminate = vi.fn()
+
+        constructor() {
+          workers.push(this)
+        }
+
+        postMessage(message: { id: number, text: string }) {
+          this.messages.push(message)
+        }
+      },
+    })
+    const { renderMarkdownInWorker } = await importClient()
+
+    const pending = renderMarkdownInWorker('text')
+    const { id } = workers[0].messages[0]
+    workers[0].onmessage?.({ data: { id, html: '<p>text</p>', retryable: false } } as MessageEvent)
+    await expect(pending).resolves.toEqual({ html: '<p>text</p>', retryable: false, styles: {} })
   })
 })

@@ -60,6 +60,77 @@ describe('chatscrollanchor', () => {
     expect(top).toBe(170)
   })
 
+  describe('zero-height run at the anchor offset (shared-offset tie-break)', () => {
+    // A geometry over explicit per-row heights (gap 0), so a run of zero-height rows
+    // shares one cumulative offset. The production virtualizer now reserves a positive
+    // estimate for every row, so this exercises the pure anchor math's defensive tie-break
+    // for any caller (or geometry) that can still produce a shared-offset run.
+    function varGeo(heights: number[]): AnchorOffsetGeometry {
+      const offs = [0]
+      for (const h of heights)
+        offs.push(offs[offs.length - 1] + h)
+      const list: AnchorRow[] = heights.map((_, i) => ({ id: `m${i}`, seq: BigInt(i) }))
+      return {
+        list,
+        indexOfId: id => list.findIndex(r => r.id === id),
+        offsetOfIndex: i => offs[Math.max(0, Math.min(i, heights.length))],
+        heightOfIndex: i => heights[i] ?? 0,
+        gapAfter: () => 0,
+        indexAtOffset: (y) => {
+          let idx = 0
+          for (let i = 0; i < heights.length; i++) {
+            if (offs[i] <= y)
+              idx = i
+            else
+              break
+          }
+          return idx
+        },
+      }
+    }
+
+    it('anchors to the FIRST row of a leading zero-height run, not the last', () => {
+      // Rows 0..4 are collapsed (height 0) and stack at offset 0; row 5 is the first
+      // VISIBLE row (height 100), also at offset 0.
+      const geo = varGeo([0, 0, 0, 0, 0, 100, 100])
+      const anchor = anchorAtOffset(geo, 0)
+      expect(anchor?.id).toBe('m0') // the true top row, NOT m5 (the first visible row)
+      expect(anchor?.offsetWithinRow).toBe(0)
+      expect(anchor?.basisHeight).toBe(0)
+      // Resolves to the top and STAYS there once the collapsed rows measure taller --
+      // the growth lands below m0, which remains at offset 0.
+      expect(resolveAnchorScrollTop(geo, anchor!)).toBe(0)
+      expect(resolveAnchorScrollTop(varGeo([100, 100, 100, 100, 100, 100, 100]), anchor!)).toBe(0)
+    })
+
+    it('anchors to the first row of a MID-LIST zero-height run', () => {
+      // offsets [0,100,200,200,200,300,400]: rows 2,3 are collapsed at offset 200, row 4
+      // is the first visible row there. The anchor at 200 is the first of that run (m2).
+      const geo = varGeo([100, 100, 0, 0, 100, 100])
+      expect(anchorAtOffset(geo, 200)?.id).toBe('m2')
+    })
+
+    it('is unchanged for distinct (non-zero) offsets', () => {
+      const geo = varGeo([100, 100, 100])
+      expect(anchorAtOffset(geo, 250)?.id).toBe('m2') // the row whose body contains 250
+      expect(anchorAtOffset(geo, 100)?.id).toBe('m1') // exact boundary -> the row starting there
+    })
+
+    it('keeps the within-row offset when scrollTop sits INSIDE the terminal row of a run', () => {
+      // Same leading zero-height run, but the viewport top sits 50px INTO row 5's body
+      // (the run's terminal, visible row). Walking back to the zero-height run-top here
+      // would clamp `within` against m0's 0 basisHeight and DISCARD the 50px -- the
+      // resolve would land at 0, a 50px capture->resolve yank with no geometry change.
+      // The tie-break applies only AT the shared offset; strictly inside the body the
+      // containing row keeps its within-row offset and the round trip is the identity.
+      const geo = varGeo([0, 0, 0, 0, 0, 100, 100])
+      const anchor = anchorAtOffset(geo, 50)
+      expect(anchor?.id).toBe('m5')
+      expect(anchor?.offsetWithinRow).toBe(50)
+      expect(resolveAnchorScrollTop(geo, anchor!)).toBe(50)
+    })
+  })
+
   describe('resolveNearestAnchorScrollTop (trimmed-row recovery)', () => {
     it('returns the exact position when the row still resolves', () => {
       const geo = fakeGeo(rows([10, 20, 30]))

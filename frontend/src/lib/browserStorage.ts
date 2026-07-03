@@ -76,6 +76,7 @@ export const PREFIX_ASK_STATE = 'leapmux:ask-state:'
 export const PREFIX_WORKER_INFO = 'leapmux:worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'leapmux:local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'leapmux:files-show-hidden:'
+export const PREFIX_CHAT_ROW_HEIGHTS = 'leapmux:chat-row-heights:'
 
 /** sessionStorage dynamic key prefixes. */
 export const PREFIX_FILE_SCROLL = 'leapmux:fileScroll:'
@@ -123,6 +124,10 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
   { prefix: PREFIX_WORKER_INFO, ttlMs: 7 * DAY_MS },
   { prefix: PREFIX_LOCAL_MESSAGES, ttlMs: 7 * DAY_MS },
   { prefix: PREFIX_FILES_SHOW_HIDDEN, ttlMs: 7 * DAY_MS },
+  // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
+  // cache: stale entries are harmless (each row's key digest must match its
+  // live heightKey to hydrate), so the TTL only bounds storage growth.
+  { prefix: PREFIX_CHAT_ROW_HEIGHTS, ttlMs: 7 * DAY_MS },
 ]
 
 /**

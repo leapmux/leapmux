@@ -53,3 +53,15 @@ export function spanLinesReservedWidth(lineCount: number): number {
     return NO_SPAN_MARGIN
   return lineCount * COL_SPACING + CONTAINER_PAD_RIGHT
 }
+
+/**
+ * X position (px, from the row's left edge) of a span column's line center.
+ * The first column's box starts at -COL_OVERLAP (every column carries the
+ * negative overlap margin, including the first), so center i sits at
+ * COL_WIDTH/2 - COL_OVERLAP + i * COL_SPACING. Used by the gap-bridge overlay
+ * (SpanLineGapBridges) to draw the inter-row rail segments at exactly the
+ * in-row line positions.
+ */
+export function spanColumnCenterX(index: number): number {
+  return COL_WIDTH / 2 - COL_OVERLAP + index * COL_SPACING
+}
