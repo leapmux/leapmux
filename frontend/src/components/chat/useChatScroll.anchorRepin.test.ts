@@ -1944,6 +1944,102 @@ describe('usechatscroll anchor re-pin', () => {
       })
     }))
 
+  it('does NOT flag fast-scroll for an idle non-echo scroll event with no user input', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const setFastScrollActive = vi.fn()
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => 8000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: scrollTop => ({ id: 'anchored-row', offsetWithinRow: scrollTop }),
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: anchor => anchor.offsetWithinRow,
+            setFastScrollActive,
+            setVisibleMeasurementDeferral: () => {},
+          }
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // A NON-echo scroll event with no pointer/touch drag and no recent wheel/touch
+          // momentum: a stick echo delivered past its marker TTL, browser scroll
+          // anchoring, or a sub-pixel nudge while the reader sits idle at the tail. Its
+          // velocity is unknown/stale, so isFling() reports true -- but it is NOT a user
+          // fast-scroll, so the fling-skeleton flag must stay off (otherwise a freshly
+          // appended, still-unmeasured tail row flashes a one-frame skeleton).
+          div.setScrollTop(900)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+
+          expect(setFastScrollActive).not.toHaveBeenCalledWith(true)
+
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('flags fast-scroll for a momentum (wheel) fling via recent momentum input', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(40000)
+          div.setScrollTop(300)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+          const setFastScrollActive = vi.fn()
+          const virt: ChatScrollVirtualizer = {
+            ...measurementDeferralNoOps(),
+            totalHeight: () => 8000,
+            geometryVersion: () => 0,
+            updateViewport: () => {},
+            anchorAt: scrollTop => ({ id: 'anchored-row', offsetWithinRow: scrollTop }),
+            scrollTopNearAnchor: () => null,
+            scrollTopForAnchor: anchor => anchor.offsetWithinRow,
+            setFastScrollActive,
+            setVisibleMeasurementDeferral: () => {},
+          }
+          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // A wheel gesture marks momentum input; the fast scroll event it drives then
+          // enters through the SAME idle-looking path (no active pointer) but carries a
+          // live user-scroll signal (hasRecentMomentumInput), so the skeleton engages.
+          hook.handlers.onWheel({ deltaY: 400, deltaX: 0, ctrlKey: false } as WheelEvent)
+          div.setScrollTop(900)
+          hook.handlers.onScroll()
+          await Promise.resolve()
+
+          expect(setFastScrollActive).toHaveBeenCalledWith(true)
+
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
   it('cancels the deferred fling-settle when the user grabs to stop (no coast-on write)', () =>
     new Promise<void>((resolve, reject) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

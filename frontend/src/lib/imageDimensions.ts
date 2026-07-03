@@ -29,6 +29,8 @@
  *     results render as a placeholder, never an `<img>`.
  */
 
+import { base64ToUint8Array } from './base64'
+
 export interface ImageDimensions {
   width: number
   height: number
@@ -125,17 +127,15 @@ function decodeBase64Prefix(base64: string, maxBytes: number): Uint8Array | null
     prefix = prefix.slice(0, prefix.length - partial)
   if (prefix.length === 0)
     return null
-  let binary: string
   try {
-    binary = atob(prefix)
+    // Shared decode (base64ToUint8Array): atob + per-char Uint8Array fill, single-sourced
+    // so this header sniffer can't drift from the rest of the codebase's base64 handling.
+    return base64ToUint8Array(prefix)
   }
   catch {
+    // atob throws on a malformed 4-char quantum -- treat as unsniffable.
     return null
   }
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++)
-    bytes[i] = binary.charCodeAt(i)
-  return bytes
 }
 
 function readU16BE(b: Uint8Array, at: number): number {

@@ -29,14 +29,6 @@ const STALE_NATIVE_SCROLL_TRANSLATE_MS = 300
  */
 const STALE_NATIVE_OLD_COORDINATE_PROXIMITY_CLIENT_RATIO = 0.4
 const STALE_NATIVE_OLD_COORDINATE_PROXIMITY_DELTA_RATIO = 0.15
-/**
- * Floor (px) of the "near the old coordinate" window. Historically the fixed fling
- * render-ahead cap (1800px): a momentum event can land up to roughly a render-ahead
- * beyond the pre-repin position, so the window must cover that travel even on a short
- * pane (where clientHeight * 2 alone would under-reach). Kept as its own constant now
- * that the render-ahead cap is derived from the live pane height.
- */
-const OLD_COORDINATE_WINDOW_MIN_PX = 1800
 
 interface AnchorRepinShift {
   beforeTop: number
@@ -60,6 +52,15 @@ export interface StaleNativeTranslatorDeps {
    * createViewportRestore takes for the same baseline).
    */
   setLastScrollTopForDir: (top: number) => void
+  /**
+   * The fling render-ahead cap (px) for a given pane height (see
+   * useChatScroll.flingOverscanCapPx). A compositor-delayed momentum event can land up
+   * to roughly a render-ahead beyond the pre-repin position, so the "near the old
+   * coordinate" window must cover that travel. Sharing the SAME pane-derived cap the
+   * fling overscan uses keeps the two coupled: a taller pane's larger render-ahead
+   * widens this window in lockstep, instead of a frozen constant under-reaching it.
+   */
+  flingOverscanCapPx: (clientHeight: number) => number
   /** Clock, injectable for tests. */
   now?: () => number
 }
@@ -149,7 +150,12 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
       return false
 
     const staleTop = el.scrollTop
-    const oldCoordinateWindowPx = Math.max(shift.clientHeight * 2, OLD_COORDINATE_WINDOW_MIN_PX)
+    // Cover the full fling render-ahead (a stale momentum event lands up to ~one
+    // render-ahead past the pre-repin position), plus a two-screen floor for very tall
+    // panes where the hard-capped render-ahead is under two screens. Deriving the upper
+    // bound from the live pane's render-ahead cap keeps it from under-reaching the way a
+    // frozen constant did once the cap became pane-derived.
+    const oldCoordinateWindowPx = Math.max(shift.clientHeight * 2, deps.flingOverscanCapPx(shift.clientHeight))
     const oldCoordinateDistance = Math.abs(staleTop - shift.beforeTop)
     const nearOldCoordinate = oldCoordinateDistance <= oldCoordinateWindowPx
     const farFromNewCoordinate = Math.abs(staleTop - shift.afterTop) > Math.abs(shift.delta) / 2

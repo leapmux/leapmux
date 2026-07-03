@@ -32,13 +32,25 @@ const viewportSizeObserverState = vi.hoisted(() => ({
   onHeight: undefined as undefined | ((height: number) => void),
 }))
 
-vi.mock('~/context/PreferencesContext', () => ({
-  usePreferences: () => ({
-    diffView: () => 'unified',
-    expandAgentThoughts: () => true,
-    showHiddenMessages: () => false,
-  }),
+const prefsState = vi.hoisted(() => ({
+  setDiffView: undefined as undefined | ((view: 'unified' | 'split') => void),
+  setExpandThoughts: undefined as undefined | ((value: boolean) => void),
 }))
+
+vi.mock('~/context/PreferencesContext', async () => {
+  const { createSignal } = await import('solid-js')
+  const [diffView, setDiffView] = createSignal<'unified' | 'split'>('unified')
+  const [expandThoughts, setExpandThoughts] = createSignal(true)
+  prefsState.setDiffView = setDiffView
+  prefsState.setExpandThoughts = setExpandThoughts
+  return {
+    usePreferences: () => ({
+      diffView,
+      expandAgentThoughts: expandThoughts,
+      showHiddenMessages: () => false,
+    }),
+  }
+})
 
 vi.mock('./MessageBubble', () => ({
   MessageBubble: (props: { message: AgentChatMessage, premeasureMode?: boolean }) => (
@@ -175,6 +187,8 @@ afterEach(() => {
   viewportSizeObserverState.height = 733
   viewportSizeObserverState.onWidth = undefined
   viewportSizeObserverState.onHeight = undefined
+  prefsState.setDiffView?.('unified') // the pref signals are module-scoped; reset between tests
+  prefsState.setExpandThoughts?.(true)
 })
 
 function message(id: string, seq: number): AgentChatMessage {
@@ -488,6 +502,45 @@ describe('chat view virtualized visible slice', () => {
     // After the crossfade beat the skeletons unmount for good.
     vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
     expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
+  })
+
+  it('does NOT re-key non-diff / non-thinking rows on a global diffView or expandThoughts toggle', () => {
+    // The kind-scoped heightKey keeps diffView out of every row's key except tool_use /
+    // tool_result, and expandAgentThoughts out of every kind except assistant_thinking (see
+    // kindScopedLayoutKey). These agent-TEXT rows (assistant_text) depend on NEITHER, so a
+    // global toggle must leave their heightKey byte-identical -- no re-measure, no viewport
+    // blank. This is the fix for the whole-viewport dim: it FAILS against the old global
+    // layoutEpochKey (which folded both prefs into every row). kindScopedLayoutKey's own
+    // unit tests cover the other half -- that tool / thinking rows DO carry the term.
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set() // all unmeasured -> all are premeasure candidates
+    virtualizerState.currentHeightKeys = new Map()
+    virtualizerState.setDeferred?.(false)
+    hiddenPremeasureState.candidates = []
+    hiddenPremeasureState.onMeasure = undefined
+    prefsState.setDiffView?.('unified')
+    prefsState.setExpandThoughts?.(true)
+    virtualizerState.setRange?.({ start: 0, end: 3 })
+    const messages = [message('m0', 1), message('m1', 2), message('m2', 3)]
+    render(() => (
+      <ChatView
+        messages={messages}
+        streamingText=""
+      />
+    ))
+
+    // The premeasure mock captures each candidate row's heightKey (see its createEffect).
+    const before = new Map(virtualizerState.currentHeightKeys)
+    expect([...before.keys()].sort()).toEqual(['m0', 'm1', 'm2'])
+    expect([...before.values()].every(key => typeof key === 'string' && key.length > 0)).toBe(true)
+
+    prefsState.setDiffView?.('split') // toggle the GLOBAL diff-view preference
+    for (const id of ['m0', 'm1', 'm2'])
+      expect(virtualizerState.currentHeightKeys.get(id)).toBe(before.get(id)) // unchanged
+
+    prefsState.setExpandThoughts?.(false) // toggle the GLOBAL expand-thoughts preference
+    for (const id of ['m0', 'm1', 'm2'])
+      expect(virtualizerState.currentHeightKeys.get(id)).toBe(before.get(id)) // still unchanged
   })
 
   it('reveals appended rows in document order, even when a later one measures first', async () => {

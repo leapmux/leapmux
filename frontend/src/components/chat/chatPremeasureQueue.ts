@@ -3,7 +3,7 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import { createComputed, createMemo, createSignal, untrack } from 'solid-js'
-import { mapWithout, setWithout } from '~/lib/immutableCollections'
+import { mapWith, mapWithout, setWithout } from '~/lib/immutableCollections'
 import { shallowEqualSets } from '~/lib/shallowEqual'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
 
@@ -112,6 +112,10 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     if (!shallowEqualSets(prevCollapsed, nextCollapsed))
       setCollapsedPremeasureIds(nextCollapsed)
     const prevUnsettled = untrack(unsettledPremeasureKeys)
+    // nextUnsettled is a copy of prev with only DELETIONS above (never an add -- new
+    // unsettled keys enter solely via onMeasure's mapWith), so it is always either
+    // identical to prev (size ties, correctly skipped) or a strict subset (size shrinks,
+    // caught below). A constant-size key swap can't occur here, so scanning prev suffices.
     if (prevUnsettled.size !== nextUnsettled.size || [...prevUnsettled].some(([id, heightKey]) => nextUnsettled.get(id) !== heightKey))
       setUnsettledPremeasureKeys(nextUnsettled)
   })
@@ -148,13 +152,9 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       setUnsettledPremeasureKeys(keys => mapWithout(keys, id))
     }
     else if (!settled && hasCommittedOrPendingHeight) {
-      setUnsettledPremeasureKeys((keys) => {
-        if (keys.has(id) && keys.get(id) === heightKey)
-          return keys
-        const next = new Map(keys)
-        next.set(id, heightKey)
-        return next
-      })
+      // Keep the row's premeasure mount alive for a re-measure under the SAME heightKey
+      // (the copy-on-write short-circuit skips the reference churn when the key is unchanged).
+      setUnsettledPremeasureKeys(keys => mapWith(keys, id, heightKey))
     }
     return hasCommittedOrPendingHeight
   }

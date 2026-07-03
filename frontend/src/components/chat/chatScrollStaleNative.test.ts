@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
+import { flingOverscanCapPx } from './useChatScroll'
 import { makeFakeScrollDiv } from './useChatScroll.testkit'
 
 describe('chatscrollstalenative translator', () => {
-  function setup(opts: { inputActive?: boolean, echo?: boolean } = {}) {
+  function setup(opts: { inputActive?: boolean, echo?: boolean, clientHeight?: number } = {}) {
     const div = makeFakeScrollDiv()
     div.setScrollHeight(50000)
-    div.setClientHeight(500)
+    div.setClientHeight(opts.clientHeight ?? 500)
     let now = 1000
     const baselines: number[] = []
     const translator = createStaleNativeScrollTranslator({
@@ -14,6 +15,9 @@ describe('chatscrollstalenative translator', () => {
       isScrollInputActive: () => opts.inputActive ?? false,
       isProgrammaticEcho: () => opts.echo ?? false,
       setLastScrollTopForDir: top => baselines.push(top),
+      // The real pane-derived cap, so the old-coordinate window couples to the fling
+      // render-ahead exactly as production does.
+      flingOverscanCapPx,
       now: () => now,
     })
     const advance = (ms: number) => {
@@ -94,6 +98,31 @@ describe('chatscrollstalenative translator', () => {
     })
     t.div.setScrollTop(900)
     expect(t.translator.translate()).toBe(false)
+  })
+
+  it('covers the full pane-derived fling render-ahead on a tall pane', () => {
+    // Regression: the old-coordinate window was a frozen max(clientHeight*2, 1800). Once
+    // the fling render-ahead cap became pane-derived (up to 2.5 screens), that window
+    // under-reached it on a tall pane -- a stale momentum event that coasted between two
+    // screens and the render-ahead cap failed classification and jumped. The window now
+    // tracks flingOverscanCapPx, so it covers the whole travel.
+    const clientHeight = 1000
+    const t = setup({ clientHeight })
+    // flingOverscanCapPx(1000) = 2500; the old window would have been max(2000, 1800) = 2000.
+    expect(flingOverscanCapPx(clientHeight)).toBe(2500)
+    t.translator.noteProgrammaticWrite({
+      source: 'anchor-repin',
+      beforeTop: 3000,
+      afterTop: 8000, // delta +5000, a full-screen-plus prepend repin
+      clientHeight,
+      dir: 'older',
+    })
+    // A compositor-delayed momentum event 2200px above the pre-repin position: within the
+    // 2500px render-ahead but BEYOND the old 2000px (clientHeight*2) window.
+    t.div.setScrollTop(800)
+    t.advance(50)
+    expect(t.translator.translate()).toBe(true)
+    expect(t.div.getScrollTop()).toBe(5800) // 800 + 5000 delta, into the current space
   })
 
   it('invalidates the shift on any other programmatic write source', () => {

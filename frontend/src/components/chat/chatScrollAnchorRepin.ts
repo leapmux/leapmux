@@ -392,6 +392,18 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
           const fromTop = readScrollTop(el)
           const signed = targetTop - fromTop
           const delta = Math.abs(signed)
+          // The two "we did NOT snap the anchored row back this frame, so it is `signed`
+          // off its captured line" reports differ ONLY by reason; build the shared 5-field
+          // payload in one place so the two sites can't drift on fields (a new field is
+          // added once, not twice).
+          const reportDrift = (reason: 'absorbed' | 'deferred-fling') =>
+            deps.onAnchorDrift?.({
+              anchorId: anchorState.anchor.id,
+              residualPx: signed,
+              reason,
+              fromTop,
+              clientHeight: el.clientHeight,
+            })
           // Skip a write that wouldn't meaningfully move scrollTop (a measurement below the
           // anchor doesn't shift it): assigning scrollTop at all can interrupt a momentum
           // scroll, so don't do it for nothing. And while the user is actively flinging,
@@ -447,13 +459,7 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // The anchored row is `signed` off its captured line and we are NOT correcting
             // it -- an on-screen content shift with no scroll event. Report it (BEFORE the
             // re-anchor discards the old anchor's displacement) so the hook can WARN.
-            deps.onAnchorDrift?.({
-              anchorId: anchorState.anchor.id,
-              residualPx: signed,
-              reason: 'absorbed',
-              fromTop,
-              clientHeight: el.clientHeight,
-            })
+            reportDrift('absorbed')
             reanchorAndDropDrift()
           }
           else if ((deps.isUserScrolling() ? flingLike : activeFling) && delta < flingSuppressPx) {
@@ -472,13 +478,7 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // The row is `signed` off its line this frame -- transient drift the settle
             // re-anchors when momentum stops. Report it; the hook ignores the fast-fling
             // frames (where it blends into momentum) and surfaces only a lingering shift.
-            deps.onAnchorDrift?.({
-              anchorId: anchorState.anchor.id,
-              residualPx: signed,
-              reason: 'deferred-fling',
-              fromTop,
-              clientHeight: el.clientHeight,
-            })
+            reportDrift('deferred-fling')
             deps.flingSettle().accumulate(signed)
           }
           else if (maxScrollTopOf(el) <= 0) {

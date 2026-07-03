@@ -63,3 +63,38 @@ export function buildHeightKey(inputs: HeightKeyInputs): string {
   const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
   return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.hasCommandStream ? 'c' : ''}`
 }
+
+/**
+ * The height-key contribution of GLOBAL layout preferences that affect only SOME row
+ * kinds. Appended per row so a global toggle re-keys (hence re-measures) ONLY the rows
+ * whose rendered height actually depends on that pref -- not the whole viewport, as a
+ * shared epoch term would:
+ *
+ *  - `diffView` (unified vs split) changes height only for rows that render a file diff,
+ *    which are always `tool_use` / `tool_result` rows. This pair is a proven SUPERSET of
+ *    every diff render across all providers (Claude/Pi render the diff on `tool_result`,
+ *    ACP/Codex on `tool_use`; no diff renders under a non-tool kind). Over-inclusion (a
+ *    non-diff Bash/Read tool row) only costs a needless re-measure -- NEVER a stale,
+ *    overlapping height, which a too-narrow predicate would. Do not narrow below the two
+ *    kinds: `tool_result` carries no tool name to distinguish a diff result from a plain one.
+ *  - the thinking-expand default (`expandAgentThoughts`) changes height only for
+ *    `assistant_thinking` rows.
+ *
+ * Each resolver returns the row's EFFECTIVE value (per-message override ?? global default),
+ * so a global toggle skips a row whose override already pins its value, and toggling a pref
+ * back and forth stays cacheable (the term is a stable VALUE per state, not a monotonic
+ * counter). The resolvers are thunks so only the one relevant to the kind is evaluated (a
+ * diff row never resolves the thinking state, and vice versa). Returns '' for a kind no
+ * scoped pref affects -- most of the window -- leaving that row's key epoch-stable.
+ */
+export function kindScopedLayoutKey(
+  kind: string,
+  resolveEffectiveDiffView: () => string,
+  resolveEffectiveThinkingExpanded: () => boolean,
+): string {
+  if (kind === 'tool_use' || kind === 'tool_result')
+    return `|d:${resolveEffectiveDiffView()}`
+  if (kind === 'assistant_thinking')
+    return `|t:${resolveEffectiveThinkingExpanded() ? 1 : 0}`
+  return ''
+}

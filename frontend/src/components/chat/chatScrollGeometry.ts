@@ -88,6 +88,22 @@ export function maxScrollTopOf(el: HTMLDivElement): number {
 }
 
 /**
+ * True when the viewport CANNOT scroll out of the live-tail sticky band: its
+ * whole scrollable range fits inside STICKY_BOTTOM_THRESHOLD_PX, so EVERY scroll
+ * position reads as at-bottom and the reader can never scroll up to leave it.
+ *
+ * The single home for the `maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX`
+ * unwedge test the older-history pre-fetch machinery consults from three sites
+ * (the live-tail suppression, the geometry-commit suppression clear, and the
+ * restore-settle clear -- see useChatScroll and createViewportRestore). Keeping
+ * it in one predicate stops the sites drifting on the bound: a prior edit
+ * re-introduced the wedge at one site by using a strict `<= 0` here.
+ */
+export function cannotLeaveStickyBand(el: HTMLDivElement): boolean {
+  return maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX
+}
+
+/**
  * Clamp a desired scrollTop into the element's valid range [0, maxScrollTopOf].
  * The one home for the full clamp shared by the raw-top viewport restore and the
  * discrete page-scroll target check, so neither can drift -- and so the raw-top

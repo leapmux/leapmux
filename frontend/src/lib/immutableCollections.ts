@@ -28,6 +28,18 @@ export function setWithout<T>(set: ReadonlySet<T>, value: T): ReadonlySet<T> {
   return next
 }
 
+/**
+ * Set `key` to `value` in `map`, returning a NEW map — or `map` itself when it already
+ * maps `key` to the SAME value (`Object.is`), so a redundant write churns no reference.
+ */
+export function mapWith<K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> {
+  if (map.has(key) && Object.is(map.get(key), value))
+    return map
+  const next = new Map(map)
+  next.set(key, value)
+  return next
+}
+
 /** Remove `key` from `map`, returning a NEW map — or `map` itself when it doesn't hold `key`. */
 export function mapWithout<K, V>(map: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> {
   if (!map.has(key))

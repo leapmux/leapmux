@@ -24,6 +24,7 @@ import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
+import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
 import { createStreamingTail } from './chatStreamingTail'
@@ -33,6 +34,7 @@ import { markdownContent } from './markdownEditor/markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { assistantMessage } from './messageStyles.css'
+import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
@@ -350,19 +352,32 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onCleanup(() => viewportSizeObserver.disconnect())
   const effectiveContentWidth = createMemo(() => contentWidth() > 0 ? contentWidth() : PRE_MEASURE_WIDTH_PX)
 
-  // DOM heights are width- and UI-state-sensitive, so the measured-height cache key
-  // folds the effective layout width and global height-affecting preferences into
-  // every row. The width fallback must match hidden premeasure's fallback width: queued
-  // unsettled rows can remain mounted while the pane reports width 0.
-  const layoutEpochKey = createMemo(() =>
+  // DOM heights are width-sensitive, so the measured-height cache key folds the effective
+  // layout width into EVERY row -- width genuinely rewraps every kind. The width fallback
+  // must match hidden premeasure's fallback width: queued unsettled rows can remain mounted
+  // while the pane reports width 0. Kind-SPECIFIC height inputs (diffView, expandAgentThoughts)
+  // are NOT folded in here -- a global toggle of one of those would needlessly re-measure the
+  // whole viewport. They are scoped per row instead (see kindScopedLayoutKey below).
+  const globalEpochKey = createMemo(() =>
     JSON.stringify([
       effectiveContentWidth(),
-      prefs.expandAgentThoughts() ? 1 : 0,
-      prefs.diffView(),
       props.workingDir ?? '',
       props.homeDir ?? '',
     ]),
   )
+  // The row's EFFECTIVE diff-view (its per-message override, else the global default). Read
+  // per row only for diff-capable kinds, so a global unified<->split toggle re-keys only
+  // those rows -- and skips a row whose local override already pins its value. (A per-message
+  // override ALSO bumps that row's uiVersion, so it re-keys the row either way; reading the
+  // override HERE is what lets a GLOBAL toggle leave an already-overridden row untouched.)
+  const effectiveDiffView = (id: string): string => getLocalDiffView(id) ?? prefs.diffView()
+  // The row's EFFECTIVE thinking-expand state (its per-message override, else the global
+  // expandAgentThoughts default). Uses the SAME key + default resolvers the renderers use
+  // (expandedUiKeyFor / messageUiDefault), so the cache key can't disagree with the render.
+  const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean => {
+    const key = expandedUiKeyFor(entry.category.kind, entry.msg.agentProvider)
+    return getMessageUiBool(entry.msg.id, key) ?? messageUiDefault(key, { expandAgentThoughts: prefs.expandAgentThoughts() })
+  }
 
   // Minimal per-row descriptors for the virtualizer. Unmeasured rows use only the
   // virtualizer's per-kind median estimate (keyed by `kind` below) until visible or
@@ -382,14 +397,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         kind: e.category.kind,
         // The per-row measured-height cache key. heightKeyForEntry (chatEntryCache)
         // reads height-affecting freshness signals off the entry's own signature,
-        // while layoutEpochKey covers width/global prefs. Reading getUiVersion HERE
-        // subscribes this memo to the row's per-message UI toggle, so stale
-        // premeasured heights are ignored the moment visible state changes.
-        // DELIBERATELY EXCLUDED: live command-stream TEXT -- it grows on every
-        // delta and is measured at the tail instead. The stream PRESENCE bit is
+        // globalEpochKey covers width/dirs, and kindScopedLayoutKey folds in the
+        // GLOBAL prefs (diffView / expandAgentThoughts) only for the kinds they can
+        // resize -- so a global toggle re-measures just those, not the whole window.
+        // Reading getUiVersion HERE subscribes this memo to the row's per-message UI
+        // toggle, so stale premeasured heights are ignored the moment visible state
+        // changes. DELIBERATELY EXCLUDED: live command-stream TEXT -- it grows on
+        // every delta and is measured at the tail instead. The stream PRESENCE bit is
         // folded in (a classifier can change rendered structure from presence),
         // see EntryFreshness.
-        heightKey: `${heightKeyForEntry(e, getUiVersion(e.msg.id))}|${layoutEpochKey()}|${rowChromeHeightKey(
+        heightKey: `${heightKeyForEntry(e, getUiVersion(e.msg.id))}|${globalEpochKey()}${kindScopedLayoutKey(
+          e.category.kind,
+          () => effectiveDiffView(e.msg.id),
+          () => effectiveThinkingExpanded(e),
+        )}|${rowChromeHeightKey(
           props.messageErrors?.[e.msg.id],
           props.messagePendingLabels?.[e.msg.id],
         )}`,
@@ -645,19 +666,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const { delayedIds: skeletonIds } = createDelayedSet(
     () => pendingRevealSlice().map(entry => entry.msg.id),
     SKELETON_SHOW_DELAY_MS,
+    virt.fastScrollActive,
   )
-  // The rows currently PAINTING a skeleton overlay. During a fast fling the show-delay
-  // is bypassed: fast scrolling must never flash blank gaps, so an unmeasured row
-  // entering the window mid-fling shows its skeleton at once (the delay is for quick
-  // in-place re-measures -- expand-collapse, diff-view switch, tail append -- not for
-  // scrolling into unmeasured history). Rows that waited out the delay stay shown as the
-  // fling settles; the rest fall back to the delayed set.
-  const skeletonSlice = createMemo(() => {
-    const pending = pendingRevealSlice()
-    if (virt.fastScrollActive())
-      return pending
-    return pending.filter(entry => skeletonIds().has(entry.msg.id))
-  })
+  // The rows currently PAINTING a skeleton overlay: the pending rows whose skeleton has
+  // been shown -- either the wait exceeded SKELETON_SHOW_DELAY_MS, or a fast fling promoted
+  // it immediately (see createDelayedSet's showImmediately). Fast scrolling into unmeasured
+  // history skeletonises at once so it never flashes blank gaps; a quiet in-place re-measure
+  // (expand-collapse, diff-view switch, tail append) waits out the delay so it reveals with a
+  // plain fade-in and no distracting shimmer. Because the fling promotes into this same set
+  // (not a separate bypass), a row shown mid-fling stays shown when the fling settles before
+  // its delay would have fired, instead of flickering skeleton -> blank -> skeleton.
+  const skeletonSlice = createMemo(() =>
+    pendingRevealSlice().filter(entry => skeletonIds().has(entry.msg.id)))
 
   // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its height
   // committed, the real row starts its opacity fade-in), its skeleton lingers for one

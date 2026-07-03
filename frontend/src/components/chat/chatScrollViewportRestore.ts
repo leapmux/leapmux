@@ -1,5 +1,5 @@
 import type { ChatScrollState, ScrollContext } from './useChatScroll'
-import { clampScrollTop, isNearTopBand, maxScrollTopOf, STICKY_BOTTOM_THRESHOLD_PX } from './chatScrollGeometry'
+import { cannotLeaveStickyBand, clampScrollTop, isNearTopBand } from './chatScrollGeometry'
 
 /**
  * The hidden->visible context captured once at the top of handleResize (before
@@ -267,7 +267,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // is a no-op.
   const settleGeometryAfterPlacement = () => {
     const el = ctx.getEl()
-    if (el && maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX)
+    if (el && cannotLeaveStickyBand(el))
       extras.setSuppressOlder(false)
     extras.onGeometrySettled()
   }

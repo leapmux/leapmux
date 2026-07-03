@@ -2,6 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import { createEffect, onCleanup, untrack } from 'solid-js'
 import { localStorageGet, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { capMapInsertionOrder } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 
@@ -186,13 +187,12 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     }
     if (merged.size === 0)
       return // never replace stored data with nothing
-    let rows = [...merged.values()]
-    // Pending entries were inserted first, so over-cap trimming drops them
-    // before it drops freshly measured rows (snapshotHeights is LRU-ordered,
-    // oldest first, so the slice keeps the most recent measurements).
-    if (rows.length > PERSISTED_ROW_HEIGHTS_MAX)
-      rows = rows.slice(rows.length - PERSISTED_ROW_HEIGHTS_MAX)
-    localStorageSet(storageKey(id), { v: 1, rows } satisfies StoredRowHeights)
+    // Pending entries were inserted first, so the shared insertion-order cap
+    // (mapLru.capMapInsertionOrder) sheds them before it sheds freshly measured
+    // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
+    // measurements -- and the eviction bound can't drift from the render/token caches'.
+    capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
+    localStorageSet(storageKey(id), { v: 1, rows: [...merged.values()] } satisfies StoredRowHeights)
   }
 
   // Load once, as soon as the storage identity is available.

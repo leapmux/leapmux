@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { UseChatVirtualizerResult } from './useChatVirtualizer'
-import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { createComputed, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { setWith, setWithout } from '~/lib/immutableCollections'
 
 // ---------------------------------------------------------------------------
@@ -97,12 +97,20 @@ export function createLingerSet(
  * switch, tail append) reveals with a plain fade-in and no distracting shimmer, while a
  * slow one still gets a skeleton as a loading affordance.
  *
- * Call within a reactive owner: it creates an effect, per-id timers, and an onCleanup
+ * `showImmediately` (optional, reactive) skips the delay while true: every currently-active
+ * id appears at once. It exists for the fling case -- a fast scroll into unmeasured history
+ * must never flash blank gaps, so those rows skeletonise immediately -- and, by promoting
+ * them into the shown set rather than a separate bypass, they STAY shown when the flag flips
+ * back off mid-delay (a fling settling before a row's timer fires), instead of dropping out
+ * and flickering skeleton -> blank -> skeleton.
+ *
+ * Call within a reactive owner: it creates a computed, per-id timers, and an onCleanup
  * that clears them.
  */
 export function createDelayedSet(
   activeIds: Accessor<Iterable<string>>,
   delayMs: number,
+  showImmediately?: Accessor<boolean>,
 ): { delayedIds: Accessor<ReadonlySet<string>> } {
   const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<string>>(new Set())
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -114,14 +122,32 @@ export function createDelayedSet(
     clearTimeout(timer)
     timers.delete(id)
   }
+  const showNow = (id: string): void => {
+    clearTimer(id)
+    setDelayedIds(prev => setWith(prev, id))
+  }
 
   let previous: ReadonlySet<string> = new Set()
-  createEffect(() => {
+  // A createComputed (not createEffect): when `showImmediately` flips true, its promotions
+  // must land in the SAME pass the consumer memo (ChatView's skeletonSlice) reads
+  // `delayedIds`, so a fling shows every pending row's skeleton with no one-flush lag. An
+  // effect-phase write would show them a flush late AND, worse, let a row shown during the
+  // fling drop back out when the fling settles before its delay fires.
+  createComputed(() => {
     const current = new Set(activeIds())
-    // Ids that just ENTERED start a delay timer; they appear only if still active when it
-    // fires. An id already tracked (in `previous`, or with a pending timer) is left alone
-    // so its delay isn't restarted on an unrelated recompute.
+    const immediate = showImmediately?.() ?? false
+    const shown = untrack(delayedIds)
+    // Active ids: an already-shown one is left alone; while `immediate` a not-yet-shown one
+    // appears at once (cancelling any pending delay so it can't later re-fire); otherwise a
+    // newly-entered one (not in `previous`, no pending timer) starts its delay. An id already
+    // awaiting its timer is left alone so an unrelated recompute doesn't restart it.
     for (const id of current) {
+      if (shown.has(id))
+        continue
+      if (immediate) {
+        showNow(id)
+        continue
+      }
       if (previous.has(id) || timers.has(id))
         continue
       timers.set(id, setTimeout(() => {

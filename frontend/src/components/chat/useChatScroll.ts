@@ -11,7 +11,7 @@ import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 import { classifyUnexplainedJump, createScrollDiagnostics, KEYBOARD_SCROLL_GRACE_MS } from './chatScrollDiagnostics'
 import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
+import { cannotLeaveStickyBand, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
@@ -585,6 +585,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     isScrollInputActive,
     isProgrammaticEcho,
     setLastScrollTopForDir: (top) => { lastScrollTopForDir = top },
+    // Same pane-derived render-ahead cap the fling overscan uses, so the stale-native
+    // window covers the full fling travel on any pane height (see flingOverscanCapPx).
+    flingOverscanCapPx,
   })
 
   const writeScrollTopProgrammatically = (top: number, source?: string) => {
@@ -1176,8 +1179,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       : undefined
     // Fling-skeleton gate: unlike the measurement deferral below (momentum-only
     // — a drag re-pins immediately by design), rows entering during ANY fast
-    // user scroll mount as skeletons, scrollbar/touch drags included.
-    if (!programmaticEcho && scrollVelocity.isFling()) {
+    // user scroll mount as skeletons, scrollbar/touch drags included. Requires a
+    // live user-scroll signal on top of isFling(): a pointer/touch drag
+    // (isScrollInputActive), recent wheel/touch momentum (hasRecentMomentumInput,
+    // set on wheel + touch-end), or a measured in-flight coast (isActivelyFlinging,
+    // which covers a trackpad coast that outlives the 750ms input grace). isFling()
+    // alone is NOT enough: it reports true for an UNKNOWN or STALE velocity (its
+    // defer-biased default, correct for the re-pin), so a non-echo scroll event while
+    // the list sits IDLE -- a stick echo delivered past its marker TTL, browser scroll
+    // anchoring, a sub-pixel nudge after a tail append -- would otherwise trip it and
+    // flash a one-frame skeleton over the freshly appended (still-unmeasured) tail row.
+    if (!programmaticEcho && scrollVelocity.isFling()
+      && (scrollVelocity.isActivelyFlinging() || isScrollInputActive() || hasRecentMomentumInput())) {
       virt.setFastScrollActive(true)
       armFastScrollReset()
     }
@@ -1331,7 +1344,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // to trigger the fill -- exactly the wedge suppressOlderPrefetchAtLiveTail avoids with
     // the same bound (a strict `<= 0` here re-introduced it for the restore path). Guarded
     // on the flag so this fires only when something is actually suppressed.
-    if (messageListRef && suppressAutoLoadOlderAfterRestore && maxScrollTopOf(messageListRef) <= STICKY_BOTTOM_THRESHOLD_PX)
+    if (messageListRef && suppressAutoLoadOlderAfterRestore && cannotLeaveStickyBand(messageListRef))
       suppressAutoLoadOlderAfterRestore = false
     scheduleViewportRefresh()
   }, { defer: true }))
@@ -1654,7 +1667,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // either). Only once the pane can actually LEAVE the band does the suppression bite.
   const suppressOlderPrefetchAtLiveTail = (): boolean => {
     const el = messageListRef
-    if (!el || maxScrollTopOf(el) <= STICKY_BOTTOM_THRESHOLD_PX)
+    if (!el || cannotLeaveStickyBand(el))
       return false
     // Pinned at the LIVE tail (the tail is loaded and the viewport sits in its sticky
     // band): the older buffer is pure speculation until the reader scrolls up.

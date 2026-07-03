@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mapWithout, setWith, setWithout } from './immutableCollections'
+import { mapWith, mapWithout, setWith, setWithout } from './immutableCollections'
 
 describe('immutablecollections', () => {
   describe('setwith', () => {
@@ -29,6 +29,37 @@ describe('immutablecollections', () => {
     it('returns the SAME reference when the value is absent (no churn)', () => {
       const original = new Set(['a', 'b'])
       expect(setWithout(original, 'z')).toBe(original)
+    })
+  })
+
+  describe('mapwith', () => {
+    it('sets a missing key into a NEW map, leaving the original untouched', () => {
+      const original = new Map([['a', 1]])
+      const next = mapWith(original, 'b', 2)
+      expect(next).not.toBe(original)
+      expect([...next]).toEqual([['a', 1], ['b', 2]])
+      expect([...original]).toEqual([['a', 1]])
+    })
+
+    it('overwrites an existing key with a different value into a NEW map', () => {
+      const original = new Map([['a', 1]])
+      const next = mapWith(original, 'a', 2)
+      expect(next).not.toBe(original)
+      expect(next.get('a')).toBe(2)
+      expect(original.get('a')).toBe(1)
+    })
+
+    it('returns the SAME reference when the key already maps to the same value (no churn)', () => {
+      const original = new Map([['a', 1], ['b', 2]])
+      expect(mapWith(original, 'a', 1)).toBe(original)
+    })
+
+    it('treats undefined-valued keys by identity: same undefined is a no-op, a real value replaces', () => {
+      const original = new Map<string, number | undefined>([['a', undefined]])
+      expect(mapWith(original, 'a', undefined)).toBe(original) // present + same value -> no churn
+      const next = mapWith(original, 'a', 5)
+      expect(next).not.toBe(original)
+      expect(next.get('a')).toBe(5)
     })
   })
 

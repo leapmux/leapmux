@@ -140,6 +140,73 @@ describe('chatskeletoncrossfade', () => {
       dispose()
       expect(() => vi.advanceTimersByTime(500)).not.toThrow()
     })
+
+    it('shows an id immediately while showImmediately is true (skips the delay)', () => {
+      const [active, setActive] = createSignal<string[]>([])
+      const [immediate] = createSignal(true)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, immediate).delayedIds
+      })
+      setActive(['a']) // enters while "flinging" -> painted at once, no delay wait
+      expect([...delayed()]).toEqual(['a'])
+      dispose()
+    })
+
+    it('keeps a mid-fling id shown when showImmediately flips false before the delay elapses', () => {
+      // Regression: a fling promotes a pending row's skeleton immediately; if the fling
+      // settles BEFORE that row's would-be delay fires, the row must STAY shown rather than
+      // drop out and flicker skeleton -> blank -> skeleton.
+      const [active] = createSignal<string[]>(['a'])
+      const [immediate, setImmediate] = createSignal(true)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, immediate).delayedIds
+      })
+      expect([...delayed()]).toEqual(['a']) // shown at once during the fling
+      setImmediate(false) // fling settles, well before 500ms
+      expect([...delayed()]).toEqual(['a']) // STILL shown -- no drop, no flicker
+      vi.advanceTimersByTime(500) // and no stale timer re-drops or re-adds it
+      expect([...delayed()]).toEqual(['a'])
+      dispose()
+    })
+
+    it('promotes an already-delaying id the moment showImmediately flips true', () => {
+      const [active] = createSignal<string[]>(['a'])
+      const [immediate, setImmediate] = createSignal(false)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, immediate).delayedIds
+      })
+      vi.advanceTimersByTime(200) // partway through the delay, nothing shown yet
+      expect([...delayed()]).toEqual([])
+      setImmediate(true) // a fling starts -> show now, cancelling the pending delay
+      expect([...delayed()]).toEqual(['a'])
+      vi.advanceTimersByTime(500) // the cancelled delay timer must not re-fire
+      expect([...delayed()]).toEqual(['a'])
+      dispose()
+    })
+
+    it('still drops an immediately-shown id the moment it leaves the active set', () => {
+      const [active, setActive] = createSignal<string[]>(['a'])
+      const [immediate] = createSignal(true)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, immediate).delayedIds
+      })
+      expect([...delayed()]).toEqual(['a'])
+      setActive([]) // measured -> leaves
+      expect([...delayed()]).toEqual([]) // drops immediately (createLingerSet fades it)
+      dispose()
+    })
   })
 
   describe('createrowupgradephase', () => {
