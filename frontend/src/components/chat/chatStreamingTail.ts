@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { createComputed, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 
@@ -162,7 +162,12 @@ export function createStreamingTail(deps: StreamingTailDeps): StreamingTail {
     if (streamReplacementTailId() !== held.tailId || deps.hasNewerMessages() || deps.hasMeasuredHeight(held.tailId))
       setHeldStreamReplacement(undefined)
   })
-  createEffect(() => {
+  // A createComputed (not createEffect): the replacement-tail decision must settle in
+  // the SAME computation pass that ChatView's hide-until-measured memo reads it, not one
+  // flush later. If it lagged, a just-persisted unmeasured tail would flicker an awaiting
+  // skeleton (then a lingering crossfade) for the one pass before the cover caught up --
+  // undoing the seamless stream->row handoff this machine exists to provide.
+  createComputed(() => {
     const streamingTailVisible = !!deps.streamingText() && !deps.hasNewerMessages()
     const tailId = deps.tailVisibleId()
     if (streamingTailVisible) {

@@ -33,12 +33,15 @@ describe('chatrowheightpersistence', () => {
     storageId?: string
     items?: VirtualItem[]
     measured?: Set<string>
+    /** Ids whose deferred premeasure is queued behind the momentum gate (not yet committed). */
+    pending?: Set<string>
     primeHeights?: (entries: readonly PersistableRowHeight[], measured: Set<string>) => number
   } = {}) {
     const [items, setItems] = createSignal<VirtualItem[]>(opts.items ?? [])
     const [geomVersion, setGeomVersion] = createSignal(0)
     const [storageId, setStorageId] = createSignal(opts.storageId)
     const measured = opts.measured ?? new Set<string>()
+    const pending = opts.pending ?? new Set<string>()
     const primed: PersistableRowHeight[][] = []
     const snapshot: PersistableRowHeight[] = []
     let dispose!: () => void
@@ -59,10 +62,11 @@ describe('chatrowheightpersistence', () => {
           snapshotHeights: () => [...snapshot],
           geometryVersion: geomVersion,
           hasMeasuredHeight: id => measured.has(id),
+          hasPendingPremeasuredHeight: id => pending.has(id),
         },
       })
     })
-    return { setItems, setGeomVersion, setStorageId, primed, snapshot, measured, dispose }
+    return { setItems, setGeomVersion, setStorageId, primed, snapshot, measured, pending, dispose }
   }
 
   it('hydrates stored rows whose key digest matches the live heightKey', () => {
@@ -97,10 +101,19 @@ describe('chatrowheightpersistence', () => {
       v: 1,
       rows: [storedRow('a', 'k-a', 120)],
     })
+    const pending = new Set<string>()
     const h = makeHarness({
       storageId: 'agent-1',
       items: [item('a', 'k-a')],
-      primeHeights: () => 0,
+      pending,
+      // Deferred behind the momentum gate: nothing commits, but the row is marked
+      // pending (as the real virtualizer does), so it isn't re-primed on every
+      // item-list change while the deferral is live.
+      primeHeights: (entries) => {
+        for (const e of entries)
+          pending.add(e.id)
+        return 0
+      },
     })
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
 
@@ -125,17 +138,25 @@ describe('chatrowheightpersistence', () => {
       v: 1,
       rows: [storedRow('a', 'k-a', 120)],
     })
+    const pending = new Set<string>()
     let deferring = true
     const h = makeHarness({
       storageId: 'agent-1',
       items: [item('a', 'k-a')],
-      // While the fling is active the prime is deferred: nothing commits and the
-      // row stays UNMEASURED. Once the fling settles it commits normally.
+      pending,
+      // While the fling is active the prime is deferred: nothing commits, the row
+      // stays UNMEASURED, and (as the real virtualizer does) it is marked pending
+      // behind the momentum gate. Once the fling settles it commits normally.
       primeHeights: (entries, measured) => {
-        if (deferring)
+        if (deferring) {
+          for (const e of entries)
+            pending.add(e.id)
           return 0
-        for (const e of entries)
+        }
+        for (const e of entries) {
+          pending.delete(e.id)
           measured.add(e.id)
+        }
         return entries.length
       },
     })
@@ -157,6 +178,57 @@ describe('chatrowheightpersistence', () => {
       [{ id: 'a', heightKey: 'k-a', height: 120 }],
       [{ id: 'a', heightKey: 'k-a', height: 120 }],
     ])
+    expect(h.measured.has('a')).toBe(true)
+    h.dispose()
+  })
+
+  it('re-attempts a deferred prime that was DROPPED under the same key, but not while it is still queued', () => {
+    // A momentum fling defers the prime (queues it behind the gate, commits
+    // nothing). The row is then trimmed out of the window before the deferral
+    // flush can commit it, so the queued prime is DROPPED -- neither measured nor
+    // still pending. Under the SAME digest-matching key (no key drift to clear the
+    // attempt marker), the persistence layer must re-attempt when the row returns,
+    // or the stale marker bars its warm-start height for the component's life.
+    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: 1,
+      rows: [storedRow('a', 'k-a', 120)],
+    })
+    const pending = new Set<string>()
+    let deferring = true
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [item('a', 'k-a')],
+      pending,
+      // While the fling is active the prime is DEFERRED: queued as pending,
+      // committing nothing. Once it settles it commits normally.
+      primeHeights: (entries, measured) => {
+        if (deferring) {
+          for (const e of entries)
+            pending.add(e.id)
+          return 0
+        }
+        for (const e of entries)
+          measured.add(e.id)
+        return entries.length
+      },
+    })
+    // First attempt on load: deferred (queued as pending, nothing committed).
+    expect(h.primed).toHaveLength(1)
+
+    // An item-list change while the prime is STILL queued must NOT re-prime it --
+    // the marker suppresses the per-item-change churn during the fling.
+    h.setItems([item('a', 'k-a'), item('z', 'k-z')])
+    expect(h.primed).toHaveLength(1)
+
+    // The fling settles, but the row was trimmed out before the flush, so its
+    // queued prime is dropped: no longer pending, still unmeasured.
+    pending.delete('a')
+    deferring = false
+    // The same digest-matching key reappears -> the stale marker must clear and the
+    // warm-start height must finally be adopted.
+    h.setItems([item('a', 'k-a')])
+    expect(h.primed).toHaveLength(2)
+    expect(h.primed[1]).toEqual([{ id: 'a', heightKey: 'k-a', height: 120 }])
     expect(h.measured.has('a')).toBe(true)
     h.dispose()
   })

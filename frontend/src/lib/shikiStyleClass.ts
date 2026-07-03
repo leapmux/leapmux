@@ -173,9 +173,16 @@ export function shikiStyleClassTransformer(): ShikiTransformer {
       const className = recordShikiStyle(style)
       if (className !== undefined) {
         delete node.properties.style
-        node.properties.class = node.properties.class
-          ? `${String(node.properties.class)} ${className}`
-          : className
+        // hast permits `class` as a string OR a string[] -- append into an array in
+        // array form (String([...]) would comma-join the existing classes into one
+        // invalid token), and concatenate a string form.
+        const existing = node.properties.class
+        if (existing === undefined || existing === '')
+          node.properties.class = className
+        else if (Array.isArray(existing))
+          node.properties.class = [...existing, className]
+        else
+          node.properties.class = `${String(existing)} ${className}`
       }
       return node
     },

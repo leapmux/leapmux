@@ -59,7 +59,7 @@ export interface RowHeightPersistenceDeps {
    */
   storageId: () => string | undefined
   virtualItems: Accessor<VirtualItem[]>
-  virt: Pick<UseChatVirtualizerResult, 'primeHeights' | 'snapshotHeights' | 'geometryVersion' | 'hasMeasuredHeight'>
+  virt: Pick<UseChatVirtualizerResult, 'primeHeights' | 'snapshotHeights' | 'geometryVersion' | 'hasMeasuredHeight' | 'hasPendingPremeasuredHeight'>
 }
 
 function parseStoredRows(raw: unknown): Map<string, { digest: string, height: number }> {
@@ -130,8 +130,21 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
         attemptedAdoptions.delete(adoptionAttemptKey(item.id, entry.digest))
         continue
       }
-      if (attemptedAdoptions.has(adoptionAttemptKey(item.id, entry.digest)))
-        continue
+      if (attemptedAdoptions.has(adoptionAttemptKey(item.id, entry.digest))) {
+        // A prior tryAdopt already primed this (id, digest). The marker normally clears
+        // when the prime commits (the hasMeasuredHeight retire above) or the live key
+        // drifts. But a prime DEFERRED behind the momentum-scroll gate and then DROPPED
+        // (the row was trimmed out of the window before flushDeferredMeasurements could
+        // commit it) leaves NEITHER a measured NOR a still-pending height -- and without
+        // this the stale marker would bar re-priming under the same digest for the
+        // component's life, so the row silently loses its persisted warm-start height and
+        // falls back to the estimate. Re-attempt only once the deferred prime is no longer
+        // live (still-pending keeps the marker, so an in-flight deferral isn't re-primed on
+        // every item-list change during the fling -- the churn the marker exists to avoid).
+        if (deps.virt.hasPendingPremeasuredHeight(item.id))
+          continue
+        attemptedAdoptions.delete(adoptionAttemptKey(item.id, entry.digest))
+      }
       adoptable.push({ id: item.id, heightKey: item.heightKey, height: entry.height, digest: entry.digest })
     }
     if (adoptable.length === 0)

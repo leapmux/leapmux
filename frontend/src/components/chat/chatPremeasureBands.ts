@@ -92,8 +92,6 @@ export interface ChatPremeasureBandsDeps {
   contentWidth: Accessor<number>
   /** id -> entry for the visible window (built once in ChatView; shared with its crossfade slice). */
   visibleEntryById: Accessor<ReadonlyMap<string, ClassifiedEntry>>
-  /** The live-tail id the queue must never collapse (shared with ChatView's hide-until-measured). */
-  liveTailVisibleId: Accessor<string | undefined>
   /** Whether the idle warm-up band may run (pane visible, sized, quiet -- policy owned by ChatView). */
   warmupEnabled: Accessor<boolean>
 }
@@ -172,7 +170,6 @@ export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPr
     visibleEntryById: deps.visibleEntryById,
     virtualItemById,
     virtualItems: deps.virtualItems,
-    liveTailVisibleId: deps.liveTailVisibleId,
     rangedCandidates,
     lookAheadCandidates,
     warmupCandidates: warmup.warmupCandidates,

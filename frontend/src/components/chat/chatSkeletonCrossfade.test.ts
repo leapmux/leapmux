@@ -1,7 +1,7 @@
 import type { FlingSkeletonRegistry } from './chatSkeletonCrossfade'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createFlingSkeletonRegistry, createLingerSet, createRowUpgradePhase } from './chatSkeletonCrossfade'
+import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet, createRowUpgradePhase } from './chatSkeletonCrossfade'
 
 describe('chatskeletoncrossfade', () => {
   beforeEach(() => {
@@ -61,6 +61,84 @@ describe('chatskeletoncrossfade', () => {
       expect([...lingering()]).toEqual(['a'])
       dispose()
       expect(() => vi.advanceTimersByTime(1000)).not.toThrow()
+    })
+  })
+
+  describe('createdelayedset', () => {
+    it('adds an id only after it has stayed active for delayMs', () => {
+      const [active, setActive] = createSignal<string[]>([])
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500).delayedIds
+      })
+      setActive(['a']) // enters the active set -> delay timer armed, not shown yet
+      expect([...delayed()]).toEqual([])
+      vi.advanceTimersByTime(499)
+      expect([...delayed()]).toEqual([]) // still within the show-delay
+      vi.advanceTimersByTime(1)
+      expect([...delayed()]).toEqual(['a']) // appears once the delay elapses
+      dispose()
+    })
+
+    it('never shows an id that leaves before the delay elapses (fast reveal)', () => {
+      const [active, setActive] = createSignal<string[]>(['a'])
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500).delayedIds
+      })
+      vi.advanceTimersByTime(200) // measured quickly...
+      setActive([]) // ...and revealed before the show-delay
+      vi.advanceTimersByTime(500)
+      expect([...delayed()]).toEqual([]) // no skeleton ever appeared
+      dispose()
+    })
+
+    it('drops an already-shown id the moment it leaves the active set', () => {
+      const [active, setActive] = createSignal<string[]>(['a'])
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500).delayedIds
+      })
+      vi.advanceTimersByTime(500)
+      expect([...delayed()]).toEqual(['a']) // slow wait -> skeleton shown
+      setActive([]) // measured -> leaves
+      expect([...delayed()]).toEqual([]) // drops immediately (createLingerSet handles the fade)
+      dispose()
+    })
+
+    it('re-arms the delay when an id leaves and re-enters', () => {
+      const [active, setActive] = createSignal<string[]>(['a'])
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500).delayedIds
+      })
+      vi.advanceTimersByTime(300)
+      setActive([]) // left before appearing -> pending timer cancelled
+      setActive(['a']) // re-entered -> a FRESH delay, not the leftover 200ms
+      vi.advanceTimersByTime(300)
+      expect([...delayed()]).toEqual([]) // the earlier 300ms must not carry over
+      vi.advanceTimersByTime(200)
+      expect([...delayed()]).toEqual(['a'])
+      dispose()
+    })
+
+    it('clears pending timers on cleanup so a stale timer cannot fire', () => {
+      const [active] = createSignal<string[]>(['a'])
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        createDelayedSet(active, 500)
+      })
+      dispose()
+      expect(() => vi.advanceTimersByTime(500)).not.toThrow()
     })
   })
 

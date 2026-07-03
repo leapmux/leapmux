@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createPremeasureQueue } from './chatPremeasureQueue'
 
 describe('chatpremeasurequeue', () => {
-  function makeHarness(ids: string[], liveTailId?: string) {
+  function makeHarness(ids: string[]) {
     const measured = new Set<string>()
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const entries = new Map(ids.map(id => [id, { msg: { id } } as ClassifiedEntry]))
@@ -27,7 +27,6 @@ describe('chatpremeasurequeue', () => {
       visibleEntryById: () => entries,
       virtualItemById: () => itemById,
       virtualItems: () => items,
-      liveTailVisibleId: () => liveTailId,
       rangedCandidates: ranged,
       lookAheadCandidates: lookAhead,
       warmupCandidates: warmup,
@@ -35,18 +34,19 @@ describe('chatpremeasurequeue', () => {
     return { queue, candidate, setRanged, setLookAhead, setWarmup, itemById, measured }
   }
 
-  it('queues ranged candidates as pending+collapsed (live tail exempt) and look-ahead as pending only', () => {
+  it('queues ranged candidates as pending+collapsed (live tail included) and look-ahead as pending only', () => {
     createRoot((dispose) => {
-      const h = makeHarness(['a', 'b', 'c'], 'c')
+      const h = makeHarness(['a', 'b', 'c'])
       h.setRanged([h.candidate('a'), h.candidate('c')])
       h.setLookAhead([h.candidate('b')])
 
       // All three owed a premeasure render, in display order.
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b', 'c'])
-      // Only the in-range non-tail row is collapsed: the look-ahead row is not in the
-      // main <For> (nothing to overlap) and collapsing the live tail would flash a
-      // blank slot with no following row to protect.
-      expect([...h.queue.collapsedPremeasureIds()]).toEqual(['a'])
+      // Every in-range ranged row is collapsed -- the live tail 'c' included, so its
+      // unmeasured content can't overflow onto the trailing in-flow tail UI and it
+      // reveals in order with its siblings. The look-ahead row 'b' is not in the main
+      // <For>, so it is never collapsed.
+      expect([...h.queue.collapsedPremeasureIds()].sort()).toEqual(['a', 'c'])
       dispose()
     })
   })

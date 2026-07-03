@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { UseChatVirtualizerResult } from './useChatVirtualizer'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { setWith, setWithout } from '~/lib/immutableCollections'
 
 // ---------------------------------------------------------------------------
 // Skeleton-crossfade orchestration
@@ -44,13 +45,7 @@ export function createLingerSet(
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
   const removeFromLingering = (id: string): void => {
-    setLingeringIds((prev) => {
-      if (!prev.has(id))
-        return prev
-      const next = new Set(prev)
-      next.delete(id)
-      return next
-    })
+    setLingeringIds(prev => setWithout(prev, id))
   }
   const cancelLinger = (id: string): void => {
     const timer = timers.get(id)
@@ -69,7 +64,7 @@ export function createLingerSet(
     for (const id of previous) {
       if (current.has(id) || timers.has(id))
         continue
-      setLingeringIds(prev => new Set(prev).add(id))
+      setLingeringIds(prev => setWith(prev, id))
       timers.set(id, setTimeout(() => {
         timers.delete(id)
         removeFromLingering(id)
@@ -88,6 +83,70 @@ export function createLingerSet(
   })
 
   return { lingeringIds }
+}
+
+/**
+ * A reactive set of ids that have stayed in `activeIds` continuously for `delayMs`,
+ * then appear; an id that leaves before the delay elapses never appears, and one that
+ * leaves after appearing drops immediately.
+ *
+ * The mirror image of createLingerSet -- that delays a DROP; this delays an APPEARANCE.
+ * It gates the loading skeleton: a row hidden pending measurement enters `activeIds`
+ * immediately (so it can't overflow its slot), but its skeleton is painted only once the
+ * wait exceeds `delayMs`. A fast premeasure / re-measure (expand-collapse, diff-view
+ * switch, tail append) reveals with a plain fade-in and no distracting shimmer, while a
+ * slow one still gets a skeleton as a loading affordance.
+ *
+ * Call within a reactive owner: it creates an effect, per-id timers, and an onCleanup
+ * that clears them.
+ */
+export function createDelayedSet(
+  activeIds: Accessor<Iterable<string>>,
+  delayMs: number,
+): { delayedIds: Accessor<ReadonlySet<string>> } {
+  const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<string>>(new Set())
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  const clearTimer = (id: string): void => {
+    const timer = timers.get(id)
+    if (timer === undefined)
+      return
+    clearTimeout(timer)
+    timers.delete(id)
+  }
+
+  let previous: ReadonlySet<string> = new Set()
+  createEffect(() => {
+    const current = new Set(activeIds())
+    // Ids that just ENTERED start a delay timer; they appear only if still active when it
+    // fires. An id already tracked (in `previous`, or with a pending timer) is left alone
+    // so its delay isn't restarted on an unrelated recompute.
+    for (const id of current) {
+      if (previous.has(id) || timers.has(id))
+        continue
+      timers.set(id, setTimeout(() => {
+        timers.delete(id)
+        setDelayedIds(prev => setWith(prev, id))
+      }, delayMs))
+    }
+    // Ids that LEFT lose a still-pending timer (they never appear) and drop immediately
+    // if they had already appeared.
+    for (const id of previous) {
+      if (current.has(id))
+        continue
+      clearTimer(id)
+      setDelayedIds(prev => setWithout(prev, id))
+    }
+    previous = current
+  })
+
+  onCleanup(() => {
+    for (const timer of timers.values())
+      clearTimeout(timer)
+    timers.clear()
+  })
+
+  return { delayedIds }
 }
 
 /** The one-way fling-skeleton upgrade phase of a single row. */
@@ -174,16 +233,7 @@ export function createFlingSkeletonRegistry(
   // Toggle membership without churning the signal when it wouldn't change (most rows are
   // never skeletons, so their one effect run is a no-op).
   const setMembership = (id: string, present: boolean): void => {
-    setSkeletonIds((prev) => {
-      if (prev.has(id) === present)
-        return prev
-      const next = new Set(prev)
-      if (present)
-        next.add(id)
-      else
-        next.delete(id)
-      return next
-    })
+    setSkeletonIds(prev => (present ? setWith(prev, id) : setWithout(prev, id)))
   }
   const trackRow = (id: string): Accessor<RowUpgradePhase> => {
     const phase = createRowUpgradePhase(virt, id, crossfadeMs)

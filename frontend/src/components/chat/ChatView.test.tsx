@@ -166,10 +166,11 @@ vi.mock('./useChatVirtualizer', async (importOriginal) => {
   }
 })
 
-const { ChatView } = await import('./ChatView')
+const { ChatView, SKELETON_SHOW_DELAY_MS } = await import('./ChatView')
 const { PRE_MEASURE_WIDTH_PX } = await import('./chatViewportGeometry')
 
 afterEach(() => {
+  vi.useRealTimers()
   viewportSizeObserverState.width = 640
   viewportSizeObserverState.height = 733
   viewportSizeObserverState.onWidth = undefined
@@ -322,7 +323,11 @@ describe('chat view virtualized visible slice', () => {
     })
   })
 
-  it('does not collapse a newly appended live-tail row while premeasuring it', async () => {
+  it('hides a newly appended live-tail row until it is measured (no overflow onto trailing UI)', async () => {
+    // Regression: the live tail was shown at its ESTIMATED height immediately, so a
+    // tall unmeasured tail overflowed its slot onto the in-flow thinking indicator,
+    // and it revealed a frame ahead of an earlier appended sibling still skeletonised.
+    // The tail is now hidden-until-measured like any other in-range row.
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
     virtualizerState.currentHeightKeys = new Map()
@@ -344,14 +349,23 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.setRange?.({ start: 0, end: 2 })
     setMessages([message('m0', 1), message('m1', 2)])
 
+    // The appended tail m1 is premeasured AND hidden until its height commits -- it must
+    // not paint its real content at the estimate. It shows NO skeleton immediately (a
+    // fast re-measure is expected; the skeleton is deferred by SKELETON_SHOW_DELAY_MS).
     await waitFor(() => {
       expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m1'])
     })
+    const appendedRow = container.querySelector('[data-seq="2"]') as HTMLElement
+    expect(appendedRow.style.visibility).toBe('hidden')
+    expect(appendedRow.style.opacity).toBe('0')
+    expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
 
-    const appendedRow = container.querySelector('[data-seq="2"]') as HTMLElement | null
-    expect(appendedRow).not.toBeNull()
-    expect(appendedRow!.style.visibility).not.toBe('hidden')
-    expect(appendedRow!.style.opacity).toBe('1')
+    // Its height commits -> it fades in, still with no skeleton.
+    virtualizerState.measuredIds.add('m1')
+    virtualizerState.setRange?.({ start: 0, end: 2 }) // bump the stub's version signal
+    expect(appendedRow.style.visibility).not.toBe('hidden')
+    expect(appendedRow.style.opacity).toBe('1')
+    expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
   })
 
   it('keeps streaming text in flow until its replacement row is measured', async () => {
@@ -397,7 +411,7 @@ describe('chat view virtualized visible slice', () => {
     expect(row.style.opacity).toBe('1')
   })
 
-  it('renders a newly visible interior row invisible until measured, but not the live tail', () => {
+  it('renders newly appended interior AND live-tail rows invisible until measured', () => {
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
     virtualizerState.currentHeightKeys = new Map()
@@ -415,18 +429,20 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.setRange?.({ start: 0, end: 3 })
     setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
 
-    // Interior unmeasured rows are protected by INVISIBILITY (not a 0-height collapse):
-    // m1 (interior, unmeasured) renders hidden until its height commits; m2 (live tail)
-    // stays visible. This is applied synchronously (a createComputed), before any async turn.
+    // Both the interior unmeasured row m1 and the live tail m2 render hidden until
+    // their heights commit (INVISIBILITY, not a 0-height collapse), so neither paints
+    // real content at its estimate -- m2 no longer overflows onto the trailing tail UI.
+    // Applied synchronously (a createComputed), before any async turn.
     const interior = container.querySelector('[data-seq="2"]') as HTMLElement | null
     const tail = container.querySelector('[data-seq="3"]') as HTMLElement | null
     expect(interior).not.toBeNull()
     expect(interior!.style.visibility).toBe('hidden')
     expect(tail).not.toBeNull()
-    expect(tail!.style.visibility).not.toBe('hidden')
+    expect(tail!.style.visibility).toBe('hidden')
   })
 
-  it('paints a loading skeleton over a premeasure-hidden row\'s reserved slot, but not the live tail', async () => {
+  it('defers loading skeletons past the show-delay, then paints them (including the live tail)', () => {
+    vi.useFakeTimers()
     virtualizerState.attachedIds = []
     virtualizerState.measuredIds = new Set(['m0'])
     virtualizerState.currentHeightKeys = new Map()
@@ -445,29 +461,117 @@ describe('chat view virtualized visible slice', () => {
     virtualizerState.setRange?.({ start: 0, end: 3 })
     setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
 
-    // m1 (interior, unmeasured, premeasure-hidden) gets its reserved slot
-    // painted by the skeleton overlay; m0 (measured) and m2 (live tail, never
-    // hidden) do not.
+    // m1 (interior) and m2 (live tail) are hidden immediately, but NO skeleton paints
+    // yet -- a fast re-measure is expected, so the shimmer is deferred.
+    expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
+
+    // Only once the wait exceeds SKELETON_SHOW_DELAY_MS do the skeletons appear, one per
+    // still-hidden row (m1 -> 100px, m2 -> 200px); m0 (measured) gets none.
+    vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
+    const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    expect(skeletons).toHaveLength(2)
+    expect(skeletons.every(s => s.style.height === '100px')).toBe(true) // stub heightOfIndex
+    expect(skeletons.map(s => s.parentElement!.style.transform).sort())
+      .toEqual(['translateY(100px)', 'translateY(200px)'])
+
+    // Once both heights commit, the real rows show and the shown overlays CROSSFADE out:
+    // each lingers for one SKELETON_CROSSFADE_MS beat in the fading-out wrapper.
+    virtualizerState.measuredIds.add('m1')
+    virtualizerState.measuredIds.add('m2')
+    virtualizerState.setRange?.({ start: 0, end: 3 }) // bump the stub's version signal
+    expect((container.querySelector('[data-seq="2"]') as HTMLElement).style.visibility).not.toBe('hidden')
+    expect((container.querySelector('[data-seq="3"]') as HTMLElement).style.visibility).not.toBe('hidden')
+    const lingering = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+    expect(lingering).toHaveLength(2)
+    expect(lingering.every(s => s.parentElement!.classList.contains(rowSkeletonClosing))).toBe(true)
+
+    // After the crossfade beat the skeletons unmount for good.
+    vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
+    expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
+  })
+
+  it('reveals appended rows in document order, even when a later one measures first', async () => {
+    // Issue: when several messages are appended at once, whichever measured first
+    // used to pop in first -- so a later message could appear ahead of an earlier one
+    // still showing a skeleton. Now a measured tail row is HELD until every earlier
+    // still-loading sibling has revealed.
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set(['m0'])
+    virtualizerState.currentHeightKeys = new Map()
+    virtualizerState.setDeferred?.(false)
+    hiddenPremeasureState.candidates = []
+    hiddenPremeasureState.onMeasure = undefined
+    virtualizerState.setRange?.({ start: 0, end: 1 })
+    const [messages, setMessages] = createSignal([message('m0', 1)])
+    const { container } = render(() => (
+      <ChatView
+        messages={messages()}
+        streamingText=""
+      />
+    ))
+
+    // Append m1 (interior) and m2 (tail) together -- both hidden until measured.
+    virtualizerState.setRange?.({ start: 0, end: 3 })
+    setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+    const interior = () => container.querySelector('[data-seq="2"]') as HTMLElement
+    const tail = () => container.querySelector('[data-seq="3"]') as HTMLElement
+    expect(interior().style.visibility).toBe('hidden')
+    expect(tail().style.visibility).toBe('hidden')
+
+    // The TAIL (m2) measures FIRST, while the interior m1 is still loading. m2 must
+    // stay hidden so it can't appear before m1 (ordering is enforced by visibility,
+    // independent of the deferred loading skeleton).
+    virtualizerState.measuredIds.add('m2')
+    virtualizerState.setRange?.({ start: 0, end: 3 }) // bump
+    expect(interior().style.visibility).toBe('hidden') // still loading
+    expect(tail().style.visibility).toBe('hidden') // HELD behind m1
+
+    // m1 measures -> both reveal together, in order.
+    virtualizerState.measuredIds.add('m1')
+    virtualizerState.setRange?.({ start: 0, end: 3 }) // bump
+    expect(interior().style.visibility).not.toBe('hidden')
+    expect(tail().style.visibility).not.toBe('hidden')
+  })
+
+  it('does not skeletonise a stream-covered tail even when an earlier appended row is loading', () => {
+    // The order gate can pick up the stream-replacement tail (it is "ready" -- its
+    // content is painted by the in-flow streaming bubble, not a skeleton). Holding it
+    // behind an earlier still-loading row must NOT paint a skeleton over its slot, or
+    // the row double-paints with the bubble.
+    vi.useFakeTimers()
+    virtualizerState.attachedIds = []
+    virtualizerState.measuredIds = new Set(['m0'])
+    virtualizerState.currentHeightKeys = new Map()
+    virtualizerState.setDeferred?.(false)
+    hiddenPremeasureState.candidates = []
+    hiddenPremeasureState.onMeasure = undefined
+    virtualizerState.setRange?.({ start: 0, end: 3 })
+    const [messages, setMessages] = createSignal([message('m0', 1)])
+    const [streamingText, setStreamingText] = createSignal('Streaming answer')
+    const { container } = render(() => (
+      <ChatView
+        messages={messages()}
+        streamingText={streamingText()}
+      />
+    ))
+
+    // Streaming ends: the persisted assistant row m2 becomes the (stream-covered) tail,
+    // with an earlier tool row m1 appended alongside it and still premeasuring.
+    batch(() => {
+      setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+      setStreamingText('')
+    })
+
+    expect(container).toHaveTextContent('Streaming answer')
+    // Past the show-delay, exactly one skeleton appears -- the interior loading row m1's
+    // overlay (offset 100px). The stream-covered tail m2 (offset 200px) gets NONE even
+    // as its earlier sibling skeletonises; it is covered by the bubble.
+    vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
     const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
     expect(skeletons).toHaveLength(1)
-    expect(skeletons[0].style.height).toBe('100px') // stub heightOfIndex (the reserved estimate)
-    expect(skeletons[0].parentElement!.style.transform).toBe('translateY(100px)') // stub offset of m1
-
-    // Once m1's height commits, the real row shows and the overlay CROSSFADES
-    // out: it lingers for one SKELETON_CROSSFADE_MS beat in the fading-out
-    // wrapper instead of popping away.
-    virtualizerState.measuredIds.add('m1')
-    virtualizerState.setRange?.({ start: 0, end: 3 }) // bump the stub's version signal
-    const interior = container.querySelector('[data-seq="2"]') as HTMLElement
-    expect(interior.style.visibility).not.toBe('hidden')
-    const lingering = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
-    expect(lingering).toHaveLength(1)
-    expect(lingering[0].parentElement!.classList.contains(rowSkeletonClosing)).toBe(true)
-
-    // After the crossfade beat the skeleton unmounts for good.
-    await waitFor(() => {
-      expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
-    })
+    expect(skeletons[0].parentElement!.style.transform).toBe('translateY(100px)')
+    // The tail row itself is hidden (covered by the in-flow streaming bubble).
+    expect((container.querySelector('[data-seq="3"]') as HTMLElement).style.visibility).toBe('hidden')
   })
 
   it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {

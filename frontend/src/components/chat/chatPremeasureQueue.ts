@@ -3,6 +3,7 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import { createComputed, createMemo, createSignal, untrack } from 'solid-js'
+import { mapWithout, setWithout } from '~/lib/immutableCollections'
 import { shallowEqualSets } from '~/lib/shallowEqual'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
 
@@ -14,9 +15,12 @@ import { warnSlowScrollPhase } from './chatScrollGeometry'
 //  - `pendingPremeasureIds`: the rows currently owed a hidden premeasure render.
 //  - `collapsedPremeasureIds`: the IN-RANGE unmeasured rows the visible list must keep
 //    collapsed until their height commits, so a tall unmeasured row can't paint past
-//    its estimated slot and overlap the next row. Look-ahead rows are never collapsed
-//    (they are not in the main <For>), and neither is the live tail (it has no
-//    following row to protect; collapsing it would flash a blank slot).
+//    its estimated slot and overlap what follows -- the next row, or (for the live
+//    tail) the in-flow thinking indicator / streaming bubble / startup banner that sit
+//    below the virtual spacer. Look-ahead rows are never collapsed (they are not in the
+//    main <For>). The live tail IS collapsed like any other in-range row: ChatView
+//    keeps the stream-replacement tail exempt from the skeleton separately (the in-flow
+//    streaming bubble already covers it), so live streaming text is never double-painted.
 //  - `unsettledPremeasureKeys`: rows whose ACCEPTED measurement is still settling
 //    (pending images), keyed by the heightKey it was measured under, so the row keeps
 //    its premeasure mount for a re-measure instead of being dropped as done.
@@ -36,8 +40,6 @@ export interface PremeasureQueueDeps {
   virtualItemById: Accessor<ReadonlyMap<string, VirtualItem>>
   /** The current items in display order (candidate assembly preserves it). */
   virtualItems: Accessor<readonly VirtualItem[]>
-  /** The live tail's id (exempt from collapse), or undefined when windowed away. */
-  liveTailVisibleId: Accessor<string | undefined>
   /** Unmeasured rows inside the rendered range (collapsed until they measure). */
   rangedCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
   /** Unmeasured rows just outside the range (premeasured, never collapsed). */
@@ -57,20 +59,6 @@ export interface PremeasureQueueDeps {
  * or re-arms the row's queue entries by the measurement's outcome.
  */
 export function createPremeasureQueue(deps: PremeasureQueueDeps) {
-  const removeIdFromSet = (ids: ReadonlySet<string>, id: string): ReadonlySet<string> => {
-    if (!ids.has(id))
-      return ids
-    const next = new Set(ids)
-    next.delete(id)
-    return next
-  }
-  const removeIdFromMap = <V>(items: ReadonlyMap<string, V>, id: string): ReadonlyMap<string, V> => {
-    if (!items.has(id))
-      return items
-    const next = new Map(items)
-    next.delete(id)
-    return next
-  }
   const [pendingPremeasureIds, setPendingPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
   const [collapsedPremeasureIds, setCollapsedPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
   const [unsettledPremeasureKeys, setUnsettledPremeasureKeys] = createSignal<ReadonlyMap<string, string | undefined>>(new Map())
@@ -78,15 +66,17 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
   createComputed(() => {
     const entries = deps.visibleEntryById()
     const items = deps.virtualItemById()
-    const liveTailId = deps.liveTailVisibleId()
     const unsettled = untrack(unsettledPremeasureKeys)
     const nextPending = new Set(untrack(pendingPremeasureIds))
     const nextCollapsed = new Set(untrack(collapsedPremeasureIds))
     const nextUnsettled = new Map(unsettled)
+    // Every in-range unmeasured row is collapsed until its height commits -- the live
+    // tail included, so an unmeasured tall tail can't overflow its estimated slot onto
+    // the trailing thinking indicator / streaming bubble, and appended rows reveal in
+    // order rather than the tail popping in ahead of a still-loading sibling.
     for (const candidate of deps.rangedCandidates()) {
       nextPending.add(candidate.item.id)
-      if (candidate.item.id !== liveTailId)
-        nextCollapsed.add(candidate.item.id)
+      nextCollapsed.add(candidate.item.id)
     }
     // Look-ahead and warm-up band rows are premeasured (pending) but never marked
     // invisible: they are not rendered in the main list, so they need no collapse entry.
@@ -94,8 +84,6 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       nextPending.add(candidate.item.id)
     for (const candidate of deps.warmupCandidates?.() ?? [])
       nextPending.add(candidate.item.id)
-    if (liveTailId !== undefined)
-      nextCollapsed.delete(liveTailId)
     for (const id of [...nextPending]) {
       const item = items.get(id)
       if (!entries.has(id) || !item) {
@@ -156,8 +144,8 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     const accepted = deps.virt.primeHeight(id, height, heightKey)
     const hasCommittedOrPendingHeight = accepted || deps.virt.hasMeasuredHeight(id) || deps.virt.hasPendingPremeasuredHeight(id)
     if (settled && hasCommittedOrPendingHeight) {
-      setPendingPremeasureIds(ids => removeIdFromSet(ids, id))
-      setUnsettledPremeasureKeys(keys => removeIdFromMap(keys, id))
+      setPendingPremeasureIds(ids => setWithout(ids, id))
+      setUnsettledPremeasureKeys(keys => mapWithout(keys, id))
     }
     else if (!settled && hasCommittedOrPendingHeight) {
       setUnsettledPremeasureKeys((keys) => {

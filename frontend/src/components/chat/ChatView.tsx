@@ -22,9 +22,10 @@ import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
+import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
-import { createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
+import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
 import { createStreamingTail } from './chatStreamingTail'
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
@@ -47,6 +48,12 @@ const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
 // pop. The shared motion token keeps this unmount timer and the CSS fade
 // duration in lockstep (see tokens.ts).
 export const SKELETON_CROSSFADE_MS = motion.medium
+// How long a row must stay hidden-pending-reveal before its loading skeleton is
+// painted. A fast premeasure / re-measure (message expand-collapse, unified<->split
+// diff-view switch, a freshly appended tail) settles well under this, so the row just
+// fades in with no distracting shimmer; only a genuinely slow wait surfaces a skeleton
+// as a loading affordance. See createDelayedSet.
+export const SKELETON_SHOW_DELAY_MS = 500
 
 function heightKeyPart(value: string | undefined): string {
   return value === undefined ? '0:' : `${value.length}:${value}`
@@ -498,13 +505,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     const all = visibleEntries()
     return all[all.length - 1]
   })
-  // Hidden-premeasure collapse protects rows that have following content: a tall
-  // unmeasured row can otherwise paint past its estimated slot and overlap the
-  // next row. The live tail has no following message row to protect, so collapsing
-  // it only creates a visible blank slot before its first measurement lands.
-  const liveTailVisibleId = createMemo(() => (
-    props.pagination?.hasNewerMessages ? undefined : tailVisibleEntry()?.msg.id
-  ))
 
   // Premeasure bands: hidden-DOM premeasure of the ranged + look-ahead + idle warm-up
   // rows, fed into the coherence queue that de-dupes / collapses / settles them (see
@@ -519,7 +519,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     virt,
     contentWidth,
     visibleEntryById,
-    liveTailVisibleId,
     warmupEnabled: () => (props.tabActive ?? true)
       && contentWidth() > 0
       && !props.streamingText
@@ -556,26 +555,53 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       clearTimeout(syntaxHighlightResumeTimer)
   })
 
-  // An actively premeasured unknown-height row awaiting its DOM height commit.
+  // The rendered window: only the rows in/near the viewport.
+  const visibleSlice = createMemo(() => {
+    const all = visibleEntries()
+    const r = virt.range()
+    return all.slice(r.start, r.end)
+  })
+
+  // An actively premeasured unknown-height row awaiting its OWN DOM height commit.
   // While true the row renders INVISIBLE (see rowHiddenUntilMeasured) and its
   // reserved slot is painted by the loading-skeleton overlay instead of blank
-  // space. Distinct from the stream-covered tail below, whose content is
-  // already painted by the in-flow streaming bubble (a skeleton there would
-  // double-paint over live text).
+  // space. The live tail is included -- its unmeasured content would otherwise
+  // overflow its estimated slot onto the trailing thinking indicator / streaming
+  // UI -- EXCEPT the stream-covered tail, whose content is already painted by the
+  // in-flow streaming bubble (a skeleton there would double-paint over live text).
   const rowAwaitingMeasurement = (id: string): boolean => (
     !virt.hasMeasuredHeight(id)
     && collapsedPremeasureIds().has(id)
     && streamReplacementTailId() !== id
-    && liveTailVisibleId() !== id
   )
 
+  // In-order reveal of an append burst: a measured tail row is held hidden until
+  // every earlier still-loading row in its cohort has shown, so a later appended
+  // message never pops in ahead of an earlier one -- even if it finishes measuring
+  // first. Scoped to the tail cohort (see createOrderedTailReveal), so scrolling
+  // back through already-loaded history is left untouched.
+  const orderedRevealHeld = createOrderedTailReveal(
+    () => visibleSlice().map(entry => entry.msg.id),
+    rowAwaitingMeasurement,
+  )
+
+  // A row is hidden pending reveal when it is awaiting its OWN measurement OR being held
+  // so an earlier appended sibling reveals first -- but NEVER while the in-flow streaming
+  // bubble already covers it (the order gate can pick up a stream-replacement tail, whose
+  // content the bubble paints; a skeleton there would double-paint over live text). The
+  // row hides IMMEDIATELY (so it can't overflow its slot); its loading skeleton is
+  // deferred separately (see skeletonSlice) so fast re-measures don't flash a shimmer.
+  const rowHiddenPendingReveal = (id: string): boolean =>
+    !isCoveredByInFlowTail(id) && (rowAwaitingMeasurement(id) || orderedRevealHeld().has(id))
+
   // Hide-until-measured, shared by the row itself and its gap-bridge overlay
-  // entry: an actively premeasured unknown-height row stays invisible until
-  // its DOM height commits, so a tall row can't paint beyond its estimated
-  // slot and overlap rows already on screen. Rows with no active premeasure
-  // stay visible so a zero attach read cannot hide content forever.
+  // entry: a premeasure-hidden (or order-held) row stays invisible until it is
+  // ready to reveal, so a tall row can't paint beyond its estimated slot and
+  // overlap what follows (a later row, or the in-flow tail UI). Rows with no
+  // active premeasure stay visible so a zero attach read cannot hide content
+  // forever.
   const rowHiddenUntilMeasured = (id: string): boolean => (
-    isCoveredByInFlowTail(id) || rowAwaitingMeasurement(id)
+    isCoveredByInFlowTail(id) || rowHiddenPendingReveal(id)
   )
 
   // Fling-skeleton phases for the rendered rows, collected into one reactive set so the
@@ -605,29 +631,43 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     />
   )
 
-  // The rendered window: only the rows in/near the viewport.
-  const visibleSlice = createMemo(() => {
-    const all = visibleEntries()
-    const r = virt.range()
-    return all.slice(r.start, r.end)
+  // Rows hidden pending reveal -- the CANDIDATES for a loading skeleton. Filter
+  // preserves the stable entry references, so downstream <For>s only mount/unmount
+  // on membership changes.
+  const pendingRevealSlice = createMemo(() =>
+    visibleSlice().filter(entry => rowHiddenPendingReveal(entry.msg.id)))
+
+  // Only rows still hidden after SKELETON_SHOW_DELAY_MS actually paint a skeleton (see
+  // createDelayedSet): a fast premeasure / re-measure (expand-collapse, diff-view switch,
+  // tail append) reveals with a plain fade-in and no distracting shimmer; a slow wait
+  // still surfaces a skeleton as a loading affordance. The row itself is hidden
+  // immediately regardless (rowHiddenUntilMeasured) so it can never overflow its slot.
+  const { delayedIds: skeletonIds } = createDelayedSet(
+    () => pendingRevealSlice().map(entry => entry.msg.id),
+    SKELETON_SHOW_DELAY_MS,
+  )
+  // The rows currently PAINTING a skeleton overlay. During a fast fling the show-delay
+  // is bypassed: fast scrolling must never flash blank gaps, so an unmeasured row
+  // entering the window mid-fling shows its skeleton at once (the delay is for quick
+  // in-place re-measures -- expand-collapse, diff-view switch, tail append -- not for
+  // scrolling into unmeasured history). Rows that waited out the delay stay shown as the
+  // fling settles; the rest fall back to the delayed set.
+  const skeletonSlice = createMemo(() => {
+    const pending = pendingRevealSlice()
+    if (virt.fastScrollActive())
+      return pending
+    return pending.filter(entry => skeletonIds().has(entry.msg.id))
   })
 
-  // Rows currently premeasure-hidden (blank until their height commits): the
-  // loading-skeleton overlay paints their reserved slots. Filter preserves the
-  // stable entry references, so the overlay <For> only mounts/unmounts on
-  // membership changes.
-  const awaitingMeasurementSlice = createMemo(() =>
-    visibleSlice().filter(entry => rowAwaitingMeasurement(entry.msg.id)))
-
-  // Crossfade for the loading skeletons: when a row leaves awaiting-measurement
-  // (its height committed, the real row starts its opacity fade-in), its
-  // skeleton lingers for one SKELETON_CROSSFADE_MS beat in a fading-out
-  // wrapper instead of popping away. A row that re-enters awaiting (heightKey
-  // churn) cancels its linger — the live overlay covers it again. The linger
-  // state machine (start-on-leave / cancel-on-re-enter / clear-on-cleanup) lives
-  // in createLingerSet.
+  // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its height
+  // committed, the real row starts its opacity fade-in), its skeleton lingers for one
+  // SKELETON_CROSSFADE_MS beat in a fading-out wrapper instead of popping away. A row
+  // that re-enters cancels its linger — the live overlay covers it again. The linger
+  // state machine (start-on-leave / cancel-on-re-enter / clear-on-cleanup) lives in
+  // createLingerSet. Only rows that actually showed a skeleton linger; a fast reveal
+  // (never skeletonised) just fades in with nothing to fade out.
   const { lingeringIds: lingeringSkeletonIds } = createLingerSet(
-    () => awaitingMeasurementSlice().map(entry => entry.msg.id),
+    () => skeletonSlice().map(entry => entry.msg.id),
     SKELETON_CROSSFADE_MS,
   )
   // Lingering ids resolved back to entries (stable references, so the fade-out
@@ -829,14 +869,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     hiddenOf={rowSpanColumnHidden}
                   />
                   {/*
-                    Loading skeletons: a premeasure-hidden row paints its
-                    reserved slot as shimmer lines instead of blank space while
-                    its height settles. Rendered OUTSIDE the rows — a hidden
-                    row's opacity:0 would swallow any child — and positioned by
-                    the same offsets, so they vanish seamlessly the moment the
+                    Loading skeletons: a premeasure-hidden row whose wait has
+                    exceeded SKELETON_SHOW_DELAY_MS paints its reserved slot as
+                    shimmer lines instead of blank space (a fast re-measure never
+                    reaches here — it just fades in). Rendered OUTSIDE the rows — a
+                    hidden row's opacity:0 would swallow any child — and positioned
+                    by the same offsets, so they vanish seamlessly the moment the
                     real row's measurement commits and it fades in.
                   */}
-                  <For each={awaitingMeasurementSlice()}>
+                  <For each={skeletonSlice()}>
                     {entry => positionedRowSkeleton(entry)}
                   </For>
                   {/*
