@@ -1,6 +1,8 @@
-import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { platformBridge, readClipboardImage } from './platformBridge'
+import { observeWindowMode, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -271,5 +273,286 @@ describe('cliInstallSymlink', () => {
       result: 'io_error',
       message: 'unknown sidecar response',
     })
+  })
+})
+
+describe('restoreWindowGeometry', () => {
+  let calls: Array<{ cmd: string, args: Record<string, unknown> }>
+
+  // Record every IPC call and answer the window-state queries with `state`,
+  // so the mode the save handler computes is controllable per test.
+  function installIPC(state: { fullscreen: boolean, maximized: boolean }) {
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      switch (cmd) {
+        case 'plugin:window|is_fullscreen':
+          return state.fullscreen
+        case 'plugin:window|is_maximized':
+          return state.maximized
+        default:
+          return null
+      }
+    })
+  }
+
+  const cmds = () => calls.map(c => c.cmd)
+  const saved = () => calls.find(c => c.cmd === 'save_window_geometry')?.args
+
+  beforeEach(() => {
+    calls = []
+    mockWindows('main')
+  })
+
+  afterEach(() => {
+    clearMocks()
+    vi.useRealTimers()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('sizes to the saved windowed geometry then enters fullscreen', async () => {
+    installIPC({ fullscreen: true, maximized: false })
+    await restoreWindowGeometry(1280, 800, 'fullscreen')
+
+    expect(cmds()).toContain('plugin:window|set_size')
+    expect(cmds()).toContain('plugin:window|show')
+    expect(cmds()).not.toContain('plugin:window|maximize')
+    const fs = calls.find(c => c.cmd === 'plugin:window|set_fullscreen')
+    expect(fs?.args).toMatchObject({ value: true })
+  })
+
+  it('maximizes without entering fullscreen when mode is maximized', async () => {
+    installIPC({ fullscreen: false, maximized: true })
+    await restoreWindowGeometry(1280, 800, 'maximized')
+
+    expect(cmds()).toContain('plugin:window|maximize')
+    expect(cmds()).not.toContain('plugin:window|set_fullscreen')
+  })
+
+  it('never sets size when the saved windowed geometry is absent', async () => {
+    installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(0, 0, 'normal')
+
+    expect(cmds()).not.toContain('plugin:window|set_size')
+    expect(cmds()).toContain('plugin:window|show')
+  })
+
+  it('saves fullscreen with zeroed dims so the windowed size is preserved', async () => {
+    vi.useFakeTimers()
+    installIPC({ fullscreen: true, maximized: false })
+    await restoreWindowGeometry(1280, 800, 'fullscreen')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    expect(saved()).toMatchObject({ width: 0, height: 0, mode: 'fullscreen' })
+  })
+
+  it('saves the live viewport dimensions with normal mode when windowed', async () => {
+    vi.useFakeTimers()
+    installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(1000, 700, 'normal')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    expect(saved()).toMatchObject({
+      width: window.innerWidth,
+      height: window.innerHeight,
+      mode: 'normal',
+    })
+  })
+
+  it('saves maximized with zeroed dims so the windowed size is preserved', async () => {
+    vi.useFakeTimers()
+    installIPC({ fullscreen: false, maximized: true })
+    await restoreWindowGeometry(1280, 800, 'maximized')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    expect(saved()).toMatchObject({ width: 0, height: 0, mode: 'maximized' })
+  })
+
+  it('prefers fullscreen over maximized when the window reports both', async () => {
+    // A native-fullscreen window can simultaneously report zoomed; fullscreen
+    // must win, else exiting fullscreen would restore into a maximized state
+    // the user never chose.
+    vi.useFakeTimers()
+    installIPC({ fullscreen: true, maximized: true })
+    await restoreWindowGeometry(1280, 800, 'fullscreen')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    expect(saved()).toMatchObject({ width: 0, height: 0, mode: 'fullscreen' })
+  })
+
+  it('replaces the resize saver on re-entry instead of stacking listeners', async () => {
+    // The launcher can remount (switching connection mode returns to it), which
+    // re-runs restoreWindowGeometry. Each re-entry must replace the prior saver,
+    // not leak another resize listener -- otherwise one resize fans out into N
+    // duplicate save_window_geometry IPC calls.
+    vi.useFakeTimers()
+    installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(1000, 700, 'normal')
+    await restoreWindowGeometry(1000, 700, 'normal')
+    await restoreWindowGeometry(1000, 700, 'normal')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    const saves = calls.filter(c => c.cmd === 'save_window_geometry')
+    expect(saves).toHaveLength(1)
+  })
+})
+
+// The behavior tests above mock the IPC layer, so they bypass Tauri's
+// permission allowlist entirely. A window command the frontend invokes but
+// the Rust capabilities never grant fails only at runtime -- exactly the
+// `set_fullscreen not allowed` class of bug. This guard drives the real
+// restore path, captures the commands it emits, and asserts each is granted
+// in capabilities/default.json so the two stay in sync.
+describe('desktop window capabilities', () => {
+  // `plugin:window|set_fullscreen` -> `core:window:allow-set-fullscreen`.
+  function permissionFor(ipcCommand: string): string {
+    const command = ipcCommand.replace('plugin:window|', '').replace(/_/g, '-')
+    return `core:window:allow-${command}`
+  }
+
+  function grantedPermissions(): string[] {
+    // import.meta.dirname is frontend/src/api; the capabilities live at the
+    // repo root under desktop/rust.
+    const path = resolve(
+      (import.meta as { dirname: string }).dirname,
+      '../../../desktop/rust/capabilities/default.json',
+    )
+    const config = JSON.parse(readFileSync(path, 'utf8')) as { permissions: string[] }
+    return config.permissions
+  }
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('grants every window command the geometry-restore path invokes', async () => {
+    const invoked = new Set<string>()
+    mockWindows('main')
+    mockIPC((cmd) => {
+      if (cmd.startsWith('plugin:window|'))
+        invoked.add(cmd)
+      return null
+    })
+
+    // Both branches together exercise every mutating command on the restore
+    // path: set_size + show (shared), maximize (maximized), set_fullscreen
+    // (fullscreen). No resize is dispatched, so only mutating commands --
+    // which must be granted explicitly -- are captured, not the is_* reads
+    // that ride on core:default.
+    await restoreWindowGeometry(1280, 800, 'fullscreen')
+    await restoreWindowGeometry(1280, 800, 'maximized')
+
+    const commands = [...invoked]
+    const granted = grantedPermissions()
+    expect(commands).toContain('plugin:window|set_fullscreen')
+    for (const cmd of commands) {
+      expect(granted, `${cmd} needs ${permissionFor(cmd)} in capabilities/default.json`)
+        .toContain(permissionFor(cmd))
+    }
+  })
+})
+
+describe('observeWindowMode', () => {
+  // Answer the window-state reads so the derived mode is controllable, and
+  // give the event listener a real rid so onResized resolves cleanly.
+  function installIPC(state: { fullscreen: boolean, maximized: boolean }) {
+    mockIPC((cmd) => {
+      switch (cmd) {
+        case 'plugin:window|is_fullscreen':
+          return state.fullscreen
+        case 'plugin:window|is_maximized':
+          return state.maximized
+        case 'plugin:event|listen':
+          return 1
+        default:
+          return null
+      }
+    })
+  }
+
+  beforeEach(() => {
+    mockWindows('main')
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('pushes the derived mode once on attach', async () => {
+    installIPC({ fullscreen: false, maximized: true })
+    const onChange = vi.fn()
+
+    const dispose = observeWindowMode(onChange)
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
+
+    expect(onChange).toHaveBeenCalledWith('maximized')
+    expect(() => dispose()).not.toThrow()
+  })
+
+  it('reports fullscreen even when the window also reports maximized', async () => {
+    installIPC({ fullscreen: true, maximized: true })
+    const onChange = vi.fn()
+
+    observeWindowMode(onChange)
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
+
+    expect(onChange).toHaveBeenCalledWith('fullscreen')
+  })
+
+  it('is inert outside the Tauri app (no window global)', () => {
+    // No mockWindows here -> isTauriApp() is false; the observer must no-op
+    // and hand back a disposer that is safe to call.
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    const onChange = vi.fn()
+
+    const dispose = observeWindowMode(onChange)
+
+    expect(onChange).not.toHaveBeenCalled()
+    expect(() => dispose()).not.toThrow()
+  })
+})
+
+describe('windowExitFullscreen', () => {
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('invokes set_fullscreen(false) on the current window', async () => {
+    // The CustomTitlebar tests mock this bridge, so they can't catch a
+    // setFullscreen(true) copy-paste bug -- assert the actual IPC value here.
+    const calls: Array<{ cmd: string, args: Record<string, unknown> }> = []
+    mockWindows('main')
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      return null
+    })
+
+    await windowExitFullscreen()
+
+    const fs = calls.find(c => c.cmd === 'plugin:window|set_fullscreen')
+    expect(fs).toBeDefined()
+    expect(fs!.args).toMatchObject({ value: false })
+  })
+
+  it('is inert outside the Tauri app (no window global)', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    await expect(windowExitFullscreen()).resolves.toBeUndefined()
   })
 })

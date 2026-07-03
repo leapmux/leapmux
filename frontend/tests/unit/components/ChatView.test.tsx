@@ -661,7 +661,7 @@ describe('chatView', () => {
     await waitFor(() => expect(view.container.querySelector('[data-seq="2"]')).not.toBeNull())
   })
 
-  it('keeps unmeasured interior rows invisible without collapsing the live tail', async () => {
+  it('keeps unmeasured interior and tail rows invisible while reserving their estimated space', async () => {
     const messages = [
       { ...makeMessage('assistant', 'Older tall output', 'msg-1'), seq: 1n },
       { ...makeMessage('assistant', 'Current message', 'msg-2'), seq: 2n },
@@ -688,10 +688,12 @@ describe('chatView', () => {
     expect(row.style.opacity).toBe('0')
     const tailRow = view.container.querySelector('[data-seq="2"]') as HTMLElement | null
     expect(tailRow).not.toBeNull()
-    expect(tailRow!.style.visibility).toBe('')
-    expect(tailRow!.style.opacity).toBe('1')
-    // Both rows are unmeasured and reserve the seed estimate (96) -- the interior row is
-    // hidden but still reserves space (no collapse-to-0), so the spacer is 96 + 20 gap + 96.
+    // The live tail is hidden-until-measured like any other in-range row, so its
+    // unmeasured content can't overflow its estimated slot onto the trailing tail UI.
+    expect(tailRow!.style.visibility).toBe('hidden')
+    expect(tailRow!.style.opacity).toBe('0')
+    // Both rows are unmeasured and reserve the seed estimate (96); hidden means invisible,
+    // NOT collapsed-to-0, so both still reserve space -- the spacer is 96 + 20 gap + 96.
     expect(spacer!.style.height).toBe('212px')
 
     vi.spyOn(tailRow!, 'getBoundingClientRect').mockImplementation(() => ({ height: 32 }) as DOMRect)
@@ -706,6 +708,10 @@ describe('chatView', () => {
 
     await waitFor(() => expect(row.style.visibility).toBe(''))
     expect(row.style.opacity).toBe('1')
+    // The tail measured first but was held until the earlier interior row revealed
+    // (ordered append reveal); with both measured it is now visible too.
+    expect(tailRow!.style.visibility).toBe('')
+    expect(tailRow!.style.opacity).toBe('1')
     expect(spacer!.style.height).toBe('532px')
   })
 
@@ -792,6 +798,13 @@ describe('chatView', () => {
     await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
 
     await reportChatViewportSize(view)
+
+    // Measure the prior row so the ordered-reveal gate doesn't hold the replacement
+    // tail behind it -- in the running app an existing message is already measured, so
+    // this isolates the stream->row handoff (the tail reveals on its OWN measurement).
+    const priorRow = view.container.querySelector('[data-seq="1"]') as HTMLElement
+    vi.spyOn(priorRow, 'getBoundingClientRect').mockImplementation(() => ({ height: 40 }) as DOMRect)
+    await triggerResizeObserverFor(priorRow)
 
     batch(() => {
       setStreamingText('')

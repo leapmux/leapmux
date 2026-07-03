@@ -11,6 +11,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-set-size",
+    "core:window:allow-set-fullscreen",
     "core:window:allow-show",
     "core:window:allow-center",
     "core:window:allow-maximize",
@@ -18,7 +19,6 @@
     "core:window:allow-close",
     "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-is-maximized",
     "core:window:allow-start-dragging",
     "core:webview:allow-create-webview-window"
   ]

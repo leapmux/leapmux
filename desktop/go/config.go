@@ -7,13 +7,22 @@ import (
 	"path/filepath"
 )
 
+// Window display modes persisted in DesktopConfig.WindowMode. The states are
+// mutually exclusive; WindowWidth/Height always hold the last *windowed*
+// geometry so exiting maximized/fullscreen returns to a sensible size.
+const (
+	WindowModeNormal     = "normal"
+	WindowModeMaximized  = "maximized"
+	WindowModeFullscreen = "fullscreen"
+)
+
 // DesktopConfig persists the user's last connection mode, hub URL, and window size.
 type DesktopConfig struct {
-	Mode            string `json:"mode"`                       // "solo" or "distributed"
-	HubURL          string `json:"hub_url"`                    // Only for distributed
-	WindowWidth     int    `json:"window_width,omitempty"`     // Saved window width
-	WindowHeight    int    `json:"window_height,omitempty"`    // Saved window height
-	WindowMaximized bool   `json:"window_maximized,omitempty"` // Saved maximized state
+	Mode         string `json:"mode"`                    // "solo" or "distributed"
+	HubURL       string `json:"hub_url"`                 // Only for distributed
+	WindowWidth  int    `json:"window_width,omitempty"`  // Saved windowed width
+	WindowHeight int    `json:"window_height,omitempty"` // Saved windowed height
+	WindowMode   string `json:"window_mode,omitempty"`   // "normal" | "maximized" | "fullscreen"
 }
 
 func configPath() (string, error) {

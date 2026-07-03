@@ -1,14 +1,15 @@
 /// <reference types="vitest/globals" />
+import type { WindowMode } from '~/api/platformBridge'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openWebInspector, quitApp, windowClose, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { openWebInspector, quitApp, windowClose, windowExitFullscreen, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
 import { CustomTitlebar } from './CustomTitlebar'
 
 // Hoisted so the vi.mock factories below can close over them — vi.mock
 // runs above any top-level `const` in the file.
-const { initialMaximized, setShowAboutDialog, runtimeLocalSolo, detectedEditors } = vi.hoisted(() => ({
-  initialMaximized: { value: false },
+const { initialMode, setShowAboutDialog, runtimeLocalSolo, detectedEditors } = vi.hoisted(() => ({
+  initialMode: { value: 'normal' as WindowMode },
   setShowAboutDialog: vi.fn(),
   runtimeLocalSolo: { value: false },
   detectedEditors: { value: [] as Array<{ id: string, displayName: string }> },
@@ -41,8 +42,8 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
         localSolo: runtimeLocalSolo.value,
       },
     }),
-    observeWindowMaximized: (onChange: (max: boolean) => void) => {
-      onChange(initialMaximized.value)
+    observeWindowMode: (onChange: (mode: WindowMode) => void) => {
+      onChange(initialMode.value)
       return () => {}
     },
     openWebInspector: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     windowClose: vi.fn(() => Promise.resolve()),
     windowMinimize: vi.fn(() => Promise.resolve()),
     windowToggleMaximize: vi.fn(() => Promise.resolve()),
+    windowExitFullscreen: vi.fn(() => Promise.resolve()),
   }
 })
 
@@ -91,7 +93,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  initialMaximized.value = false
+  initialMode.value = 'normal'
 })
 
 function renderTitlebar(activeWorkingDir?: () => string | undefined) {
@@ -179,7 +181,7 @@ describe('customTitlebar hamburger menu', () => {
   })
 
   it('menu item reads "Restore" when the window is maximized', () => {
-    initialMaximized.value = true
+    initialMode.value = 'maximized'
     const { container } = renderTitlebar()
     const labels = getMenuItemLabels(container)
     expect(labels).toContain('Restore')
@@ -187,11 +189,29 @@ describe('customTitlebar hamburger menu', () => {
   })
 
   it('right-side window-control button title switches between Maximize and Restore', () => {
-    initialMaximized.value = true
+    initialMode.value = 'maximized'
     renderTitlebar()
     // The Linux window-controls cluster exposes the maximize/restore button via aria-label.
     expect(screen.getByLabelText('Restore')).toBeInTheDocument()
     expect(screen.queryByLabelText('Maximize')).toBeNull()
+  })
+
+  it('menu item reads "Exit Full Screen" and exits fullscreen when the window is fullscreen', () => {
+    initialMode.value = 'fullscreen'
+    clickMenuItem('Exit Full Screen')
+    // Must route to setFullscreen(false); toggleMaximize can't leave fullscreen.
+    expect(windowExitFullscreen).toHaveBeenCalledTimes(1)
+    expect(windowToggleMaximize).not.toHaveBeenCalled()
+  })
+
+  it('right-side window-control button relabels to "Exit Full Screen" in fullscreen and exits it', () => {
+    initialMode.value = 'fullscreen'
+    renderTitlebar()
+    expect(screen.queryByLabelText('Maximize')).toBeNull()
+    const button = screen.getByLabelText('Exit Full Screen')
+    fireEvent.click(button)
+    expect(windowExitFullscreen).toHaveBeenCalledTimes(1)
+    expect(windowToggleMaximize).not.toHaveBeenCalled()
   })
 })
 

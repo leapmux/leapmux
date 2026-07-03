@@ -96,7 +96,7 @@ message ListEditorsRequest {
 message SetWindowSizeRequest {
   int32 width = 1;
   int32 height = 2;
-  bool maximized = 3;
+  WindowMode mode = 3;
 }
 
 message ConnectDistributedRequest {
@@ -289,12 +289,24 @@ message SidecarLogEvent {
 
 // --- Shared types ---
 
+// WindowMode is the top-level display state of the desktop window. The three
+// states are mutually exclusive: a window is windowed, macOS-zoomed, or in
+// native fullscreen -- never a combination. window_width/height on
+// DesktopConfig always hold the last *windowed* geometry so exiting
+// maximized/fullscreen returns to a sensible size.
+enum WindowMode {
+  WINDOW_MODE_UNSPECIFIED = 0; // treated as NORMAL (fresh config default)
+  WINDOW_MODE_NORMAL = 1;
+  WINDOW_MODE_MAXIMIZED = 2;
+  WINDOW_MODE_FULLSCREEN = 3;
+}
+
 message DesktopConfig {
   string mode = 1;
   string hub_url = 2;
   int32 window_width = 3;
   int32 window_height = 4;
-  bool window_maximized = 5;
+  WindowMode window_mode = 5;
 }
 
 message BuildInfo {

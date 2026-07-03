@@ -131,7 +131,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         setVersionLine(formatVersionLine(buildInfo))
 
       // Restore saved window geometry on startup.
-      await restoreWindowGeometry(config.window_width, config.window_height, config.window_maximized)
+      await restoreWindowGeometry(config.window_width, config.window_height, config.window_mode)
 
       if (config.mode === 'distributed' && config.hub_url) {
         setHubUrl(config.hub_url)
