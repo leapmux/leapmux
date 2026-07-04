@@ -15,6 +15,7 @@ import {
   WorkspacePrivateEventSchema,
 } from '~/generated/leapmux/v1/workspace_private_pb'
 import { createLogger } from '~/lib/logger'
+import { sleep } from '~/lib/sleep'
 
 const log = createLogger('workspacePrivateEvents')
 
@@ -124,8 +125,4 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
     }
     catch { /* ignore */ }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
