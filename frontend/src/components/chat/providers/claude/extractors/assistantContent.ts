@@ -43,6 +43,22 @@ export function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: st
 }
 
 /**
+ * The text body of ONE Claude tool_result block's `content`: a plain string, or the joined text of a
+ * nested Anthropic-style block array (text blocks). Returns null when neither yields text. The single
+ * home for the string-vs-array unwrap -- the fiddly part -- shared by {@link extractToolResultText}
+ * (the FIRST tool_result) and {@link joinToolResultText} (EVERY tool_result), so the two can't drift.
+ */
+function toolResultBlockText(block: ContentBlock): string | null {
+  const inner = block.content
+  if (typeof inner === 'string')
+    return inner || null
+  const nested = asContentArray(inner)
+  if (!nested)
+    return null
+  return joinContentParagraphs(nested, { text: 'text' }) || null
+}
+
+/**
  * Pull the text content out of a Claude `tool_result` block inside a
  * parsed `{message:{content:[...]}}` envelope. Returns null when the
  * envelope carries no tool_result or its content has no text blocks.
@@ -52,11 +68,29 @@ export function extractToolResultText(parsed: Record<string, unknown> | null | u
   if (!content)
     return null
   const tr = content.find(c => isObject(c) && c.type === 'tool_result')
-  if (!tr)
+  return tr ? toolResultBlockText(tr) : null
+}
+
+/**
+ * Join the textual body of EVERY tool_result block in a Claude
+ * `{message:{content:[...]}}` envelope (distinct from {@link extractToolResultText},
+ * which returns only the FIRST). Parallel tool calls join with a blank line. A
+ * tool_result's `content` is either a plain string or a nested Anthropic-style block
+ * array (text/image blocks); both are handled. Used by Claude's scroll-rail `previewText`
+ * to preview a self-displaying control-response answer (AskUserQuestion / ExitPlanMode).
+ * Returns null when there is no tool_result text.
+ */
+export function joinToolResultText(parsed: Record<string, unknown> | null | undefined): string | null {
+  const content = getMessageContentArray(parsed)
+  if (!content)
     return null
-  const inner = tr.content
-  const text = Array.isArray(inner)
-    ? joinContentParagraphs(asContentArray(inner), { text: 'text' })
-    : String(inner || '')
-  return text || null
+  const parts: string[] = []
+  for (const block of content) {
+    if (!isObject(block) || block.type !== 'tool_result')
+      continue
+    const text = toolResultBlockText(block)
+    if (text)
+      parts.push(text)
+  }
+  return parts.length > 0 ? parts.join('\n\n') : null
 }

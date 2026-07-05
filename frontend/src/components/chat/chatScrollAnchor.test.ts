@@ -1,6 +1,6 @@
 import type { AnchorOffsetGeometry, AnchorRow } from './chatScrollAnchor'
 import { describe, expect, it } from 'vitest'
-import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
+import { anchorAtOffset, nearestServerRowIndexBySeq, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 
 /**
  * A fake geometry over uniform rows of `rowHeight` with a constant `gap` below each
@@ -131,7 +131,7 @@ describe('chatscrollanchor', () => {
     })
   })
 
-  describe('resolveNearestAnchorScrollTop (trimmed-row recovery)', () => {
+  describe('resolve nearest anchor scroll top (trimmed-row recovery)', () => {
     it('returns the exact position when the row still resolves', () => {
       const geo = fakeGeo(rows([10, 20, 30]))
       expect(resolveNearestAnchorScrollTop(geo, { id: 'm20', offsetWithinRow: 0, seq: 20n })).toBe(120)
@@ -168,6 +168,28 @@ describe('chatscrollanchor', () => {
       // local lived).
       const geo = fakeGeo(rows([10, 20, 30]))
       expect(resolveNearestAnchorScrollTop(geo, { id: 'gone', offsetWithinRow: 0, seq: 0n })).toBeNull()
+    })
+  })
+
+  describe('nearest server row index by seq (shared scan)', () => {
+    it('picks the row with the smallest absolute seq distance', () => {
+      const r = rows([10, 20, 30])
+      expect(nearestServerRowIndexBySeq(r, 22n)).toBe(1) // 20 is nearest
+      expect(nearestServerRowIndexBySeq(r, 30n)).toBe(2) // exact
+      expect(nearestServerRowIndexBySeq(r, 5n)).toBe(0) // below floor -> oldest
+      expect(nearestServerRowIndexBySeq(r, 999n)).toBe(2) // above ceiling -> newest
+    })
+
+    it('breaks ties toward the first (lower-index) row via the strict < compare', () => {
+      // target 15 is equidistant (5) from 10 and 20; strict `<` keeps the first.
+      expect(nearestServerRowIndexBySeq(rows([10, 20]), 15n)).toBe(0)
+    })
+
+    it('skips optimistic locals (seq 0n) and missing seqs, and returns -1 when none remain', () => {
+      const mixed: { id: string, seq?: bigint }[] = [{ id: 'a', seq: 0n }, { id: 'b', seq: 40n }, { id: 'c' }]
+      expect(nearestServerRowIndexBySeq(mixed, 5n)).toBe(1) // only 'b' is a server row
+      expect(nearestServerRowIndexBySeq([{ seq: 0n }], 5n)).toBe(-1)
+      expect(nearestServerRowIndexBySeq([], 5n)).toBe(-1)
     })
   })
 })

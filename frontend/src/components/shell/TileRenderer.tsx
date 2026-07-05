@@ -5,7 +5,7 @@ import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
-import type { ChatMessageLookups } from '~/components/chat/ChatView'
+import type { ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -24,6 +24,7 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
+import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
@@ -598,6 +599,28 @@ export function createTileRenderer(opts: TileRendererOpts) {
               getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
               getTodoById: taskId => chatStore.todos.getById(agentId, taskId),
             }
+            // The scroll-rail prop object, memoized like `lookups` above: getRailData does
+            // firstServerSeq/lastServerSeq scans and the rail's per-frame memos read
+            // props.rail.{minSeq,maxSeq,marks} several times per scroll frame -- a fresh
+            // `{...getRailData(), previewFor, warmPreview}` per access would re-run those scans
+            // and allocate an object + two closures each time. Memoizing recomputes only when
+            // getRailData's reactive deps change (marks / window / live tail), and the preview
+            // callbacks are built ONCE (stable references) rather than per read.
+            const railPreviewFor = (seq: bigint) => getCachedMarkPreview(agentId, seq)
+            const railWarmPreview = (seq: bigint) => {
+              const workerId = agent()?.workerId
+              if (!workerId)
+                return
+              warmMarkPreview(workerId, agentId, seq, {
+                getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
+                fetchMessageBySeq: chatStore.fetchMessageBySeq,
+              })
+            }
+            const railProps = createMemo<ChatRailProps>(() => ({
+              ...chatStore.getRailData(agentId),
+              previewFor: railPreviewFor,
+              warmPreview: railWarmPreview,
+            }))
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -633,7 +656,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
                       onJumpToLatest: () => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId),
                       onJumpToOldest: () => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId),
+                      onJumpToSeq: seq => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq),
                     }}
+                    rail={railProps()}
                     savedViewportScroll={chatStore.viewportScroll.get(agentId)}
                     onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
                     // Unmount save (tile split/merge, workspace switch): keep the

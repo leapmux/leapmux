@@ -77,7 +77,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 					return err
 				}
 			}
-			cursor := resumeCursorFor(req, resp.GetMessages(), resp.GetLatestSeq())
+			cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
 
 			return tailAgentMessages(ctx, c, workerID, agentID, workspaceID, cursor, em)
 		},
@@ -87,32 +87,32 @@ func RunAgentMessages(rawCtx any, args []string) error {
 // resumeCursorFor picks the seq the live WatchEvents stream resumes after, given
 // the page-1 request, the messages it returned, and the response's authoritative
 // latest_seq. The last message shown wins (resume right after it). When page 1 is
-// empty, an explicit AFTER resume -- or an INDETERMINATE latest_seq (-1, the worker
+// empty, an explicit AFTER resume -- or an INDETERMINATE latest_seq (unset, the worker
 // couldn't read the tail; see ListAgentMessagesResponse.latest_seq) -- falls back to
 // the request's own --cursor-seq rather than trusting a tail we don't have.
 //
-// Otherwise (an empty page with a positive latest_seq) resume after latest_seq-1, NOT
-// latest_seq: the page rows and latest_seq are two non-atomic reads, so an empty
+// Otherwise (an empty page with a present, positive latest_seq) resume after latest_seq-1,
+// NOT latest_seq: the page rows and latest_seq are two non-atomic reads, so an empty
 // LATEST page with latest_seq > 0 is the race where the agent's first/only message
 // committed BETWEEN them -- resuming after latest_seq would skip that very message.
 // Resuming after latest_seq-1 delivers seq >= latest_seq (catching it) while a
 // populated agent still avoids the OLDEST full-history drain: latest_seq-1 stays a
 // positive resume cursor (drainFetch treats afterSeq <= 0 as "from the oldest
 // message"), and only a first-ever message at seq 1 drops to the oldest drain, which
-// is then a single message. A genuine latest_seq == 0 (truly empty agent) stays 0
+// is then a single message. A present latest_seq == 0 (truly empty agent) stays 0
 // ("tail from now"). Pure, so the empty-page fallback is table-testable without a
 // live RPC.
-func resumeCursorFor(req *leapmuxv1.ListAgentMessagesRequest, messages []*leapmuxv1.AgentChatMessage, latestSeq int64) int64 {
+func resumeCursorFor(req *leapmuxv1.ListAgentMessagesRequest, messages []*leapmuxv1.AgentChatMessage, latestSeq *int64) int64 {
 	if n := len(messages); n > 0 {
 		return messages[n-1].GetSeq()
 	}
-	if latestSeq < 0 || req.GetAnchor() == leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER {
+	if latestSeq == nil || req.GetAnchor() == leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER {
 		return req.GetCursorSeq()
 	}
-	if latestSeq > 0 {
-		return latestSeq - 1
+	if *latestSeq > 0 {
+		return *latestSeq - 1
 	}
-	return latestSeq
+	return *latestSeq
 }
 
 // followSelectorError rejects --follow combined with a backward/historical page

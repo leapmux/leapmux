@@ -21,6 +21,10 @@ type SpanInfo struct {
 	SpanType        string
 	SpanColor       int32
 	Closing         bool
+	// MarkType rides the persist path into messages.mark_type, tagging the row
+	// as a scroll-rail jump target. Zero value (MARK_TYPE_UNSPECIFIED) leaves the
+	// row unmarked, so existing SpanInfo{...} literals need no change.
+	MarkType leapmuxv1.MarkType
 }
 
 type AutoContinueReason string

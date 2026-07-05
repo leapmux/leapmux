@@ -249,11 +249,11 @@ message AgentEvent {
 // flashing until CatchUpComplete. CatchUpComplete repeats the reconcile as the final
 // authority after the burst.
 message CatchUpStart {
-  // The agent's authoritative live-tail seq at the moment replay began. Sentinel:
-  // -1 = the worker couldn't determine it (a DB error) and the client skips
-  // reconciliation; 0 = the agent genuinely has no messages; >0 = the authoritative
-  // MAX(seq).
-  int64 latest_seq = 1;
+  // The agent's authoritative live-tail seq at the moment replay began. Explicit
+  // presence: UNSET = the worker couldn't determine it (a DB error) and the client skips
+  // reconciliation; present 0 = the agent genuinely has no messages; present >0 = the
+  // authoritative MAX(seq).
+  optional int64 latest_seq = 1;
 }
 
 message CatchUpComplete {
@@ -262,10 +262,10 @@ message CatchUpComplete {
   // deleted meanwhile, so it reconciles here: it drops any loaded row whose seq exceeds
   // latest_seq (a tail deletion it missed) and clamps its recorded live-tail to this
   // value, so its "new messages below" affordance can't stay stuck past a now-shorter
-  // history. Sentinel: -1 = the worker couldn't determine it (a DB error) and the
-  // client skips reconciliation; 0 = the agent genuinely has no messages; >0 = the
-  // authoritative MAX(seq).
-  int64 latest_seq = 1;
+  // history. Explicit presence: UNSET = the worker couldn't determine it (a DB error) and
+  // the client skips reconciliation; present 0 = the agent genuinely has no messages;
+  // present >0 = the authoritative MAX(seq).
+  optional int64 latest_seq = 1;
   // The live-tail seq at the moment replay BEGAN (== CatchUpStart.latest_seq), repeated
   // here so the reconcile can tell a deleted-during-replay phantom from a live arrival.
   // The worker registers the watcher BEFORE reading latest_seq, so a message created and
@@ -274,9 +274,9 @@ message CatchUpComplete {
   // deleted-during-replay phantom sits at-or-below it. So the client reaps only the
   // (latest_seq, start_tail_seq] band and EXEMPTS rows above start_tail_seq (genuine live
   // arrivals), instead of reaping everything above latest_seq (which would wrongly drop
-  // them). Same -1/0/>0 sentinel as latest_seq; -1 disables the band exemption (the
+  // them). Same explicit presence as latest_seq; UNSET disables the band exemption (the
   // client falls back to reaping above latest_seq, matching the pre-field behavior).
-  int64 start_tail_seq = 2;
+  optional int64 start_tail_seq = 2;
 }
 
 message TerminalEvent {

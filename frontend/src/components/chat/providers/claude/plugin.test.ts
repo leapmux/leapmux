@@ -58,6 +58,62 @@ describe('claude extractQuotableText', () => {
   })
 })
 
+describe('claude preview text (scroll-rail mark preview)', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('extracts a self-displaying control-response tool_result body (ExitPlanMode / AskUserQuestion answer)', () => {
+    // The user's answer/feedback lives inside a tool_result block; is_error is irrelevant.
+    const parent = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', content: '> **A stored** column: needs a migration.\n\nWe should go with this option.', is_error: true, tool_use_id: 'toolu_1' }],
+      },
+      parent_tool_use_id: null,
+    }
+    // Newlines survive so the tooltip renders the blockquote + paragraph structure.
+    expect(plugin.previewText!({ kind: 'tool_result' }, input(parent)))
+      .toBe('> **A stored** column: needs a migration.\n\nWe should go with this option.')
+  })
+
+  it('extracts a tool_result whose content is itself a block array', () => {
+    const parent = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: 'answer text' }] }] },
+    }
+    expect(plugin.previewText!({ kind: 'tool_result' }, input(parent))).toBe('answer text')
+  })
+
+  it('joins multiple tool_result bodies (parallel tool calls) with a blank line', () => {
+    const parent = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'first', tool_use_id: 'a' },
+          { type: 'tool_result', content: 'second', tool_use_id: 'b' },
+        ],
+      },
+    }
+    expect(plugin.previewText!({ kind: 'tool_result' }, input(parent))).toBe('first\n\nsecond')
+  })
+
+  it('reads the Claude {message:{content}} transcript envelope (a Claude-specific shape, not the shared default)', () => {
+    // A transcript user row nests its text under message.content as a string; this Anthropic
+    // shape is read here, not by the provider-neutral defaultMarkPreview.
+    expect(plugin.previewText!({ kind: 'user_text' }, input({ message: { content: 'typed text' } }))).toBe('typed text')
+  })
+
+  it('falls back to the shared neutral extractor for a plain {content} user send', () => {
+    expect(plugin.previewText!({ kind: 'user_content' }, input({ content: 'hello world' }))).toBe('hello world')
+  })
+
+  it('falls back to the shared neutral extractor for a {controlResponse} row, and null otherwise', () => {
+    expect(plugin.previewText!({ kind: 'control_response' }, input({ controlResponse: { action: 'approved' } }))).toBe('Approved')
+    expect(plugin.previewText!({ kind: 'assistant_text' }, input({ message: { content: [{ type: 'text', text: 'hi' }] } }))).toBeNull()
+  })
+})
+
 describe('claude classify', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 

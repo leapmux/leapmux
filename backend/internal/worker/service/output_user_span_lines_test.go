@@ -201,7 +201,7 @@ func TestSendSyntheticUserMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T)
 
 	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
 
-	svc.sendSyntheticUserMessage("agent-1", "synthetic prompt")
+	svc.sendSyntheticUserMessage("agent-1", "synthetic prompt", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",

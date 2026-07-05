@@ -11,10 +11,12 @@ import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type {
   CloseAgentResponse,
   DeleteAgentMessageResponse,
+  GetAgentMessageResponse,
   InterruptAgentResponse,
   ListAgentMessagesResponse,
   ListAgentsResponse,
   ListAvailableProvidersResponse,
+  ListMessageMarksResponse,
   OpenAgentResponse,
   RenameAgentResponse,
   SendAgentMessageResponse,
@@ -77,6 +79,8 @@ import {
   CloseAgentResponseSchema,
   DeleteAgentMessageRequestSchema,
   DeleteAgentMessageResponseSchema,
+  GetAgentMessageRequestSchema,
+  GetAgentMessageResponseSchema,
   InterruptAgentRequestSchema,
   InterruptAgentResponseSchema,
   ListAgentMessagesRequestSchema,
@@ -85,6 +89,8 @@ import {
   ListAgentsResponseSchema,
   ListAvailableProvidersRequestSchema,
   ListAvailableProvidersResponseSchema,
+  ListMessageMarksRequestSchema,
+  ListMessageMarksResponseSchema,
   OpenAgentRequestSchema,
   OpenAgentResponseSchema,
   RenameAgentRequestSchema,
@@ -467,6 +473,14 @@ export function listAgents(workerId: string, req: MessageInitShape<typeof ListAg
 
 export function listAgentMessages(workerId: string, req: MessageInitShape<typeof ListAgentMessagesRequestSchema>): Promise<ListAgentMessagesResponse> {
   return callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, req)
+}
+
+export function listMessageMarks(workerId: string, req: MessageInitShape<typeof ListMessageMarksRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListMessageMarksResponse> {
+  return callWorker(workerId, 'ListMessageMarks', ListMessageMarksRequestSchema, ListMessageMarksResponseSchema, req, opts)
+}
+
+export function getAgentMessage(workerId: string, req: MessageInitShape<typeof GetAgentMessageRequestSchema>): Promise<GetAgentMessageResponse> {
+  return callWorker(workerId, 'GetAgentMessage', GetAgentMessageRequestSchema, GetAgentMessageResponseSchema, req)
 }
 
 export function renameAgent(workerId: string, req: MessageInitShape<typeof RenameAgentRequestSchema>): Promise<RenameAgentResponse> {

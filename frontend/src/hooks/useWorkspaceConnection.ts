@@ -1023,8 +1023,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Pre-trim BEFORE the message replay renders: the worker ships the
         // authoritative live tail up front so a reconnecting client drops phantom rows
         // (a tail it loaded before disconnect that was deleted while away) immediately,
-        // rather than flashing them until catchUpComplete reconciles at the end. A
-        // negative latest_seq (worker couldn't determine the tail) is skipped by the store.
+        // rather than flashing them until catchUpComplete reconciles at the end. An
+        // unset latest_seq (worker couldn't determine the tail) is skipped by the store.
         //
         // At catch-up START, latest_seq IS the start tail, so a phantom and a live
         // message that raced in are indistinguishable by seq alone -- both sit above
@@ -1047,11 +1047,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // reconnecting client never received the AgentMessageDeleted for rows deleted
         // while it was disconnected, so it drops phantom rows beyond latest_seq and
         // clamps its recorded live-tail -- otherwise its "new messages below"
-        // affordance can stay stuck past a now-shorter history. A negative latest_seq
+        // affordance can stay stuck past a now-shorter history. An unset latest_seq
         // (worker couldn't determine the tail) is skipped for the reap, but PROBED (see
         // probeIndeterminate below). start_tail_seq (the tail when replay began) bounds
         // the reap so a live message that raced in DURING catch-up -- seq above it --
-        // isn't reaped as a phantom. When start_tail_seq is indeterminate (-1, a failed
+        // isn't reaped as a phantom. When start_tail_seq is indeterminate (unset, a failed
         // worker readback), fall back to the resume cursor (the loaded tail this subscribe
         // sent) as the ceiling -- the SAME bound catchUpStart uses -- so a live arrival
         // above it is still exempted instead of reaping everything beyond latest_seq and
@@ -1063,18 +1063,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // whenever the loaded tail lags it -- so a windowed-away reader keeps their
         // position + affordance, and a following reader's gap closes without hinging on
         // this frame. The ONE exception folded into the reconcile is an INDETERMINATE
-        // (-1) tail: liveTail can't be raised, so probeIndeterminate=true nudges it one
+        // (unset) tail: liveTail can't be raised, so probeIndeterminate=true nudges it one
         // past the loaded tail to make the continuous reconcile probe (it would otherwise
         // read the partial replay as caught up). This keeps ALL forward-fill in the
         // continuous reconcile -- there is no one-shot fill in this handler.
         chatStore.reconcileAuthoritativeTail(
           agentId,
           inner.value.latestSeq,
-          inner.value.startTailSeq < 0n
+          inner.value.startTailSeq === undefined
             ? resumeTails.get(agentId)
             : inner.value.startTailSeq,
           true,
         )
+        // Re-seed the scroll-rail marks so any user sends / deletes that happened while
+        // disconnected are reflected (live add/remove already heals the connected case). Tied
+        // to this subscription's signal so a resubscribe/teardown cancels it (see loadMessageMarks).
+        void chatStore.loadMessageMarks(tabStore.getAgentTab(agentId)?.workerId ?? '', agentId, eventStreamAbort?.signal)
         // Reclaim any command stream orphaned DURING catch-up: a mid-stream
         // delete (or beyond-window reseq) recorded an orphan, but its turn-end
         // divider replayed while the phase was still 'catchingUp', so the
@@ -1226,6 +1230,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           try {
             const wid = tabStore.getAgentTab(entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
+            // Seed the scroll-rail marks alongside history (not awaited: a failure
+            // must not block or fail the history load -- the rail just stays hidden). Tied to
+            // this subscription's signal so a resubscribe/teardown cancels it.
+            void chatStore.loadMessageMarks(wid, entry.agentId, eventStreamAbort?.signal)
           }
           catch (err) {
             showWarnToast('Failed to load chat history', err)
@@ -1497,6 +1505,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
       showWarnToast('Failed to load chat history', err)
     })
+    // Seed the scroll-rail marks for the newly-opened agent (fire-and-forget). Tied to the
+    // current subscription's signal so a resubscribe/teardown cancels it (see loadMessageMarks).
+    void chatStore.loadMessageMarks(agent.workerId, tabId, eventStreamAbort?.signal)
   })
 
   // Continuous tail reconcile: whenever a loaded window lags its recorded live tail

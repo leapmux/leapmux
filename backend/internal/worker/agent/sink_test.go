@@ -56,6 +56,7 @@ type testSinkMessage struct {
 	SpanID          string
 	SpanType        string
 	Closing         bool
+	MarkType        leapmuxv1.MarkType
 	// TurnEnd is set on entries recorded by PersistTurnEnd so tests can
 	// distinguish the turn-end divider from regular AGENT messages
 	// without inspecting the inner content.
@@ -76,7 +77,7 @@ type testSinkSpanOpen struct {
 func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing})
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType})
 	return nil
 }
 
@@ -91,6 +92,7 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 		SpanID:          span.SpanID,
 		SpanType:        span.SpanType,
 		Closing:         span.Closing,
+		MarkType:        span.MarkType,
 		TurnEnd:         true,
 	})
 	return nil

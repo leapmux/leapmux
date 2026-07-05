@@ -139,7 +139,9 @@ export const CursorControlActions: Component<ActionsProps> = (props) => {
   const createPlanReject = () => sendResponse(
     props.request.agentId,
     props.onRespond,
-    buildDenyResponse(props.request.requestId, 'Rejected by user.'),
+    // Bare deny (no typed reason): buildDenyResponse fills the shared
+    // CONTROL_REJECTED_BY_USER_MESSAGE placeholder, so don't re-spell the literal here.
+    buildDenyResponse(props.request.requestId),
   )
 
   const userInputOnRespond = async (_agentId: string, content: Uint8Array) => {

@@ -219,6 +219,21 @@ export interface Provider {
   ) => string | null
 
   /**
+   * Short plaintext preview of a MARKED message's content (user inputs, control
+   * responses) for the chat scroll rail's dot-hover tooltip. Sibling of
+   * {@link extractQuotableText}: each provider knows its own wire shapes, so preview
+   * extraction is a per-provider concern. Providers whose marked rows are all in the
+   * Leapmux-neutral shapes (`{content}`, `{controlResponse}`) delegate to the shared
+   * `defaultMarkPreview`; Claude also reads its Anthropic `message.content[]` tool_result
+   * blocks. Return null when there is no previewable text (the rail then shows a
+   * mark-type label). See chatMarkPreview.ts.
+   */
+  previewText?: (
+    category: MessageCategory,
+    parsed: ParsedMessageContent,
+  ) => string | null
+
+  /**
    * Build the wire-format content string to interrupt the agent.
    * Returns null if interrupt is not supported or not applicable.
    */

@@ -12,6 +12,7 @@ import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messag
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
+import { CONTROL_RESPONSE_APPROVED_LABEL, CONTROL_RESPONSE_FEEDBACK_LEAD, CONTROL_RESPONSE_REJECTED_LABEL } from './markPreviewShared'
 import { MarkdownText } from './messageRenderers'
 import {
   controlResponseMessage,
@@ -255,21 +256,23 @@ export const controlResponseRenderer: MessageContentRenderer = {
     const action = cr.action as string
     const comment = (cr.comment as string) || ''
 
+    // The three labels are shared with the scroll-rail dot preview (defaultMarkPreview) via the
+    // markPreviewShared constants, so the dot reads identically to this row it jumps to.
     if (action === 'approved')
-      return <div class={controlResponseMessage}>Approved</div>
+      return <div class={controlResponseMessage}>{CONTROL_RESPONSE_APPROVED_LABEL}</div>
 
     if (comment) {
       return (
         <div class={controlResponseMessage}>
           <div>
-            <div>Sent feedback:</div>
+            <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
             <MarkdownText text={comment} context={context} />
           </div>
         </div>
       )
     }
 
-    return <div class={controlResponseMessage}>Rejected</div>
+    return <div class={controlResponseMessage}>{CONTROL_RESPONSE_REJECTED_LABEL}</div>
   },
 }
 

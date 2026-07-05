@@ -1,4 +1,4 @@
-import { keyframes, style } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { breakpoints, motion } from '~/styles/tokens'
 
@@ -65,6 +65,20 @@ export const messageList = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-3)',
+})
+
+/**
+ * Hides the native scrollbar so ONLY the seq-space ChatScrollRail overlay shows (the
+ * browser thumb reflects just the loaded window, not the whole conversation). Applied to
+ * `messageList` only while the rail is actually active (marks seeded); if the marks RPC
+ * fails or lags, the native scrollbar stays visible rather than leaving a long
+ * conversation with no scrollbar at all. Scoped here -- the app-wide thin scrollbar stays.
+ */
+export const messageListRailActive = style({
+  scrollbarWidth: 'none',
+})
+globalStyle(`${messageListRailActive}::-webkit-scrollbar`, {
+  display: 'none',
 })
 
 /**

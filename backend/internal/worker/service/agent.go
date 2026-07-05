@@ -353,7 +353,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// passthrough vertical bars instead of breaking the column.
 		spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
 
-		// Persist the user message.
+		// Persist the user message. mark_type=USER_MESSAGE so the scroll rail
+		// draws a jump dot for every message the human actually typed and sent.
 		seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
 			ID:                 messageID,
 			AgentID:            agentID,
@@ -366,6 +367,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			SpanLines:          spanLines,
 			SpanColor:          0,
 			AgentProvider:      dbAgent.AgentProvider,
+			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
 			CreatedAt:          now,
 		})
 		if err != nil {
@@ -388,6 +390,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			CreatedAt:          timefmt.Format(now),
 			Depth:              0,
 			SpanLines:          spanLines,
+			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
 		}
 
 		// For /clear, broadcast the user message before restarting so live
@@ -473,8 +476,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 		content := r.GetContent()
-		if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
-			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
+		if agent.ProviderFor(dbAgent.AgentProvider).NeedsSyntheticInterruptNotice() && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
+			// An interrupt notice is not the user's answer to a control request, so it
+			// draws no rail dot.
+			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
 		}
 
 		svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
@@ -617,15 +622,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// The authoritative live-tail seq, so the --follow CLI can resolve a resume
 		// point even when this page is empty (never inferring a spurious seq 0 from an
-		// empty page on a populated agent). A query error degrades to -1 (the shared
-		// "indeterminate" sentinel), NOT 0: 0 means "the agent genuinely has no
-		// messages" (resume fresh), so a spurious 0 from an error would wrongly tell the
-		// CLI to drain from the start. -1 tells the consumer to fall back to its own
-		// loaded cursor instead. See ListAgentMessagesResponse.latest_seq.
-		latestSeq, maxErr := svc.Queries.GetMaxSeqByAgentID(ctx, agentID)
-		if maxErr != nil {
+		// empty page on a populated agent). A query error leaves it UNSET (indeterminate),
+		// NOT present-0: a present 0 means "the agent genuinely has no messages" (resume
+		// fresh), so a spurious 0 from an error would wrongly tell the CLI to drain from
+		// the start. An unset field tells the consumer to fall back to its own loaded
+		// cursor instead. See ListAgentMessagesResponse.latest_seq.
+		var latestSeq *int64
+		if seq, maxErr := svc.Queries.GetMaxSeqByAgentID(ctx, agentID); maxErr != nil {
 			slog.Warn("failed to read max seq for list response", "agent_id", agentID, "error", maxErr)
-			latestSeq = -1
+		} else {
+			latestSeq = &seq
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
@@ -634,6 +640,122 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Todos:       todoevents.ItemsToProto(todoItems),
 			TodosLoaded: todosLoaded,
 			LatestSeq:   latestSeq,
+		})
+	})
+
+	// GetAgentMessage fetches ONE message by its per-agent seq, for the scroll
+	// rail's dot-hover preview when the marked message is outside the loaded
+	// window. Access control mirrors ListAgentMessages: requireAccessibleAgent
+	// verifies the caller's channel may reach the agent's workspace, and the
+	// query is scoped to agent_id, so an authorized caller can only read a
+	// message belonging to that agent -- never another agent's or workspace's.
+	d.Register("GetAgentMessage", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.GetAgentMessageRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		agentID := r.GetAgentId()
+		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
+
+		// Return an unset message for closed agents (mirrors ListAgentMessages,
+		// whose empty response leaves the rail without dots to preview anyway).
+		if agentRow.ClosedAt.Valid {
+			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{})
+			return
+		}
+
+		row, err := svc.Queries.GetMessageByAgentIDAndSeq(ctx, db.GetMessageByAgentIDAndSeqParams{
+			AgentID: agentID,
+			Seq:     r.GetSeq(),
+		})
+		if err != nil {
+			// A mark can outlive its message (deleted / reseq'd since it was recorded):
+			// no row is a normal "no preview available", not an error.
+			if errors.Is(err, sql.ErrNoRows) {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{})
+				return
+			}
+			slog.Error("failed to get agent message", "agent_id", agentID, "seq", r.GetSeq(), "error", err)
+			sendInternalError(sender, "failed to get message")
+			return
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
+	})
+
+	// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
+	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
+	// content decompression -- because mark_type is set at write time.
+	d.Register("ListMessageMarks", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.ListMessageMarksRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		agentID := r.GetAgentId()
+		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
+
+		// Return empty for closed agents (mirrors ListAgentMessages, which serves a closed agent
+		// no history -- so the rail has nothing to show). Report a PRESENT, empty (0) range rather
+		// than leaving min/max unset: an unset range is the DB-error "indeterminate" signal, which
+		// the client cannot tell apart from a closed agent and so retries up to
+		// MAX_MESSAGE_MARK_SEED_RESCHEDULES times (~5 round-trips) on every closed-tab view. A
+		// present-0 range seeds the rail `loaded` (it stays hidden over the empty window) and ends
+		// the retry chain.
+		if agentRow.ClosedAt.Valid {
+			zeroSeq := int64(0)
+			sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{MinSeq: &zeroSeq, MaxSeq: &zeroSeq})
+			return
+		}
+
+		tx, txErr := svc.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if txErr != nil {
+			slog.Error("failed to start message marks read transaction", "agent_id", agentID, "error", txErr)
+			sendInternalError(sender, "failed to list message marks")
+			return
+		}
+		queries := svc.Queries.WithTx(tx)
+
+		rows, marksErr := queries.ListMessageMarksByAgentID(ctx, agentID)
+		if marksErr != nil {
+			_ = tx.Rollback()
+			slog.Error("failed to list message marks", "agent_id", agentID, "error", marksErr)
+			sendInternalError(sender, "failed to list message marks")
+			return
+		}
+		marks := make([]*leapmuxv1.MessageMark, 0, len(rows))
+		for i := range rows {
+			marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: rows[i].MarkType})
+		}
+
+		// Two endpoint seeks for the whole-history bounds. min/max are left UNSET on error
+		// (both together), matching latest_seq's explicit-presence convention (the client
+		// keeps its current value rather than trusting a bogus 0).
+		var minSeq, maxSeq *int64
+		if seqRange, rangeErr := queries.GetSeqRangeByAgentID(ctx, agentID); rangeErr != nil {
+			slog.Warn("failed to read seq range for marks response", "agent_id", agentID, "error", rangeErr)
+		} else {
+			minSeq, maxSeq = &seqRange.MinSeq, &seqRange.MaxSeq
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			slog.Error("failed to finish message marks read transaction", "agent_id", agentID, "error", commitErr)
+			sendInternalError(sender, "failed to list message marks")
+			return
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{
+			Marks:  marks,
+			MinSeq: minSeq,
+			MaxSeq: maxSeq,
 		})
 	})
 
@@ -743,12 +865,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// The authoritative new live tail AFTER the delete (0 if no rows remain). A
 		// windowed client whose loaded window lags the live tail sets its recorded
 		// live-tail seq to exactly this when the deleted row was that tail -- no
-		// guesswork. On the exceptional query-error path, degrade to the shared "-1"
-		// indeterminate sentinel rather than guessing deletedSeq - 1: the old guess
+		// guesswork. On the exceptional query-error path, leave the field UNSET
+		// (indeterminate) rather than guessing deletedSeq - 1: the old guess
 		// under-reported a non-tail delete's tail and conflated a deleted seq 1 with
-		// "agent empty". -1 tells the client to leave its recorded tail unchanged (see
-		// AgentMessageDeleted.new_latest_seq / removeMessage), which is always safe.
-		newLatestSeq := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq after delete")
+		// "agent empty". An unset field tells the client to leave its recorded tail
+		// unchanged (see AgentMessageDeleted.new_latest_seq / removeMessage), always safe.
+		newLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq after delete")
 
 		// Broadcast deletion to all watchers, carrying the deleted row's seq (so a
 		// windowed client can tell whether the deleted row was its recorded tail)
@@ -868,38 +990,30 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		content := r.GetContent()
 
-		if svc.handleCodexPlanModePromptResponse(agentID, content) {
+		plan := svc.buildControlResponsePlan(agentID, dbAgent, content)
+
+		// Drop the control request before persisting display rows or forwarding the response,
+		// on EVERY path (the plan-prompt branch below and the fall-through both need it). Claude
+		// can emit a follow-up control_request immediately after it reads a denial; if the old
+		// request is still pending client-side, the revised request can hide behind stale dedup
+		// state.
+		svc.deleteControlRequest(agentID, dbAgent.AgentProvider, plan.requestMeta, plan.resolution.SelfDisplayed)
+
+		if plan.resolution.PlanModeControl == agent.PlanModeControlPrompt && plan.hasDecision {
+			svc.handleControlResponsePromptPlan(agentID, dbAgent, plan)
 			sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
 			return
 		}
 
-		var displayText string
-		content, displayText = svc.normalizeProviderControlResponse(agentID, dbAgent.AgentProvider, content)
-		if displayText == "" {
-			displayText = svc.controlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
-		}
+		svc.persistControlResponseAnswerRows(agentID, dbAgent.AgentProvider, plan)
 
-		// Detect plan mode changes from the control response before
-		// forwarding to the agent. This mirrors the main-branch Hub logic
-		// that updated permission mode based on EnterPlanMode/ExitPlanMode
-		// approval or rejection.
-		skipSend := svc.handleControlResponsePlanMode(agentID, content)
-
-		// Drop the prompt before forwarding the response. Claude can emit the
-		// follow-up control_request immediately after it reads the denial; if
-		// the old request is still pending client-side, the revised request can
-		// be hidden behind stale dedup state.
-		reqID := extractControlResponseRequestID(content)
-		if reqID != "" {
-			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-			sink.DeleteControlRequest(reqID)
-			sink.BroadcastControlCancel(reqID)
-		}
-
-		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, displayText)
+		// Detect plan mode changes after the answer row is durable but before forwarding to
+		// the agent. Clear-context plan execution starts asynchronously, so persisting first
+		// keeps the user's answer before plan-execution rows even if the goroutine runs fast.
+		skipSend := svc.applyControlResponsePlanModeEffects(agentID, dbAgent, plan)
 
 		if !skipSend {
-			if err := svc.Agents.SendRawInput(agentID, content); err != nil {
+			if err := svc.Agents.SendRawInput(agentID, plan.resolution.Content); err != nil {
 				slog.Error("failed to send control response to agent",
 					"agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
@@ -1381,10 +1495,10 @@ func (svc *Context) replayAgentCatchUp(
 	// the message replay, so a reconnecting windowed client drops phantom rows
 	// (a tail it loaded before disconnect that was deleted while it was away) up
 	// front, rather than flashing them until CatchUpComplete reconciles at the end.
-	// -1 on a query error tells the client to skip the reconcile (see
+	// An unset field on a query error tells the client to skip the reconcile (see
 	// CatchUpStart.latest_seq). The tail is re-read for CatchUpComplete below so the
 	// final authority reflects any message created mid-replay.
-	replayStartTail := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq for catch-up start")
+	replayStartTail := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up start")
 	broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpStart{
@@ -1485,11 +1599,7 @@ func (svc *Context) replayAgentCatchUp(
 			broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{
-					ControlRequest: &leapmuxv1.AgentControlRequest{
-						AgentId:   agentID,
-						RequestId: cr.RequestID,
-						Payload:   cr.Payload,
-					},
+					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, cr.RequestID, cr.Payload),
 				},
 			})
 		}
@@ -1500,11 +1610,11 @@ func (svc *Context) replayAgentCatchUp(
 	// live-tail seq (highest existing message seq) so a client that missed
 	// deletions while disconnected can drop phantom rows beyond it and clamp
 	// its recorded live-tail (see CatchUpComplete.latest_seq). On a query error
-	// send -1 (NOT 0): the client trims rows strictly above latest_seq, so a
-	// genuine 0 (empty agent) correctly drops a fully-deleted window, while a
-	// spurious 0 would wrongly wipe a populated one -- the negative sentinel
-	// tells the client "couldn't determine, skip reconciliation".
-	catchUpLatestSeq := svc.maxSeqOrIndeterminate(agentID, "failed to read max seq for catch-up complete")
+	// leave it UNSET (NOT 0): the client trims rows strictly above latest_seq, so a
+	// present 0 (empty agent) correctly drops a fully-deleted window, while a
+	// spurious 0 would wrongly wipe a populated one -- an unset field tells the
+	// client "couldn't determine, skip reconciliation".
+	catchUpLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up complete")
 	broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpComplete{
@@ -2715,7 +2825,12 @@ func (svc *Context) handleControlRequestMessage(agentID string, provider leapmux
 	}
 }
 
-func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
+// persistSyntheticUserMessage persists a backend-synthesized `{content}` user row.
+// markType tags it for the scroll rail: CONTROL_RESPONSE for the user's answer to a
+// control request (the display row every provider except Claude relies on, since none
+// echo the answer in their own stream), or UNSPECIFIED for a non-answer marker such as
+// the interrupt notice -- so only genuine control answers draw a rail dot.
+func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string, markType leapmuxv1.MarkType) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return
@@ -2726,7 +2841,7 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{MarkType: markType}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
@@ -2853,7 +2968,12 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 // sendSyntheticUserMessage persists and broadcasts a user message, then sends
 // it to the agent process if possible. This is used for local plan-mode flows
 // that originate from a UI prompt rather than a frontend SendAgentMessage RPC.
-func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
+// sendSyntheticUserMessage persists a `{content}` user row AND forwards it to the agent as
+// input. markType tags it for the scroll rail: UNSPECIFIED for a truly synthetic prompt the
+// user did not type (e.g. the auto-injected "Implement the plan."), or CONTROL_RESPONSE for
+// the user's own typed answer to a control request that is delivered as agent input (a Codex
+// plan-mode-prompt denial's feedback) -- so only genuine user answers draw a rail dot.
+func (svc *Context) sendSyntheticUserMessage(agentID, content string, markType leapmuxv1.MarkType) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("synthetic user message: agent not found", "agent_id", agentID, "error", err)
@@ -2877,6 +2997,9 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	// passthrough vertical bars instead of breaking the column.
 	spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
 
+	// mark_type is caller-scoped: UNSPECIFIED for an auto-injected synthetic prompt
+	// (no rail dot), CONTROL_RESPONSE for the user's own typed control answer delivered
+	// as agent input (a rail dot, like every other control-answer path).
 	seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
 		ID:                 messageID,
 		AgentID:            agentID,
@@ -2889,6 +3012,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		SpanLines:          spanLines,
 		SpanColor:          0,
 		AgentProvider:      dbAgent.AgentProvider,
+		MarkType:           markType,
 		CreatedAt:          now,
 	})
 	if err != nil {
@@ -2927,6 +3051,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		CreatedAt:          timefmt.Format(now),
 		Depth:              0,
 		SpanLines:          spanLines,
+		MarkType:           markType,
 	}
 	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
@@ -2946,328 +3071,6 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 			},
 		})
 	}
-}
-
-// controlResponsePlanModePayload is the decoded shape of a plan-mode control
-// response: the approve/reject envelope ({request_id, response:{behavior, message}})
-// plus the optional permission-mode switch and context-clear the frontend attaches.
-// Shared by the two plan-mode handlers (the Codex prompt-response path and the common
-// control-response path) so the wire shape is defined once and can't drift between them.
-type controlResponsePlanModePayload struct {
-	PermissionMode string `json:"permissionMode"`
-	ClearContext   bool   `json:"clearContext"`
-	Response       struct {
-		RequestID string `json:"request_id"`
-		Response  struct {
-			Behavior string `json:"behavior"`
-			Message  string `json:"message"`
-		} `json:"response"`
-	} `json:"response"`
-}
-
-func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []byte) bool {
-	var crPayload controlResponsePlanModePayload
-	if err := json.Unmarshal(content, &crPayload); err != nil {
-		return false
-	}
-
-	reqID := crPayload.Response.RequestID
-	if reqID == "" {
-		return false
-	}
-
-	cr, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{
-		AgentID:   agentID,
-		RequestID: reqID,
-	})
-	if err != nil {
-		return false
-	}
-
-	var crBody struct {
-		Request struct {
-			ToolName string `json:"tool_name"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
-		slog.Warn("codex plan mode prompt unmarshal failed", "agent_id", agentID, "error", err)
-		return false
-	}
-	if crBody.Request.ToolName != agent.ToolNameCodexPlanModePrompt {
-		return false
-	}
-
-	_ = svc.Queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
-		AgentID:   agentID,
-		RequestID: reqID,
-	})
-	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_ControlCancel{
-			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
-				AgentId:   agentID,
-				RequestId: reqID,
-			},
-		},
-	})
-
-	switch crPayload.Response.Response.Behavior {
-	case agent.ControlBehaviorAllow:
-		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-		if err != nil {
-			slog.Error("codex plan mode prompt: agent not found", "agent_id", agentID, "error", err)
-			return false
-		}
-
-		// Settle Codex's collaboration axis back to its default mode (applied live, notify on
-		// first set).
-		dbAgent = svc.applyOptionChanges(dbAgent,
-			map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault},
-			applyOptionsSpec{live: true, notifyFirstSet: true})
-
-		if crPayload.PermissionMode != "" {
-			dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
-			// Grant Codex bypass options for the approved mode: full network access and no
-			// sandbox restrictions (applied live, notify on first set).
-			svc.applyOptionChanges(dbAgent, map[string]string{
-				agent.CodexOptionNetworkAccess: agent.CodexNetworkEnabled,
-				agent.CodexOptionSandboxPolicy: agent.CodexSandboxDangerFullAccess,
-			}, applyOptionsSpec{live: true, notifyFirstSet: true})
-		}
-
-		if crPayload.ClearContext {
-			targetMode := crPayload.PermissionMode
-			if targetMode == "" {
-				targetMode = agent.PermissionModeDefault
-			}
-			go svc.initiatePlanExecution(agentID, targetMode)
-		} else {
-			svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
-		}
-	case agent.ControlBehaviorDeny:
-		if msg := strings.TrimSpace(crPayload.Response.Response.Message); msg != "" && msg != "Rejected by user." {
-			svc.sendSyntheticUserMessage(agentID, msg)
-		}
-	}
-
-	return true
-}
-
-// normalizeProviderControlResponse transforms provider-specific control
-// responses into the wire format expected by the agent process.  It returns
-// the (possibly transformed) content and, when the transform already computed
-// the display text, a non-empty displayText so the caller can skip a second
-// DB lookup in controlResponseDisplayText.
-func (svc *Context) normalizeProviderControlResponse(agentID string, provider leapmuxv1.AgentProvider, content []byte) (normalized []byte, displayText string) {
-	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
-		if transformed, text, ok := svc.transformCursorControlResponse(agentID, content); ok {
-			return transformed, text
-		}
-	}
-	return content, ""
-}
-
-func (svc *Context) transformCursorControlResponse(agentID string, content []byte) ([]byte, string, bool) {
-	var crPayload struct {
-		Response struct {
-			RequestID string `json:"request_id"`
-			Response  struct {
-				Behavior string `json:"behavior"`
-				Message  string `json:"message"`
-			} `json:"response"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal(content, &crPayload); err != nil {
-		return nil, "", false
-	}
-
-	reqID := strings.TrimSpace(crPayload.Response.RequestID)
-	if reqID == "" {
-		return nil, "", false
-	}
-
-	cr, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{
-		AgentID:   agentID,
-		RequestID: reqID,
-	})
-	if err != nil {
-		return nil, "", false
-	}
-
-	var req struct {
-		Method string `json:"method"`
-	}
-	if err := json.Unmarshal(cr.Payload, &req); err != nil {
-		slog.Warn("cursor control response unmarshal method failed", "agent_id", agentID, "error", err)
-		return nil, "", false
-	}
-	if req.Method != agent.CursorMethodCreatePlan {
-		return nil, "", false
-	}
-
-	idRaw, _, ok := agent.ExtractJSONRPCID(cr.Payload)
-	if !ok {
-		return nil, "", false
-	}
-
-	outcomeBody := map[string]interface{}{
-		"outcome": "accepted",
-	}
-	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
-		outcomeBody["outcome"] = "rejected"
-		if reason := strings.TrimSpace(crPayload.Response.Response.Message); reason != "" && reason != "Rejected by user." {
-			outcomeBody["reason"] = reason
-		}
-	}
-
-	encoded, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(idRaw),
-		"result":  map[string]interface{}{"outcome": outcomeBody},
-	})
-	if err != nil {
-		return nil, "", false
-	}
-	return encoded, cursorCreatePlanResponseDisplayText(encoded), true
-}
-
-// extractControlResponseRequestID extracts the control request ID from a
-// control response's raw JSON content.  It supports both Claude Code format
-// (response.request_id) and OpenCode/ACP JSON-RPC format (top-level id).
-func extractControlResponseRequestID(content []byte) string {
-	var parsed struct {
-		// Claude Code format
-		Response struct {
-			RequestID string `json:"request_id"`
-		} `json:"response"`
-		// OpenCode / ACP JSON-RPC format (id can be number or string)
-		ID json.RawMessage `json:"id"`
-	}
-	if err := json.Unmarshal(content, &parsed); err != nil {
-		slog.Warn("extract control response request ID unmarshal failed", "error", err)
-		return ""
-	}
-	if parsed.Response.RequestID != "" {
-		return parsed.Response.RequestID
-	}
-	// Try JSON-RPC id: strip quotes for string, use raw for number.
-	if len(parsed.ID) > 0 && string(parsed.ID) != "null" {
-		var s string
-		if json.Unmarshal(parsed.ID, &s) == nil {
-			return s
-		}
-		return strings.TrimSpace(string(parsed.ID))
-	}
-	return ""
-}
-
-// handleControlResponsePlanMode detects plan mode changes from control
-// responses. When the frontend approves/rejects an EnterPlanMode or
-// ExitPlanMode control request, this updates the permission mode and
-// initiates plan execution as needed. Returns true when the caller
-// should skip sending the response to the agent (clearContext path).
-func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte) bool {
-	var crPayload controlResponsePlanModePayload
-	if err := json.Unmarshal(content, &crPayload); err != nil {
-		return false
-	}
-
-	reqID := crPayload.Response.RequestID
-	if reqID == "" {
-		return false
-	}
-
-	// Look up the original control request to get the tool_name.
-	cr, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{
-		AgentID:   agentID,
-		RequestID: reqID,
-	})
-	if err != nil {
-		return false
-	}
-
-	var crBody struct {
-		Request struct {
-			ToolName  string `json:"tool_name"`
-			ToolUseID string `json:"tool_use_id"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
-		slog.Warn("control request payload unmarshal failed", "agent_id", agentID, "error", err)
-		return false
-	}
-	toolName := crBody.Request.ToolName
-	toolUseID := crBody.Request.ToolUseID
-
-	// Look up the agent's provider for message persistence.
-	dbAgent, dbErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if dbErr != nil {
-		return false
-	}
-
-	// Persist a display message for the control response.
-	// Skip for AskUserQuestion — the tool_result already shows the user's answers.
-	// Skip for ExitPlanMode — the tool_result already shows approval/feedback.
-	if toolName != agent.ToolNameAskUserQuestion && toolName != agent.ToolNameExitPlanMode {
-		action := "approved"
-		if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
-			action = "rejected"
-		}
-		displayContent := map[string]interface{}{
-			"isSynthetic": true,
-			"controlResponse": map[string]string{
-				"action":  action,
-				"comment": crPayload.Response.Response.Message,
-			},
-		}
-		displayJSON, marshalErr := json.Marshal(displayContent)
-		if marshalErr != nil {
-			slog.Warn("marshal control response notification", "agent_id", agentID, "error", marshalErr)
-		} else if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
-			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
-		}
-	}
-
-	// Detect plan mode changes from control responses (agent-initiated).
-	skipSend := false
-	if crPayload.Response.Response.Behavior == agent.ControlBehaviorAllow {
-		switch toolName {
-		case agent.ToolNameEnterPlanMode:
-			svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
-		case agent.ToolNameExitPlanMode:
-			// Determine target permission mode from control_response.
-			targetMode := agent.PermissionModeAcceptEdits
-			if crPayload.PermissionMode != "" {
-				targetMode = crPayload.PermissionMode
-			}
-			svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
-
-			// Remove the planModeToolUse entry so detectPlanModeFromToolResult
-			// does not override the mode we just set.
-			if toolUseID != "" {
-				svc.Output.planModeToolUse.Delete(toolUseID)
-			}
-
-			if crPayload.ClearContext {
-				// When clearing context, don't send the approval to the
-				// agent — we're about to stop it anyway. This avoids
-				// the race where the agent acts on the approval before
-				// initiatePlanExecution kills it.
-				go svc.initiatePlanExecution(agentID, targetMode)
-				skipSend = true
-			}
-			// When !clearContext, the agent continues in current context.
-		}
-	}
-
-	// Delete the answered control request.
-	_ = svc.Queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
-		AgentID:   agentID,
-		RequestID: reqID,
-	})
-
-	return skipSend
 }
 
 // initiatePlanExecution clears the agent's context and sends the plan as a
@@ -3436,6 +3239,15 @@ func broadcastReplayAgentEvent(sender *channel.Sender, event *leapmuxv1.AgentEve
 	})
 }
 
+func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestID string, payload []byte) *leapmuxv1.AgentControlRequest {
+	return &leapmuxv1.AgentControlRequest{
+		AgentId:       agentID,
+		RequestId:     requestID,
+		Payload:       payload,
+		AgentProvider: provider,
+	}
+}
+
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.
 func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResponse) {
 	slog.Debug("stream payload", "payload", protojson.Format(resp))
@@ -3505,22 +3317,22 @@ func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmux
 	return leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST
 }
 
-// maxSeqOrIndeterminate reads the agent's live-tail seq on a background context,
-// returning the shared -1 "indeterminate" sentinel (after logging logMsg) on a
-// query error. -1 (NOT 0) is deliberate: 0 means the agent is genuinely empty, so a
-// spurious 0 from an error would wrongly wipe a populated window / drain from the
-// start, while -1 tells the consumer to skip reconciliation and keep its own cursor.
-// Shared by the delete, catch-up-start, and catch-up-complete broadcasts so the
-// sentinel rule lives in one place. The synchronous list-response handler does NOT
-// use this -- it reads max seq on the cancellable request ctx and logs an expected
-// cancellation at Warn, not Error.
-func (svc *Context) maxSeqOrIndeterminate(agentID, logMsg string) int64 {
+// maxSeqOrNil reads the agent's live-tail seq on a background context, returning nil
+// (after logging logMsg) on a query error -- the explicit-presence "indeterminate"
+// signal. Leaving the field UNSET (rather than 0) is deliberate: a present 0 means the
+// agent is genuinely empty, so a spurious 0 from an error would wrongly wipe a populated
+// window / drain from the start, while an unset field tells the consumer to skip
+// reconciliation and keep its own cursor. Shared by the delete, catch-up-start, and
+// catch-up-complete broadcasts so the presence rule lives in one place. The synchronous
+// list-response handler does NOT use this -- it reads max seq on the cancellable request
+// ctx and logs an expected cancellation at Warn, not Error.
+func (svc *Context) maxSeqOrNil(agentID, logMsg string) *int64 {
 	seq, err := svc.Queries.GetMaxSeqByAgentID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error(logMsg, "agent_id", agentID, "error", err)
-		return -1
+		return nil
 	}
-	return seq
+	return &seq
 }
 
 // resolveMessagePage maps an anchor + cursor + caller limit to a query plan.
@@ -3599,5 +3411,6 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		SpanType:           m.SpanType,
 		SpanColor:          int32(m.SpanColor),
 		SpanLines:          m.SpanLines,
+		MarkType:           m.MarkType,
 	}
 }

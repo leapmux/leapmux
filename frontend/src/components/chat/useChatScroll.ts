@@ -19,6 +19,7 @@ import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
 import { createStickyBottom } from './chatScrollSticky'
 import { createScrollVelocity } from './chatScrollVelocity'
 import { createViewportRestore } from './chatScrollViewportRestore'
+import { createChatSeek } from './chatSeek'
 
 /** Saved/queried scroll position — anchored to a message, see SavedViewportScroll. */
 export type ChatScrollState = SavedViewportScroll
@@ -278,6 +279,11 @@ export interface PaginationCallbacks {
   /** Re-fetch the earliest page and snap to the first message (Home). */
   onJumpToOldest?: () => Promise<void> | void
   /**
+   * Replace the window with a page centered on `seq` (the scroll rail's out-of-window
+   * seek). Resolves once the window has been swapped, so the hook can land on the row.
+   */
+  onJumpToSeq?: (seq: bigint) => Promise<void> | void
+  /**
    * Cap the in-memory window on a live-tail append. `minKeepNewest` is the count of
    * newest messages the trim must retain to leave a scrolled-up reader's viewport
    * intact (the anchored row down to the tail); 0 while following the bottom. The
@@ -352,6 +358,24 @@ export interface UseChatScrollResult {
   /** Synchronous jump to bottom (used by the inline "show more" button). */
   jumpToBottom: () => void
   /**
+   * Seek to a message seq (a scroll-rail dot click, track click, or thumb release):
+   * an in-window aligned landing, or a fetch-around-seq window swap then land. Resolves
+   * to whether the seek actually moved the scroll position (so the rail's drag-release
+   * hold knows whether to await the landing's metrics settle or clear the thumb now).
+   */
+  jumpToSeq: (seq: bigint) => Promise<boolean>
+  /**
+   * A guard-marked programmatic scroll write for in-window rail thumb-drag live-scroll.
+   * Marked like the landing writes so the drag's scroll events don't trip velocity
+   * sampling, edge pagination, or the buffer filler.
+   */
+  previewScrollTo: (top: number) => void
+  /**
+   * Abandon any in-flight out-of-window seek (rail thumb re-grab): its late fetch must
+   * not yank the viewport after the user has taken manual control of the thumb.
+   */
+  cancelPendingSeek: () => void
+  /**
    * Re-stick to the bottom if we were pinned there and content below the
    * viewport just grew. For tail content that is NOT a virtualizer row -- the
    * streaming-markdown block and the thinking indicator, rendered as siblings of
@@ -416,6 +440,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let preserveBrowsingPosition = false
   let scrollAnimationId: number | null = null
   let suppressAutoLoadOlderAfterRestore = false
+  // The scroll-rail seek unit (createChatSeek), assigned below where its deps are all in
+  // scope. It owns the in-flight out-of-window seek + epoch; a forward `let` (read only at
+  // call time) lets handleScroll cancel a live seek on a genuine user scroll before the unit
+  // is created. See the wiring at the assignment site.
+  let chatSeek!: ReturnType<typeof createChatSeek>
   let autoScrollFirstSeq: bigint | undefined
   let autoScrollLastSeq: bigint | undefined
   let lastAutoScrollSig: unknown[] = []
@@ -1172,6 +1201,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     )
     // Defer the re-pin as fling drift only for a momentum scroll.
     userScrolling = isMomentumScroll
+    // Only a user-directed scroll cancels an in-flight out-of-window seek: ambient layout
+    // shifts/window swaps can emit real scroll events while the fetch is pending, but they
+    // are not the reader taking control and must not strand the seek before it can land.
+    const userDirectedScroll = !programmaticEcho
+      && (discretePage || isScrollInputActive() || hasRecentMomentumInput() || hasRecentKeyboardScroll())
+    if (userDirectedScroll)
+      chatSeek.cancelPendingSeek()
     // Render-ahead overscan for this scroll (undefined for echoes and idle), read
     // BEFORE refreshViewport / checkAtBottom can move scrollTop.
     const viewportLead = scrollTopAtStart !== undefined
@@ -1382,19 +1418,23 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
   }
 
-  const forceScrollToBottom = () => {
-    cancelScrollAnimation()
-    // A deliberate jump-to-bottom is the user re-taking control of position, exactly
-    // like a genuine scroll: resume the pre-fetch a prior forced-stop tap paused. It
-    // otherwise clears only on a non-echo scroll, and a jump emits only programmatic
-    // echoes -- so without this a stop-then-jump leaves the buffer fill wedged off.
+  /**
+   * Clear the per-window "buffer filler paused / suppressed" flags -- a deliberate jump
+   * (to bottom, or to a rail seq) is the user re-taking control of position, exactly like
+   * a genuine scroll, but a jump emits only programmatic echoes that never clear them.
+   * Resumes a pre-fetch a prior forced-stop tap paused, drops the settle gate, and
+   * abandons any near-top restore's older-load suppression. Callers that REPLACE the
+   * window additionally rearmScrollBufferFiller() for the fresh window's per-window state.
+   */
+  const retakeScrollControl = () => {
     bufferFillPaused = false
     bufferFillSettling = false
-    // A jump-to-bottom also abandons any near-top restore landing, so its older-load
-    // suppression no longer applies -- clear it (a window REPLACE on the hasNewer path
-    // below invalidates it outright; even a same-window stick is a deliberate move off
-    // the protected top). Mirrors the rearmScrollBufferFiller() below for per-window state.
     suppressAutoLoadOlderAfterRestore = false
+  }
+
+  const forceScrollToBottom = () => {
+    cancelScrollAnimation()
+    retakeScrollControl()
     // Scrolled away from the live tail: re-fetch the latest page first, then
     // snap. jumpToLatest replaces the window; the totalHeight re-pin effect and
     // the sticky auto-scroll then land us at the true bottom.
@@ -1453,6 +1493,30 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
     stickToBottom()
   }
+
+  // ---- Scroll-rail seek (jumpToSeq / previewScrollTo / cancelPendingSeek) -------------
+  // The seek machine (dot/track/thumb -> land, or fetch-around-seq then land) lives in its
+  // own tested unit, createChatSeek; wired here where all its deps are in scope. It owns the
+  // pendingSeek/epoch state. rearmScrollBufferFiller is threaded as a thunk because the
+  // buffer filler is created LATER than this seam; the rest are already defined above.
+  chatSeek = createChatSeek(scrollCtx, {
+    messages: opts.messages,
+    readScrollTop: readLogicalScrollTop,
+    cancelScrollAnimation,
+    cancelFlingSettle: () => {
+      flingSettle.cancel()
+      flingSettle.reset()
+    },
+    captureAnchor,
+    captureRowTopAnchor,
+    bumpGeomTick: () => bumpGeomTick(t => t + 1),
+    retakeScrollControl,
+    rearmScrollBufferFiller: () => rearmScrollBufferFiller(),
+    checkAtBottom,
+    onJumpToSeq: opts.onJumpToSeq,
+    onSaveViewportScroll: opts.onSaveViewportScroll,
+    hasNewerMessages: () => !!opts.hasNewerMessages?.(),
+  })
 
   // The keyboard / wheel input layer (createScrollInput). Owns no scroll state -- the
   // shared `lastScrollDir` / `discretePageTarget` stay here (handleScroll reads them)
@@ -1892,6 +1956,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     scrollToBottomAnimated,
     scrollToBottom,
     jumpToBottom,
+    jumpToSeq: seq => chatSeek.jumpToSeq(seq),
+    previewScrollTo: top => chatSeek.previewScrollTo(top),
+    cancelPendingSeek: () => chatSeek.cancelPendingSeek(),
     restickIfAtBottom,
     getScrollState,
     forceScrollToBottom,

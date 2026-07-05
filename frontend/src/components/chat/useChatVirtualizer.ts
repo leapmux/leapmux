@@ -2,6 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createMemo, createSignal, onCleanup } from 'solid-js'
+import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { monotonicNow } from '~/lib/monotonicNow'
@@ -236,46 +237,6 @@ function resolve(v: Accessor<number> | number | undefined, fallback: number): nu
  */
 function isUsableHeight(n: number): boolean {
   return n > 0 && Number.isFinite(n)
-}
-
-// Largest index in [0, n-1] for which `pred(mid)` holds, or 0 when none does.
-// Lower-bound scan: each satisfied probe raises the floor. Module-level and pure
-// (state passed in), so it isn't re-allocated per useChatVirtualizer instance and
-// can be unit-tested directly.
-function largestIndexWhere(n: number, pred: (mid: number) => boolean): number {
-  let lo = 0
-  let hi = n - 1
-  let ans = 0
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1
-    if (pred(mid)) {
-      ans = mid
-      lo = mid + 1
-    }
-    else {
-      hi = mid - 1
-    }
-  }
-  return ans
-}
-
-// Smallest index in [0, n-1] for which `pred(mid)` holds, or `fallback` when none
-// does. Upper-bound scan: each satisfied probe lowers the ceiling.
-function smallestIndexWhere(n: number, pred: (mid: number) => boolean, fallback: number): number {
-  let lo = 0
-  let hi = n - 1
-  let ans = fallback
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1
-    if (pred(mid)) {
-      ans = mid
-      hi = mid - 1
-    }
-    else {
-      lo = mid + 1
-    }
-  }
-  return ans
 }
 
 export interface UseChatVirtualizerResult {

@@ -13,6 +13,7 @@ import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimit
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
+import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
@@ -459,6 +460,12 @@ const codexPlugin: Provider = {
     }
     return null
   },
+
+  // Codex marks only user sends and control-response answers. A control answer is persisted in one
+  // of two Leapmux-neutral shapes -- `{content}` (a provider-resolved answer or a deny-with-feedback)
+  // or `{controlResponse}` (a bare approve/deny with no feedback) -- and Codex never self-displays
+  // one. The shared neutral extractor handles BOTH shapes, so it is the whole preview.
+  previewText: defaultMarkPreview,
 
   notificationThreadEntry: codexNotificationThreadEntry,
 

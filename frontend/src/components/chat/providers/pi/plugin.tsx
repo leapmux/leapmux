@@ -9,6 +9,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatUnifiedDiffText } from '../../diff'
+import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
@@ -317,6 +318,13 @@ const piPlugin: Provider = {
       return obj.content.trim() || null
     return null
   },
+
+  // Pi marks only user sends and control-response answers. A control answer is persisted in one of
+  // two Leapmux-neutral shapes -- `{content}` (a provider-resolved answer or a deny-with-feedback)
+  // or `{controlResponse}` (a bare approve/deny with no feedback) -- and Pi consumes
+  // extension_ui_response on stdin without echoing it. The shared neutral extractor handles BOTH
+  // shapes, so it is the whole preview.
+  previewText: defaultMarkPreview,
 
   buildInterruptContent(): string | null {
     return JSON.stringify({ type: 'abort' })

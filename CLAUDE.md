@@ -33,12 +33,40 @@ Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. Th
 
 ## Coding conventions
 
+### Provider-specific logic belongs in the provider, not shared code
+
+LeapMux supports many agent providers (Claude Code, Codex, Pi, and ACP-based
+providers: OpenCode, Cursor, Copilot, Kilo, Goose, Reasonix). Anything that depends
+on a **single provider's wire format or message shapes** MUST live in that provider's
+plugin/implementation — never hardcoded into shared code (a package-level helper, a
+shared `default*` function, or a `switch` on provider). Shared code stays
+provider-neutral and delegates the provider-specific decision.
+
+- **Backend (Go):** the `Provider` interface in
+  `backend/internal/worker/agent/provider.go` is the home for per-provider decisions.
+  Add a method there (e.g. `IsSelfDisplayingControlTool`) and dispatch via
+  `agent.ProviderFor(provider)`. Do NOT put a provider's tool names / method names /
+  envelope shapes in a package-level function that shared service code calls.
+- **Frontend (TS):** the `Provider` plugin interface in
+  `frontend/src/components/chat/providers/registry.ts` is the home. Add a method
+  (e.g. `previewText`, sibling of `extractQuotableText`) and implement it per plugin;
+  a genuinely provider-neutral shape (`{content}`, `{controlResponse}`) can share a
+  `default*` helper that plugins delegate to, but the Anthropic/Codex/Pi/ACP-specific
+  parsing stays in that plugin. The renderer layer is where each provider's raw
+  message shapes are known — see the `frontend-owns-message-extraction` principle.
+
+Why: hardcoding one provider's shape into shared code silently breaks or half-serves
+every other provider and is a second source of truth that drifts. When you catch
+yourself writing a provider's tool/method name outside its plugin, move it into the
+plugin behind an interface method.
+
 ### Tests
 
 - Backend: `testify/assert`, `testify/require`.
 - Frontend: `vitest`. `describe` names must be lowercase.
 - E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
 - Unused imports cause lint failures (strict).
+- Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.
 
 ### Frontend CSS (vanilla-extract)
 

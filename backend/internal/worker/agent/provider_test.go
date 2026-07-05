@@ -210,6 +210,30 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 	}
 }
 
+func TestPlanApprovalOptions_PerProvider(t *testing.T) {
+	// Codex owns its plan-approval option settlement behind the Provider interface: Base
+	// resets the collaboration axis, Bypass (mode-switch only) grants full network + no sandbox.
+	codex := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).PlanApprovalOptions()
+	assert.Equal(t, map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}, codex.Base)
+	assert.Equal(t, map[string]string{
+		CodexOptionNetworkAccess: CodexNetworkEnabled,
+		CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
+	}, codex.Bypass)
+
+	// Every other provider settles no plan-approval options (no plan-mode-prompt flow).
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED,
+	} {
+		opts := ProviderFor(provider).PlanApprovalOptions()
+		assert.Empty(t, opts.Base, "provider %v must settle no base plan-approval options", provider)
+		assert.Empty(t, opts.Bypass, "provider %v must settle no bypass plan-approval options", provider)
+	}
+}
+
 func TestIsNotificationThreadable_ClaudeSystemUsesPlugin(t *testing.T) {
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))

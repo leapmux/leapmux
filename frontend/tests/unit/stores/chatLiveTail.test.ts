@@ -124,12 +124,12 @@ describe('chatlivetail', () => {
     it('lowers to deletedSeq-1 for an unloaded beyond-window delete with an indeterminate (-1) tail', () => {
       withTracker((t) => {
         t.bump('a1', 60n)
-        // The worker degraded new_latest_seq to -1 (couldn't read the tail), but deletedSeq
+        // The worker left new_latest_seq unset (couldn't read the tail), but deletedSeq
         // (60) === the recorded tail, so it is the highest observed seq and the new tail is
         // provably <= 59. Lower to it rather than leaving the recorded tail pointing at the
         // now-deleted 60 (which would keep the "new messages below" affordance falsely lit
         // forever, since 60 can never load again).
-        t.onDelete('a1', { deletedSeq: 60n, newLatestSeq: -1n, windowTail: 30n })
+        t.onDelete('a1', { deletedSeq: 60n, newLatestSeq: undefined, windowTail: 30n })
         expect(t.get('a1')).toBe(59n)
       })
     })
@@ -137,21 +137,21 @@ describe('chatlivetail', () => {
     it('clears the caught-up gap when the window had loaded right up to the deleted unloaded tail', () => {
       withTracker((t) => {
         t.bump('a1', 31n) // the unloaded tail was 31; the window loaded up to 30
-        // 31 is deleted with an indeterminate (-1) tail. deletedSeq-1 = 30 == windowTail,
+        // 31 is deleted with an indeterminate (unset) tail. deletedSeq-1 = 30 == windowTail,
         // so the reader has now loaded everything that still exists: caughtUp must resolve
         // (recorded clamps to 30), not stay wedged at the deleted 31.
-        t.onDelete('a1', { deletedSeq: 31n, newLatestSeq: -1n, windowTail: 30n })
+        t.onDelete('a1', { deletedSeq: 31n, newLatestSeq: undefined, windowTail: 30n })
         expect(t.get('a1')).toBe(30n)
         expect(t.caughtUp('a1', 30n)).toBe(true)
       })
     })
 
-    it('uses the loaded window tail for a LOADED-tail delete with an indeterminate (-1) tail', () => {
+    it('uses the loaded window tail for a LOADED-tail delete with an indeterminate (unset) tail', () => {
       withTracker((t) => {
         t.bump('a1', 3n)
         // A loaded-tail delete can see the new last loaded row (windowTail), so an
-        // indeterminate broadcast falls back to it rather than the bogus -1.
-        t.onDelete('a1', { removedSeq: 3n, newLatestSeq: -1n, windowTail: 2n })
+        // indeterminate broadcast falls back to it rather than a missing tail.
+        t.onDelete('a1', { removedSeq: 3n, newLatestSeq: undefined, windowTail: 2n })
         expect(t.get('a1')).toBe(2n)
       })
     })

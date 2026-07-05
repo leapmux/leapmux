@@ -3,14 +3,18 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { MESSAGE_PAGE_SIZE } from '~/stores/chatHistoryPaginator'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerPage / catchUpToTail
 const mockListAgentMessages = vi.fn()
+const mockListMessageMarks = vi.fn()
+const mockGetAgentMessage = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
   listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
+  listMessageMarks: (...args: unknown[]) => mockListMessageMarks(...args),
+  getAgentMessage: (...args: unknown[]) => mockGetAgentMessage(...args),
 }))
 
 function makeMessage(id: string, seq: bigint, deliveryError = '') {
@@ -20,6 +24,17 @@ function makeMessage(id: string, seq: bigint, deliveryError = '') {
     content: new TextEncoder().encode(`{"content":"test"}`),
     seq,
     deliveryError,
+  })
+}
+
+/** A message carrying a scroll-rail mark_type, to exercise the marks hooks. */
+function makeMarkedMessage(id: string, seq: bigint, markType: MarkType) {
+  return create(AgentChatMessageSchema, {
+    id,
+    source: MessageSource.USER,
+    content: new TextEncoder().encode(`{"content":"test"}`),
+    seq,
+    markType,
   })
 }
 
@@ -147,6 +162,8 @@ describe('createChatStore', () => {
   // per-call expectations after this.
   beforeEach(() => {
     mockListAgentMessages.mockReset()
+    mockListMessageMarks.mockReset()
+    mockGetAgentMessage.mockReset()
   })
 
   it('should initialize with empty state', () => {
@@ -575,12 +592,12 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail skips a negative latest_seq (worker could not determine the tail)', () => {
+  it('reconcileAuthoritativeTail skips an unset (indeterminate) latest_seq (worker could not determine the tail)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
       store.liveTail.bump('a1', 2n)
-      store.reconcileAuthoritativeTail('a1', -1n)
+      store.reconcileAuthoritativeTail('a1', undefined)
       // Nothing trimmed, tail untouched -- we don't act on a value we can't trust.
       expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm2'])
       expect(store.liveTail.get('a1')).toBe(2n)
@@ -594,12 +611,12 @@ describe('createChatStore', () => {
       store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
       store.liveTail.bump('a1', 2n)
       expect(store.caughtUpToLiveTail('a1')).toBe(true)
-      // CatchUpComplete with an indeterminate (-1) tail + probeIndeterminate=true: the
+      // CatchUpComplete with an indeterminate (unset) tail + probeIndeterminate=true: the
       // worker couldn't read its tail, so liveTail can't be raised authoritatively. Nudge
       // it one past the loaded tail so the continuous reconcile probes (catchUpToTail)
       // instead of trusting a possibly-partial replay as the tail; settleToWindow clamps
       // the nudge back down if nothing's actually there.
-      store.reconcileAuthoritativeTail('a1', -1n, undefined, true)
+      store.reconcileAuthoritativeTail('a1', undefined, undefined, true)
       expect(store.liveTail.get('a1')).toBe(3n) // windowTail (2) + 1
       expect(store.caughtUpToLiveTail('a1')).toBe(false) // now lagging -> reconcile probes
       // Nothing is trimmed (no authoritative tail to reap against).
@@ -615,7 +632,7 @@ describe('createChatStore', () => {
       store.liveTail.bump('a1', 2n)
       // CatchUpStart path (probeIndeterminate defaults false): the replay hasn't run yet,
       // so a probe would race it. Leave liveTail untouched -- catchUpComplete probes.
-      store.reconcileAuthoritativeTail('a1', -1n)
+      store.reconcileAuthoritativeTail('a1', undefined)
       expect(store.liveTail.get('a1')).toBe(2n)
       expect(store.caughtUpToLiveTail('a1')).toBe(true)
       dispose()
@@ -3909,6 +3926,204 @@ describe('createChatStore', () => {
 
         expect(store.getMessageVersion('a1')).toBe(2)
         expect(store.getMessageVersion('a2')).toBe(1)
+        dispose()
+      })
+    })
+  })
+
+  describe('scroll-rail marks', () => {
+    it('addMessage records a mark for a marked message, keeping the mark type', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        store.addMessage('a1', makeMarkedMessage('m2', 2n, MarkType.CONTROL_RESPONSE))
+        store.addMessage('a1', makeMessage('m3', 3n)) // unmarked
+        expect(store.messageMarks.get('a1').marks).toEqual([
+          { seq: 1n, type: MarkType.USER_MESSAGE },
+          { seq: 2n, type: MarkType.CONTROL_RESPONSE },
+        ])
+        dispose()
+      })
+    })
+
+    it('records the mark even when the message is dropped beyond the loaded window', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        // Window holds [m2, m3] with older history unloaded (hasMoreOlder=true).
+        store.setMessages('a1', [makeMessage('m2', 2n), makeMessage('m3', 3n)], true)
+        // A marked message for seq 1 (< firstSeq) belongs to the unloaded older region,
+        // so the live-append guard DROPS it -- but the mark is recorded first.
+        const dropped = store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        expect(dropped).toBe(false) // not loaded into the window
+        expect(store.getMessages('a1').map(m => m.id)).toEqual(['m2', 'm3'])
+        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 1n, type: MarkType.USER_MESSAGE }])
+        dispose()
+      })
+    })
+
+    it('does not record a mark for optimistic locals (seq 0n)', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMarkedMessage('local-1', 0n, MarkType.USER_MESSAGE))
+        expect(store.messageMarks.get('a1').marks).toEqual([])
+        dispose()
+      })
+    })
+
+    it('removeMessage drops the mark for a loaded row', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        store.addMessage('a1', makeMarkedMessage('m2', 2n, MarkType.USER_MESSAGE))
+        store.removeMessage('a1', 'm1')
+        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 2n, type: MarkType.USER_MESSAGE }])
+        dispose()
+      })
+    })
+
+    it('removeMessage drops the mark for an unloaded beyond-window delete (seq from the broadcast)', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        // Record a mark for a beyond-window seq (dropped, but marked -- see above).
+        store.setMessages('a1', [makeMessage('m2', 2n)], true)
+        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        expect(store.messageMarks.get('a1').marks.map(m => m.seq)).toEqual([1n])
+        // The row isn't loaded, so removeMessage learns its seq from the broadcast arg.
+        store.removeMessage('a1', 'm1', 1n)
+        expect(store.messageMarks.get('a1').marks).toEqual([])
+        dispose()
+      })
+    })
+
+    it('moves a mark on a reseq (previousSeq) instead of stranding a ghost dot at the old seq', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMarkedMessage('m1', 3n, MarkType.CONTROL_RESPONSE))
+        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 3n, type: MarkType.CONTROL_RESPONSE }])
+        // A reseq MOVE re-emits the same id at a higher seq, carrying its mark.
+        const moved = create(AgentChatMessageSchema, {
+          id: 'm1',
+          source: MessageSource.USER,
+          content: new TextEncoder().encode(`{"content":"test"}`),
+          seq: 8n,
+          previousSeq: 3n,
+          markType: MarkType.CONTROL_RESPONSE,
+        })
+        store.addMessage('a1', moved)
+        // The mark follows to seq 8 with no ghost left behind at seq 3.
+        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 8n, type: MarkType.CONTROL_RESPONSE }])
+        dispose()
+      })
+    })
+
+    it('reconcileAuthoritativeTail drops the marks of reaped phantom rows (no ghost dot after a disconnected delete)', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        // Two marked rows in the window; m2 was deleted server-side while the client was
+        // disconnected, so the worker reports the authoritative tail is 1.
+        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        store.addMessage('a1', makeMarkedMessage('m2', 2n, MarkType.CONTROL_RESPONSE))
+        store.liveTail.bump('a1', 2n)
+        expect(store.messageMarks.get('a1').marks.map(m => m.seq)).toEqual([1n, 2n])
+
+        store.reconcileAuthoritativeTail('a1', 1n)
+
+        // The reaped row m2 leaves the window AND its mark is dropped -- otherwise the stale
+        // seq-2 mark survives the next reseed (its seq exceeds the lowered maxSeq, so the
+        // beyond-horizon preserve keeps it) and resurfaces as a ghost dot once a later
+        // append raises maxSeq past it.
+        expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1'])
+        expect(store.messageMarks.get('a1').marks.map(m => m.seq)).toEqual([1n])
+        dispose()
+      })
+    })
+
+    it('forgetAgent clears an agent\'s marks', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
+        store.forgetAgent('a1')
+        expect(store.messageMarks.get('a1').loaded).toBe(false)
+        expect(store.messageMarks.get('a1').marks).toEqual([])
+        dispose()
+      })
+    })
+
+    it('getRailData takes the live-tail high-water over the seeded max', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.messageMarks.seed('a1', [{ seq: 2n, type: MarkType.USER_MESSAGE }], 1n, 5n)
+        // A beyond-window live message bumps liveTail past the seed's max.
+        store.setMessages('a1', [makeMessage('m2', 2n)], true)
+        store.addMessage('a1', makeMessage('m9', 9n)) // dropped beyond window, bumps liveTail
+        const rail = store.getRailData('a1')
+        expect(rail.loaded).toBe(true)
+        expect(rail.minSeq).toBe(1n)
+        expect(rail.maxSeq).toBe(9n) // liveTail (9) > seedMax (5)
+        dispose()
+      })
+    })
+
+    it('getRailData drops a deleted tail seq from the range instead of pinning the stale seed max', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.messageMarks.seed('a1', [{ seq: 5n, type: MarkType.USER_MESSAGE }], 1n, 10n)
+        store.liveTail.bump('a1', 10n)
+        expect(store.getRailData('a1').maxSeq).toBe(10n)
+        // Delete the tail row (seq 10); the window's new last seq is 9. liveTail lowers.
+        store.liveTail.onDelete('a1', { removedSeq: 10n, windowTail: 9n })
+        // Must follow the live tail down, NOT stay pinned at the stale seed max (10).
+        expect(store.getRailData('a1').maxSeq).toBe(9n)
+        dispose()
+      })
+    })
+
+    it('loadMessageMarks seeds from the RPC and survives an RPC failure', async () => {
+      mockListMessageMarks.mockResolvedValueOnce({
+        marks: [{ seq: 3n, type: MarkType.USER_MESSAGE }, { seq: 7n, type: MarkType.CONTROL_RESPONSE }],
+        minSeq: 1n,
+        maxSeq: 10n,
+      })
+      await createRoot(async (dispose) => {
+        const store = createChatStore()
+        await store.loadMessageMarks('w1', 'a1')
+        const rail = store.getRailData('a1')
+        expect(rail.marks.map(m => m.seq)).toEqual([3n, 7n])
+        expect(rail.minSeq).toBe(1n)
+        expect(rail.maxSeq).toBe(10n)
+
+        // A failing RPC leaves the prior state intact (rail stays as-is, no throw).
+        mockListMessageMarks.mockRejectedValueOnce(new Error('offline'))
+        await store.loadMessageMarks('w1', 'a1')
+        expect(store.getRailData('a1').marks.map(m => m.seq)).toEqual([3n, 7n])
+        dispose()
+      })
+    })
+
+    it('fetchMessageBySeq returns the fetched message on success', async () => {
+      mockGetAgentMessage.mockResolvedValueOnce({ message: makeMessage('m9', 9n) })
+      await createRoot(async (dispose) => {
+        const store = createChatStore()
+        const got = await store.fetchMessageBySeq('w1', 'a1', 9n)
+        expect(got?.id).toBe('m9')
+        expect(mockGetAgentMessage).toHaveBeenCalledWith('w1', { agentId: 'a1', seq: 9n })
+        dispose()
+      })
+    })
+
+    it('fetchMessageBySeq resolves undefined for an unset message but RETHROWS a failed RPC', async () => {
+      await createRoot(async (dispose) => {
+        const store = createChatStore()
+        // Unset message: the mark outlived its row (deleted / reseq'd) -> definitive absence,
+        // resolves undefined so the rail caches '' and shows a label without re-fetching.
+        mockGetAgentMessage.mockResolvedValueOnce({ message: undefined })
+        expect(await store.fetchMessageBySeq('w1', 'a1', 9n)).toBeUndefined()
+        // An RPC failure RETHROWS (rather than collapsing to undefined) so the caller can tell
+        // a transient blip from a real absence and retry instead of poisoning the preview.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        mockGetAgentMessage.mockRejectedValueOnce(new Error('offline'))
+        await expect(store.fetchMessageBySeq('w1', 'a1', 9n)).rejects.toThrow('offline')
+        warn.mockRestore()
         dispose()
       })
     })

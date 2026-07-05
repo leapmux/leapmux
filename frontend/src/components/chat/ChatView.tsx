@@ -5,6 +5,7 @@ import type { ChatScrollState, PaginationCallbacks } from './useChatScroll'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTypes'
 
@@ -24,8 +25,11 @@ import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
+import { resolveScrollbarOwner } from './chatRailPolicy'
 import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
+import { ChatScrollRail } from './ChatScrollRail'
+import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
 import { createStreamingTail } from './chatStreamingTail'
 import * as styles from './ChatView.css'
@@ -178,6 +182,19 @@ export interface AgentLifecycleProps {
   providerLabel?: string
 }
 
+/**
+ * The scroll-rail data ({@link ChatRailData}) plus the two on-demand preview callbacks the
+ * host wires per agent. Named (rather than an inline `ChatRailData & {...}`) so the store's
+ * `getRailData` producer, this consumer prop, and the memoized `rail` object the host builds
+ * (TileRenderer) all check against ONE shape and can't drift.
+ */
+export interface ChatRailProps extends ChatRailData {
+  /** Reactive read of a mark's hover-preview text (undefined = loading, '' = no text). */
+  previewFor?: (seq: bigint) => string | undefined
+  /** Kick off resolving a mark's preview on dot hover. */
+  warmPreview?: (seq: bigint) => void
+}
+
 interface ChatViewProps {
   /**
    * Stable agent id. Forwarded to ThinkingIndicator so the random
@@ -204,6 +221,11 @@ interface ChatViewProps {
   homeDir?: string
   /** Pagination / windowing state + callbacks (see ChatPaginationProps). */
   pagination?: ChatPaginationProps
+  /**
+   * Seq-space scroll-rail data: the marked seqs (teal jump dots) plus the whole-history
+   * seq range. The rail hides itself when absent / unseeded (see ChatScrollRail).
+   */
+  rail?: ChatRailProps
   /** Saved scroll state for viewport restoration on tab switch. */
   savedViewportScroll?: ChatScrollState
   /** Called when saved scroll state should be cleared after restoration. */
@@ -285,6 +307,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.
   let listEl: HTMLElement | undefined
+  // Reactive handle on the same element for the scroll rail (which attaches its own
+  // passive listener + ResizeObserver in a createEffect keyed on it).
+  const [scrollEl, setScrollEl] = createSignal<HTMLDivElement | undefined>()
 
   // Classify + cache the window's messages by id so <For> receives stable object
   // references for unchanged rows. createClassifiedEntryCache owns the cache, the
@@ -433,6 +458,46 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Point the UI-state cap's protect set at the virtualizer's live mounted rows
   // (a stable Set reference) now that `virt` exists.
   mountedRowIds = virt.mountedIds
+
+  // Resolve which scrollbar owns the viewport ONCE, here -- ChatView holds the single
+  // viewport CONTENT-box height (viewportHeight(), the ResizeObserver's contentRect, the same
+  // coordinate space totalHeight lives in) plus the item list, range, and totalHeight -- and hands
+  // the result to BOTH the native-scrollbar hide below AND the rail (via its `hidden` prop). One
+  // resolution, one height source, is what makes "never zero or two scrollbars" STRUCTURAL: a
+  // shared function called twice with two height sources (the rail formerly read its own
+  // padding-box clientHeight) could hide both bars over content overflowing by the container's
+  // vertical padding. railRowSeqs is memoized on the item list so the O(n) row-seq scan reruns
+  // only when rows change -- not on every scroll frame or streaming-height commit.
+  //
+  // Gate the scan on a STABLE presence boolean, NOT props.rail's object reference: the host
+  // rebuilds the rail prop object on every marks / live-tail / window change (TileRenderer's
+  // railProps memo), so a bare `props.rail ?` here would re-run the O(n) scan on each of those
+  // even when the row list is unchanged. railPresent flips only when the rail appears / disappears,
+  // so the scan reruns solely when virtualItems changes -- exactly as the note above promises.
+  const railPresent = createMemo(() => props.rail !== undefined)
+  const railRowSeqs = createMemo(() => (railPresent() ? rowStartSeqs(virtualItems()) : null))
+  const railOwner = createMemo(() => {
+    const rail = props.rail
+    if (!rail)
+      return null
+    return resolveScrollbarOwner({
+      loaded: rail.loaded,
+      itemCount: virtualItems().length,
+      rowSeqs: railRowSeqs(),
+      range: { minSeq: rail.minSeq, maxSeq: rail.maxSeq },
+      hasMoreOlder: !!props.pagination?.hasOlderMessages,
+      hasMoreNewer: !!props.pagination?.hasNewerMessages,
+      totalHeight: virt.totalHeight(),
+      viewportHeight: viewportHeight(),
+    })
+  })
+  // Hide the native scrollbar whenever the rail owns scrolling OR nothing needs a scrollbar -- i.e.
+  // every owner except 'native'. The exact complement of the rail's `hidden` prop (owner !==
+  // 'rail'), both derived from the SAME railOwner, so exactly one bar is ever shown.
+  const hideNativeScrollbar = createMemo(() => {
+    const owner = railOwner()
+    return owner !== null && owner !== 'native'
+  })
 
   // Reload warm-start: hydrate persisted measured heights (keyed by height-
   // key digest, so content/width changes self-invalidate) and keep the
@@ -715,6 +780,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     onLoadNewerMessages: () => props.pagination?.onLoadNewerMessages?.(),
     onJumpToLatest: () => props.pagination?.onJumpToLatest?.(),
     onJumpToOldest: () => props.pagination?.onJumpToOldest?.(),
+    onJumpToSeq: seq => props.pagination?.onJumpToSeq?.(seq),
     virtualizer: virt,
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
@@ -723,6 +789,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Now that the scroll hook (and its anchor engine) exists, point the toggle-time row
   // pin at it (see the `let` declaration above and buildMessageHost).
   anchorRowForResize = scroll.anchorRowForResize
+
+  // The rail's seq-space bounds (window-aware min/max) and loaded-window seqs are resolved
+  // once in the store's getRailData (see resolveRailRange), so ChatView passes props.rail
+  // straight through to ChatScrollRail rather than re-deriving the range in the view.
 
   const pauseThen = <Args extends unknown[]>(handler: (...args: Args) => void): ((...args: Args) => void) =>
     (...args: Args) => {
@@ -819,11 +889,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         <div
           ref={(el) => {
             listEl = el
+            setScrollEl(el)
             scroll.attachListRef(el)
             viewportSizeObserver.observe(el)
             attachPassiveScrollListeners(el)
           }}
-          class={styles.messageList}
+          // Hide the native scrollbar when the rail is active and either can draw a thumb
+          // from a server anchor, or there is no scrollable local-only overflow that would
+          // need the native scrollbar as a fallback.
+          class={`${styles.messageList} ${hideNativeScrollbar() ? styles.messageListRailActive : ''}`}
           data-chat-scroll-container="true"
           tabIndex={0}
           {...scrollHandlers}
@@ -1090,6 +1164,34 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           >
             <Icon icon={ArrowDown} size="lg" />
           </button>
+        </Show>
+        <Show when={props.rail?.loaded}>
+          <ChatScrollRail
+            scrollEl={scrollEl()}
+            items={virtualItems()}
+            offsetOfIndex={virt.offsetOfIndex}
+            totalHeight={virt.totalHeight()}
+            geometryVersion={virt.geometryVersion()}
+            // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
+            // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
+            railRowSeqs={railRowSeqs()}
+            // ChatRailProps extends ChatRailData, so pass the whole object straight through as the
+            // rail's `rail` prop rather than re-flattening its six fields (which the view would then
+            // have to keep in hand-sync). previewFor/warmPreview are the orthogonal on-demand
+            // callbacks and stay separate.
+            rail={props.rail!}
+            // Whether the rail hides itself, the exact complement of hideNativeScrollbar: both are
+            // derived from ONE railOwner resolution (single viewport-height source), so the rail is
+            // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
+            hidden={railOwner() !== 'rail'}
+            hasMoreOlder={!!props.pagination?.hasOlderMessages}
+            hasMoreNewer={!!props.pagination?.hasNewerMessages}
+            onJumpToSeq={seq => scroll.jumpToSeq(seq)}
+            previewScrollTo={top => scroll.previewScrollTo(top)}
+            onSeekInterrupt={() => scroll.cancelPendingSeek()}
+            previewFor={props.rail!.previewFor}
+            warmPreview={props.rail!.warmPreview}
+          />
         </Show>
       </div>
       <ChatHiddenPremeasure

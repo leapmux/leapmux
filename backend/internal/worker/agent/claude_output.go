@@ -238,6 +238,38 @@ type messageEnvelope struct {
 	contentParsed bool
 }
 
+// claudeUserEnvelopeMarkType classifies a persisted Claude `user`-envelope row for
+// the scroll rail's jump marks. The only Claude user row that carries a mark at
+// ingestion is a self-displaying control answer -- an AskUserQuestion / ExitPlanMode
+// tool_result Claude re-emits into its own transcript -- which is marked
+// CONTROL_RESPONSE. Everything else is unmarked. spanType is the resolved tool name
+// for tool_result rows (empty otherwise).
+//
+// A human-typed prompt is NOT marked here: HandleOutput drops string-content `user`
+// envelopes via isSimpleUserTextEcho before persist, and the live USER_MESSAGE dot is
+// written by the SendAgentMessage handler against the row it persists. Marking a
+// string-content echo here too would double the dot (SendAgentMessage already marked
+// the send), so this classifier deliberately leaves user text UNSPECIFIED -- an
+// un-dropped echo then persists dot-less rather than as a duplicate jump target.
+func claudeUserEnvelopeMarkType(spanType string) leapmuxv1.MarkType {
+	if (claudeProvider{}).IsSelfDisplayingControlTool(spanType) {
+		return leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
+	}
+	return leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED
+}
+
+func claudeUserEnvelopeBlocksMarkType(blocks []contentBlock, spanTypeFor func(string) string) leapmuxv1.MarkType {
+	for _, block := range blocks {
+		if block.Type != "tool_result" || block.ToolUseID == "" {
+			continue
+		}
+		if claudeUserEnvelopeMarkType(spanTypeFor(block.ToolUseID)) == leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE {
+			return leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
+		}
+	}
+	return leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED
+}
+
 // ContentBlocks returns the parsed content blocks from message.content.
 // Returns nil if content is not an array (e.g. a plain string).
 func (e *messageEnvelope) ContentBlocks() []contentBlock {
@@ -271,6 +303,8 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 
 		// Plan mode tracking (EnterPlanMode/ExitPlanMode).
 		if block.ID != "" {
+			a.sink.SetSpanType(block.ID, block.Name)
+
 			switch block.Name {
 			case ToolNameEnterPlanMode:
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
@@ -441,12 +475,17 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// so the assistant message stays at the parent depth.
 	// closing is true when this is a tool_result that will close its span.
 	closing := msgType == claudeMsgTypeUser && spanID != ""
+	var markType leapmuxv1.MarkType
+	if msgType == claudeMsgTypeUser {
+		markType = claudeUserEnvelopeBlocksMarkType(env.ContentBlocks(), a.sink.GetSpanType)
+	}
 	spanInfo := SpanInfo{
 		ParentSpanID: parentSpanID,
 		SpanID:       spanID,
 		SpanType:     spanType,
 		SpanColor:    spanColor,
 		Closing:      closing,
+		MarkType:     markType,
 	}
 	var persistErr error
 	if msgType == claudeMsgTypeResult {

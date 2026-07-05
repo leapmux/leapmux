@@ -61,6 +61,36 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs[0].AgentProvider)
 }
 
+func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-bad-mark",
+		AgentID:       "agent-1",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:       []byte(`{"type":"result"}`),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		MarkType:      leapmuxv1.MarkType(999),
+		CreatedAt:     time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mark_type")
+
+	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
+	require.NoError(t, err)
+	assert.Empty(t, msgs, "a message with an unknown mark_type must not be persisted")
+}
+
 // createAgentRecord enforces the same real-provider invariant at the point agent
 // rows are born, so a misconfigured caller fails at creation with a clear error
 // rather than later when createMessageRow rejects the agent's first message. The

@@ -22,6 +22,14 @@ const (
 	ControlBehaviorDeny  = "deny"
 )
 
+// ControlRejectedByUserMessage is the placeholder reject message the frontend emits when
+// the user declines a control request WITHOUT typing a reason (buildDenyResponse in
+// frontend utils/controlResponse.ts). The backend treats it as "no feedback" -- it is not
+// shown as the user's answer -- so every deny-with-feedback path compares against this one
+// constant instead of re-spelling the literal (which must stay in lockstep with the
+// frontend producer).
+const ControlRejectedByUserMessage = "Rejected by user."
+
 // Tool name constants used in control requests.
 const (
 	ToolNameAskUserQuestion     = "AskUserQuestion"
