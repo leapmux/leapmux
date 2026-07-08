@@ -3,7 +3,7 @@ import { expect, test } from './fixtures'
 /**
  * The context menu's item visibility (Rename / Share / Archive vs. Unarchive /
  * Delete / Move-to) and the owner-only filter are unit-tested in
- * `tests/unit/components/WorkspaceContextMenu.test.tsx`. This e2e exercises
+ * `src/components/workspace/WorkspaceContextMenu.test.tsx`. This e2e exercises
  * the parts that need a real session + backend round-trip: inline rename
  * persisting via UpdateWorkspace, and the two-step Delete dialog actually
  * removing the workspace from the sidebar after the server processes it.

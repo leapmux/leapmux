@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { platformBridgeFileSaveStubs } from '../../../tests/unit/helpers/saveActionsMocks'
+import { platformBridgeFileSaveStubs } from '~/test-support/saveActionsMocks'
 import { DirectoryTree } from './DirectoryTree'
 
 // Stub the listDirectory RPC — these tests only exercise the path-input.

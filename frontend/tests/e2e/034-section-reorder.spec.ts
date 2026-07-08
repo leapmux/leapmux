@@ -3,7 +3,7 @@ import { expect, test } from './fixtures'
 /**
  * Smoke test for sidebar section drag-drop. The drop-position math and
  * cross-sidebar move logic are exhaustively tested at the unit level in
- * `tests/unit/components/sectionDragUtils.test.ts`. This e2e exercises just
+ * `src/components/shell/sectionDragUtils.test.ts`. This e2e exercises just
  * the UI/backend integration: real pointer events through solid-dnd, the
  * persisted MoveSection RPC, and the post-reload sidebar restore.
  */

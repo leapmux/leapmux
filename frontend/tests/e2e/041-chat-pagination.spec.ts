@@ -5,7 +5,7 @@ import { firstAssistantBubble } from './helpers/ui'
 /**
  * Smoke test for chat scroll + pagination integration. The store-level
  * pagination logic (windowing, fetch-older, fetch-newer, dedupe) is
- * exhaustively tested in `tests/unit/stores/chat.store.test.ts`. The bits
+ * exhaustively tested in `src/stores/chat.store.test.ts`. The bits
  * that genuinely require a real browser — overflow calculation, the
  * auto-scroll interplay during streaming, the thinking indicator
  * lifecycle, and tab-switch scroll preservation — are condensed into this

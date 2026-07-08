@@ -51,7 +51,7 @@ test.describe('Active-client ding gate', () => {
   //      observable.
   //
   // Both smokes are in this file; the full E2E with a real turn-end
-  // ding lives at `tests/unit/components/AppShell.tsx` (turn-end
+  // ding lives at `src/components/shell/AppShell.tsx` (turn-end
   // sound preferences) where the env stays controllable.
   test('dispatches `leapmux:turn-end-played` only when this client is the active client', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId } = leapmuxServer

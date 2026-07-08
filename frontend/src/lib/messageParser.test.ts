@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
-import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import {
   extractAssistantUsage,
   extractCodexTokenUsage,

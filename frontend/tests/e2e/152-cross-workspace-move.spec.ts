@@ -15,7 +15,7 @@ import { gotoWorkspace } from './helpers/ui'
  * The sidebar drag-to-workspace gesture's CRDT contract — a single
  * `SetTabRegister(tile_id=newTileInW2)` + `SetTabRegister(position)`
  * batch instead of tombstone-then-re-add — is exercised at the unit
- * level in `tests/unit/stores/tab.store.crdt.test.ts`
+ * level in `src/stores/tab.store.crdt.test.ts`
  * (`moveTabToWorkspace emits a single batch with tile_id + position`).
  * The full UI gesture E2E currently depends on per-workspace worker-
  * provider availability that the dev fixture only populates after an

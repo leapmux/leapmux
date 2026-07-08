@@ -1,7 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
-import { _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown } from './renderMarkdown'
+import { _getMarkdownCacheSize, _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 
@@ -183,5 +183,57 @@ describe('rendermarkdown shared token-style classes', () => {
         s: { 'sk-00000001-13': '--shiki-light:#aaa' },
       })
     })
+  })
+})
+
+describe('rendermarkdown cache and gfm', () => {
+  beforeEach(() => {
+    _resetMarkdownCache()
+  })
+
+  it('should render markdown with syntax highlighting', () => {
+    const html = renderMarkdown('```js\nconst x = 1\n```', true)
+    expect(html).toContain('class="shiki')
+    expect(html).toContain('const')
+  })
+
+  it('should render plain text', () => {
+    const html = renderMarkdown('hello world', true)
+    expect(html).toContain('hello world')
+  })
+
+  it('should render inline code', () => {
+    const html = renderMarkdown('use `const x = 1`', true)
+    expect(html).toContain('<code>')
+    expect(html).toContain('const x = 1')
+  })
+
+  it('should render code blocks with unknown languages without crashing', () => {
+    // Unknown language should fall back gracefully (no Shiki highlighting).
+    const html = renderMarkdown('```unknownlang123\nfoo bar\n```', true)
+    expect(html).toContain('foo bar')
+  })
+
+  it('should render GFM tables', () => {
+    const md = '| a | b |\n|---|---|\n| 1 | 2 |'
+    const html = renderMarkdown(md, true)
+    expect(html).toContain('<table>')
+    expect(html).toContain('<td>')
+  })
+
+  it('should cache results', () => {
+    expect(_getMarkdownCacheSize()).toBe(0)
+    const html1 = renderMarkdown('cached test')
+    expect(_getMarkdownCacheSize()).toBe(1)
+    const html2 = renderMarkdown('cached test')
+    // Second call must hit the cache -- size stays at 1, not 2.
+    expect(_getMarkdownCacheSize()).toBe(1)
+    expect(html1).toBe(html2)
+  })
+
+  it('should bypass cache when skipCache is true', () => {
+    expect(_getMarkdownCacheSize()).toBe(0)
+    renderMarkdown('cached test', true)
+    expect(_getMarkdownCacheSize()).toBe(0)
   })
 })

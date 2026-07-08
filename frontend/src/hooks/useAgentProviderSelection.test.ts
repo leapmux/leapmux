@@ -1,7 +1,7 @@
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { flush } from '../../tests/unit/helpers/async'
+import { flush } from '~/test-support/async'
 
 const CC = AgentProvider.CLAUDE_CODE
 const CODEX = AgentProvider.CODEX

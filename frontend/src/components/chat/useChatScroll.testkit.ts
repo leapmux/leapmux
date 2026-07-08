@@ -3,7 +3,7 @@ import type { ChatScrollVirtualizer, ScrollContext } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, vi } from 'vitest'
-import { installControllableResizeObserver } from '../../../tests/unit/helpers/resizeObserverStub'
+import { installControllableResizeObserver } from '~/test-support/resizeObserverStub'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 
 /**

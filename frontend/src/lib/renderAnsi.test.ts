@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { containsAnsi, escapeHtml, renderAnsi, stripAnsi } from './renderAnsi'
+import { shikiHighlighter } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 
@@ -7,6 +8,7 @@ const ESC = '\x1B'
 const RED = `${ESC}[31m`
 const GREEN = `${ESC}[32m`
 const RESET = `${ESC}[0m`
+const SPAN_TAG_RE = /<span/g
 
 describe('containsansi', () => {
   it('detects a foreground color escape', () => {
@@ -17,8 +19,28 @@ describe('containsansi', () => {
     expect(containsAnsi(`${ESC}[m`)).toBe(true)
   })
 
+  it('detects a lone reset SGR escape', () => {
+    expect(containsAnsi(`${ESC}[0m`)).toBe(true)
+  })
+
   it('detects a multi-parameter SGR escape (e.g. bold + bright red)', () => {
     expect(containsAnsi(`${ESC}[1;91mhello${RESET}`)).toBe(true)
+  })
+
+  it('detects a 256-color SGR escape', () => {
+    expect(containsAnsi(`${ESC}[38;5;196mred${RESET}`)).toBe(true)
+  })
+
+  it('detects a truecolor (24-bit) SGR escape', () => {
+    expect(containsAnsi(`${ESC}[38;2;255;0;0mred${RESET}`)).toBe(true)
+  })
+
+  it('detects a lone bold SGR escape', () => {
+    expect(containsAnsi(`${ESC}[1mbold${RESET}`)).toBe(true)
+  })
+
+  it('detects a lone underline SGR escape', () => {
+    expect(containsAnsi(`${ESC}[4munderline${RESET}`)).toBe(true)
   })
 
   it('returns false for plain text', () => {
@@ -47,6 +69,18 @@ describe('renderansi', () => {
     expect(html).toContain('error')
   })
 
+  it('produces a <pre class="shiki"> root for colored text', () => {
+    const html = renderAnsi(`${RED}red text${RESET}`)
+    expect(html).toContain('class="shiki')
+    expect(html).toContain('red text')
+  })
+
+  it('produces CSS variable-based styles for colored text', () => {
+    const html = renderAnsi(`${RED}red${RESET}`)
+    expect(html).toContain('--shiki-light:')
+    expect(html).toContain('--shiki-dark:')
+  })
+
   it('preserves the surrounding text when ANSI is mixed with plain content', () => {
     const html = renderAnsi(`prefix ${GREEN}ok${RESET} suffix`)
     expect(html).toContain('prefix')
@@ -58,6 +92,30 @@ describe('renderansi', () => {
     const html = renderAnsi('plain output')
     expect(html).toMatch(/<pre[^>]*>/)
     expect(html).toContain('plain output')
+  })
+
+  it('escapes HTML characters in content via the shiki path', () => {
+    const html = renderAnsi('<script>alert("xss")</script>')
+    expect(html).not.toContain('<script>')
+    // Shiki uses XML numeric entities (&#x3C;) for '<'
+    expect(html).toContain('&#x3C;script>')
+  })
+
+  it('emits at least one styled span per color across a multi-color string', () => {
+    const html = renderAnsi(`${RED}red${RESET} ${GREEN}green${RESET}`)
+    expect(html).toContain('red')
+    expect(html).toContain('green')
+    // Each color yields its own token span.
+    const spanCount = (html.match(SPAN_TAG_RE) || []).length
+    expect(spanCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('renders background colors with --shiki-*-bg variables', () => {
+    const html = renderAnsi(`${ESC}[41mred bg${RESET}`)
+    expect(html).toContain('red bg')
+    // Background colors produce --shiki-light-bg / --shiki-dark-bg variables
+    expect(html).toContain('--shiki-light-bg:')
+    expect(html).toContain('--shiki-dark-bg:')
   })
 
   it('does not include the raw ESC character in the rendered HTML', () => {
@@ -78,6 +136,33 @@ describe('renderansi', () => {
     expect(html).toContain('before')
     expect(html).toContain('link')
     expect(html).toContain('after')
+  })
+
+  describe('fallback on shiki error', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('falls back to escaped HTML when shiki throws', () => {
+      vi.spyOn(shikiHighlighter, 'codeToHtml').mockImplementation(() => {
+        throw new Error('regex engine failure')
+      })
+
+      const html = renderAnsi('<b>bold</b>')
+      expect(html).toContain('<pre><code>')
+      expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;')
+      expect(html).not.toContain('<b>')
+    })
+
+    it('strips terminal controls from fallback HTML', () => {
+      vi.spyOn(shikiHighlighter, 'codeToHtml').mockImplementation(() => {
+        throw new Error('regex engine failure')
+      })
+
+      const html = renderAnsi(`before${ESC}[2K<script>after</script>`)
+      expect(html.includes(ESC)).toBe(false)
+      expect(html).toContain('before&lt;script&gt;after&lt;/script&gt;')
+    })
   })
 })
 
