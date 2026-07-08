@@ -15,12 +15,27 @@ func TestResolveControlResponse_NoopKeepsRawResponse(t *testing.T) {
 	res := noopProvider{}.ResolveControlResponse(ControlResponseContext{ResponseContent: content})
 
 	assert.Equal(t, content, res.Content)
-	assert.Empty(t, res.DisplayText)
+	assert.Nil(t, res.RequestContext)
 	assert.False(t, res.SelfDisplayed)
 	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
 }
 
-func TestResolveControlResponse_CodexUserInputAnswer(t *testing.T) {
+func TestResolveControlResponse_CodexApprovalRequestContext(t *testing.T) {
+	// A Codex command-approval decision: the native response is forwarded verbatim, and the pruned
+	// request context is just the method -- the frontend maps result.decision to a label itself.
+	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
+	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
+		RequestPayload:  []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`),
+		ResponseContent: content,
+	})
+
+	assert.Equal(t, content, res.Content)
+	assert.JSONEq(t, `{"method":"item/commandExecution/requestApproval"}`, string(res.RequestContext))
+	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
+}
+
+func TestResolveControlResponse_CodexUserInputRequestContext(t *testing.T) {
+	// requestUserInput keeps the question id + header the frontend labels its answer values with.
 	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
@@ -35,36 +50,16 @@ func TestResolveControlResponse_CodexUserInputAnswer(t *testing.T) {
 		}`),
 	})
 
-	assert.Equal(t, "Task: Inspect\nReason: Parity", res.DisplayText)
+	assert.JSONEq(t, `{
+		"method":"item/tool/requestUserInput",
+		"params":{"questions":[{"id":"task","header":"Task"},{"id":"reason","header":"Reason"}]}
+	}`, string(res.RequestContext))
 	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
 }
 
-func TestResolveControlResponse_CodexUserInputAnswerStableExtraOrdering(t *testing.T) {
-	// The response carries answer keys NOT present in the request's questions ("alpha", "mango",
-	// "zebra"). Those are absent from the request-derived order, so they must render in a STABLE
-	// (sorted) order rather than Go's randomized map-iteration order -- otherwise the same control
-	// response would render its trailing lines differently across renders.
-	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
-		RequestPayload: []byte(`{
-			"jsonrpc":"2.0","id":7,"method":"item/tool/requestUserInput",
-			"params":{"questions":[{"header":"Task","id":"task"}]}
-		}`),
-		ResponseContent: []byte(`{
-			"jsonrpc":"2.0","id":7,
-			"result":{"answers":{
-				"task":{"answers":["Inspect"]},
-				"zebra":{"answers":["Z"]},
-				"alpha":{"answers":["A"]},
-				"mango":{"answers":["M"]}
-			}}
-		}`),
-	})
-
-	// The request-ordered question first, then the extra keys alphabetically.
-	assert.Equal(t, "Task: Inspect\nalpha: A\nmango: M\nzebra: Z", res.DisplayText)
-}
-
 func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
+	// The synthesized plan-mode prompt frame carries no top-level method; its request.tool_name is
+	// the pruned context, and the neutral allow/deny envelope is forwarded verbatim.
 	content := []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`)
 	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload:  []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
@@ -73,60 +68,8 @@ func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
 	})
 
 	assert.Equal(t, content, res.Content)
-	assert.Empty(t, res.DisplayText)
+	assert.JSONEq(t, `{"request":{"tool_name":"CodexPlanModePrompt"}}`, string(res.RequestContext))
 	assert.Equal(t, PlanModeControlPrompt, res.PlanModeControl)
-}
-
-func TestResolveControlResponse_CodexFeedbackMessage(t *testing.T) {
-	content := []byte(`{"response":{"response":{"behavior":"deny","message":"Add tests first."}}}`)
-	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
-		RequestPayload:  []byte(`{"method":"item/commandExecution/requestApproval"}`),
-		ResponseContent: content,
-	})
-
-	assert.Equal(t, content, res.Content)
-	assert.Equal(t, "Add tests first.", res.DisplayText)
-	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
-}
-
-func TestResolveControlResponse_CodexDecisionDisplayText(t *testing.T) {
-	tests := []struct {
-		name    string
-		content []byte
-		want    string
-	}{
-		{
-			name:    "accept",
-			content: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`),
-			want:    "Allow",
-		},
-		{
-			name:    "decline",
-			content: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"decline"}}`),
-			want:    "Reject",
-		},
-		{
-			name:    "exec policy amendment",
-			content: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":{"acceptWithExecpolicyAmendment":{"match":"npm test"}}}}`),
-			want:    "Allow & Remember",
-		},
-		{
-			name:    "network policy amendment",
-			content: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":{"applyNetworkPolicyAmendment":true}}}`),
-			want:    "Apply Network Policy",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
-				RequestPayload:  []byte(`{"method":"item/commandExecution/requestApproval"}`),
-				ResponseContent: tt.content,
-			})
-
-			assert.Equal(t, tt.want, res.DisplayText)
-		})
-	}
 }
 
 func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
@@ -137,6 +80,8 @@ func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
 
 	assert.True(t, res.SelfDisplayed)
 	assert.Equal(t, PlanModeControlExit, res.PlanModeControl)
+	// The tool name is all the frontend needs to render Claude's Approved / Rejected / feedback.
+	assert.JSONEq(t, `{"request":{"tool_name":"ExitPlanMode"}}`, string(res.RequestContext))
 }
 
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
@@ -155,7 +100,9 @@ func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T)
 		}`),
 	})
 
-	require.Equal(t, "Needs tests.", res.DisplayText)
+	// The plan decision renders from the transformed outcome alone, so the pruned context is
+	// method-only.
+	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		ID     int `json:"id"`
 		Result struct {
@@ -187,7 +134,7 @@ func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 		}`),
 	})
 
-	require.Equal(t, "Accept", res.DisplayText)
+	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		ID     string `json:"id"`
 		Result struct {
@@ -219,7 +166,7 @@ func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t 
 		}`),
 	})
 
-	require.Equal(t, "Reject", res.DisplayText)
+	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		Result struct {
 			Outcome struct {
@@ -234,6 +181,9 @@ func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t 
 }
 
 func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *testing.T) {
+	// The response isn't the neutral envelope, so the transform bails and the create-plan request
+	// falls through to the ACP permission context -- which has no options, so it degrades to
+	// method-only. The raw response is forwarded unchanged.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"rejected","reason":"No"}}}`)
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
@@ -246,13 +196,12 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 	})
 
 	assert.Equal(t, content, res.Content)
-	assert.Empty(t, res.DisplayText)
+	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 }
 
-func TestResolveControlResponse_CursorQuestionAnsweredMapsOptionLabels(t *testing.T) {
-	// Cursor AskQuestion "answered": each selected optionId maps to its option LABEL, formatted as
-	// "prompt: label1, label2" per question in request order. This exercises cursorQuestionAnswersText's
-	// answered path (option-label mapping + labeled-line formatting), which had no direct coverage.
+func TestResolveControlResponse_CursorQuestionRequestContext(t *testing.T) {
+	// Cursor AskQuestion keeps the question prompts and the option id->label map the frontend needs
+	// to render selected option ids as their labels.
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0","id":7,"method":"` + CursorMethodAskQuestion + `",
@@ -270,18 +219,24 @@ func TestResolveControlResponse_CursorQuestionAnsweredMapsOptionLabels(t *testin
 		}`),
 	})
 
-	assert.Equal(t, "Pick a color: Red, Blue\nPick a size: Large", res.DisplayText)
+	assert.JSONEq(t, `{
+		"method":"cursor/ask_question",
+		"params":{"questions":[
+			{"id":"q1","prompt":"Pick a color","options":[{"id":"o1","label":"Red"},{"id":"o2","label":"Blue"}]},
+			{"id":"q2","prompt":"Pick a size","options":[{"id":"s1","label":"Large"}]}
+		]}
+	}`, string(res.RequestContext))
 }
 
-func TestResolveControlResponse_OpenCodeStyleQuestionAnswer(t *testing.T) {
+func TestResolveControlResponse_OpenCodeQuestionRequestContext(t *testing.T) {
+	// The OpenCode/Kilo question context keeps the question headers the frontend labels its answer
+	// values with. Resolve through ProviderFor (not an inline literal) so the test exercises the
+	// real registration: the question hook is set only for OpenCode/Kilo in init().
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {
-			// Resolve through ProviderFor (not an inline acpProvider literal) so the test exercises
-			// the real registration: the OpenCode question summary now dispatches through the
-			// questionAnswersText hook that init() sets only for OpenCode/Kilo.
 			res := ProviderFor(provider).ResolveControlResponse(ControlResponseContext{
 				RequestPayload: []byte(`{
 					"type":"question.asked",
@@ -290,64 +245,39 @@ func TestResolveControlResponse_OpenCodeStyleQuestionAnswer(t *testing.T) {
 				ResponseContent: []byte(`{"jsonrpc":"2.0","id":"q1","result":{"answers":[["Build"],["Dev"]]}}`),
 			})
 
-			assert.Equal(t, "Task: Build\nEnv: Dev", res.DisplayText)
+			assert.JSONEq(t, `{
+				"type":"question.asked",
+				"properties":{"questions":[{"header":"Task"},{"header":"Env"}]}
+			}`, string(res.RequestContext))
 		})
 	}
-}
-
-func TestResolveControlResponse_OpenCodeStyleQuestionReject(t *testing.T) {
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-	} {
-		t.Run(provider.String(), func(t *testing.T) {
-			res := ProviderFor(provider).ResolveControlResponse(ControlResponseContext{
-				RequestPayload: []byte(`{
-					"type":"question.asked",
-					"properties":{"questions":[{"header":"Task"}]}
-				}`),
-				ResponseContent: []byte(`{"jsonrpc":"2.0","id":"q1","result":{"rejected":true}}`),
-			})
-
-			assert.Equal(t, "Reject", res.DisplayText)
-		})
-	}
-}
-
-func TestResolveControlResponse_OpenCodeDropsEmptyAnswerValues(t *testing.T) {
-	// Edge case for the shared labeledAnswerLine formatting: an answer whose values are all
-	// empty/whitespace produces NO line (never a dangling "Env: "), and the question is omitted
-	// entirely -- while a sibling question with a real value still renders.
-	res := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE).ResolveControlResponse(ControlResponseContext{
-		RequestPayload:  []byte(`{"type":"question.asked","properties":{"questions":[{"header":"Task"},{"header":"Env"}]}}`),
-		ResponseContent: []byte(`{"result":{"answers":[["Build"],["  ",""]]}}`),
-	})
-
-	assert.Equal(t, "Task: Build", res.DisplayText)
 }
 
 func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *testing.T) {
-	// The OpenCode-protocol `question.asked` answer summary must dispatch through the
-	// registration-time questionAnswersText hook (set only for OpenCode and Kilo in init()), NOT a
+	// The OpenCode-protocol `question.asked` request context must dispatch through the
+	// registration-time questionRequestContext hook (set only for OpenCode and Kilo in init()), NOT a
 	// provider-enum allowlist in ResolveControlResponse. This is the backend mirror of the frontend's
 	// registerOpenCodeProtocolProvider membership: keeping "who speaks the question protocol" at the
 	// single registration site stops a second source of truth from drifting.
 	//
 	// The fixture deliberately carries BOTH wire shapes at once -- an OpenCode `question.asked`
-	// question/answer AND an ACP permission option/outcome -- so the two dispatch paths yield DISTINCT
-	// display text. A provider WITH the hook renders the question summary ("Task: Build"); a provider
-	// WITHOUT it falls through to the permission summary ("Allow once"). That divergence is what makes
-	// case (b) a real regression guard: it fails if someone re-adds a non-question provider to an enum
-	// allowlist, or wires the hook onto a provider that shouldn't have it -- either way the wrong
-	// provider would render "Task: Build" instead of "Allow once".
+	// question AND an ACP permission method/options -- so the two dispatch paths yield DISTINCT
+	// request context. A provider WITH the hook prunes the question context; a provider WITHOUT it
+	// falls through to the permission context. That divergence is what makes case (b) a real
+	// regression guard: it fails if someone re-adds a non-question provider to an enum allowlist, or
+	// wires the hook onto a provider that shouldn't have it.
 	requestPayload := []byte(`{
 		"type":"question.asked",
 		"properties":{"questions":[{"header":"Task"}]},
+		"method":"session/request_permission",
 		"params":{"options":[{"optionId":"proceed_once","name":"Allow once"}]}
 	}`)
 	responseContent := []byte(`{"result":{"answers":[["Build"]],"outcome":{"optionId":"proceed_once"}}}`)
 
-	// (a) Both providers registered WITH the hook render the OpenCode question summary.
+	questionContext := `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`
+	permissionContext := `{"method":"session/request_permission","params":{"options":[{"optionId":"proceed_once","name":"Allow once"}]}}`
+
+	// (a) Both providers registered WITH the hook prune the OpenCode question context.
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
@@ -357,12 +287,12 @@ func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *
 				RequestPayload:  requestPayload,
 				ResponseContent: responseContent,
 			})
-			assert.Equal(t, "Task: Build", res.DisplayText)
+			assert.JSONEq(t, questionContext, string(res.RequestContext))
 		})
 	}
 
-	// (b) An ACP provider registered WITHOUT the hook falls through to the ACP permission summary for
-	// the very same `question.asked` payload -- it never invokes opencodeQuestionAnswersText.
+	// (b) An ACP provider registered WITHOUT the hook falls through to the ACP permission context for
+	// the very same `question.asked` payload -- it never invokes opencodeQuestionRequestContext.
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
@@ -372,14 +302,12 @@ func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *
 				RequestPayload:  requestPayload,
 				ResponseContent: responseContent,
 			})
-			assert.Equal(t, "Allow once", res.DisplayText)
-			assert.NotEqual(t, "Task: Build", res.DisplayText,
-				"a provider without the questionAnswersText hook must not render the OpenCode question summary")
+			assert.JSONEq(t, permissionContext, string(res.RequestContext))
 		})
 	}
 }
 
-func TestResolveControlResponse_ACPPermissionLabels(t *testing.T) {
+func TestResolveControlResponse_ACPPermissionRequestContext(t *testing.T) {
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
@@ -394,17 +322,40 @@ func TestResolveControlResponse_ACPPermissionLabels(t *testing.T) {
 					"jsonrpc":"2.0",
 					"id":7,
 					"method":"session/request_permission",
-					"params":{"options":[{"optionId":"proceed_once","name":"Allow once"}]}
+					"params":{"options":[
+						{"optionId":"proceed_once","name":"Allow once","kind":"allow_once"},
+						{"optionId":"reject","name":"Reject","kind":"reject_once"}
+					]}
 				}`),
 				ResponseContent: []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"proceed_once"}}}`),
 			})
 
-			assert.Equal(t, "Allow once", res.DisplayText)
+			// Options keep optionId + name -- the minimal context the frontend matches the selected
+			// id against to render its label; the selected optionId itself lives in the native
+			// response. The request's `kind` is intentionally pruned away (the frontend never reads it).
+			assert.JSONEq(t, `{
+				"method":"session/request_permission",
+				"params":{"options":[
+					{"optionId":"proceed_once","name":"Allow once"},
+					{"optionId":"reject","name":"Reject"}
+				]}
+			}`, string(res.RequestContext))
 		})
 	}
 }
 
-func TestResolveControlResponse_PiExtensionUIResponse(t *testing.T) {
+func TestResolveControlResponse_ACPPermissionRequestContextWithoutOptions(t *testing.T) {
+	// A permission request that carries no options (e.g. a Cursor create-plan request that fell
+	// through the transform) degrades to method-only context rather than an empty options list.
+	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE}.ResolveControlResponse(ControlResponseContext{
+		RequestPayload:  []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{}}`),
+		ResponseContent: []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"proceed_once"}}}`),
+	})
+
+	assert.JSONEq(t, `{"method":"session/request_permission"}`, string(res.RequestContext))
+}
+
+func TestResolveControlResponse_PiRequestContext(t *testing.T) {
 	confirmed := true
 	response, err := json.Marshal(map[string]interface{}{"confirmed": confirmed})
 	require.NoError(t, err)
@@ -414,18 +365,47 @@ func TestResolveControlResponse_PiExtensionUIResponse(t *testing.T) {
 		ResponseContent: response,
 	})
 
-	assert.Equal(t, "Approve", res.DisplayText)
+	assert.Equal(t, response, res.Content)
+	assert.JSONEq(t, `{"method":"confirm"}`, string(res.RequestContext))
 }
 
-func TestFirstNonEmpty(t *testing.T) {
-	// Returns the first argument non-empty AFTER trimming, and trims the chosen value --
-	// including a fallback passed with surrounding whitespace (the display-label tidy the
-	// answer summaries rely on).
-	assert.Equal(t, "x", firstNonEmpty("", "  ", "x"))
-	assert.Equal(t, "a", firstNonEmpty("  a  ", "b"), "trims the chosen value")
-	assert.Equal(t, "fallback", firstNonEmpty("   ", "  fallback  "), "trims a whitespace-padded fallback")
-	assert.Equal(t, "", firstNonEmpty(), "no args -> empty")
-	assert.Equal(t, "", firstNonEmpty("", "\t\n "), "all blank -> empty")
+func TestResolveControlResponse_EmptyRequestPayloadYieldsNilContext(t *testing.T) {
+	// Every resolver returns nil RequestContext when it has no stored request to prune (the request
+	// row was already deleted, or never captured) -- the row then persists with `request` omitted.
+	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
+	cases := map[string]Provider{
+		"codex":  codexProvider{},
+		"pi":     piProvider{},
+		"acp":    acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
+		"claude": claudeProvider{}, // Claude keys context off ToolName, empty here
+	}
+	for name, provider := range cases {
+		t.Run(name, func(t *testing.T) {
+			res := provider.ResolveControlResponse(ControlResponseContext{ResponseContent: content})
+			assert.Nil(t, res.RequestContext)
+			assert.Equal(t, content, res.Content)
+		})
+	}
+}
+
+func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testing.T) {
+	// A stored request that doesn't parse as JSON leaves RequestContext nil (warnUnmarshal fails)
+	// without dropping the forwarded response.
+	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
+	for name, provider := range map[string]Provider{
+		"codex": codexProvider{},
+		"pi":    piProvider{},
+		"acp":   acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := provider.ResolveControlResponse(ControlResponseContext{
+				RequestPayload:  []byte(`not json`),
+				ResponseContent: content,
+			})
+			assert.Nil(t, res.RequestContext)
+			assert.Equal(t, content, res.Content)
+		})
+	}
 }
 
 func TestWarnUnmarshal(t *testing.T) {

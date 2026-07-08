@@ -221,13 +221,6 @@ globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
   marginLeft: 'auto',
 })
 
-// Inline control response tag in tool header (approved/rejected indicator)
-export const controlResponseTag = style({
-  color: 'var(--muted-foreground)',
-  fontSize: 'var(--text-7)',
-  flexShrink: 0,
-})
-
 // Body content indent for tool_use renderers. The transparent border-
 // left reserves the slot so adding `toolBodyBorder` doesn't shift the
 // content horizontally. Padding compensates for the 1px gap between

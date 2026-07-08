@@ -13,6 +13,7 @@ import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
+import { controlBehaviorDisplay } from '../../persistedControlResponse'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { getAssistantContent, joinToolResultText } from './extractors/assistantContent'
@@ -234,9 +235,8 @@ function classifyClaudeCodeMessage(
   if (parentObject.isCompactSummary === true)
     return { kind: 'compact_summary' }
 
-  // Synthetic control response (also preempts content-shaped types).
-  if (parentObject.isSynthetic === true && isObject(parentObject.controlResponse))
-    return { kind: 'control_response' }
+  // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
+  // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
 
   // Content-shaped types (assistant / user).
   if (type) {
@@ -287,8 +287,10 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
  * only this plugin knows how to read are handled here before the shared fallback: a
  * self-displaying control response (AskUserQuestion / ExitPlanMode answer) re-emitted as a
  * `message.content[]` tool_result, and a transcript user row nesting its text under
- * `{message:{content:"..."}}`. Every other marked shape (`{content}`, `{controlResponse}`)
- * is Leapmux-neutral and handled by the shared defaultMarkPreview.
+ * `{message:{content:"..."}}`. The Leapmux-neutral `{content}` user send falls back to the shared
+ * defaultMarkPreview. A persisted `{controlResponse}` row never reaches here -- it classifies as
+ * `control_response` and the rail resolves its preview through the plugin's controlResponseDisplay
+ * (chatMarkPreview.ts), before previewText runs.
  */
 function claudeMarkPreview(category: MessageCategory, parsed: ParsedMessageContent): string | null {
   const toolResultText = joinToolResultText(parsed.parentObject)
@@ -334,6 +336,9 @@ const claudeCodePlugin: Provider = {
   toolResultMeta: claudeToolResultMeta,
   extractQuotableText: claudeExtractQuotableText,
   previewText: claudeMarkPreview,
+  // Claude's native control response IS the neutral behavior envelope, so its derivation is the
+  // shared reader: allow -> "Approved", deny+message -> feedback, bare deny -> "Rejected".
+  controlResponseDisplay: cr => controlBehaviorDisplay(cr.response),
   notificationThreadEntry: claudeNotificationThreadEntry,
   resultDivider: claudeResultDivider,
 

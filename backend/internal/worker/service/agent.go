@@ -479,7 +479,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if agent.ProviderFor(dbAgent.AgentProvider).NeedsSyntheticInterruptNotice() && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
 			// An interrupt notice is not the user's answer to a control request, so it
 			// draws no rail dot.
-			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
 		}
 
 		svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
@@ -988,32 +988,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if !ok {
 			return
 		}
-		content := r.GetContent()
 
-		plan := svc.buildControlResponsePlan(agentID, dbAgent, content)
-
-		// Drop the control request before persisting display rows or forwarding the response,
-		// on EVERY path (the plan-prompt branch below and the fall-through both need it). Claude
-		// can emit a follow-up control_request immediately after it reads a denial; if the old
-		// request is still pending client-side, the revised request can hide behind stale dedup
-		// state.
-		svc.deleteControlRequest(agentID, dbAgent.AgentProvider, plan.requestMeta, plan.resolution.SelfDisplayed)
-
-		if plan.resolution.PlanModeControl == agent.PlanModeControlPrompt && plan.hasDecision {
-			svc.handleControlResponsePromptPlan(agentID, dbAgent, plan)
-			sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
-			return
-		}
-
-		svc.persistControlResponseAnswerRows(agentID, dbAgent.AgentProvider, plan)
-
-		// Detect plan mode changes after the answer row is durable but before forwarding to
-		// the agent. Clear-context plan execution starts asynchronously, so persisting first
-		// keeps the user's answer before plan-execution rows even if the goroutine runs fast.
-		skipSend := svc.applyControlResponsePlanModeEffects(agentID, dbAgent, plan)
-
-		if !skipSend {
-			if err := svc.Agents.SendRawInput(agentID, plan.resolution.Content); err != nil {
+		// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
+		// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
+		// forward=false for a deduped duplicate / server-side plan-prompt / withheld restart approval.
+		// claimToken is the per-instance token the frontend echoed from the answered AgentControlRequest.
+		if forwardBytes, forward := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken()); forward {
+			if err := svc.Agents.SendRawInput(agentID, forwardBytes); err != nil {
 				slog.Error("failed to send control response to agent",
 					"agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
@@ -1599,7 +1580,7 @@ func (svc *Context) replayAgentCatchUp(
 			broadcastReplayAgentEvent(sender, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{
-					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, cr.RequestID, cr.Payload),
+					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, cr.RequestID, cr.Payload, cr.ClaimToken),
 				},
 			})
 		}
@@ -2825,12 +2806,11 @@ func (svc *Context) handleControlRequestMessage(agentID string, provider leapmux
 	}
 }
 
-// persistSyntheticUserMessage persists a backend-synthesized `{content}` user row.
-// markType tags it for the scroll rail: CONTROL_RESPONSE for the user's answer to a
-// control request (the display row every provider except Claude relies on, since none
-// echo the answer in their own stream), or UNSPECIFIED for a non-answer marker such as
-// the interrupt notice -- so only genuine control answers draw a rail dot.
-func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string, markType leapmuxv1.MarkType) {
+// persistSyntheticUserMessage persists a backend-synthesized `{content}` user row that is NOT the
+// user's answer to a control request -- the interrupt notice ("[Request interrupted by user]").
+// It is left UNMARKED (MARK_TYPE_UNSPECIFIED) so it draws no scroll-rail dot; genuine control
+// answers persist through persistControlResponseRow, which owns the CONTROL_RESPONSE mark.
+func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return
@@ -2841,7 +2821,7 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{MarkType: markType}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
@@ -2965,12 +2945,10 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
-// sendSyntheticUserMessage persists and broadcasts a user message, then sends
-// it to the agent process if possible. This is used for local plan-mode flows
-// that originate from a UI prompt rather than a frontend SendAgentMessage RPC.
-// sendSyntheticUserMessage persists a `{content}` user row AND forwards it to the agent as
-// input. markType tags it for the scroll rail: UNSPECIFIED for a truly synthetic prompt the
-// user did not type (e.g. the auto-injected "Implement the plan."), or CONTROL_RESPONSE for
+// sendSyntheticUserMessage persists a `{content}` user row AND forwards it to the agent as input --
+// used for local plan-mode flows that originate from a UI prompt rather than a frontend
+// SendAgentMessage RPC. markType tags it for the scroll rail: UNSPECIFIED for a truly synthetic
+// prompt the user did not type (e.g. the auto-injected "Implement the plan."), or CONTROL_RESPONSE for
 // the user's own typed answer to a control request that is delivered as agent input (a Codex
 // plan-mode-prompt denial's feedback) -- so only genuine user answers draw a rail dot.
 func (svc *Context) sendSyntheticUserMessage(agentID, content string, markType leapmuxv1.MarkType) {
@@ -3239,12 +3217,15 @@ func broadcastReplayAgentEvent(sender *channel.Sender, event *leapmuxv1.AgentEve
 	})
 }
 
-func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestID string, payload []byte) *leapmuxv1.AgentControlRequest {
+func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestID string, payload []byte, claimToken string) *leapmuxv1.AgentControlRequest {
 	return &leapmuxv1.AgentControlRequest{
 		AgentId:       agentID,
 		RequestId:     requestID,
 		Payload:       payload,
 		AgentProvider: provider,
+		// The per-instance token the frontend echoes in its answer so the idempotency claim can dedup
+		// a reused request_id per INSTANCE (see AgentControlRequest.claim_token).
+		ClaimToken: claimToken,
 	}
 }
 

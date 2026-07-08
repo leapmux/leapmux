@@ -24,6 +24,7 @@ import {
   CODEX_OPTION_SANDBOX_POLICY,
   DEFAULT_CODEX_COLLABORATION_MODE,
 } from './constants'
+import { codexControlResponseDisplay } from './controlResponse'
 import { CODEX_RENDERERS } from './defineRenderer'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
@@ -338,6 +339,9 @@ const codexPlugin: Provider = {
     if (!parent)
       return { kind: 'unknown' }
 
+    // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
+    // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
+
     if (isCodexJsonRpcResponse(parent) || codexAssistantInterruptEcho(parent))
       return { kind: 'hidden' }
 
@@ -461,11 +465,12 @@ const codexPlugin: Provider = {
     return null
   },
 
-  // Codex marks only user sends and control-response answers. A control answer is persisted in one
-  // of two Leapmux-neutral shapes -- `{content}` (a provider-resolved answer or a deny-with-feedback)
-  // or `{controlResponse}` (a bare approve/deny with no feedback) -- and Codex never self-displays
-  // one. The shared neutral extractor handles BOTH shapes, so it is the whole preview.
+  // Codex marks only user sends and control-response answers. A user send is the Leapmux-neutral
+  // `{content}` shape the shared extractor handles; a control answer is the structured
+  // `{controlResponse}` row, which classifies as `control_response` and resolves its preview
+  // through controlResponseDisplay (chatMarkPreview), not here.
   previewText: defaultMarkPreview,
+  controlResponseDisplay: codexControlResponseDisplay,
 
   notificationThreadEntry: codexNotificationThreadEntry,
 

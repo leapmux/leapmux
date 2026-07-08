@@ -2,9 +2,7 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -14,19 +12,24 @@ import (
 // control response. The service loads the stored control request once, extracts the
 // shared metadata, and passes both payloads here; providers must not perform I/O.
 type ControlResponseContext struct {
-	RequestID       string
 	RequestPayload  json.RawMessage
 	ResponseContent []byte
 	ToolName        string
-	ToolUseID       string
 }
 
 // ControlResponseResolution is the provider-owned interpretation of a control
-// response. The service executes side effects from this plan: it persists display
-// rows, deletes control requests, mutates plan-mode settings, and forwards Content.
+// response. The service executes side effects from this plan: it persists the
+// structured control-response row, deletes control requests, mutates plan-mode
+// settings, and forwards Content.
 type ControlResponseResolution struct {
-	Content         []byte
-	DisplayText     string
+	Content []byte
+	// RequestContext is the provider-pruned minimal request context persisted alongside the
+	// native response so the frontend can render the answer AFTER the pending control request is
+	// deleted (permission option names, question headers, the request method, ...). Provider code
+	// owns the pruning -- what each wire shape keeps stays in that provider's resolver, never in
+	// shared service code. Nil when the stored request is unavailable or unrecognized, in which
+	// case the row persists with `request` omitted and the frontend degrades gracefully.
+	RequestContext  json.RawMessage
 	SelfDisplayed   bool
 	PlanModeControl PlanModeControlKind
 }
@@ -45,22 +48,7 @@ func (p codexProvider) ResolveControlResponse(ctx ControlResponseContext) Contro
 		return res
 	}
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
-
-	var req struct {
-		Method string `json:"method"`
-	}
-	if !warnUnmarshal(ctx.RequestPayload, &req, "codex control response request") {
-		return res
-	}
-	if req.Method == "item/tool/requestUserInput" {
-		res.DisplayText = codexUserInputAnswersText(ctx.RequestPayload, ctx.ResponseContent)
-		return res
-	}
-	if text := codexFeedbackMessageText(ctx.ResponseContent); text != "" {
-		res.DisplayText = text
-		return res
-	}
-	res.DisplayText = codexDecisionDisplayText(ctx.ResponseContent)
+	res.RequestContext = codexControlRequestContext(ctx.RequestPayload)
 	return res
 }
 
@@ -68,6 +56,9 @@ func (p claudeProvider) ResolveControlResponse(ctx ControlResponseContext) Contr
 	res := defaultControlResponseResolution(ctx)
 	res.SelfDisplayed = p.IsSelfDisplayingControlTool(ctx.ToolName)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
+	// The tool name is all the frontend needs to render Claude's approve/reject/feedback answer;
+	// the behavior itself lives in the native response payload.
+	res.RequestContext = toolNameRequestContext(ctx.ToolName)
 	return res
 }
 
@@ -82,7 +73,7 @@ func (p piProvider) ResolveControlResponse(ctx ControlResponseContext) ControlRe
 	if !warnUnmarshal(ctx.RequestPayload, &req, "pi control response request") {
 		return res
 	}
-	res.DisplayText = piExtensionUIResponseDisplayText(req.Method, ctx.ResponseContent)
+	res.RequestContext = methodRequestContext(req.Method)
 	return res
 }
 
@@ -106,27 +97,29 @@ func (p acpProvider) ResolveControlResponse(ctx ControlResponseContext) ControlR
 	if p.provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR {
 		switch req.Method {
 		case CursorMethodAskQuestion:
-			res.DisplayText = cursorQuestionAnswersText(ctx.RequestPayload, ctx.ResponseContent)
+			res.RequestContext = cursorQuestionRequestContext(ctx.RequestPayload)
 			return res
 		case CursorMethodCreatePlan:
-			if transformed, text, ok := transformCursorControlResponse(ctx.RequestPayload, ctx.ResponseContent); ok {
+			if transformed, ok := transformCursorControlResponse(ctx.RequestPayload, ctx.ResponseContent); ok {
+				// Persist the TRANSFORMED outcome that was forwarded to the agent -- the frontend
+				// renders the plan decision (Accept / Reject / Cancel) from result.outcome alone.
 				res.Content = transformed
-				res.DisplayText = text
+				res.RequestContext = methodRequestContext(req.Method)
 				return res
 			}
 		}
 	}
 
-	// The OpenCode-protocol `question.asked` answer summary dispatches through a registration-time
+	// The OpenCode-protocol `question.asked` request context dispatches through a registration-time
 	// hook (set only for the providers that speak that protocol, see init()) rather than a provider
 	// enum allowlist -- so the membership lives at the single registration site, mirroring the
 	// frontend's registerOpenCodeProtocolProvider, not a second source of truth that drifts.
-	if p.questionAnswersText != nil && req.Type == "question.asked" {
-		res.DisplayText = p.questionAnswersText(ctx.RequestPayload, ctx.ResponseContent)
+	if p.questionRequestContext != nil && req.Type == "question.asked" {
+		res.RequestContext = p.questionRequestContext(ctx.RequestPayload)
 		return res
 	}
 
-	res.DisplayText = acpPermissionResponseDisplayText(ctx.RequestPayload, ctx.ResponseContent)
+	res.RequestContext = acpPermissionRequestContext(ctx.RequestPayload)
 	return res
 }
 
@@ -141,111 +134,99 @@ func warnUnmarshal(data []byte, v any, label string) bool {
 	return true
 }
 
-// firstNonEmpty returns the first argument that is non-empty after trimming surrounding
-// whitespace, or "" when all are blank. Centralizes the "prefer this label, else fall back to
-// that one" idiom the answer summaries repeat -- and, because it trims the fallback too, a
-// display label chosen from a fallback never renders with stray whitespace.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if t := strings.TrimSpace(v); t != "" {
-			return t
-		}
+// marshalControlRequestContext encodes a provider-pruned request-context projection into the
+// bytes persisted under the synthetic row's `request` field, returning nil (which omits `request`)
+// when the value can't be encoded. The single home for the marshal-and-warn tail every context
+// builder shares.
+func marshalControlRequestContext(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		slog.Warn("marshal control request context failed", "error", err)
+		return nil
 	}
-	return ""
+	return encoded
 }
 
-// labeledAnswerLine formats one "label: v1, v2" answer line, trimming each value and dropping the
-// empties; ok is false when no value survives (the caller skips the line). The single home for the
-// per-line answer formatting the codex / opencode / cursor answer summaries all repeat, so a change
-// to the separator or the empty-value rule happens once.
-func labeledAnswerLine(label string, values []string) (string, bool) {
-	parts := make([]string, 0, len(values))
-	for _, v := range values {
-		if t := strings.TrimSpace(v); t != "" {
-			parts = append(parts, t)
-		}
+// projectRequestContext decodes a stored control request into the pruned projection dst (a pointer to
+// a projection struct), then re-marshals dst as the persisted request context -- the
+// decode->warn->remarshal glue the per-provider question pruners share, so each caller's struct
+// declaration stays the single spec of what survives. Nil when the payload doesn't parse
+// (warnUnmarshal logs the reason).
+func projectRequestContext(requestPayload []byte, dst any, label string) json.RawMessage {
+	if !warnUnmarshal(requestPayload, dst, label) {
+		return nil
 	}
-	if len(parts) == 0 {
-		return "", false
-	}
-	return fmt.Sprintf("%s: %s", label, strings.Join(parts, ", ")), true
+	return marshalControlRequestContext(dst)
 }
 
-func codexUserInputAnswersText(requestPayload, responseContent []byte) string {
+// methodRequestContext is the pruned request context for a request whose only render-relevant
+// field is its method (Codex approvals, Pi extension UI, Cursor create-plan): {"method": ...}.
+// Nil when the method is blank.
+func methodRequestContext(method string) json.RawMessage {
+	if strings.TrimSpace(method) == "" {
+		return nil
+	}
+	return marshalControlRequestContext(struct {
+		Method string `json:"method"`
+	}{Method: method})
+}
+
+// toolNameRequestContext is the pruned request context for a Claude-style control request (Claude
+// permission tools, the synthesized Codex plan-mode prompt): {"request": {"tool_name": ...}}, which
+// is all the frontend needs to render Approved / Rejected / feedback. Nil when the tool name is
+// blank.
+func toolNameRequestContext(toolName string) json.RawMessage {
+	if strings.TrimSpace(toolName) == "" {
+		return nil
+	}
+	var ctx struct {
+		Request struct {
+			ToolName string `json:"tool_name"`
+		} `json:"request"`
+	}
+	ctx.Request.ToolName = toolName
+	return marshalControlRequestContext(ctx)
+}
+
+// codexControlRequestContext prunes a stored Codex control request to the minimal context the
+// frontend needs to render the answer: the question definitions for requestUserInput, the tool
+// name for the synthesized plan-mode prompt, or just the method for a command-approval request.
+// Nil when nothing render-relevant survives.
+func codexControlRequestContext(requestPayload []byte) json.RawMessage {
 	var req struct {
+		Method  string `json:"method"`
+		Request struct {
+			ToolName string `json:"tool_name"`
+		} `json:"request"`
+	}
+	if !warnUnmarshal(requestPayload, &req, "codex control request context") {
+		return nil
+	}
+	if req.Method == "item/tool/requestUserInput" {
+		return codexUserInputRequestContext(requestPayload)
+	}
+	if req.Method != "" {
+		return methodRequestContext(req.Method)
+	}
+	// The plan-mode prompt is a synthesized Claude-style frame with no top-level method; its
+	// request.tool_name (CodexPlanModePrompt) is what the frontend keys the plan answer off.
+	return toolNameRequestContext(req.Request.ToolName)
+}
+
+// codexUserInputRequestContext keeps the requestUserInput question definitions (id + header) the
+// frontend maps its answer values onto. It unmarshals the stored request into the projection shape
+// and re-marshals it, so the struct declaration is the single spec of what survives.
+func codexUserInputRequestContext(requestPayload []byte) json.RawMessage {
+	var req struct {
+		Method string `json:"method"`
 		Params struct {
 			Questions []struct {
-				ID     string `json:"id"`
-				Header string `json:"header"`
+				ID     string `json:"id,omitempty"`
+				Header string `json:"header,omitempty"`
 			} `json:"questions"`
 		} `json:"params"`
 	}
-	var resp struct {
-		Result struct {
-			Answers map[string]struct {
-				Answers []string `json:"answers"`
-			} `json:"answers"`
-		} `json:"result"`
-	}
-	if !warnUnmarshal(requestPayload, &req, "codex user input request") {
-		return ""
-	}
-	if !warnUnmarshal(responseContent, &resp, "codex user input response") {
-		return ""
-	}
-
-	if len(resp.Result.Answers) == 0 {
-		return ""
-	}
-
-	labels := make(map[string]string, len(req.Params.Questions))
-	order := make([]string, 0, len(req.Params.Questions))
-	for _, q := range req.Params.Questions {
-		key := firstNonEmpty(q.ID, q.Header)
-		if key == "" {
-			continue
-		}
-		labels[key] = firstNonEmpty(q.Header, key)
-		order = append(order, key)
-	}
-
-	lines := make([]string, 0, len(resp.Result.Answers))
-	seen := make(map[string]bool, len(resp.Result.Answers))
-	appendLine := func(key string) {
-		answer, ok := resp.Result.Answers[key]
-		if !ok || seen[key] {
-			return
-		}
-		// seen is set ONLY when a non-empty line is emitted, so the empty-filter and the dedup
-		// stay entangled -- an all-empty answer neither renders nor marks the key seen.
-		if line, ok := labeledAnswerLine(labels[key], answer.Answers); ok {
-			lines = append(lines, line)
-			seen[key] = true
-		}
-	}
-
-	for _, key := range order {
-		appendLine(key)
-	}
-	// Any answer whose key wasn't in the request's questions is absent from `order`. Append
-	// these in a STABLE (sorted) order rather than Go's randomized map-iteration order, so the
-	// same control response always renders the same lines (a map range would reorder them
-	// nondeterministically between renders).
-	extraKeys := make([]string, 0, len(resp.Result.Answers))
-	for key := range resp.Result.Answers {
-		if !seen[key] {
-			extraKeys = append(extraKeys, key)
-		}
-	}
-	sort.Strings(extraKeys)
-	for _, key := range extraKeys {
-		if _, ok := labels[key]; !ok {
-			labels[key] = key
-		}
-		appendLine(key)
-	}
-
-	return strings.Join(lines, "\n")
+	return projectRequestContext(requestPayload, &req, "codex user input request context")
 }
 
 // ControlBehaviorEnvelope is the frontend's neutral approve/reject control-response envelope --
@@ -294,232 +275,91 @@ func NormalizeRejectionMessage(message string) string {
 	return message
 }
 
-func codexFeedbackMessageText(responseContent []byte) string {
-	_, _, message, _ := DecodeControlBehavior(responseContent)
-	return message
-}
-
-func codexDecisionDisplayText(responseContent []byte) string {
-	var resp struct {
-		Result struct {
-			Decision json.RawMessage `json:"decision"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(responseContent, &resp); err != nil || len(resp.Result.Decision) == 0 || string(resp.Result.Decision) == "null" {
-		return ""
-	}
-
-	var decision string
-	if err := json.Unmarshal(resp.Result.Decision, &decision); err == nil {
-		switch strings.TrimSpace(decision) {
-		case "accept":
-			return "Allow"
-		case "acceptForSession":
-			return "Allow for Session"
-		case "decline":
-			return "Reject"
-		case "cancel":
-			return "Cancel"
-		default:
-			return strings.TrimSpace(decision)
-		}
-	}
-
-	var objectDecision map[string]json.RawMessage
-	if err := json.Unmarshal(resp.Result.Decision, &objectDecision); err != nil {
-		return ""
-	}
-	if _, ok := objectDecision["acceptWithExecpolicyAmendment"]; ok {
-		return "Allow & Remember"
-	}
-	if _, ok := objectDecision["applyNetworkPolicyAmendment"]; ok {
-		return "Apply Network Policy"
-	}
-	if len(objectDecision) > 0 {
-		return "Allow"
-	}
-	return ""
-}
-
-func opencodeQuestionAnswersText(requestPayload, responseContent []byte) string {
+// opencodeQuestionRequestContext keeps the OpenCode-protocol `question.asked` question definitions
+// (header + question) the frontend labels its answer values with. Registered as the ACP
+// questionRequestContext hook for the providers that speak that protocol (OpenCode, Kilo).
+func opencodeQuestionRequestContext(requestPayload []byte) json.RawMessage {
 	var req struct {
+		Type       string `json:"type"`
 		Properties struct {
 			Questions []struct {
-				Header   string `json:"header"`
-				Question string `json:"question"`
+				Header   string `json:"header,omitempty"`
+				Question string `json:"question,omitempty"`
 			} `json:"questions"`
 		} `json:"properties"`
 	}
-	var resp struct {
-		Result struct {
-			Rejected bool       `json:"rejected"`
-			Answers  [][]string `json:"answers"`
-		} `json:"result"`
-	}
-	if !warnUnmarshal(requestPayload, &req, "opencode question request") {
-		return ""
-	}
-	if !warnUnmarshal(responseContent, &resp, "opencode question response") {
-		return ""
-	}
-	if resp.Result.Rejected {
-		return "Reject"
-	}
-
-	lines := make([]string, 0, len(resp.Result.Answers))
-	for i, answers := range resp.Result.Answers {
-		label := fmt.Sprintf("Question %d", i+1)
-		if i < len(req.Properties.Questions) {
-			q := req.Properties.Questions[i]
-			if v := firstNonEmpty(q.Header, q.Question); v != "" {
-				label = v
-			}
-		}
-		if line, ok := labeledAnswerLine(label, answers); ok {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
+	return projectRequestContext(requestPayload, &req, "opencode question request context")
 }
 
-func cursorQuestionAnswersText(requestPayload, responseContent []byte) string {
+// cursorQuestionRequestContext keeps the Cursor ask_question definitions (id + prompt + the option
+// id/label map) the frontend needs to render selected options as their labels.
+func cursorQuestionRequestContext(requestPayload []byte) json.RawMessage {
 	var req struct {
+		Method string `json:"method"`
 		Params struct {
 			Questions []struct {
-				ID      string `json:"id"`
-				Prompt  string `json:"prompt"`
+				ID      string `json:"id,omitempty"`
+				Prompt  string `json:"prompt,omitempty"`
 				Options []struct {
-					ID    string `json:"id"`
-					Label string `json:"label"`
-				} `json:"options"`
+					ID    string `json:"id,omitempty"`
+					Label string `json:"label,omitempty"`
+				} `json:"options,omitempty"`
 			} `json:"questions"`
 		} `json:"params"`
 	}
-	var resp struct {
-		Result struct {
-			Outcome struct {
-				Outcome string `json:"outcome"`
-				Reason  string `json:"reason"`
-				Answers []struct {
-					QuestionID        string   `json:"questionId"`
-					SelectedOptionIDs []string `json:"selectedOptionIds"`
-				} `json:"answers"`
-			} `json:"outcome"`
-		} `json:"result"`
-	}
-	if !warnUnmarshal(requestPayload, &req, "cursor question request") {
-		return ""
-	}
-	if !warnUnmarshal(responseContent, &resp, "cursor question response") {
-		return ""
-	}
-
-	switch resp.Result.Outcome.Outcome {
-	case "answered":
-		labels := make(map[string]string, len(req.Params.Questions))
-		optionLabels := make(map[string]map[string]string, len(req.Params.Questions))
-		order := make([]string, 0, len(req.Params.Questions))
-		for _, q := range req.Params.Questions {
-			if strings.TrimSpace(q.ID) == "" {
-				continue
-			}
-			labels[q.ID] = strings.TrimSpace(q.Prompt)
-			options := make(map[string]string, len(q.Options))
-			for _, option := range q.Options {
-				if strings.TrimSpace(option.ID) == "" {
-					continue
-				}
-				options[option.ID] = firstNonEmpty(option.Label, option.ID)
-			}
-			optionLabels[q.ID] = options
-			order = append(order, q.ID)
-		}
-
-		answerByQuestion := make(map[string][]string, len(resp.Result.Outcome.Answers))
-		for _, answer := range resp.Result.Outcome.Answers {
-			if strings.TrimSpace(answer.QuestionID) == "" {
-				continue
-			}
-			mapped := make([]string, 0, len(answer.SelectedOptionIDs))
-			for _, optionID := range answer.SelectedOptionIDs {
-				optionID = strings.TrimSpace(optionID)
-				if optionID == "" {
-					continue
-				}
-				label := optionID
-				if options := optionLabels[answer.QuestionID]; options != nil {
-					if mappedLabel := strings.TrimSpace(options[optionID]); mappedLabel != "" {
-						label = mappedLabel
-					}
-				}
-				mapped = append(mapped, label)
-			}
-			if len(mapped) > 0 {
-				answerByQuestion[answer.QuestionID] = mapped
-			}
-		}
-
-		lines := make([]string, 0, len(answerByQuestion))
-		for _, questionID := range order {
-			mapped := answerByQuestion[questionID]
-			if len(mapped) == 0 {
-				continue
-			}
-			label := firstNonEmpty(labels[questionID], questionID)
-			if line, ok := labeledAnswerLine(label, mapped); ok {
-				lines = append(lines, line)
-			}
-		}
-		return strings.Join(lines, "\n")
-	case "cancelled", "skipped":
-		return strings.TrimSpace(resp.Result.Outcome.Reason)
-	default:
-		return ""
-	}
+	return projectRequestContext(requestPayload, &req, "cursor question request context")
 }
 
-func cursorCreatePlanDisplayText(outcome, reason string) string {
-	switch outcome {
-	case "accepted":
-		return "Accept"
-	case "rejected":
-		if reason := strings.TrimSpace(reason); reason != "" {
-			return reason
-		}
-		return "Reject"
-	case "cancelled":
-		if reason := strings.TrimSpace(reason); reason != "" {
-			return reason
-		}
-		return "Cancel"
-	default:
-		return ""
+// acpPermissionRequestContext keeps the ACP permission options (optionId + name) the frontend
+// matches the selected optionId against to render its label. When the request carries no options
+// (e.g. a create-plan request that failed the Cursor transform and fell through here), it degrades
+// to method-only context, or nil when even the method is absent.
+func acpPermissionRequestContext(requestPayload []byte) json.RawMessage {
+	var req struct {
+		Method string `json:"method"`
+		Params struct {
+			Options []struct {
+				OptionID string `json:"optionId"`
+				Name     string `json:"name,omitempty"`
+			} `json:"options"`
+		} `json:"params"`
 	}
+	if !warnUnmarshal(requestPayload, &req, "acp permission request context") {
+		return nil
+	}
+	if len(req.Params.Options) == 0 {
+		return methodRequestContext(req.Method)
+	}
+	return marshalControlRequestContext(req)
 }
 
-func transformCursorControlResponse(requestPayload, responseContent []byte) ([]byte, string, bool) {
+// transformCursorControlResponse rewrites the frontend's neutral approve/reject envelope for a
+// Cursor create-plan control request into the ACP outcome Cursor expects on its stdin, returning
+// ok=false (and the caller forwards the response unchanged) when the bytes aren't a create-plan
+// decision that matches the stored request id.
+func transformCursorControlResponse(requestPayload, responseContent []byte) ([]byte, bool) {
 	var req struct {
 		Method string `json:"method"`
 	}
 	if !warnUnmarshal(requestPayload, &req, "cursor control response method") {
-		return nil, "", false
+		return nil, false
 	}
 	if req.Method != CursorMethodCreatePlan {
-		return nil, "", false
+		return nil, false
 	}
 
 	respRequestID, behavior, message, ok := DecodeControlBehavior(responseContent)
 	if !ok {
-		return nil, "", false
+		return nil, false
 	}
 
 	idRaw, requestID, ok := ExtractJSONRPCID(requestPayload)
 	if !ok {
-		return nil, "", false
+		return nil, false
 	}
 
 	if respRequestID == "" || respRequestID != requestID {
-		return nil, "", false
+		return nil, false
 	}
 
 	outcome := "accepted"
@@ -532,7 +372,7 @@ func transformCursorControlResponse(requestPayload, responseContent []byte) ([]b
 		// to "" by DecodeControlBehavior, so a bare rejection carries no reason.
 		reason = message
 	default:
-		return nil, "", false
+		return nil, false
 	}
 
 	outcomeBody := map[string]interface{}{
@@ -548,88 +388,7 @@ func transformCursorControlResponse(requestPayload, responseContent []byte) ([]b
 		"result":  map[string]interface{}{"outcome": outcomeBody},
 	})
 	if err != nil {
-		return nil, "", false
+		return nil, false
 	}
-	return encoded, cursorCreatePlanDisplayText(outcome, reason), true
-}
-
-// piExtensionUIResponseDisplayText extracts a human-readable summary of a Pi
-// extension_ui_response so the user's choice shows up as a synthetic message
-// in the transcript.
-func piExtensionUIResponseDisplayText(method string, responseContent []byte) string {
-	var resp struct {
-		Cancelled bool   `json:"cancelled"`
-		Confirmed *bool  `json:"confirmed"`
-		Value     string `json:"value"`
-	}
-	if err := json.Unmarshal(responseContent, &resp); err != nil {
-		return ""
-	}
-
-	if resp.Cancelled {
-		return "Cancelled"
-	}
-
-	switch method {
-	case PiDialogMethodConfirm:
-		if resp.Confirmed != nil && *resp.Confirmed {
-			return "Approve"
-		}
-		return "Deny"
-	case PiDialogMethodSelect, PiDialogMethodInput, PiDialogMethodEditor:
-		return strings.TrimSpace(resp.Value)
-	default:
-		return ""
-	}
-}
-
-// acpPermissionResponseDisplayText extracts a human-readable display text from
-// an ACP permission response by matching the selected optionId against the
-// original request payload's option list.
-func acpPermissionResponseDisplayText(requestPayload, responseContent []byte) string {
-	var req struct {
-		Params struct {
-			Options []struct {
-				OptionID string `json:"optionId"`
-				Name     string `json:"name"`
-			} `json:"options"`
-		} `json:"params"`
-	}
-	var resp struct {
-		Result struct {
-			Outcome struct {
-				OptionID string `json:"optionId"`
-			} `json:"outcome"`
-		} `json:"result"`
-	}
-	if !warnUnmarshal(requestPayload, &req, "acp permission request") {
-		return ""
-	}
-	if !warnUnmarshal(responseContent, &resp, "acp permission response") {
-		return ""
-	}
-
-	optionID := strings.TrimSpace(resp.Result.Outcome.OptionID)
-	if optionID == "" {
-		return ""
-	}
-	for _, option := range req.Params.Options {
-		if strings.TrimSpace(option.OptionID) == optionID {
-			if name := strings.TrimSpace(option.Name); name != "" {
-				return name
-			}
-			break
-		}
-	}
-
-	switch optionID {
-	case "once", "proceed_once":
-		return "Allow once"
-	case "always", "proceed_always":
-		return "Always allow"
-	case "reject", "cancel":
-		return "Reject"
-	default:
-		return optionID
-	}
+	return encoded, true
 }

@@ -86,13 +86,15 @@ func (svc *Context) loadControlResponseRequestMetadata(agentID string, content [
 func (svc *Context) buildControlResponsePlan(agentID string, dbAgent db.Agent, content []byte) controlResponsePlan {
 	requestMeta := svc.loadControlResponseRequestMetadata(agentID, content)
 	resolution := agent.ProviderFor(dbAgent.AgentProvider).ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       requestMeta.RequestID,
 		RequestPayload:  requestMeta.Payload,
 		ResponseContent: content,
 		ToolName:        requestMeta.ToolName,
-		ToolUseID:       requestMeta.ToolUseID,
 	})
-	if resolution.Content == nil {
+	// Backfill on len==0, not just ==nil: a provider that returned an empty-but-non-nil Content would
+	// otherwise reach persistControlResponseRow, where json.RawMessage of empty bytes makes
+	// json.Marshal fail ("unexpected end of JSON input") and silently drop the user's answer row.
+	// Falling back to the raw response bytes keeps the forwarded payload as the persisted response.
+	if len(resolution.Content) == 0 {
 		resolution.Content = content
 	}
 
@@ -105,24 +107,37 @@ func (svc *Context) buildControlResponsePlan(agentID string, dbAgent db.Agent, c
 	// envelope -- NOT from resolution.Content, which a provider may have rewritten for the agent
 	// (e.g. Cursor createPlan's transformCursorControlResponse replaces it with an ACP outcome that
 	// carries no request_id). Reading the frontend-only shape from the frontend bytes keeps plan-mode
-	// handling and the fallback row correct even for a provider that BOTH rewrites Content for the
-	// agent AND needs plan-mode handling; resolution.Content is still what gets forwarded to the
-	// agent. (For every provider except Cursor createPlan resolution.Content == content, so this is
-	// identical to decoding from resolution.Content; for Cursor createPlan it flips hasDecision to
-	// true, which is behavior-neutral -- PlanModeControl==None makes the plan-mode effects a no-op
-	// and the answer stays controlAnswerSynthetic, so no fallback row is added.)
+	// handling correct even for a provider that BOTH rewrites Content for the agent AND needs
+	// plan-mode handling; resolution.Content is still what gets forwarded to the agent. (For every
+	// provider except Cursor createPlan resolution.Content == content, so this is identical to
+	// decoding from resolution.Content; for Cursor createPlan it flips hasDecision to true, which is
+	// behavior-neutral -- PlanModeControl==None makes the plan-mode effects a no-op, and the single
+	// structured row is unaffected by hasDecision.)
 	//
-	// hasDecision gates the plan-mode / fallback-row handling, and is set ONLY for a recognized
+	// hasDecision gates the plan-mode handling, and is set ONLY for a recognized
 	// allow/deny behavior. The frontend is the sole producer of control responses and provably
 	// emits nothing else (buildAllowResponse/buildDenyResponse/decodeControlResponseBehavior in
 	// utils/controlResponse.ts), so an empty/unknown behavior is unreachable in practice -- the
 	// narrowing (a plan-prompt whose behavior is neither would otherwise forward its raw envelope
-	// and skip the fallback row) rests on that frontend contract by design rather than a defensive
-	// guard.
-	if err := json.Unmarshal(content, &plan.decision); err == nil && plan.decision.Response.RequestID != "" {
-		switch plan.behavior() {
-		case agent.ControlBehaviorAllow, agent.ControlBehaviorDeny:
-			plan.hasDecision = true
+	// and skip the plan-mode branch) rests on that frontend contract by design rather than a
+	// defensive guard.
+	//
+	// Normalize the decoded envelope ONCE here -- trim request_id and behavior, collapse the
+	// ControlRejectedByUserMessage placeholder to "" -- exactly as agent.DecodeControlBehavior reads
+	// the same wire bytes on the other paths. Every downstream reader (behavior(), rejectionMessage(),
+	// the plan-mode request-id match) is then a plain field read, so the "trim everywhere to match"
+	// hazard becomes mechanically impossible instead of comment-enforced at each site. In particular
+	// the hasDecision gate and the applyControlResponsePlanModeMutations request-id match now read the
+	// SAME normalized request_id, so a whitespace-padded id can't make one accept while the other skips.
+	if err := json.Unmarshal(content, &plan.decision); err == nil {
+		plan.decision.Response.RequestID = strings.TrimSpace(plan.decision.Response.RequestID)
+		plan.decision.Response.Response.Behavior = strings.TrimSpace(plan.decision.Response.Response.Behavior)
+		plan.decision.Response.Response.Message = agent.NormalizeRejectionMessage(plan.decision.Response.Response.Message)
+		if plan.decision.Response.RequestID != "" {
+			switch plan.decision.Response.Response.Behavior {
+			case agent.ControlBehaviorAllow, agent.ControlBehaviorDeny:
+				plan.hasDecision = true
+			}
 		}
 	}
 	return plan
@@ -130,27 +145,106 @@ func (svc *Context) buildControlResponsePlan(agentID string, dbAgent db.Agent, c
 
 // behavior is the approve/reject behavior the frontend attached to this control response, read
 // through one accessor rather than walking plan.decision.Response.Response.Behavior at each site.
-// Trimmed to match agent.DecodeControlBehavior's behavior read: buildControlResponsePlan gates
-// hasDecision on this matching agent.ControlBehaviorAllow/Deny, so surrounding whitespace must not
-// silently drop it to "no decision" here while the trimming decoder accepts it on the other paths.
+// Already trimmed at construction (buildControlResponsePlan), so this is a plain field read.
 func (plan controlResponsePlan) behavior() string {
-	return strings.TrimSpace(plan.decision.Response.Response.Behavior)
+	return plan.decision.Response.Response.Behavior
 }
 
 // rejectionMessage is the user's typed rejection reason, or "" when they gave none -- an empty
-// message OR the ControlRejectedByUserMessage sentinel (the auto-filled placeholder). Delegates to
-// agent.NormalizeRejectionMessage so this side of the wire and DecodeControlBehavior apply one
-// shared deny-feedback rule that can't drift.
+// message OR the ControlRejectedByUserMessage sentinel (the auto-filled placeholder). Already
+// normalized (via agent.NormalizeRejectionMessage) at construction, so this names the deeply-nested
+// field for the one caller rather than re-applying the rule.
 func (plan controlResponsePlan) rejectionMessage() string {
-	return agent.NormalizeRejectionMessage(plan.decision.Response.Response.Message)
+	return plan.decision.Response.Response.Message
 }
 
-// answerRow is which persisted row carries the single CONTROL_RESPONSE rail mark, derived from the
-// immutable resolution rather than stored -- a method like its sibling derivations (behavior /
-// rejectionMessage / exitPlanClearingContext) so the plan can never be constructed with an
-// answerRow that disagrees with its own resolution.
-func (plan controlResponsePlan) answerRow() controlAnswerRow {
-	return classifyControlAnswerRow(plan.resolution.SelfDisplayed, plan.resolution.DisplayText)
+// isPlanPrompt reports whether this answer is a plan-mode PROMPT decision (the Codex plan-mode
+// prompt), which handleControlResponsePromptPlan handles entirely server-side and NEVER forwards to
+// the agent. Derived from the immutable resolution + hasDecision -- a method like its sibling
+// predicates (behavior / withholdsForward / exitPlanClearingContext) so the winner-work dispatch and
+// the forward gate can never be constructed to disagree on it.
+func (plan controlResponsePlan) isPlanPrompt() bool {
+	return plan.resolution.PlanModeControl == agent.PlanModeControlPrompt && plan.hasDecision
+}
+
+// applyWinningControlResponse runs the once-only work the idempotency-claim WINNER performs for a
+// control answer: delete the pending control request (broadcasting its cancel to every window and
+// marking the self-displayed span), then either handle a plan-mode prompt entirely server-side or
+// persist the structured answer row and apply the plan-mode side effects. SendControlResponse calls
+// it for the claim winner only -- a duplicate must not re-delete, re-persist, or re-restart.
+//
+// Deleting the request here (for the winner alone) is also what keeps the winner's earlier read
+// while-present: a loser that deleted could tear the request out from under a concurrent winner's
+// not-yet-run read. Claude can emit a follow-up control_request right after it reads a denial; the
+// winner's delete + cancel clears the stale one from every window. The row is persisted here BEFORE
+// the caller forwards, so the user's answer precedes any async plan-execution rows.
+func (svc *Context) applyWinningControlResponse(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
+	svc.deleteControlRequest(agentID, dbAgent.AgentProvider, plan.requestMeta, plan.resolution.SelfDisplayed)
+	if plan.isPlanPrompt() {
+		svc.handleControlResponsePromptPlan(agentID, dbAgent, plan)
+	} else {
+		svc.persistControlResponseAnswerRow(agentID, dbAgent.AgentProvider, plan)
+		svc.applyControlResponsePlanModeMutations(agentID, dbAgent, plan)
+	}
+}
+
+// processControlResponse runs the control-response orchestration for one SendControlResponse call:
+// build the plan, claim the answer for idempotency, run the once-only WINNER work, and report the
+// bytes (if any) the RPC handler should forward to the agent. It is dispatcher-free -- the transport
+// (unmarshal, access check, sender replies) stays in the handler -- so the winner/duplicate/forward
+// decision is unit-testable without a channel sender. Returns forward=false (nil bytes) for a
+// duplicate (deduped no-op), a plan-mode prompt (handled entirely server-side), or a context-clearing
+// plan approval (withheld so it can't race the restart it kicked off).
+func (svc *Context) processControlResponse(agentID string, dbAgent db.Agent, content []byte, claimToken string) (forwardBytes []byte, forward bool) {
+	// Build the plan (which reads the pending control request and decodes the request id ONCE),
+	// then CLAIM the answer for idempotency. The claim is the concurrency serialization point:
+	// handlers run concurrently (DispatchAsync, no per-agent lock), and an atomic INSERT on
+	// (agent_id, request_id, claim_token) picks exactly ONE winner. A duplicate -- an RPC retry, or a
+	// second window answering the same request instance before it received the cancel broadcast, both
+	// echoing the SAME claim_token -- loses. The claim is a DURABLE row (see claimControlResponseAnswer),
+	// so a duplicate straddling even a worker-PROCESS restart is deduped, and a REUSED request_id is
+	// deduped per instance by its distinct claim_token. An unattributable answer (no request id) is
+	// nobody's duplicate, so it needs no claim.
+	//
+	// Claiming AFTER buildControlResponsePlan is safe and lets the request id be decoded once: only
+	// the winner deletes the request (in applyWinningControlResponse below), and only AFTER its own
+	// claim, which is after its own read -- so the winner always reads the FULL render context (and
+	// the true SelfDisplayed flag) while the request is present, and a loser (which does nothing) may
+	// read it gone. The claim must precede the persist/delete, though: claiming only after a
+	// successful persist would let two answers both persist before either claims -- the double-row
+	// this prevents.
+	plan := svc.buildControlResponsePlan(agentID, dbAgent, content)
+
+	firstAnswer := true
+	if plan.requestMeta.RequestID != "" {
+		firstAnswer = svc.Output.claimControlResponseAnswer(agentID, plan.requestMeta.RequestID, claimToken)
+	}
+
+	// A duplicate does NOTHING: the winner already deleted the request, persisted the answer row,
+	// applied the plan-mode side effects, AND forwarded its own response. A duplicate must not
+	// re-do any of it -- and in particular must NOT re-forward. Because a duplicate read the request
+	// gone, its resolution.Content diverges from the winner's: a Codex plan-mode prompt approval
+	// would forward an envelope the winner (via applyWinningControlResponse) handles server-side and
+	// never sends, and a Cursor create_plan answer whose ACP transform needs the now-deleted request
+	// would forward the untransformed envelope. Re-forwarding either injects a stray/malformed frame
+	// onto the agent's stdin, so only the winner forwards.
+	if !firstAnswer {
+		return nil, false
+	}
+
+	// The once-only winner work: delete the request, then persist the answer row and apply the
+	// plan-mode side effects (or handle a plan-mode prompt entirely server-side). It runs BEFORE the
+	// forward so the user's answer row precedes any async plan-execution rows.
+	svc.applyWinningControlResponse(agentID, dbAgent, plan)
+
+	// Forward the winner's response to the agent unless it withholds its forward. A plan-prompt is
+	// handled server-side and never forwarded (plan.isPlanPrompt()); a context-clearing plan
+	// approval must not race the restart applyWinningControlResponse just kicked off
+	// (withholdsForward keys off the response's clearContext).
+	if plan.isPlanPrompt() || plan.withholdsForward() {
+		return nil, false
+	}
+	return plan.resolution.Content, true
 }
 
 func (svc *Context) deleteControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
@@ -165,48 +259,59 @@ func (svc *Context) deleteControlRequest(agentID string, provider leapmuxv1.Agen
 	sink.BroadcastControlCancel(requestMeta.RequestID)
 }
 
-func (svc *Context) persistControlResponseAnswerRows(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
-	if plan.needsFallbackDisplayRow() {
-		svc.persistControlResponseDisplayRow(agentID, provider, plan)
-	}
-
-	// The synthetic {content} answer row belongs ONLY to a provider-resolved answer
-	// (controlAnswerSynthetic). A self-displayed answer already lives in the provider's own
-	// transcript, and a fallback answer is carried by the {controlResponse} row above -- persisting
-	// resolution.DisplayText for either would DUPLICATE the answer row. Today the only
-	// self-displaying provider (Claude) returns no DisplayText, so persistSyntheticUserMessage
-	// early-returns on empty and this is a no-op for it -- but gating on the classifier makes "exactly
-	// one answer row" STRUCTURAL (matching classifyControlAnswerRow's no-double-MARK guarantee) rather
-	// than resting on that emptiness, so a future provider that BOTH self-displays AND returns display
-	// text can't double-render the answer. controlAnswerSynthetic always carries non-empty display
-	// text (the classifier's own rule), so the mark is unconditionally CONTROL_RESPONSE here.
-	if plan.answerRow() == controlAnswerSynthetic {
-		svc.persistSyntheticUserMessage(agentID, provider, plan.resolution.DisplayText, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
+// persistControlResponseAnswerRow persists the single synthetic control-response row that carries
+// the user's answer -- and the rail's CONTROL_RESPONSE mark -- for every provider whose answer is
+// not already shown in its own transcript. needsStructuredRow decides whether THIS answer needs the
+// row, so a self-displayed answer (Claude's echoed tool_result) draws its dot on the ingested
+// provider row instead of here. Duplicate answers for the same request are gated out one layer up
+// (SendControlResponse's idempotency claim) before reaching here, so the row is never double-marked.
+func (svc *Context) persistControlResponseAnswerRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+	if plan.needsStructuredRow() {
+		svc.persistControlResponseRow(agentID, provider, plan)
 	}
 }
 
-// exitPlanClearingContext reports the one compound condition the fallback-row rule and the
-// plan-mode-effects skipSend both hinge on: an APPROVED ExitPlanMode that ALSO clears context.
-// When it holds, initiatePlanExecution is about to stop the agent, so the self-displayed
-// transcript tool_result never materializes -- which is why the fallback display row must
-// carry the mark instead. Naming the triple once keeps needsFallbackDisplayRow and
-// applyControlResponsePlanModeEffects from silently drifting on it.
+// approvedClearContext reports an APPROVED decision that clears context: behavior()==Allow with the
+// frontend's clearContext flag set. clearContext is attached ONLY by the two restart-causing plan
+// approvals (ExitPlanMode, the Codex plan-mode prompt), so this is the shared core of the two
+// predicates below -- withholdsForward (the request-independent forward gate) narrows it with
+// hasDecision, exitPlanClearingContext (the loaded-answer mark rule) narrows it with
+// PlanModeControl==Exit. Named once so the two can't drift on what "approved + clears context" means.
+func (plan controlResponsePlan) approvedClearContext() bool {
+	return plan.behavior() == agent.ControlBehaviorAllow && plan.decision.ClearContext
+}
+
+// exitPlanClearingContext reports the one compound condition the structured-row rule hinges on: an
+// APPROVED ExitPlanMode that ALSO clears context. When it holds, initiatePlanExecution is about to
+// stop the agent, so the self-displayed transcript tool_result never materializes -- which is why the
+// synthetic structured row must carry the mark instead. It is the LOADED-answer equivalent of
+// withholdsForward (which is request-independent); naming the triple once keeps needsStructuredRow and
+// applyControlResponsePlanModeMutations from silently drifting on it.
 func (plan controlResponsePlan) exitPlanClearingContext() bool {
-	return plan.behavior() == agent.ControlBehaviorAllow &&
-		plan.resolution.PlanModeControl == agent.PlanModeControlExit &&
-		plan.decision.ClearContext
+	return plan.approvedClearContext() && plan.resolution.PlanModeControl == agent.PlanModeControlExit
 }
 
-func (plan controlResponsePlan) needsFallbackDisplayRow() bool {
-	if !plan.requestMeta.Loaded || !plan.hasDecision {
+// needsStructuredRow reports whether SendControlResponse should synthesize the structured
+// control-response row for this answer. A resolvable request id is required (an unattributable
+// response draws no row, as before).
+//
+// A genuinely self-displayed answer (Claude's echoed tool_result carries the mark) gets NO structured
+// row, EXCEPT when a context-clearing plan exit is about to wipe that echoed row, where the
+// structured row carries the mark instead.
+//
+// Otherwise the answer gets the row -- even when the pending request was already deleted or the
+// decision was unrecognized, so the user's answer is never lost (#258). The "answered twice" concern
+// (a request-gone duplicate whose first answer's Claude tool_result already carries the mark) is
+// handled ONE layer up by SendControlResponse's per-request idempotency claim, which lets only the
+// first answer reach this row -- so needsStructuredRow no longer needs a provider-capability guard.
+func (plan controlResponsePlan) needsStructuredRow() bool {
+	if plan.requestMeta.RequestID == "" {
 		return false
 	}
-	if plan.answerRow() == controlAnswerFallback {
-		return true
+	if plan.resolution.SelfDisplayed {
+		return plan.exitPlanClearingContext()
 	}
-	// A self-displayed answer normally owns the mark on its own transcript row -- unless a
-	// context-clearing plan exit is about to wipe that row, where the fallback row carries it.
-	return plan.answerRow() == controlAnswerSelfDisplayed && plan.exitPlanClearingContext()
+	return true
 }
 
 func (svc *Context) handleControlResponsePromptPlan(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
@@ -220,7 +325,7 @@ func (svc *Context) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 	approvalOptions := agent.ProviderFor(dbAgent.AgentProvider).PlanApprovalOptions()
 	switch plan.behavior() {
 	case agent.ControlBehaviorAllow:
-		svc.persistControlResponseDisplayRow(agentID, dbAgent.AgentProvider, plan)
+		svc.persistControlResponseRow(agentID, dbAgent.AgentProvider, plan)
 
 		// Settle the provider's base plan-approval options (applied live, notify on first set).
 		if len(approvalOptions.Base) > 0 {
@@ -249,102 +354,80 @@ func (svc *Context) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 			// other deny-with-feedback path (ExitPlanMode, permission decisions).
 			svc.sendSyntheticUserMessage(agentID, msg, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
 		} else {
-			svc.persistControlResponseDisplayRow(agentID, dbAgent.AgentProvider, plan)
+			svc.persistControlResponseRow(agentID, dbAgent.AgentProvider, plan)
 		}
 	}
 }
 
-// controlAnswerRow identifies which persisted row carries the single CONTROL_RESPONSE rail
-// mark for a user's answer to a control request. The three homes are mutually exclusive, so
-// naming them here lets the two persist sites agree on exactly one -- never both (a double
-// dot), never neither (a real answer with no dot).
-type controlAnswerRow int
-
-const (
-	// controlAnswerSelfDisplayed: the provider re-emits the answer in its OWN transcript
-	// (Claude's AskUserQuestion / ExitPlanMode tool_result), which the Claude user-envelope
-	// classifier marks at ingestion -- so neither synthesized row is marked.
-	controlAnswerSelfDisplayed controlAnswerRow = iota
-	// controlAnswerSynthetic: a provider-resolved answer row (Codex/OpenCode/Pi/Cursor) that
-	// SendControlResponse writes via persistSyntheticUserMessage from displayText -- that row
-	// carries the mark.
-	controlAnswerSynthetic
-	// controlAnswerFallback: no provider display text and not self-displayed (a Claude
-	// permission decision, or a non-Claude approval with no feedback) -- the synthetic
-	// {controlResponse} fallback row in persistControlResponseAnswerRows carries the mark.
-	controlAnswerFallback
-)
-
-// classifyControlAnswerRow is the SINGLE home for the "which row is the control answer"
-// decision, derived from the provider-resolved self-display flag and display text. Both
-// persist sites consult it -- the synthetic answer row and the fallback display row -- so
-// exactly one row draws the rail's jump dot. Because self-display is checked FIRST, a
-// provider that BOTH self-displays AND returns display text can never double-mark: its
-// ingested transcript row owns the mark and the synthesized rows stay unmarked.
-func classifyControlAnswerRow(selfDisplayed bool, displayText string) controlAnswerRow {
-	if selfDisplayed {
-		return controlAnswerSelfDisplayed
-	}
-	if strings.TrimSpace(displayText) != "" {
-		return controlAnswerSynthetic
-	}
-	return controlAnswerFallback
+// withholdsForward reports whether this answer's response must NOT be forwarded to the agent: an
+// APPROVED context-clearing plan approval (ExitPlanMode, or the Codex plan-mode prompt), which is
+// about to restart the agent via initiatePlanExecution -- forwarding it would race the restart. Only
+// the claim WINNER ever reaches this predicate: a duplicate returns at SendControlResponse's
+// !firstAnswer gate before the forward decision. It is read from the RESPONSE envelope
+// (content-derived, request-independent), so a request-gone winner -- a genuine orphan whose pending
+// request was already cleared (a teardown, or never stored), which therefore can't resolve
+// PlanModeControlExit -- still withholds rather than forwarding a stale restart-approval onto a
+// subprocess that is already being torn down. clearContext is set ONLY by the two restart-causing plan
+// approvals, never an ordinary permission or EnterPlanMode, so it is a reliable proxy for "this answer
+// restarts the agent."
+//
+// On a LOADED ExitPlanMode answer this equals exitPlanClearingContext() -- the predicate
+// needsStructuredRow keys its mark-carrying row off -- because such an answer resolves
+// PlanModeControl==Exit; the two are named separately only so the mark rule can require
+// PlanModeControl==Exit while the forward rule stays request-independent for the request-gone case.
+// The one loaded answer where they DIVERGE is the Codex plan-mode PROMPT: it also carries
+// clearContext+Allow (so withholdsForward is true) but resolves PlanModeControl==Prompt, not Exit (so
+// exitPlanClearingContext is false). That divergence is harmless: the handler catches a plan prompt on
+// its isPlanPrompt gate and runs it server-side (handleControlResponsePromptPlan) BEFORE the forward,
+// so withholdsForward is never consulted for it.
+func (plan controlResponsePlan) withholdsForward() bool {
+	return plan.hasDecision && plan.approvedClearContext()
 }
 
-// applyControlResponsePlanModeEffects detects plan mode changes from control responses.
-// When the frontend approves/rejects an EnterPlanMode or ExitPlanMode control request,
-// this updates the permission mode and initiates plan execution as needed. Returns true
-// when the caller should skip sending the response to the agent (clearContext path).
-func (svc *Context) applyControlResponsePlanModeEffects(agentID string, dbAgent db.Agent, plan controlResponsePlan) bool {
-	if !plan.requestMeta.Loaded || !plan.hasDecision {
-		return false
+// applyControlResponsePlanModeMutations applies the once-only plan-mode side effects of an
+// EnterPlanMode / ExitPlanMode approval: the permission-mode switch, the planModeToolUse cleanup, and
+// (for a context-clearing exit) kicking off initiatePlanExecution. The caller runs it for the WINNER
+// only -- a duplicate must not re-run the switch or re-restart the agent -- so unlike withholdsForward
+// (a pure content-derived predicate, correct for any answer but reached only by the winner), these
+// mutations are side effects the caller gates externally to the winner, not internally.
+// A request-gone or decision-less answer touches nothing (the mutations need the loaded request).
+func (svc *Context) applyControlResponsePlanModeMutations(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
+	if !plan.requestMeta.Loaded || !plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow {
+		return
 	}
 
 	crPayload := plan.decision
-	// Trim to match: plan.requestMeta.RequestID came through DecodeControlBehavior (which trims),
-	// so read the response's own request id the same way -- otherwise a whitespace-padded id would
-	// fail this equality and silently skip the plan-mode transition even though hasDecision (which
-	// also trims) accepted it. Keeps the "trim everywhere" rule the rest of this file enforces.
-	reqID := strings.TrimSpace(crPayload.Response.RequestID)
+	// crPayload.Response.RequestID is already trimmed at construction (buildControlResponsePlan),
+	// matching plan.requestMeta.RequestID (which came through DecodeControlBehavior's trimming read),
+	// so this equality can never be a trimmed-vs-untrimmed mismatch -- and it agrees with the
+	// hasDecision gate, which reads the same normalized id.
+	reqID := crPayload.Response.RequestID
 	if reqID == "" || reqID != plan.requestMeta.RequestID {
-		return false
+		return
 	}
 
-	// Detect plan mode changes from control responses (agent-initiated).
-	skipSend := false
-	if plan.behavior() == agent.ControlBehaviorAllow {
-		switch plan.resolution.PlanModeControl {
-		case agent.PlanModeControlEnter:
-			svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
-		case agent.PlanModeControlExit:
-			// Determine target permission mode from control_response (default AcceptEdits here,
-			// vs Default on the plan-prompt path -- resolveTargetMode owns that fallback).
-			targetMode := resolveTargetMode(crPayload.PermissionMode, agent.PermissionModeAcceptEdits)
-			svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
+	switch plan.resolution.PlanModeControl {
+	case agent.PlanModeControlEnter:
+		svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
+	case agent.PlanModeControlExit:
+		// Determine target permission mode from control_response (default AcceptEdits here,
+		// vs Default on the plan-prompt path -- resolveTargetMode owns that fallback).
+		targetMode := resolveTargetMode(crPayload.PermissionMode, agent.PermissionModeAcceptEdits)
+		svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
 
-			// Remove the planModeToolUse entry so detectPlanModeFromToolResult
-			// does not override the mode we just set.
-			if plan.requestMeta.ToolUseID != "" {
-				svc.Output.planModeToolUse.Delete(plan.requestMeta.ToolUseID)
-			}
+		// Remove the planModeToolUse entry so detectPlanModeFromToolResult
+		// does not override the mode we just set.
+		if plan.requestMeta.ToolUseID != "" {
+			svc.Output.planModeToolUse.Delete(plan.requestMeta.ToolUseID)
+		}
 
-			// Inside the Behavior==Allow branch and the PlanModeControlExit case, this
-			// IS plan.exitPlanClearingContext() -- the same predicate needsFallbackDisplayRow
-			// keys the mark-carrying fallback row off. Call it (rather than re-inlining the
-			// ClearContext read) so the two provably stay in lockstep, as its doc promises.
-			if plan.exitPlanClearingContext() {
-				// When clearing context, don't send the approval to the
-				// agent — we're about to stop it anyway. This avoids
-				// the race where the agent acts on the approval before
-				// initiatePlanExecution kills it.
-				go svc.initiatePlanExecution(agentID, targetMode)
-				skipSend = true
-			}
-			// When !clearContext, the agent continues in current context.
+		// When clearing context, kick off the restart -- once. The forward itself is withheld for
+		// every answer by withholdsForward (== exitPlanClearingContext on this loaded path), so we only
+		// start the restart here; we don't re-decide the withhold.
+		if plan.exitPlanClearingContext() {
+			go svc.initiatePlanExecution(agentID, targetMode)
 		}
 	}
-
-	return skipSend
 }
 
 // resolveTargetMode picks the plan-execution target permission mode: the mode the frontend
@@ -358,32 +441,82 @@ func resolveTargetMode(permissionMode, defaultMode string) string {
 	return defaultMode
 }
 
-// persistControlResponseDisplayRow writes the synthetic {controlResponse} row from the plan's
-// approve/reject behavior and the NORMALIZED comment the frontend attached, reading both off the
-// plan so the deep decision chain lives here once rather than at each call site. The comment runs
-// through plan.rejectionMessage() (not the raw decision message) so the auto-filled
-// ControlRejectedByUserMessage sentinel collapses to "" -- otherwise a bare deny would render the
-// placeholder "Rejected by user." as if it were typed feedback ("Sent feedback: ...") in both the
-// transcript row (controlResponseRenderer) and the rail dot preview (defaultMarkPreview), instead
-// of the intended "Rejected". An approved row ignores comment, so normalizing it is safe there too.
-func (svc *Context) persistControlResponseDisplayRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
-	action := "approved"
-	if plan.behavior() == agent.ControlBehaviorDeny {
-		action = "rejected"
+// persistedControlResponse is the structured control-response payload persisted inside the
+// synthetic transcript row (issue #258). It keeps the provider-native response as sent to the
+// agent plus the minimal provider-pruned request context, so the frontend can render human-facing
+// labels AFTER the pending control request is deleted -- the backend no longer duplicates the
+// frontend's label text.
+type persistedControlResponse struct {
+	// Provider is the AgentProvider enum name minus its AGENT_PROVIDER_ prefix (CODEX, OPENCODE,
+	// CLAUDE_CODE, ...), matching how protobuf-es names the TS enum members. It durably records
+	// which provider produced this answer; the frontend resolves the rendering plugin from the
+	// message's own agentProvider, NOT this field, so it is an audit/debug token rather than a
+	// dispatch key.
+	Provider string `json:"provider"`
+	// RequestID is the id of the control request this answers, omitted only when unknown.
+	RequestID string `json:"requestId,omitempty"`
+	// Request is the provider-pruned minimal render context (agent.ControlResponseResolution's
+	// RequestContext), omitted when the stored request was unavailable or unrecognized.
+	Request json.RawMessage `json:"request,omitempty"`
+	// Response is the provider-native response payload forwarded to the agent (resolution.Content,
+	// e.g. Cursor's transformed outcome), the source of truth the frontend renders the answer from.
+	Response json.RawMessage `json:"response"`
+}
+
+// syntheticControlResponseRow is the transcript-row content envelope wrapping a
+// persistedControlResponse. isSynthetic (NOT the message source) is what makes the frontend
+// classify it as a control_response: the row is USER-sourced (a control answer is the user's own
+// response), so without this flag it would render as a plain user-send content bubble.
+type syntheticControlResponseRow struct {
+	IsSynthetic     bool                     `json:"isSynthetic"`
+	ControlResponse persistedControlResponse `json:"controlResponse"`
+}
+
+// controlResponseProviderName renders an AgentProvider as the bare token the persisted control
+// response records -- the proto enum name with its AGENT_PROVIDER_ prefix stripped, matching how
+// protobuf-es names the TS enum members (AGENT_PROVIDER_CODEX -> "CODEX"). It is recorded for
+// audit/debug; the frontend dispatches on the message's agentProvider, not this token.
+func controlResponseProviderName(p leapmuxv1.AgentProvider) string {
+	return strings.TrimPrefix(p.String(), "AGENT_PROVIDER_")
+}
+
+// persistControlResponseRow writes the durable synthetic control-response transcript row: the
+// provider-native response payload forwarded to the agent, plus the provider-pruned request
+// context the frontend renders human-facing labels from (issue #258). It is sourced from USER --
+// a control answer is the user's own response to the agent, so like a typed message it counts
+// toward HasUserMessages/resolveResumeSessionID (answering alone can make a session resumable) and
+// its bubble exposes data-role="user". This matches how every non-Claude provider-resolved answer
+// was persisted on the pre-#258 path (a USER {content} row); the isSynthetic flag -- not the source
+// -- is what routes it to the control_response renderer. It carries the CONTROL_RESPONSE rail mark.
+// The frontend owns all label text; the backend no longer duplicates it.
+func (svc *Context) persistControlResponseRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+	// Coalesce empty-OR-invalid bytes to nil so the Response field marshals as `null` rather than
+	// making the WHOLE row marshal fail (which would silently drop the user's answer row): a
+	// json.RawMessage marshals only when it holds valid JSON -- empty-but-non-nil bytes error with
+	// "unexpected end of JSON input", and non-empty non-JSON bytes error with "invalid character
+	// ...". buildControlResponsePlan already backfills empty Content with the raw response, so this is
+	// the marshal-boundary backstop that keeps "a resolvable answer always persists a row" true
+	// regardless of the resolution's Content -- empty or malformed. json.Valid also treats nil/empty
+	// as invalid, so this one check subsumes the empty case.
+	response := json.RawMessage(plan.resolution.Content)
+	if !json.Valid(response) {
+		response = nil
 	}
-	displayContent := map[string]interface{}{
-		"isSynthetic": true,
-		"controlResponse": map[string]string{
-			"action":  action,
-			"comment": plan.rejectionMessage(),
+	row := syntheticControlResponseRow{
+		IsSynthetic: true,
+		ControlResponse: persistedControlResponse{
+			Provider:  controlResponseProviderName(provider),
+			RequestID: plan.requestMeta.RequestID,
+			Request:   plan.resolution.RequestContext,
+			Response:  response,
 		},
 	}
-	displayJSON, err := json.Marshal(displayContent)
+	rowJSON, err := json.Marshal(row)
 	if err != nil {
-		slog.Warn("marshal control response notification", "agent_id", agentID, "error", err)
+		slog.Warn("marshal control response row", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, displayJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil); err != nil {
-		slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rowJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil); err != nil {
+		slog.Warn("failed to persist control response row", "agent_id", agentID, "error", err)
 	}
 }

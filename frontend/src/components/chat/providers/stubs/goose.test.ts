@@ -27,4 +27,14 @@ describe('goose provider', () => {
     // (permissionMode) without a plan toggle, so it still declares triggerModeGroupKey.
     expect(plugin.triggerModeGroupKey).toBe('permissionMode')
   })
+
+  it('derives a control-response label via the default ACP permission path (no question hook)', () => {
+    // Goose has no question protocol, so it gets the shared acpControlResponseDisplay default.
+    expect(plugin.controlResponseDisplay!({
+      provider: 'GOOSE',
+      requestId: '7',
+      request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
+      response: { result: { outcome: { optionId: 'proceed_once' } } },
+    })).toEqual({ kind: 'label', text: 'Allow once' })
+  })
 })

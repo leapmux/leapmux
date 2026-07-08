@@ -17,7 +17,7 @@ export interface ControlResponseHandlingProps {
   agentId: string
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
-  onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
+  onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
   onSettingChange?: (change: ProviderSettingChange) => void
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
@@ -133,9 +133,12 @@ export function useControlResponseHandling(
     })
   })
 
-  // Handles editor text for control requests.
+  // Handles editor text for control requests. Threads the per-instance claim token of the request
+  // being answered (the active one) so the worker's idempotency claim keys on THIS instance even
+  // after the request leaves the store -- the typed-feedback / ask-question sibling of the footer
+  // action path in AgentEditorPanel.
   const sendControlResponse = (agentId: string, bytes: Uint8Array): Promise<void> => {
-    return props.onControlResponse?.(agentId, bytes) ?? Promise.resolve()
+    return props.onControlResponse?.(agentId, bytes, activeControlRequest()?.claimToken) ?? Promise.resolve()
   }
 
   const cleanupControlRequestDrafts = (requestId: string) => {

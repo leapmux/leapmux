@@ -8,7 +8,6 @@ function parsedOf(obj: Record<string, unknown> | undefined): ParsedMessageConten
 }
 
 const USER: MessageCategory = { kind: 'user_content' }
-const CONTROL: MessageCategory = { kind: 'control_response' }
 
 describe('default mark preview', () => {
   it('extracts the provider-neutral {content} user shape', () => {
@@ -17,24 +16,17 @@ describe('default mark preview', () => {
 
   it('does NOT extract the Claude {message:{content}} transcript shape (that is the claude plugin\'s job)', () => {
     // The nested `{message:{content}}` envelope is an Anthropic transcript shape; the shared
-    // neutral default handles only `{content}` / `{controlResponse}`. See claude/plugin.test.ts.
+    // neutral default handles only `{content}`. See claude/plugin.test.ts.
     expect(defaultMarkPreview({ kind: 'user_text' }, parsedOf({ message: { content: 'typed text' } }))).toBeNull()
   })
 
-  it('summarizes an approved control response', () => {
-    expect(defaultMarkPreview(CONTROL, parsedOf({ controlResponse: { action: 'approved' } }))).toBe('Approved')
-  })
-
-  it('summarizes a rejected control response carrying feedback the same way the row renderer does', () => {
-    // Mirror controlResponseRenderer (notificationRenderers), the row the dot jumps to: a
-    // rejection WITH a typed reason renders "Sent feedback:" above the reason, so the preview
-    // must read the same -- NOT the inline ControlResponseTag's "Rejected: <reason>".
-    expect(defaultMarkPreview(CONTROL, parsedOf({ controlResponse: { action: 'rejected', comment: 'not this way' } })))
-      .toBe('Sent feedback:\nnot this way')
-  })
-
-  it('labels a bare rejection', () => {
-    expect(defaultMarkPreview(CONTROL, parsedOf({ controlResponse: { action: 'rejected' } }))).toBe('Rejected')
+  it('does NOT handle persisted control-response rows (they resolve through controlResponseDisplay)', () => {
+    // A control-response row classifies as `control_response` and the rail resolves its preview
+    // through the plugin's controlResponseDisplay (chatMarkPreview.ts), NOT this neutral default.
+    expect(defaultMarkPreview(
+      { kind: 'control_response' },
+      parsedOf({ isSynthetic: true, controlResponse: { provider: 'CODEX', response: { result: { decision: 'accept' } } } }),
+    )).toBeNull()
   })
 
   it('returns null when there is no previewable text', () => {

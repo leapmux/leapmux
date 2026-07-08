@@ -46,7 +46,7 @@ export interface AgentEditorPanelProps {
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
-  onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
+  onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: (change: ProviderSettingChange) => void
   /**
@@ -377,11 +377,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     askState={askState}
                     agentProvider={props.agent?.agentProvider}
                     onRespond={(agentId, content) => {
-                      const reqId = ctrl.activeControlRequest()?.requestId
-                      if (reqId)
-                        ctrl.cleanupControlRequestDrafts(reqId)
+                      // Capture the per-instance claim token from the request being answered NOW,
+                      // before removeRequest can drop it, so the worker's idempotency claim keys on
+                      // the answered instance even in a double-submit / answer-after-cancel race.
+                      const active = ctrl.activeControlRequest()
+                      if (active?.requestId)
+                        ctrl.cleanupControlRequestDrafts(active.requestId)
                       editorHeight.resetEditorHeight()
-                      return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
+                      return props.onControlResponse?.(agentId, content, active?.claimToken) ?? Promise.resolve()
                     }}
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}

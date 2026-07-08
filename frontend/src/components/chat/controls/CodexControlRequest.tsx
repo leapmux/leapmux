@@ -1,12 +1,14 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from './types'
+import type { CodexDecision } from '../providers/codex/controlResponse'
 
+import type { ActionsProps, AskQuestionState, ContentProps, Question } from './types'
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { codexDecisionKey, codexDecisionLabel } from '../providers/codex/controlResponse'
 import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
 import { CollapsibleText } from './CollapsibleText'
 import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
@@ -16,8 +18,6 @@ import { sendResponse } from './types'
 function getCodexParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined
 }
-
-type CodexDecision = string | Record<string, unknown>
 
 /** Convert a string request ID to a numeric JSON-RPC id when possible. */
 export function toRpcId(requestId: string): number | string {
@@ -113,24 +113,6 @@ function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string,
       input: { questions: params?.questions ?? [] },
     },
   }
-}
-
-/** Label for a Codex decision. */
-function decisionLabel(decision: CodexDecision): string {
-  if (typeof decision === 'string') {
-    switch (decision) {
-      case 'accept': return 'Allow'
-      case 'acceptForSession': return 'Allow for Session'
-      case 'decline': return 'Reject'
-      case 'cancel': return 'Cancel'
-      default: return decision
-    }
-  }
-  if ('acceptWithExecpolicyAmendment' in decision)
-    return 'Allow & Remember'
-  if ('applyNetworkPolicyAmendment' in decision)
-    return 'Apply Network Policy'
-  return 'Allow'
 }
 
 /** Whether a decision is a cancel/decline type (rendered as outline button). */
@@ -311,9 +293,9 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                       <button
                         class={isNegativeDecision(decision) ? 'outline' : undefined}
                         onClick={() => handleDecision(decision)}
-                        data-testid={`control-decision-${typeof decision === 'string' ? decision : Object.keys(decision)[0]}`}
+                        data-testid={`control-decision-${codexDecisionKey(decision)}`}
                       >
-                        {decisionLabel(decision)}
+                        {codexDecisionLabel(decision)}
                       </button>
                     )}
                   </For>

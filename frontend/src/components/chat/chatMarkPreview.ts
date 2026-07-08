@@ -1,8 +1,10 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { parseMessageContent } from '~/lib/messageParser'
+import { truncatePreview } from '~/lib/textTruncate'
 import { defaultMarkPreview } from './markPreviewShared'
 import { classifyAgentMessage } from './messageClassification'
+import { controlResponsePreviewText, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,16 @@ export function messageMarkPreviewText(message: AgentChatMessage): string | null
     const parsed = parseMessageContent(message)
     const category = classifyAgentMessage(message)
     const plugin = pluginFor(message.agentProvider)
+    // A persisted control-response row resolves its preview through the SAME per-provider
+    // derivation the transcript row uses (plugin.controlResponseDisplay), so the dot reads
+    // identically to the row it jumps to. Degrades to the neutral behavior/generic fallback.
+    if (category.kind === 'control_response') {
+      const cr = parsePersistedControlResponse(parsed.parentObject)
+      if (cr) {
+        const display = resolveControlResponseDisplay(cr, plugin?.controlResponseDisplay)
+        return truncatePreview(controlResponsePreviewText(display))
+      }
+    }
     // Route to the plugin's previewText when it defines one, treating its result as
     // authoritative -- including a deliberate null (no preview). Only a provider WITHOUT
     // a previewText falls back to the shared neutral extractor. (A `?? defaultMarkPreview`

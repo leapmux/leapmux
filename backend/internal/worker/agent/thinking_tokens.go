@@ -227,7 +227,7 @@ func (s *thinkingResetSink) PersistTurnEnd(content []byte, span SpanInfo) error 
 	return s.OutputSink.PersistTurnEnd(content, span)
 }
 
-func (s *thinkingResetSink) BroadcastControlRequest(requestID string, payload []byte) {
+func (s *thinkingResetSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
 	s.est.reset()
-	s.OutputSink.BroadcastControlRequest(requestID, payload)
+	s.OutputSink.BroadcastControlRequest(requestID, payload, claimToken)
 }

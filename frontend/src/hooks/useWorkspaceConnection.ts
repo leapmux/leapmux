@@ -722,7 +722,7 @@ export function handleControlRequest(
     log.warn('Ignoring malformed control request payload', { agentId: cr.agentId, requestId: cr.requestId, err })
     return
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload })
+  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, claimToken: cr.claimToken })
   if (catchUpPhase === 'live') {
     // Light up the tab badge so a user looking at a sibling tab knows the background
     // agent is now waiting on them.

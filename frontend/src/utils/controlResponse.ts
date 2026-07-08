@@ -1,3 +1,5 @@
+import { isObject, pickString } from '~/lib/jsonPick'
+
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
   const request = payload.request as Record<string, unknown> | undefined
@@ -68,6 +70,44 @@ export function buildDenyResponse(
 }
 
 /**
+ * Trim a control-response reject reason and collapse the
+ * {@link CONTROL_REJECTED_BY_USER_MESSAGE} placeholder (the auto-filled "declined without a
+ * reason" text) to "". Mirrors the backend's `NormalizeRejectionMessage` so a bare deny reads
+ * as "Rejected" on both sides instead of leaking the placeholder as typed feedback.
+ */
+export function normalizeRejectionMessage(message: string): string {
+  const trimmed = message.trim()
+  return trimmed === CONTROL_REJECTED_BY_USER_MESSAGE ? '' : trimmed
+}
+
+/**
+ * Decode the neutral approve/reject control-response envelope
+ * (`{response:{request_id, response:{behavior, message}}}`) from an already-parsed OBJECT, the
+ * shape `buildAllowResponse` / `buildDenyResponse` produce and the Claude/Codex-envelope native
+ * response persists. Returns the trimmed request id, behavior, and rejection message (with the
+ * {@link CONTROL_REJECTED_BY_USER_MESSAGE} sentinel collapsed to ""), or null when the object
+ * doesn't carry a recognizable allow/deny behavior. The single home for reading this shape,
+ * shared by the byte-oriented {@link decodeControlResponseBehavior} and the persisted-row
+ * renderer (persistedControlResponse.ts).
+ */
+export function decodeControlBehaviorEnvelope(
+  obj: unknown,
+): { requestId: string, behavior: 'allow' | 'deny', message: string } | null {
+  if (!isObject(obj))
+    return null
+  const outer = isObject(obj.response) ? obj.response : undefined
+  const inner = isObject(outer?.response) ? outer.response as Record<string, unknown> : undefined
+  const behavior = pickString(inner, 'behavior', '').trim()
+  if (behavior !== 'allow' && behavior !== 'deny')
+    return null
+  return {
+    requestId: pickString(outer, 'request_id', '').trim(),
+    behavior,
+    message: normalizeRejectionMessage(pickString(inner, 'message', '')),
+  }
+}
+
+/**
  * Decode the inverse of `buildAllowResponse` / `buildDenyResponse`: a
  * `control_response` envelope's serialized bytes back into its `behavior`.
  * Returns null on any decode failure or when the envelope doesn't carry a
@@ -79,19 +119,14 @@ export function buildDenyResponse(
  * `response.response` themselves.
  */
 export function decodeControlResponseBehavior(content: Uint8Array): 'allow' | 'deny' | null {
-  let parsed: Record<string, unknown>
+  let parsed: unknown
   try {
-    parsed = JSON.parse(new TextDecoder().decode(content)) as Record<string, unknown>
+    parsed = JSON.parse(new TextDecoder().decode(content))
   }
   catch {
     return null
   }
-  const outer = parsed.response as Record<string, unknown> | undefined
-  const inner = outer?.response as Record<string, unknown> | undefined
-  const behavior = inner?.behavior
-  if (behavior === 'allow' || behavior === 'deny')
-    return behavior
-  return null
+  return decodeControlBehaviorEnvelope(parsed)?.behavior ?? null
 }
 
 /**

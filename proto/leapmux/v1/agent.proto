@@ -480,6 +480,12 @@ message AgentControlRequest {
   string request_id = 2;
   bytes payload = 3;  // Full JSON of the control_request (verbatim)
   AgentProvider agent_provider = 4; // Provider for this agent
+  // claim_token identifies this REQUEST INSTANCE. The worker mints a fresh token per
+  // PersistControlRequest; the frontend echoes it in SendControlResponseRequest so a stale
+  // duplicate answer to a PRIOR instance of a reused request_id (e.g. a Codex/ACP JSON-RPC
+  // counter that reset across a plan-exec restart) cannot re-win the idempotency claim of the
+  // current instance. Empty when the row predates the token (degrades to request_id-only dedup).
+  string claim_token = 5;
 }
 
 // AgentControlCancelRequest is sent when Claude Code cancels a pending control request.
@@ -492,6 +498,11 @@ message AgentControlCancelRequest {
 message SendControlResponseRequest {
   string agent_id = 1;
   bytes content = 2;  // Raw JSON control_response for Claude Code stdin
+  // claim_token is the per-instance token the frontend echoes from the AgentControlRequest it is
+  // answering (see AgentControlRequest.claim_token). The worker keys the idempotency claim on it so
+  // a stale duplicate of a prior instance of a reused request_id cannot re-win. Empty falls back to
+  // request_id-only dedup.
+  string claim_token = 3;
 }
 
 message SendControlResponseResponse {}

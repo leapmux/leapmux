@@ -3,8 +3,10 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createControlStore } from '~/stores/control.store'
 
-function makeRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { data: requestId }): ControlRequest {
-  return { requestId, agentId, payload }
+// claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
+// the SAME instance); pass an explicit token to model a REISSUED instance that reused the request_id.
+function makeRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { data: requestId }, claimToken: string = `tok-${requestId}`): ControlRequest {
+  return { requestId, agentId, payload, claimToken }
 }
 
 describe('createControlStore', () => {
@@ -65,6 +67,19 @@ describe('createControlStore', () => {
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       expect(() => store.removeRequest('agent-1', 'nonexistent')).not.toThrow()
       expect(store.getRequests('agent-1')).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('should return the matching request (with its claimToken) on getRequest, else undefined', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+      store.addRequest('agent-1', makeRequest('r2', 'agent-1'))
+      // getRequest recovers the per-instance claimToken the answer echoes back to the worker.
+      expect(store.getRequest('agent-1', 'r2')?.claimToken).toBe('tok-r2')
+      expect(store.getRequest('agent-1', 'missing')).toBeUndefined()
+      expect(store.getRequest('no-agent', 'r1')).toBeUndefined()
       dispose()
     })
   })
@@ -141,23 +156,66 @@ describe('createControlStore', () => {
   })
 
   // Claude Code can reuse request_id for a revised ExitPlanMode prompt after
-  // the user rejects a plan with feedback. That is not a stale replay: the
-  // payload changed and the next banner must be shown.
+  // the user rejects a plan with feedback. That is not a stale replay: it is a
+  // REISSUED instance carrying a fresh claimToken, so the next banner must be shown.
   it('does not suppress a revised request that reuses requestId within the same agent', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
         request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
-      }))
+      }, 'tok-r1-first'))
       store.removeRequest('agent-1', 'r1')
 
+      // The reissued prompt carries a fresh claimToken (a new PersistControlRequest instance).
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
         request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
-      }))
+      }, 'tok-r1-revised'))
       expect(store.getRequests('agent-1')).toHaveLength(1)
       expect(store.getRequests('agent-1')[0].payload).toEqual({
         request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
       })
+      dispose()
+    })
+  })
+
+  // The regression this closes (the UI half of the backend claim_token fix): after the user answers a
+  // request, an IDENTICAL re-ask (same request_id AND same payload) that carries a FRESH claimToken --
+  // a genuinely new instance, e.g. the agent restarted and its JSON-RPC counter reset -- must be SHOWN,
+  // not swallowed as a duplicate. The payload fingerprint alone would suppress it (same payload); the
+  // per-instance claimToken is what tells the new instance apart.
+  it('shows an identical re-ask (same payload) that carries a fresh claimToken after a prior answer', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      const payload = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instA'))
+      store.removeRequest('agent-1', '1')
+
+      // A reconnect replay of the SAME instance (same token) stays suppressed.
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instA'))
+      expect(store.getRequests('agent-1')).toHaveLength(0)
+
+      // A genuine re-ask by a NEW instance (fresh token, identical payload) is shown.
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instB'))
+      expect(store.getRequests('agent-1')).toHaveLength(1)
+      expect(store.getRequests('agent-1')[0].claimToken).toBe('instB')
+      dispose()
+    })
+  })
+
+  // Tokenless fallback: a synthetic / pre-token row (no claimToken) still dedups by the payload
+  // fingerprint, so an identical replay is suppressed while a differing payload is shown.
+  it('falls back to the payload fingerprint when a request carries no claimToken', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      const p1 = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
+      const p2 = { request: { tool_name: 'Bash', input: { command: 'rm -rf /' } } }
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', p1, ''))
+      store.removeRequest('agent-1', '1')
+
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', p1, '')) // identical -> suppressed
+      expect(store.getRequests('agent-1')).toHaveLength(0)
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', p2, '')) // different payload -> shown
+      expect(store.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
   })

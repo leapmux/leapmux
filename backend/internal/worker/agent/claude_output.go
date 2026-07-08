@@ -610,8 +610,8 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlRequest(content []byte) {
 		slog.Warn("invalid control_request JSON", "agent_id", a.agentID, "error", err)
 		return
 	}
-	a.sink.PersistControlRequest(cr.RequestID, content)
-	a.sink.BroadcastControlRequest(cr.RequestID, content)
+	claimToken := a.sink.PersistControlRequest(cr.RequestID, content)
+	a.sink.BroadcastControlRequest(cr.RequestID, content, claimToken)
 }
 
 // claudeCodeHandleControlCancel persists and broadcasts a control_cancel_request.

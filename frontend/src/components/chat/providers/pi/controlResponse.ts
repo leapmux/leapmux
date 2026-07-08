@@ -15,8 +15,11 @@
  */
 
 import type { AskQuestionState } from '../../controls/types'
+import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
-import { PI_EVENT } from './protocol'
+import { label } from '../../persistedControlResponse'
+import { PI_DIALOG_METHOD, PI_EVENT } from './protocol'
 
 const RESPONSE_TYPE = PI_EVENT.ExtensionUIResponse
 
@@ -74,4 +77,35 @@ export function sendPiExtensionResponse(
   response: PiExtensionResponse,
 ): Promise<void> {
   return sendResponse(agentId, onRespond, response)
+}
+
+/**
+ * Derive the display for a persisted Pi extension-UI response. A cancel is "Cancelled"; a confirm
+ * dialog maps to "Approve"/"Deny"; a select/input/editor dialog shows the typed value. The pruned
+ * request method disambiguates confirm-vs-value precisely, but when it is absent (a request-gone
+ * answer) the response shape recovers it: a `confirmed` boolean is a confirm dialog, a non-empty
+ * `value` is a text dialog. Null for an empty value or an unrecognized known method (the caller then
+ * degrades to the generic label).
+ */
+export function piControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+  const response = cr.response
+  if (!response)
+    return null
+  if (response.cancelled === true)
+    return label('Cancelled')
+
+  const method = pickString(cr.request, 'method', '')
+  if (method === PI_DIALOG_METHOD.Confirm || (method === '' && typeof response.confirmed === 'boolean'))
+    return label(response.confirmed === true ? 'Approve' : 'Deny')
+  switch (method) {
+    case PI_DIALOG_METHOD.Select:
+    case PI_DIALOG_METHOD.Input:
+    case PI_DIALOG_METHOD.Editor:
+    case '': {
+      const value = pickString(response, 'value', '').trim()
+      return value ? label(value) : null
+    }
+    default:
+      return null
+  }
 }

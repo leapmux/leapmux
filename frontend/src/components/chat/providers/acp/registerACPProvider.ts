@@ -8,6 +8,7 @@ import { defaultMarkPreview } from '../../markPreviewShared'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { acpBuildControlResponse, acpExtractQuotableText, buildACPInterruptContent, classifyACPMessage } from './classification'
+import { acpControlResponseDisplay } from './controlResponse'
 import { acpResultDivider } from './renderers'
 import { renderACPMessage } from './rendering'
 
@@ -75,6 +76,12 @@ export interface ACPProviderOptions {
   bypassPermissionMode?: PermissionMode
   /** Question-handling hooks for providers that override the default ACP path. */
   questionHandling?: ACPQuestionHandling
+  /**
+   * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseDisplay}
+   * (the permission-selection path); OpenCode/Kilo and Cursor pass their own, which dispatch on the
+   * request shape and delegate back to the ACP default for the permission case.
+   */
+  controlResponseDisplay?: Provider['controlResponseDisplay']
   /** Extra `session/update` types that should be hidden from the chat. */
   extraHiddenSessionUpdates?: Set<string>
   /**
@@ -139,12 +146,12 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     renderMessage: renderACPMessage,
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
-    // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and
-    // control-response answers. A control answer is persisted in one of two Leapmux-neutral shapes --
-    // `{content}` (a provider-resolved answer or a deny-with-feedback) or `{controlResponse}` (a bare
-    // approve/deny with no feedback) -- and ACP never echoes the answer as a message. The shared
-    // neutral extractor handles BOTH shapes, so it is the whole preview.
+    // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and control-response
+    // answers. A user send is the Leapmux-neutral `{content}` shape the shared extractor handles; a
+    // control answer is the structured `{controlResponse}` row, which classifies as
+    // `control_response` and resolves through controlResponseDisplay (below), not here.
     previewText: defaultMarkPreview,
+    controlResponseDisplay: opts.controlResponseDisplay ?? acpControlResponseDisplay,
     buildInterruptContent: buildACPInterruptContent,
     buildControlResponse: acpBuildControlResponse,
 

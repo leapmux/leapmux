@@ -108,9 +108,19 @@ describe('claude preview text (scroll-rail mark preview)', () => {
     expect(plugin.previewText!({ kind: 'user_content' }, input({ content: 'hello world' }))).toBe('hello world')
   })
 
-  it('falls back to the shared neutral extractor for a {controlResponse} row, and null otherwise', () => {
-    expect(plugin.previewText!({ kind: 'control_response' }, input({ controlResponse: { action: 'approved' } }))).toBe('Approved')
+  it('returns null for an assistant content-block array (no neutral string field)', () => {
     expect(plugin.previewText!({ kind: 'assistant_text' }, input({ message: { content: [{ type: 'text', text: 'hi' }] } }))).toBeNull()
+  })
+
+  it('derives the control-response display from the native response envelope (not previewText)', () => {
+    // Control-response rows resolve through controlResponseDisplay, not previewText -- Claude's
+    // derivation IS the neutral behavior envelope: allow -> Approved, deny+message -> feedback.
+    const allow = { type: 'control_response', response: { request_id: 'r', response: { behavior: 'allow' } } }
+    expect(plugin.controlResponseDisplay!({ provider: 'CLAUDE_CODE', requestId: 'r', request: undefined, response: allow }))
+      .toEqual({ kind: 'label', text: 'Approved' })
+    const deny = { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'use ripgrep' } } }
+    expect(plugin.controlResponseDisplay!({ provider: 'CLAUDE_CODE', requestId: 'r', request: undefined, response: deny }))
+      .toEqual({ kind: 'feedback', message: 'use ripgrep' })
   })
 })
 

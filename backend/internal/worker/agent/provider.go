@@ -78,11 +78,11 @@ type Provider interface {
 	// ignore it) is ALREADY displayed by the provider's own transcript -- e.g.
 	// Claude re-emits AskUserQuestion / ExitPlanMode answers as a user-envelope
 	// tool_result. When true, the scroll rail marks that ingested row directly
-	// and the service layer persists NO separate synthetic display row (which
-	// would double the dot). Every provider except Claude synthesizes the display
-	// row itself (persistSyntheticUserMessage) and so returns false -- confirmed
-	// against the Codex, OpenCode/ACP, and Pi wire protocols, none of which echo a
-	// control answer back into their output stream.
+	// and the service layer persists NO separate structured control-response row
+	// (which would double the dot). Every provider except Claude has the service
+	// synthesize the structured row and so returns false -- confirmed against the
+	// Codex, OpenCode/ACP, and Pi wire protocols, none of which echo a control
+	// answer back into their output stream.
 	IsSelfDisplayingControlTool(toolName string) bool
 	// PlanModeControl classifies a provider-native control request name into
 	// the provider-neutral plan-mode operation the service layer should run.
@@ -90,7 +90,8 @@ type Provider interface {
 	PlanModeControl(toolName string) PlanModeControlKind
 	// ResolveControlResponse interprets a frontend control response against the
 	// stored provider-native control request. It is pure: providers may normalize
-	// the response bytes and compute display/plan metadata, but the service owns
+	// the response bytes and prune the request into the minimal render context
+	// persisted alongside it (plus plan-mode metadata), but the service owns
 	// persistence, control-request deletion, option changes, and process I/O.
 	ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution
 	// PlanApprovalOptions declares the option changes to settle when a plan-mode-prompt
@@ -434,13 +435,14 @@ type acpProvider struct {
 	noopProvider
 	provider              leapmuxv1.AgentProvider
 	defaultPermissionMode string
-	// questionAnswersText renders the display summary for an OpenCode-protocol `question.asked`
-	// answer. Non-nil ONLY for the ACP providers that speak that question protocol (OpenCode,
-	// Kilo); nil for the rest, whose control answers fall through to the ACP permission summary.
+	// questionRequestContext prunes an OpenCode-protocol `question.asked` request to the minimal
+	// context persisted alongside the native answer (the question headers the frontend labels its
+	// values with). Non-nil ONLY for the ACP providers that speak that question protocol (OpenCode,
+	// Kilo); nil for the rest, whose control answers fall through to the ACP permission context.
 	// Set at registration (init) so the "who uses the OpenCode question shape" membership lives at
 	// one site (mirroring the frontend's registerOpenCodeProtocolProvider) rather than a
 	// provider-enum switch in ResolveControlResponse that would drift.
-	questionAnswersText func(requestPayload, responseContent []byte) string
+	questionRequestContext func(requestPayload []byte) json.RawMessage
 }
 
 func (acpProvider) IsInterrupt(content string) bool {
@@ -463,8 +465,8 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionAnswersText: opencodeQuestionAnswersText})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionAnswersText: opencodeQuestionAnswersText})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX})
 }

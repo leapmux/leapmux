@@ -76,7 +76,7 @@ describe('controlRequest guard for inactive agents', () => {
   }
 
   function makeRequest(requestId: string, agentId: string) {
-    return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' } }
+    return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' }, claimToken: `tok-${requestId}` }
   }
 
   it('should not add catch-up control request when agent is INACTIVE', () => {
@@ -934,7 +934,7 @@ describe('handleAgentInactive', () => {
     const tabStore = createTabStore()
     tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', agentStatus: AgentStatus.INACTIVE } as unknown as Parameters<typeof tabStore.addTab>[0])
     const controlStore = createControlStore()
-    controlStore.addRequest('agent-1', { requestId: 'r1', agentId: 'agent-1', payload: {} })
+    controlStore.addRequest('agent-1', { requestId: 'r1', agentId: 'agent-1', payload: {}, claimToken: 'tok-r1' })
     return { controlStore, agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), tabStore }
   }
 
@@ -1608,6 +1608,24 @@ describe('extracted handleAgentEvent arm handlers', () => {
         dispose()
       })
     })
+
+    it('threads the wire claim_token into the stored request so the answer can echo it back', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        const withToken = {
+          requestId: 'r1',
+          agentId: 'a1',
+          payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })),
+          claimToken: 'instance-token-1',
+        } as unknown as AgentControlRequest
+        handleControlRequest('a1', withToken, 'live', s, undefined)
+        // The per-instance token from AgentControlRequest.claim_token must reach the store, since the
+        // answer (handleControlResponse) echoes it back so the worker dedups the answer per instance.
+        expect(s.controlStore.getRequest('a1', 'r1')?.claimToken).toBe('instance-token-1')
+        dispose()
+      })
+    })
   })
 
   describe('handleAgentStatusChange', () => {
@@ -1641,7 +1659,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
-        s.controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { method: 'x' } })
+        s.controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { method: 'x' }, claimToken: 'tok-r1' })
         const sc = { agentId: 'a1', status: AgentStatus.INACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), () => {}, undefined)
         expect(s.controlStore.getRequests('a1')).toHaveLength(0)

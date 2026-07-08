@@ -175,8 +175,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Handle control responses (permission grant/deny) for agent prompts
-  const handleControlResponse = async (agentId: string, content: Uint8Array) => {
+  // Handle control responses (permission grant/deny) for agent prompts. answeredClaimToken is the
+  // per-instance token captured from the ACTIVE control request at the answer site (AgentEditorPanel /
+  // controlResponseHandling), threaded through so it is always the answered instance's token -- even
+  // once the request has left the store (a double-submit / answer-after-cancel race).
+  const handleControlResponse = async (agentId: string, content: Uint8Array, answeredClaimToken?: string) => {
     props.forceScrollToBottom?.()
     try {
       const workerId = getAgentWorkerId(agentId)
@@ -184,9 +187,19 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       const requestId = parsed?.response?.request_id
         ?? (parsed?.id != null ? String(parsed.id) : undefined)
 
+      // Echo the per-instance claimToken the worker minted for THIS request so its idempotency claim
+      // dedups per instance -- a reused request_id gets a fresh token (see AgentControlRequest.claim_token).
+      // Prefer the token threaded from the answer site (authoritative even after the request left the
+      // store); fall back to a store lookup for any caller that doesn't thread one, then to '' (which
+      // degrades to request_id-only dedup on the worker rather than dropping the answer).
+      const claimToken = answeredClaimToken
+        ?? (requestId ? props.controlStore.getRequest(agentId, requestId)?.claimToken : undefined)
+        ?? ''
+
       await workerRpc.sendControlResponse(workerId, {
         agentId,
         content,
+        claimToken,
       })
 
       if (requestId)

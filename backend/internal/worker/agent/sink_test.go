@@ -153,10 +153,10 @@ func (s *testSink) BroadcastStreamEnd(spanID string) {
 	s.streamEnds = append(s.streamEnds, spanID)
 }
 
-func (s *testSink) PersistControlRequest(string, []byte)   {}
-func (s *testSink) DeleteControlRequest(string)            {}
-func (s *testSink) BroadcastControlRequest(string, []byte) {}
-func (s *testSink) BroadcastControlCancel(string)          {}
+func (s *testSink) PersistControlRequest(string, []byte) string    { return "" }
+func (s *testSink) DeleteControlRequest(string)                    {}
+func (s *testSink) BroadcastControlRequest(string, []byte, string) {}
+func (s *testSink) BroadcastControlCancel(string)                  {}
 func (s *testSink) UpdateSessionID(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -438,9 +438,9 @@ func (noopSink) GetSpanType(string) string                                      
 func (noopSink) ReserveSpanColor(string, string) int32                             { return 0 }
 func (noopSink) BroadcastStreamChunk([]byte, string, string)                       {}
 func (noopSink) BroadcastStreamEnd(string)                                         {}
-func (noopSink) PersistControlRequest(string, []byte)                              {}
+func (noopSink) PersistControlRequest(string, []byte) string                       { return "" }
 func (noopSink) DeleteControlRequest(string)                                       {}
-func (noopSink) BroadcastControlRequest(string, []byte)                            {}
+func (noopSink) BroadcastControlRequest(string, []byte, string)                    {}
 func (noopSink) BroadcastControlCancel(string)                                     {}
 func (noopSink) UpdateSessionID(string)                                            {}
 func (noopSink) UpdatePermissionMode(string)                                       {}

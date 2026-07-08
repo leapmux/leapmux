@@ -85,11 +85,36 @@ END;
 
 -- Pending control requests
 CREATE TABLE control_requests (
-    agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    request_id TEXT NOT NULL,
-    payload    BLOB NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    request_id  TEXT NOT NULL,
+    payload     BLOB NOT NULL,
+    -- claim_token identifies this REQUEST INSTANCE. The worker mints a fresh token per
+    -- PersistControlRequest (id.Generate nanoid), broadcasts it in AgentControlRequest, and the frontend
+    -- echoes it in the answer so control_response_answers can dedup per instance rather than per
+    -- reused request_id. '' for a row stored before the token existed (degrades to id-only dedup).
+    claim_token TEXT NOT NULL DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, request_id)
+);
+
+-- Idempotency claims for control-response answers (#258). A control answer is deduped by an atomic
+-- INSERT here (ClaimControlResponseAnswer): the first answer for a (agent_id, request_id, claim_token)
+-- wins the primary key, and a duplicate -- an RPC retry, or a second window answering the SAME request
+-- instance (same echoed claim_token) -- loses. Being a durable row rather than in-memory state, the
+-- claim survives BOTH a subprocess restart and a worker-PROCESS restart, so a duplicate straddling
+-- either is still deduped instead of re-persisting a second answer row + scroll-rail dot.
+--
+-- claim_token is what makes the dedup INSTANCE-scoped: when a request_id is REUSED (a Codex/ACP
+-- JSON-RPC counter that reset across a plan-exec restart, or a Claude follow-up), the new instance
+-- carries a FRESH claim_token, so its genuine answer claims a distinct key and is never rejected as a
+-- duplicate of the prior instance's -- while a stale duplicate of the PRIOR instance (carrying the old
+-- token) still loses. No release-on-reissue is needed; rows are cleaned up in bulk with the agent via
+-- ON DELETE CASCADE. '' claim_token (a pre-token or lookup-miss answer) degrades to id-only dedup.
+CREATE TABLE control_response_answers (
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    request_id  TEXT NOT NULL,
+    claim_token TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (agent_id, request_id, claim_token)
 );
 
 -- Scheduled synthetic auto-continue messages
@@ -231,6 +256,7 @@ DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
 DROP TABLE IF EXISTS auto_continue_schedules;
+DROP TABLE IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_requests;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_update;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_insert;

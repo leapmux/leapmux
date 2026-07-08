@@ -1,6 +1,7 @@
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { registerACPProvider } from './acp/registerACPProvider'
+import { opencodeControlResponseDisplay } from './opencode/questionAnswers'
 
 interface OpenCodeProtocolOptions {
   provider: AgentProvider
@@ -27,6 +28,9 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     ControlContent: OpenCodeControlContent,
     ControlActions: OpenCodeControlActions,
     planValue: PLAN_PRIMARY_AGENT,
+    // OpenCode and Kilo share the question-answer derivation from this single registration site
+    // (mirroring the backend's questionRequestContext hook), so it can't drift per provider.
+    controlResponseDisplay: opencodeControlResponseDisplay,
     questionHandling: {
       isAskUserQuestion: payload => payload?.type === 'question.asked',
       extractAskUserQuestions: extractOpenCodeQuestions,

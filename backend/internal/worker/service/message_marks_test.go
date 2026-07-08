@@ -190,7 +190,7 @@ func TestSendAgentMessage_PersistsUserMessageMark(t *testing.T) {
 }
 
 // TestPersistAndBroadcast_ThreadsMarkType covers the shared persist path used by
-// the Claude transcript ingestion AND the control-response display row: a SpanInfo
+// the Claude transcript ingestion AND the structured control-response row: a SpanInfo
 // MarkType must land in both the persisted row and the live broadcast. This is the
 // coverage for the control-response CONTROL_RESPONSE mark, whose write site routes
 // through sink.PersistMessage -> persistAndBroadcast.
@@ -200,8 +200,8 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	require.NoError(t, sink.PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
-		[]byte(`{"isSynthetic":true,"controlResponse":{"action":"approved"}}`),
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		[]byte(`{"isSynthetic":true,"controlResponse":{"provider":"CLAUDE_CODE","requestId":"r","response":{"behavior":"allow"}}}`),
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE},
 	))
 
@@ -224,12 +224,10 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, broadcastMark, "broadcast must carry the mark")
 }
 
-// TestPersistSyntheticUserMessage_MarkScopedToControlResponse asserts the shared
-// synthetic-user-message writer marks ONLY the caller's requested type: the control-
-// response display row (every non-Claude provider's answer flows through here) is a
-// CONTROL_RESPONSE jump target, while a non-answer notice like the interrupt marker
-// stays UNSPECIFIED so it draws no rail dot.
-func TestPersistSyntheticUserMessage_MarkScopedToControlResponse(t *testing.T) {
+// TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked asserts the synthetic-user-message
+// writer -- now used ONLY for the interrupt notice, since genuine control answers persist through
+// persistControlResponseRow -- writes an UNSPECIFIED-mark row so the interrupt draws no rail dot.
+func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -237,50 +235,73 @@ func TestPersistSyntheticUserMessage_MarkScopedToControlResponse(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
-	// A control-response answer -> marked (draws a dot).
-	svc.persistSyntheticUserMessage("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "Task: Build", leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
-	// The interrupt notice -> unmarked (no dot).
-	svc.persistSyntheticUserMessage("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "[Request interrupted by user]", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+	svc.persistSyntheticUserMessage("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "[Request interrupted by user]")
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
-	require.Len(t, rows, 2)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "the control-response answer is marked")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[1].MarkType, "the interrupt notice stays unmarked")
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[0].MarkType, "the interrupt notice stays unmarked")
 }
 
-// TestPersistControlResponseAnswerRows_SelfDisplayedWithTextDoesNotDoubleRow pins the structural
-// "exactly one answer row" guarantee for the double-DISPLAY case -- the sibling of
-// classifyControlAnswerRow's no-double-MARK rule. A self-displayed answer that ALSO carries display
-// text, in the context-clearing ExitPlanMode case where the fallback row must carry the mark (the
-// transcript row is about to be wiped), must persist ONLY the mark-carrying {controlResponse}
-// fallback row -- never an extra {content} synthetic row duplicating the provider's own transcript
-// answer. No current provider is in this state (Claude self-displays but returns no display text);
-// this pins the guarantee structurally so a future one can't double-render. Without the classifier
-// gate this persists TWO rows.
-func TestPersistControlResponseAnswerRows_SelfDisplayedWithTextDoesNotDoubleRow(t *testing.T) {
+// TestPersistControlResponseAnswerRows_SingleStructuredRow pins the structural "exactly one answer
+// row" guarantee. A non-self-displayed provider gets exactly one marked structured row; a
+// self-displayed answer in the context-clearing ExitPlanMode case (its own tool_result is about to
+// be wiped) gets exactly one marked structured row too -- never a second echo; a self-displayed
+// answer NOT clearing context gets none (its ingested tool_result owns the mark).
+func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
 
-	var plan controlResponsePlan
-	plan.requestMeta.Loaded = true
-	plan.hasDecision = true
-	plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
-	plan.decision.ClearContext = true
-	plan.resolution.PlanModeControl = agent.PlanModeControlExit
-	plan.resolution.SelfDisplayed = true
-	plan.resolution.DisplayText = "Answered: proceed"
+	mk := func(selfDisplayed, clear bool) controlResponsePlan {
+		var plan controlResponsePlan
+		plan.requestMeta.RequestID = "req-1"
+		plan.requestMeta.Loaded = true
+		plan.hasDecision = true
+		plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
+		plan.decision.ClearContext = clear
+		plan.resolution.PlanModeControl = agent.PlanModeControlExit
+		plan.resolution.SelfDisplayed = selfDisplayed
+		plan.resolution.Content = []byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`)
+		return plan
+	}
 
-	svc.persistControlResponseAnswerRows("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, plan)
+	t.Run("non-self-displayed persists one marked structured row", func(t *testing.T) {
+		svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(false, false))
+		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	})
 
-	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
-	require.NoError(t, err)
-	require.Len(t, rows, 1, "a self-displayed answer must persist only the {controlResponse} fallback row, not a second {content} echo")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "the single persisted row carries the rail mark")
+	t.Run("self-displayed clear-context persists exactly one marked structured row", func(t *testing.T) {
+		svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, true))
+		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
+		require.NoError(t, err)
+		require.Len(t, rows, 1, "the wiped tool_result's mark moves to the single structured row, never a second echo")
+		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	})
+
+	t.Run("self-displayed without clear-context persists no row", func(t *testing.T) {
+		svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, false))
+		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
+		require.NoError(t, err)
+		require.Empty(t, rows, "the ingested tool_result owns the mark; no synthetic row")
+	})
 }
 
 func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
@@ -294,9 +315,10 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	}))
 	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-		AgentID:   "agent-1",
-		RequestID: "request-1",
-		Payload:   []byte(`{"type":"permission","id":"request-1"}`),
+		AgentID:    "agent-1",
+		RequestID:  "request-1",
+		Payload:    []byte(`{"type":"permission","id":"request-1"}`),
+		ClaimToken: "instance-token-1",
 	}))
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
@@ -314,4 +336,8 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 	require.NotNil(t, replayed, "catch-up replay must include pending control requests")
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, replayed.GetAgentProvider(),
 		"replayed control requests must preserve the provider-specific UI/response policy")
+	// The replay must carry the stored per-instance claim_token so a reconnecting window echoes it back
+	// on its answer and the worker's idempotency claim stays instance-scoped across the reconnect.
+	assert.Equal(t, "instance-token-1", replayed.GetClaimToken(),
+		"replayed control requests must carry the per-instance claim token the frontend echoes back")
 }

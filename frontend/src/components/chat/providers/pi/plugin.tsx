@@ -21,6 +21,7 @@ import {
   piAskAnswerValue,
   piCancelResponse,
   piConfirmResponse,
+  piControlResponseDisplay,
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
@@ -223,6 +224,9 @@ const piPlugin: Provider = {
     if (!parent)
       return { kind: 'unknown' }
 
+    // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
+    // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
+
     const type = pickString(parent, 'type')
 
     // User messages persisted by the Leapmux service layer are stored as
@@ -319,12 +323,12 @@ const piPlugin: Provider = {
     return null
   },
 
-  // Pi marks only user sends and control-response answers. A control answer is persisted in one of
-  // two Leapmux-neutral shapes -- `{content}` (a provider-resolved answer or a deny-with-feedback)
-  // or `{controlResponse}` (a bare approve/deny with no feedback) -- and Pi consumes
-  // extension_ui_response on stdin without echoing it. The shared neutral extractor handles BOTH
-  // shapes, so it is the whole preview.
+  // Pi marks only user sends and control-response answers. A user send is the Leapmux-neutral
+  // `{content}` shape the shared extractor handles; a control answer is the structured
+  // `{controlResponse}` row, which classifies as `control_response` and resolves through
+  // controlResponseDisplay (chatMarkPreview), not here.
   previewText: defaultMarkPreview,
+  controlResponseDisplay: piControlResponseDisplay,
 
   buildInterruptContent(): string | null {
     return JSON.stringify({ type: 'abort' })
