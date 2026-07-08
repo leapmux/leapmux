@@ -60,6 +60,32 @@ describe('createRafCoalescer', () => {
     expect(seen).toEqual(['second'])
   })
 
+  it('is a no-op on flush when nothing is pending', () => {
+    const seen: string[] = []
+    const coalescer = createRafCoalescer<string>(value => seen.push(value))
+
+    coalescer.flush()
+
+    expect(seen).toEqual([])
+    expect(cancelAnimationFrame).not.toHaveBeenCalled()
+  })
+
+  it('schedules a fresh frame when pushing after a flush', () => {
+    const seen: string[] = []
+    const coalescer = createRafCoalescer<string>(value => seen.push(value))
+
+    coalescer.push('first')
+    coalescer.flush()
+    coalescer.push('second')
+
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual(['first'])
+
+    runFrame(2)
+
+    expect(seen).toEqual(['first', 'second'])
+  })
+
   it('aborts the pending frame without dispatching stale work', () => {
     const seen: string[] = []
     const coalescer = createRafCoalescer<string>(value => seen.push(value))

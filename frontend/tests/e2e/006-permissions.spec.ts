@@ -16,8 +16,8 @@ const WORKSPACE_URL_RE = /\/workspace\//
  * org slug, nonexistent workspace ID, workspace under wrong org) are unit-
  * tested at the context layer:
  *
- * - tests/unit/components/AuthGuard.test.tsx — requireAdmin → NotFoundPage
- * - tests/unit/context/OrgContext.test.tsx — notFound when slug missing
+ * - src/components/common/AuthGuard.test.tsx — requireAdmin → NotFoundPage
+ * - src/context/OrgContext.test.tsx — notFound when slug missing
  *
  * What only a real session-cookie + share-mode integration can verify is that
  * a non-owner who has been granted access via SHARE_MODE_MEMBERS can open the

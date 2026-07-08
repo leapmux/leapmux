@@ -5,7 +5,7 @@ import { insert } from 'solid-js/web'
 import { describe, expect, it } from 'vitest'
 import {
   triggerResizeObserversSync,
-} from '../../../tests/unit/helpers/resizeObserverStub'
+} from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
 import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
 

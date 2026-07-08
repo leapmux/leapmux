@@ -1,4 +1,4 @@
-import type { SaveActionsSpies } from '../../../tests/unit/helpers/saveActionsMocks'
+import type { SaveActionsSpies } from '~/test-support/saveActionsMocks'
 import { render, screen, waitFor, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -7,7 +7,7 @@ import {
   preferencesMock,
   resetSaveActionsSpies,
   toastMock,
-} from '../../../tests/unit/helpers/saveActionsMocks'
+} from '~/test-support/saveActionsMocks'
 
 // Tree-specific assertions: DirectoryTree wires FileActionsMenu in with
 // the `tree` test-id prefix and only shows the file-only items for non-

@@ -4,7 +4,7 @@ import { assistantBubbles, firstAssistantBubble, waitForAgentIdle } from './help
 /**
  * Smoke test for end-to-end chat rendering: user input → real LLM response →
  * rendered bubbles. The bubble component itself is exhaustively unit-tested
- * in `tests/unit/components/MessageBubble.test.tsx` (over 30 cases covering
+ * in `src/components/chat/MessageBubble.test.tsx` (over 30 cases covering
  * thinking, todos, tools, attachments, edits, etc.). This e2e exercises the
  * remaining integration: the editor send path, the WebSocket/RPC delivery
  * to a real Claude agent, the streaming-to-rendered transition, and the

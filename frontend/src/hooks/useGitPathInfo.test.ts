@@ -1,7 +1,7 @@
 import type { GetGitInfoResponse } from '~/generated/leapmux/v1/git_pb'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { deferred, flush } from '../../tests/unit/helpers/async'
+import { deferred, flush } from '~/test-support/async'
 
 const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string, orgId: string }) => Promise<GetGitInfoResponse>>()
 

@@ -1,8 +1,8 @@
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach } from 'vitest'
 import { setCRDTBridge } from './src/lib/crdt'
-import { installTestBridge } from './tests/unit/helpers/crdtBridge'
-import { installPointerEventShim } from './tests/unit/helpers/pointer'
+import { installTestBridge } from './src/test-support/crdtBridge'
+import { installPointerEventShim } from './src/test-support/pointer'
 import '@testing-library/jest-dom/vitest'
 
 // Install a default CRDT bridge before every test so the projection-

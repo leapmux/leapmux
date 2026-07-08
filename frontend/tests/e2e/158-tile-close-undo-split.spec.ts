@@ -14,7 +14,7 @@ import { tabbarAgentLabels } from './helpers/ui'
  * live child" and emits an inverse-split batch: tombstone the closing
  * tile + sibling, migrate sibling tabs to the parent, flip the
  * parent's NodeKind back to LEAF in place. The unit tests in
- * `tests/unit/stores/layout.store.crdt.test.ts` pin the op shape;
+ * `src/stores/layout.store.crdt.test.ts` pin the op shape;
  * this spec exercises the user-visible behaviour through the actual
  * Tile close button so the full chain (UI handler → emitCloseTile →
  * hub broadcast → reconciler → render) is covered.

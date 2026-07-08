@@ -64,6 +64,7 @@ plugin behind an interface method.
 
 - Backend: `testify/assert`, `testify/require`.
 - Frontend: `vitest`. `describe` names must be lowercase.
+- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. Do **not** add a second test file for a module under `tests/unit/` — that mirror has been retired (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`). Only Playwright **E2E** specs live outside `src/`, under `tests/e2e/`.
 - E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
 - Unused imports cause lint failures (strict).
 - Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.

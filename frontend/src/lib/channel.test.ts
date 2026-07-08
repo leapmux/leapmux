@@ -12,7 +12,7 @@ import {
   InnerStreamMessageSchema,
   UserIdClaimResponseSchema,
 } from '~/generated/leapmux/v1/channel_pb'
-import { ChannelManager } from './channel'
+import { ChannelError, ChannelManager } from './channel'
 
 // ---- Test helpers ----
 
@@ -407,6 +407,19 @@ describe('channelManager', () => {
       await mgr.closeChannel(channelId)
       await mgr.closeChannel(channelId) // Should not throw.
     })
+
+    it('should reject the pending openChannel when closeChannel is called during the claim exchange', async () => {
+      const openPromise = mgr.openChannel('w1')
+      await flushMicrotasks()
+      mockWs.simulateOpen()
+      await flushMicrotasks()
+      // The UserIdClaim is now pending (the worker has not accepted it).
+      // Closing the channel mid-claim must reject openChannel, not hang.
+      const channelId = decodeWireMessage(mockWs.sent.at(-1)!).channelId
+      await mgr.closeChannel(channelId)
+      await expect(openPromise).rejects.toThrow(ChannelError)
+      await expect(openPromise).rejects.toThrow('channel closed')
+    })
   })
 
   describe('call', () => {
@@ -663,6 +676,19 @@ describe('channelManager', () => {
       expect(errorFn).toHaveBeenCalledOnce()
       expect(errorFn.mock.calls[0][0].message).toBe('channel closed by server')
     })
+
+    it('should reject the pending openChannel when the server sends CLOSE during the claim exchange', async () => {
+      const openPromise = mgr.openChannel('w1')
+      await flushMicrotasks()
+      mockWs.simulateOpen()
+      await flushMicrotasks()
+      // The UserIdClaim is pending. A CLOSE sentinel from the server before
+      // the claim is accepted must reject openChannel, not hang forever.
+      const channelId = decodeWireMessage(mockWs.sent.at(-1)!).channelId
+      mockWs.simulateMessage(encodeCloseMessage(channelId))
+      await expect(openPromise).rejects.toThrow(ChannelError)
+      await expect(openPromise).rejects.toThrow('channel closed by server')
+    })
   })
 
   describe('decrypt failure', () => {
@@ -739,6 +765,18 @@ describe('channelManager', () => {
 
       expect(mgr.isOpen(ch1)).toBe(false)
       expect(mgr.isOpen(ch2)).toBe(false)
+    })
+
+    it('should reject the pending openChannel when the WebSocket closes during the claim exchange', async () => {
+      const openPromise = mgr.openChannel('w1')
+      await flushMicrotasks()
+      mockWs.simulateOpen()
+      await flushMicrotasks()
+      // The UserIdClaim is pending. A WebSocket close before the worker
+      // accepts the claim must reject openChannel, not hang forever.
+      mockWs.simulateClose()
+      await expect(openPromise).rejects.toThrow(ChannelError)
+      await expect(openPromise).rejects.toThrow('channel disconnected')
     })
   })
 
@@ -1310,5 +1348,194 @@ describe('channelManager', () => {
         expect(mgr.hasOpenChannel('w1')).toBe(false)
       })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getOrOpenChannel concurrency / deduplication
+//
+// These tests exercise *concurrent* opens, which the main suite's real-crypto
+// mock handshake cannot model (mockHandshake2 returns the LAST registered
+// session, so two simultaneous opens would clobber each other's crypto state).
+// They use a self-contained identity-cipher setup so multiple channels can be
+// opened at once without real crypto.
+// ---------------------------------------------------------------------------
+
+/** Mock WebSocket that auto-opens on the next microtask (simulates TCP + upgrade). */
+class AutoOpenMockWebSocket extends EventTarget {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+
+  readyState = AutoOpenMockWebSocket.CONNECTING
+  binaryType = 'arraybuffer'
+
+  constructor() {
+    super()
+    queueMicrotask(() => {
+      if (this.readyState === AutoOpenMockWebSocket.CONNECTING) {
+        this.readyState = AutoOpenMockWebSocket.OPEN
+        this.dispatchEvent(new Event('open'))
+      }
+    })
+  }
+
+  /** Fire the 'close' event and set readyState to CLOSED. */
+  simulateClose() {
+    this.readyState = AutoOpenMockWebSocket.CLOSED
+    this.dispatchEvent(new Event('close'))
+  }
+
+  close() {
+    this.readyState = AutoOpenMockWebSocket.CLOSED
+  }
+
+  send(_data: unknown) {
+    // no-op in tests
+  }
+}
+
+/** Identity-cipher Noise session — encrypt/decrypt are pass-through, no real crypto. */
+function makeMockSession(): Session {
+  return {
+    send: {
+      encrypt: (pt: Uint8Array) => pt,
+      decrypt: (ct: Uint8Array) => ct,
+      needsRekey: () => false,
+    },
+    receive: {
+      encrypt: (pt: Uint8Array) => pt,
+      decrypt: (ct: Uint8Array) => ct,
+      needsRekey: () => false,
+    },
+  } as Session
+}
+
+function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTransport {
+  return {
+    getWorkerHandshakeParams: vi.fn().mockResolvedValue({
+      keys: {
+        x25519PublicKey: new Uint8Array(32),
+        mlkemPublicKey: new Uint8Array(0),
+        slhdsaPublicKey: new Uint8Array(0),
+      } satisfies WorkerKeyBundle,
+      encryptionMode: EncryptionMode.CLASSIC,
+    }),
+    openChannel: vi.fn().mockResolvedValue({
+      channelId: 'ch-1',
+      handshakePayload: new Uint8Array(48),
+    }),
+    closeChannel: vi.fn().mockResolvedValue(undefined),
+    createWebSocket: () => onCreateWs() as unknown as WebSocket,
+    confirmKeyPin: vi.fn().mockResolvedValue('accept' as const),
+    getUserId: () => 'user-1',
+  }
+}
+
+/**
+ * Simulate a successful UserIdClaimResponse arriving on the WebSocket.
+ * Since mock sessions use identity encrypt/decrypt, we can build the
+ * wire message directly without real crypto.
+ */
+function simulateClaimAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
+  const claimResp = create(UserIdClaimResponseSchema, { success: true })
+  const envelope = create(InnerMessageSchema, {
+    kind: { case: 'userIdClaimResponse', value: claimResp },
+  })
+  const plaintext = toBinary(InnerMessageSchema, envelope)
+
+  // Build a ChannelMessage with the plaintext as ciphertext (identity cipher).
+  const channelMsg = create(ChannelMessageSchema, {
+    channelId,
+    ciphertext: plaintext,
+  })
+  const msgBytes = toBinary(ChannelMessageSchema, channelMsg)
+
+  // Wire format: 4-byte big-endian length prefix + protobuf bytes.
+  const frame = new Uint8Array(4 + msgBytes.length)
+  new DataView(frame.buffer).setUint32(0, msgBytes.length)
+  frame.set(msgBytes, 4)
+
+  ws.dispatchEvent(new MessageEvent('message', { data: frame.buffer }))
+}
+
+describe('channelManager getOrOpenChannel deduplication', () => {
+  it('should return the same channel for concurrent calls to the same worker', async () => {
+    let ws: AutoOpenMockWebSocket | null = null
+    let channelCounter = 0
+    const transport = makeMockTransport(() => {
+      ws = new AutoOpenMockWebSocket()
+      return ws
+    })
+    // Each openChannel call gets a unique channel ID so we can detect duplicates.
+    transport.openChannel = vi.fn().mockImplementation(async () => ({
+      channelId: `ch-${++channelCounter}`,
+      handshakePayload: new Uint8Array(48),
+    }))
+
+    const cm = new ChannelManager(transport, {
+      classicHandshake1: (_rs: Uint8Array) => ({
+        message1: new Uint8Array(48),
+        handshakeState: {} as any,
+      }),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    })
+
+    // Launch two concurrent getOrOpenChannel calls for the same worker.
+    const p1 = cm.getOrOpenChannel('worker-1')
+    const p2 = cm.getOrOpenChannel('worker-1')
+
+    // Let the handshake + WebSocket open progress.
+    await new Promise(r => setTimeout(r, 10))
+
+    // Simulate claim acceptance for the single channel that was opened.
+    simulateClaimAcceptOnWs(ws!, 'ch-1')
+
+    const [ch1, ch2] = await Promise.all([p1, p2])
+
+    // Both should resolve to the same channel — only one openChannel call.
+    expect(ch1).toBe(ch2)
+    expect(transport.openChannel).toHaveBeenCalledTimes(1)
+
+    cm.closeAll()
+  })
+
+  it('should open separate channels for different workers', async () => {
+    let ws: AutoOpenMockWebSocket | null = null
+    let channelCounter = 0
+    const transport = makeMockTransport(() => {
+      ws = new AutoOpenMockWebSocket()
+      return ws
+    })
+    transport.openChannel = vi.fn().mockImplementation(async () => ({
+      channelId: `ch-${++channelCounter}`,
+      handshakePayload: new Uint8Array(48),
+    }))
+
+    const cm = new ChannelManager(transport, {
+      classicHandshake1: (_rs: Uint8Array) => ({
+        message1: new Uint8Array(48),
+        handshakeState: {} as any,
+      }),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    })
+
+    // Launch concurrent getOrOpenChannel calls for different workers.
+    const p1 = cm.getOrOpenChannel('worker-1')
+    const p2 = cm.getOrOpenChannel('worker-2')
+
+    await new Promise(r => setTimeout(r, 10))
+
+    // Accept claims for both channels.
+    simulateClaimAcceptOnWs(ws!, 'ch-1')
+    simulateClaimAcceptOnWs(ws!, 'ch-2')
+
+    const [ch1, ch2] = await Promise.all([p1, p2])
+
+    expect(ch1).not.toBe(ch2)
+    expect(transport.openChannel).toHaveBeenCalledTimes(2)
+
+    cm.closeAll()
   })
 })

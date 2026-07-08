@@ -8,7 +8,7 @@ const LOGIN_URL_RE = /\/login/
  * The "Sign in disabled while fields are empty" UI state and the absence of a
  * `leapmux_token` localStorage entry are unit-tested in
  * `src/components/common/LoginPage.test.tsx`. The redirect-when-unauth and
- * AuthGuard behavior are unit-tested in `tests/unit/components/AuthGuard.test.tsx`.
+ * AuthGuard behavior are unit-tested in `src/components/common/AuthGuard.test.tsx`.
  *
  * What only a real browser session can verify is that the auth cookie is
  * HttpOnly and survives `localStorage.clear()` + reload — proving the session
