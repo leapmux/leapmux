@@ -64,6 +64,19 @@ enum MessageSource {
   MESSAGE_SOURCE_LEAPMUX = 3;
 }
 
+// MarkType classifies a message as a notable jump target for the chat scroll
+// rail (teal dots the user clicks to jump). Set at write time by the worker so
+// the rail can enumerate marked seqs without decompressing message content.
+// Deliberately NOT user-scoped: future values may mark non-user messages worth
+// jumping to (e.g. errors, turn dividers).
+enum MarkType {
+  MARK_TYPE_UNSPECIFIED = 0;      // Not a jump mark.
+  MARK_TYPE_USER_MESSAGE = 1;     // A message the user typed and sent.
+  MARK_TYPE_CONTROL_RESPONSE = 2; // The user's answer to a control request
+                                  // (AskUserQuestion answers, ExitPlanMode
+                                  // approval, permission decisions).
+}
+
 // ContentCompression identifies the compression algorithm used for message content.
 enum ContentCompression {
   CONTENT_COMPRESSION_UNSPECIFIED = 0;
@@ -254,6 +267,9 @@ message AgentChatMessage {
   // Lets every consumer recognize a move EXPLICITLY instead of inferring it (the CLI
   // follower has no id memory; the frontend no longer has to guess from a seq change).
   int64 previous_seq = 15;
+  // Scroll-rail jump-mark classifier, set at write time. MARK_TYPE_UNSPECIFIED for
+  // ordinary rows. Carried on persisted rows, ListAgentMessages pages, and replays.
+  MarkType mark_type = 16;
 }
 
 message AgentStreamChunk {
@@ -377,12 +393,56 @@ message ListAgentMessagesResponse {
   // the `--follow` CLI resolve a resume point WITHOUT inferring it from the page's
   // content: when page 1 comes back empty it resumes after latest_seq instead of seq 0,
   // so a transient empty page on a populated agent can no longer collapse to the
-  // "drain the entire history from OLDEST" path. Sentinel (shared with
-  // CatchUpStart/Complete.latest_seq and AgentMessageDeleted.new_latest_seq): -1 = the
-  // worker couldn't determine it (a DB error) and the consumer skips reconciliation /
-  // falls back to its loaded cursor; 0 = the agent genuinely has no messages; >0 = the
-  // authoritative MAX(seq).
-  int64 latest_seq = 5;
+  // "drain the entire history from OLDEST" path. Explicit presence (the shared convention
+  // with CatchUpStart/Complete.latest_seq and AgentMessageDeleted.new_latest_seq): UNSET =
+  // the worker couldn't determine it (a DB error) and the consumer skips reconciliation /
+  // falls back to its loaded cursor; present 0 = the agent genuinely has no messages;
+  // present >0 = the authoritative MAX(seq).
+  optional int64 latest_seq = 5;
+}
+
+// GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
+// chat scroll rail to preview a marked message on dot-hover when that message
+// is outside the loaded window (the rail spans the whole conversation, so the
+// hovered mark is usually not loaded). The seq is agent-scoped; the worker
+// verifies the caller may access the agent's workspace before reading, and the
+// lookup is scoped to agent_id, so no cross-agent/cross-workspace read is
+// possible.
+message GetAgentMessageRequest {
+  string agent_id = 1;
+  int64 seq = 2;
+}
+
+message GetAgentMessageResponse {
+  // The message at the requested seq, or unset when the agent has no message
+  // with that seq (deleted/reseq'd since the mark was recorded, or a closed
+  // agent). The client treats an unset message as "no preview available".
+  AgentChatMessage message = 1;
+}
+
+// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
+// targets) plus the agent's whole-history seq range. Drives the chat scroll
+// rail: dot positions (marked seqs) and the seq-space track extent
+// (min_seq..max_seq). The frontend keeps the set updated incrementally from
+// live events; this seeds it and heals it after a reconnect.
+message ListMessageMarksRequest {
+  string agent_id = 1;
+}
+
+message MessageMark {
+  int64 seq = 1;
+  MarkType type = 2;
+}
+
+message ListMessageMarksResponse {
+  repeated MessageMark marks = 1; // Ascending by seq. May be empty.
+  // Lowest / highest live message seq. Explicit presence, the shared convention with
+  // ListAgentMessagesResponse.latest_seq: UNSET = the worker couldn't determine the
+  // range (a DB error; the client keeps its current value), present 0 = the agent
+  // genuinely has no messages, present >0 = the authoritative MIN/MAX(seq). Both are
+  // set or unset together (they come from one seq-range query).
+  optional int64 min_seq = 2;
+  optional int64 max_seq = 3;
 }
 
 // TodoItem is the provider-neutral to-do row used by the sidebar list and
@@ -455,11 +515,11 @@ message AgentMessageDeleted {
   // the recorded live tail, a windowed client sets its live-tail seq to exactly this
   // value instead of guessing seq - 1 -- so a delete of an unloaded beyond-window tail
   // can't strand the recorded tail above the true server max, and the next forward-fill
-  // resolves against the real tail rather than a conservative under-estimate. Sentinel
-  // (shared with latest_seq): -1 = the worker couldn't determine it (a DB error) and
-  // the client leaves its recorded tail unchanged; 0 = no messages remain; >0 = the
-  // authoritative MAX(seq).
-  int64 new_latest_seq = 4;
+  // resolves against the real tail rather than a conservative under-estimate. Explicit
+  // presence (shared with latest_seq): UNSET = the worker couldn't determine it (a DB
+  // error) and the client leaves its recorded tail unchanged; present 0 = no messages
+  // remain; present >0 = the authoritative MAX(seq).
+  optional int64 new_latest_seq = 4;
 }
 
 message DeleteAgentMessageRequest {

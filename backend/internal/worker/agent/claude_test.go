@@ -457,6 +457,8 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 	}, "expected both spans to be opened")
 
 	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, []string{sink.OpenSpans()[0].SpanID, sink.OpenSpans()[1].SpanID})
+	assert.Equal(t, "Grep", sink.GetSpanType("toolu_A"))
+	assert.Equal(t, "Bash", sink.GetSpanType("toolu_B"))
 
 	// Single user message with two tool_result blocks.
 	toolResultMsg := `{"type":"user","message":{"role":"user","content":[` +
@@ -470,6 +472,54 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 	}, "expected both spans to be closed")
 
 	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.ClosedSpans())
+}
+
+func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "parallel-control-response-test",
+		Options:    map[string]string{OptionIDModel: "test"},
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls"}},` +
+		`{"type":"tool_use","id":"toolu_B","name":"AskUserQuestion","input":{"question":"Proceed?"}}` +
+		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return len(sink.OpenSpans()) >= 2
+	}, "expected both spans to be opened")
+
+	toolResultMsg := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"toolu_A","content":"file list"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_B","content":"Yes, continue."}` +
+		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
+	messageCountBeforeResult := len(sink.Messages())
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		msgs := sink.Messages()
+		return len(msgs) > messageCountBeforeResult && msgs[len(msgs)-1].SpanID == "toolu_A"
+	}, "expected persisted user envelope")
+
+	msgs := sink.Messages()
+	toolResult := msgs[len(msgs)-1]
+	assert.Equal(t, "toolu_A", toolResult.SpanID, "span metadata still anchors the row on the first result")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, toolResult.MarkType,
+		"a later self-displaying control result in the same user envelope must still draw a rail dot")
 }
 
 // TestHelperProcessEarlyExit is a test helper that writes an error to stderr

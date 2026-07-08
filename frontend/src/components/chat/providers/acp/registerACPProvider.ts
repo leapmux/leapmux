@@ -4,6 +4,7 @@ import type { AttachmentCapabilities, Provider } from '../registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { ACPControlActions, ACPControlContent } from '../../controls/ACPControlRequest'
+import { defaultMarkPreview } from '../../markPreviewShared'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { acpBuildControlResponse, acpExtractQuotableText, buildACPInterruptContent, classifyACPMessage } from './classification'
@@ -138,6 +139,12 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     renderMessage: renderACPMessage,
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
+    // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and
+    // control-response answers. A control answer is persisted in one of two Leapmux-neutral shapes --
+    // `{content}` (a provider-resolved answer or a deny-with-feedback) or `{controlResponse}` (a bare
+    // approve/deny with no feedback) -- and ACP never echoes the answer as a message. The shared
+    // neutral extractor handles BOTH shapes, so it is the whole preview.
+    previewText: defaultMarkPreview,
     buildInterruptContent: buildACPInterruptContent,
     buildControlResponse: acpBuildControlResponse,
 

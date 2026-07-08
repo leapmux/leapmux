@@ -6,7 +6,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { batch, createEffect, createSignal, For } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
-import { rowSkeletonClosing } from './ChatView.css'
+import { messageListRailActive, rowSkeletonClosing } from './ChatView.css'
 
 type HiddenPremeasureOnMeasure = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean
 
@@ -746,5 +746,79 @@ describe('chat view virtualized visible slice', () => {
     finally {
       spy.mockRestore()
     }
+  })
+})
+
+describe('chat view native scrollbar hiding', () => {
+  // The seq-space rail replaces the native scrollbar, but ONLY once it is active AND can
+  // draw a thumb, or when there is no scrollable local-only content that needs the native
+  // scrollbar fallback. Otherwise scrollable content would be left with no scrollbar at all.
+  const railBase = {
+    loaded: true,
+    minSeq: 1n,
+    maxSeq: 10n,
+    marks: [],
+    windowFirstSeq: 1n,
+    windowLastSeq: 5n,
+  }
+  const scroller = (container: HTMLElement) => container.querySelector('[data-chat-scroll-container]') as HTMLElement
+
+  it('hides the native scrollbar when the rail is loaded AND has a server row to anchor', () => {
+    const { container } = render(() => (
+      <ChatView messages={[message('m0', 1)]} streamingText="" rail={railBase} />
+    ))
+    expect(scroller(container).className).toContain(messageListRailActive)
+  })
+
+  it('hides the native scrollbar for an empty seeded rail because there is no native overflow to preserve', () => {
+    const { container } = render(() => (
+      <ChatView messages={[]} streamingText="" rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
+    ))
+    expect(scroller(container).className).toContain(messageListRailActive)
+  })
+
+  it('keeps the native scrollbar while the rail is unseeded (marks RPC failed / slow)', () => {
+    const { container } = render(() => (
+      <ChatView messages={[message('m0', 1)]} streamingText="" rail={{ ...railBase, loaded: false }} />
+    ))
+    expect(scroller(container).className).not.toContain(messageListRailActive)
+  })
+
+  it('keeps the native scrollbar for an all-optimistic-local window (no server seq to anchor)', () => {
+    // A window of only optimistic locals (seq 0n) has no server row for the rail to anchor a thumb
+    // to, so the rail hides itself and the native scrollbar must stay or overflowing local content
+    // would have no scrollbar at all. windowFirst/LastSeq are undefined to match (no server seq).
+    const { container } = render(() => (
+      <ChatView messages={[message('m0', 0)]} streamingText="" rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
+    ))
+    expect(scroller(container).className).not.toContain(messageListRailActive)
+  })
+
+  it('keeps the native scrollbar when unsafe seq geometry prevents the rail from rendering', () => {
+    const unsafe = BigInt(Number.MAX_SAFE_INTEGER)
+    const unsafeMessage = create(AgentChatMessageSchema, {
+      id: 'unsafe',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode('unsafe seq'),
+      seq: unsafe,
+      createdAt: '2026-06-28T00:00:00.000Z',
+      agentProvider: AgentProvider.CODEX,
+    })
+
+    const { container } = render(() => (
+      <ChatView
+        messages={[unsafeMessage]}
+        streamingText=""
+        rail={{
+          ...railBase,
+          minSeq: unsafe,
+          maxSeq: unsafe,
+          windowFirstSeq: unsafe,
+          windowLastSeq: unsafe,
+        }}
+      />
+    ))
+
+    expect(scroller(container).className).not.toContain(messageListRailActive)
   })
 })

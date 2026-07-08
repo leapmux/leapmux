@@ -34,11 +34,22 @@ export function buildAllowResponse(
 }
 
 /**
- * Builds a control_response JSON object that denies a tool use.
+ * The placeholder reject message emitted when the user declines a control request WITHOUT
+ * typing a reason. Must stay byte-identical to the backend's `ControlRejectedByUserMessage`
+ * (backend/internal/worker/agent/factory.go), whose `NormalizeRejectionMessage` collapses it
+ * to "" so a bare deny renders "Rejected" rather than leaking this placeholder as if it were
+ * typed feedback. Kept as ONE frontend constant so the producer sites (buildDenyResponse's
+ * default and any caller wanting a bare deny) can't drift from each other.
+ */
+export const CONTROL_REJECTED_BY_USER_MESSAGE = 'Rejected by user.'
+
+/**
+ * Builds a control_response JSON object that denies a tool use. Omit `message` for a bare
+ * deny with no typed reason (it falls back to CONTROL_REJECTED_BY_USER_MESSAGE).
  */
 export function buildDenyResponse(
   requestId: string,
-  message: string,
+  message?: string,
 ): Record<string, unknown> {
   return {
     type: 'control_response',
@@ -50,7 +61,7 @@ export function buildDenyResponse(
         // Ensure the message is never empty — Claude Code SDK converts deny
         // responses into tool_result with is_error=true, and the Anthropic API
         // rejects empty content when is_error is set.
-        message: message || 'Rejected by user.',
+        message: message || CONTROL_REJECTED_BY_USER_MESSAGE,
       },
     },
   }

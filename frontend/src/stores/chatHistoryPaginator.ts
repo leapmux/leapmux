@@ -12,6 +12,7 @@ export const MESSAGE_PAGE_SIZE = 50
  * genuinely-vanished live seq stops the loop instead of spinning.
  */
 const MAX_FORWARD_FILL_ATTEMPTS = 4
+const MAX_INT64_SEQ = 9223372036854775807n
 
 /**
  * Abort `controller` when the WatchEvents `watchSignal` fires, so a reconcile-driven
@@ -279,10 +280,19 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     }
     finally {
       cleanupWatchSignal()
-      catchingUp.delete(agentId)
-      // Release the slot, but only if a superseding loop hasn't replaced the controller.
-      if (deps.catchUpAbort.get(agentId) === controller)
+      // Release the single-flight slot AND the controller together, but only if a superseding
+      // loop hasn't already replaced this controller. On an abort-driven supersession the abort
+      // listener above frees the `catchingUp` slot INSTANTLY (so a reconcile re-kick fired in that
+      // window isn't dropped), and a newer loop may already own the slot by the time this aborted
+      // body resumes into the finally. Deleting `catchingUp` unconditionally here would clobber
+      // that newer loop's slot -- the next reconcile tick then passes the `catchingUp.has` guard,
+      // starts a THIRD loop, and aborts the newer loop's in-flight page: exactly the abort-and-
+      // re-issue RPC thrash the single-flight guard exists to prevent. Gating the slot release on
+      // still owning the controller keeps the two in lock-step.
+      if (deps.catchUpAbort.get(agentId) === controller) {
+        catchingUp.delete(agentId)
         deps.catchUpAbort.delete(agentId)
+      }
     }
   }
 
@@ -664,6 +674,55 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     })
   }
 
+  /**
+   * Replace the window with a page CENTERED on `seq` -- the scroll-rail's seek/jump
+   * target. Two disjoint anchored fetches run in parallel: BEFORE cursor=seq+1n (rows
+   * with seq <= seq, INCLUDING the target when it exists -- the bound is exclusive;
+   * LATEST is used instead at int64 max because seq+1 is not a valid backend cursor) and
+   * AFTER cursor=seq (rows with seq > seq). Both come back ascending, so their
+   * concatenation is one contiguous ascending window with the target ~mid-window and
+   * ~50 rows of padding on each side (under the 150 cap), so the buffer filler's first
+   * pass fetches BACKGROUND pages rather than tripping the hard-edge stall indicators.
+   *
+   * A deleted target seq lands on the nearest survivors (BEFORE returns the highest
+   * seq <= target); the scroll hook's nearest-row-by-seq landing does the rest. When
+   * `seq` falls into a deleted prefix/suffix, one page is empty and the window snaps to
+   * the surviving oldest/newest rows. Both empty means the history genuinely vanished
+   * (mirrors jumpToLatestMessages' authoritative-empty reset).
+   */
+  async function jumpToMessagesAroundSeq(workerId: string, agentId: string, seq: bigint): Promise<void> {
+    await deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
+      // Snapshot the recorded live tail before the swap: a message broadcast DURING the
+      // fetch raises it past this, and hasMoreNewer/resetToEmptyIfStale must respect that.
+      const liveSeqAtEntry = deps.liveTail.get(agentId)
+      const beforeRequest = seq >= MAX_INT64_SEQ
+        ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_SIZE }
+        : { agentId, anchor: MessagePageAnchor.BEFORE, cursorSeq: seq + 1n, limit: MESSAGE_PAGE_SIZE }
+      const [before, after] = await Promise.all([
+        listAgentMessages(workerId, beforeRequest),
+        listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_SIZE }),
+      ])
+      if (signal.aborted)
+        return
+      const rows = [...before.messages, ...after.messages]
+      if (rows.length === 0) {
+        // No rows on either side: the history around (and beyond) the target is gone.
+        // Empty the window and clear a stale recorded tail (skipped if a mid-fetch
+        // broadcast raised a genuinely-reachable seq -- forward-fill will pull it).
+        deps.applyMessages(agentId, [], false)
+        deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
+        return
+      }
+      // One window swap. applyMessages sets hasMoreOlder from before.hasMore (more
+      // history exists below the loaded page) and defaults hasMoreNewer=false.
+      deps.applyMessages(agentId, rows, before.hasMore)
+      // Override hasMoreNewer: after.hasMore covers server rows past the page; the
+      // !caughtUpToLiveTail term (mirroring loadNewerPage) covers a live message that
+      // bumped the recorded tail during the fetch, so the window can't claim the tail.
+      setState('hasMoreNewer', agentId, after.hasMore || !deps.caughtUpToLiveTail(agentId))
+    })
+  }
+
   return {
     loadInitialMessages,
     loadOlderMessages,
@@ -673,5 +732,6 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     resumeDeferredTailFill,
     jumpToLatestMessages,
     jumpToOldestMessages,
+    jumpToMessagesAroundSeq,
   }
 }

@@ -90,14 +90,25 @@ export function userMessageSignature(message: AgentChatMessage): string | null {
 }
 
 /**
+ * True when `seq` is the optimistic-local sentinel: a freshly-sent bubble is assigned
+ * seq 0n and pinned to the tail until its server echo arrives, and server-persisted rows
+ * always carry seq > 0n -- so a 0n seq unambiguously marks an unassigned local. The
+ * seq-level companion to {@link isOptimisticLocal} for sites that hold only a seq (a marks
+ * entry, a rail lookup) rather than the whole message, so the "pinned local" rule has one
+ * named home instead of a bare `seq === 0n` scattered across the slices.
+ */
+export function isOptimisticLocalSeq(seq: bigint): boolean {
+  return seq === 0n
+}
+
+/**
  * True for an optimistic local message: a freshly-sent bubble assigned seq 0n
  * and pinned to the tail until its server echo arrives. The seq-0n marker is the
  * single load-bearing signal the windowing core, both trims, and the reconcile
- * path all key the "pinned local" rule off -- so it gets one named home here
- * rather than a bare `seq === 0n` scattered across the slices.
+ * path all key the "pinned local" rule off.
  */
 export function isOptimisticLocal(m: AgentChatMessage): boolean {
-  return m.seq === 0n
+  return isOptimisticLocalSeq(m.seq)
 }
 
 /**

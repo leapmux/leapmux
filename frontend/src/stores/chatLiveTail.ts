@@ -100,11 +100,12 @@ export function createLiveTailTracker() {
       // must NEVER claim a tail BELOW a row still loaded in the window (that would make
       // caughtUp falsely true). The one home for the floor both delete branches apply.
       const clampAtWindowFloor = (seq: bigint): bigint => (seq > windowTail ? seq : windowTail)
-      // Normalize the indeterminate sentinel: the broadcast carries new_latest_seq = -1
-      // when the worker couldn't read the tail (a DB error), which is NOT a real seq.
-      // Treat it like "no authoritative tail carried" so we never lower the recorded
-      // tail toward a bogus value (see AgentMessageDeleted.new_latest_seq).
-      const newLatestSeq = opts.newLatestSeq !== undefined && opts.newLatestSeq >= 0n ? opts.newLatestSeq : undefined
+      // new_latest_seq is UNSET (undefined here) when the worker couldn't read the tail (a
+      // DB error) or for a local optimistic delete that carries none; a present value is
+      // always a real post-delete MAX(seq). Treat undefined as "no authoritative tail
+      // carried" so we never lower the recorded tail toward a bogus value (see
+      // AgentMessageDeleted.new_latest_seq).
+      const newLatestSeq = opts.newLatestSeq
       const recordedTail = get(agentId)
       if (removedSeq !== undefined && removedSeq !== 0n && removedSeq === recordedTail) {
         // Loaded tail deleted. Prefer the authoritative new tail; a local optimistic
@@ -115,9 +116,9 @@ export function createLiveTailTracker() {
       }
       else if (removedSeq === undefined && deletedSeq !== undefined && deletedSeq !== 0n && deletedSeq === recordedTail) {
         // The deleted row was an UNLOADED beyond-window tail. With an authoritative new
-        // tail, set it exactly; otherwise -- an INDETERMINATE -1 broadcast (a failed
-        // worker MAX(seq) readback, normalized to undefined above) or no new_latest_seq
-        // field at all -- fall back to deletedSeq - 1n. That is the PROVABLE ceiling of
+        // tail, set it exactly; otherwise -- an INDETERMINATE (unset) broadcast (a failed
+        // worker MAX(seq) readback) or no new_latest_seq field at all -- fall back to
+        // deletedSeq - 1n. That is the PROVABLE ceiling of
         // the new tail, NOT a guess: we are in this branch only because deletedSeq ===
         // recordedTail, the highest seq the client has observed, and ordered broadcasts
         // rule out a higher UNobserved one (a later create/reseq would have bumped

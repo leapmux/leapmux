@@ -49,6 +49,9 @@ CREATE TABLE messages (
     span_color          INTEGER NOT NULL DEFAULT 0,
     delivery_error      TEXT NOT NULL DEFAULT '',
     agent_provider      INTEGER NOT NULL DEFAULT 1,
+    -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
+    -- time so the rail can list marked seqs without decompressing content.
+    mark_type           INTEGER NOT NULL DEFAULT 0,
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
@@ -56,6 +59,10 @@ CREATE TABLE messages (
 -- uses to find a tool_result's paired tool_use, so SQLite serves the
 -- ORDER BY seq ASC LIMIT 1 from the index rather than re-sorting matches.
 CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, source, seq) WHERE span_id <> '';
+-- Covering index for the scroll rail's ListMessageMarksByAgentID: SQLite serves
+-- the (agent_id, ORDER BY seq ASC) scan of marked rows from the index alone.
+-- Partial (only marked rows) so the far-more-numerous unmarked inserts skip it.
+CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type <> 0;
 
 -- Advance agents.message_seq_hwm whenever a message is assigned a seq -- a fresh
 -- insert (CreateMessage) or a notification reseq that moves a row to the tail

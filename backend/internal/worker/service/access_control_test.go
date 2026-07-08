@@ -76,6 +76,12 @@ var agentHandlerCases = []agentHandlerCase{
 	{"ListAgentMessages", func(id string) proto.Message {
 		return &leapmuxv1.ListAgentMessagesRequest{AgentId: id}
 	}},
+	{"GetAgentMessage", func(id string) proto.Message {
+		return &leapmuxv1.GetAgentMessageRequest{AgentId: id, Seq: 1}
+	}},
+	{"ListMessageMarks", func(id string) proto.Message {
+		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}
+	}},
 }
 
 // terminalHandlerCases enumerates terminal-ID-scoped handlers gated via

@@ -26,6 +26,28 @@ func (c NotificationClassification) Consolidatable() bool {
 	return c.Kind != NotificationKindNone
 }
 
+type PlanModeControlKind int
+
+const (
+	PlanModeControlNone PlanModeControlKind = iota
+	PlanModeControlEnter
+	PlanModeControlExit
+	PlanModeControlPrompt
+)
+
+// PlanApprovalOptions is the provider-specific option settlement the service applies when a
+// plan-mode-prompt control request is APPROVED. Keeping the option ids/values here (rather than
+// hardcoded in the shared service layer) means a provider owns its own plan-approval wire values.
+//   - Base is applied unconditionally on approval (e.g. Codex settling its collaboration axis).
+//   - Bypass is applied only when the approval also switches permission mode (e.g. Codex granting
+//     full network access + no sandbox for the approved mode).
+//
+// Both maps are nil for a provider with no plan-approval options.
+type PlanApprovalOptions struct {
+	Base   map[string]string
+	Bypass map[string]string
+}
+
 // Provider bundles the per-provider wire-format hooks the service
 // layer invokes without holding a running-agent reference. Plugins are
 // stateless and shared across goroutines — a single instance per provider.
@@ -51,6 +73,37 @@ type Provider interface {
 	// mode/approval policy -- the value stamped under the "permissionMode"
 	// option id when the agent carries no explicit selection.
 	DefaultPermissionMode() string
+	// IsSelfDisplayingControlTool reports whether a control response for the
+	// named control request (`toolName` is a Claude tool name; other providers
+	// ignore it) is ALREADY displayed by the provider's own transcript -- e.g.
+	// Claude re-emits AskUserQuestion / ExitPlanMode answers as a user-envelope
+	// tool_result. When true, the scroll rail marks that ingested row directly
+	// and the service layer persists NO separate synthetic display row (which
+	// would double the dot). Every provider except Claude synthesizes the display
+	// row itself (persistSyntheticUserMessage) and so returns false -- confirmed
+	// against the Codex, OpenCode/ACP, and Pi wire protocols, none of which echo a
+	// control answer back into their output stream.
+	IsSelfDisplayingControlTool(toolName string) bool
+	// PlanModeControl classifies a provider-native control request name into
+	// the provider-neutral plan-mode operation the service layer should run.
+	// Unknown or non-plan controls return PlanModeControlNone.
+	PlanModeControl(toolName string) PlanModeControlKind
+	// ResolveControlResponse interprets a frontend control response against the
+	// stored provider-native control request. It is pure: providers may normalize
+	// the response bytes and compute display/plan metadata, but the service owns
+	// persistence, control-request deletion, option changes, and process I/O.
+	ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution
+	// PlanApprovalOptions declares the option changes to settle when a plan-mode-prompt
+	// control request is approved (see PlanApprovalOptions). The service applies them; the
+	// provider owns the ids/values. Empty for providers with no plan-approval options.
+	PlanApprovalOptions() PlanApprovalOptions
+	// NeedsSyntheticInterruptNotice reports whether the service must persist a synthetic
+	// "[Request interrupted by user]" user row when the frontend forwards this provider's
+	// interrupt frame as a raw message (SendAgentRawMessage). True only for providers that
+	// consume the interrupt SILENTLY: Codex resolves turn/interrupt internally and emits no
+	// transcript row for it, so without the synthetic row the interrupt would leave no trace.
+	// A provider whose interrupt already surfaces in its own transcript returns false.
+	NeedsSyntheticInterruptNotice() bool
 }
 
 type noopProvider struct{}
@@ -66,6 +119,23 @@ func (noopProvider) Merge(class NotificationClassification, previous, next json.
 func (noopProvider) IsInterrupt(string) bool { return false }
 
 func (noopProvider) DefaultPermissionMode() string { return "" }
+
+// IsSelfDisplayingControlTool defaults to false: a provider that doesn't echo control
+// answers into its own transcript relies on the service layer's synthetic display row.
+// The ACP-based providers inherit this via their noopProvider embedding.
+func (noopProvider) IsSelfDisplayingControlTool(string) bool { return false }
+
+func (noopProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
+
+// PlanApprovalOptions defaults to none: a provider with no plan-mode-prompt flow settles no
+// options on approval. The ACP-based providers inherit this via their noopProvider embedding.
+func (noopProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+
+// NeedsSyntheticInterruptNotice defaults to false: a provider whose interrupt surfaces in its
+// own transcript (or that is interrupted via the InterruptAgent RPC rather than a raw frame)
+// needs no synthetic notice. The ACP-based providers inherit this via their noopProvider
+// embedding.
+func (noopProvider) NeedsSyntheticInterruptNotice() bool { return false }
 
 var (
 	providerMu       sync.RWMutex
@@ -186,6 +256,35 @@ func (codexProvider) IsInterrupt(content string) bool {
 
 func (codexProvider) DefaultPermissionMode() string { return CodexDefaultApprovalPolicy }
 
+// Codex consumes control responses internally (only a serverRequest/resolved
+// metadata notification returns), so it never self-displays the answer.
+func (codexProvider) IsSelfDisplayingControlTool(string) bool { return false }
+
+func (codexProvider) PlanModeControl(toolName string) PlanModeControlKind {
+	if toolName == ToolNameCodexPlanModePrompt {
+		return PlanModeControlPrompt
+	}
+	return PlanModeControlNone
+}
+
+// PlanApprovalOptions settles Codex on plan approval: Base resets the collaboration axis to its
+// default mode; Bypass (applied only on a permission-mode switch) grants full network access and
+// removes the sandbox for the approved mode.
+func (codexProvider) PlanApprovalOptions() PlanApprovalOptions {
+	return PlanApprovalOptions{
+		Base: map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault},
+		Bypass: map[string]string{
+			CodexOptionNetworkAccess: CodexNetworkEnabled,
+			CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
+		},
+	}
+}
+
+// NeedsSyntheticInterruptNotice: Codex resolves turn/interrupt internally and emits only a
+// serverRequest/resolved metadata notification -- never a transcript row -- so the service
+// persists the synthetic "[Request interrupted by user]" row to record the interrupt.
+func (codexProvider) NeedsSyntheticInterruptNotice() bool { return true }
+
 type claudeProvider struct{}
 
 func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
@@ -237,6 +336,33 @@ func (claudeProvider) IsInterrupt(content string) bool {
 
 func (claudeProvider) DefaultPermissionMode() string { return PermissionModeDefault }
 
+// Claude re-emits AskUserQuestion / ExitPlanMode answers as a user-envelope
+// tool_result in its own transcript, so the rail marks that ingested row directly
+// (claudeUserEnvelopeMarkType) and no synthetic display row is persisted for them. The single
+// home for this set, shared by the mark classifier and the synthetic-row skip.
+func (claudeProvider) IsSelfDisplayingControlTool(name string) bool {
+	return name == ToolNameAskUserQuestion || name == ToolNameExitPlanMode
+}
+
+func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
+	switch toolName {
+	case ToolNameEnterPlanMode:
+		return PlanModeControlEnter
+	case ToolNameExitPlanMode:
+		return PlanModeControlExit
+	default:
+		return PlanModeControlNone
+	}
+}
+
+// Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
+// plan-approval option settlement runs for it.
+func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+
+// NeedsSyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no
+// synthetic notice is persisted for a forwarded interrupt frame.
+func (claudeProvider) NeedsSyntheticInterruptNotice() bool { return false }
+
 // piProvider collapses Pi's lifecycle notifications and recognizes
 // Pi's interrupt frame. Pi emits compaction_start/end whenever a turn
 // crosses the compaction threshold; without consolidation, long sessions
@@ -286,6 +412,19 @@ func (piProvider) IsInterrupt(content string) bool {
 
 func (piProvider) DefaultPermissionMode() string { return "" }
 
+// Pi consumes extension_ui_response on stdin without echoing the answer to stdout,
+// so it never self-displays a control answer.
+func (piProvider) IsSelfDisplayingControlTool(string) bool { return false }
+
+func (piProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
+
+// Pi has no plan-mode-prompt flow, so it settles no options on approval.
+func (piProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+
+// NeedsSyntheticInterruptNotice: Pi's abort surfaces in its own transcript, so no synthetic
+// notice is persisted for a forwarded interrupt frame.
+func (piProvider) NeedsSyntheticInterruptNotice() bool { return false }
+
 // acpProvider recognizes ACP's `session/cancel` notification (and
 // the bare `cancel` form retained for legacy producers). Shared across all
 // ACP-based providers (Cursor, Copilot, Kilo, OpenCode, Goose).
@@ -293,7 +432,15 @@ func (piProvider) DefaultPermissionMode() string { return "" }
 // the no-op embedding.
 type acpProvider struct {
 	noopProvider
+	provider              leapmuxv1.AgentProvider
 	defaultPermissionMode string
+	// questionAnswersText renders the display summary for an OpenCode-protocol `question.asked`
+	// answer. Non-nil ONLY for the ACP providers that speak that question protocol (OpenCode,
+	// Kilo); nil for the rest, whose control answers fall through to the ACP permission summary.
+	// Set at registration (init) so the "who uses the OpenCode question shape" membership lives at
+	// one site (mirroring the frontend's registerOpenCodeProtocolProvider) rather than a
+	// provider-enum switch in ResolveControlResponse that would drift.
+	questionAnswersText func(requestPayload, responseContent []byte) string
 }
 
 func (acpProvider) IsInterrupt(content string) bool {
@@ -314,10 +461,10 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{defaultPermissionMode: CursorCLIModeAgent})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{defaultPermissionMode: CopilotCLIModeAgent})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{defaultPermissionMode: GooseCLIModeAuto})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionAnswersText: opencodeQuestionAnswersText})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionAnswersText: opencodeQuestionAnswersText})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX})
 }

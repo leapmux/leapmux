@@ -6,14 +6,16 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { randomUUID } from '~/lib/idGenerator'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { truncatePreview } from '~/lib/textTruncate'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
+import { defaultMarkPreview } from '../../markPreviewShared'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
-import { getAssistantContent } from './extractors/assistantContent'
+import { getAssistantContent, joinToolResultText } from './extractors/assistantContent'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
 import { claudeResultDivider } from './resultDivider'
@@ -280,6 +282,28 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
   return null
 }
 
+/**
+ * Scroll-rail preview for a Claude marked message. Two Claude-specific (Anthropic) shapes
+ * only this plugin knows how to read are handled here before the shared fallback: a
+ * self-displaying control response (AskUserQuestion / ExitPlanMode answer) re-emitted as a
+ * `message.content[]` tool_result, and a transcript user row nesting its text under
+ * `{message:{content:"..."}}`. Every other marked shape (`{content}`, `{controlResponse}`)
+ * is Leapmux-neutral and handled by the shared defaultMarkPreview.
+ */
+function claudeMarkPreview(category: MessageCategory, parsed: ParsedMessageContent): string | null {
+  const toolResultText = joinToolResultText(parsed.parentObject)
+  if (toolResultText)
+    return truncatePreview(toolResultText)
+  // Claude transcript user row: `{message:{content:"..."}}` (string content). The
+  // message-array (assistant / tool_result) form is picked up by joinToolResultText above,
+  // so a string here is genuine user text, never a mis-picked block array.
+  const message = pickObject(parsed.parentObject, 'message')
+  const nestedContent = pickString(message, 'content', '')
+  if (nestedContent)
+    return truncatePreview(nestedContent)
+  return defaultMarkPreview(category, parsed)
+}
+
 // Claude reserves ~16.5% of the context window as an autocompact buffer, so the
 // context-usage percentage is measured against the remaining usable capacity.
 const CLAUDE_AUTOCOMPACT_BUFFER_PCT = 16.5
@@ -309,6 +333,7 @@ const claudeCodePlugin: Provider = {
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
   extractQuotableText: claudeExtractQuotableText,
+  previewText: claudeMarkPreview,
   notificationThreadEntry: claudeNotificationThreadEntry,
   resultDivider: claudeResultDivider,
 

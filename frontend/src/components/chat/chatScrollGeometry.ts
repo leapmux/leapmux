@@ -34,6 +34,15 @@ export const STICKY_BOTTOM_THRESHOLD_PX = 32
 export const EDGE_INTENT_TOLERANCE_PX = 1
 
 /**
+ * Pixel slack for "does the content fit the viewport, so no scrollbar is needed?" -- a
+ * sub-pixel rounding overflow (fractional DPI / zoom) needs no scrollbar. The SINGLE source
+ * for this bound so the rail's self-hide (ChatScrollRail) and the native-scrollbar hide
+ * (ChatView) agree on what "overflows" means; if they diverged, a viewport could be left with
+ * NO usable scrollbar (both hidden) or two.
+ */
+export const SCROLLBAR_OVERFLOW_TOLERANCE_PX = 1
+
+/**
  * A synchronous scroll-pipeline phase (refreshViewport render cascade, a premeasure row's
  * forced-layout measure, or an offset-map rebuild) that runs longer than this dropped
  * multiple frames and is a main-thread STALL -- the cause of the batched catch-up scroll

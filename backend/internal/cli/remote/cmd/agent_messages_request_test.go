@@ -148,14 +148,17 @@ func TestResumeCursorFor(t *testing.T) {
 	req := func(anchor leapmuxv1.MessagePageAnchor, cursor int64) *leapmuxv1.ListAgentMessagesRequest {
 		return &leapmuxv1.ListAgentMessagesRequest{Anchor: anchor, CursorSeq: cursor}
 	}
+	// latest_seq is now optional (explicit presence): a *int64 value = a present tail, nil =
+	// indeterminate (the worker couldn't read it). ptr wraps a present value.
+	ptr := func(v int64) *int64 { return &v }
 
 	t.Run("non-empty page resumes after the last message, ignoring the anchor/cursor/latest_seq", func(t *testing.T) {
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 5), msgs(10, 20, 30), 99)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 5), msgs(10, 20, 30), ptr(99))
 		assert.Equal(t, int64(30), got)
 	})
 
 	t.Run("empty page with --anchor after resumes from the explicit cursor (over latest_seq)", func(t *testing.T) {
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 42), nil, 99)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 42), nil, ptr(99))
 		assert.Equal(t, int64(42), got)
 	})
 
@@ -164,37 +167,37 @@ func TestResumeCursorFor(t *testing.T) {
 		// race: the agent's first/only message committed between the two reads. Resume
 		// after latest_seq-1 so seq >= latest_seq is delivered (the message isn't
 		// skipped), while staying a positive resume cursor (no OLDEST full drain).
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, 137)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, ptr(137))
 		assert.Equal(t, int64(136), got)
 	})
 
-	t.Run("empty latest page on a truly-empty agent tails from now (latest_seq 0)", func(t *testing.T) {
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, 0)
+	t.Run("empty latest page on a truly-empty agent tails from now (present latest_seq 0)", func(t *testing.T) {
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, ptr(0))
 		assert.Zero(t, got)
 	})
 
 	t.Run("a first-ever message at seq 1 (empty page, latest_seq 1) drops to the oldest drain of that single message", func(t *testing.T) {
 		// latest_seq-1 == 0 -> the oldest drain, but that is exactly the one message
 		// the empty page missed, not a history flood.
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, 1)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, ptr(1))
 		assert.Zero(t, got)
 	})
 
 	t.Run("empty oldest page resumes after latest_seq-1 even with a stray cursor", func(t *testing.T) {
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, 7), nil, 50)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, 7), nil, ptr(50))
 		assert.Equal(t, int64(49), got)
 	})
 
-	t.Run("indeterminate latest_seq (-1) falls back to the request cursor, NOT the bogus tail", func(t *testing.T) {
-		// The worker degrades latest_seq to -1 when it can't read the tail (a DB error).
-		// The CLI must NOT resume after -1 (drainFetch treats afterSeq <= 0 as the OLDEST
+	t.Run("indeterminate latest_seq (unset) falls back to the request cursor, NOT the bogus tail", func(t *testing.T) {
+		// The worker leaves latest_seq UNSET when it can't read the tail (a DB error).
+		// The CLI must NOT resume after 0 (drainFetch treats afterSeq <= 0 as the OLDEST
 		// full-history drain); it falls back to the request's own cursor instead.
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 88), nil, -1)
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, 88), nil, nil)
 		assert.Equal(t, int64(88), got)
 	})
 
-	t.Run("indeterminate latest_seq (-1) on a latest page falls back to the request cursor", func(t *testing.T) {
-		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, -1)
+	t.Run("indeterminate latest_seq (unset) on a latest page falls back to the request cursor", func(t *testing.T) {
+		got := resumeCursorFor(req(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, 0), nil, nil)
 		assert.Zero(t, got)
 	})
 }

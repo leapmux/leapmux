@@ -304,8 +304,12 @@ func (svc *Context) Init() {
 		panic("service.Context.Init: Send must be set before calling Init")
 	}
 
-	// Wire auto-continue so OutputHandler can send synthetic user messages.
-	svc.Output.SetSendMessageFunc(svc.sendSyntheticUserMessage)
+	// Wire auto-continue so OutputHandler can send synthetic user messages. An
+	// auto-continue injection is not a human-typed input, so it stays UNSPECIFIED
+	// (no scroll-rail jump dot).
+	svc.Output.SetSendMessageFunc(func(agentID, content string) {
+		svc.sendSyntheticUserMessage(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't clobber
 	// a settings change made mid-startup (see SetAgentStartingFunc).
 	svc.Output.SetAgentStartingFunc(func(agentID string) bool {

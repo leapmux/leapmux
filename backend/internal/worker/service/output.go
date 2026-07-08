@@ -911,12 +911,7 @@ func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []by
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
-			ControlRequest: &leapmuxv1.AgentControlRequest{
-				AgentId:       s.agentID,
-				RequestId:     requestID,
-				Payload:       payload,
-				AgentProvider: s.agentProvider,
-			},
+			ControlRequest: buildAgentControlRequest(s.agentID, s.agentProvider, requestID, payload),
 		},
 	})
 }
@@ -1613,16 +1608,22 @@ func (h *OutputHandler) clearNotifThread(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 }
 
-// createMessageRow persists a chat-message row, refusing an UNSPECIFIED agent
-// provider. Every persisted message must carry a real provider so the client can
-// render it through that provider's renderers; an UNSPECIFIED provider is a
-// persistence bug (the frontend surfaces such a row as `unsupported_provider`).
-// Catch it here at the DB boundary so the malformed row is never written,
-// whichever write path produced it -- the agent open path already defaults an
-// unspecified request to a real provider, so this should never fire in practice.
+// createMessageRow persists a chat-message row, refusing invalid boundary values.
+// Every persisted message must carry a real provider so the client can render it
+// through that provider's renderers; an UNSPECIFIED provider is a persistence bug
+// (the frontend surfaces such a row as `unsupported_provider`). mark_type is also
+// stored as an integer and later rendered as a rail label, so reject unknown enum
+// values before they become misleading clickable dots.
 func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessageParams) (int64, error) {
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
+	}
+	switch params.MarkType {
+	case leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED,
+		leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+		leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE:
+	default:
+		return 0, fmt.Errorf("refusing to persist message %q for agent %q with unknown mark_type %d", params.ID, params.AgentID, params.MarkType)
 	}
 	return q.CreateMessage(ctx, params)
 }
@@ -1663,6 +1664,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanColor:          int64(spanColor),
 		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
+		MarkType:           span.MarkType,
 		CreatedAt:          now,
 	})
 	if err != nil {
@@ -1686,6 +1688,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanType:           span.SpanType,
 		SpanColor:          spanColor,
 		SpanLines:          spanLines,
+		MarkType:           span.MarkType,
 	})
 
 	// Update the provider-neutral to-do list off the just-persisted
@@ -2232,6 +2235,12 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
 		Depth:              0,
 		SpanLines:          spanLines,
+		// Carry the row's scroll-rail mark so this MOVE broadcast matches what a
+		// refetch (messageToProto) would report. UpdateNotificationThread leaves
+		// mark_type untouched, so parentRow.MarkType is still authoritative. Today
+		// threaded rows are unmarked (0), but a future marked-and-threaded row would
+		// otherwise show its dot only after a reload.
+		MarkType: parentRow.MarkType,
 		// This broadcast is a MOVE: the consolidated thread row jumped from its old
 		// seq (parentRow.Seq, read before UpdateNotificationThread) to newSeq. Mark it
 		// so consumers reconcile by id instead of treating it as a new message. Only set

@@ -186,6 +186,30 @@ describe('chatMessageOrder', () => {
       expect(next).toBe(prev)
     })
 
+    it('discards a duplicate seq in the MIDDLE of the window (binary-search dedup, not just the tail)', () => {
+      // The lower-bound probe must find a non-terminal duplicate, not only the last server row.
+      const prev = [msg('a', 1n), msg('b', 2n), msg('c', 3n)]
+      const { next, inserted } = applyFreshMessage(prev, msg('b-dup', 2n), undefined)
+      expect(inserted).toBe(false)
+      expect(next).toBe(prev)
+    })
+
+    it('discards a duplicate server seq while optimistic locals trail (dedup bounded to the server region)', () => {
+      // The dedup search is bounded to [0, serverEnd); a trailing seq-0n local must not be
+      // scanned as a server row nor let the duplicate slip through.
+      const prev = [msg('a', 1n), msg('b', 2n), msg('local-x', 0n)]
+      const { next, inserted } = applyFreshMessage(prev, msg('b-dup', 2n), undefined)
+      expect(inserted).toBe(false)
+      expect(next).toBe(prev)
+    })
+
+    it('inserts a fresh server message below the window head (lower-bound at index 0, no false dedup)', () => {
+      const prev = [msg('b', 2n), msg('c', 3n)]
+      const { next, inserted } = applyFreshMessage(prev, msg('a', 1n), undefined)
+      expect(inserted).toBe(true)
+      expect(ids(next)).toEqual(['a', 'b', 'c'])
+    })
+
     it('drops the reconciled local first, then lands the echo among server messages (not at the local index)', () => {
       // An earlier send (local-1) is still pending when a LATER send (local-2)
       // echoes first: substituting in place would strand local-1 mid-list. The

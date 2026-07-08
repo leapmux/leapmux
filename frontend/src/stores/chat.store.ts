@@ -1,11 +1,15 @@
+import type { ChatRailData } from './chatMessageMarks'
 import type { PendingOutboundMessage } from './chatPendingOutbound'
 import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { toBinary } from '@bufbuild/protobuf'
 import { createStore, produce, unwrap } from 'solid-js/store'
+import { getAgentMessage } from '~/api/workerRpc'
+import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassification'
-import { AgentChatMessageSchema, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, MarkType, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
@@ -13,10 +17,12 @@ import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './ch
 import { createLiveTailTracker } from './chatLiveTail'
 import { getPersistedLocalMessages, hydrateLocalMessage, persistLocalMessage, removePersistedLocalMessage } from './chatLocalMessages'
 import { createMessageAnnotationStore } from './chatMessageAnnotations'
+import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
+import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
 import { applyFreshMessage, firstServerSeq, insertServerBySeq, isReapablePhantom, lastServerSeq, mergeWindow, prunableDroppedSpanIds, serverMessageEnd, withTrailingLocals } from './chatMessageOrder'
 import { createPendingOutboundStore } from './chatPendingOutbound'
 import { createPerAgentStore } from './chatPerAgentStore'
-import { isOptimisticLocal, isReconcilableLocal, priorServerIds, reconcileEchoedLocals, userMessageSignature } from './chatReconcile'
+import { isOptimisticLocal, isOptimisticLocalSeq, isReconcilableLocal, priorServerIds, reconcileEchoedLocals, userMessageSignature } from './chatReconcile'
 import { createSpanIndex } from './chatSpanIndex'
 import { createStreamingTextStore } from './chatStreamingText'
 import { createTodoStore } from './chatTodoStore'
@@ -90,7 +96,7 @@ export interface ChatStoreState {
    * Whether a reconnect catch-up is in flight for this agent (per agent): set when the
    * client (re)subscribes via WatchEvents, cleared at CatchUpComplete. During catch-up
    * the recorded live tail tracks the LOADED tail (the bounded replay's own bumps), not
-   * the true server tail -- and an indeterminate (-1) tail never raises it -- so the
+   * the true server tail -- and an indeterminate (unset) tail never raises it -- so the
    * live-append guard falls back to seq-CONTIGUITY while this is set (a non-contiguous
    * frame is a live arrival past the unfilled replay gap; a contiguous one is the next
    * in-order replay page). See beyondUnloadedNewerTail.
@@ -136,6 +142,16 @@ export function createChatStore() {
   // The "true tail + caught-up" invariant: highest server seq observed (incl. messages
   // dropped while scrolled away), with the bump/settle/delete rules in one tested unit.
   const liveTail = createLiveTailTracker()
+  // Scroll-rail jump marks: the seqs of notable messages (user inputs, control
+  // responses) + whole-history seq range. Seeded from ListMessageMarks, kept current
+  // from live add/delete. Recorded even for messages dropped beyond the window.
+  const messageMarks = createMessageMarksStore()
+  // The seed-race machine that drives ListMessageMarks into `messageMarks`: epoch fencing,
+  // the immediate-retry loop, and the bounded delayed-reschedule chain that heal a seed that
+  // didn't stick. Its own tested unit (createMessageMarkSeeder), the sibling of the marks DATA
+  // above; the store keeps the public loadMessageMarks entry (delegating to markSeeder.load)
+  // and forgetAgent (calling markSeeder.forget).
+  const markSeeder = createMessageMarkSeeder({ marks: messageMarks })
 
   /**
    * Non-reactive index linking each tool span's opener (tool_use) and result
@@ -342,6 +358,12 @@ export function createChatStore() {
     }))
     // Drop the agent's entry in each composed per-agent sub-store.
     liveTail.forget(agentId)
+    messageMarks.forget(agentId)
+    markSeeder.forget(agentId)
+    // The rail's hover-preview cache is module-global (survives rail remounts), so it
+    // must be pruned explicitly here or it leaks -- and a stale entry would outlive a
+    // close/reopen of the same agentId. See chatMarkPreview.forgetMarkPreview.
+    forgetMarkPreview(agentId)
     streaming.remove(agentId)
     todos.remove(agentId)
     pendingOutbound.remove(agentId)
@@ -365,6 +387,18 @@ export function createChatStore() {
     const survivors = prev.filter(m => !isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
     if (survivors.length === prev.length)
       return // nothing loaded in the phantom band -- window already consistent
+    // Drop the scroll-rail marks of the reaped rows -- rows the client held but the
+    // worker deleted while we were disconnected. Without this, a reaped marked row
+    // (a USER_MESSAGE / CONTROL_RESPONSE) strands its dot: the mark's seq now exceeds
+    // the lowered maxSeq, so the reseed's beyond-horizon preserve (seed's
+    // freshBeyondSnapshot) keeps it -- indistinguishable from a live send racing the
+    // reseed -- and it resurfaces as a ghost dot the moment a later append raises maxSeq
+    // past it. Mirrors the removeMessage / reseq-MOVE mark drop for the online case. remove()
+    // bumps the marks store's own seed-race revision on each real drop.
+    for (const m of prev) {
+      if (!isOptimisticLocalSeq(m.seq) && isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
+        messageMarks.remove(agentId, m.seq)
+    }
     reclaimDroppedRows(agentId, prev, survivors)
     spanIdx.reindex(agentId, survivors)
     setState('messagesByAgent', agentId, survivors)
@@ -383,9 +417,9 @@ export function createChatStore() {
    * received the AgentMessageDeleted for rows deleted meanwhile, so it drops any loaded
    * SERVER row whose seq exceeds `latestSeq` (a deletion it missed) and clamps its
    * recorded live-tail -- so the "new messages below" affordance can't stay stuck past a
-   * now-shorter history. A NEGATIVE `latestSeq` means the worker couldn't determine the
-   * tail (query error); skip rather than trim against a value we don't trust. Optimistic
-   * locals (seq 0n) are never above a non-negative tail, so they're preserved.
+   * now-shorter history. An UNSET (`undefined`) `latestSeq` means the worker couldn't
+   * determine the tail (query error); skip rather than trim against a value we don't trust.
+   * Optimistic locals (seq 0n) are never above a present tail, so they're preserved.
    *
    * `reapCeilingSeq` (CatchUpComplete.start_tail_seq -- the tail when replay BEGAN)
    * exempts live arrivals from the reap: a row ABOVE it was broadcast DURING catch-up
@@ -397,7 +431,7 @@ export function createChatStore() {
    * phantom.
    *
    * `probeIndeterminate` (true only at CatchUpComplete, when the bounded replay is DONE)
-   * handles an indeterminate (-1) tail: the worker couldn't read its max seq, so liveTail
+   * handles an indeterminate (unset) tail: the worker couldn't read its max seq, so liveTail
    * was never raised and the continuous reconcile would read the loaded tail as caught up
    * even though a bounded replay may have stopped short. Nudge the recorded live tail one
    * past the loaded tail so the reconcile PROBES (caughtUpToLiveTail reads false) and
@@ -405,8 +439,8 @@ export function createChatStore() {
    * nothing's there. Skipped at CatchUpStart (the replay hasn't run, so a probe would
    * race it).
    */
-  function reconcileAuthoritativeTail(agentId: string, latestSeq: bigint, reapCeilingSeq?: bigint, probeIndeterminate = false) {
-    if (latestSeq < 0n) {
+  function reconcileAuthoritativeTail(agentId: string, latestSeq: bigint | undefined, reapCeilingSeq?: bigint, probeIndeterminate = false) {
+    if (latestSeq === undefined) {
       if (probeIndeterminate) {
         const windowTail = lastServerSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
         if (windowTail > 0n)
@@ -771,7 +805,7 @@ export function createChatStore() {
      *    the continuous reconcile forward-fill (lastSeq, seq] contiguously rather than
      *    splice a hole; a CONTIGUOUS frame is the next in-order replay page, kept. This
      *    branch is what makes catch-up robust when the worker can't report its tail
-     *    (latest_seq = -1, a DB error): liveTail then only tracks the LOADED tail, so the
+     *    (latest_seq unset, a DB error): liveTail then only tracks the LOADED tail, so the
      *    live-tail comparison below can't see a beyond-tail live frame.
      *  - in the LIVE phase: the loaded tail provably lags a KNOWN higher live tail
      *    (lastSeq < recordedLiveTail) and `seq` is beyond it (seq > recordedLiveTail).
@@ -954,6 +988,21 @@ export function createChatStore() {
       // jumpToLatestMessages knows where the true tail is.
       liveTail.bump(agentId, message.seq)
 
+      // Record the scroll-rail mark BEFORE any beyond-window drop, so a message the
+      // reader scrolled away from still gets its jump dot. The mark rides the proto
+      // (set at write time by the worker); optimistic locals (seq 0n) are excluded.
+      // A reseq MOVE (previousSeq set) carries the mark to its new seq, so drop the
+      // stale mark at the vacated old seq first, or it strands a ghost dot. (Threaded
+      // rows are unmarked today, so this is latent -- but the worker now carries
+      // mark_type on the MOVE broadcast, so keep the two ends symmetric.) noteMark/remove
+      // bump the marks store's own seed-race revision only on a real change: an unmarked
+      // reseq MOVE (remove of a never-marked seq) or a re-broadcast of an already-noted
+      // mark are no-ops that must not perturb a concurrent loadMessageMarks.
+      if (message.previousSeq !== 0n)
+        messageMarks.remove(agentId, message.previousSeq)
+      if (message.markType !== MarkType.UNSPECIFIED)
+        messageMarks.noteMark(agentId, message.seq, message.markType)
+
       // Notification thread update: LEAPMUX notification messages can be updated
       // in-place when consolidating. Check if a message with this ID exists.
       const messages = state.messagesByAgent[agentId] ?? []
@@ -1085,6 +1134,13 @@ export function createChatStore() {
         newLatestSeq,
         windowTail: this.getLastSeq(agentId),
       })
+      // Drop the deleted row's scroll-rail mark. The seq comes from the loaded row when
+      // present, else the broadcast-carried seq for an unloaded beyond-window delete.
+      // remove() bumps the marks store's own seed-race revision only on a real drop (an
+      // unmarked row's delete is a no-op and must not perturb a concurrent seed).
+      const goneSeq = removed?.seq ?? deletedSeq
+      if (goneSeq !== undefined && goneSeq !== 0n)
+        messageMarks.remove(agentId, goneSeq)
       // Only rebuild when the removed row actually carried a span (the common
       // case -- a user/local message -- has none, so this is usually skipped).
       if (removedSpanId) {
@@ -1433,10 +1489,84 @@ export function createChatStore() {
     forgetAgent,
     reconcileAuthoritativeTail,
     liveTail,
+    messageMarks,
     todos,
     streamingText: streaming,
     pendingOutbound,
     viewportScroll,
+    /**
+     * Reactive scroll-rail data for an agent: the marked seqs, the window-aware whole-history
+     * seq range, and the loaded window's bounds. The range rule (seed vs live tail vs window
+     * head/tail) lives in the pure {@link resolveRailRange} so it is testable and can't drift
+     * from a second copy -- this selector just wires the reactive reads to it. Read inside a
+     * memo/JSX for reactivity (it tracks the marks store, the live tail, and the window).
+     */
+    getRailData(agentId: string): ChatRailData {
+      const marks = messageMarks.get(agentId)
+      const messages = state.messagesByAgent[agentId] ?? []
+      const windowFirstSeq = firstServerSeq(messages)
+      const windowLastSeq = lastServerSeq(messages)
+      const { minSeq, maxSeq } = resolveRailRange({
+        seededMinSeq: marks.minSeq,
+        seedMaxSeq: marks.seedMaxSeq,
+        liveMaxSeq: liveTail.get(agentId),
+        windowFirstSeq,
+        windowLastSeq,
+        hasOlderMessages: state.hasMoreOlder[agentId] ?? false,
+      })
+      return { loaded: marks.loaded, minSeq, maxSeq, marks: marks.marks, windowFirstSeq, windowLastSeq }
+    },
+    /**
+     * Seed (or re-seed) an agent's scroll-rail marks from the worker. The public entry to
+     * the seed-race machine, which lives in its own tested unit (createMessageMarkSeeder);
+     * this just delegates. `watchSignal` ties the seed to the current WatchEvents
+     * subscription -- see markSeeder.load for the full fire-and-forget / retry / fencing
+     * contract. Kept as a method name here because the connection hook and the store tests
+     * drive the seed through `store.loadMessageMarks`.
+     */
+    loadMessageMarks: markSeeder.load,
+    /**
+     * The loaded message at `seq`, or undefined when it isn't in the current window.
+     * Used by the scroll rail's hover preview to extract a mark's preview WITHOUT a
+     * fetch when the marked message is already loaded. Optimistic locals (seq 0n) are
+     * skipped -- a real mark's seq never matches them. Non-reactive: called imperatively
+     * on hover, not inside a tracking scope.
+     */
+    getLoadedMessageBySeq(agentId: string, seq: bigint): AgentChatMessage | undefined {
+      if (isOptimisticLocalSeq(seq))
+        return undefined
+      const messages = state.messagesByAgent[agentId]
+      if (!messages)
+        return undefined
+      // Server rows occupy [0, serverMessageEnd) ascending by unique seq (optimistic locals,
+      // seq 0n, trail after and are excluded by the guard above), so binary-search that region
+      // instead of a linear .find: a marked message is usually OUTSIDE the loaded window, so the
+      // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
+      const end = serverMessageEnd(messages)
+      const idx = lowerBoundBySeq(messages, seq, end)
+      const hit = messages[idx]
+      return hit?.seq === seq ? hit : undefined
+    },
+    /**
+     * Fetch a SINGLE message by its per-agent seq for the scroll rail's hover preview
+     * of a mark outside the loaded window. Resolves undefined ONLY for a definitive
+     * absence -- the agent has no message at that seq (deleted/reseq'd since the mark
+     * was recorded), which the worker returns as an unset message. A transient RPC
+     * failure RETHROWS (rather than collapsing to undefined) so the caller can tell a
+     * real absence -- cache '' and stop -- from a blip it should retry, instead of
+     * poisoning the dot's preview for the rest of the session. Does NOT touch the
+     * loaded window; it's a read-only lookup for preview text only.
+     */
+    async fetchMessageBySeq(workerId: string, agentId: string, seq: bigint): Promise<AgentChatMessage | undefined> {
+      try {
+        const resp = await getAgentMessage(workerId, { agentId, seq })
+        return resp.message
+      }
+      catch (err) {
+        console.warn('failed to fetch message for preview', { agentId, seq, err })
+        throw err
+      }
+    },
     /**
      * Persist an agent's viewport scroll for the NEXT mount of the same chat window (a
      * tile split/merge or workspace switch recreates ChatView over the still-live store

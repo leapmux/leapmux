@@ -1,4 +1,5 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { isOptimisticLocal } from './chatReconcile'
 
 /**
@@ -87,16 +88,9 @@ export function insertServerBySeq(list: AgentChatMessage[], message: AgentChatMe
   // Fast path: newer than the last server message.
   if (end === 0 || message.seq > list[end - 1].seq)
     return [...list.slice(0, end), message, ...list.slice(end)]
-  // Slow path: binary-insert among server messages [0, end).
-  let lo = 0
-  let hi = end
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1
-    if (list[mid].seq < message.seq)
-      lo = mid + 1
-    else
-      hi = mid
-  }
+  // Slow path: binary-insert among server messages [0, end) at the lower bound (the first index
+  // whose seq >= message.seq), via the shared tested search rather than a hand-rolled off-by-one.
+  const lo = lowerBoundBySeq(list, message.seq, end)
   return [...list.slice(0, lo), message, ...list.slice(lo)]
 }
 
@@ -175,12 +169,14 @@ export function applyFreshMessage(
   if (isOptimisticLocal(message))
     return { next: [...base, message], inserted: true }
 
-  // Dedup: skip if a server message with this exact seq already exists.
+  // Dedup: skip if a server message with this exact seq already exists. The server region
+  // [0, serverEnd) is unique and ascending by seq (insertServerBySeq maintains that), so a
+  // binary lower-bound probe replaces the O(n) backward scan -- the same lowerBoundBySeq
+  // insertServerBySeq itself runs on the next line, kept off this per-message-commit hot path.
   const serverEnd = serverMessageEnd(base)
-  for (let i = serverEnd - 1; i >= 0; i--) {
-    if (base[i].seq === message.seq)
-      return { next: base, inserted: false }
-  }
+  const dupIdx = lowerBoundBySeq(base, message.seq, serverEnd)
+  if (dupIdx < serverEnd && base[dupIdx].seq === message.seq)
+    return { next: base, inserted: false }
 
   return { next: insertServerBySeq(base, message), inserted: true }
 }
@@ -193,10 +189,10 @@ export function applyFreshMessage(
  * Locals never appear in a fetched page, but seq 0n is ignored defensively.
  */
 function olderRowsPrecedeWindowHead(older: AgentChatMessage[], base: AgentChatMessage[]): boolean {
-  const headSeq = base.find(m => m.seq !== 0n)?.seq
+  const headSeq = base.find(m => !isOptimisticLocal(m))?.seq
   if (headSeq === undefined)
     return true
-  return older.every(m => m.seq === 0n || m.seq < headSeq)
+  return older.every(m => isOptimisticLocal(m) || m.seq < headSeq)
 }
 
 /**
@@ -235,8 +231,8 @@ export function mergeWindow(
   // stay pinned to the tail. On the 'older' side this drop is inert: an older page's
   // seqs are all below the window head, so they never collide with a loaded row.
   const newIds = new Set(newMsgs.map(m => m.id))
-  const newSeqs = new Set(newMsgs.filter(m => m.seq !== 0n).map(m => m.seq))
-  const collidesNewSeq = (m: AgentChatMessage) => m.seq !== 0n && newSeqs.has(m.seq) && !newIds.has(m.id)
+  const newSeqs = new Set(newMsgs.filter(m => !isOptimisticLocal(m)).map(m => m.seq))
+  const collidesNewSeq = (m: AgentChatMessage) => !isOptimisticLocal(m) && newSeqs.has(m.seq) && !newIds.has(m.id)
   const dropsExisting = reconciledLocalIds.size > 0
     || prev.some(m => newIds.has(m.id) || collidesNewSeq(m))
   const base = dropsExisting
