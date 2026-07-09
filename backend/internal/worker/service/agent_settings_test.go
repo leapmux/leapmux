@@ -1700,6 +1700,46 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 		"permission mode should be persisted to DB when set_permission_mode is sent while agent is running")
 }
 
+// TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider pins the intended
+// narrowing after moving the parse behind the Provider interface: only Claude speaks
+// set_permission_mode, so a Claude-shaped frame sent to a non-Claude (Codex) agent extracts no mode
+// and does NOT eagerly write the DB -- it falls through to the generic raw-forward path.
+func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
+		Options: marshalOptions(map[string]string{agent.OptionIDPermissionMode: "untrusted"}),
+		ID:      "agent-1",
+	}))
+
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"r1","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`,
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "untrusted", parseOptions(dbAgent.Options)[agent.OptionIDPermissionMode],
+		"a Claude-shaped set_permission_mode frame must not eagerly rewrite a Codex agent's permission mode")
+}
+
 // TestConfirmedOptions verifies the settled-options overlay that the settings_changed
 // notification, the corrective DB write, and the RPC reply all share: confirmed
 // (non-empty) values override the requested base on EVERY axis -- not just model/effort

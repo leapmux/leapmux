@@ -1,3 +1,4 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { renderDivider } from '../../messageRenderTestUtils'
@@ -467,5 +468,47 @@ describe('pi extension UI integration', () => {
   it('cancels unknown methods to keep Pi unblocked', () => {
     const resp = plugin.buildControlResponse!({ type: 'extension_ui_request', method: 'futureMethod' }, 'whatever', 'req-1')
     expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', cancelled: true })
+  })
+})
+
+describe('pi spanRole', () => {
+  const plugin = providerFor(AgentProvider.PI)!
+
+  function parsedWithType(type: string): ParsedMessageContent {
+    return { rawText: '', topLevel: null, parentObject: { type }, wrapper: null }
+  }
+
+  it('routes tool_execution_start to opener and _end to result by envelope type', () => {
+    expect(plugin.spanRole!(parsedWithType('tool_execution_start'))).toBe('opener')
+    expect(plugin.spanRole!(parsedWithType('tool_execution_end'))).toBe('result')
+  })
+
+  it('returns other for an unrelated pi envelope type', () => {
+    expect(plugin.spanRole!(parsedWithType('agent_message'))).toBe('other')
+  })
+})
+
+describe('pi contextUsageFromMessage', () => {
+  const plugin = providerFor(AgentProvider.PI)!
+
+  // Pi reads message.usage off the parsed message (getInnerMessage(parsed).message.usage).
+  const withUsage = (usage: Record<string, unknown>): ParsedMessageContent =>
+    ({ rawText: '', topLevel: null, parentObject: { message: { usage } }, wrapper: null })
+
+  it('extracts raw Pi usage (input/output/cacheRead/cacheWrite/totalTokens)', () => {
+    expect(plugin.contextUsageFromMessage!(withUsage({ input: 100, output: 10, cacheRead: 20, cacheWrite: 5, totalTokens: 130 })))
+      .toEqual({ inputTokens: 100, cacheCreationInputTokens: 5, cacheReadInputTokens: 20, outputTokens: 10, contextTokens: 130 })
+  })
+
+  it('returns null when there is no token data', () => {
+    expect(plugin.contextUsageFromMessage!(withUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }))).toBeNull()
+  })
+
+  it('returns null for a non-Pi usage shape (no input field)', () => {
+    expect(plugin.contextUsageFromMessage!(withUsage({ input_tokens: 100 }))).toBeNull()
+  })
+
+  it('returns null when the message carries no message.usage', () => {
+    expect(plugin.contextUsageFromMessage!({ rawText: '', topLevel: null, parentObject: { type: 'message_end', message: {} }, wrapper: null })).toBeNull()
   })
 })

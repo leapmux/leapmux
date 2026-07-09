@@ -1480,45 +1480,6 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 	assert.Equal(t, before.Options, after.Options, "approving createPlan must not change agent options/permission mode")
 }
 
-func TestControlResponseRequestID(t *testing.T) {
-	// Claude Code format: response.request_id
-	assert.Equal(t, "req-1", controlResponseRequestID(
-		[]byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`),
-	))
-
-	// Mixed envelopes still belong to the nested control response. A top-level
-	// JSON-RPC id can be present for provider plumbing, but the pending LeapMux
-	// control_request row is keyed by response.request_id.
-	assert.Equal(t, "req-1", controlResponseRequestID(
-		[]byte(`{"id":"jsonrpc-req","response":{"request_id":"req-1","response":{"behavior":"allow"}}}`),
-	))
-
-	// OpenCode / ACP JSON-RPC format: numeric id
-	assert.Equal(t, "5", controlResponseRequestID(
-		[]byte(`{"jsonrpc":"2.0","id":5,"result":{"outcome":{"outcome":"selected","optionId":"once"}}}`),
-	))
-
-	// OpenCode / ACP JSON-RPC format: string id
-	assert.Equal(t, "abc-123", controlResponseRequestID(
-		[]byte(`{"jsonrpc":"2.0","id":"abc-123","result":{"outcome":{"outcome":"selected","optionId":"reject"}}}`),
-	))
-
-	// No request ID
-	assert.Equal(t, "", controlResponseRequestID(
-		[]byte(`{"type":"unknown"}`),
-	))
-
-	// Null id
-	assert.Equal(t, "", controlResponseRequestID(
-		[]byte(`{"id":null}`),
-	))
-
-	// Invalid JSON
-	assert.Equal(t, "", controlResponseRequestID(
-		[]byte(`not json`),
-	))
-}
-
 // TestNeedsStructuredRow pins the single "does this answer get a synthetic structured row" rule.
 // A resolvable request id is required. A genuinely self-displayed answer draws no row except when a
 // context-clearing plan exit wipes its echoed tool_result. Otherwise the answer gets the row -- for

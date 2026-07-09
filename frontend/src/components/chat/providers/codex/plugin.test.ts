@@ -1,11 +1,12 @@
 import type { AskQuestionState, Question } from '../../controls/types'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
+import { sendCodexDecision, sendCodexUserInputResponse } from './CodexControlRequest'
 import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
 
 // Side-effect import to register the Codex plugin.
@@ -573,20 +574,6 @@ describe('codex isAskUserQuestion', () => {
   })
 })
 
-describe('toRpcId', () => {
-  it('converts numeric string to number', () => {
-    expect(toRpcId('42')).toBe(42)
-  })
-
-  it('preserves non-numeric string', () => {
-    expect(toRpcId('abc')).toBe('abc')
-  })
-
-  it('converts zero', () => {
-    expect(toRpcId('0')).toBe(0)
-  })
-})
-
 describe('sendCodexDecision', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
@@ -894,5 +881,183 @@ describe('codex settings config', () => {
         permissionMode: 'never',
       },
     }])
+  })
+})
+
+// Build a plain ParsedMessageContent whose inner message is `inner`; the
+// session-metadata hooks read `parsed.parentObject` (getInnerMessage falls back
+// to topLevel), so both point at the same object.
+function parsed(inner: Record<string, unknown>): ParsedMessageContent {
+  return { rawText: '', topLevel: inner, parentObject: inner, wrapper: null }
+}
+
+describe('codex contextUsageFromMessage', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('extracts context usage from a thread/tokenUsage/updated notification (params.tokenUsage.last)', () => {
+    const msg = parsed({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
+          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+          modelContextWindow: 4096,
+        },
+      },
+    })
+    expect(plugin.contextUsageFromMessage!(msg)).toEqual({
+      inputTokens: 5,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 5,
+      contextWindow: 4096,
+    })
+  })
+
+  it('returns null for an unrelated method', () => {
+    expect(plugin.contextUsageFromMessage!(parsed({ method: 'turn/completed', params: {} }))).toBeNull()
+  })
+})
+
+describe('codex rateLimitsFromMessage', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('extracts Codex native rate limit info', () => {
+    const result = plugin.rateLimitsFromMessage!(parsed({
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          primary: { usedPercent: 85, windowDurationMins: 300, resetsAt: 1774070211 },
+          secondary: { usedPercent: 4, windowDurationMins: 10080, resetsAt: 1774525963 },
+        },
+      },
+    }))
+    expect(result).toHaveLength(2)
+    expect(result![0].key).toBe('five_hour')
+    expect(result![0].info.utilization).toBeCloseTo(0.85)
+    expect(result![0].info.status).toBe('allowed_warning')
+    expect(result![1].key).toBe('seven_day')
+    expect(result![1].info.utilization).toBeCloseTo(0.04)
+    expect(result![1].info.status).toBe('allowed')
+  })
+
+  it('returns empty array without tiers', () => {
+    expect(plugin.rateLimitsFromMessage!(parsed({
+      method: 'account/rateLimits/updated',
+      params: { rateLimits: {} },
+    }))).toEqual([])
+  })
+
+  it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
+    const result = plugin.rateLimitsFromMessage!(parsed({
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'rate_limit_reached',
+          primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: 1774070211 },
+          secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1774525963 },
+        },
+      },
+    }))
+    expect(result![0].key).toBe('five_hour')
+    expect(result![0].info.status).toBe('exceeded')
+    expect(result![1].info.status).toBe('allowed')
+  })
+
+  it('does not elevate for non-time-window reached-type', () => {
+    const result = plugin.rateLimitsFromMessage!(parsed({
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'workspace_owner_credits_depleted',
+          primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1774070211 },
+        },
+      },
+    }))
+    expect(result![0].info.status).toBe('allowed')
+  })
+
+  it('returns null for a non-rate-limit method', () => {
+    expect(plugin.rateLimitsFromMessage!(parsed({ method: 'turn/completed' }))).toBeNull()
+  })
+})
+
+describe('codex resultSubtype', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('maps a completed turn object to turn_completed', () => {
+    expect(plugin.resultSubtype!(parsed({ turn: { status: 'completed', usage: { inputTokens: 100 } } }))).toBe('turn_completed')
+  })
+
+  it('maps a failed turn object to turn_completed', () => {
+    expect(plugin.resultSubtype!(parsed({ turn: { status: 'failed' } }))).toBe('turn_completed')
+  })
+
+  it('returns undefined without a turn object', () => {
+    expect(plugin.resultSubtype!(parsed({ type: 'result', subtype: 'turn_end' }))).toBeUndefined()
+  })
+})
+
+describe('codex lifecycleSessionInfo', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('clears the live turn id on thread/started', () => {
+    expect(plugin.lifecycleSessionInfo!(parsed({ method: 'thread/started' }))).toEqual({ codexTurnId: '' })
+  })
+
+  it('clears the plan streaming indicator on a plan item', () => {
+    expect(plugin.lifecycleSessionInfo!(parsed({ item: { type: 'plan' } }))).toEqual({ streamingType: '' })
+  })
+
+  it('returns null for a lifecycle frame with no side effect', () => {
+    expect(plugin.lifecycleSessionInfo!(parsed({ item: { type: 'commandExecution' } }))).toBeNull()
+  })
+})
+
+describe('codex commandSpanSuperseded', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('supersedes a completed commandExecution', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'commandExecution', status: 'completed' } }))).toBe(true)
+  })
+
+  it('supersedes a completed fileChange', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'fileChange', status: 'completed' } }))).toBe(true)
+  })
+
+  it('does not supersede a still-running commandExecution', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'commandExecution', status: 'running' } }))).toBe(false)
+  })
+
+  it('supersedes a reasoning item that now carries a summary', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'reasoning', summary: ['x'] } }))).toBe(true)
+  })
+
+  it('supersedes a reasoning item that now carries content', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'reasoning', content: ['y'] } }))).toBe(true)
+  })
+
+  it('does not supersede an empty reasoning item', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({ item: { type: 'reasoning' } }))).toBe(false)
+  })
+
+  it('does not supersede a frame with no item', () => {
+    expect(plugin.commandSpanSuperseded!(parsed({}))).toBe(false)
+  })
+})
+
+describe('codex commandStreamSegmentKind', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('maps known command-stream delta methods to their segment kind', () => {
+    expect(plugin.commandStreamSegmentKind!('item/commandExecution/terminalInteraction')).toBe('interaction')
+    expect(plugin.commandStreamSegmentKind!('item/reasoning/summaryTextDelta')).toBe('reasoning_summary')
+    expect(plugin.commandStreamSegmentKind!('item/reasoning/textDelta')).toBe('reasoning_content')
+    expect(plugin.commandStreamSegmentKind!('item/reasoning/summaryPartAdded')).toBe('reasoning_summary_break')
+  })
+
+  it('returns null for an unknown method (the caller defaults to output)', () => {
+    expect(plugin.commandStreamSegmentKind!('item/commandExecution/output')).toBeNull()
   })
 })

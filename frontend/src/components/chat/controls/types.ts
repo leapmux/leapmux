@@ -75,3 +75,9 @@ export function sendResponse(
   const bytes = new TextEncoder().encode(JSON.stringify(response))
   return onRespond(agentId, bytes)
 }
+
+/** Convert a string request ID to a numeric JSON-RPC id when possible. */
+export function toRpcId(requestId: string): number | string {
+  const numId = Number(requestId)
+  return Number.isFinite(numId) ? numId : requestId
+}

@@ -1,13 +1,12 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from './types'
+import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
 
 import { Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
-import * as styles from '../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
-import { toRpcId } from './CodexControlRequest'
-import { sendResponse } from './types'
+import * as styles from '../../ControlRequestBanner.css'
+import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { sendResponse, toRpcId } from '../../controls/types'
 
 function getCursorParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined

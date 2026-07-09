@@ -1,8 +1,25 @@
 import type { TodoListSource } from '../../../todoListMessage'
+import type { TodoItem } from '~/stores/chatTodos'
 import { pickString } from '~/lib/jsonPick'
-import { codexPlanToTodos } from '~/lib/messageParser'
 import { pluralize } from '~/lib/plural'
+import { normalizeTodoStatus } from '~/stores/chatTodos'
 import { CODEX_ITEM } from '~/types/toolMessages'
+
+/** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
+function codexPlanToTodos(plan: unknown[]): TodoItem[] {
+  return plan.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const step = String((entry as Record<string, unknown>).step || '')
+    if (!step)
+      return []
+    return [{
+      content: step,
+      status: normalizeTodoStatus((entry as Record<string, unknown>).status),
+      activeForm: step,
+    }]
+  })
+}
 
 /**
  * Build a TodoListSource from Codex `turn/plan/updated` params. Returns null

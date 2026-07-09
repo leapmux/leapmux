@@ -1,12 +1,11 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps } from './types'
+import type { ActionsProps, ContentProps } from '../../controls/types'
 
 import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
-import * as styles from '../ControlRequestBanner.css'
-import { toRpcId } from './CodexControlRequest'
-import { sendResponse } from './types'
+import * as styles from '../../ControlRequestBanner.css'
+import { sendResponse, toRpcId } from '../../controls/types'
 
 interface ACPPermissionOption {
   optionId: string

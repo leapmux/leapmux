@@ -38,6 +38,40 @@ func defaultControlResponseResolution(ctx ControlResponseContext) ControlRespons
 	return ControlResponseResolution{Content: ctx.ResponseContent}
 }
 
+// defaultControlResponseRequestID reads the stored-control-request lookup id from a raw frontend
+// control response. It tries the neutral approve/reject envelope first
+// (DecodeControlBehavior: {response:{request_id, ...}}, which every provider's frontend emits) and
+// falls back to a top-level JSON-RPC id (ExtractJSONRPCID, used by the ACP family and Codex). When
+// a payload carries BOTH -- a top-level id AND a nested response.request_id -- the nested envelope
+// id wins, because the pending control_request row is keyed by response.request_id. Returns "" when
+// neither shape yields a non-empty id. Shared by every provider's ControlResponseRequestID; no
+// provider narrows it, since narrowing to one shape would drop the other's real flows.
+func defaultControlResponseRequestID(content []byte) string {
+	if requestID, _, _, ok := DecodeControlBehavior(content); ok && requestID != "" {
+		return requestID
+	}
+	if _, requestID, ok := ExtractJSONRPCID(content); ok {
+		return requestID
+	}
+	return ""
+}
+
+func (noopProvider) ControlResponseRequestID(content []byte) string {
+	return defaultControlResponseRequestID(content)
+}
+
+func (codexProvider) ControlResponseRequestID(content []byte) string {
+	return defaultControlResponseRequestID(content)
+}
+
+func (claudeProvider) ControlResponseRequestID(content []byte) string {
+	return defaultControlResponseRequestID(content)
+}
+
+func (piProvider) ControlResponseRequestID(content []byte) string {
+	return defaultControlResponseRequestID(content)
+}
+
 func (noopProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
 	return defaultControlResponseResolution(ctx)
 }
@@ -249,8 +283,8 @@ type ControlBehaviorEnvelope struct {
 // message. ok is false only when the bytes don't parse as JSON. The message is the user's typed
 // rejection reason, with the ControlRejectedByUserMessage sentinel (an auto-filled placeholder,
 // not a real reason) collapsed to "". The SINGLE home for the sentinel rule, shared by the Codex
-// feedback path, the Cursor create-plan transform, and the service's request-id lookup, so a
-// sentinel change lands in exactly one place.
+// feedback path, the Cursor create-plan transform, and the shared control-response request-id
+// default (defaultControlResponseRequestID), so a sentinel change lands in exactly one place.
 func DecodeControlBehavior(content []byte) (requestID, behavior, message string, ok bool) {
 	var cr ControlBehaviorEnvelope
 	if err := json.Unmarshal(content, &cr); err != nil {

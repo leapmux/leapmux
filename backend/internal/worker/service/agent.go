@@ -476,10 +476,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 		content := r.GetContent()
-		if agent.ProviderFor(dbAgent.AgentProvider).NeedsSyntheticInterruptNotice() && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
+		if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
 			// An interrupt notice is not the user's answer to a control request, so it
 			// draws no rail dot.
-			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
+			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
 		}
 
 		svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
@@ -2765,12 +2765,11 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
 func (svc *Context) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
-	// Persist set_permission_mode to the DB eagerly so that /clear
-	// (which reads the DB) always sees the latest mode. Some providers
-	// (e.g. Claude Code) don't echo the mode back in their
-	// control_response, so relying on the output handler alone would
-	// leave the DB stale.
-	mode, isSetMode := parseSetPermissionMode(content)
+	// The provider owns the wire-format parse; the service owns the DB write + forward. Persist an
+	// eager set_permission_mode to the DB so that /clear (which reads the DB) always sees the latest
+	// mode. Some providers (e.g. Claude Code) don't echo the mode back in their control_response, so
+	// relying on the output handler alone would leave the DB stale.
+	mode, isSetMode := agent.ProviderFor(provider).PermissionModeFromRawInput(content)
 	if isSetMode {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
@@ -2807,9 +2806,10 @@ func (svc *Context) handleControlRequestMessage(agentID string, provider leapmux
 }
 
 // persistSyntheticUserMessage persists a backend-synthesized `{content}` user row that is NOT the
-// user's answer to a control request -- the interrupt notice ("[Request interrupted by user]").
-// It is left UNMARKED (MARK_TYPE_UNSPECIFIED) so it draws no scroll-rail dot; genuine control
-// answers persist through persistControlResponseRow, which owns the CONTROL_RESPONSE mark.
+// user's answer to a control request -- the interrupt notice, whose text is the provider's
+// SyntheticInterruptNotice. It is left UNMARKED (MARK_TYPE_UNSPECIFIED) so it draws no scroll-rail
+// dot; genuine control answers persist through persistControlResponseRow, which owns the
+// CONTROL_RESPONSE mark.
 func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -3182,27 +3182,6 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	}
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
-}
-
-// parseSetPermissionMode checks if a control_request is a set_permission_mode
-// request and returns the requested mode. Returns ("", false) if not a match.
-func parseSetPermissionMode(content string) (string, bool) {
-	if !strings.Contains(content, "set_permission_mode") {
-		return "", false
-	}
-	var msg struct {
-		Request struct {
-			Subtype string `json:"subtype"`
-			Mode    string `json:"mode"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return "", false
-	}
-	if msg.Request.Subtype != "set_permission_mode" || msg.Request.Mode == "" {
-		return "", false
-	}
-	return msg.Request.Mode, true
 }
 
 // broadcastReplayAgentEvent wraps an AgentEvent in the WatchEventsResponse

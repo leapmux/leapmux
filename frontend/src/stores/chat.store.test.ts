@@ -1222,7 +1222,7 @@ describe('createChatStore', () => {
       const store = createChatStore()
       // Build up state for a1 across every per-agent slice.
       store.setMessages('a1', [makeMessage('m1', 1n, 'boom')], true) // window + hasMoreOlder + initialLoadComplete + an error annotation
-      store.appendCommandStream('a1', 's1', 'item/commandExecution/output', 'streaming')
+      store.appendCommandStream('a1', 's1', 'output', 'streaming')
       store.streamingText.set('a1', 'partial')
       store.todos.replace('a1', [create(TodoItemSchema, { content: 'Do', status: TodoStatus.IN_PROGRESS, activeForm: 'Doing' })])
       store.viewportScroll.set('a1', { anchor: { id: 'm1', offsetWithinRow: 12 }, atBottom: false, hasMoreNewer: true })
@@ -2685,7 +2685,7 @@ describe('createChatStore', () => {
           initial[10] = makeToolUseSpan('m10', 11n, 'spanX')
           store.setMessages('a1', initial)
           store.trimNewestEnd('a1', 30) // window seq 1..30, m10 in window
-          store.appendCommandStream('a1', 'spanX', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'spanX', 'output', 'output')
           expect(store.getCommandStream('a1', 'spanX')).toHaveLength(1)
 
           // The page reseqs m10 to seq 35 under a DIFFERENT spanId ('spanY'), so the
@@ -3592,8 +3592,8 @@ describe('createChatStore', () => {
           // buffer but is NOT renderable. The recorded part boundary would still be LOST
           // if pruned, so the survivor guard spares a span by its BUFFER, not just its
           // renderable bit -- and records it as orphaned so the buffer stays bounded.
-          store.appendCommandStream('a1', 'span0', 'item/reasoning/summaryPartAdded', '')
-          store.appendCommandStream('a1', 'span49', 'item/reasoning/summaryPartAdded', '')
+          store.appendCommandStream('a1', 'span0', 'reasoning_summary_break', '')
+          store.appendCommandStream('a1', 'span49', 'reasoning_summary_break', '')
           expect(store.getCommandStream('a1', 'span0')).toHaveLength(1)
           expect(store.hasRenderableCommandStream('a1', 'span0')).toBe(false)
 
@@ -3616,8 +3616,8 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
-          store.appendCommandStream('a1', 'span0', 'item/commandExecution/output', 'old output') // marks span0 active
-          store.appendCommandStream('a1', 'span49', 'item/commandExecution/output', 'new output')
+          store.appendCommandStream('a1', 'span0', 'output', 'old output') // marks span0 active
+          store.appendCommandStream('a1', 'span49', 'output', 'new output')
           expect(store.hasRenderableCommandStream('a1', 'span0')).toBe(true)
 
           store.trimOldestEnd('a1', 30) // keep newest 30 (seq 21..50); drop span0..span19
@@ -3647,7 +3647,7 @@ describe('createChatStore', () => {
           msgs[19] = makeToolUseSpan('op', 20n, 'shared') // dropped (oldest end)
           msgs[20] = makeToolResultSpan('res', 21n, 'shared') // kept (in window)
           store.setMessages('a1', msgs)
-          store.appendCommandStream('a1', 'shared', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'shared', 'output', 'output')
           expect(store.getCommandStream('a1', 'shared')).toHaveLength(1)
 
           store.trimOldestEnd('a1', 30)
@@ -3667,7 +3667,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true, latestLiveSeq=50
           // span4's row (m4, seq 5) is mid-flight: appending marks the span renderable.
-          store.appendCommandStream('a1', 'span4', 'item/commandExecution/output', 'live output')
+          store.appendCommandStream('a1', 'span4', 'output', 'live output')
           expect(store.getCommandStream('a1', 'span4')).toHaveLength(1)
 
           // m4 is consolidated on the backend and reseq'd to a brand-new tail seq
@@ -3693,7 +3693,7 @@ describe('createChatStore', () => {
           const store = createChatStore()
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           // span4 is mid-flight (buffered + renderable).
-          store.appendCommandStream('a1', 'span4', 'item/commandExecution/output', 'live output')
+          store.appendCommandStream('a1', 'span4', 'output', 'live output')
           expect(store.getCommandStream('a1', 'span4')).toHaveLength(1)
 
           // A full-window replace (jump-to-oldest / reconnect snapshot landing on a
@@ -3713,7 +3713,7 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.setMessages('a1', [makeToolUseSpan('m1', 1n, 'span1')])
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'span1', 'output', 'output')
           // The stream ENDS: clearCommandStream drops the buffer, so span1 is no
           // longer buffered. A subsequent full-window replace that drops m1 has
           // nothing to spare -- the prune is a clean no-op, not a leak.
@@ -3730,7 +3730,7 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'span1', 'output', 'output')
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
           // The row is deleted while its tool is still mid-flight: clearing now
           // would lose the in-progress segments, so the buffer is SPARED and
@@ -3751,7 +3751,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           // span49 (a dropped newest row) buffers only a content-less break:
           // inactive, but holding a recorded part boundary a prune would lose.
-          store.appendCommandStream('a1', 'span49', 'item/reasoning/summaryPartAdded', '')
+          store.appendCommandStream('a1', 'span49', 'reasoning_summary_break', '')
           expect(store.hasRenderableCommandStream('a1', 'span49')).toBe(false)
 
           store.trimNewestEnd('a1', 30) // keep oldest 30 (seq 1..30); drop span30..span49
@@ -3774,7 +3774,7 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'span1', 'output', 'output')
           // Delete the row mid-flight: the active buffer is spared and recorded.
           store.removeMessage('a1', 'm1')
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
@@ -3804,7 +3804,7 @@ describe('createChatStore', () => {
           // span1 buffers only a content-less break (inactive). The old isActive guard
           // would clear it on delete, losing the recorded boundary; the buffer-based
           // guard spares and records it instead.
-          store.appendCommandStream('a1', 'span1', 'item/reasoning/summaryPartAdded', '')
+          store.appendCommandStream('a1', 'span1', 'reasoning_summary_break', '')
           expect(store.hasRenderableCommandStream('a1', 'span1')).toBe(false)
           store.removeMessage('a1', 'm1')
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
@@ -3818,14 +3818,14 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'span1', 'output', 'output')
           store.removeMessage('a1', 'm1') // spared (active), orphaned
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
           // The stream completes normally: clearCommandStream drops the buffer AND
           // forgets the orphan, so a later sweep is a no-op.
           store.clearCommandStream('a1', 'span1')
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 're-vivified')
+          store.appendCommandStream('a1', 'span1', 'output', 're-vivified')
           store.sweepOrphanedBufferedSpans('a1') // must NOT clear the new buffer
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
           dispose()
@@ -3838,7 +3838,7 @@ describe('createChatStore', () => {
           // A tool_use opener and its tool_result share one spanId.
           store.addMessage('a1', makeToolUseSpan('op', 1n, 'span1'))
           store.addMessage('a1', makeToolUseSpan('res', 2n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+          store.appendCommandStream('a1', 'span1', 'output', 'output')
           expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
 
           // Deleting only one member must NOT wipe the stream the survivor renders.
@@ -3863,7 +3863,7 @@ describe('createChatStore', () => {
           const store = createChatStore()
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           // A stream arrives for a span whose tool_use message hasn't loaded yet.
-          store.appendCommandStream('a1', 'pending-span', 'item/commandExecution/output', 'live')
+          store.appendCommandStream('a1', 'pending-span', 'output', 'live')
           store.trimOldestEnd('a1', 30) // drops only loaded oldest spans, never the orphan
           expect(store.getCommandStream('a1', 'pending-span')).toHaveLength(1)
           dispose()
@@ -3875,8 +3875,8 @@ describe('createChatStore', () => {
           const store = createChatStore()
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           // span49 is the live tail span, mid-stream; span40 streamed then completed.
-          store.appendCommandStream('a1', 'span49', 'item/commandExecution/output', 'live tail')
-          store.appendCommandStream('a1', 'span40', 'item/commandExecution/output', 'done')
+          store.appendCommandStream('a1', 'span49', 'output', 'live tail')
+          store.appendCommandStream('a1', 'span40', 'output', 'done')
           store.clearCommandStream('a1', 'span40') // completion clears buffer + renderable bit
           expect(store.getCommandStream('a1', 'span49')).toHaveLength(1)
 
@@ -3897,7 +3897,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeToolUseSpan(`m${i}`, BigInt(i + 1), `span${i}`)))
           store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
           // m5 (seq 6, span5) is inside the window and mid-stream.
-          store.appendCommandStream('a1', 'span5', 'item/commandExecution/output', 'live')
+          store.appendCommandStream('a1', 'span5', 'output', 'live')
           expect(store.getCommandStream('a1', 'span5')).toHaveLength(1)
 
           // m5 is reseq'd (notification consolidation) to a tail seq beyond the

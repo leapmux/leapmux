@@ -408,6 +408,45 @@ func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testi
 	}
 }
 
+func TestControlResponseRequestID(t *testing.T) {
+	// Both wire shapes are cross-provider, so every provider must extract the same id from the same
+	// bytes -- run each case over the provider map to pin "identical across providers" as a property,
+	// not an accident of one provider's resolver.
+	providers := map[string]Provider{
+		"noop":   noopProvider{},
+		"claude": claudeProvider{},
+		"codex":  codexProvider{},
+		"pi":     piProvider{},
+		"acp":    acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
+	}
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		// Neutral approve/reject envelope: response.request_id.
+		{"envelope", `{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`, "req-1"},
+		// Mixed envelopes still belong to the nested control response. A top-level JSON-RPC id can be
+		// present for provider plumbing, but the pending control_request row is keyed by
+		// response.request_id, so the nested id wins.
+		{"mixed nested wins", `{"id":"jsonrpc-req","response":{"request_id":"req-1","response":{"behavior":"allow"}}}`, "req-1"},
+		// JSON-RPC numeric id (ACP family).
+		{"jsonrpc numeric", `{"jsonrpc":"2.0","id":5,"result":{"outcome":{"outcome":"selected","optionId":"once"}}}`, "5"},
+		// JSON-RPC string id.
+		{"jsonrpc string", `{"jsonrpc":"2.0","id":"abc-123","result":{"outcome":{"outcome":"selected","optionId":"reject"}}}`, "abc-123"},
+		{"no id", `{"type":"unknown"}`, ""},
+		{"null id", `{"id":null}`, ""},
+		{"invalid json", `not json`, ""},
+	}
+	for providerName, provider := range providers {
+		for _, tc := range cases {
+			t.Run(providerName+"/"+tc.name, func(t *testing.T) {
+				assert.Equal(t, tc.want, provider.ControlResponseRequestID([]byte(tc.content)))
+			})
+		}
+	}
+}
+
 func TestWarnUnmarshal(t *testing.T) {
 	var ok struct {
 		Method string `json:"method"`

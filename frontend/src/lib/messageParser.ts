@@ -1,10 +1,7 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
-import type { TodoItem } from '~/stores/chatTodos'
+import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
-import { normalizeTodoStatus } from '~/stores/chatTodos'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -136,6 +133,18 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
 }
 
 /**
+ * The raw provider `message.usage` bag, when present. The `.message.usage` LOCATION is a
+ * provider-neutral envelope shape -- Claude and Pi both carry per-message token usage there -- so
+ * this accessor stays neutral; only the field NAMES inside are provider-specific (Claude
+ * `input_tokens`/`cache_*`, Pi `input`/`cacheWrite`), which each provider's `contextUsageFromMessage`
+ * interprets after reading the bag through here. Returns undefined when the message carries none.
+ */
+export function messageUsage(parsed: ParsedMessageContent): Record<string, unknown> | undefined {
+  const message = getInnerMessage(parsed)?.message
+  return isObject(message) ? (message.usage as Record<string, unknown> | undefined) : undefined
+}
+
+/**
  * The inner messages to scan for a notification: a consolidated thread's wrapped
  * messages, or the lone top-level message as a one-element array (empty when the
  * content failed to parse). Several extractors walk this same shape -- in reverse
@@ -161,22 +170,6 @@ export function todosToMarkdown(items: ReadonlyArray<{ status: string, content: 
       default: return `- [ ] ${t.content}`
     }
   }).join('\n')
-}
-
-/** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
-export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
-  return plan.flatMap((entry) => {
-    if (typeof entry !== 'object' || entry === null)
-      return []
-    const step = String((entry as Record<string, unknown>).step || '')
-    if (!step)
-      return []
-    return [{
-      content: step,
-      status: normalizeTodoStatus((entry as Record<string, unknown>).status),
-      activeForm: step,
-    }]
-  })
 }
 
 /** Normalize a snake_case context_usage broadcast payload into AgentSessionInfo shape. */
@@ -216,8 +209,19 @@ export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefi
   return usage
 }
 
-/** Extract context usage from an assistant message's inner usage field. */
-export function extractAssistantUsage(parsed: ParsedMessageContent): {
+/**
+ * Extract usage metadata (context usage + cumulative cost) from a message. The provider-neutral
+ * fields are read here -- subagent skip (a subagent's usage is already in the parent's totals),
+ * `total_cost_usd`, and a backend-normalized `context_usage`. Only when no normalized context_usage
+ * is present does it fall through to the provider's `contextUsageFromMessage`, which reads whatever
+ * raw shape carries the usage (Codex `thread/tokenUsage/updated`, Claude/Pi `message.usage`) -- so
+ * no provider wire shape lives here and the neutral guards never live in a provider. Runs for every
+ * message in the notification-metadata pass; returns null for a message that carries no usage.
+ */
+export function extractContextUsage(
+  parsed: ParsedMessageContent,
+  contextUsageFromMessage: (parsed: ParsedMessageContent) => ContextUsageInfo | null,
+): {
   totalCostUsd?: number
   contextUsage?: ContextUsageInfo
 } | null {
@@ -234,74 +238,16 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
     result.totalCostUsd = totalCostUsd
 
   const normalizedContextUsage = normalizeContextUsage(inner.context_usage)
-  if (normalizedContextUsage)
+  if (normalizedContextUsage) {
     result.contextUsage = normalizedContextUsage
-
-  const usage = (inner.message as Record<string, unknown> | undefined)?.usage as
-    Record<string, unknown> | undefined
-  if (usage && !result.contextUsage) {
-    // Claude Code shape.
-    if (typeof usage.input_tokens === 'number') {
-      result.contextUsage = {
-        inputTokens: usage.input_tokens as number,
-        cacheCreationInputTokens: pickNumber(usage, 'cache_creation_input_tokens', 0),
-        cacheReadInputTokens: pickNumber(usage, 'cache_read_input_tokens', 0),
-      }
-    }
-    // Pi shape, retained as a fallback for raw/unaugmented messages. Newer
-    // backend messages carry a normalized top-level contextUsage above.
-    else if (typeof usage.input === 'number') {
-      const inputTokens = usage.input as number
-      const cacheCreationInputTokens = pickNumber(usage, 'cacheWrite', 0)
-      const cacheReadInputTokens = pickNumber(usage, 'cacheRead', 0)
-      const outputTokens = pickNumber(usage, 'output', undefined)
-      const totalTokens = pickNumber(usage, 'totalTokens', undefined)
-      const hasPiTokenData = inputTokens > 0
-        || cacheCreationInputTokens > 0
-        || cacheReadInputTokens > 0
-        || (outputTokens ?? 0) > 0
-        || (totalTokens ?? 0) > 0
-      if (hasPiTokenData) {
-        const piUsage: ContextUsageInfo = {
-          inputTokens,
-          cacheCreationInputTokens,
-          cacheReadInputTokens,
-        }
-        if (outputTokens !== undefined)
-          piUsage.outputTokens = outputTokens
-        if (totalTokens !== undefined && totalTokens > 0)
-          piUsage.contextTokens = totalTokens
-        result.contextUsage = piUsage
-      }
-    }
+  }
+  else {
+    const fromProvider = contextUsageFromMessage(parsed)
+    if (fromProvider)
+      result.contextUsage = fromProvider
   }
 
   return Object.keys(result).length > 0 ? result : null
-}
-
-/** Extract context usage from a persisted Codex thread/tokenUsage/updated notification. */
-export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
-  contextUsage: ContextUsageInfo
-} | null {
-  const inner = getInnerMessage(parsed)
-  if (!inner || inner.method !== 'thread/tokenUsage/updated')
-    return null
-
-  const params = inner.params as Record<string, unknown> | undefined
-  const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined
-  const last = tokenUsage?.last as Record<string, unknown> | undefined
-  if (!last || typeof last.inputTokens !== 'number')
-    return null
-
-  const contextUsage: ContextUsageInfo = {
-    inputTokens: Math.max((last.inputTokens as number) - (typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0), 0),
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0,
-  }
-  if (typeof tokenUsage?.modelContextWindow === 'number')
-    contextUsage.contextWindow = tokenUsage.modelContextWindow as number
-
-  return { contextUsage }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,8 +328,13 @@ function parseCompactionMeta(meta: Record<string, unknown> | undefined): Compact
 }
 
 /**
- * A completed compaction boundary: Claude's `compact_boundary` system message or
- * Codex's `thread/compacted` JSON-RPC notification -- both the same signal.
+ * A completed compaction boundary: Claude's `compact_boundary` system message or Codex's
+ * `thread/compacted` JSON-RPC notification -- both the same signal. Deliberately NEUTRAL and
+ * shape-based (not a per-provider hook): the notification-thread renderer and the context-usage
+ * grid recognize a boundary by SHAPE regardless of the row's provider, so legacy Codex rows still
+ * carrying the `compact_boundary` shape, and any cross-provider row, render correctly. This is the
+ * shared renderer's cross-provider boundary vocabulary, a sibling of {@link parseBoundaryMeta}'s
+ * shared metadata-key knowledge, not one provider's wire parsing.
  */
 export function isCompactBoundary(m: Record<string, unknown>): boolean {
   return (m.type === 'system' && m.subtype === 'compact_boundary') || m.method === 'thread/compacted'
@@ -476,8 +427,19 @@ function findPrimaryContextWindow(modelUsage: Record<string, unknown>, primaryMo
   return maxContextWindow(modelUsage)
 }
 
-/** Extract result-message metadata: subtype, context usage/window, totalCostUsd, numToolUses. */
-export function extractResultMetadata(parsed: ParsedMessageContent, primaryModelId?: string): {
+/**
+ * Extract result-message metadata: subtype, context usage/window, totalCostUsd, numToolUses. The
+ * neutral fields are read here; `subtypeFallback` is the provider's derivation
+ * (Provider.resultSubtype) for a subtype that isn't on `inner.subtype` (Codex's `turn.status`), so
+ * no provider wire shape is matched in shared code. `subtypeFallback` takes the whole parsed message
+ * (like the sibling provider hooks) and is required so a caller can't silently drop the provider's
+ * subtype derivation; pass `() => undefined` when the caller has no provider fallback.
+ */
+export function extractResultMetadata(
+  parsed: ParsedMessageContent,
+  primaryModelId: string | undefined,
+  subtypeFallback: (parsed: ParsedMessageContent) => string | undefined,
+): {
   subtype?: string
   contextWindow?: number
   contextUsage?: ContextUsageInfo
@@ -496,10 +458,12 @@ export function extractResultMetadata(parsed: ParsedMessageContent, primaryModel
   if (inner.subtype)
     result.subtype = inner.subtype as string
 
-  // Codex turn/completed: detect via turn.status and map to the same shape.
-  const turn = inner.turn as Record<string, unknown> | undefined
-  if (!result.subtype && turn && typeof turn === 'object' && typeof turn.status === 'string')
-    result.subtype = 'turn_completed'
+  // A provider whose terminal envelope carries no `subtype` (Codex maps turn.status) derives it.
+  if (!result.subtype) {
+    const fallback = subtypeFallback(parsed)
+    if (fallback)
+      result.subtype = fallback
+  }
 
   // num_tool_uses is injected by the backend for all providers.
   if (typeof inner.num_tool_uses === 'number')
@@ -520,51 +484,6 @@ export function extractResultMetadata(parsed: ParsedMessageContent, primaryModel
     result.totalCostUsd = totalCostUsd
 
   return Object.keys(result).length > 0 ? result : null
-}
-
-/** Extract rate limit info from a Claude rate_limit_event or Codex rateLimits/updated inner message. */
-export function extractRateLimitInfo(parsed: ParsedMessageContent): {
-  key: string
-  info: RateLimitInfo
-}[] {
-  const inner = getInnerMessage(parsed)
-  if (!inner)
-    return []
-
-  // Claude raw rate_limit_event format: {type:"rate_limit_event", rate_limit_info:{...}}
-  if (inner.type === 'rate_limit_event') {
-    const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
-    if (!rlInfo || typeof rlInfo !== 'object')
-      return []
-    const key = (rlInfo.rateLimitType as string) || 'unknown'
-    return [{ key, info: rlInfo as RateLimitInfo }]
-  }
-
-  // Codex native format: {method:"account/rateLimits/updated", params:{rateLimits:{primary:{...},secondary:{...}}}}
-  if (inner.method === CODEX_RATE_LIMITS_METHOD) {
-    const results: { key: string, info: RateLimitInfo }[] = []
-    for (const { info } of iterCodexRateLimitTiers(inner)) {
-      if (info.rateLimitType)
-        results.push({ key: info.rateLimitType, info })
-    }
-    // Mirror the backend's elevate so this replay path agrees with the live
-    // session-info broadcast: when the authoritative reached-type says a
-    // time-windowed limit is hit but rounding kept every window under 100%,
-    // surface the most-utilized window as "exceeded".
-    if (codexRateLimitReachedType(inner) === CODEX_RATE_LIMIT_REACHED_TIME_WINDOW
-      && !results.some(r => r.info.status === 'exceeded')) {
-      let top: { key: string, info: RateLimitInfo } | undefined
-      for (const r of results) {
-        if (!top || (r.info.utilization ?? 0) > (top.info.utilization ?? 0))
-          top = r
-      }
-      if (top)
-        top.info = { ...top.info, status: 'exceeded' }
-    }
-    return results
-  }
-
-  return []
 }
 
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */

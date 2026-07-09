@@ -1188,8 +1188,8 @@ export function createChatStore() {
       }
     },
 
-    appendCommandStream(agentId: string, spanId: string, method: string, text: string) {
-      commandStreams.append(agentId, spanId, method, text)
+    appendCommandStream(agentId: string, spanId: string, segmentKind: CommandStreamSegment['kind'], text: string) {
+      commandStreams.append(agentId, spanId, segmentKind, text)
     },
 
     getCommandStream(agentId: string, spanId: string): CommandStreamSegment[] {

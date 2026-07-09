@@ -1,10 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
+import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from './OpenCodeControlRequest'
 
 // Side-effect import to register the OpenCode plugin.
 import './plugin'

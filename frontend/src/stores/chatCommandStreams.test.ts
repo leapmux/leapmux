@@ -2,9 +2,11 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createCommandStreamStore } from '~/stores/chatCommandStreams'
 
-const OUTPUT = 'item/commandExecution/output'
-const SUMMARY = 'item/reasoning/summaryTextDelta'
-const BREAK = 'item/reasoning/summaryPartAdded'
+// The store now stores segments by resolved kind (the method->kind mapping moved to the Codex
+// plugin's commandStreamSegmentKind hook), so these are the kinds the former methods mapped to.
+const OUTPUT = 'output' as const
+const SUMMARY = 'reasoning_summary' as const
+const BREAK = 'reasoning_summary_break' as const
 
 describe('chatCommandStreams', () => {
   it('merges consecutive same-kind deltas into one segment', () =>

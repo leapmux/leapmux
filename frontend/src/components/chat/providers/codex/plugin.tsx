@@ -5,19 +5,22 @@ import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { getInnerMessage } from '~/lib/messageParser'
+import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
-import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
+import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from './CodexControlRequest'
 import {
   CODEX_OPTION_COLLABORATION_MODE,
   CODEX_OPTION_NETWORK_ACCESS,
@@ -276,6 +279,92 @@ const CODEX_LEAPMUX_NOTIFICATION_TYPES = new Set<string>([
   'compacting',
 ])
 
+/** Codex rate limits: {method:"account/rateLimits/updated", params:{rateLimits:{primary,secondary}}}. */
+function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key: string, info: RateLimitInfo }[] | null {
+  const inner = getInnerMessage(parsed)
+  if (!inner || inner.method !== CODEX_RATE_LIMITS_METHOD)
+    return null
+  const results: { key: string, info: RateLimitInfo }[] = []
+  for (const { info } of iterCodexRateLimitTiers(inner)) {
+    if (info.rateLimitType)
+      results.push({ key: info.rateLimitType, info })
+  }
+  // Mirror the backend's elevate so this replay path agrees with the live session-info broadcast:
+  // when the authoritative reached-type says a time-windowed limit is hit but rounding kept every
+  // window under 100%, surface the most-utilized window as "exceeded".
+  if (codexRateLimitReachedType(inner) === CODEX_RATE_LIMIT_REACHED_TIME_WINDOW
+    && !results.some(r => r.info.status === 'exceeded')) {
+    let top: { key: string, info: RateLimitInfo } | undefined
+    for (const r of results) {
+      if (!top || (r.info.utilization ?? 0) > (top.info.utilization ?? 0))
+        top = r
+    }
+    if (top)
+      top.info = { ...top.info, status: 'exceeded' }
+  }
+  return results
+}
+
+/** Codex context usage from a `thread/tokenUsage/updated` notification (`params.tokenUsage.last`). */
+function codexContextUsageFromNotification(parsed: ParsedMessageContent): ContextUsageInfo | null {
+  const inner = getInnerMessage(parsed)
+  if (!inner || inner.method !== 'thread/tokenUsage/updated')
+    return null
+  const params = inner.params as Record<string, unknown> | undefined
+  const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined
+  const last = tokenUsage?.last as Record<string, unknown> | undefined
+  if (!last || typeof last.inputTokens !== 'number')
+    return null
+  const cached = typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0
+  const contextUsage: ContextUsageInfo = {
+    inputTokens: Math.max((last.inputTokens as number) - cached, 0),
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: cached,
+  }
+  if (typeof tokenUsage?.modelContextWindow === 'number')
+    contextUsage.contextWindow = tokenUsage.modelContextWindow as number
+  return contextUsage
+}
+
+/**
+ * Codex lifecycle → session-info patch: clear the live turn id on thread/started, clear the plan
+ * streaming indicator on a `plan` item.
+ */
+function codexLifecycleSessionInfo(parsed: ParsedMessageContent): Partial<AgentSessionInfo> | null {
+  const method = parsed.parentObject?.method as string | undefined
+  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+  const patch: Partial<AgentSessionInfo> = {}
+  // A new Codex thread starts idle. Clear any stale turn ID restored from localStorage so the chat
+  // shows its empty state instead of a phantom thinking indicator.
+  if (method === 'thread/started')
+    patch.codexTurnId = ''
+  if (item?.type === 'plan')
+    patch.streamingType = ''
+  return Object.keys(patch).length > 0 ? patch : null
+}
+
+/**
+ * Codex: a persisted span row supersedes its command stream when a commandExecution/fileChange
+ * item is completed, or a reasoning item now carries summary/content.
+ */
+function codexCommandSpanSuperseded(parsed: ParsedMessageContent): boolean {
+  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+  if (!item)
+    return false
+  if ((item.type === 'commandExecution' || item.type === 'fileChange') && item.status === 'completed')
+    return true
+  return item.type === 'reasoning'
+    && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
+}
+
+// Map a Codex command-stream delta method to its segment kind; unknown methods are plain output.
+const CODEX_METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
+  'item/commandExecution/terminalInteraction': 'interaction',
+  'item/reasoning/summaryTextDelta': 'reasoning_summary',
+  'item/reasoning/textDelta': 'reasoning_content',
+  'item/reasoning/summaryPartAdded': 'reasoning_summary_break',
+}
+
 const codexPlugin: Provider = {
   bypassPermissionMode: 'never',
   // Seed a new Codex agent with its default collaboration mode.
@@ -448,6 +537,17 @@ const codexPlugin: Provider = {
   // the thinking indicator after a reconnect / missed live event -- so it clears the
   // active codex_turn_id, mirroring the ephemeral session-info clear.
   resultDividerEndsActiveTurn: subtype => subtype === 'turn_completed',
+
+  rateLimitsFromMessage: codexRateLimitsFromMessage,
+  contextUsageFromMessage: codexContextUsageFromNotification,
+  // Codex turn/completed carries no `subtype`; detect via the `turn` object's status.
+  resultSubtype: (parsed) => {
+    const turn = getInnerMessage(parsed)?.turn as Record<string, unknown> | undefined
+    return turn && typeof turn === 'object' && typeof turn.status === 'string' ? 'turn_completed' : undefined
+  },
+  lifecycleSessionInfo: codexLifecycleSessionInfo,
+  commandSpanSuperseded: codexCommandSpanSuperseded,
+  commandStreamSegmentKind: method => CODEX_METHOD_TO_SEGMENT_KIND[method] ?? null,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

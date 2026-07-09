@@ -1,7 +1,11 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { providerFor } from '~/components/chat/providers/registry'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
+// Register the provider plugins: createSpanIndex resolves span roles through pluginFor (Claude
+// reads Anthropic tool_use/tool_result blocks, Pi routes by envelope type).
+import '~/components/chat/providers'
 
 function encode(raw: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(raw))
@@ -74,6 +78,20 @@ function piEnd(id: string, spanId: string) {
   })
 }
 
+/** A Codex command-span row. Codex registers no spanRole hook, so it classifies as 'other'. */
+function codexSpan(id: string, spanId: string, seq: bigint, status: string) {
+  return create(AgentChatMessageSchema, {
+    id,
+    source: MessageSource.AGENT,
+    content: encode({ item: { type: 'commandExecution', status } }),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    spanId,
+    spanType: 'commandExecution',
+    agentProvider: AgentProvider.CODEX,
+  })
+}
+
 describe('createspanindex', () => {
   it('routes by content-block role, not arrival order (result before opener)', () => {
     const idx = createSpanIndex()
@@ -138,6 +156,24 @@ describe('createspanindex', () => {
     idx.reindex('a1', [opener, result])
     expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.content).toBe('OPENER')
     expect(idx.getResultParsed('a1', 's1')?.parentObject?.content).toBe('RESULT')
+  })
+
+  it('files Codex/ACP span rows (no spanRole hook) first-seen-is-opener, pairing same-span rows via the backstop', () => {
+    // Codex and the ACP providers intentionally register NO spanRole hook: their spans are
+    // single-logical-row (the item IS both opener and terminal state), so createSpanIndex defaults
+    // them to 'other'. Pin that so nobody "fixes" it by adding a Codex/ACP spanRole returning
+    // 'opener' -- that would file two same-span rows both on the opener side and break result lookup
+    // (the very pairing this test asserts). A DISTINCT result-role row would instead need 'result'.
+    expect(providerFor(AgentProvider.CODEX)?.spanRole).toBeUndefined()
+    expect(providerFor(AgentProvider.OPENCODE)?.spanRole).toBeUndefined()
+
+    const idx = createSpanIndex()
+    // A started row then a re-broadcast completed row (distinct id) share the span. In seq order the
+    // first files as the opener; the second 'other' member flags a conflict and the backstop files it
+    // as the result -- so getResultMessage still resolves.
+    expect(idx.index('a1', codexSpan('started', 's1', 1n, 'in_progress'), codexSpan('completed', 's1', 2n, 'completed'))).toBe(true)
+    expect(idx.getOpenerMessage('a1', 's1')?.id).toBe('started')
+    expect(idx.getResultMessage('a1', 's1')?.id).toBe('completed')
   })
 
   it('keeps agents and absent spans isolated', () => {

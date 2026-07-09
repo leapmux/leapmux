@@ -103,10 +103,11 @@ func classifyAttachments(attachments []*leapmuxv1.Attachment) []classifiedAttach
 }
 
 func NormalizeAttachmentsForProvider(provider leapmuxv1.AgentProvider, attachments []*leapmuxv1.Attachment) ([]*leapmuxv1.Attachment, error) {
+	plugin := ProviderFor(provider)
 	classified := classifyAttachments(attachments)
 	normalized := make([]*leapmuxv1.Attachment, 0, len(classified))
 	for _, attachment := range classified {
-		if err := validateAttachmentForProvider(provider, attachment); err != nil {
+		if err := plugin.ValidateAttachment(attachment); err != nil {
 			return nil, err
 		}
 		normalized = append(normalized, &leapmuxv1.Attachment{
@@ -182,36 +183,59 @@ func isTextAttachmentMimeType(mimeType string) bool {
 		strings.HasSuffix(mimeType, "+xml")
 }
 
-func validateAttachmentForProvider(provider leapmuxv1.AgentProvider, attachment classifiedAttachment) error {
-	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:
-		if attachment.kind == attachmentKindBinary {
-			return fmt.Errorf("claude code does not support binary attachments: %s", attachment.filename)
-		}
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
-		if attachment.kind == attachmentKindPDF {
-			return fmt.Errorf("codex does not support PDF attachments: %s", attachment.filename)
-		}
-		if attachment.kind == attachmentKindBinary {
-			return fmt.Errorf("codex does not support binary attachments: %s", attachment.filename)
-		}
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
-		return nil
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
-		return nil
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
-		if attachment.kind == attachmentKindPDF {
-			return fmt.Errorf("pi does not support PDF attachments: %s", attachment.filename)
-		}
-		if attachment.kind == attachmentKindBinary {
-			return fmt.Errorf("pi does not support binary attachments: %s", attachment.filename)
-		}
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
-		// Reasonix is text-only: it advertises image:false/audio:false and drops
-		// any non-text content block, so reject everything but text up front.
-		if attachment.kind != attachmentKindText {
-			return fmt.Errorf("reasonix only supports text attachments: %s", attachment.filename)
-		}
+// ValidateAttachment defaults to accepting every classified attachment. Providers with no
+// restriction (Cursor, Copilot, Kilo, OpenCode, Goose) and unknown providers (via the ProviderFor
+// noop fallback) inherit this; the ACP providers reach it through their noopProvider embedding
+// unless they register a restrictive validateAttachment hook.
+func (noopProvider) ValidateAttachment(classifiedAttachment) error { return nil }
+
+// Claude Code accepts text, image, and PDF blocks but has no binary content block.
+func (claudeProvider) ValidateAttachment(attachment classifiedAttachment) error {
+	if attachment.kind == attachmentKindBinary {
+		return fmt.Errorf("claude code does not support binary attachments: %s", attachment.filename)
+	}
+	return nil
+}
+
+// rejectPDFAndBinaryAttachment enforces the "text and image only" policy shared by Codex and Pi:
+// neither has an input representation for a PDF or binary content block. label names the provider in
+// the rejection message so the single policy body can't drift between the two providers.
+func rejectPDFAndBinaryAttachment(label string, attachment classifiedAttachment) error {
+	if attachment.kind == attachmentKindPDF {
+		return fmt.Errorf("%s does not support PDF attachments: %s", label, attachment.filename)
+	}
+	if attachment.kind == attachmentKindBinary {
+		return fmt.Errorf("%s does not support binary attachments: %s", label, attachment.filename)
+	}
+	return nil
+}
+
+// Codex accepts text and image blocks; PDF and binary have no representation in its input.
+func (codexProvider) ValidateAttachment(attachment classifiedAttachment) error {
+	return rejectPDFAndBinaryAttachment("codex", attachment)
+}
+
+// Pi accepts text and image blocks; PDF and binary have no representation in its input.
+func (piProvider) ValidateAttachment(attachment classifiedAttachment) error {
+	return rejectPDFAndBinaryAttachment("pi", attachment)
+}
+
+// ValidateAttachment dispatches to the ACP provider's registered policy hook. It must override the
+// embedded noopProvider method explicitly -- the embedded default would ignore validateAttachment.
+// nil hook accepts everything (Cursor, Copilot, Kilo, OpenCode, Goose).
+func (p acpProvider) ValidateAttachment(attachment classifiedAttachment) error {
+	if p.validateAttachment != nil {
+		return p.validateAttachment(attachment)
+	}
+	return nil
+}
+
+// reasonixValidateAttachment enforces Reasonix's text-only policy: it advertises
+// image:false/audio:false and drops any non-text content block, so reject everything but text up
+// front. Registered as the ACP validateAttachment hook for Reasonix.
+func reasonixValidateAttachment(attachment classifiedAttachment) error {
+	if attachment.kind != attachmentKindText {
+		return fmt.Errorf("reasonix only supports text attachments: %s", attachment.filename)
 	}
 	return nil
 }
