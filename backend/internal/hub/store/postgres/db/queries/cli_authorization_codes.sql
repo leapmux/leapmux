@@ -3,6 +3,10 @@ INSERT INTO cli_authorization_codes (
     code, user_id, code_challenge, device_name, expires_at
 ) VALUES ($1, $2, $3, $4, $5);
 
+-- name: GetActiveCLIAuthorizationCode :one
+SELECT * FROM cli_authorization_codes
+WHERE code = $1 AND consumed_at IS NULL AND expires_at > NOW();
+
 -- name: ConsumeCLIAuthorizationCode :one
 UPDATE cli_authorization_codes
 SET consumed_at = NOW()

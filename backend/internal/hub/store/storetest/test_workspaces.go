@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
@@ -425,5 +426,112 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, workspaces, 1)
 		assert.Equal(t, wsA, workspaces[0].ID)
+	})
+
+	t.Run("list all accessible spans orgs and includes owned", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgA := SeedOrg(t, st, "aa-orgA", false)
+		orgB := SeedOrg(t, st, "aa-orgB", false)
+		viewer := SeedUser(t, st, orgA, "aa-viewer") // member of orgA only
+		ownerA := SeedUser(t, st, orgA, "aa-ownerA") // shares a same-org workspace
+		ownerB := SeedUser(t, st, orgB, "aa-ownerB") // shares a cross-org workspace
+		ownedByViewer := SeedWorkspace(t, st, orgA, viewer.ID, "viewer own")
+		sameOrgShared := SeedWorkspace(t, st, orgA, ownerA.ID, "same-org shared")
+		crossOrgShared := SeedWorkspace(t, st, orgB, ownerB.ID, "cross-org shared")
+		deletedShared := SeedWorkspace(t, st, orgB, ownerB.ID, "deleted shared")
+		unrelated := SeedWorkspace(t, st, orgB, ownerB.ID, "unrelated, not shared")
+
+		for _, wsID := range []string{sameOrgShared, crossOrgShared, deletedShared} {
+			require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
+				WorkspaceID: wsID, UserID: viewer.ID,
+			}))
+		}
+		// A soft-deleted grant must not surface.
+		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+			ID: deletedShared, OwnerUserID: ownerB.ID,
+		})
+		require.NoError(t, err)
+
+		accessible, err := st.Workspaces().ListAllAccessible(ctx, viewer.ID)
+		require.NoError(t, err)
+		ids := make([]string, len(accessible))
+		for i, w := range accessible {
+			ids[i] = w.ID
+		}
+		// Owned (any org) + same-org grant + cross-org grant all surface, with no
+		// org filter; the soft-deleted grant and a workspace never shared do not.
+		assert.ElementsMatch(t, []string{ownedByViewer, sameOrgShared, crossOrgShared}, ids)
+		assert.NotContains(t, ids, deletedShared, "soft-deleted workspace must be excluded")
+		assert.NotContains(t, ids, unrelated, "a workspace not owned and not granted must be excluded")
+
+		// Each returned workspace carries its true owning org so the caller can
+		// route follow-up reads; the cross-org one is in orgB.
+		for _, w := range accessible {
+			if w.ID == crossOrgShared {
+				assert.Equal(t, orgB, w.OrgID)
+			}
+		}
+
+		// The owner sees their OWN workspaces (owner-or-grant), across orgs, minus
+		// the soft-deleted one -- and not another user's owned/shared rows.
+		ownerAccessible, err := st.Workspaces().ListAllAccessible(ctx, ownerB.ID)
+		require.NoError(t, err)
+		ownerIDs := make([]string, len(ownerAccessible))
+		for i, w := range ownerAccessible {
+			ownerIDs[i] = w.ID
+		}
+		assert.ElementsMatch(t, []string{crossOrgShared, unrelated}, ownerIDs)
+	})
+
+	t.Run("list all accessible dedups owned-and-granted and orders newest-first", func(t *testing.T) {
+		// Exercises the two boundaries the UNION-of-indexed-seeks form must
+		// preserve: a workspace the user both OWNS and was explicitly GRANTED
+		// collapses to one row (UNION, not UNION ALL), and the trailing ORDER BY
+		// over the union result ranks every branch newest-first across orgs.
+		st := s.NewStore(t)
+		orgA := SeedOrg(t, st, "dedup-orgA", false)
+		orgB := SeedOrg(t, st, "dedup-orgB", false)
+		viewer := SeedUser(t, st, orgA, "dedup-viewer") // member of orgA only
+		granter := SeedUser(t, st, orgB, "dedup-granter")
+
+		// Sleep between creates so created_at ordering is deterministic (some
+		// backends only have millisecond precision, and ids are random nanoids
+		// that carry no creation order).
+		ownedA := SeedWorkspace(t, st, orgA, viewer.ID, "owned in A") // oldest
+		time.Sleep(5 * time.Millisecond)
+		ownedB := SeedWorkspace(t, st, orgB, viewer.ID, "owned in B") // owned in a second org
+		time.Sleep(5 * time.Millisecond)
+		// Owned AND granted to the same viewer: UNION must dedup it to one row.
+		ownedAndGranted := SeedWorkspace(t, st, orgA, viewer.ID, "owned and granted")
+		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
+			WorkspaceID: ownedAndGranted, UserID: viewer.ID,
+		}))
+		time.Sleep(5 * time.Millisecond)
+		// Granted-only in an org the viewer neither owns nor belongs to.
+		grantedOnly := SeedWorkspace(t, st, orgB, granter.ID, "granted only") // newest
+		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
+			WorkspaceID: grantedOnly, UserID: viewer.ID,
+		}))
+
+		accessible, err := st.Workspaces().ListAllAccessible(ctx, viewer.ID)
+		require.NoError(t, err)
+		ids := make([]string, len(accessible))
+		for i, w := range accessible {
+			ids[i] = w.ID
+		}
+
+		// Owned-across-orgs + owned-and-granted (once) + granted-only, newest-first.
+		assert.Equal(t, []string{grantedOnly, ownedAndGranted, ownedB, ownedA}, ids,
+			"results must be deduped and ordered by created_at DESC (newest first)")
+
+		// Explicit dedup guard: the owned-and-granted workspace appears exactly
+		// once. UNION ALL (or a regressed DISTINCT) would surface it twice.
+		count := 0
+		for _, wid := range ids {
+			if wid == ownedAndGranted {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "a workspace both owned and granted must appear exactly once")
 	})
 }

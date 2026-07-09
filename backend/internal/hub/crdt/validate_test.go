@@ -2,9 +2,11 @@ package crdt_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -13,16 +15,16 @@ import (
 // allowAll returns an AuthChecker that accepts every workspace.
 type allowAll struct{}
 
-func (allowAll) CanWriteWorkspace(_ context.Context, _, _, _ string) bool { return true }
-func (allowAll) CanReadWorkspace(_ context.Context, _, _, _ string) bool  { return true }
-func (allowAll) CanUseWorker(_ context.Context, _, _, _ string) bool      { return true }
+func (allowAll) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+func (allowAll) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error)  { return true, nil }
+func (allowAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)      { return true, nil }
 
 // denyAll returns an AuthChecker that rejects every workspace.
 type denyAll struct{}
 
-func (denyAll) CanWriteWorkspace(_ context.Context, _, _, _ string) bool { return false }
-func (denyAll) CanReadWorkspace(_ context.Context, _, _, _ string) bool  { return false }
-func (denyAll) CanUseWorker(_ context.Context, _, _, _ string) bool      { return false }
+func (denyAll) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
+func (denyAll) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error)  { return false, nil }
+func (denyAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)      { return false, nil }
 
 // onlyOwner returns an AuthChecker that accepts only workspaces
 // owned by the given principal id.
@@ -30,13 +32,13 @@ type onlyOwner struct {
 	allowed map[string]bool // workspaceID set
 }
 
-func (o onlyOwner) CanWriteWorkspace(_ context.Context, _, workspaceID, _ string) bool {
-	return o.allowed[workspaceID]
+func (o onlyOwner) CanWriteWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
+	return o.allowed[workspaceID], nil
 }
-func (o onlyOwner) CanReadWorkspace(_ context.Context, _, workspaceID, _ string) bool {
-	return o.allowed[workspaceID]
+func (o onlyOwner) CanReadWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
+	return o.allowed[workspaceID], nil
 }
-func (o onlyOwner) CanUseWorker(_ context.Context, _, _, _ string) bool { return true }
+func (o onlyOwner) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
 
 // workerScope is an AuthChecker variant that accepts every workspace
 // (the per-op auth check is orthogonal to worker_ref validation) but
@@ -47,10 +49,101 @@ type workerScope struct {
 	workers map[string]bool
 }
 
-func (workerScope) CanWriteWorkspace(_ context.Context, _, _, _ string) bool { return true }
-func (workerScope) CanReadWorkspace(_ context.Context, _, _, _ string) bool  { return true }
-func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) bool {
-	return s.workers[workerID]
+func (workerScope) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+	return true, nil
+}
+func (workerScope) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+	return true, nil
+}
+func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
+	return s.workers[workerID], nil
+}
+
+// erroringAuth is an AuthChecker whose every predicate fails with a transient
+// store error, exercising the retryable-vs-forbidden distinction: a lookup
+// failure must NOT collapse into a permanent FORBIDDEN op-rejection.
+type erroringAuth struct{ err error }
+
+func (e erroringAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
+	return false, e.err
+}
+func (e erroringAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+	return false, e.err
+}
+func (e erroringAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+	return false, e.err
+}
+
+// TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden guards the J1
+// fix: when the per-op permission lookup fails transiently (a store error), the
+// validator must set result.Err (a retryable signal) rather than reject the op
+// as BATCH_REJECTION_FORBIDDEN_WORKSPACE, which would silently drop a user's edit
+// on a brief DB hiccup.
+func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	// A live tab whose tombstone triggers a CanWriteWorkspace(preWS=w1) check.
+	pre.Tabs["tA"] = &leapmuxv1.TabRecord{
+		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:    "tA",
+		TileId:   &leapmuxv1.LWWString{Value: "root1", Hlc: hlcAt(1, 0, "seed")},
+		WorkerId: &leapmuxv1.LWWString{Value: "wkr", Hlc: hlcAt(1, 1, "seed")},
+		Position: &leapmuxv1.LWWString{Value: "p", Hlc: hlcAt(1, 2, "seed")},
+	}
+	tomb := stamped(&leapmuxv1.TombstoneTabOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+	}, hlcAt(10, 0, "a"))
+
+	boom := errors.New("db unavailable")
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tomb}, false /* not internal */, "p1", erroringAuth{err: boom})
+
+	require.ErrorIs(t, res.Err, boom, "a transient permission-lookup failure must surface as a retryable error")
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
+		"a transient lookup error must NOT be a permanent FORBIDDEN op-rejection")
+	assert.Nil(t, working)
+}
+
+// workerRefErrorAuth allows all workspace access but fails the worker lookup, so
+// a SetTabRegisterOp.worker_id write clears the write-auth check and reaches
+// validateWorkerRefs' CanUseWorker call.
+type workerRefErrorAuth struct{ err error }
+
+func (workerRefErrorAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+func (workerRefErrorAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+func (w workerRefErrorAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+	return false, w.err
+}
+
+// TestValidate_TransientWorkerLookupError_SurfacesAsErr guards the other half of
+// the J1 fix: the worker-ref gate (validateWorkerRefs) must also treat a
+// transient CanUseWorker store error as retryable (result.Err) rather than a
+// permanent INVALID_WORKER_REF rejection that would silently drop the edit.
+func TestValidate_TransientWorkerLookupError_SurfacesAsErr(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	pre.Tabs["tA"] = &leapmuxv1.TabRecord{
+		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:    "tA",
+		TileId:   &leapmuxv1.LWWString{Value: "root1", Hlc: hlcAt(1, 0, "seed")},
+		WorkerId: &leapmuxv1.LWWString{Value: "wkr", Hlc: hlcAt(1, 1, "seed")},
+		Position: &leapmuxv1.LWWString{Value: "p", Hlc: hlcAt(1, 2, "seed")},
+	}
+	// Re-point the existing tab at a different worker so validateWorkerRefs runs
+	// CanUseWorker on the new id (an in-place edit clears the write check first).
+	op := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
+	}, hlcAt(10, 0, "a"))
+
+	boom := errors.New("db unavailable")
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false /* not internal */, "p1", workerRefErrorAuth{err: boom})
+
+	require.ErrorIs(t, res.Err, boom, "a transient worker-lookup failure must surface as a retryable error")
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
+		"a transient worker-lookup error must NOT be a permanent INVALID_WORKER_REF rejection")
+	assert.Nil(t, working)
 }
 
 func TestValidate_TabPlacementInvariant_OrphanTile(t *testing.T) {

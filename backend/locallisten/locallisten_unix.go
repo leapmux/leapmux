@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"syscall"
+	"time"
 )
 
 func listenUnix(path string) (net.Listener, error) {
@@ -54,6 +56,14 @@ func removeStaleSocket(path string) error {
 		return err
 	}
 	if info.Mode().Type() == fs.ModeSocket {
+		conn, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return fmt.Errorf("%s is already in use", path)
+		}
+		if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+			return fmt.Errorf("probe existing socket %s: %w", path, dialErr)
+		}
 		return os.Remove(path)
 	}
 	return fmt.Errorf("%s exists but is not a socket", path)

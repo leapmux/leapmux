@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -43,12 +44,13 @@ func (s *Suite) testSessions(t *testing.T) {
 		// LastActiveAt is used as a gate in the WHERE clause (last_active_at < ?),
 		// so use a future time to ensure the condition matches.
 		newActive := time.Now().Add(1 * time.Minute)
-		err := st.Sessions().Touch(ctx, store.TouchSessionParams{
+		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
 			ID:           sess.ID,
 			ExpiresAt:    newExpiry,
 			LastActiveAt: newActive,
 		})
 		require.NoError(t, err)
+		assert.Equal(t, int64(1), n, "a matched touch reports one updated row")
 
 		updated, err := st.Sessions().GetByID(ctx, sess.ID)
 		require.NoError(t, err)
@@ -69,6 +71,27 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		_, err = st.Sessions().GetByID(ctx, sess.ID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("delete publishes session revocation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "sess-org", true)
+		user := SeedUser(t, st, orgID, "del-event-user")
+		sess := SeedSession(t, st, user.ID)
+
+		n, err := st.Sessions().Delete(ctx, sess.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindSession, events[0].Event.Kind)
+		assert.Equal(t, sess.ID, events[0].Event.SubjectID)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
 	})
 
 	t.Run("delete nonexistent returns zero", func(t *testing.T) {
@@ -155,6 +178,33 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.True(t, sw.EmailVerified)
 	})
 
+	t.Run("user revocation invalidates stale session generation", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "sess-org", true)
+		user := SeedUser(t, st, orgID, "generation-user")
+		sess := SeedSession(t, st, user.ID)
+
+		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), sw.AuthGeneration)
+
+		_, err = st.Users().RevokeUserTokens(ctx, user.ID)
+		require.NoError(t, err)
+		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+
+		n, err := st.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
+			SessionID: sess.ID,
+			UserID:    user.ID,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		sw, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), sw.AuthGeneration)
+	})
+
 	t.Run("validate with user not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.Sessions().ValidateWithUser(ctx, "nonexistent")
@@ -231,12 +281,13 @@ func (s *Suite) testSessions(t *testing.T) {
 		// First touch with a future LastActiveAt — should succeed.
 		futureActive := time.Now().Add(1 * time.Minute)
 		newExpiry := time.Now().Add(48 * time.Hour)
-		err := st.Sessions().Touch(ctx, store.TouchSessionParams{
+		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
 			ID:           sess.ID,
 			ExpiresAt:    newExpiry,
 			LastActiveAt: futureActive,
 		})
 		require.NoError(t, err)
+		assert.Equal(t, int64(1), n, "the first (matching) touch updates one row")
 
 		after1, err := st.Sessions().GetByID(ctx, sess.ID)
 		require.NoError(t, err)
@@ -244,14 +295,17 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		// Second touch with a past LastActiveAt — should be a no-op
 		// because the session's last_active_at is already beyond this value.
+		// It must report zero rows so the interceptor does not slide in-memory
+		// lifecycle deadlines past the un-advanced DB expiry (see touchSession).
 		staleActive := sess.CreatedAt.Add(-1 * time.Minute)
 		staleExpiry := time.Now().Add(72 * time.Hour)
-		err = st.Sessions().Touch(ctx, store.TouchSessionParams{
+		n, err = st.Sessions().Touch(ctx, store.TouchSessionParams{
 			ID:           sess.ID,
 			ExpiresAt:    staleExpiry,
 			LastActiveAt: staleActive,
 		})
 		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "a stale (below-threshold) touch matches no row")
 
 		after2, err := st.Sessions().GetByID(ctx, sess.ID)
 		require.NoError(t, err)
@@ -262,13 +316,40 @@ func (s *Suite) testSessions(t *testing.T) {
 	t.Run("touch non-existent", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		// Touch a non-existent session should be a no-op (no error).
-		err := st.Sessions().Touch(ctx, store.TouchSessionParams{
+		// Touch a non-existent session should be a no-op (no error) and report
+		// zero rows updated.
+		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
 			ID:           "nonexistent-sess",
 			ExpiresAt:    time.Now().Add(24 * time.Hour),
 			LastActiveAt: time.Now(),
 		})
 		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "touching a missing session matches no row")
+	})
+
+	t.Run("touch rolls back with transaction", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "sess-org", true)
+		user := SeedUser(t, st, orgID, "touch-tx-user")
+		sess := SeedSession(t, st, user.ID)
+
+		rollbackErr := errors.New("rollback touch")
+		newExpiry := time.Now().Add(48 * time.Hour)
+		err := st.RunInTransaction(ctx, func(tx store.Store) error {
+			n, err := tx.Sessions().Touch(ctx, store.TouchSessionParams{
+				ID:           sess.ID,
+				ExpiresAt:    newExpiry,
+				LastActiveAt: time.Now().Add(1 * time.Minute),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), n, "the in-transaction touch updates one row before rollback")
+			return rollbackErr
+		})
+		require.ErrorIs(t, err, rollbackErr)
+
+		after, err := st.Sessions().GetByID(ctx, sess.ID)
+		require.NoError(t, err)
+		assert.WithinDuration(t, sess.ExpiresAt, after.ExpiresAt, time.Second)
 	})
 
 	t.Run("delete others with single session", func(t *testing.T) {

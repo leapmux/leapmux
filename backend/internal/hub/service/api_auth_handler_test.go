@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,15 +27,79 @@ import (
 )
 
 // apiAuthEnv wires the APIAuthHandler against an in-memory store with
-// the bootstrap admin already provisioned, plus a SessionCache and the
-// RefreshGraceCache the handler depends on.
+// the bootstrap admin already provisioned, plus the token validator and
+// session cache the handler depends on.
 type apiAuthEnv struct {
-	store      store.Store
-	validator  *auth.TokenValidator
-	cache      *auth.SessionCache
-	graceCache *auth.RefreshGraceCache
-	server     *httptest.Server
-	userID     string
+	store     store.Store
+	validator *auth.TokenValidator
+	cache     *auth.AuthContextRegistry
+	closer    *recordingBearerCloser
+	server    *httptest.Server
+	userID    string
+}
+
+type recordingBearerCloser struct {
+	mu             sync.Mutex
+	tokenIDs       []string
+	kinds          []auth.BearerKind
+	rescheduledIDs []string
+}
+
+type noopBearerCloser struct{}
+
+func (noopBearerCloser) CloseChannelsByBearer(auth.BearerRef) int        { return 0 }
+func (noopBearerCloser) CloseChannelsBySession(string) int               { return 0 }
+func (noopBearerCloser) CloseChannelsByUserRevocation(string, int64) int { return 0 }
+func (noopBearerCloser) RestampSessionGeneration(string, int64)          {}
+
+func TestNewAPIAuthHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
+	require.Panics(t, func() {
+		service.NewAPIAuthHandler(nil, nil, nil, "")
+	})
+}
+
+func (c *recordingBearerCloser) CloseChannelsByBearer(ref auth.BearerRef) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.kinds = append(c.kinds, ref.Kind())
+	c.tokenIDs = append(c.tokenIDs, ref.TokenID())
+	return 0
+}
+
+func (*recordingBearerCloser) CloseChannelsBySession(string) int               { return 0 }
+func (*recordingBearerCloser) CloseChannelsByUserRevocation(string, int64) int { return 0 }
+func (*recordingBearerCloser) RestampSessionGeneration(string, int64)          {}
+
+// recordingBearerCloser doubles as the ChannelExpiryRescheduler so one fake
+// records both bearer teardown and rotation-driven expiry extension.
+func (c *recordingBearerCloser) RescheduleExpiryByBearer(ref auth.BearerRef, _ auth.CredentialDeadline) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rescheduledIDs = append(c.rescheduledIDs, ref.TokenID())
+}
+
+func (*recordingBearerCloser) RescheduleExpiryBySession(string, auth.CredentialDeadline) {}
+
+func (c *recordingBearerCloser) rescheduled(tokenID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range c.rescheduledIDs {
+		if id == tokenID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *recordingBearerCloser) closed(tokenID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, got := range c.tokenIDs {
+		if got == tokenID {
+			return true
+		}
+	}
+	return false
 }
 
 func setupAPIAuth(t *testing.T) *apiAuthEnv {
@@ -46,32 +112,30 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
 
-	// SessionCache is needed by the handler to evict revoked bearers; we
+	// AuthContextRegistry is needed by the handler to evict revoked bearers; we
 	// don't run it through the interceptor, so just construct the bare
 	// interceptor for its cache side-effect and stop the sweeper.
 	_, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 
-	gc, err := auth.NewRefreshGraceCache(auth.RefreshReuseGrace)
-	require.NoError(t, err)
-
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	h := service.NewAPIAuthHandler(st, tv, sc, gc, srv.URL)
+	closer := &recordingBearerCloser{}
+	h := service.NewAPIAuthHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), srv.URL)
 	h.RegisterRoutes(mux)
 
 	u, err := st.Users().GetByUsername(context.Background(), "admin")
 	require.NoError(t, err)
 
 	return &apiAuthEnv{
-		store:      st,
-		validator:  tv,
-		cache:      sc,
-		graceCache: gc,
-		server:     srv,
-		userID:     u.ID,
+		store:     st,
+		validator: tv,
+		cache:     sc,
+		closer:    closer,
+		server:    srv,
+		userID:    u.ID,
 	}
 }
 
@@ -154,7 +218,7 @@ func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("token exchange failed: %d %s", resp.StatusCode, string(body))
+		require.Failf(t, "token exchange failed", "%d %s", resp.StatusCode, string(body))
 	}
 
 	var tokens map[string]any
@@ -247,6 +311,45 @@ func TestAPIAuth_LocalRedirect_RejectsCodeReplay(t *testing.T) {
 	assert.Equal(t, "invalid_grant", body2["error"])
 }
 
+func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
+	env := setupAPIAuth(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	code := id.Generate()
+	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
+		Code: code, UserID: env.userID, CodeChallenge: challenge, DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	require.NoError(t, err)
+
+	statuses := make(chan int, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			resp, postErr := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
+				"grant_type": {service.GrantTypeAuthorizationCode}, "code": {code}, "code_verifier": {verifier},
+			})
+			if postErr != nil {
+				statuses <- 0
+				return
+			}
+			_ = resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	got := make([]int, 0, 2)
+	for status := range statuses {
+		got = append(got, status)
+	}
+	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, got)
+	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	require.NoError(t, err)
+	assert.Len(t, after, len(before)+1)
+}
+
 func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
@@ -283,6 +386,35 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 	var body map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	assert.Equal(t, "invalid_grant", body["error"])
+
+	// A failed proof must not burn the authorization code. The legitimate
+	// client still holding the verifier must be able to exchange it.
+	verifier, challenge := pkceVerifierAndChallenge()
+	retryCode := id.Generate()
+	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
+		Code:          retryCode,
+		UserID:        env.userID,
+		CodeChallenge: challenge,
+		DeviceName:    "test",
+		ExpiresAt:     time.Now().Add(time.Minute),
+	}))
+	bad, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
+		"grant_type":    {service.GrantTypeAuthorizationCode},
+		"code":          {retryCode},
+		"code_verifier": {"wrong-verifier"},
+	})
+	require.NoError(t, err)
+	_ = bad.Body.Close()
+	require.Equal(t, http.StatusBadRequest, bad.StatusCode)
+
+	good, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
+		"grant_type":    {service.GrantTypeAuthorizationCode},
+		"code":          {retryCode},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err)
+	defer func() { _ = good.Body.Close() }()
+	assert.Equal(t, http.StatusOK, good.StatusCode)
 }
 
 func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
@@ -538,6 +670,9 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	require.True(t, strings.HasPrefix(access, "lmx_"))
 	require.True(t, strings.HasPrefix(refresh, "lmx_"))
 	assert.NotEqual(t, auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh), refresh, "refresh must rotate")
+	assert.True(t, env.closer.rescheduled(tokenID),
+		"a refresh rotation must extend (reschedule) the bearer's channel expiry, not close it")
+	assert.False(t, env.closer.closed(tokenID), "a rotation must not close the bearer's channels")
 
 	// The rotated access bearer must actually validate against the
 	// token validator. ValidateBearer checks the row's secret_hash, so
@@ -555,6 +690,42 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp2.StatusCode, "second refresh on rotated pair must succeed")
+}
+
+func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing.T) {
+	env := setupAPIAuth(t)
+
+	tokenID := id.Generate()
+	currentRefresh := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:          tokenID,
+		UserID:      env.userID,
+		ClientType:  "cli",
+		ClientName:  "test",
+		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
+		RefreshHash: env.validator.HashSecret(currentRefresh),
+		Scope:       "remote:*",
+	}))
+
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(env.store, env.validator, auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/refresh", strings.NewReader(form.Encode())).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code,
+		"refresh work inside the singleflight must not inherit the leader request cancellation")
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	assert.NotEmpty(t, body["access_token"])
+	assert.NotEmpty(t, body["refresh_token"])
 }
 
 func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
@@ -590,8 +761,205 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 	require.Equal(t, http.StatusOK, retry.StatusCode)
 	var retryBody map[string]any
 	require.NoError(t, json.NewDecoder(retry.Body).Decode(&retryBody))
-	assert.Equal(t, firstBody["access_token"], retryBody["access_token"], "grace retry must return cached access token")
-	assert.Equal(t, firstBody["refresh_token"], retryBody["refresh_token"], "grace retry must return cached refresh token")
+	assert.Equal(t, firstBody["access_token"], retryBody["access_token"], "grace retry must return the same derived access token")
+	assert.Equal(t, firstBody["refresh_token"], retryBody["refresh_token"], "grace retry must return the same derived refresh token")
+}
+
+func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) {
+	env := setupAPIAuth(t)
+	tokenID := id.Generate()
+	previousRefresh := auth.MintAccessSecret()
+	previousHash := env.validator.HashSecret(previousRefresh)
+	now := time.Now()
+	derived := env.validator.DeriveRefreshBearerPair(
+		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
+	)
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: tokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash, Scope: "remote:*",
+	}))
+	storedExpiry := now.Add(10 * time.Second)
+	refreshExpiry := now.Add(time.Hour)
+	graceExpiry := now.Add(auth.RefreshReuseGrace)
+	rotated, err := env.store.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
+		ID: tokenID, NewSecretHash: derived.AccessHash, NewExpiresAt: &storedExpiry,
+		NewRefreshHash: derived.RefreshHash, NewRefreshExpiresAt: &refreshExpiry,
+		PreviousRefreshHash: previousHash, PreviousRefreshExpiresAt: &graceExpiry,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rotated)
+
+	resp, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, previousRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	expiresIn, ok := body["expires_in"].(float64)
+	require.True(t, ok)
+	assert.Positive(t, expiresIn)
+	assert.LessOrEqual(t, expiresIn, float64(10), "retry must report the stored access-token deadline, not reset the TTL")
+}
+
+func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
+	env := setupAPIAuth(t)
+	tokenID := id.Generate()
+	previousRefresh := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:          tokenID,
+		UserID:      env.userID,
+		ClientType:  "cli",
+		ClientName:  "test",
+		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
+		RefreshHash: env.validator.HashSecret(previousRefresh),
+		Scope:       "remote:*",
+	}))
+
+	first, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, previousRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = first.Body.Close() }()
+	require.Equal(t, http.StatusOK, first.StatusCode)
+	var firstBody map[string]any
+	require.NoError(t, json.NewDecoder(first.Body).Decode(&firstBody))
+
+	// A different Hub shares only durable state and the server pepper.
+	otherMux := http.NewServeMux()
+	otherServer := httptest.NewServer(otherMux)
+	t.Cleanup(otherServer.Close)
+	otherValidator, err := auth.NewTokenValidator(env.store, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	service.NewAPIAuthHandler(env.store, otherValidator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), otherServer.URL).RegisterRoutes(otherMux)
+
+	retry, err := http.PostForm(otherServer.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, previousRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = retry.Body.Close() }()
+	require.Equal(t, http.StatusOK, retry.StatusCode)
+	var retryBody map[string]any
+	require.NoError(t, json.NewDecoder(retry.Body).Decode(&retryBody))
+	assert.Equal(t, firstBody["access_token"], retryBody["access_token"])
+	assert.Equal(t, firstBody["refresh_token"], retryBody["refresh_token"])
+}
+
+func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testing.T) {
+	env := setupAPIAuth(t)
+
+	tokenID := id.Generate()
+	currentRefresh := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:          tokenID,
+		UserID:      env.userID,
+		ClientType:  "cli",
+		ClientName:  "test",
+		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
+		RefreshHash: env.validator.HashSecret(currentRefresh),
+		Scope:       "remote:*",
+	}))
+	wrapped := apiTokenOverrideStore{
+		Store: env.store,
+		api: apiRotateTokens{
+			APITokenStore: env.store.APITokens(),
+			rotate: func(context.Context, store.RotateAPITokenRefreshParams) (int64, error) {
+				return 0, nil
+			},
+		},
+	}
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "invalid_grant", body["error"])
+}
+
+func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T) {
+	env := setupAPIAuth(t)
+	tokenID := id.Generate()
+	currentRefresh := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: tokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh), Scope: "remote:*",
+	}))
+	underlying := env.store.APITokens()
+	wrapper := apiTokenOverrideStore{
+		Store: env.store,
+		api: apiRotateTokens{APITokenStore: underlying, rotate: func(ctx context.Context, p store.RotateAPITokenRefreshParams) (int64, error) {
+			winnerExpiry := time.Now().Add(10 * time.Second)
+			p.NewExpiresAt = &winnerExpiry
+			if _, err := underlying.RotateRefresh(ctx, p); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		}},
+	}
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	service.NewAPIAuthHandler(wrapper, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	expiresIn, ok := body["expires_in"].(float64)
+	require.True(t, ok)
+	assert.Positive(t, expiresIn)
+	assert.LessOrEqual(t, expiresIn, float64(10), "CAS loser must report the winner's persisted deadline")
+}
+
+func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
+	env := setupAPIAuth(t)
+
+	tokenID := id.Generate()
+	currentRefresh := auth.MintAccessSecret()
+	currentRefreshHash := env.validator.HashSecret(currentRefresh)
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:          tokenID,
+		UserID:      env.userID,
+		ClientType:  "cli",
+		ClientName:  "test",
+		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
+		RefreshHash: currentRefreshHash,
+		Scope:       "remote:*",
+	}))
+	wrapped := apiTokenOverrideStore{
+		Store: env.store,
+		api: apiRotateTokens{
+			APITokenStore: env.store.APITokens(),
+			rotate: func(ctx context.Context, p store.RotateAPITokenRefreshParams) (int64, error) {
+				_, err := env.store.APITokens().Revoke(ctx, p.ID)
+				return 0, err
+			},
+		},
+	}
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
@@ -611,16 +979,17 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
-		RefreshHash: env.validator.HashSecret(cur),
+		RefreshHash: env.validator.HashSecret(prev),
 		Scope:       "remote:*",
 	}))
-	require.NoError(t, env.store.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
+	_, err := env.store.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
 		NewSecretHash:            env.validator.HashSecret(auth.MintAccessSecret()),
 		NewRefreshHash:           env.validator.HashSecret(cur),
 		PreviousRefreshHash:      env.validator.HashSecret(prev),
 		PreviousRefreshExpiresAt: &expiredGrace,
-	}))
+	})
+	require.NoError(t, err)
 
 	// Reuse the previous refresh: outside the grace window → revoke.
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
@@ -629,6 +998,7 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.True(t, env.closer.closed(tokenID), "refresh reuse must close channels authorized by the compromised bearer")
 
 	// The current refresh must also fail now: reuse-after-grace revokes
 	// the underlying row.
@@ -673,6 +1043,501 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 	// even before that, the cache should have been evicted).
 	_, err = env.validator.ValidateBearer(context.Background(), bearer)
 	assert.Error(t, err)
+}
+
+type apiTokenOverrideStore struct {
+	store.Store
+	api store.APITokenStore
+}
+
+func (s apiTokenOverrideStore) APITokens() store.APITokenStore {
+	return s.api
+}
+
+type apiRotateTokens struct {
+	store.APITokenStore
+	rotate func(context.Context, store.RotateAPITokenRefreshParams) (int64, error)
+}
+
+func (s apiRotateTokens) RotateRefresh(ctx context.Context, p store.RotateAPITokenRefreshParams) (int64, error) {
+	return s.rotate(ctx, p)
+}
+
+type apiRevokeFailTokens struct {
+	store.APITokenStore
+}
+
+func (s apiRevokeFailTokens) Revoke(context.Context, string) (int64, error) {
+	return 0, errors.New("forced revoke failure")
+}
+
+type apiLookupFailTokens struct {
+	store.APITokenStore
+	err error
+}
+
+type deadlineRecordingTokens struct {
+	store.APITokenStore
+	deadline time.Time
+}
+
+func (s *deadlineRecordingTokens) GetByID(ctx context.Context, _ string) (*store.APIToken, error) {
+	s.deadline, _ = ctx.Deadline()
+	return nil, errors.New("forced lookup failure")
+}
+
+type userLookupFailStore struct {
+	store.Store
+	users store.UserStore
+}
+
+type deviceAuthorizationOverrideStore struct {
+	store.Store
+	device store.DeviceAuthorizationStore
+}
+
+func (s deviceAuthorizationOverrideStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
+	return s.device
+}
+
+func (s deviceAuthorizationOverrideStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(store.Store) error) error {
+	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		override := s.device.(deviceAuthorizationOverride)
+		return fn(deviceAuthorizationOverrideStore{
+			Store: tx,
+			device: deviceAuthorizationOverride{
+				DeviceAuthorizationStore: tx.DeviceAuthorizations(),
+				get:                      override.get,
+				touchPoll:                override.touchPoll,
+				consume:                  override.consume,
+			},
+		})
+	})
+}
+
+type deviceAuthorizationOverride struct {
+	store.DeviceAuthorizationStore
+	get       func(context.Context, string) (*store.DeviceAuthorization, error)
+	touchPoll func(context.Context, string) error
+	consume   func(context.Context, string) (int64, error)
+}
+
+func (s deviceAuthorizationOverride) Get(ctx context.Context, code string) (*store.DeviceAuthorization, error) {
+	if s.get != nil {
+		return s.get(ctx, code)
+	}
+	return s.DeviceAuthorizationStore.Get(ctx, code)
+}
+
+func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string) error {
+	if s.touchPoll != nil {
+		return s.touchPoll(ctx, code)
+	}
+	return s.DeviceAuthorizationStore.TouchPoll(ctx, code)
+}
+
+func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string) (int64, error) {
+	if s.consume != nil {
+		return s.consume(ctx, code)
+	}
+	return s.DeviceAuthorizationStore.Consume(ctx, code)
+}
+
+func (s userLookupFailStore) Users() store.UserStore { return s.users }
+
+func (s userLookupFailStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(store.Store) error) error {
+	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		return fn(userLookupFailStore{Store: tx, users: s.users})
+	})
+}
+
+type getByIDFailUsers struct {
+	store.UserStore
+}
+
+func (s getByIDFailUsers) GetByID(context.Context, string) (*store.User, error) {
+	return nil, errors.New("forced user lookup failure")
+}
+
+func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
+	env := setupAPIAuth(t)
+	recording := &deadlineRecordingTokens{APITokenStore: env.store.APITokens()}
+	wrapped := apiTokenOverrideStore{Store: env.store, api: recording}
+	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+
+	form := url.Values{"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/refresh", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.False(t, recording.deadline.IsZero(), "detached refresh work must carry a replacement deadline")
+	remaining := time.Until(recording.deadline)
+	assert.Positive(t, remaining)
+	assert.LessOrEqual(t, remaining, service.RefreshWorkTimeout)
+}
+
+func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
+	env := setupAPIAuth(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	code := id.Generate()
+	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
+		Code:          code,
+		UserID:        env.userID,
+		CodeChallenge: challenge,
+		DeviceName:    "test",
+		ExpiresAt:     time.Now().Add(time.Minute),
+	}))
+	failing := userLookupFailStore{
+		Store: env.store,
+		users: getByIDFailUsers{UserStore: env.store.Users()},
+	}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+
+	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	require.NoError(t, err)
+	form := url.Values{
+		"grant_type":    {service.GrantTypeAuthorizationCode},
+		"code":          {code},
+		"code_verifier": {verifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	require.NoError(t, err)
+	assert.Len(t, after, len(before), "failed issuance must roll back the undisclosed token row")
+
+	retry, err := http.PostForm(env.server.URL+"/auth/cli/token", form)
+	require.NoError(t, err)
+	defer func() { _ = retry.Body.Close() }()
+	assert.Equal(t, http.StatusOK, retry.StatusCode, "failed issuance must leave the authorization code retryable")
+}
+
+func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) {
+	env := setupAPIAuth(t)
+	deviceCode := id.Generate()
+	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserCode: verifycode.Generate(), DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserID: env.userID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "internal server error\n", rec.Body.String())
+
+	// The failed issuance rolled back Consume, so the grant is still
+	// unconsumed and exchangeable. Its poll was recorded regardless
+	// (TouchPoll now runs outside the issuance transaction), so an
+	// immediate retry is correctly throttled with slow_down; wait past
+	// the interval, then confirm a clean retry succeeds -- proving the
+	// grant stayed retryable.
+	time.Sleep(service.DeviceCodePollInterval + 100*time.Millisecond)
+	retry, err := http.PostForm(env.server.URL+"/auth/cli/token", form)
+	require.NoError(t, err)
+	defer func() { _ = retry.Body.Close() }()
+	assert.Equal(t, http.StatusOK, retry.StatusCode, "failed issuance must leave the device grant retryable")
+}
+
+func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
+	env := setupAPIAuth(t)
+	deviceCode := id.Generate()
+	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	forcedErr := errors.New("sensitive poll failure")
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, string) error {
+		return forcedErr
+	}}
+	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "internal server error\n", rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), forcedErr.Error())
+}
+
+func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
+	env := setupAPIAuth(t)
+	forcedErr := errors.New("sensitive device lookup failure")
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), get: func(context.Context, string) (*store.DeviceAuthorization, error) {
+		return nil, forcedErr
+	}}
+	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "internal server error\n", rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), forcedErr.Error())
+}
+
+func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
+	env := setupAPIAuth(t)
+	deviceCode := id.Generate()
+	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserID: env.userID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
+		return 0, nil
+	}}
+	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	assert.Equal(t, "invalid_grant", body["error"])
+}
+
+// TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure
+// locks in the throttle contract: an approved poll advances last_polled_at
+// even when issuance fails transiently and rolls back, so a client hammering
+// an approved-but-failing grant still gets slow_down. This only holds because
+// TouchPoll runs outside the issuance transaction; if it ran inside, the
+// rollback would discard the anchor and the rapid re-poll would retry issuance
+// instead of being throttled.
+func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t *testing.T) {
+	env := setupAPIAuth(t)
+	deviceCode := id.Generate()
+	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserCode: verifycode.Generate(), IntervalSeconds: 5, ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
+		DeviceCode: deviceCode, UserID: env.userID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// Inject a transient (non-terminal) store error inside the issuance
+	// transaction so token creation rolls back. Consume runs inside the
+	// transaction; TouchPoll runs outside it, so last_polled_at must survive.
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
+		return 0, errors.New("transient consume failure")
+	}}
+	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
+
+	// First poll: issuance fails transiently (500), but the throttle anchor
+	// must have advanced regardless, and the grant must stay retryable.
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	afterRow, err := env.store.DeviceAuthorizations().Get(context.Background(), deviceCode)
+	require.NoError(t, err)
+	require.NotNil(t, afterRow.LastPolledAt, "failed issuance must still advance last_polled_at")
+	require.Nil(t, afterRow.ConsumedAt, "rolled-back issuance must leave the grant retryable")
+
+	// Immediate second poll: within the interval window, so the advanced
+	// anchor throttles it with slow_down instead of re-attempting issuance.
+	req2 := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusBadRequest, rec2.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rec2.Body).Decode(&body))
+	assert.Equal(t, "slow_down", body["error"], "rapid re-poll of a transiently-failing approved grant must be throttled")
+}
+
+func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
+	for _, previous := range []bool{false, true} {
+		name := "current"
+		if previous {
+			name = "previous"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := setupAPIAuth(t)
+			tokenID := id.Generate()
+			refreshSecret := auth.MintAccessSecret()
+			require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+				ID:          tokenID,
+				UserID:      env.userID,
+				ClientType:  "cli",
+				ClientName:  "test",
+				SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
+				RefreshHash: env.validator.HashSecret(refreshSecret),
+				Scope:       "remote:*",
+			}))
+			if previous {
+				currentRefresh := auth.MintAccessSecret()
+				graceExpiry := time.Now().Add(auth.RefreshReuseGrace)
+				_, err := env.store.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
+					ID:                       tokenID,
+					NewSecretHash:            env.validator.HashSecret(auth.MintAccessSecret()),
+					NewRefreshHash:           env.validator.HashSecret(currentRefresh),
+					PreviousRefreshHash:      env.validator.HashSecret(refreshSecret),
+					PreviousRefreshExpiresAt: &graceExpiry,
+				})
+				require.NoError(t, err)
+			}
+
+			resp, err := http.PostForm(env.server.URL+"/auth/cli/revoke", url.Values{
+				"token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, refreshSecret)},
+			})
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			row, err := env.store.APITokens().GetByID(context.Background(), tokenID)
+			require.NoError(t, err)
+			assert.NotNil(t, row.RevokedAt)
+		})
+	}
+}
+
+func (s apiLookupFailTokens) GetByID(context.Context, string) (*store.APIToken, error) {
+	return nil, s.err
+}
+
+func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
+	env := setupAPIAuth(t)
+	wrapped := apiTokenOverrideStore{
+		Store: env.store,
+		api: apiLookupFailTokens{
+			APITokenStore: env.store.APITokens(),
+			err:           errors.New("sensitive database failure"),
+		},
+	}
+	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+
+	form := url.Values{"refresh_token": {
+		auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()),
+	}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/cli/refresh", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "internal server error\n", rec.Body.String())
+}
+
+func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
+	env := setupAPIAuth(t)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     env.userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: env.validator.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	wrapped := apiTokenOverrideStore{
+		Store: env.store,
+		api:   apiRevokeFailTokens{APITokenStore: env.store.APITokens()},
+	}
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/revoke", url.Values{"token": {bearer}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "internal server error\n", string(body))
+
+	row, err := env.store.APITokens().GetByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Nil(t, row.RevokedAt, "failed revoke must not be reported as success")
+}
+
+func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
+	env := setupAPIAuth(t)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     env.userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: env.validator.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+
+	wrapped := apiTokenOverrideStore{
+		Store: env.store,
+		api: apiLookupFailTokens{
+			APITokenStore: env.store.APITokens(),
+			err:           errors.New("forced lookup failure"),
+		},
+	}
+	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/revoke", url.Values{"token": {bearer}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "internal server error\n", string(body))
+
+	row, err := env.store.APITokens().GetByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Nil(t, row.RevokedAt, "failed verification lookup must not revoke or be reported as invalid token")
 }
 
 func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {

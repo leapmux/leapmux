@@ -26,10 +26,12 @@ const userKey contextKey = iota
 //
 // Email and EmailVerified are loaded by ValidateToken from a JOIN on
 // users; they're cached for sessionCacheTTL alongside the rest. Mutating
-// either column on `users` (verify, change, admin reset) requires
-// evicting the user's cached sessions — see SessionCache.EvictByUserID.
+// either column on `users` (verify, change, admin reset) requires evicting the
+// user's cached authentication contexts — see AuthContextRegistry.EvictByUserID.
+// That is deliberately separate from credential revocation, which uses
+// AuthContextRegistry.RevokeUserAuthContextAtGeneration.
 //
-// DelegationWorkspaceID is set only when the request was authenticated
+// Credential.WorkspaceScopeID is set only when the request was authenticated
 // by a delegation_tokens row (as opposed to a session cookie or an
 // api_tokens bearer). It pins the request to the workspace the
 // delegation was minted for; downstream authorization (notably
@@ -37,21 +39,40 @@ const userKey contextKey = iota
 // reasoning to this single id rather than the user's full grant set,
 // so a compromised delegation bearer cannot pivot beyond its scope.
 //
-// BearerTokenID is the api_tokens / delegation_tokens primary key
-// when the request was authenticated by an `lmx_…` bearer; empty for
-// cookie-based sessions. ChannelService.OpenChannel records it on
-// the channelmgr entry so revocation paths can force-close every
-// open channel that was authorized by a now-revoked token.
+// AuthenticatedAt is the timestamp of the stored session or bearer row that
+// authenticated the request. It is retained for auditing and diagnostics;
+// user-wide revocation correctness is based on UserAuthGeneration.
+//
+// UserAuthGeneration is the user's persisted credential epoch observed by the
+// credential that authenticated this request. Long-lived channel registration
+// records it so user-wide revocation events close only channels authorized by
+// older credentials.
+//
+// AuthGeneration is the AuthContextRegistry revocation generation observed before
+// validation. OpenChannel rejects a request whose session, bearer, or user
+// identity was evicted after this generation, closing the race where a cache
+// hit happens just before the watcher evicts and sweeps current channels.
 type UserInfo struct {
-	ID                    string
-	SessionID             string // session that authenticated this request
-	OrgID                 string
-	Username              string
-	IsAdmin               bool
-	Email                 string
-	EmailVerified         bool
-	DelegationWorkspaceID string
-	BearerTokenID         string
+	ID                  string
+	OrgID               string
+	Username            string
+	IsAdmin             bool
+	Email               string
+	EmailVerified       bool
+	Credential          CredentialIdentity
+	AuthenticatedAt     time.Time
+	CredentialExpiresAt CredentialDeadline
+	UserAuthGeneration  int64
+	AuthGeneration      uint64
+}
+
+// CredentialCurrent reports whether the credential is still live at now. Nil-safe:
+// a nil UserInfo is not current. The expiry semantics (NeverExpires is always
+// live; At(t) requires now strictly before t) live on CredentialDeadline, the
+// single source of truth shared by the auth cache and the channel service, so the
+// two can never disagree at the exact expiry instant.
+func (u *UserInfo) CredentialCurrent(now time.Time) bool {
+	return u != nil && u.CredentialExpiresAt.IsCurrent(now)
 }
 
 // WithUser stores a UserInfo in the context.
@@ -76,15 +97,17 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 }
 
 // RevokeAllUserCredentials revokes every active api_tokens and
-// delegation_tokens row for userID and bumps
-// users.tokens_revoked_at. Returns (apiCount, delegationCount) so
-// admin handlers can report what was killed.
+// delegation_tokens row for userID and, via RevokeUserTokens, bumps
+// users.tokens_revoked_at AND users.auth_generation, emitting the durable
+// user_tokens revocation event that carries the new generation to other Hub
+// processes (the backbone of cross-process teardown). Returns (apiCount,
+// delegationCount) so admin handlers can report what was killed.
 //
 // Caller-side concerns:
 //   - The bearer cache lives in the running hub process; admin CLI
 //     callers don't need to evict it (the revocation watcher closes
-//     the loop). In-process callers should wrap this in
-//     PropagateUserRevocation, which adds cache invalidation.
+//     the loop). In-process callers must invalidate AuthContextRegistry with
+//     the committed user auth generation after this transaction commits.
 //   - Pass a transaction-scoped Store to keep the multi-row update
 //     atomic; admin handlers wrap this in `RunInTransaction`.
 //
@@ -92,51 +115,23 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 // failed api-token revoke aborts before the delegation-token revoke
 // or the watermark bump.
 func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID string) (int64, int64, error) {
-	apiCount, err := st.APITokens().RevokeByUser(ctx, userID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("revoke api tokens: %w", err)
-	}
-	delegationCount, err := st.DelegationTokens().RevokeByUser(ctx, userID)
-	if err != nil {
-		return apiCount, 0, fmt.Errorf("revoke delegation tokens: %w", err)
-	}
-	if _, err := st.Users().BumpTokensRevokedAt(ctx, userID); err != nil {
-		return apiCount, delegationCount, fmt.Errorf("bump user tokens_revoked_at: %w", err)
-	}
-	return apiCount, delegationCount, nil
-}
-
-// PropagateUserRevocation revokes every live api_tokens and
-// delegation_tokens row for userID, bumps users.tokens_revoked_at
-// (so the hub's revocation watcher picks the event up
-// cross-process), and busts the in-memory bearer cache so the
-// revocation is observed immediately rather than after the 30s
-// cache TTL.
-//
-// Hooked from in-process credential-rotation paths
-// (UserService.ChangePassword today; future account-deactivation
-// flows). Admin CLI commands run in a different process; they
-// mutate the same DB rows directly and the watcher closes the
-// loop. The function is idempotent and safe to call repeatedly.
-//
-// Returns the total count of credentials revoked and the first
-// store error if any. Callers tend to treat revoke failures as
-// warnings: the watcher's next sweep retries, and the row's TTL
-// bounds the worst case.
-func PropagateUserRevocation(ctx context.Context, st store.Store, sc *SessionCache, userID string) (int64, error) {
-	if userID == "" {
-		return 0, nil
-	}
-	apiCount, delegationCount, revErr := RevokeAllUserCredentials(ctx, st, userID)
-	if sc != nil {
-		// The user-wide sweeps Range every cached entry exactly once,
-		// covering both the rows we just revoked and any issued between
-		// listing and revoking. A prior list-then-evict pass paired with
-		// the sweep was strictly redundant.
-		sc.EvictBearersByUserID(userID)
-		sc.EvictByUserID(userID)
-	}
-	return apiCount + delegationCount, revErr
+	var apiCount, delegationCount int64
+	err := st.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		var err error
+		apiCount, err = tx.APITokens().RevokeByUser(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("revoke api tokens: %w", err)
+		}
+		delegationCount, err = tx.DelegationTokens().RevokeByUser(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("revoke delegation tokens: %w", err)
+		}
+		if _, err := tx.Users().RevokeUserTokens(ctx, userID); err != nil {
+			return fmt.Errorf("revoke user tokens (bump generation): %w", err)
+		}
+		return nil
+	})
+	return apiCount, delegationCount, err
 }
 
 // LoadSoloUser looks up the bootstrapped solo user and maps it into a
@@ -148,10 +143,12 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 		return nil, err
 	}
 	return &UserInfo{
-		ID:       user.ID,
-		OrgID:    user.OrgID,
-		Username: user.Username,
-		IsAdmin:  user.IsAdmin,
+		ID:                 user.ID,
+		OrgID:              user.OrgID,
+		Username:           user.Username,
+		IsAdmin:            user.IsAdmin,
+		AuthenticatedAt:    time.Now().UTC(),
+		UserAuthGeneration: user.AuthGeneration,
 	}, nil
 }
 
@@ -167,19 +164,60 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 
-	match, err := pwdhash.Verify(user.PasswordHash, password)
+	// Verify the password OUTSIDE the auth transaction. On the default
+	// SQLite backend RunInUserAuthTransaction promotes to a write
+	// transaction (LockUserAuthState), which serializes every other hub
+	// write for as long as it is held; argon2 verification (~50-200ms) has
+	// no need of that lock. Inside the transaction we recompute the
+	// (expensive) hash only when the stored hash changed between this read
+	// and the locked re-read, so a password rotated at the transaction
+	// boundary is still verified against the committed hash -- preserving
+	// the ordering guarantee of verifying against the locked row.
+	matchPrelock, verifyErrPrelock := pwdhash.Verify(user.PasswordHash, password)
+	prelockHash := user.PasswordHash
+
+	var sessionID string
+	var expiresAt time.Time
+	err = st.RunInUserAuthTransaction(ctx, user.ID, func(tx store.Store) error {
+		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
+		if err != nil {
+			return fmt.Errorf("query locked user: %w", err)
+		}
+		if lockedUser.Username != store.NormalizeUsername(username) {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
+		match, verifyErr := matchPrelock, verifyErrPrelock
+		if lockedUser.PasswordHash != prelockHash {
+			// The hash changed under the lock (concurrent rotation), so the
+			// pre-lock result is stale: re-verify against the committed hash.
+			match, verifyErr = pwdhash.Verify(lockedUser.PasswordHash, password)
+		}
+		if verifyErr != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", verifyErr))
+		}
+		if !match {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
+		sessionID, expiresAt, err = CreateSession(ctx, tx, lockedUser.ID)
+		if err != nil {
+			return err
+		}
+		user = lockedUser
+		return nil
+	})
 	if err != nil {
-		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return "", nil, zero, connectErr
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
+		return "", nil, zero, connect.NewError(connect.CodeInternal, err)
 	}
-	if !match {
-		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
-	}
-
-	sessionID, expiresAt, sessionErr := CreateSession(ctx, st, user.ID)
-	if sessionErr != nil {
-		return "", nil, zero, connect.NewError(connect.CodeInternal, sessionErr)
-	}
-
 	return sessionID, user, expiresAt, nil
 }
 
@@ -222,12 +260,16 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	}
 
 	return &UserInfo{
-		ID:            row.UserID,
-		OrgID:         row.OrgID,
-		Username:      row.Username,
-		IsAdmin:       row.IsAdmin,
-		Email:         row.Email,
-		EmailVerified: row.EmailVerified,
+		ID:                  row.UserID,
+		Credential:          SessionCredential(token),
+		OrgID:               row.OrgID,
+		Username:            row.Username,
+		IsAdmin:             row.IsAdmin,
+		Email:               row.Email,
+		EmailVerified:       row.EmailVerified,
+		AuthenticatedAt:     row.CreatedAt.UTC(),
+		CredentialExpiresAt: DeadlineAt(row.ExpiresAt.UTC()),
+		UserAuthGeneration:  row.AuthGeneration,
 	}, nil
 }
 
@@ -260,7 +302,12 @@ func ResolveOrgID(ctx context.Context, st store.Store, user *UserInfo, requested
 		UserID: user.ID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("check org membership: %w", err)
+		// A transient store failure during the membership check must surface as
+		// a retryable Internal, not an uncoded error the caller relays as
+		// CodeUnknown -- keeping this consistent with the sibling read/mutation
+		// paths that map store errors to CodeInternal so clients retry rather
+		// than treat a DB blip as permanent.
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("check org membership: %w", err))
 	}
 	if !isMember {
 		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("not a member of this organization"))

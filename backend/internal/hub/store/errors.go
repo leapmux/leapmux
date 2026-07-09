@@ -11,6 +11,10 @@ var (
 	// constraint (e.g. duplicate ID, username, or email).
 	ErrConflict = errors.New("conflict")
 
+	// ErrHubAlreadyRunning is returned when another Hub holds the singleton
+	// database runtime lease.
+	ErrHubAlreadyRunning = errors.New("another Hub is already running")
+
 	// ErrSectionNotEmpty is returned when attempting to delete a
 	// workspace section that still contains items.
 	ErrSectionNotEmpty = errors.New("section not empty")

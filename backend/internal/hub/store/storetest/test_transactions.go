@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -132,5 +133,25 @@ func (s *Suite) testTransactions(t *testing.T) {
 		// After rollback, the org should not be visible outside.
 		_, err = st.Orgs().GetByID(ctx, orgID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("registration key consume rolls back with outer transaction", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "tx-registration-key-org", true)
+		user := SeedUser(t, st, orgID, "tx-registration-key-user")
+		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+
+		err := st.RunInTransaction(ctx, func(tx store.Store) error {
+			_, err := tx.RegistrationKeys().Consume(ctx, regID)
+			if err != nil {
+				return err
+			}
+			return errors.New("intentional rollback")
+		})
+		require.EqualError(t, err, "intentional rollback")
+
+		consumed, err := st.RegistrationKeys().Consume(ctx, regID)
+		require.NoError(t, err)
+		assert.Equal(t, user.ID, consumed.CreatedBy)
 	})
 }

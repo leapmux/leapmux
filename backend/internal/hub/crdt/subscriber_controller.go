@@ -19,22 +19,25 @@ import (
 // Subscribe / unsub churn.
 type SubscriberController struct {
 	mu       sync.RWMutex
-	subs     map[*Subscriber]struct{}
+	subs     map[*Subscriber]*Subscriber
 	snapshot atomic.Pointer[[]*Subscriber]
 }
 
 func newSubscriberController() *SubscriberController {
 	return &SubscriberController{
-		subs: map[*Subscriber]struct{}{},
+		subs: map[*Subscriber]*Subscriber{},
 	}
 }
 
-// Add registers `s` and refreshes the broadcast snapshot.
-func (c *SubscriberController) Add(s *Subscriber) {
+// Add registers s, caches its immutable broadcast clone, and returns the
+// filter captured at registration for connection bootstrap.
+func (c *SubscriberController) Add(s *Subscriber) SubscriberFilter {
 	c.mu.Lock()
-	c.subs[s] = struct{}{}
+	published := cloneSubscriber(s)
+	c.subs[s] = published
 	c.refreshSnapshotLocked()
 	c.mu.Unlock()
+	return published.Filter
 }
 
 // Remove drops `s` from the active set and refreshes the snapshot.
@@ -49,8 +52,8 @@ func (c *SubscriberController) Remove(s *Subscriber) {
 }
 
 // Snapshot returns the current subscriber slice. Safe to call without
-// holding any lock — the slice is owned by the snapshot publisher
-// and replaced (not mutated) on every Add/Remove.
+// holding any lock: both the slice and each subscriber's filter map are
+// deep copies owned by this publication and never mutated after Store.
 func (c *SubscriberController) Snapshot() []*Subscriber {
 	if p := c.snapshot.Load(); p != nil {
 		return *p
@@ -59,16 +62,29 @@ func (c *SubscriberController) Snapshot() []*Subscriber {
 }
 
 // ForEachLocked invokes fn for each subscriber under the controller's
-// read lock. Used by callers that need an iteration with the
-// guarantee no Add/Remove fires concurrently (e.g. expansion of a
-// new workspace into every subscriber's filter, which mutates each
-// subscriber's Filter map). Most callers should prefer Snapshot.
+// read lock. The callback must not mutate a subscriber; callers that update
+// filters must use MutateEach so the immutable broadcast snapshot is refreshed.
 func (c *SubscriberController) ForEachLocked(fn func(*Subscriber)) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for s := range c.subs {
 		fn(s)
 	}
+}
+
+// MutateEach invokes fn for every live subscriber under the exclusive lock,
+// then publishes a new deeply immutable snapshot. It is the only supported
+// path for changing subscriber filters after Add.
+func (c *SubscriberController) MutateEach(fn func(*Subscriber)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for s, published := range c.subs {
+		fn(s)
+		if !subscriberFilterEqual(s.Filter, published.Filter) {
+			c.subs[s] = cloneSubscriber(s)
+		}
+	}
+	c.refreshSnapshotLocked()
 }
 
 // Len returns the current subscriber count. Helpful for cheap
@@ -80,11 +96,44 @@ func (c *SubscriberController) Len() int {
 }
 
 // refreshSnapshotLocked must be called with c.mu held (write lock).
-// Replaces the published slice with a fresh copy of c.subs.
+// Replaces the published slice with the cached immutable clones. Only a
+// subscriber whose filter changed is re-cloned by MutateEach.
 func (c *SubscriberController) refreshSnapshotLocked() {
 	snap := make([]*Subscriber, 0, len(c.subs))
-	for s := range c.subs {
-		snap = append(snap, s)
+	for _, published := range c.subs {
+		snap = append(snap, published)
 	}
 	c.snapshot.Store(&snap)
+}
+
+func subscriberFilterEqual(a, b SubscriberFilter) bool {
+	if (a.WorkspaceIDs == nil) != (b.WorkspaceIDs == nil) || len(a.WorkspaceIDs) != len(b.WorkspaceIDs) {
+		return false
+	}
+	for workspaceID, allowed := range a.WorkspaceIDs {
+		if b.WorkspaceIDs[workspaceID] != allowed {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneSubscriber(s *Subscriber) *Subscriber {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.RequestedWorkspaceIDs != nil {
+		out.RequestedWorkspaceIDs = make(map[string]bool, len(s.RequestedWorkspaceIDs))
+		for workspaceID, requested := range s.RequestedWorkspaceIDs {
+			out.RequestedWorkspaceIDs[workspaceID] = requested
+		}
+	}
+	if s.Filter.WorkspaceIDs != nil {
+		out.Filter.WorkspaceIDs = make(map[string]bool, len(s.Filter.WorkspaceIDs))
+		for workspaceID, allowed := range s.Filter.WorkspaceIDs {
+			out.Filter.WorkspaceIDs[workspaceID] = allowed
+		}
+	}
+	return &out
 }

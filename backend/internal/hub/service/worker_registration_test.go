@@ -88,7 +88,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	opts := connect.WithInterceptors(interceptor)
 
 	mailer := &recordingSender{}
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

@@ -24,19 +24,22 @@ import (
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	store        store.Store
-	cfg          *config.Config
-	sessionCache *auth.SessionCache
-	keystore     *keystore.Keystore
-	mail         mail.Sender
-	renderer     mail.Renderer
-	hasAnyUser   atomic.Bool // one-way latch: once true, never re-queried
+	store      store.Store
+	cfg        *config.Config
+	lifecycle  *auth.CredentialLifecycleEffects
+	keystore   *keystore.Keystore
+	mail       mail.Sender
+	renderer   mail.Renderer
+	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
 }
 
 // NewAuthService creates a new AuthService. renderer carries the hub's
 // public URL used to build absolute deep-links in verification emails.
-func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore, sender mail.Sender, renderer mail.Renderer) *AuthService {
-	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks, mail: sender, renderer: renderer}
+func NewAuthService(st store.Store, cfg *config.Config, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore, sender mail.Sender, renderer mail.Renderer) *AuthService {
+	if lifecycle == nil {
+		panic("auth service requires credential lifecycle effects")
+	}
+	return &AuthService{store: st, cfg: cfg, lifecycle: lifecycle, keystore: ks, mail: sender, renderer: renderer}
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -78,8 +81,12 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
-		_, _ = s.store.Sessions().Delete(ctx, token)
-		s.sessionCache.Evict(token)
+		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
+			connectErr := connect.NewError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
+			connectErr.Meta().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
+			return nil, connectErr
+		}
+		s.lifecycle.SessionRevoked(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
 	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
@@ -398,7 +405,7 @@ func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string) (
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if time.Now().UTC().After(pending.ExpiresAt) {
+	if auth.IsExpired(time.Now().UTC(), pending.ExpiresAt) {
 		_ = st.PendingOAuthSignups().Delete(ctx, token)
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
 	}

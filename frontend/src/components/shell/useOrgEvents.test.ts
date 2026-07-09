@@ -1,5 +1,6 @@
 import type { WatchOrgEvent } from '~/generated/leapmux/v1/org_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
+import { EmptySchema } from '@bufbuild/protobuf/wkt'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -18,6 +19,7 @@ import {
   TabIdentSchema,
   WatchOrgEventSchema,
   WorkspaceCreatedSchema,
+  WorkspaceProjectionChangedSchema,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
@@ -35,6 +37,7 @@ interface FakePending {
   consumeRemote: ReturnType<typeof vi.fn>
   consumeEntityMaterialized: ReturnType<typeof vi.fn>
   consumeEntityRemoved: ReturnType<typeof vi.fn>
+  consumeWorkspaceProjection: ReturnType<typeof vi.fn>
   clock: { observe: ReturnType<typeof vi.fn> }
 }
 
@@ -44,6 +47,7 @@ function makeFakePending(opts?: { droppedPending?: boolean }): FakePending {
     consumeRemote: vi.fn(),
     consumeEntityMaterialized: vi.fn(),
     consumeEntityRemoved: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
+    consumeWorkspaceProjection: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
     clock: { observe: vi.fn() },
   }
 }
@@ -296,6 +300,36 @@ describe('useorgevents (websocket dispatch)', () => {
     })
   })
 
+  it('routes workspace projection changes and reports dropped pending', async () => {
+    await createRoot(async (dispose) => {
+      const [orgId] = createSignal('org-1')
+      const pending = makeFakePending({ droppedPending: true })
+      const onPendingDropped = vi.fn()
+      const onWorkspaceLifecycleChanged = vi.fn()
+      useOrgEvents({
+        orgId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        onPendingDropped,
+        onWorkspaceLifecycleChanged,
+        buildWsUrl: (org, _ws) => `ws://test/${org}`,
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      const transition = create(WorkspaceProjectionChangedSchema, {
+        workspaceId: 'w1',
+        change: { case: 'revoked', value: create(EmptySchema) },
+      })
+      sock.sendEvent(create(WatchOrgEventSchema, { event: { case: 'workspaceProjection', value: transition } }))
+
+      expect(pending.consumeWorkspaceProjection).toHaveBeenCalledWith(transition)
+      expect(onPendingDropped).toHaveBeenCalledTimes(1)
+      expect(onWorkspaceLifecycleChanged).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
   it('routes presence into activeClient.update', async () => {
     await createRoot(async (dispose) => {
       const [orgId] = createSignal('org-1')
@@ -339,6 +373,44 @@ describe('useorgevents (websocket dispatch)', () => {
       sock.sendEvent(create(WatchOrgEventSchema, { event: { case: 'created', value: created } }))
 
       expect(onWorkspaceLifecycleChanged).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('ignores a message that arrives on a socket superseded by teardown', async () => {
+    await createRoot(async (dispose) => {
+      const [orgId, setOrgId] = createSignal('org-1')
+      const pending = makeFakePending()
+      useOrgEvents({
+        orgId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (org, _ws) => `ws://test/${org}`,
+      })
+      await flushEffects()
+      const stale = FakeSocket.instances[0]!
+
+      // An org_id change tears down the first socket and opens a fresh one.
+      setOrgId('org-2')
+      await flushEffects()
+      expect(FakeSocket.instances).toHaveLength(2)
+
+      // A frame still queued on the OLD (superseded) socket must be dropped by the
+      // message handler's stale-connection guard -- otherwise it would re-bootstrap
+      // the still-live PendingOpsManager to a stale snapshot (resetting currentEpoch
+      // and re-arming the epoch loop). The close/error handlers already guard this;
+      // the message handler must too.
+      const staleInitial = create(OrgMaterializedSchema, {
+        orgId: 'org-1',
+        nodes: {},
+        tabs: {},
+        floatingWindows: {},
+        workspaces: {},
+        currentEpoch: 99n,
+      })
+      stale.sendEvent(create(WatchOrgEventSchema, { event: { case: 'initial', value: staleInitial } }))
+
+      expect(pending.bootstrap).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -397,5 +469,38 @@ describe('useorgevents (websocket dispatch)', () => {
       expect(hook.bootstrapped()).toBe(false)
       dispose()
     })
+  })
+
+  it('reconnects after an unexpected close but not after intentional teardown', async () => {
+    vi.useFakeTimers()
+    try {
+      await createRoot(async (dispose) => {
+        const [orgId, setOrgId] = createSignal('org-1')
+        useOrgEvents({
+          orgId,
+          activeClient: createActiveClientStore(),
+          pending: () => makeFakePending() as never,
+          buildWsUrl: org => `ws://test/${org}`,
+        })
+        await flushEffects()
+        FakeSocket.instances[0]!.emit('close', new Event('close'))
+
+        // First reconnect delay is 250ms +/- 20% jitter (< 300ms); advance past
+        // the jitter ceiling so the retry fires deterministically.
+        await vi.advanceTimersByTimeAsync(300)
+        await flushEffects()
+        expect(FakeSocket.instances).toHaveLength(2)
+
+        setOrgId('org-2')
+        await flushEffects()
+        expect(FakeSocket.instances).toHaveLength(3)
+        await vi.advanceTimersByTimeAsync(5_000)
+        expect(FakeSocket.instances).toHaveLength(3)
+        dispose()
+      })
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })

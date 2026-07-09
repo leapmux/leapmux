@@ -36,7 +36,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -109,7 +109,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, soloUser, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -168,7 +168,7 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -208,6 +208,33 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	resp, err := client.GetCurrentUser(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+}
+
+func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+
+	validReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	validReq.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err := client.GetCurrentUser(context.Background(), validReq)
+	require.NoError(t, err)
+
+	wrongSecretReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	wrongSecretReq.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, "wrong-secret"))
+	_, err = client.GetCurrentUser(context.Background(), wrongSecretReq)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
 func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
@@ -260,7 +287,7 @@ func TestInterceptor_LeapMuxBearer_RejectsUnknownTokenID(t *testing.T) {
 // TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke pins down the
 // "revocation is immediate" contract from the plan. The cache TTL is
 // 30s; without explicit eviction, a revoked token would keep working
-// for up to 30s after the admin clicks Revoke. SessionCache.EvictBearer
+// for up to 30s after the admin clicks Revoke. AuthContextRegistry.EvictBearer
 // must purge the in-memory cache so the next request hits the DB and
 // observes the revoked_at column.
 func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
@@ -275,7 +302,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	interceptor, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -301,7 +328,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	// Revoke + evict.
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
-	sc.EvictBearer(tokenID)
+	sc.EvictBearer(auth.NewBearerRef(auth.BearerKindAPI, tokenID))
 
 	// Next call must fail immediately, not 30s later.
 	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -343,12 +370,38 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 		"expired bearer must surface as Unauthenticated, got %v", err)
 }
 
-// TestInterceptor_DelegationBearer_AcceptsValidToken verifies a
-// delegation-token bearer (kind 'd') resolves through the same
-// interceptor path as an API token. The plan unifies both kinds
-// behind the single Authorization: Bearer surface; this test pins
-// that the validator dispatches to the right table by kind tag.
-func TestInterceptor_DelegationBearer_AcceptsValidToken(t *testing.T) {
+func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	expiresAt := time.Now().Add(50 * time.Millisecond)
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+		ExpiresAt:  &expiresAt,
+	}))
+
+	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", bearer)
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		retry := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+		retry.Header().Set("Authorization", bearer)
+		_, err := client.GetCurrentUser(context.Background(), retry)
+		return connect.CodeOf(err) == connect.CodeUnauthenticated
+	}, time.Second, 10*time.Millisecond, "cached bearer must stop authenticating at its persisted expiry")
+}
+
+func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
 	userID := adminUserID(t, st)
 
@@ -388,9 +441,10 @@ func TestInterceptor_DelegationBearer_AcceptsValidToken(t *testing.T) {
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
 	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
 
-	resp, err := client.GetCurrentUser(context.Background(), req)
-	require.NoError(t, err, "valid delegation bearer must resolve like an API bearer")
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"delegation bearers must not authenticate account-level procedures")
 }
 
 // TestInterceptor_DelegationBearer_RejectsRevoked confirms the
@@ -515,7 +569,7 @@ func newTestTokenID() string {
 }
 
 // setupInterceptorTestServerWithCache is like setupInterceptorTestServer but
-// wires the SessionCache into the AuthService (so Logout evicts entries) and
+// wires the AuthContextRegistry into the AuthService (so Logout evicts entries) and
 // returns the store for DB inspection.
 func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
@@ -528,7 +582,7 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -592,7 +646,7 @@ func TestLogout_EvictsSessionFromCache(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-func TestSessionCache_RapidRequestsSucceed(t *testing.T) {
+func TestAuthContextRegistry_RapidRequestsSucceed(t *testing.T) {
 	client, _ := setupInterceptorTestServerWithCache(t)
 
 	token := loginAdmin(t, client)
@@ -608,7 +662,7 @@ func TestSessionCache_RapidRequestsSucceed(t *testing.T) {
 	}
 }
 
-func TestSessionCache_EvictInvalidatesCache(t *testing.T) {
+func TestAuthContextRegistry_EvictInvalidatesCache(t *testing.T) {
 	// This test verifies that logging out (which evicts from cache) immediately
 	// invalidates the session, even if it was recently cached.
 	client, _ := setupInterceptorTestServerWithCache(t)

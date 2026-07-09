@@ -16,14 +16,13 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 // OpenTestStore opens an in-memory SQLite store with migrations applied.
 // (sqlite.Open runs migrations automatically.)
 func OpenTestStore(t *testing.T) store.Store {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.OpenTestable(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	return st

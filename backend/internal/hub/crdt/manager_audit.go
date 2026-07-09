@@ -47,8 +47,12 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 	// handful of distinct (worker, principal) pairs even when they
 	// touch dozens of tabs.
 	canUseCache := map[[2]string]bool{}
+	// Tracks (worker, principal) pairs whose usability lookup failed, so the
+	// inconclusive-audit diagnostic below is emitted at most once per pair even
+	// when several tombstones in the batch pin the same worker.
+	inconclusiveLogged := map[[2]string]struct{}{}
 	auditCtx := context.Background()
-	canUse := func(workerID string) bool {
+	canUse := func(workerID, batchID string) bool {
 		key := [2]string{workerID, in.PrincipalID}
 		if v, ok := canUseCache[key]; ok {
 			return v
@@ -57,7 +61,26 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		// goroutine spawned AFTER commit, decoupled from the request
 		// ctx (which may already be cancelled by the time we get
 		// here). auditWG, drained by Stop(), bounds the lifetime.
-		v := m.auth.CanUseWorker(auditCtx, m.orgID, workerID, in.PrincipalID)
+		v, err := m.auth.CanUseWorker(auditCtx, m.orgID, workerID, in.PrincipalID)
+		if err != nil {
+			// A transient worker-lookup failure must not be read as "worker
+			// gone": that would mislabel a legitimate tombstone as orphan
+			// cleanup. Treat it as usable (no orphan breadcrumb) and don't
+			// cache the verdict, so a later op re-checks -- but record ONCE per
+			// (worker, principal) that the orphan audit could NOT conclude, so a
+			// genuinely-orphaned tab tombstoned during a DB hiccup is a visible
+			// inconclusive breadcrumb rather than a silent blind spot.
+			if _, done := inconclusiveLogged[key]; !done {
+				inconclusiveLogged[key] = struct{}{}
+				m.logger.Warn("crdt: orphan tab audit inconclusive (worker lookup failed)",
+					"worker_id", workerID,
+					"principal_id", in.PrincipalID,
+					"batch_id", batchID,
+					"error", err,
+				)
+			}
+			return true
+		}
 		canUseCache[key] = v
 		return v
 	}
@@ -81,7 +104,7 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 			// half-committed write). No orphan to flag.
 			continue
 		}
-		if canUse(workerID) {
+		if canUse(workerID, batch.GetBatchId()) {
 			// Routine close: principal can use the worker, so
 			// this is a normal `agent close` / `terminal close`
 			// or UI-driven tombstone. Skipping these keeps the

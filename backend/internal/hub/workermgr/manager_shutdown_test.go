@@ -1,9 +1,11 @@
 package workermgr
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,7 +35,7 @@ func TestNotifyShutdown_SendsToAllWorkers(t *testing.T) {
 	m.Register(makeMockConn("w2"))
 	m.Register(makeMockConn("w3"))
 
-	m.NotifyShutdown(10)
+	m.NotifyShutdown(context.Background(), 10)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -58,7 +60,7 @@ func TestNotifyShutdown_CustomRetryDelay(t *testing.T) {
 		},
 	})
 
-	m.NotifyShutdown(30)
+	m.NotifyShutdown(context.Background(), 30)
 
 	require.NotNil(t, received)
 	payload, ok := received.GetPayload().(*leapmuxv1.ConnectResponse_HubShuttingDown)
@@ -69,7 +71,7 @@ func TestNotifyShutdown_CustomRetryDelay(t *testing.T) {
 func TestNotifyShutdown_NoWorkers(t *testing.T) {
 	m := New()
 	// Should not panic when no workers are connected.
-	m.NotifyShutdown(10)
+	m.NotifyShutdown(context.Background(), 10)
 }
 
 func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
@@ -101,9 +103,65 @@ func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
 	})
 
 	// Should not panic or abort; best-effort delivery.
-	m.NotifyShutdown(10)
+	m.NotifyShutdown(context.Background(), 10)
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, 2, sendCount, "should attempt to send to all workers even on error")
+}
+
+func TestNotifyShutdown_DoesNotHoldManagerLockDuringSend(t *testing.T) {
+	m := New()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}})
+
+	done := make(chan struct{})
+	go func() {
+		m.NotifyShutdown(context.Background(), 10)
+		close(done)
+	}()
+	<-started
+
+	registered := make(chan struct{})
+	go func() {
+		m.Register(&Conn{WorkerID: "new"})
+		close(registered)
+	}()
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("Register blocked behind a shutdown notification send")
+	}
+	close(release)
+	<-done
+}
+
+func TestNotifyShutdown_ReturnsWhenContextExpires(t *testing.T) {
+	m := New()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		m.NotifyShutdown(ctx, 10)
+		close(done)
+	}()
+	<-started
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("NotifyShutdown ignored context expiration")
+	}
 }

@@ -119,6 +119,37 @@ func TestListen_UnixRemovesStaleSocket(t *testing.T) {
 	_ = ln.Close()
 }
 
+func TestListen_UnixRefusesToReplaceActiveSocket(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	active, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen active socket: %v", err)
+	}
+	defer func() { _ = active.Close() }()
+
+	if replacement, err := Listen("unix:" + path); err == nil {
+		_ = replacement.Close()
+		t.Fatal("Listen replaced an active Unix socket")
+	}
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := active.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+	conn, err := net.DialTimeout("unix", path, time.Second)
+	if err != nil {
+		t.Fatalf("active socket no longer accepts connections: %v", err)
+	}
+	_ = conn.Close()
+	if err := <-accepted; err != nil {
+		t.Fatalf("accept active socket: %v", err)
+	}
+}
+
 func TestListen_UnixRejectsNonSocketFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-a-socket")
 	if err := os.WriteFile(path, []byte("hi"), 0o600); err != nil {

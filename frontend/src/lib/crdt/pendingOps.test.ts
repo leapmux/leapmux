@@ -1,13 +1,16 @@
 import { create } from '@bufbuild/protobuf'
+import { EmptySchema } from '@bufbuild/protobuf/wkt'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema, NodeKind, NodeRecordSchema, OrgMaterializedSchema, WorkspaceContentsRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
 import {
   BatchCommittedSchema,
+  BatchRejectionReason,
   BatchRejectionSchema,
   CommittedOpSchema,
   EntityMaterializedSchema,
   EntityRemovedSchema,
   TabIdentSchema,
+  WorkspaceProjectionChangedSchema,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { HLCClock } from './hlc'
@@ -93,15 +96,82 @@ describe('pendingOpsManager', () => {
     expect(mgr.state.speculativeState.nodes.n1).toBeUndefined()
   })
 
-  it('consumeBatchRejected reports retryable=true for unknown reasons (default catch-all)', () => {
+  it('consumeBatchRejected reports retryable=true only for EPOCH_REQUIRED', () => {
     const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
-      reason: 0, // UNSPECIFIED — represents transport-failure / unknown
-      offendingOpId: '',
+      reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
+      offendingOpId: batch.ops[0].opId,
     }))
     expect(result.retryable).toBe(true)
+  })
+
+  it('consumeBatchRejected fails safe: unknown and permanent reasons are NOT retryable', () => {
+    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    // The retryable set is an allowlist, so a reason absent from it -- an
+    // unspecified/transport code (0), a reason added to the proto later
+    // (INVALID_WORKER_REF, a permanent CanUseWorker deny), or an out-of-range
+    // value -- defaults to non-retryable rather than looping forever.
+    for (const reason of [
+      0, // UNSPECIFIED — transport-failure / unknown
+      BatchRejectionReason.BATCH_REJECTION_INVALID_WORKER_REF,
+      BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
+      99, // out of the enum range entirely
+    ]) {
+      const batch = newBatch([setNodeKind(ctx, `n-${reason}`, NodeKind.LEAF)])
+      mgr.submit(batch)
+      const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
+        reason: reason as BatchRejectionReason,
+        offendingOpId: '',
+      }))
+      expect(result.retryable).toBe(false)
+    }
+  })
+
+  it('keeps a retryable batch applied on rejection; revertPendingBatch drops it', () => {
+    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    mgr.submit(batch)
+    expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
+
+    // A retryable (EPOCH_REQUIRED) rejection is NOT terminal -- the submitter
+    // requeues the batch -- so its optimistic ops stay applied (no
+    // revert-then-reapply flicker across the reconnect+retry window).
+    const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
+      reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
+      offendingOpId: batch.ops[0].opId,
+    }))
+    expect(result.retryable).toBe(true)
+    expect(mgr.state.pendingBatches.length).toBe(1)
+    expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
+
+    // When the submitter finally gives up, revertPendingBatch drops + reverts it.
+    mgr.revertPendingBatch(batch.batchId)
+    expect(mgr.state.pendingBatches.length).toBe(0)
+    expect(mgr.state.speculativeState.nodes.n1).toBeUndefined()
+  })
+
+  it('a kept retryable batch is reconciled (not double-applied) when the retry commits', () => {
+    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
+    mgr.submit(batch)
+    mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
+      reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
+      offendingOpId: batch.ops[0].opId,
+    }))
+    expect(mgr.state.pendingBatches.length).toBe(1) // kept applied
+
+    // The requeued retry commits: the still-pending batch is reconciled into
+    // confirmed and dropped from pending exactly once.
+    const canonical = create(HLCSchema, { physical: 900n, logical: 1n, clientId: 'hub' })
+    mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
+      committed: [create(CommittedOpSchema, { opId: batch.ops[0].opId, canonicalHlc: canonical })],
+      maxHlc: canonical,
+      epoch: 8n,
+    }))
+    expect(mgr.state.pendingBatches.length).toBe(0)
+    expect(mgr.state.confirmedState.nodes.n1?.kind?.value).toBe(NodeKind.GRID)
   })
 
   it('consumeEntityMaterialized installs a fresh tab record into confirmedState', () => {
@@ -147,6 +217,100 @@ describe('pendingOpsManager', () => {
     expect(mgr.state.pendingBatches[0].ops.length).toBe(1)
     const remaining = mgr.state.pendingBatches[0].ops[0]
     expect(remaining.body.case).toBe('setNodeRegister')
+  })
+
+  it('workspace projection revoke removes only that workspace and its pending ops', () => {
+    const root1 = create(NodeRecordSchema, { nodeId: 'root1' })
+    const root2 = create(NodeRecordSchema, { nodeId: 'root2' })
+    mgr.bootstrap({
+      orgId: 'org',
+      nodes: { root1, root2 },
+      tabs: {},
+      floatingWindows: {},
+      workspaces: {
+        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
+        w2: create(WorkspaceContentsRecordSchema, { workspaceId: 'w2', rootNodeId: 'root2' }),
+      },
+      currentEpoch: 1n,
+    })
+    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    mgr.submit(newBatch([
+      setNodeKind(ctx, 'root1', NodeKind.SPLIT),
+      setNodeKind(ctx, 'root2', NodeKind.GRID),
+    ]))
+
+    const result = mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
+      workspaceId: 'w1',
+      change: { case: 'revoked', value: create(EmptySchema) },
+    }))
+
+    expect(result.droppedPending).toBe(true)
+    expect(mgr.state.confirmedState.workspaces.w1).toBeUndefined()
+    expect(mgr.state.confirmedState.nodes.root1).toBeUndefined()
+    expect(mgr.state.confirmedState.workspaces.w2).toBeDefined()
+    expect(mgr.state.confirmedState.nodes.root2).toBeDefined()
+    expect(mgr.state.pendingBatches).toHaveLength(1)
+    expect(mgr.state.pendingBatches[0]!.ops).toHaveLength(1)
+    const remainingBody = mgr.state.pendingBatches[0]!.ops[0]!.body
+    expect(remainingBody.case).toBe('setNodeRegister')
+    if (remainingBody.case === 'setNodeRegister')
+      expect(remainingBody.value.nodeId).toBe('root2')
+  })
+
+  it('workspace projection grant installs existing state without replacing unrelated state', () => {
+    mgr.bootstrap({
+      orgId: 'org',
+      nodes: { root2: create(NodeRecordSchema, { nodeId: 'root2' }) },
+      tabs: {},
+      floatingWindows: {},
+      workspaces: {
+        w2: create(WorkspaceContentsRecordSchema, { workspaceId: 'w2', rootNodeId: 'root2' }),
+      },
+      currentEpoch: 1n,
+    })
+    const projection = create(OrgMaterializedSchema, {
+      orgId: 'org',
+      nodes: { root1: create(NodeRecordSchema, { nodeId: 'root1' }) },
+      workspaces: {
+        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
+      },
+      currentEpoch: 1n,
+    })
+
+    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
+      workspaceId: 'w1',
+      change: { case: 'granted', value: projection },
+    }))
+
+    expect(mgr.state.confirmedState.workspaces.w1).toBeDefined()
+    expect(mgr.state.confirmedState.nodes.root1).toBeDefined()
+    expect(mgr.state.confirmedState.workspaces.w2).toBeDefined()
+    expect(mgr.state.confirmedState.nodes.root2).toBeDefined()
+  })
+
+  it('ignores malformed workspace projection transitions without deleting state', () => {
+    mgr.bootstrap({
+      orgId: 'org',
+      nodes: { root1: create(NodeRecordSchema, { nodeId: 'root1' }) },
+      tabs: {},
+      floatingWindows: {},
+      workspaces: {
+        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
+      },
+      currentEpoch: 1n,
+    })
+
+    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, { workspaceId: 'w1' }))
+    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
+      workspaceId: 'w1',
+      change: {
+        case: 'granted',
+        value: create(OrgMaterializedSchema, { orgId: 'org', currentEpoch: 1n }),
+      },
+    }))
+
+    expect(mgr.state.confirmedState.workspaces.w1).toBeDefined()
+    expect(mgr.state.confirmedState.nodes.root1).toBeDefined()
   })
 
   it('notify is invoked after every state-mutating method', () => {
@@ -294,12 +458,10 @@ describe('pendingOpsManager', () => {
       const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n3', NodeKind.LEAF)])
       mgr.submit(batch)
-      // Use an unknown enum value (out of the BatchRejectionReason
-      // range) so consumeBatchRejected classifies it as retryable —
-      // this test only cares about the alias re-establishment, not
-      // the rejection reason.
+      // The rejection reason is immaterial here -- this test only cares
+      // about alias re-establishment after the pending queue drains, not
+      // the retryable classification.
       const rejection = create(BatchRejectionSchema, {
-
         reason: 99 as any,
         offendingOpId: batch.ops[0].opId,
       })

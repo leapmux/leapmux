@@ -67,26 +67,6 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 	}, nil
 }
 
-// NewFromDB wraps an existing *sql.DB (already opened and migrated) into a
-// Store. The returned Store takes ownership of the DB handle; calling Close
-// on the Store will close the underlying *sql.DB.
-func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
-	mig, err := newMigrator(sqlDB)
-	if err != nil {
-		return nil, fmt.Errorf("init sqlite migrator: %w", err)
-	}
-	return &sqliteStore{
-		conn: &sqliteConn{
-			shared: &sqliteShared{
-				db:       sqlDB,
-				migrator: mig,
-			},
-			exec: sqlDB,
-			q:    gendb.New(sqlDB),
-		},
-	}, nil
-}
-
 func (s *sqliteStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
 func (s *sqliteStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
 func (s *sqliteStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
@@ -139,6 +119,9 @@ func (s *sqliteStore) APITokens() store.APITokenStore { return &apiTokenStore{co
 func (s *sqliteStore) DelegationTokens() store.DelegationTokenStore {
 	return &delegationTokenStore{conn: s.conn}
 }
+func (s *sqliteStore) RevocationEvents() store.RevocationEventStore {
+	return newRevocationEventStore(s.conn)
+}
 func (s *sqliteStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
@@ -149,20 +132,44 @@ func (s *sqliteStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: 
 func (s *sqliteStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	tx, err := s.conn.shared.db.BeginTx(ctx, nil)
+	if s.conn.inTx() {
+		return fn(s)
+	}
+	return s.conn.withTransaction(ctx, func(conn *sqliteConn) error {
+		return fn(&sqliteStore{conn: conn})
+	})
+}
+
+func (s *sqliteStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+	return s.conn.withTransaction(ctx, func(conn *sqliteConn) error {
+		if _, err := conn.q.LockUserAuthState(ctx, userID); err != nil {
+			return mapErr(err)
+		}
+		return fn(&sqliteStore{conn: conn})
+	})
+}
+
+func (c *sqliteConn) inTx() bool {
+	_, ok := c.exec.(*sql.Tx)
+	return ok
+}
+
+func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn) error) error {
+	if c.inTx() {
+		return fn(c)
+	}
+	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	txStore := &sqliteStore{
-		conn: &sqliteConn{
-			shared: s.conn.shared,
-			exec:   tx,
-			q:      s.conn.q.WithTx(tx),
-		},
+	txConn := &sqliteConn{
+		shared: c.shared,
+		exec:   tx,
+		q:      c.q.WithTx(tx),
 	}
-	if err := fn(txStore); err != nil {
+	if err := fn(txConn); err != nil {
 		return err
 	}
 	return tx.Commit()

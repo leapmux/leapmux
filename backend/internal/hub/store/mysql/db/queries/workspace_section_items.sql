@@ -25,7 +25,7 @@ WHERE user_id = ? AND workspace_id = ?;
 -- ordering. MySQL's default `utf8mb4_general_ci` collation is
 -- case-INsensitive, so two workspace_ids that differ only in case
 -- (e.g. "Foo..." vs "foo...") would sort non-deterministically
--- across runs — different planner picks land on different orderings,
+-- across runs -- different planner picks land on different orderings,
 -- and the storetest tiebreaker-stability test catches it. SQLite and
 -- PostgreSQL already collate case-sensitively by default, so they
 -- don't need an explicit cast.

@@ -215,29 +215,3 @@ func rowsAffected(tag pgconn.CommandTag, err error) (int64, error) {
 	}
 	return tag.RowsAffected(), nil
 }
-
-// mapRevocations is the postgres analogue of sqlutil.MapRevocations:
-// the pgx generated rows wrap timestamps in pgtype.Timestamptz, not
-// sql.NullTime, so the conversion goes through tsToTimePtr instead.
-// Rows where revoked_at scans as NULL (eg a concurrent un-revoke
-// between query and read) are skipped.
-func mapRevocations[R any](
-	rows []R,
-	getID func(R) string,
-	getUserID func(R) string,
-	getRevokedAt func(R) pgtype.Timestamptz,
-) []store.TokenRevocationRecord {
-	out := make([]store.TokenRevocationRecord, 0, len(rows))
-	for _, r := range rows {
-		t := tsToTimePtr(getRevokedAt(r))
-		if t == nil {
-			continue
-		}
-		out = append(out, store.TokenRevocationRecord{
-			ID:        getID(r),
-			UserID:    getUserID(r),
-			RevokedAt: *t,
-		})
-	}
-	return out
-}

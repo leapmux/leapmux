@@ -37,14 +37,15 @@ CREATE TABLE users (
     updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- High-water mark bumped whenever this user's auth basis is
     -- bulk-revoked (admin user delete / reset-password / session
-    -- revoke-user, ChangePassword). The hub's revocation watcher
-    -- polls this column to fire `EvictByUserID` +
-    -- `EvictBearersByUserID` + `CloseChannelsByUser` so cookie
-    -- channels and any leftover bearer-cache entries die in
-    -- lock-step with the DB mutation. Without this column, an
-    -- admin command running in a different process would leave
-    -- the hub's in-memory state stale until cache TTL.
+    -- revoke-user, ChangePassword). Each bump also records a durable
+    -- user-token revocation event that closes cookie channels and
+    -- evicts bearer caches across hub processes.
     tokens_revoked_at        DATETIME,
+    -- Monotonic credential epoch. Sessions and bearer rows copy this
+    -- value when issued; user-wide revocation increments it so stale
+    -- credentials fail without depending on timestamp precision or
+    -- cross-host clock agreement.
+    auth_generation          INTEGER NOT NULL DEFAULT 0,
     deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
@@ -77,6 +78,7 @@ CREATE TABLE user_sessions (
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    auth_generation INTEGER NOT NULL DEFAULT 0,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT ''
 );
@@ -97,7 +99,7 @@ CREATE TABLE workers (
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The deregister handler refuses these so the user can't
-    -- accidentally tear down the bundled desktop worker — it would just
+    -- accidentally tear down the bundled desktop worker -- it would just
     -- re-register on next launch and the running process would noisily
     -- exit with "invalid auth token" in between.
     auto_registered INTEGER NOT NULL DEFAULT 0,
@@ -198,6 +200,11 @@ CREATE TABLE workspace_access (
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (workspace_id, user_id)
 );
+-- Point index for the cross-org "shared with me" lookup (the grant branch of
+-- ListAllAccessibleWorkspaces), which keys on user_id. The PK leads with
+-- workspace_id, so it cannot serve a user_id-only probe. (MySQL gets this index
+-- automatically from the user_id foreign key; SQLite does not index FK columns.)
+CREATE INDEX idx_workspace_access_user_id ON workspace_access(user_id);
 
 -- CRDT op-batch journal. The per-org CRDT manager appends every committed
 -- batch here in the same transaction that updates the in-memory state and
@@ -206,7 +213,7 @@ CREATE TABLE workspace_access (
 -- canonical HLC range anchored at (physical_ms, logical) with op_count
 -- ops, so the last op's logical = logical + op_count - 1.
 --
--- Compaction periodically drops rows whose batch's last canonical HLC ≤
+-- Compaction periodically drops rows whose batch's last canonical HLC <=
 -- compaction_watermark; the surviving batch_ids move to
 -- org_recent_batch_ids so retries within ~14 days remain idempotent.
 CREATE TABLE org_op_batches (
@@ -311,6 +318,38 @@ CREATE TABLE lifecycle_outbox (
 );
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id) WHERE consumed_at IS NULL;
 
+-- Durable revocation stream. Token/user mutations write pending events
+-- in the same transaction as the state transition. Watchers publish those
+-- facts into a gapless seq stream before consuming them, so cursors are
+-- based on durable sequence numbers rather than wall-clock timestamps.
+CREATE TABLE revocation_events (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL CHECK (kind IN ('session', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    subject_id TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    revoked_at DATETIME NOT NULL,
+    user_auth_generation INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    seq INTEGER UNIQUE CHECK (seq IS NULL OR seq > 0),
+    published_at DATETIME,
+    CHECK ((seq IS NULL) = (published_at IS NULL))
+);
+CREATE INDEX idx_revocation_events_pending ON revocation_events(created_at, id) WHERE seq IS NULL;
+CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq) WHERE seq IS NOT NULL;
+
+CREATE TABLE revocation_event_sequence (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    last_seq INTEGER NOT NULL CHECK (last_seq >= 0)
+);
+INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0);
+
+CREATE TABLE hub_runtime_lease (
+    singleton_id     INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    holder_id        TEXT NOT NULL CHECK (holder_id <> ''),
+    cursor_seq       INTEGER NOT NULL CHECK (cursor_seq >= 0),
+    lease_expires_at DATETIME NOT NULL
+);
+
 -- Durable, low-churn API tokens used by the leapmux remote CLI (and any
 -- future mobile / IDE / integration). Each row's id appears verbatim in
 -- the bearer string ("lmx_<id>_<secret>") so verification is a single
@@ -333,6 +372,7 @@ CREATE TABLE api_tokens (
     previous_refresh_expires_at   DATETIME,
     scope                         TEXT NOT NULL DEFAULT 'remote:*',
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    auth_generation               INTEGER NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,
     last_rotated_at               DATETIME,
     expires_at                    DATETIME,
@@ -360,9 +400,8 @@ CREATE TABLE delegation_tokens (
     issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
     secret_hash                   BLOB NOT NULL,
     refresh_hash                  BLOB,
-    previous_refresh_hash         BLOB,
-    previous_refresh_expires_at   DATETIME,
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    auth_generation               INTEGER NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,
     expires_at                    DATETIME NOT NULL,
     refresh_expires_at            DATETIME,
@@ -480,6 +519,9 @@ DROP TABLE IF EXISTS cli_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS hub_runtime_lease;
+DROP TABLE IF EXISTS revocation_events;
+DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

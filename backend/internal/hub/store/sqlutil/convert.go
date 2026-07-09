@@ -2,9 +2,8 @@ package sqlutil
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
-
-	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
 // RowsAffected extracts the number of affected rows from a sql.Result,
@@ -13,7 +12,10 @@ func RowsAffected(result sql.Result, err error, mapErrFn func(error) error) (int
 	if err != nil {
 		return 0, mapErrFn(err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, mapErrFn(err)
+	}
 	return n, nil
 }
 
@@ -37,29 +39,19 @@ func ToNullTime(t *time.Time) sql.NullTime {
 	return sql.NullTime{Time: t.UTC(), Valid: true}
 }
 
-// MapRevocations projects sqlc rows from a `revoked_at IS NOT NULL`
-// query into the backend-neutral TokenRevocationRecord shape, keeping
-// the per-row WHAT-comment "revoked_at is non-null per the WHERE
-// clause; the generated row type still wraps it in sql.NullTime" in
-// one place. Rows whose `revoked_at` somehow scans as invalid (eg a
-// concurrent unrevoke between query and read) are skipped.
-func MapRevocations[R any](
-	rows []R,
-	getID func(R) string,
-	getUserID func(R) string,
-	getRevokedAt func(R) sql.NullTime,
-) []store.TokenRevocationRecord {
-	out := make([]store.TokenRevocationRecord, 0, len(rows))
-	for _, r := range rows {
-		revoked := getRevokedAt(r)
-		if !revoked.Valid {
-			continue
-		}
-		out = append(out, store.TokenRevocationRecord{
-			ID:        getID(r),
-			UserID:    getUserID(r),
-			RevokedAt: revoked.Time,
-		})
+// RequireInt64 unwraps a nullable database integer that the schema requires.
+func RequireInt64(value int64, valid bool, column string) (int64, error) {
+	if !valid {
+		return 0, fmt.Errorf("database row returned NULL %s", column)
 	}
-	return out
+	return value, nil
+}
+
+// RequireTime unwraps a nullable database timestamp that the schema requires
+// and normalizes it to UTC.
+func RequireTime(value time.Time, valid bool, column string) (time.Time, error) {
+	if !valid {
+		return time.Time{}, fmt.Errorf("database row returned NULL %s", column)
+	}
+	return value.UTC(), nil
 }

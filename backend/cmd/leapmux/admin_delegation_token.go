@@ -40,10 +40,11 @@ func runDelegationTokenList(cmd adminCmdCtx, args []string) error {
 // runDelegationTokenRevoke marks a delegation_tokens row revoked.
 //
 // Note: this command runs in a separate process from the live hub and
-// only mutates the database row. The hub's revocation watcher polls
-// `delegation_tokens.revoked_at` (default cadence: every 2s, see
-// internal/hub/revocationwatcher) and drives SessionCache.EvictBearer
-// + ChannelCloser.CloseChannelsByBearer for newly-revoked rows. The
+// only mutates the database row. The store records a durable revocation
+// event in the same transaction; the hub's revocation watcher publishes
+// and consumes that stream (default cadence: every 2s, see
+// internal/hub/revocationwatcher) and drives AuthContextRegistry.EvictBearer +
+// ChannelCloser.CloseChannelsByBearer for newly-revoked rows. The
 // minting worker can additionally call its own
 // /worker/delegation-tokens/revoke endpoint for zero-latency
 // in-process eviction; both paths converge on the same close

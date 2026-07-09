@@ -66,7 +66,3 @@ sql:
             go_type:
               type: "byte"
               slice: true
-          - column: "delegation_tokens.previous_refresh_hash"
-            go_type:
-              type: "byte"
-              slice: true

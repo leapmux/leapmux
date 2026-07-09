@@ -2,8 +2,6 @@ package mysql
 
 import (
 	"context"
-	"errors"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -36,6 +34,15 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 	}))
 }
 
+func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, code)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBCLIAuthorizationCode(row)
+	return &out, nil
+}
+
 // Consume implements MySQL's two-step "consume" pattern: first try to mark
 // the row as consumed (returning rows-affected); if anything was affected,
 // re-read the row to return its contents. RETURNING is unavailable on
@@ -46,7 +53,7 @@ func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*
 		return nil, err
 	}
 	if rows == 0 {
-		return nil, errors.New("cli authorization code not found or expired")
+		return nil, store.ErrNotFound
 	}
 	row, err := s.conn.q.GetCLIAuthorizationCode(ctx, code)
 	if err != nil {
@@ -54,8 +61,4 @@ func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*
 	}
 	out := fromDBCLIAuthorizationCode(row)
 	return &out, nil
-}
-
-func (s *cliAuthorizationCodeStore) DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, cutoff.UTC()))
 }

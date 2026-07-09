@@ -73,37 +73,32 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 // concurrent callers cannot both observe the same live row. MySQL has no
 // UPDATE ... RETURNING, so the row lock is doing the heavy lifting here.
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
-	tx, err := s.conn.shared.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	q := s.conn.q.WithTx(tx)
-	now := time.Now().UTC()
-	r, err := q.GetActiveRegistrationKeyForUpdate(ctx, gendb.GetActiveRegistrationKeyForUpdateParams{
-		ID:        id,
-		ExpiresAt: now,
-	})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, store.ErrNotFound
+	var consumed *store.WorkerRegistrationKey
+	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		now := time.Now().UTC()
+		r, err := conn.q.GetActiveRegistrationKeyForUpdate(ctx, gendb.GetActiveRegistrationKeyForUpdateParams{
+			ID:        id,
+			ExpiresAt: now,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
 		}
-		return nil, mapErr(err)
-	}
-	// Internal soft-delete: ownership is already enforced by the row
-	// lock above, so this UPDATE skips the created_by filter that the
-	// user-facing SoftDelete query carries.
-	if err := q.ConsumeSoftDeleteRegistrationKey(ctx, gendb.ConsumeSoftDeleteRegistrationKeyParams{
-		ID:        id,
-		ExpiresAt: now.Add(store.RegistrationKeySoftDeleteOffset),
-	}); err != nil {
-		return nil, mapErr(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBRegistrationKey(r), nil
+		// Internal soft-delete: ownership is already enforced by the row
+		// lock above, so this UPDATE skips the created_by filter that the
+		// user-facing SoftDelete query carries.
+		if err := conn.q.ConsumeSoftDeleteRegistrationKey(ctx, gendb.ConsumeSoftDeleteRegistrationKeyParams{
+			ID:        id,
+			ExpiresAt: now.Add(store.RegistrationKeySoftDeleteOffset),
+		}); err != nil {
+			return mapErr(err)
+		}
+		consumed = fromDBRegistrationKey(r)
+		return nil
+	})
+	return consumed, err
 }
 
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {

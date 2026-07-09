@@ -141,7 +141,7 @@ func batchHasStructuralOp(batch []*leapmuxv1.OrgOp) bool {
 // produce a tab that points at a non-existent worker. The CLI
 // preflight catches this earlier with a friendlier message; this
 // is the defense-in-depth catch for trustless / future writers.
-func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.OrgOp, principalID, orgID string, auth AuthChecker) (leapmuxv1.BatchRejectionReason, string) {
+func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.OrgOp, principalID, orgID string, auth AuthChecker) (leapmuxv1.BatchRejectionReason, string, error) {
 	for _, op := range batch {
 		body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetTabRegister)
 		if !ok {
@@ -155,9 +155,15 @@ func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.OrgOp, principal
 		if workerID == "" {
 			continue
 		}
-		if !auth.CanUseWorker(ctx, orgID, workerID, principalID) {
-			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INVALID_WORKER_REF, op.GetOpId()
+		allowed, err := auth.CanUseWorker(ctx, orgID, workerID, principalID)
+		if err != nil {
+			// Transient worker-lookup failure: surface it as retryable rather than
+			// rejecting the op as an invalid worker ref.
+			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, "", err
+		}
+		if !allowed {
+			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INVALID_WORKER_REF, op.GetOpId(), nil
 		}
 	}
-	return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, ""
+	return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, "", nil
 }

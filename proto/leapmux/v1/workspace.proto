@@ -21,6 +21,13 @@ enum TabType {
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  // ListAllAccessibleWorkspaces returns every workspace the caller can read
+  // (owner OR explicit grant) across every org -- including workspaces owned by
+  // an org the caller is not a member of (cross-org collaboration). Unlike the
+  // org-scoped ListWorkspaces, it is not filtered by org; each returned
+  // Workspace carries its own org_id so the caller can route follow-up reads to
+  // the owning org.
+  rpc ListAllAccessibleWorkspaces(ListAllAccessibleWorkspacesRequest) returns (ListAllAccessibleWorkspacesResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
@@ -68,6 +75,12 @@ message ListWorkspacesRequest {
 message ListWorkspacesResponse {
   repeated Workspace workspaces = 1;
   PageResponse page = 2;
+}
+
+message ListAllAccessibleWorkspacesRequest {}
+
+message ListAllAccessibleWorkspacesResponse {
+  repeated Workspace workspaces = 1;
 }
 
 message GetWorkspaceRequest {

@@ -25,7 +25,8 @@ type fakeJournal struct {
 	indexRows map[string]crdt.TabIndexRow       // owned_tabs[tab_id] → row
 	rendered  map[string]crdt.TabIndexRow       // rendered_tabs[tab_id] → row
 
-	commitErr error // injectable failure
+	commitErr error // injectable CommitBatch failure
+	lookupErr error // injectable LookupRecentBatchID failure
 }
 
 func newFakeJournal() *fakeJournal {
@@ -73,6 +74,9 @@ func (f *fakeJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 func (f *fakeJournal) LookupRecentBatchID(_ context.Context, _, batchID string) (*crdt.RecentBatchRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
 	row, ok := f.dedup[batchID]
 	if !ok {
 		return nil, crdt.ErrNotFound
@@ -125,6 +129,12 @@ func (f *fakeJournal) CleanupExpiredRecentBatchIDs(_ context.Context, before tim
 	return deleted, nil
 }
 
+func (f *fakeJournal) putDedup(row crdt.RecentBatchRecord) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dedup[row.BatchID] = row
+}
+
 // snapshotIndex returns the current owned/rendered rows under lock.
 func (f *fakeJournal) snapshotIndex() (owned, rendered map[string]crdt.TabIndexRow) {
 	f.mu.Lock()
@@ -169,3 +179,7 @@ func (fakeOutbox) MarkLifecycleOutboxConsumed(_ context.Context, _ int64, _ time
 // errCommitFailed is the canonical commit-failure used by tests that
 // inject a journal error.
 var errCommitFailed = errors.New("test: commit failed")
+
+// errLookupFailed is the canonical dedup-lookup failure used by tests that
+// inject a transient LookupRecentBatchID error.
+var errLookupFailed = errors.New("test: dedup lookup failed")

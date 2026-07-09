@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,10 +46,10 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
-
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	t.Cleanup(contexts.Stop)
+	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -102,10 +103,11 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -165,6 +167,31 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "newname", user.Username)
+
+	current, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: env.userID,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "newname", current.Msg.GetUsername(), "profile mutation must invalidate cached auth context")
+}
+
+func TestUserService_UpdateProfileRollsBackWhenOrgRenameFails(t *testing.T) {
+	env := setupUserTest(t)
+	require.NoError(t, env.store.Orgs().Create(context.Background(), store.CreateOrgParams{
+		ID: id.Generate(), Name: "conflicting-org",
+	}))
+
+	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username: "conflicting-org", DisplayName: "Changed",
+	}, env.token))
+	require.Error(t, err)
+
+	user, userErr := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, userErr)
+	assert.Equal(t, "testuser", user.Username)
+	org, orgErr := env.store.Orgs().GetByID(context.Background(), env.orgID)
+	require.NoError(t, orgErr)
+	assert.Equal(t, "testuser", org.Name)
 }
 
 func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
@@ -178,6 +205,18 @@ func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
 
 	// OrgName should be empty since username didn't change.
 	assert.Empty(t, resp.Msg.GetOrgName(), "username unchanged")
+
+	// The display-name update must still persist...
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Equal(t, "Updated Display", user.DisplayName)
+
+	// ...but a display-name-only edit changes no cached UserInfo field
+	// (username is the only one this mutation touches), so it must emit no
+	// fleet-wide user_info cache-invalidation event.
+	published, err := env.store.RevocationEvents().PublishPending(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Zero(t, published, "display-name-only profile edit must not emit a user_info event")
 }
 
 func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
@@ -271,6 +310,31 @@ func TestUserService_UpdatePreferences(t *testing.T) {
 	assert.Equal(t, "match-ui", prefs.GetTerminalTheme())
 	assert.Len(t, prefs.GetUiFonts(), 2)
 	assert.Len(t, prefs.GetMonoFonts(), 1)
+}
+
+func TestUserService_UpdatePreferences_ResponseEchoesSanitizedTheme(t *testing.T) {
+	env := setupUserTest(t)
+
+	// theme / terminal_theme are sanitized via SanitizeSlug (lowercase + trim),
+	// so send values that transform -- raw != sanitized.
+	resp, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
+		Theme:         "Dark",       // -> "dark"
+		TerminalTheme: "  Match-UI", // -> "match-ui"
+	}, env.token))
+	require.NoError(t, err)
+
+	// The UpdatePreferences RESPONSE must echo the persisted (sanitized) values,
+	// NOT the raw request -- otherwise a client re-reading preferences would see a
+	// value different from the one the update just reported.
+	updated := resp.Msg.GetPreferences()
+	assert.Equal(t, "dark", updated.GetTheme(), "response must carry the sanitized theme, not the raw request")
+	assert.Equal(t, "match-ui", updated.GetTerminalTheme(), "response must carry the sanitized terminal theme")
+
+	// A follow-up GetPreferences must AGREE with the update response (no drift).
+	got, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, updated.GetTheme(), got.Msg.GetPreferences().GetTheme())
+	assert.Equal(t, updated.GetTerminalTheme(), got.Msg.GetPreferences().GetTerminalTheme())
 }
 
 func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
@@ -413,6 +477,56 @@ func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
 	assert.True(t, user.EmailVerified)
 }
 
+// --- RequestEmailChange: non-admin, verification off, immediate unverified change ---
+
+// TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified covers
+// the non-admin arm of the collapsed immediate-change branch: with verification
+// off, the change applies immediately but the new address must land UNVERIFIED
+// (verified == userInfo.IsAdmin == false), unlike the admin arm which trusts it.
+func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
+	client, st, _ := setupVerificationUserTestServer(t, false)
+
+	adminUser, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+
+	userID := id.Generate()
+	hash, _ := password.Hash("userpass")
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           userID,
+		OrgID:        adminUser.OrgID,
+		Username:     "plainuser",
+		PasswordHash: hash,
+		DisplayName:  "Plain User",
+		PasswordSet:  true,
+		IsAdmin:      false,
+	}))
+	require.NoError(t, st.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
+		OrgID:  adminUser.OrgID,
+		UserID: userID,
+		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	}))
+	// Start from a verified address so the interceptor doesn't gate the call.
+	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		Email:         "old@example.com",
+		EmailVerified: true,
+		ID:            userID,
+	}))
+
+	userToken, _, _, err := auth.Login(context.Background(), st, "plainuser", "userpass")
+	require.NoError(t, err)
+
+	resp, err := client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "new@example.com",
+	}, userToken))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetVerificationRequired())
+
+	user, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, "new@example.com", user.Email, "the change applies immediately when verification is off")
+	assert.False(t, user.EmailVerified, "a non-admin immediate change must land unverified (verified == IsAdmin)")
+}
+
 // --- RequestEmailChange: duplicate email rejected ---
 
 func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
@@ -447,10 +561,10 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 
 // --- RequestEmailChange: config on, pending email ---
 
-// setupVerificationUserTestServer creates a test server with
-// EmailVerificationRequired=true and both UserService and AuthService
+// setupVerificationUserTestServer creates a test server with the given
+// EmailVerificationRequired setting and both UserService and AuthService
 // registered. It returns a UserService client, st, and the admin token.
-func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserServiceClient, store.Store, string) {
+func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired bool) (leapmuxv1connect.UserServiceClient, store.Store, string) {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -463,13 +577,14 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, true)
+	interceptor, contexts := auth.NewInterceptor(st, nil, false, true)
+	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
-	cfg.EmailVerificationRequired = true
+	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -486,7 +601,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 }
 
 func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
-	client, st, adminToken := setupVerificationUserTestServer(t)
+	client, st, adminToken := setupVerificationUserTestServer(t, true)
 
 	// Create a non-admin user.
 	adminUser, err := st.Users().GetByUsername(context.Background(), "admin")
@@ -724,10 +839,11 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	rec := &recordingSender{}
-	userSvc := service.NewUserService(st, testConfig(), nil, rec, mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -935,6 +1051,87 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	// The other session should be invalidated.
 	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
 	assert.Error(t, err, "other sessions should be invalidated after password change")
+}
+
+// onUserAuthTxStore fires a one-shot side effect when a user-auth transaction is
+// opened, letting a test inject a concurrent mutation into ChangePassword.
+type onUserAuthTxStore struct {
+	store.Store
+	once   sync.Once
+	before func()
+}
+
+func (s *onUserAuthTxStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+	s.once.Do(s.before)
+	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
+}
+
+// TestChangePassword_ToleratesConcurrentActingSessionDeletion verifies that a
+// same-user logout / admin force-logout deleting the acting session mid-request
+// (Sessions().Delete does not contend on the user-auth lock ChangePassword
+// holds) does not roll back an otherwise-valid password change: RefreshAuth-
+// Generation matching zero rows for the now-absent session is tolerated, not
+// fatal. Against the pre-fix `n != 1` guard this request failed with a spurious
+// CodeInternal and left the password unchanged.
+func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(ctx))
+
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("testpass")
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testuser"}))
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "testuser", PasswordHash: hash,
+		DisplayName: "Test User", PasswordSet: true,
+	}))
+
+	token, _, _, err := auth.Login(ctx, st, "testuser", "testpass")
+	require.NoError(t, err)
+	userInfo, err := auth.ValidateToken(ctx, st, token)
+	require.NoError(t, err)
+	sessionID := userInfo.Credential.SessionID()
+	require.NotEmpty(t, sessionID)
+
+	// The interceptor validates the token against the live session, then the
+	// handler opens its transaction on the wrapped store -- at which point we
+	// delete the acting session, exactly as a concurrent logout would.
+	var deleteN int64
+	var deleteErr error
+	hooked := &onUserAuthTxStore{Store: st, before: func() {
+		deleteN, deleteErr = st.Sessions().Delete(ctx, sessionID)
+	}}
+
+	mux := http.NewServeMux()
+	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	t.Cleanup(contexts.Stop)
+	userSvc := service.NewUserService(hooked, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	_, err = client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
+		CurrentPassword: "testpass",
+		NewPassword:     "newpass123",
+	}, token))
+	require.NoError(t, err, "password change must survive a concurrently-deleted acting session")
+	require.NoError(t, deleteErr)
+	require.Equal(t, int64(1), deleteN, "test must have deleted the acting session mid-request")
+
+	// The password actually changed: the old one no longer authenticates and the
+	// new one does.
+	_, _, _, err = auth.Login(ctx, st, "testuser", "testpass")
+	require.Error(t, err, "old password must be rejected after the change")
+	_, _, _, err = auth.Login(ctx, st, "testuser", "newpass123")
+	require.NoError(t, err, "new password must authenticate after the change")
 }
 
 // --- ChangePassword tests for OAuth users ---

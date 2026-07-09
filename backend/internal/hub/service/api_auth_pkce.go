@@ -99,7 +99,7 @@ func (h *APIAuthHandler) handleAuthorize(w http.ResponseWriter, r *http.Request)
 		DeviceName:    deviceName,
 		ExpiresAt:     time.Now().Add(CLIAuthCodeTTL),
 	}); err != nil {
-		http.Error(w, "failed to record authorization", http.StatusInternalServerError)
+		writeInternalError(w, "authorization code creation failed", err)
 		return
 	}
 

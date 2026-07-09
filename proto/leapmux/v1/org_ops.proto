@@ -1,6 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "leapmux/v1/org_crdt.proto";
 import "leapmux/v1/workspace.proto";
@@ -217,6 +218,18 @@ message WatchOrgEvent {
     WorkspaceRenamed     renamed             = 6;
     WorkspaceCreated     created             = 7;
     WorkspaceDeleted     deleted             = 8;
+    WorkspaceProjectionChanged workspace_projection = 9;
+  }
+}
+
+// WorkspaceProjectionChanged atomically replaces one workspace's delivered
+// projection after an ACL grant or removes it after a revoke. Unrelated
+// workspace state is never part of this event.
+message WorkspaceProjectionChanged {
+  string workspace_id = 1;
+  oneof change {
+    OrgMaterialized      granted = 2;
+    google.protobuf.Empty revoked = 3;
   }
 }
 

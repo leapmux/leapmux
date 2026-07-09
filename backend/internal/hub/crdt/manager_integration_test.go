@@ -2,6 +2,7 @@ package crdt_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +99,53 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 			}}},
 		},
 	}
+}
+
+// The lifecycle-outbox consumer calls MutateInternal (workspace add/delete) on a
+// request goroutine while the manager goroutine reads m.state.Workspaces bare in
+// ValidateBatch -> registeredRoots. Without stateWriteMu serializing the two, a
+// client submit racing a workspace create/delete is a Go-fatal "concurrent map
+// read and map write" that kills the Hub. This hammers both paths; it must run
+// clean (and clean under -race) with the fix.
+func TestManager_MutateInternalRacesClientSubmit(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 900_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	const iterations = 1500
+	var wg sync.WaitGroup
+	wg.Add(2)
+	// Manager goroutine: each Submit validates against m.state, iterating Workspaces.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_, _ = mgr.Submit(context.Background(), crdt.SubmitInput{
+				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
+					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
+			})
+		}
+	}()
+	// Request goroutine: in-place workspace add/delete via MutateInternal.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			id := "churn-" + strconv.Itoa(i)
+			mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+				s.Workspaces[id] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: id}
+			})
+			mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
+		}
+	}()
+	wg.Wait()
+}
+
+func TestSubscriberFilter_NilAllowsAllEmptyMapAllowsNone(t *testing.T) {
+	assert.True(t, crdt.SubscriberFilter{}.IsAllowed("w1"))
+	assert.False(t, crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}}.IsAllowed("w1"))
+	assert.True(t, crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}}.IsAllowed("w1"))
+	assert.False(t, crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w2": true}}.IsAllowed("w1"))
+	assert.False(t, crdt.SubscriberFilter{}.IsAllowed(""))
 }
 
 func TestManager_TwoClients_InterleavedOps_Converge(t *testing.T) {
@@ -321,6 +369,39 @@ func TestManager_DedupeByOpID_DifferentPrincipal_RejectsUnauthorized(t *testing.
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED, rejected.GetReason())
 }
 
+func TestManager_WorkspaceScopeRejectsSiblingSubmit(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 5_500)
+	seedRootInternal(t, mgr, "w1", "root1")
+	seedRootInternal(t, mgr, "w2", "root2")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	allowed, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID:            "org",
+		Epoch:            epoch,
+		PrincipalID:      "user",
+		OriginClient:     "c1",
+		WorkspaceScopeID: "w1",
+		Batches:          []*leapmuxv1.OpBatch{addTabBatch(t, "scope-allowed", "t-pinned", "root1", "wkr1", "p1")},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, allowed[0].GetCommitted(),
+		"workspace-scoped submits must still allow ops inside the pinned workspace")
+
+	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID:            "org",
+		Epoch:            epoch,
+		PrincipalID:      "user",
+		OriginClient:     "c1",
+		WorkspaceScopeID: "w1",
+		Batches:          []*leapmuxv1.OpBatch{addTabBatch(t, "scope-denied", "t-sibling", "root2", "wkr1", "p1")},
+	})
+	require.NoError(t, err)
+	rejected := r[0].GetRejected()
+	require.NotNil(t, rejected)
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_FORBIDDEN_WORKSPACE, rejected.GetReason(),
+		"workspace-scoped submits must reject ops targeting a sibling workspace even when the underlying auth checker would allow it")
+}
+
 func TestManager_Epoch0_RejectedAsEpochRequired(t *testing.T) {
 	mgr, _, _ := runManager(t, "org", allowAll{}, 6_000)
 	seedRootInternal(t, mgr, "w1", "root1")
@@ -353,6 +434,50 @@ func TestManager_StaleEpoch_Rejected(t *testing.T) {
 	rejected := r[0].GetRejected()
 	require.NotNil(t, rejected)
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, rejected.GetReason())
+}
+
+// A transient journal CommitBatch failure (a brief DB hiccup) must surface as a
+// retryable Submit error, NOT a permanent VALUE_DOMAIN rejection. The frontend
+// drops a VALUE_DOMAIN batch (it is not on the retryable allowlist) but retries a
+// transport error, so mapping a transient store failure to a rejection would
+// silently lose the user's edit.
+func TestManager_TransientCommitError_SurfacesAsRetryableError(t *testing.T) {
+	mgr, j, _ := runManager(t, "org", allowAll{}, 12_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	j.mu.Lock()
+	j.commitErr = errCommitFailed
+	j.mu.Unlock()
+
+	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bA", "tA", "root1", "wkr1", "p1")},
+	})
+	require.Error(t, err, "a transient commit failure must be a retryable error, not a rejection")
+	require.ErrorIs(t, err, errCommitFailed)
+	require.Nil(t, res)
+}
+
+// A transient dedup-lookup failure (LookupRecentBatchID hitting a brief DB
+// hiccup) must likewise surface as a retryable Submit error rather than a
+// permanent VALUE_DOMAIN rejection the client would drop.
+func TestManager_TransientDedupLookupError_SurfacesAsRetryableError(t *testing.T) {
+	mgr, j, _ := runManager(t, "org", allowAll{}, 13_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	j.mu.Lock()
+	j.lookupErr = errLookupFailed
+	j.mu.Unlock()
+
+	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bA", "tA", "root1", "wkr1", "p1")},
+	})
+	require.Error(t, err, "a transient dedup-lookup failure must be a retryable error, not a rejection")
+	require.ErrorIs(t, err, errLookupFailed)
+	require.Nil(t, res)
 }
 
 func TestManager_PresenceActiveClient(t *testing.T) {
@@ -529,7 +654,74 @@ func TestManager_PresenceDeferredClear_ReconnectCancelsClear(t *testing.T) {
 	defer muObs.Unlock()
 	for _, evt := range eventsObs {
 		if p := evt.GetPresence(); p != nil {
-			t.Fatalf("unexpected PresenceUpdate during reconnect: active=%q", p.GetActiveClientId())
+			require.Failf(t, "unexpected PresenceUpdate during reconnect", "active=%q", p.GetActiveClientId())
+		}
+	}
+}
+
+// A double-invoked unsub (an error-path cleanup racing a deferred cleanup) must
+// not decrement the presence refcount twice: clientA here has TWO live
+// connections, so unsub-ing one of them twice must leave the refcount at 1 and
+// keep clientA present. Without the idempotency guard the second decrement
+// underflows the count to 0, schedules a clear, and prematurely evicts a client
+// that still has a live connection -- flickering the active-client gate.
+func TestManager_PresenceUnsubIsIdempotent(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 6_250, crdt.WithPresenceClearGrace(20*time.Millisecond))
+
+	var (
+		muObs     sync.Mutex
+		eventsObs []*leapmuxv1.WatchOrgEvent
+	)
+	observer := &crdt.Subscriber{
+		ClientID: "observer",
+		Filter:   crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}},
+		Send: func(evt *crdt.MarshaledEvent) error {
+			muObs.Lock()
+			defer muObs.Unlock()
+			eventsObs = append(eventsObs, evt.Event)
+			return nil
+		},
+	}
+	_, unsubObs := mgr.Subscribe(observer)
+	defer unsubObs()
+
+	// Two connections of the SAME client (e.g. two browser tabs): connCount == 2.
+	subA1 := &crdt.Subscriber{
+		ClientID: "clientA",
+		Filter:   crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}},
+		Send:     func(*crdt.MarshaledEvent) error { return nil },
+	}
+	_, unsubA1 := mgr.Subscribe(subA1)
+	subA2 := &crdt.Subscriber{
+		ClientID: "clientA",
+		Filter:   crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}},
+		Send:     func(*crdt.MarshaledEvent) error { return nil },
+	}
+	_, unsubA2 := mgr.Subscribe(subA2)
+	defer unsubA2()
+
+	require.NoError(t, mgr.HeartbeatPresence(context.Background(), "w1", "clientA"))
+	time.Sleep(30 * time.Millisecond)
+
+	// Inspect only what happens after the double-unsub.
+	muObs.Lock()
+	eventsObs = nil
+	muObs.Unlock()
+
+	// Double-invoke the first connection's unsub; subA2 is still live.
+	unsubA1()
+	unsubA1()
+
+	// Wait well past the grace window. With the fix the refcount is still 1, so
+	// no clear timer was ever scheduled and clientA stays active.
+	time.Sleep(150 * time.Millisecond)
+
+	muObs.Lock()
+	defer muObs.Unlock()
+	for _, evt := range eventsObs {
+		if p := evt.GetPresence(); p != nil {
+			assert.Equal(t, "clientA", p.GetActiveClientId(),
+				"clientA has a second live connection; a double-invoked unsub must not clear its presence")
 		}
 	}
 }
@@ -851,6 +1043,31 @@ func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
 		assert.Equal(t, crdt.HLCCmp(originalHLCs[i], op.GetCanonicalHlc()), 0,
 			"post-compaction retry must echo the original canonical HLC")
 	}
+}
+
+func TestManager_HousekeepingDeletesDedupRowsAfterExpiresAt(t *testing.T) {
+	j := newFakeJournal()
+	now := time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC)
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, func() time.Time {
+		return now
+	})
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+
+	expiresAt := now.Add(crdt.DedupTTL)
+	j.putDedup(crdt.RecentBatchRecord{
+		OrgID:     "org",
+		BatchID:   "batch-expiring",
+		BodyHash:  []byte("hash"),
+		ExpiresAt: expiresAt,
+	})
+
+	now = expiresAt.Add(-time.Millisecond)
+	mgr.TickHousekeeping(context.Background())
+	require.Equal(t, 1, j.dedupCount(), "dedup row must survive until its expires_at timestamp")
+
+	now = expiresAt.Add(time.Millisecond)
+	mgr.TickHousekeeping(context.Background())
+	assert.Equal(t, 0, j.dedupCount(), "dedup row must not be retained for a second TTL window")
 }
 
 // TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch covers the

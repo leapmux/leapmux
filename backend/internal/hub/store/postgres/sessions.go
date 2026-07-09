@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -13,13 +15,14 @@ var _ store.SessionStore = (*sessionStore)(nil)
 
 func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
-		ID:           s.ID,
-		UserID:       s.UserID,
-		ExpiresAt:    tsToTime(s.ExpiresAt),
-		CreatedAt:    tsToTime(s.CreatedAt),
-		LastActiveAt: tsToTime(s.LastActiveAt),
-		UserAgent:    s.UserAgent,
-		IPAddress:    s.IpAddress,
+		ID:             s.ID,
+		UserID:         s.UserID,
+		ExpiresAt:      tsToTime(s.ExpiresAt),
+		CreatedAt:      tsToTime(s.CreatedAt),
+		LastActiveAt:   tsToTime(s.LastActiveAt),
+		AuthGeneration: s.AuthGeneration,
+		UserAgent:      s.UserAgent,
+		IPAddress:      s.IpAddress,
 	}
 }
 
@@ -28,13 +31,15 @@ func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
-	return mapErr(s.conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-		ID:        p.ID,
-		UserID:    p.UserID,
-		ExpiresAt: timeToTs(p.ExpiresAt),
-		UserAgent: p.UserAgent,
-		IpAddress: p.IPAddress,
-	}))
+	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
+		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
+			ID:        p.ID,
+			UserID:    p.UserID,
+			ExpiresAt: timeToTs(p.ExpiresAt),
+			UserAgent: p.UserAgent,
+			IpAddress: p.IPAddress,
+		}))
+	})
 }
 
 func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
@@ -46,16 +51,27 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 	return &out, nil
 }
 
-func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) error {
-	return mapErr(s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
+func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
+	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
 		ExpiresAt:    timeToTs(p.ExpiresAt),
 		ID:           p.ID,
 		LastActiveAt: timeToTs(p.LastActiveAt),
-	}))
+	})
+	return n, mapErr(err)
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteUserSession(ctx, id))
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
+		row, err := conn.q.DeleteUserSession(ctx, id)
+		if err != nil {
+			mapped := mapErr(err)
+			if errors.Is(mapped, store.ErrNotFound) {
+				return nil, nil
+			}
+			return nil, mapped
+		}
+		return &store.CredentialEvent{Kind: store.RevocationEventKindSession, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
+	}, emitCredentialEvent)
 }
 
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
@@ -67,6 +83,17 @@ func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSess
 		UserID: p.UserID,
 		ID:     p.KeepID,
 	}))
+}
+
+func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.RefreshSessionAuthGenerationParams) (int64, error) {
+	n, err := s.conn.q.RefreshUserSessionAuthGeneration(ctx, gendb.RefreshUserSessionAuthGenerationParams{
+		SessionID: p.SessionID,
+		UserID:    p.UserID,
+	})
+	// Map to a store.* sentinel like the sqlite/mysql twins (which route through
+	// rowsAffected->mapErr) so this dialect-neutral layer does not leak a raw pgx
+	// error to a caller that pattern-matches store errors.
+	return n, mapErr(err)
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
@@ -108,11 +135,14 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 		return nil, mapErr(err)
 	}
 	return &store.SessionWithUser{
-		UserID:        row.ID,
-		OrgID:         row.OrgID,
-		Username:      row.Username,
-		IsAdmin:       row.IsAdmin,
-		EmailVerified: row.EmailVerified,
-		Email:         row.Email,
+		UserID:         row.ID,
+		OrgID:          row.OrgID,
+		Username:       row.Username,
+		IsAdmin:        row.IsAdmin,
+		EmailVerified:  row.EmailVerified,
+		Email:          row.Email,
+		CreatedAt:      row.CreatedAt.Time.UTC(),
+		ExpiresAt:      row.ExpiresAt.Time.UTC(),
+		AuthGeneration: row.AuthGeneration,
 	}, nil
 }

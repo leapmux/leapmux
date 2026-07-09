@@ -54,7 +54,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

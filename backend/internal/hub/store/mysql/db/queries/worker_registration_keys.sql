@@ -35,7 +35,7 @@ SELECT * FROM worker_registration_keys WHERE id = ? AND expires_at > ? FOR UPDAT
 
 -- ConsumeSoftDeleteRegistrationKey runs inside the Consume transaction,
 -- after GetActiveRegistrationKeyForUpdate has authorized the row via the
--- row lock. No ownership check here — Consume is invoked by the worker
+-- row lock. No ownership check here -- Consume is invoked by the worker
 -- presenting the bearer key, not by the key's owner.
 -- name: ConsumeSoftDeleteRegistrationKey :exec
 UPDATE worker_registration_keys SET expires_at = ? WHERE id = ?;
@@ -50,7 +50,7 @@ DELETE FROM worker_registration_keys WHERE id IN (
     ) inner_q
 );
 
--- The first placeholder in each `(? IS NULL OR …)` pair lets callers opt
+-- The first placeholder in each `(? IS NULL OR ...)` pair lets callers opt
 -- out of the active-only / cursor filter (mirrors ListWorkersAdmin*; sqlc's
 -- MySQL engine rejects narg, hence the doubled positional placeholders).
 -- name: ListRegistrationKeysAdmin :many

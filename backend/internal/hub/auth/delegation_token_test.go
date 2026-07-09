@@ -26,8 +26,8 @@ import (
 //     independent — revoking one doesn't void the others;
 //   - `Touch` advances `last_used_at` so admin tooling can surface
 //     a non-stale "in-use" indicator;
-//   - the DeleteRevokedBefore / DeleteExpiredBefore cleanup queries
-//     respect their cutoff and don't drop active rows.
+//   - the Cleanup() revoked/expired delegation-token sweeps respect
+//     their cutoff and don't drop active rows.
 
 const testPepper = "0123456789abcdef0123456789abcdef"
 
@@ -151,7 +151,7 @@ func TestDelegationToken_TouchUpdatesLastUsedAt(t *testing.T) {
 		"successful validation must populate LastUsedAt for admin/audit views")
 }
 
-func TestDelegationToken_DeleteRevokedBefore_RespectsCutoff(t *testing.T) {
+func TestDelegationToken_DeleteRevokedDelegationTokensBefore_RespectsCutoff(t *testing.T) {
 	st := newTestStore(t)
 	v := newValidator(t, st)
 	userID := seedUser(t, st)
@@ -174,7 +174,7 @@ func TestDelegationToken_DeleteRevokedBefore_RespectsCutoff(t *testing.T) {
 	// datetime() on both sides to normalize the strftime-written
 	// revoked_at against Go's driver-bound cutoff — see the SQL file
 	// for the rationale.
-	deleted, err := st.DelegationTokens().DeleteRevokedBefore(context.Background(), time.Now().Add(time.Hour))
+	deleted, err := st.Cleanup().DeleteRevokedDelegationTokensBefore(context.Background(), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, deleted, int64(1), "cleanup must delete the revoked row")
 
@@ -209,7 +209,7 @@ func TestDelegationToken_DeleteExpiredBefore_RespectsCutoff(t *testing.T) {
 	})
 
 	// Cutoff = now: only rows whose ExpiresAt < now get deleted.
-	deleted, err := st.DelegationTokens().DeleteExpiredBefore(context.Background(), time.Now())
+	deleted, err := st.Cleanup().DeleteExpiredDelegationTokensBefore(context.Background(), time.Now())
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, deleted, int64(1), "cleanup must delete the expired row")
 
@@ -217,36 +217,4 @@ func TestDelegationToken_DeleteExpiredBefore_RespectsCutoff(t *testing.T) {
 	require.NoError(t, err, "fresh row must remain")
 	_, err = st.DelegationTokens().GetByID(context.Background(), expiredID)
 	require.Error(t, err, "expired row must be gone")
-}
-
-func TestDelegationToken_RotateRefreshAdvancesPreviousHash(t *testing.T) {
-	st := newTestStore(t)
-	v := newValidator(t, st)
-	userID := seedUser(t, st)
-	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
-
-	tokenID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:      userID,
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		RefreshHash: v.HashSecret("orig-refresh"),
-	})
-
-	// Rotate: the new refresh becomes current; the old one moves to
-	// previous_refresh_hash with a grace expiry.
-	prevExp := time.Now().Add(auth.RefreshReuseGrace)
-	require.NoError(t, st.DelegationTokens().RotateRefresh(context.Background(), store.RotateDelegationTokenRefreshParams{
-		ID:                       tokenID,
-		NewRefreshHash:           v.HashSecret("new-refresh"),
-		PreviousRefreshHash:      v.HashSecret("orig-refresh"),
-		PreviousRefreshExpiresAt: &prevExp,
-	}))
-
-	row, err := st.DelegationTokens().GetByID(context.Background(), tokenID)
-	require.NoError(t, err)
-	require.NotNil(t, row.PreviousRefreshExpiresAt, "previous_refresh_expires_at must be persisted on rotation")
-	assert.WithinDuration(t, prevExp, *row.PreviousRefreshExpiresAt, time.Second,
-		"previous_refresh_expires_at must round-trip through the store")
-	// PreviousRefreshHash recorded.
-	assert.NotEmpty(t, row.PreviousRefreshHash)
 }

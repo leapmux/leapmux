@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -111,6 +112,93 @@ func TestRegister_ReturnsReplacedFlag(t *testing.T) {
 	assert.False(t, m.Unregister("w1", conn1))
 	// Unregister with current conn2 should return true.
 	assert.True(t, m.Unregister("w1", conn2))
+}
+
+func TestRegister_FencesReplacedConnection(t *testing.T) {
+	m := New()
+	oldSends := 0
+	cancelled := false
+	oldConn := &Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
+		oldSends++
+		return nil
+	}, Cancel: func() { cancelled = true }}
+	m.Register(oldConn)
+
+	assert.True(t, m.Register(&Conn{WorkerID: "w1"}))
+	assert.ErrorIs(t, oldConn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
+	assert.Zero(t, oldSends)
+	assert.True(t, cancelled)
+}
+
+func TestConnCloseRejectsLaterSend(t *testing.T) {
+	sent := 0
+	conn := &Conn{SendFn: func(*leapmuxv1.ConnectResponse) error {
+		sent++
+		return nil
+	}}
+	conn.Close()
+
+	err := conn.Send(&leapmuxv1.ConnectResponse{})
+
+	assert.ErrorIs(t, err, ErrConnectionClosed)
+	assert.Zero(t, sent)
+}
+
+func TestConnCloseWaitsForInFlightSend(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	conn := &Conn{SendFn: func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}}
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- conn.Send(&leapmuxv1.ConnectResponse{}) }()
+	<-started
+	closeDone := make(chan struct{})
+	go func() {
+		conn.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while a send was still using the stream")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-sendDone)
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after the in-flight send completed")
+	}
+	assert.ErrorIs(t, conn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
+}
+
+func TestUnregisterStopsRoutingBeforeWaitingForInFlightSend(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	conn := &Conn{WorkerID: "worker", SendFn: func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}}
+	mgr := New()
+	mgr.Register(conn)
+	go func() { _ = conn.Send(&leapmuxv1.ConnectResponse{}) }()
+	<-started
+	unregistered := make(chan bool, 1)
+	go func() { unregistered <- mgr.Unregister("worker", conn) }()
+
+	testutil.AssertEventually(t, func() bool { return !mgr.IsOnline("worker") })
+	select {
+	case <-unregistered:
+		t.Fatal("Unregister returned before the in-flight send completed")
+	default:
+	}
+	close(release)
+	assert.True(t, <-unregistered)
 }
 
 func TestManager_Get_NotRegistered(t *testing.T) {

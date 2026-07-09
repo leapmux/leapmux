@@ -55,7 +55,12 @@ type SubmitInput struct {
 	Batches      []*leapmuxv1.OpBatch
 	PrincipalID  string
 	OriginClient string
-	Internal     bool
+	// WorkspaceScopeID, when non-empty, narrows client-auth checks to
+	// this single workspace. Delegation bearers use it so a principal
+	// with broader owner/share grants cannot submit ops against a
+	// sibling workspace through a scoped remote session.
+	WorkspaceScopeID string
+	Internal         bool
 }
 
 // Manager owns one org's CRDT state and its journal, and coordinates
@@ -81,14 +86,36 @@ type Manager struct {
 	clock       *Clock
 	hubClientID string
 
-	mu          sync.RWMutex
-	state       *leapmuxv1.OrgCrdtState
-	subscribers *SubscriberController
-	presenceCtl *PresenceController
-	auth        AuthChecker
-	journal     Journal
-	now         func() time.Time
-	logger      *slog.Logger
+	mu    sync.RWMutex
+	state *leapmuxv1.OrgCrdtState
+	// stateWriteMu serializes every writer of m.state against each other: the
+	// manager goroutine's read-modify-swap in processSubmit / maybeAdvanceEpoch
+	// and MutateInternal's in-place write from the lifecycle-consumer request
+	// goroutine. The manager goroutine reads m.state's maps BARE (it is normally
+	// the sole writer), so without this an out-of-band MutateInternal add/delete of
+	// a workspace would race those bare reads in ValidateBatch / DiffProjectionForBatch
+	// -- a Go-fatal "concurrent map read and map write" that crashes the Hub -- and
+	// could be clobbered by the commit swap. m.mu still guards the maps against the
+	// RLock readers (Materialized, currentEpoch, broadcast). Lock order: stateWriteMu
+	// is outermost (stateWriteMu -> projection -> m.mu); nothing takes projection or
+	// m.mu and then stateWriteMu, so there is no inversion.
+	stateWriteMu sync.Mutex
+	subscribers  *SubscriberController
+	projection   sync.Mutex
+	// aclTransitionMu serializes whole workspace ACL transitions
+	// (CommitWorkspaceAccessTransition) end to end, so two shares of the same
+	// workspace cannot interleave their revoke/commit/grant phases and let the
+	// in-memory filter order diverge from the DB-commit order. It is taken OUTSIDE
+	// projection (aclTransitionMu -> projection -> m.mu) and, unlike projection, is
+	// NOT held across the DB commit's op-broadcast-blocking window -- only this one
+	// call site takes it, and it never takes projection before it, so there is no
+	// inversion.
+	aclTransitionMu sync.Mutex
+	presenceCtl     *PresenceController
+	auth            AuthChecker
+	journal         Journal
+	now             func() time.Time
+	logger          *slog.Logger
 
 	// clearGrace seeds presenceCtl at construction. Held on Manager
 	// (rather than only inside the controller) so WithPresenceClearGrace
@@ -119,13 +146,14 @@ type SubscriberFilter struct {
 }
 
 // IsAllowed returns true when the workspace passes the filter.
-// Empty-set means "allow all". The hub computes this set per
-// connection by intersecting with the caller's read ACL.
+// nil WorkspaceIDs means "allow all"; a non-nil empty map means
+// "allow none". The hub computes this set per connection by
+// intersecting with the caller's read ACL.
 func (f SubscriberFilter) IsAllowed(workspaceID string) bool {
 	if workspaceID == "" {
 		return false
 	}
-	if len(f.WorkspaceIDs) == 0 {
+	if f.WorkspaceIDs == nil {
 		return true
 	}
 	return f.WorkspaceIDs[workspaceID]
@@ -136,15 +164,26 @@ func (f SubscriberFilter) IsAllowed(workspaceID string) bool {
 // Events are pushed via Send; the caller owns the underlying stream's
 // lifetime.
 //
-// ClientID is the presence identity (cookie-session id, bearer token
-// id, or user id — see `service.presenceClientID`). It scopes the
+// ClientID is the namespaced presence identity derived from a cookie
+// session, bearer kind and token id, or user id (see
+// `service.presenceClientID`). It scopes the
 // refcount the manager keeps for deferred presence clearing on
 // disconnect. Empty disables presence tracking for this subscription
 // (e.g. server-internal subscribers).
 type Subscriber struct {
 	UserID   string
 	ClientID string
-	Filter   SubscriberFilter
+	// RequestedWorkspaceIDs is the immutable upper bound selected by an
+	// explicit workspace_ids subscription query. nil means the subscriber
+	// requested all readable workspaces; a non-nil map never expands beyond
+	// those IDs when ACLs change.
+	RequestedWorkspaceIDs map[string]bool
+	// WorkspaceScopeID is the immutable upper bound on Filter for the
+	// lifetime of the subscription. Delegation-authenticated streams set
+	// it to the workspace encoded in the bearer; lifecycle ACL refreshes
+	// may add that workspace but must never add a sibling.
+	WorkspaceScopeID string
+	Filter           SubscriberFilter
 	// Send delivers one event to this subscriber.
 	//
 	// Contract: Send MUST return promptly — implementations either push
@@ -161,6 +200,13 @@ type Subscriber struct {
 	// `evt.Bytes()` and pay the proto.Marshal cost once per broadcast —
 	// not once per subscriber.
 	Send func(*MarshaledEvent) error
+}
+
+func subscriberMaySeeWorkspace(sub *Subscriber, workspaceID string) bool {
+	if sub.WorkspaceScopeID != "" && sub.WorkspaceScopeID != workspaceID {
+		return false
+	}
+	return sub.RequestedWorkspaceIDs == nil || sub.RequestedWorkspaceIDs[workspaceID]
 }
 
 // ErrSubscriberSlow signals that a subscriber's bounded send buffer is
@@ -452,9 +498,44 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 	return m.presenceCtl.PostHeartbeat(ctx, workspaceID, clientID)
 }
 
+// SubscribeWithACL resolves a subscriber's workspace filter and registers it
+// atomically under aclTransitionMu, closing the resolve-then-register TOCTOU.
+//
+// resolve reads the DB ACL and returns the allowed workspace set; it runs while
+// this holds aclTransitionMu, the SAME lock CommitWorkspaceAccessTransition holds
+// across a share/unshare. That serialization means a concurrent transition of a
+// workspace in the filter is ordered either FULLY before resolve() -- so resolve
+// reads the post-commit ACL and the workspace is already excluded -- or FULLY
+// after this Add -- so the transition's revoke pass sees the now-registered
+// subscriber. Without it, a filter resolved from the pre-commit ACL could be
+// Added after the whole transition finished, and the post-commit reclassify (which
+// only visits already-registered subscribers) would miss it, leaking a
+// just-unshared workspace's snapshot and ops until the subscriber reconnected.
+//
+// resolve's error is returned unregistered so the caller can reject the connection
+// before streaming any events. Lock order aclTransitionMu -> projection -> m.mu is
+// preserved because Subscribe (called here) takes only projection and m.mu.
+func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]bool, error)) (initial *leapmuxv1.OrgMaterialized, unsub func(), err error) {
+	m.aclTransitionMu.Lock()
+	defer m.aclTransitionMu.Unlock()
+	allowed, err := resolve()
+	if err != nil {
+		return nil, nil, err
+	}
+	sub.Filter.WorkspaceIDs = allowed
+	initial, unsub = m.Subscribe(sub)
+	return initial, unsub, nil
+}
+
 // Subscribe attaches a new subscriber. Returns an unsubscribe
 // callback. Bootstrap is sent inline (the caller's stream layer
 // formats it).
+//
+// The production org-events path registers through SubscribeWithACL, which
+// resolves the filter and calls this Add while holding aclTransitionMu so a
+// concurrent ACL transition cannot leave a straggler with a stale pre-commit
+// filter (see SubscribeWithACL). A direct Subscribe (tests, or a caller that has
+// already resolved a filter under no such lock) does NOT get that guarantee.
 //
 // Subscribers with a non-empty ClientID contribute to a refcount keyed
 // on that id. The first Subscribe cancels any pending deferred clear;
@@ -462,27 +543,52 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 // reconnect inside the grace window keeps the client's presence
 // entries intact so the active-client gate doesn't flicker.
 func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.OrgMaterialized, unsub func()) {
-	// Register the subscriber + presence bookkeeping (separate
-	// locks), then take m.mu.RLock just for the materialized
-	// projection. materializedLocked clones every visible
-	// node/tab/floating-window for the subscriber's filter — an
-	// O(N) walk that would otherwise block every concurrent commit
-	// / presence broadcast if it held the write lock.
+	// The whole sequence runs under m.projection -- the same lock broadcasts and
+	// each visibility phase of an ACL transition (share/unshare) take -- so a
+	// subscriber's registration + initial snapshot are atomic with respect to any
+	// concurrent broadcast and any single grant/revoke phase: the filter captured
+	// by Add and the materialized baseline can never straddle a filter mutation.
+	// (CommitWorkspaceAccessTransition applies revokes and grants in separate
+	// projection-held phases around a lock-free DB commit. A subscription whose Add
+	// lands DURING that transition is re-classified by its post-commit phase; a
+	// subscription serialized against the transition via SubscribeWithACL resolves
+	// the correct pre- or post-commit ACL. The post-commit reclassify only visits
+	// already-registered subscribers, which is why the production path must go
+	// through SubscribeWithACL rather than resolving a filter and Adding it here
+	// unserialized.) The cost is
+	// that the O(N) materializedLocked clone below is serialized against broadcasts
+	// for that duration (a large-org connect briefly stalls the org's commit/
+	// broadcast pipeline); relaxing it -- computing the snapshot outside
+	// m.projection -- would reopen exactly that straddle window, so it is held
+	// deliberately.
 	//
-	// Subscriber visibility is identical either way: by the time we
-	// take the state RLock the subscriber is in subscribers, so it
-	// sees the next broadcast; the initial snapshot computed under
-	// RLock is strictly newer-than-or-equal to whatever a commit
+	// Within that, m.mu is only RLocked for the clone. materializedLocked walks
+	// every visible node/tab/floating-window for the subscriber's filter; taking
+	// the state write lock would block every concurrent commit, whereas the RLock
+	// only contends the brief state-swap. Subscriber visibility is identical
+	// either way: by the time we take the state RLock the subscriber is in
+	// subscribers, so it sees the next broadcast, and the initial snapshot
+	// computed under RLock is strictly newer-than-or-equal to whatever a commit
 	// that lost the race would have produced.
-	m.subscribers.Add(sub)
+	m.projection.Lock()
+	initialFilter := m.subscribers.Add(sub)
 	m.presenceCtl.OnConnect(sub.ClientID)
 
 	m.mu.RLock()
-	initial = m.materializedLocked(sub.Filter)
+	initial = m.materializedLocked(initialFilter)
 	m.mu.RUnlock()
+	m.projection.Unlock()
+	// Idempotent unsub: a caller that invokes it twice (an error-path cleanup
+	// racing a deferred cleanup, or the partway-through-unsubscribe teardown the
+	// registry hardens against) must not decrement the presence refcount twice --
+	// that would underflow the count and prematurely clear a client that still has
+	// live connections, flickering the active-client gate.
+	var unsubOnce sync.Once
 	return initial, func() {
-		m.subscribers.Remove(sub)
-		m.presenceCtl.OnDisconnect(sub.ClientID)
+		unsubOnce.Do(func() {
+			m.subscribers.Remove(sub)
+			m.presenceCtl.OnDisconnect(sub.ClientID)
+		})
 	}
 }
 
@@ -589,6 +695,13 @@ func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitRespon
 		return submitResponse{err: fmt.Errorf("manager %q received submit for org %q", m.orgID, in.OrgID)}
 	}
 
+	// Hold stateWriteMu across this submit's read-modify-write of m.state so an
+	// out-of-band MutateInternal (a lifecycle create/delete on a request goroutine)
+	// cannot interleave with the bare m.state map reads in ValidateBatch /
+	// DiffProjectionForBatch or the commit swap below. See the stateWriteMu field.
+	m.stateWriteMu.Lock()
+	defer m.stateWriteMu.Unlock()
+
 	// 1. epoch_required + stale_epoch (request-level).
 	if !job.internal {
 		if in.Epoch == 0 {
@@ -601,32 +714,49 @@ func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitRespon
 
 	results := make([]*leapmuxv1.BatchResult, 0, len(in.Batches))
 	for _, batch := range in.Batches {
-		result := m.processBatch(ctx, in, batch)
+		result, err := m.processBatch(ctx, in, batch)
+		if err != nil {
+			// A transient permission-lookup failure: return it as the whole
+			// submit's error (retryable) rather than a permanent per-batch
+			// rejection, so the client re-issues instead of dropping the edit.
+			return submitResponse{err: err}
+		}
 		results = append(results, result)
 	}
 	return submitResponse{results: results}
 }
 
-func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch) *leapmuxv1.BatchResult {
+// processBatch validates and commits a single batch. A non-nil error is a
+// transient failure (e.g. a permission-lookup store error surfaced by
+// ValidateBatch) that the caller propagates as a retryable Submit error rather
+// than a permanent rejection, so a brief DB hiccup does not drop a user's edit.
+func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch) (*leapmuxv1.BatchResult, error) {
 	if batch.GetBatchId() == "" {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, "")
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""), nil
 	}
 	if len(batch.GetOps()) == 0 {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, "")
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""), nil
 	}
 
 	// 2. Dedup by batch_id. With per-batch rows, a retry either fully
 	//    hits (same body, same principal, return cached canonical HLCs)
 	//    or misses; partial-hit no longer exists.
-	dedupResult, dedupRow := m.runDedup(ctx, in, batch)
+	dedupResult, dedupRow, err := m.runDedup(ctx, in, batch)
+	if err != nil {
+		// A transient store error looking up the dedup row -- surface it as a
+		// retryable Submit error (the same treatment ValidateBatch's res.Err
+		// gets) rather than a permanent VALUE_DOMAIN rejection the client would
+		// silently drop.
+		return nil, err
+	}
 	if dedupResult != nil {
-		return dedupResult
+		return dedupResult, nil
 	}
 	if dedupRow != nil {
 		// Full dedup hit — reconstruct per-op CommittedOps from the
 		// stored first canonical HLC + op_count (logicals are
 		// contiguous within a batch, same physical and client).
-		return makeDedupHitResult(batch, dedupRow, m.state.GetCurrentEpoch())
+		return makeDedupHitResult(batch, dedupRow, m.state.GetCurrentEpoch()), nil
 	}
 
 	// 3. Assign canonical HLCs. One Tick per op so intra-batch LWW
@@ -642,9 +772,15 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	}
 
 	// 4-10. Validate against working copy.
-	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, m.auth)
+	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, scopedAuthChecker(m.auth, in.WorkspaceScopeID))
+	if res.Err != nil {
+		// A permission lookup failed transiently (store error), not a genuine
+		// deny: return it so Submit surfaces a retryable error instead of a
+		// permanent FORBIDDEN op-rejection that would silently drop the edit.
+		return nil, res.Err
+	}
 	if res.Reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
-		return rejectBatch(batch, res.Reason, res.OffendingOpID)
+		return rejectBatch(batch, res.Reason, res.OffendingOpID), nil
 	}
 
 	// Snapshot pre-commit state before m.commit replaces m.state
@@ -656,8 +792,13 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 
 	// 11. Commit: journal + index views + state advance, all in one tx.
 	if err := m.commit(ctx, in, batch, working); err != nil {
+		// A commit failure is a transient store error (the journal DB write) --
+		// the batch already passed ValidateBatch, so the body-hash step inside
+		// commit cannot fail here in practice. Surface it as a retryable Submit
+		// error rather than a permanent VALUE_DOMAIN rejection, so a brief DB
+		// hiccup does not silently drop the user's edit.
 		m.logger.Error("commit batch", "err", err)
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, "")
+		return nil, err
 	}
 
 	// 11a. Audit: any TombstoneTabOp that removes a tab pinned to a
@@ -706,45 +847,52 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 				Epoch:     m.state.GetCurrentEpoch(),
 			},
 		},
-	}
+	}, nil
 }
 
 // runDedup checks the batch's batch_id against org_recent_batch_ids.
 // Outcomes:
+//   - transient store error (err non-nil): the caller propagates it as a
+//     retryable Submit error rather than a permanent rejection.
 //   - immediate rejection (*result non-nil): returned verbatim.
 //   - full hit (row non-nil, result nil): caller reconstructs the
 //     original CommittedOps from the cached canonical HLC range.
-//   - miss (both nil): caller proceeds with assigning canonical HLCs.
-func (m *Manager) runDedup(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch) (*leapmuxv1.BatchResult, *RecentBatchRecord) {
+//   - miss (all nil): caller proceeds with assigning canonical HLCs.
+func (m *Manager) runDedup(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch) (*leapmuxv1.BatchResult, *RecentBatchRecord, error) {
 	row, err := m.journal.LookupRecentBatchID(ctx, m.orgID, batch.GetBatchId())
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""), nil
+		// A transient store failure, not a value-domain problem: surface it so
+		// the caller returns a retryable Submit error instead of a permanent
+		// VALUE_DOMAIN rejection the client would drop.
+		return nil, nil, fmt.Errorf("lookup recent batch id: %w", err)
 	}
 	if row == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Stored batch's epoch outside the retention window? Treat as stale.
 	if row.Epoch < m.state.GetCurrentEpoch()-1 {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, ""), nil
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, ""), nil, nil
 	}
 	// Principal mismatch: reject.
 	if row.PrincipalID != in.PrincipalID {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED, ""), nil
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED, ""), nil, nil
 	}
 	// op_count mismatch: reject (would prevent canonical HLC
 	// reconstruction even if the body somehow matched).
 	if row.OpCount != int64(len(batch.GetOps())) {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION, ""), nil
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION, ""), nil, nil
 	}
-	// Body mismatch: reject.
+	// Body mismatch: reject. A hashing failure here is a deterministic
+	// value-domain problem (a malformed body that would also fail in commit),
+	// not a transient store error, so it stays a permanent rejection.
 	bodyHash, err := BatchBodyHash(batch)
 	if err != nil {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""), nil
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""), nil, nil
 	}
 	if !bytes.Equal(bodyHash, row.BodyHash) {
-		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION, ""), nil
+		return rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION, ""), nil, nil
 	}
-	return nil, row
+	return nil, row, nil
 }
 
 // commit performs the per-batch transactional write. The journal owns
@@ -845,12 +993,26 @@ func (m *Manager) currentEpoch() int64 {
 	return m.state.GetCurrentEpoch()
 }
 
-// MutateInternal lets the lifecycle outbox consumer mutate
-// manager-internal state (workspaces map, current_epoch). Caller
-// must serialize through the manager goroutine — this method is only
-// safe to call from inside Submit / SubmitInternal flows or under
-// careful lifecycle integration.
+// MutateInternal lets the lifecycle outbox consumer mutate manager-internal
+// state (workspaces map, current_epoch) from a request goroutine. It takes
+// stateWriteMu — the same lock processSubmit / maybeAdvanceEpoch hold across the
+// manager goroutine's read-modify-write of m.state — so an in-place write here
+// cannot race the manager goroutine's bare m.state reads (a concurrent map
+// read+write) nor be clobbered by the commit swap. m.mu still excludes the RLock
+// readers (Materialized, currentEpoch, broadcast) while the maps change.
+//
+// Do NOT call this from the manager goroutine itself (inside processSubmit /
+// maybeAdvanceEpoch): those already hold stateWriteMu, so re-taking it would
+// deadlock. maybeCompact -- the other tickHousekeeping arm -- does NOT hold
+// stateWriteMu, but it never races this method: it touches m.state only under
+// m.mu (RLock to clone, Lock to advance the monotonic watermark / prune
+// tombstones), and runs on the same single Start-loop goroutine as
+// processSubmit, so it cannot overlap the manager goroutine's bare m.state
+// reads. The lifecycle-outbox consumer runs on the request goroutine, which is
+// the intended caller.
 func (m *Manager) MutateInternal(fn func(state *leapmuxv1.OrgCrdtState)) {
+	m.stateWriteMu.Lock()
+	defer m.stateWriteMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fn(m.state)

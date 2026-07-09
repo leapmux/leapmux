@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -391,6 +392,52 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, "new-pending@example.com", promoted.Email)
 		assert.Empty(t, promoted.PendingEmail)
 		assert.Empty(t, promoted.PendingEmailToken)
+	})
+
+	t.Run("concurrent verification attempts return their own atomic increments", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "user-org", true)
+		user := SeedUser(t, st, orgID, "concurrent-verification-attempts")
+		expires := time.Now().Add(time.Hour)
+		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "new-concurrent@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+		}))
+
+		const attemptCount = 24
+		start := make(chan struct{})
+		type attemptResult struct {
+			attempt int64
+			err     error
+		}
+		results := make(chan attemptResult, attemptCount)
+		for range attemptCount {
+			go func() {
+				<-start
+				updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID)
+				if err != nil {
+					results <- attemptResult{err: err}
+					return
+				}
+				results <- attemptResult{attempt: updated.PendingEmailAttempts}
+			}()
+		}
+		close(start)
+
+		got := make([]int64, 0, attemptCount)
+		for range attemptCount {
+			result := <-results
+			require.NoError(t, result.err)
+			got = append(got, result.attempt)
+		}
+		sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+		want := make([]int64, attemptCount)
+		for i := range want {
+			want[i] = int64(i + 1)
+		}
+		assert.Equal(t, want, got)
 	})
 
 	t.Run("clear pending email", func(t *testing.T) {

@@ -28,16 +28,6 @@ func OpenTestable(cfg config.MySQLConfig) (store.TestableStore, error) {
 	return &testableMySQLStore{mysqlStore: st.(*mysqlStore)}, nil
 }
 
-// NewTestableFromDB wraps an existing *sql.DB (already opened and migrated)
-// into a TestableStore. Intended for use in tests only.
-func NewTestableFromDB(sqlDB *sql.DB) (store.TestableStore, error) {
-	st, err := NewFromDB(sqlDB)
-	if err != nil {
-		return nil, err
-	}
-	return &testableMySQLStore{mysqlStore: st.(*mysqlStore)}, nil
-}
-
 func (s *testableMySQLStore) TestHelper() store.TestHelper {
 	return &mysqlTestHelper{db: s.conn.shared.db}
 }
@@ -46,12 +36,25 @@ type mysqlTestHelper struct {
 	db *sql.DB
 }
 
+func (h *mysqlTestHelper) exec(ctx context.Context, query string, args ...any) error {
+	_, err := h.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 func (h *mysqlTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	return sqlutil.SetDeletedAt(ctx, h.db, entity, id, deletedAt)
+	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, deletedAt)
 }
 
 func (h *mysqlTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	return sqlutil.SetCreatedAt(ctx, h.db, entity, id, createdAt)
+	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, createdAt)
+}
+
+func (h *mysqlTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
+	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
+}
+
+func (h *mysqlTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
+	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, column, id, at)
 }
 
 func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
@@ -63,6 +66,9 @@ func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
 		if _, err := h.db.ExecContext(ctx, "TRUNCATE TABLE "+t); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
+	}
+	if _, err := h.db.ExecContext(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
+		return fmt.Errorf("reset revocation_event_sequence: %w", err)
 	}
 	return nil
 }

@@ -30,7 +30,7 @@ func (h *APIAuthHandler) handleDeviceAuthorization(w http.ResponseWriter, r *htt
 		IntervalSeconds: int64(DeviceCodePollInterval / time.Second),
 		ExpiresAt:       time.Now().Add(DeviceCodeTTL),
 	}); err != nil {
-		http.Error(w, "failed to start device authorization", http.StatusInternalServerError)
+		writeInternalError(w, "device authorization creation failed", err)
 		return
 	}
 	verifyURI := locallisten.JoinPath(h.hubURL, "/auth/cli/activate")
@@ -84,7 +84,7 @@ func (h *APIAuthHandler) handleActivate(w http.ResponseWriter, r *http.Request) 
 			UserID:   user.ID,
 		})
 		if err != nil {
-			http.Error(w, "failed to approve", http.StatusInternalServerError)
+			writeInternalError(w, "device authorization approval failed", err)
 			return
 		}
 		if rows == 0 {

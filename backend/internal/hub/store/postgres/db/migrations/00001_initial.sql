@@ -35,12 +35,15 @@ CREATE TABLE users (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- High-water mark bumped whenever this user's auth basis is
-    -- bulk-revoked. The hub's revocation watcher polls this column
-    -- to fire EvictByUserID + EvictBearersByUserID +
-    -- CloseChannelsByUser so cookie channels and bearer caches die
-    -- in lock-step with admin-CLI mutations that run in a separate
-    -- process from the hub.
+    -- bulk-revoked. Each bump also records a durable user-token
+    -- revocation event so cookie channels and bearer caches die in
+    -- lock-step with admin-CLI mutations that run in a separate process.
     tokens_revoked_at        TIMESTAMPTZ,
+    -- Monotonic credential epoch. Sessions and bearer rows copy this
+    -- value when issued; user-wide revocation increments it so stale
+    -- credentials fail without depending on timestamp precision or
+    -- cross-host clock agreement.
+    auth_generation          BIGINT NOT NULL DEFAULT 0,
     deleted_at     TIMESTAMPTZ
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
@@ -74,6 +77,7 @@ CREATE TABLE user_sessions (
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_active_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    auth_generation BIGINT NOT NULL DEFAULT 0,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT ''
 );
@@ -94,7 +98,7 @@ CREATE TABLE workers (
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The deregister handler refuses these so the user can't
-    -- accidentally tear down the bundled desktop worker — it would just
+    -- accidentally tear down the bundled desktop worker -- it would just
     -- re-register on next launch and the running process would noisily
     -- exit with "invalid auth token" in between.
     auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
@@ -196,6 +200,12 @@ CREATE TABLE workspace_access (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (workspace_id, user_id)
 );
+-- Point index for the cross-org "shared with me" lookup (the grant branch of
+-- ListAllAccessibleWorkspaces), which keys on user_id. The PK leads with
+-- workspace_id, so it cannot serve a user_id-only probe. (MySQL gets this index
+-- automatically from the user_id foreign key; Postgres does not index the
+-- referencing column of a foreign key.)
+CREATE INDEX idx_workspace_access_user_id ON workspace_access(user_id);
 
 -- See sqlite migration for full rationale on the CRDT schema (op
 -- journal, materialized state blob, derived tab views, dedup table,
@@ -278,6 +288,34 @@ CREATE TABLE lifecycle_outbox (
 );
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id) WHERE consumed_at IS NULL;
 
+CREATE TABLE revocation_events (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL CHECK (kind IN ('session', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    subject_id TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    revoked_at TIMESTAMPTZ NOT NULL,
+    user_auth_generation BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    seq BIGINT UNIQUE CHECK (seq IS NULL OR seq > 0),
+    published_at TIMESTAMPTZ,
+    CHECK ((seq IS NULL) = (published_at IS NULL))
+);
+CREATE INDEX idx_revocation_events_pending ON revocation_events(created_at, id) WHERE seq IS NULL;
+CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq) WHERE seq IS NOT NULL;
+
+CREATE TABLE revocation_event_sequence (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    last_seq BIGINT NOT NULL CHECK (last_seq >= 0)
+);
+INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0);
+
+CREATE TABLE hub_runtime_lease (
+    singleton_id     SMALLINT PRIMARY KEY CHECK (singleton_id = 1),
+    holder_id        TEXT NOT NULL CHECK (holder_id <> ''),
+    cursor_seq       BIGINT NOT NULL CHECK (cursor_seq >= 0),
+    lease_expires_at TIMESTAMPTZ NOT NULL
+);
+
 -- See sqlite migration for full rationale on api_tokens.
 CREATE TABLE api_tokens (
     id                            TEXT PRIMARY KEY,
@@ -290,6 +328,7 @@ CREATE TABLE api_tokens (
     previous_refresh_expires_at   TIMESTAMPTZ,
     scope                         TEXT NOT NULL DEFAULT 'remote:*',
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  TIMESTAMPTZ,
     last_rotated_at               TIMESTAMPTZ,
     expires_at                    TIMESTAMPTZ,
@@ -311,9 +350,8 @@ CREATE TABLE delegation_tokens (
     issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
     secret_hash                   BYTEA NOT NULL,
     refresh_hash                  BYTEA,
-    previous_refresh_hash         BYTEA,
-    previous_refresh_expires_at   TIMESTAMPTZ,
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  TIMESTAMPTZ,
     expires_at                    TIMESTAMPTZ NOT NULL,
     refresh_expires_at            TIMESTAMPTZ,
@@ -421,6 +459,9 @@ DROP TABLE IF EXISTS cli_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS hub_runtime_lease;
+DROP TABLE IF EXISTS revocation_events;
+DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

@@ -15,11 +15,15 @@ import (
 // so any auth shim works.
 type allowAllAuth struct{}
 
-func (allowAllAuth) CanWriteWorkspace(context.Context, string, string, string) bool {
-	return true
+func (allowAllAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
+	return true, nil
 }
-func (allowAllAuth) CanReadWorkspace(context.Context, string, string, string) bool { return true }
-func (allowAllAuth) CanUseWorker(context.Context, string, string, string) bool     { return true }
+func (allowAllAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+func (allowAllAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
 
 // tabPlacementCheck scoping: pre-existing tabs that already passed
 // placement must not be re-validated when the batch carries only tab

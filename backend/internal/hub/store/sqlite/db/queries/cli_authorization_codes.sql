@@ -3,14 +3,16 @@ INSERT INTO cli_authorization_codes (
     code, user_id, code_challenge, device_name, expires_at
 ) VALUES (?, ?, ?, ?, ?);
 
+-- name: GetActiveCLIAuthorizationCode :one
+SELECT * FROM cli_authorization_codes
+WHERE code = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday('now');
+
 -- name: ConsumeCLIAuthorizationCode :one
--- expires_at is compared via datetime() so both operands are in
--- SQLite's canonical "YYYY-MM-DD HH:MM:SS" form. A bare lexicographic
--- comparison would silently misbehave when the row's stored timezone
--- offset string differs from strftime('now') by a single character.
+-- julianday() normalizes timezone representations without discarding the
+-- fractional seconds needed at the exact expiry boundary.
 UPDATE cli_authorization_codes
 SET consumed_at = datetime('now')
-WHERE code = ? AND consumed_at IS NULL AND datetime(expires_at) > datetime('now')
+WHERE code = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday('now')
 RETURNING *;
 
 -- name: DeleteExpiredCLIAuthorizationCodes :execresult

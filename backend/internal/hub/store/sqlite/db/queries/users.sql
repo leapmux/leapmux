@@ -5,6 +5,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
+-- SQLite has no row-level SELECT FOR UPDATE. This no-op write acquires the
+-- database writer lock before any credential table is touched.
+-- name: LockUserAuthState :one
+UPDATE users SET auth_generation = auth_generation
+WHERE id = ? AND deleted_at IS NULL
+RETURNING id;
+
+-- LockUserRow acquires the writer lock on a user row WITHOUT the deleted_at
+-- filter LockUserAuthState applies, so a user_info mutation can serialize its
+-- before/after cached-field projection against a concurrent mutation on the same
+-- user (including a soft-deleted one). A no-op self-assign: it touches no cached
+-- field and not updated_at, and a missing row is a tolerated no-op.
+-- name: LockUserRow :exec
+UPDATE users SET auth_generation = auth_generation WHERE id = ?;
+
 -- name: GetUserByIDIncludeDeleted :one
 SELECT * FROM users WHERE id = ?;
 
@@ -61,21 +76,31 @@ LIMIT sqlc.arg(limit);
 UPDATE users SET password_hash = ?, password_set = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
--- name: UpdateUserProfile :exec
+-- The profile/email/email_verified/admin updates all RETURN id, updated_at so
+-- the store layer can atomically emit a user_info cache-invalidation event: each
+-- mutates a field cached in UserInfo (username, email, email_verified -- an auth
+-- gate -- and is_admin), so a stale cached UserInfo must be dropped cross-process
+-- the same way. No row match -> no event.
+
+-- name: UpdateUserProfile :one
 UPDATE users SET username = ?, display_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
+WHERE id = ?
+RETURNING id, updated_at;
 
--- name: UpdateUserEmail :exec
+-- name: UpdateUserEmail :one
 UPDATE users SET email = ?, email_verified = ?, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
+WHERE id = ?
+RETURNING id, updated_at;
 
--- name: UpdateUserEmailVerified :exec
+-- name: UpdateUserEmailVerified :one
 UPDATE users SET email_verified = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
+WHERE id = ?
+RETURNING id, updated_at;
 
--- name: UpdateUserAdmin :exec
+-- name: UpdateUserAdmin :one
 UPDATE users SET is_admin = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
+WHERE id = ?
+RETURNING id, updated_at;
 
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
@@ -104,9 +129,10 @@ WHERE id = ?;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
--- name: PromotePendingEmail :exec
+-- name: PromotePendingEmail :one
 UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ? AND pending_email != '';
+WHERE id = ? AND pending_email != ''
+RETURNING id, updated_at;
 
 -- name: ConsumeVerificationAttempt :one
 UPDATE users
@@ -126,33 +152,19 @@ WHERE pending_email = ? AND id != ?;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < ?;
 
--- name: BumpUserTokensRevokedAt :execresult
--- Bumps the high-water mark the hub's revocation watcher polls.
--- Admin commands and in-process credential-rotation paths call
--- this so the watcher picks up the user-wide revocation and fires
--- the matching cache + channel teardown.
+-- name: BumpUserTokensRevokedAt :one
+-- Bumps the user-wide revocation timestamp and credential epoch, then
+-- returns the row that moved so the store layer can emit a durable
+-- revocation event carrying the new epoch. The query itself has no
+-- deleted_at guard, so it would act on a soft-deleted row -- but the only
+-- caller (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction,
+-- whose LockUserAuthState filters deleted_at IS NULL, so revoking an
+-- already-soft-deleted user aborts before this runs. Every revoke path
+-- revokes before soft-deleting, so that ordering is not exercised today.
+-- Only a truly missing row (no id match) is a no-op.
 UPDATE users
 SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    auth_generation   = auth_generation + 1,
     updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ? AND deleted_at IS NULL;
-
--- name: ListUsersWithTokensRevokedSince :many
--- Returns user IDs whose tokens_revoked_at moved past the watcher's
--- high-water mark. Uses strftime instead of datetime() so the
--- comparison preserves millisecond precision; plain datetime()
--- truncates to seconds and would silently lose bumps that land
--- in the same second as the watcher's last sweep.
-SELECT id, tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL
-  AND strftime('%Y-%m-%dT%H:%M:%fZ', tokens_revoked_at) > strftime('%Y-%m-%dT%H:%M:%fZ', ?)
-ORDER BY tokens_revoked_at ASC;
-
--- name: MaxUserTokensRevokedAt :one
--- Mirror of MaxAPITokenRevokedAt for users.tokens_revoked_at. The
--- revocation watcher's bootstrap-time seed uses this to skip the
--- historical enumeration. ORDER BY + LIMIT 1 lets sqlc infer the
--- return type from the underlying column.
-SELECT tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL
-ORDER BY tokens_revoked_at DESC
-LIMIT 1;
+WHERE id = ?
+RETURNING id, tokens_revoked_at, auth_generation;

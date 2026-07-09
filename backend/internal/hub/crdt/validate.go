@@ -14,6 +14,12 @@ import (
 type ValidationResult struct {
 	Reason        leapmuxv1.BatchRejectionReason
 	OffendingOpID string
+	// Err is set when a permission lookup during auth validation failed
+	// transiently (a store error), as opposed to a genuine deny. The caller
+	// surfaces it as a retryable error instead of a permanent FORBIDDEN
+	// op-rejection, so a brief DB hiccup does not silently drop a user's edit.
+	// When Err is non-nil, Reason/OffendingOpID/AffectedEntities are meaningless.
+	Err error
 	// AffectedEntities maps EntityRef -> (preWorkspaceID,
 	// postWorkspaceID). The manager broadcasts per-entity and uses
 	// this to compute visibility transitions per subscriber.
@@ -188,7 +194,12 @@ func ValidateBatch(
 	// 10. Auth check per op (skipped under internal=true).
 	if !internal {
 		for _, r := range resolved {
-			if reason, opID := authCheck(ctx, r.op, r.preW, r.postW, principalID, pre.GetOrgId(), auth); reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
+			reason, opID, err := authCheck(ctx, r.op, r.preW, r.postW, principalID, pre.GetOrgId(), auth)
+			if err != nil {
+				result.Err = err
+				return result, nil
+			}
+			if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
 				result.Reason = reason
 				result.OffendingOpID = opID
 				return result, nil
@@ -203,7 +214,12 @@ func ValidateBatch(
 	// the "clear" case (file tabs that haven't picked a worker yet,
 	// or explicit unassignment).
 	if !internal {
-		if reason, opID := validateWorkerRefs(ctx, batch, principalID, pre.GetOrgId(), auth); reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
+		reason, opID, err := validateWorkerRefs(ctx, batch, principalID, pre.GetOrgId(), auth)
+		if err != nil {
+			result.Err = err
+			return result, nil
+		}
+		if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
 			result.Reason = reason
 			result.OffendingOpID = opID
 			return result, nil

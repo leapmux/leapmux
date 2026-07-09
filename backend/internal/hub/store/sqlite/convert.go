@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -18,6 +19,10 @@ import (
 // sqliteTimeFormat is the ISO 8601 format matching SQLite's
 // strftime('%Y-%m-%dT%H:%M:%fZ', 'now') output.
 const sqliteTimeFormat = timefmt.ISO8601
+
+func formatSQLiteTime(t time.Time) string {
+	return t.UTC().Format(sqliteTimeFormat)
+}
 
 func mapErr(err error) error {
 	if err == nil {

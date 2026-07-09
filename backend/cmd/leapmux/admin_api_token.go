@@ -80,33 +80,30 @@ func runAPITokenIssue(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
-		access := auth.MintAccessSecret()
-		refresh := auth.MintAccessSecret()
 		tokenID := id.Generate()
 		now := time.Now()
 		ttl := time.Duration(ttlSeconds) * time.Second
 		if ttl <= 0 {
 			ttl = auth.AccessTokenTTL
 		}
-		accessExp := now.Add(ttl)
-		refreshExp := now.Add(auth.RefreshTokenTTL)
+		pair := validator.MintBearerPair(auth.BearerKindAPI, tokenID, now, ttl, auth.RefreshTokenTTL)
 		if err := st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID:               tokenID,
 			UserID:           userID,
 			ClientType:       clientType,
 			ClientName:       clientName,
-			SecretHash:       validator.HashSecret(access),
-			RefreshHash:      validator.HashSecret(refresh),
+			SecretHash:       pair.AccessHash,
+			RefreshHash:      pair.RefreshHash,
 			Scope:            "remote:*",
-			ExpiresAt:        &accessExp,
-			RefreshExpiresAt: &refreshExp,
+			ExpiresAt:        &pair.AccessExpiresAt,
+			RefreshExpiresAt: &pair.RefreshExpiresAt,
 		}); err != nil {
 			return fmt.Errorf("create token: %w", err)
 		}
 		fmt.Println("Token minted. Capture it now — it cannot be retrieved later:")
 		fmt.Println()
-		fmt.Println("  access_token  =", auth.FormatBearer(auth.BearerKindAPI, tokenID, access))
-		fmt.Println("  refresh_token =", auth.FormatBearer(auth.BearerKindAPI, tokenID, refresh))
+		fmt.Println("  access_token  =", pair.AccessBearer)
+		fmt.Println("  refresh_token =", pair.RefreshBearer)
 		fmt.Println("  token_id      =", tokenID)
 		return nil
 	})
@@ -114,12 +111,11 @@ func runAPITokenIssue(cmd adminCmdCtx, args []string) error {
 
 // runAPITokenRevoke marks a token row revoked.
 //
-// The hub's revocation watcher polls api_tokens.revoked_at and fires
-// EvictBearer + CloseChannelsByBearer when it observes a fresh
-// revoke, so a hub running anywhere — same machine as this admin
-// command or remote — picks the change up within the watcher's
-// sweep interval (default 2s) without an IPC. There's no
-// `--hub <url>` round-trip to configure or auth.
+// The store records a durable revocation event in the same transaction.
+// A hub running anywhere — same machine as this admin command or remote —
+// publishes and consumes that event within the watcher's sweep interval
+// (default 2s), then fires EvictBearer + CloseChannelsByBearer without
+// an IPC or `--hub <url>` round-trip.
 func runAPITokenRevoke(cmd adminCmdCtx, args []string) error {
 	var tokenID string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {

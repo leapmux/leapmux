@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -11,194 +12,636 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testTokenRevocation exercises the MaxRevokedAt / MaxTokensRevokedAt
-// aggregates the revocation watcher relies on at bootstrap. The
-// underlying queries are dialect-specific (sqlite uses strftime
-// comparison, mysql/postgres lean on native DATETIME / TIMESTAMPTZ);
-// running these against every store backend pins identical semantics.
 func (s *Suite) testTokenRevocation(t *testing.T) {
-	t.Run("MaxRevokedAt returns zero time when no rows are revoked", func(t *testing.T) {
+	t.Run("API refresh rotation creates one cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "org", true)
 		user := SeedUser(t, st, orgID, "user")
-		// Create a live api_token + delegation_token to ensure the
-		// "no revoked rows" path doesn't accidentally trip on live
-		// rows (revoked_at IS NULL must filter them out).
 		tokenID := id.Generate()
+		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     user.ID,
-			ClientType: "cli",
-			ClientName: "live",
-			SecretHash: []byte("hash"),
-			Scope:      "remote:*",
+			ID: tokenID, UserID: user.ID, ClientType: "cli", ClientName: "test",
+			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash, Scope: "remote:*",
 		}))
+		expiresAt := time.Now().Add(time.Hour)
+		refreshExpiresAt := time.Now().Add(24 * time.Hour)
+		previousRefreshExpiresAt := time.Now().Add(time.Minute)
+		params := store.RotateAPITokenRefreshParams{
+			ID:                       tokenID,
+			NewSecretHash:            []byte("new-access-hash"),
+			NewExpiresAt:             &expiresAt,
+			NewRefreshHash:           []byte("new-refresh-hash"),
+			NewRefreshExpiresAt:      &refreshExpiresAt,
+			PreviousRefreshHash:      oldRefreshHash,
+			PreviousRefreshExpiresAt: &previousRefreshExpiresAt,
+		}
 
-		got, err := st.APITokens().MaxRevokedAt(ctx)
+		n, err := st.APITokens().RotateRefresh(ctx, params)
 		require.NoError(t, err)
-		assert.True(t, got.IsZero(), "no revoked rows should yield zero time, got %v", got)
+		require.Equal(t, int64(1), n)
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindAPITokenRotation, events[0].Event.Kind)
+		assert.Equal(t, tokenID, events[0].Event.SubjectID)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
+		assert.False(t, events[0].Event.RevokedAt.IsZero())
+
+		n, err = st.APITokens().RotateRefresh(ctx, params)
+		require.NoError(t, err)
+		assert.Zero(t, n)
+		published, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published, "failed refresh CAS must not emit an event")
 	})
 
-	t.Run("MaxRevokedAt picks the latest revoked_at across many rows", func(t *testing.T) {
+	t.Run("single token revoke creates one durable event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		apiToken := seedAPIToken(t, st, user.ID)
+		delegationToken := seedDelegationToken(t, st, orgID, user.ID)
+
+		n, err := st.APITokens().Revoke(ctx, apiToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+		n, err = st.DelegationTokens().Revoke(ctx, delegationToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{apiToken, delegationToken}, store.MapSlice(events, func(e store.PublishedRevocationEvent) string {
+			return e.Event.SubjectID
+		}))
+		assert.ElementsMatch(t, []string{store.RevocationEventKindAPIToken, store.RevocationEventKindDelegationToken}, store.MapSlice(events, func(e store.PublishedRevocationEvent) string {
+			return e.Event.Kind
+		}))
+	})
+
+	t.Run("idempotent re-revoke creates no extra event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		tokenID := seedAPIToken(t, st, user.ID)
+
+		n, err := st.APITokens().Revoke(ctx, tokenID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+		n, err = st.APITokens().Revoke(ctx, tokenID)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), n)
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+	})
+
+	t.Run("bulk revoke fast-revokes live rows without per-token events", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		seedAPIToken(t, st, user.ID)
+		seedAPIToken(t, st, user.ID)
+		seedAPIToken(t, st, user.ID)
+		alreadyRevoked := seedAPIToken(t, st, user.ID)
+		_, err := st.APITokens().Revoke(ctx, alreadyRevoked)
+		require.NoError(t, err)
+		_, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+
+		n, err := st.APITokens().RevokeByUser(ctx, user.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(3), n, "only the three still-live tokens are revoked")
+
+		// Bulk user revoke is the fast path: it emits no per-token events
+		// because the user-wide RevokeUserTokens event carries the signal.
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published, "fast bulk revoke must not emit per-token events")
+	})
+
+	t.Run("user-wide bulk revoke emits only the generation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		seedAPIToken(t, st, user.ID)
+		seedDelegationToken(t, st, orgID, user.ID)
+
+		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+			apiCount, err := tx.APITokens().RevokeByUser(ctx, user.ID)
+			if err != nil {
+				return err
+			}
+			require.Equal(t, int64(1), apiCount)
+			delegationCount, err := tx.DelegationTokens().RevokeByUser(ctx, user.ID)
+			if err != nil {
+				return err
+			}
+			require.Equal(t, int64(1), delegationCount)
+			_, err = tx.Users().RevokeUserTokens(ctx, user.ID)
+			return err
+		}))
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindUserTokens, events[0].Event.Kind)
+		assert.Equal(t, int64(1), events[0].Event.UserAuthGeneration)
+	})
+
+	t.Run("user bumps create timestamped user-token events", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "org", true)
 		user := SeedUser(t, st, orgID, "user")
 
-		// Five api_tokens, revoked in succession with small sleeps so
-		// the timestamps are strictly increasing even at the dialect's
-		// minimum precision (sqlite stores ms, mysql ms via NOW(3),
-		// postgres us). 2ms cleanly separates them everywhere.
-		var lastRevoked time.Time
-		for i := 0; i < 5; i++ {
-			tokenID := id.Generate()
-			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID:         tokenID,
-				UserID:     user.ID,
-				ClientType: "cli",
-				ClientName: "t",
-				SecretHash: []byte("hash"),
-				Scope:      "remote:*",
-			}))
-			if i > 0 {
-				time.Sleep(2 * time.Millisecond)
-			}
+		for range 2 {
+			n, err := st.Users().RevokeUserTokens(ctx, user.ID)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), n)
+		}
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		for _, event := range events {
+			assert.Equal(t, store.RevocationEventKindUserTokens, event.Event.Kind)
+			assert.Equal(t, user.ID, event.Event.UserID)
+			assert.False(t, event.Event.RevokedAt.IsZero())
+		}
+		assert.ElementsMatch(t, []int64{1, 2}, []int64{
+			events[0].Event.UserAuthGeneration,
+			events[1].Event.UserAuthGeneration,
+		})
+	})
+
+	t.Run("user-token revoke still fires after soft-delete", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		require.NoError(t, st.Users().Delete(ctx, user.ID))
+
+		// A revoke-after-soft-delete caller must still bump the generation
+		// and emit the durable user_tokens event so cross-process teardown
+		// runs even though the user row is soft-deleted.
+		n, err := st.Users().RevokeUserTokens(ctx, user.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n, "soft-deleted user must still be revoked")
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindUserTokens, events[0].Event.Kind)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
+		assert.Equal(t, int64(1), events[0].Event.UserAuthGeneration)
+	})
+
+	t.Run("user-token revoke on missing user is a no-op", func(t *testing.T) {
+		st := s.NewStore(t)
+
+		n, err := st.Users().RevokeUserTokens(ctx, "does-not-exist")
+		require.NoError(t, err)
+		require.Zero(t, n, "a missing user row is the only case that revokes nothing")
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published)
+	})
+
+	t.Run("admin change emits a user_info cache-invalidation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      user.ID,
+			IsAdmin: true,
+		}))
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindUserInfo, events[0].Event.Kind)
+		assert.Equal(t, user.ID, events[0].Event.SubjectID)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
+		assert.Equal(t, int64(0), events[0].Event.UserAuthGeneration, "user_info is a cache signal, not generation-bearing")
+		assert.False(t, events[0].Event.RevokedAt.IsZero())
+	})
+
+	t.Run("admin change on missing user emits nothing", func(t *testing.T) {
+		st := s.NewStore(t)
+
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      "does-not-exist",
+			IsAdmin: true,
+		}))
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published)
+	})
+
+	t.Run("user_info mutation on a soft-deleted user still applies", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		require.NoError(t, st.Users().Delete(ctx, user.ID)) // soft delete: sets deleted_at
+
+		// runUserInfoMutation serializes its before/after cached-field projection
+		// with LockUserRow, which -- unlike LockUserAuthState -- does NOT filter
+		// deleted_at. A mutation on a soft-deleted user therefore still applies,
+		// instead of aborting because the lock returned not-found.
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      user.ID,
+			IsAdmin: true,
+		}))
+		got, err := st.Users().GetByIDIncludeDeleted(ctx, user.ID)
+		require.NoError(t, err)
+		assert.True(t, got.IsAdmin, "the admin flag must apply even though the user is soft-deleted")
+	})
+
+	// The username, email, and email_verified fields are all cached in
+	// auth.UserInfo (email_verified is a live auth gate), so an out-of-process
+	// mutation to any of them must invalidate the cache cross-process just like an
+	// IsAdmin change -- otherwise a running Hub serves the stale value until the
+	// cache TTL elapses.
+	assertUserInfoEvent := func(t *testing.T, st store.Store, userID string, mutate func() error) {
+		t.Helper()
+		require.NoError(t, mutate())
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindUserInfo, events[0].Event.Kind)
+		assert.Equal(t, userID, events[0].Event.SubjectID)
+		assert.Equal(t, userID, events[0].Event.UserID)
+		assert.Equal(t, int64(0), events[0].Event.UserAuthGeneration, "user_info is a cache signal, not generation-bearing")
+		assert.False(t, events[0].Event.RevokedAt.IsZero())
+	}
+
+	t.Run("profile change emits a user_info cache-invalidation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		assertUserInfoEvent(t, st, user.ID, func() error {
+			return st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+				ID:          user.ID,
+				Username:    "user-renamed",
+				DisplayName: "Renamed",
+			})
+		})
+	})
+
+	t.Run("display-name-only profile change emits no user_info event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		// The username (the only cached UserInfo field this mutation touches) is
+		// unchanged, so RunUserInfoMutation derives that no cached field changed
+		// (before == after projection) and suppresses the fleet-wide user_info
+		// invalidation. The row still updates -- only the durable event is skipped.
+		require.NoError(t, st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			ID:          user.ID,
+			Username:    user.Username,
+			DisplayName: "New Display Name",
+		}))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published, "a display-name-only edit must not emit a user_info event")
+		updated, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "New Display Name", updated.DisplayName, "the display-name update must still persist")
+	})
+
+	t.Run("email change emits a user_info cache-invalidation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		assertUserInfoEvent(t, st, user.ID, func() error {
+			return st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+				ID:            user.ID,
+				Email:         "new@example.com",
+				EmailVerified: true,
+			})
+		})
+	})
+
+	t.Run("email_verified change emits a user_info cache-invalidation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user") // seeded email_verified = true
+		assertUserInfoEvent(t, st, user.ID, func() error {
+			// Flip the gate off -- a real change to the cached field, so the
+			// projection compare must emit.
+			return st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+				ID:            user.ID,
+				EmailVerified: false,
+			})
+		})
+	})
+
+	t.Run("no-op update to a cached field emits no user_info event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user") // seeded is_admin = false, email_verified = true
+		// Re-set each cached field to its current value: RunUserInfoMutation
+		// compares the before/after projection and must suppress the fleet-wide
+		// eviction when nothing a cached field observes actually changed.
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID: user.ID, IsAdmin: false,
+		}))
+		require.NoError(t, st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+			ID: user.ID, EmailVerified: true,
+		}))
+		require.NoError(t, st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+			ID: user.ID, Email: user.Email, EmailVerified: true,
+		}))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published, "re-setting cached fields to their current values must emit nothing")
+	})
+
+	t.Run("pending-email promotion emits a user_info cache-invalidation event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		// Staging the pending email is a plain mutation (no event); only the
+		// promotion changes the cached email/email_verified and must emit.
+		expiresAt := time.Now().Add(time.Hour)
+		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "promoted@example.com",
+			PendingEmailToken:     "tok",
+			PendingEmailExpiresAt: &expiresAt,
+		}))
+		assertUserInfoEvent(t, st, user.ID, func() error {
+			return st.Users().PromotePendingEmail(ctx, user.ID)
+		})
+		promoted, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "promoted@example.com", promoted.Email)
+		assert.True(t, promoted.EmailVerified)
+	})
+
+	t.Run("profile/email/email_verified/promote changes on missing user emit nothing", func(t *testing.T) {
+		st := s.NewStore(t)
+
+		require.NoError(t, st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			ID: "does-not-exist", Username: "ghost", DisplayName: "Ghost",
+		}))
+		require.NoError(t, st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+			ID: "does-not-exist", Email: "ghost@example.com", EmailVerified: true,
+		}))
+		require.NoError(t, st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+			ID: "does-not-exist", EmailVerified: true,
+		}))
+		// A promotion with no pending email in flight matches zero rows and is a
+		// no-op with no event.
+		require.NoError(t, st.Users().PromotePendingEmail(ctx, "does-not-exist"))
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published)
+	})
+
+	t.Run("promotion with no pending email in flight emits nothing", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		require.NoError(t, st.Users().PromotePendingEmail(ctx, user.ID))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published)
+	})
+
+	t.Run("new credentials copy current user auth generation", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+
+		_, err := st.Users().RevokeUserTokens(ctx, user.ID)
+		require.NoError(t, err)
+
+		apiTokenID := seedAPIToken(t, st, user.ID)
+		apiToken, err := st.APITokens().GetByID(ctx, apiTokenID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), apiToken.AuthGeneration)
+
+		delegationTokenID := seedDelegationToken(t, st, orgID, user.ID)
+		delegationToken, err := st.DelegationTokens().GetByID(ctx, delegationTokenID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), delegationToken.AuthGeneration)
+	})
+
+	t.Run("transaction rollback removes state transition and event", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		tokenID := seedAPIToken(t, st, user.ID)
+		rollbackErr := errors.New("rollback")
+
+		err := st.RunInTransaction(ctx, func(tx store.Store) error {
+			n, err := tx.APITokens().Revoke(ctx, tokenID)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), n)
+			return rollbackErr
+		})
+		require.ErrorIs(t, err, rollbackErr)
+
+		token, err := st.APITokens().GetByID(ctx, tokenID)
+		require.NoError(t, err)
+		require.Nil(t, token.RevokedAt)
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), published)
+	})
+
+	t.Run("publish is idempotent and assigns gapless sequence pages", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		tokens := []string{
+			seedAPIToken(t, st, user.ID),
+			seedAPIToken(t, st, user.ID),
+			seedAPIToken(t, st, user.ID),
+		}
+		for _, token := range tokens {
+			_, err := st.APITokens().Revoke(ctx, token)
+			require.NoError(t, err)
+		}
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 2)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), published)
+		published, err = st.RevocationEvents().PublishPending(ctx, 2)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		published, err = st.RevocationEvents().PublishPending(ctx, 2)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), published)
+
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 2)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		assert.Equal(t, int64(1), events[0].Seq)
+		assert.Equal(t, int64(2), events[1].Seq)
+		events, err = st.RevocationEvents().ListPublishedAfter(ctx, 2, 2)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, int64(3), events[0].Seq)
+		maxSeq, err := st.RevocationEvents().MaxPublishedSeq(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), maxSeq)
+	})
+
+	t.Run("singleton Hub lease bounds compaction and supports takeover", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org", true)
+		user := SeedUser(t, st, orgID, "user")
+		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.Error(t, err)
+		_, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "invalid-duration", PublishLimit: 10, LeaseDuration: time.Nanosecond,
+		})
+		require.Error(t, err)
+
+		fence, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "first", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+		require.Zero(t, fence)
+		_, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "second", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+		advanced, err := st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID: "impostor", CursorSeq: 0, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+		require.False(t, advanced)
+		released, err := st.RevocationEvents().ReleaseHubRuntimeLease(ctx, "impostor")
+		require.NoError(t, err)
+		require.Zero(t, released)
+
+		for range 3 {
+			tokenID := seedAPIToken(t, st, user.ID)
 			_, err := st.APITokens().Revoke(ctx, tokenID)
 			require.NoError(t, err)
-			tok, err := st.APITokens().GetByID(ctx, tokenID)
-			require.NoError(t, err)
-			require.NotNil(t, tok.RevokedAt, "Revoke should populate revoked_at")
-			lastRevoked = *tok.RevokedAt
 		}
-
-		got, err := st.APITokens().MaxRevokedAt(ctx)
+		_, err = st.RevocationEvents().PublishPending(ctx, 10)
 		require.NoError(t, err)
-		assert.True(t, got.Equal(lastRevoked) || got.After(lastRevoked.Add(-time.Microsecond)),
-			"MaxRevokedAt %v should match the last-revoked row %v", got, lastRevoked)
+
+		advanced, err = st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID:      "first",
+			CursorSeq:     1,
+			LeaseDuration: 25 * time.Millisecond,
+		})
+		require.NoError(t, err)
+		require.True(t, advanced)
+
+		deleted, err := st.Cleanup().CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+			Cutoff: time.Now().UTC().Add(time.Hour),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), deleted)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		assert.Equal(t, int64(2), events[0].Seq)
+
+		time.Sleep(100 * time.Millisecond)
+		advanced, err = st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID:      "first",
+			CursorSeq:     3,
+			LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+		require.False(t, advanced)
+
+		fence, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "second", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(3), fence)
+
+		deleted, err = st.Cleanup().CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+			Cutoff: time.Now().UTC().Add(time.Hour),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), deleted)
+		events, err = st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Empty(t, events)
+
+		released, err = st.RevocationEvents().ReleaseHubRuntimeLease(ctx, "second")
+		require.NoError(t, err)
+		require.Equal(t, int64(1), released)
+		_, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "third", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err, "clean release must permit immediate handoff")
 	})
+}
 
-	t.Run("DelegationTokens MaxRevokedAt mirrors APITokens semantics", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org", true)
-		user := SeedUser(t, st, orgID, "user")
-		// Delegation tokens need an active worker + workspace + tab
-		// (FK constraints), so seed those before revoking.
-		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "ws")
-		tabID := id.Generate()
-		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-			OrgID:       orgID,
-			WorkspaceID: wsID,
-			WorkerID:    worker.ID,
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabID:       tabID,
-			Position:    "a",
-			TileID:      "tile-1",
-		}))
+func seedAPIToken(t *testing.T, st store.Store, userID string) string {
+	t.Helper()
+	tokenID := id.Generate()
+	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: []byte("hash"),
+		Scope:      "remote:*",
+	}))
+	return tokenID
+}
 
-		// No rows yet.
-		got, err := st.DelegationTokens().MaxRevokedAt(ctx)
-		require.NoError(t, err)
-		assert.True(t, got.IsZero())
-
-		// One revocation.
-		tokenID := id.Generate()
-		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-			ID:               tokenID,
-			UserID:           user.ID,
-			WorkerID:         worker.ID,
-			WorkspaceID:      wsID,
-			IssuedForTabID:   tabID,
-			IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-			SecretHash:       []byte("hash"),
-			ExpiresAt:        time.Now().Add(time.Hour),
-		}))
-		_, err = st.DelegationTokens().Revoke(ctx, tokenID)
-		require.NoError(t, err)
-
-		got, err = st.DelegationTokens().MaxRevokedAt(ctx)
-		require.NoError(t, err)
-		assert.False(t, got.IsZero(), "after a revoke MaxRevokedAt should be set")
-	})
-
-	t.Run("Users MaxTokensRevokedAt returns zero when no user has been revoked", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org", true)
-		_ = SeedUser(t, st, orgID, "user")
-		// User exists but BumpTokensRevokedAt was never called.
-		got, err := st.Users().MaxTokensRevokedAt(ctx)
-		require.NoError(t, err)
-		assert.True(t, got.IsZero())
-	})
-
-	t.Run("Users MaxTokensRevokedAt picks the latest bump across many users", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org", true)
-		u1 := SeedUser(t, st, orgID, "u1")
-		u2 := SeedUser(t, st, orgID, "u2")
-		u3 := SeedUser(t, st, orgID, "u3")
-		// Bump u2 first, then u1, then u3 last. Each Bump runs in its
-		// own autocommit statement so the timestamps strictly advance
-		// at the dialect's clock resolution (sqlite ms, mysql ms via
-		// NOW(3), postgres us). A 2ms sleep gives every dialect
-		// enough headroom to make NOW() strictly greater on the next
-		// call.
-		rows1, err := st.Users().BumpTokensRevokedAt(ctx, u2.ID)
-		require.NoError(t, err)
-		require.Equal(t, int64(1), rows1, "Bump must affect exactly the targeted user row")
-		time.Sleep(2 * time.Millisecond)
-		_, err = st.Users().BumpTokensRevokedAt(ctx, u1.ID)
-		require.NoError(t, err)
-		time.Sleep(2 * time.Millisecond)
-		_, err = st.Users().BumpTokensRevokedAt(ctx, u3.ID) // latest
-		require.NoError(t, err)
-
-		// MAX must reflect the latest bump; the exact value is the
-		// dialect's NOW() so we can only assert non-zero.
-		got, err := st.Users().MaxTokensRevokedAt(ctx)
-		require.NoError(t, err)
-		assert.False(t, got.IsZero(), "expected a non-zero tokens_revoked_at after three bumps")
-
-		// Cross-check via a per-user GetByID, which returns each
-		// user's tokens_revoked_at. Every row's value must be <= MAX
-		// (the MAX is necessarily the latest of the three). This
-		// avoids ListWithTokensRevokedSince's `> $since` filter,
-		// which has a known TiDB quirk for the zero time.
-		for _, uid := range []string{u1.ID, u2.ID, u3.ID} {
-			row, err := st.Users().GetByID(ctx, uid)
-			require.NoError(t, err)
-			require.NotNil(t, row, "user %q must be readable after bump", uid)
-		}
-	})
-
-	t.Run("MaxRevokedAt ignores deleted-by-cleanup rows", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org", true)
-		user := SeedUser(t, st, orgID, "user")
-
-		// One revoked api_token, then DeleteRevokedBefore wipes it.
-		tokenID := id.Generate()
-		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     user.ID,
-			ClientType: "cli",
-			ClientName: "t",
-			SecretHash: []byte("hash"),
-			Scope:      "remote:*",
-		}))
-		_, err := st.APITokens().Revoke(ctx, tokenID)
-		require.NoError(t, err)
-
-		// Confirm it's visible before cleanup.
-		before, err := st.APITokens().MaxRevokedAt(ctx)
-		require.NoError(t, err)
-		require.False(t, before.IsZero())
-
-		// Cleanup with a far-future cutoff removes the revoked row.
-		_, err = st.APITokens().DeleteRevokedBefore(ctx, time.Now().Add(time.Hour))
-		require.NoError(t, err)
-
-		after, err := st.APITokens().MaxRevokedAt(ctx)
-		require.NoError(t, err)
-		assert.True(t, after.IsZero(), "after cleanup the MAX should fall back to zero")
-	})
+func seedDelegationToken(t *testing.T, st store.Store, orgID, userID string) string {
+	t.Helper()
+	worker := SeedWorker(t, st, userID)
+	wsID := SeedWorkspace(t, st, orgID, userID, "ws")
+	tabID := id.Generate()
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		OrgID:       orgID,
+		WorkspaceID: wsID,
+		WorkerID:    worker.ID,
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       tabID,
+		Position:    "a",
+		TileID:      "tile-1",
+	}))
+	tokenID := id.Generate()
+	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		ID:               tokenID,
+		UserID:           userID,
+		WorkerID:         worker.ID,
+		WorkspaceID:      wsID,
+		IssuedForTabID:   tabID,
+		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
+		SecretHash:       []byte("hash"),
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}))
+	return tokenID
 }
