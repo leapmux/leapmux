@@ -1,3 +1,4 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
@@ -339,5 +340,86 @@ describe('claude planMode', () => {
   it('reads the current permission mode from optionValues, defaulting when unset', () => {
     expect(plugin.planMode!.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
     expect(plugin.planMode!.currentMode({})).toBe('default')
+  })
+})
+
+describe('claude spanRole', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  // spanRole only reads `parsed.parentObject`; build a minimal parsed shape whose
+  // `message.content` holds the Anthropic-style content blocks getMessageContent reads.
+  function parsedWithBlocks(blocks: unknown[]): ParsedMessageContent {
+    return { rawText: '', topLevel: null, parentObject: { message: { content: blocks } }, wrapper: null }
+  }
+
+  it('classifies a tool_use block as the opener', () => {
+    expect(plugin.spanRole!(parsedWithBlocks([{ type: 'tool_use' }]))).toBe('opener')
+  })
+
+  it('classifies a tool_result block as the result', () => {
+    expect(plugin.spanRole!(parsedWithBlocks([{ type: 'tool_result' }]))).toBe('result')
+  })
+
+  it('lets the tool_use opener win when a message carries BOTH block types, regardless of order', () => {
+    expect(plugin.spanRole!(parsedWithBlocks([{ type: 'tool_result' }, { type: 'tool_use' }]))).toBe('opener')
+    expect(plugin.spanRole!(parsedWithBlocks([{ type: 'tool_use' }, { type: 'tool_result' }]))).toBe('opener')
+  })
+
+  it('skips non-object blocks and classifies text-only content as other', () => {
+    expect(plugin.spanRole!(parsedWithBlocks([null, 'str', { type: 'text' }]))).toBe('other')
+  })
+
+  it('returns other when there is no content array', () => {
+    expect(plugin.spanRole!({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null })).toBe('other')
+  })
+})
+
+// Build a plain ParsedMessageContent whose inner message is `inner`;
+// rateLimitsFromMessage reads it through getInnerMessage (parentObject ?? topLevel).
+function parsed(inner: Record<string, unknown>): ParsedMessageContent {
+  return { rawText: '', topLevel: inner, parentObject: inner, wrapper: null }
+}
+
+describe('claude rateLimitsFromMessage', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('extracts from a raw rate_limit_event', () => {
+    expect(plugin.rateLimitsFromMessage!(parsed({
+      type: 'rate_limit_event',
+      rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85 },
+    }))).toEqual([{ key: 'five_hour', info: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85 } }])
+  })
+
+  it('defaults the key to unknown when rateLimitType is missing', () => {
+    const result = plugin.rateLimitsFromMessage!(parsed({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'exceeded' },
+    }))
+    expect(result![0].key).toBe('unknown')
+  })
+
+  it('returns empty array when rate_limit_info is missing', () => {
+    expect(plugin.rateLimitsFromMessage!(parsed({ type: 'rate_limit_event' }))).toEqual([])
+  })
+
+  it('returns null for a non-rate_limit_event', () => {
+    expect(plugin.rateLimitsFromMessage!(parsed({ type: 'settings_changed' }))).toBeNull()
+  })
+})
+
+describe('claude contextUsageFromMessage', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('reads the Claude message.usage input_tokens + cache_* shape', () => {
+    expect(plugin.contextUsageFromMessage!(parsed({ message: { usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 300 } } })))
+      .toEqual({ inputTokens: 1000, cacheCreationInputTokens: 200, cacheReadInputTokens: 300 })
+  })
+
+  it('returns null for a non-Claude usage shape (Pi input, no input_tokens)', () => {
+    expect(plugin.contextUsageFromMessage!(parsed({ message: { usage: { input: 100 } } }))).toBeNull()
+  })
+
+  it('returns null when the message carries no message.usage', () => {
+    expect(plugin.contextUsageFromMessage!(parsed({ type: 'assistant', message: {} }))).toBeNull()
   })
 })

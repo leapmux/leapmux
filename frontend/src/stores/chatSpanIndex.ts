@@ -1,6 +1,6 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { spanRole } from '~/components/chat/spanRole'
+import { pluginFor } from '~/components/chat/providers/registry'
 import { getOrCreate } from '~/lib/getOrCreate'
 import { parseMessageContent } from '~/lib/messageParser'
 
@@ -120,9 +120,14 @@ export function createSpanIndex(): ChatSpanIndex {
       if (!msg.spanId)
         continue
       // parsedFor caches, so this parse is reused by a later opener/result lookup.
-      // Pass the provider so the role classifier can apply the right dialect
-      // (Pi marks opener/result by envelope `type`, not Anthropic content blocks).
-      const role = spanRole(msg.agentProvider, parsedFor(msg))
+      // The provider plugin owns the role dialect (Claude reads Anthropic tool_use/tool_result
+      // blocks, Pi routes by envelope `type`); a provider with no spanRole hook (Codex / ACP, whose
+      // spans are single-logical-row -- the item IS both opener and terminal state) defaults to
+      // 'other' and files first-seen-is-opener, with the two-'other'-member conflict backstop below.
+      // CONTRACT: if a provider ever emits a DISTINCT result-role row that can arrive out of order
+      // (a result before its opener), it MUST add a spanRole hook returning 'result' -- first-seen
+      // can't order that case and would misfile the lone result as the opener.
+      const role = pluginFor(msg.agentProvider)?.spanRole?.(parsedFor(msg)) ?? 'other'
       if (role === 'result') {
         // Always the result side, regardless of arrival order.
         fileInto(results, openers, msg)

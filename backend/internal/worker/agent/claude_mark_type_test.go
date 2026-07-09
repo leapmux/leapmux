@@ -75,18 +75,18 @@ func TestIsSelfDisplayingControlTool(t *testing.T) {
 	assert.False(t, noopProvider{}.IsSelfDisplayingControlTool(ToolNameAskUserQuestion))
 }
 
-// TestNeedsSyntheticInterruptNotice pins the provider-delegated decision the raw-message
-// handler consults instead of a hardcoded `== CODEX` switch. Only Codex consumes its
-// interrupt silently (turn/interrupt resolves internally with no transcript row), so only it
-// needs the synthetic "[Request interrupted by user]" row; every other provider's interrupt
-// surfaces in its own transcript and defaults to false (ACP via the noopProvider embedding).
-func TestNeedsSyntheticInterruptNotice(t *testing.T) {
-	assert.True(t, codexProvider{}.NeedsSyntheticInterruptNotice())
+// TestSyntheticInterruptNotice pins the provider-delegated decision the raw-message handler
+// consults instead of a hardcoded `== CODEX` switch, including the exact display text. Only Codex
+// consumes its interrupt silently (turn/interrupt resolves internally with no transcript row), so
+// only it returns the synthetic "[Request interrupted by user]" row text; every other provider's
+// interrupt surfaces in its own transcript and returns "" (ACP via the noopProvider embedding).
+func TestSyntheticInterruptNotice(t *testing.T) {
+	assert.Equal(t, "[Request interrupted by user]", codexProvider{}.SyntheticInterruptNotice())
 
-	assert.False(t, claudeProvider{}.NeedsSyntheticInterruptNotice())
-	assert.False(t, piProvider{}.NeedsSyntheticInterruptNotice())
-	assert.False(t, acpProvider{}.NeedsSyntheticInterruptNotice())
-	assert.False(t, noopProvider{}.NeedsSyntheticInterruptNotice())
+	assert.Empty(t, claudeProvider{}.SyntheticInterruptNotice())
+	assert.Empty(t, piProvider{}.SyntheticInterruptNotice())
+	assert.Empty(t, acpProvider{}.SyntheticInterruptNotice())
+	assert.Empty(t, noopProvider{}.SyntheticInterruptNotice())
 }
 
 // TestPlanModeControl pins provider-owned tool-name interpretation. Shared service code

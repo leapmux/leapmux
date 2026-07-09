@@ -10,16 +10,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func controlResponseRequestID(content []byte) string {
-	if requestID, _, _, ok := agent.DecodeControlBehavior(content); ok && requestID != "" {
-		return requestID
-	}
-	if _, requestID, ok := agent.ExtractJSONRPCID(content); ok {
-		return requestID
-	}
-	return ""
-}
-
 // controlResponsePlanModePayload is the decoded shape of a plan-mode control response: the
 // approve/reject envelope plus the optional permission-mode switch and context-clear the frontend
 // attaches. It EMBEDS agent.ControlBehaviorEnvelope (the single Go home for the
@@ -52,8 +42,8 @@ type controlResponsePlan struct {
 	hasDecision bool
 }
 
-func (svc *Context) loadControlResponseRequestMetadata(agentID string, content []byte) controlResponseRequestMetadata {
-	reqID := controlResponseRequestID(content)
+func (svc *Context) loadControlResponseRequestMetadata(agentID string, plugin agent.Provider, content []byte) controlResponseRequestMetadata {
+	reqID := plugin.ControlResponseRequestID(content)
 	if reqID == "" {
 		return controlResponseRequestMetadata{}
 	}
@@ -84,8 +74,9 @@ func (svc *Context) loadControlResponseRequestMetadata(agentID string, content [
 }
 
 func (svc *Context) buildControlResponsePlan(agentID string, dbAgent db.Agent, content []byte) controlResponsePlan {
-	requestMeta := svc.loadControlResponseRequestMetadata(agentID, content)
-	resolution := agent.ProviderFor(dbAgent.AgentProvider).ResolveControlResponse(agent.ControlResponseContext{
+	plugin := agent.ProviderFor(dbAgent.AgentProvider)
+	requestMeta := svc.loadControlResponseRequestMetadata(agentID, plugin, content)
+	resolution := plugin.ResolveControlResponse(agent.ControlResponseContext{
 		RequestPayload:  requestMeta.Payload,
 		ResponseContent: content,
 		ToolName:        requestMeta.ToolName,

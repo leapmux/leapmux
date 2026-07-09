@@ -234,6 +234,40 @@ func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 	}
 }
 
+func TestPermissionModeFromRawInput(t *testing.T) {
+	// Claude owns the set_permission_mode wire parse behind the Provider interface.
+	claude := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	mode, ok := claude.PermissionModeFromRawInput(`{"type":"control_request","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`)
+	assert.True(t, ok)
+	assert.Equal(t, "bypassPermissions", mode)
+
+	// A control_request that isn't set_permission_mode, an empty mode, invalid JSON that happens to
+	// contain the substring, and unrelated content (fast-path miss) all yield ("", false).
+	for name, content := range map[string]string{
+		"wrong subtype":     `{"request":{"subtype":"can_use_tool","mode":"bypassPermissions"}}`,
+		"empty mode":        `{"request":{"subtype":"set_permission_mode","mode":""}}`,
+		"invalid json":      `{"request":{"subtype":"set_permission_mode",`,
+		"unrelated content": `{"type":"control_request","request":{"subtype":"interrupt"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mode, ok := claude.PermissionModeFromRawInput(content)
+			assert.False(t, ok)
+			assert.Empty(t, mode)
+		})
+	}
+
+	// Only Claude speaks set_permission_mode. The exact Claude-shaped payload extracts nothing for
+	// every other provider (they return ("", false)), so a stray frame to a non-Claude agent falls
+	// through to the generic forward path instead of an eager DB write.
+	claudePayload := `{"type":"control_request","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`
+	for _, p := range []Provider{codexProvider{}, piProvider{}, acpProvider{}, noopProvider{}} {
+		mode, ok := p.PermissionModeFromRawInput(claudePayload)
+		assert.False(t, ok)
+		assert.Empty(t, mode)
+	}
+}
+
 func TestIsNotificationThreadable_ClaudeSystemUsesPlugin(t *testing.T) {
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))

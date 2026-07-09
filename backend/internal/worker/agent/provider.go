@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -94,17 +95,35 @@ type Provider interface {
 	// persisted alongside it (plus plan-mode metadata), but the service owns
 	// persistence, control-request deletion, option changes, and process I/O.
 	ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution
+	// ControlResponseRequestID extracts the stored-control-request lookup id from a raw
+	// frontend control response, so the service can find the pending control_request row to
+	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
+	// ({response:{request_id, ...}}, emitted by buildAllowResponse/buildDenyResponse for EVERY
+	// provider) and a top-level JSON-RPC id (used by the ACP family and Codex) -- are
+	// cross-provider, so every provider delegates to defaultControlResponseRequestID. The method
+	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
+	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
+	ControlResponseRequestID(content []byte) string
 	// PlanApprovalOptions declares the option changes to settle when a plan-mode-prompt
 	// control request is approved (see PlanApprovalOptions). The service applies them; the
 	// provider owns the ids/values. Empty for providers with no plan-approval options.
 	PlanApprovalOptions() PlanApprovalOptions
-	// NeedsSyntheticInterruptNotice reports whether the service must persist a synthetic
-	// "[Request interrupted by user]" user row when the frontend forwards this provider's
-	// interrupt frame as a raw message (SendAgentRawMessage). True only for providers that
-	// consume the interrupt SILENTLY: Codex resolves turn/interrupt internally and emits no
-	// transcript row for it, so without the synthetic row the interrupt would leave no trace.
-	// A provider whose interrupt already surfaces in its own transcript returns false.
-	NeedsSyntheticInterruptNotice() bool
+	// SyntheticInterruptNotice returns the display text of the synthetic user row the service
+	// persists when the frontend forwards this provider's interrupt frame as a raw message
+	// (SendAgentRawMessage). Non-empty only for providers that consume the interrupt SILENTLY:
+	// Codex resolves turn/interrupt internally and emits no transcript row for it, so without the
+	// synthetic row the interrupt would leave no trace. A provider whose interrupt already
+	// surfaces in its own transcript returns "" (no synthetic row).
+	SyntheticInterruptNotice() string
+	// PermissionModeFromRawInput extracts an eager permission-mode update from a raw control
+	// frame in the provider's wire format (Claude's set_permission_mode control_request). The
+	// service owns the DB write and the raw forward to the subprocess; the provider owns only the
+	// parse. Returns ("", false) for providers whose mode changes never ride a raw control frame.
+	PermissionModeFromRawInput(content string) (string, bool)
+	// ValidateAttachment enforces the provider's attachment policy against a classified
+	// attachment. A nil return accepts it; a non-nil error rejects the whole send. Providers with
+	// no restrictions accept everything.
+	ValidateAttachment(attachment classifiedAttachment) error
 }
 
 type noopProvider struct{}
@@ -132,11 +151,15 @@ func (noopProvider) PlanModeControl(string) PlanModeControlKind { return PlanMod
 // options on approval. The ACP-based providers inherit this via their noopProvider embedding.
 func (noopProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
 
-// NeedsSyntheticInterruptNotice defaults to false: a provider whose interrupt surfaces in its
-// own transcript (or that is interrupted via the InterruptAgent RPC rather than a raw frame)
-// needs no synthetic notice. The ACP-based providers inherit this via their noopProvider
-// embedding.
-func (noopProvider) NeedsSyntheticInterruptNotice() bool { return false }
+// SyntheticInterruptNotice defaults to "": a provider whose interrupt surfaces in its own
+// transcript (or that is interrupted via the InterruptAgent RPC rather than a raw frame) needs no
+// synthetic notice. The ACP-based providers inherit this via their noopProvider embedding.
+func (noopProvider) SyntheticInterruptNotice() string { return "" }
+
+// PermissionModeFromRawInput defaults to ("", false): a provider whose permission-mode changes
+// don't ride raw control frames carries no eager-parse path. The ACP-based providers inherit this
+// via their noopProvider embedding.
+func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
 var (
 	providerMu       sync.RWMutex
@@ -281,10 +304,13 @@ func (codexProvider) PlanApprovalOptions() PlanApprovalOptions {
 	}
 }
 
-// NeedsSyntheticInterruptNotice: Codex resolves turn/interrupt internally and emits only a
+// SyntheticInterruptNotice: Codex resolves turn/interrupt internally and emits only a
 // serverRequest/resolved metadata notification -- never a transcript row -- so the service
-// persists the synthetic "[Request interrupted by user]" row to record the interrupt.
-func (codexProvider) NeedsSyntheticInterruptNotice() bool { return true }
+// persists this synthetic row to record the interrupt. The literal's single home lives here.
+func (codexProvider) SyntheticInterruptNotice() string { return "[Request interrupted by user]" }
+
+// PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
+func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
 type claudeProvider struct{}
 
@@ -360,9 +386,34 @@ func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
 // plan-approval option settlement runs for it.
 func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
 
-// NeedsSyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no
-// synthetic notice is persisted for a forwarded interrupt frame.
-func (claudeProvider) NeedsSyntheticInterruptNotice() bool { return false }
+// SyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no synthetic
+// notice is persisted for a forwarded interrupt frame.
+func (claudeProvider) SyntheticInterruptNotice() string { return "" }
+
+// PermissionModeFromRawInput parses Claude's set_permission_mode control_request
+// ({"request":{"subtype":"set_permission_mode","mode":"..."}}) and returns the requested mode.
+// Returns ("", false) when the frame isn't a set_permission_mode request. The service eagerly
+// writes the returned mode to the DB (so /clear, which reads the DB, sees the latest mode -- Claude
+// doesn't echo the mode back in its control_response) and still forwards the raw frame to the
+// subprocess.
+func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) {
+	if !strings.Contains(content, "set_permission_mode") {
+		return "", false
+	}
+	var msg struct {
+		Request struct {
+			Subtype string `json:"subtype"`
+			Mode    string `json:"mode"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal([]byte(content), &msg); err != nil {
+		return "", false
+	}
+	if msg.Request.Subtype != "set_permission_mode" || msg.Request.Mode == "" {
+		return "", false
+	}
+	return msg.Request.Mode, true
+}
 
 // piProvider collapses Pi's lifecycle notifications and recognizes
 // Pi's interrupt frame. Pi emits compaction_start/end whenever a turn
@@ -422,9 +473,12 @@ func (piProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeC
 // Pi has no plan-mode-prompt flow, so it settles no options on approval.
 func (piProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
 
-// NeedsSyntheticInterruptNotice: Pi's abort surfaces in its own transcript, so no synthetic
-// notice is persisted for a forwarded interrupt frame.
-func (piProvider) NeedsSyntheticInterruptNotice() bool { return false }
+// SyntheticInterruptNotice: Pi's abort surfaces in its own transcript, so no synthetic notice is
+// persisted for a forwarded interrupt frame.
+func (piProvider) SyntheticInterruptNotice() string { return "" }
+
+// PermissionModeFromRawInput: Pi has no set_permission_mode raw control frame.
+func (piProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
 // acpProvider recognizes ACP's `session/cancel` notification (and
 // the bare `cancel` form retained for legacy producers). Shared across all
@@ -443,6 +497,11 @@ type acpProvider struct {
 	// one site (mirroring the frontend's registerOpenCodeProtocolProvider) rather than a
 	// provider-enum switch in ResolveControlResponse that would drift.
 	questionRequestContext func(requestPayload []byte) json.RawMessage
+	// validateAttachment enforces a restrictive attachment policy for the ACP providers that need
+	// one (Reasonix is text-only). Non-nil ONLY for those providers; nil accepts everything (the
+	// default for Cursor, Copilot, Kilo, OpenCode, Goose). Set at registration (init) so the
+	// per-provider policy lives at one site rather than a provider-enum switch.
+	validateAttachment func(classifiedAttachment) error
 }
 
 func (acpProvider) IsInterrupt(content string) bool {
@@ -468,5 +527,5 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment})
 }

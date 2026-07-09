@@ -3,11 +3,13 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { FileEditDiffSource } from '../../results/fileEditDiff'
-import type { ClassificationInput, Provider, ToolResultMeta } from '../registry'
+import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '../registry'
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { messageUsage } from '~/lib/messageParser'
 import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
@@ -183,8 +185,55 @@ function piToolResultMeta(
   return null
 }
 
+/**
+ * Pi assistant `message.usage` shape: input / cacheWrite / cacheRead / output / totalTokens.
+ * Retained as a fallback for raw/unaugmented messages; newer backend messages carry a normalized
+ * top-level context_usage the shared reader handles. Returns null when the message carries no Pi
+ * `message.usage`, or it has no token data.
+ */
+function piContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsageInfo | null {
+  const usage = messageUsage(parsed)
+  if (!usage || typeof usage.input !== 'number')
+    return null
+  const inputTokens = usage.input
+  const cacheCreationInputTokens = pickNumber(usage, 'cacheWrite', 0)
+  const cacheReadInputTokens = pickNumber(usage, 'cacheRead', 0)
+  const outputTokens = pickNumber(usage, 'output', undefined)
+  const totalTokens = pickNumber(usage, 'totalTokens', undefined)
+  const hasPiTokenData = inputTokens > 0
+    || cacheCreationInputTokens > 0
+    || cacheReadInputTokens > 0
+    || (outputTokens ?? 0) > 0
+    || (totalTokens ?? 0) > 0
+  if (!hasPiTokenData)
+    return null
+  const piUsage: ContextUsageInfo = { inputTokens, cacheCreationInputTokens, cacheReadInputTokens }
+  if (outputTokens !== undefined)
+    piUsage.outputTokens = outputTokens
+  if (totalTokens !== undefined && totalTokens > 0)
+    piUsage.contextTokens = totalTokens
+  return piUsage
+}
+
+/**
+ * Pi span role: the flat envelope `type` discriminates the start (opener) from the end (result).
+ * Pi's `tool_execution_end` carries no Anthropic content blocks, so the default content-block scan
+ * would mis-bucket it as `other` -- routing by `type` files it as a result regardless of arrival
+ * order.
+ */
+function piSpanRole(parsed: ParsedMessageContent): SpanRole {
+  const type = pickString(parsed.parentObject, 'type')
+  if (type === PI_EVENT.ToolExecutionStart)
+    return 'opener'
+  if (type === PI_EVENT.ToolExecutionEnd)
+    return 'result'
+  return 'other'
+}
+
 const piPlugin: Provider = {
   bypassPermissionMode: undefined,
+  spanRole: piSpanRole,
+  contextUsageFromMessage: piContextUsageFromMessage,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
   // display and labels the copy action "session file path".
   sessionIdIsFilePath: true,

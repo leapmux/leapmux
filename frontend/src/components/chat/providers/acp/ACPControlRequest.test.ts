@@ -1,4 +1,4 @@
-import type { AskQuestionState } from './types'
+import type { AskQuestionState } from '../../controls/types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'

@@ -1,21 +1,23 @@
 import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
-import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
+import type { ClassificationContext, ClassificationInput, Provider, SpanRole } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { randomUUID } from '~/lib/idGenerator'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { getInnerMessage, messageUsage } from '~/lib/messageParser'
 import { truncatePreview } from '~/lib/textTruncate'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
-import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { controlBehaviorDisplay } from '../../persistedControlResponse'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
+import { ClaudeCodeControlActions, ClaudeCodeControlContent } from './ClaudeCodeControlRequest'
 import { getAssistantContent, joinToolResultText } from './extractors/assistantContent'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
@@ -310,6 +312,53 @@ function claudeMarkPreview(category: MessageCategory, parsed: ParsedMessageConte
 // context-usage percentage is measured against the remaining usable capacity.
 const CLAUDE_AUTOCOMPACT_BUFFER_PCT = 16.5
 
+/**
+ * Claude/Anthropic span role: a `tool_use` content block marks an opener, a `tool_result` block a
+ * result. Scan every block before deciding and let the `tool_use` opener win -- a message holding
+ * BOTH blocks IS the opener (it carries the tool input to render); early-returning on the first
+ * tool_result would mis-bucket it as a result and drop its input.
+ */
+function claudeSpanRole(parsed: ParsedMessageContent): SpanRole {
+  const blocks = getMessageContent(parsed.parentObject ?? undefined)
+  if (!blocks)
+    return 'other'
+  let hasToolUse = false
+  let hasToolResult = false
+  for (const b of blocks) {
+    if (!isObject(b))
+      continue
+    if (b.type === 'tool_use')
+      hasToolUse = true
+    else if (b.type === 'tool_result')
+      hasToolResult = true
+  }
+  return hasToolUse ? 'opener' : hasToolResult ? 'result' : 'other'
+}
+
+/** Claude raw rate_limit_event: {type:"rate_limit_event", rate_limit_info:{...}}. */
+function claudeRateLimitsFromMessage(parsed: ParsedMessageContent): { key: string, info: RateLimitInfo }[] | null {
+  const inner = getInnerMessage(parsed)
+  if (!inner || inner.type !== 'rate_limit_event')
+    return null
+  const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
+  if (!rlInfo || typeof rlInfo !== 'object')
+    return []
+  const key = (rlInfo.rateLimitType as string) || 'unknown'
+  return [{ key, info: rlInfo as RateLimitInfo }]
+}
+
+/** Claude Code assistant `message.usage` shape: input_tokens + cache_creation/read_input_tokens. */
+function claudeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsageInfo | null {
+  const usage = messageUsage(parsed)
+  if (!usage || typeof usage.input_tokens !== 'number')
+    return null
+  return {
+    inputTokens: usage.input_tokens,
+    cacheCreationInputTokens: pickNumber(usage, 'cache_creation_input_tokens', 0),
+    cacheReadInputTokens: pickNumber(usage, 'cache_read_input_tokens', 0),
+  }
+}
+
 const claudeCodePlugin: Provider = {
   bypassPermissionMode: 'bypassPermissions',
   contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
@@ -325,6 +374,9 @@ const claudeCodePlugin: Provider = {
   triggerModeGroupKey: 'permissionMode',
 
   classify: classifyClaudeCodeMessage,
+  spanRole: claudeSpanRole,
+  rateLimitsFromMessage: claudeRateLimitsFromMessage,
+  contextUsageFromMessage: claudeContextUsageFromMessage,
   // Claude's thinking-token counter is driven by real per-phase telemetry (the
   // worker relays Claude's own estimated_tokens), not the streamed-text estimator
   // the other providers use. Every committed AGENT message ends a phase, so always

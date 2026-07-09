@@ -12,7 +12,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
-import { providerFor } from '~/components/chat/providers/registry'
+import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
@@ -22,8 +22,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { waitForStreamCompletion } from '~/hooks/streamCompletion'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractAssistantUsage, extractCodexTokenUsage, extractCompactionContextTokens, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
-import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
+import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
@@ -211,17 +210,20 @@ export function handleAgentSessionInfo(
 /**
  * Pull notification metadata out of any message regardless of source -- Codex
  * token-usage / rate-limit notifications arrive as AGENT, while LeapMux-injected
- * settings_changed / context_cleared arrive as LEAPMUX. Each branch is gated on the
- * inner type/method so a Pi assistant message doesn't pay for five sequential
- * extractors that can never match.
+ * settings_changed / context_cleared arrive as LEAPMUX. Each branch self-gates so an
+ * unrelated message (e.g. a Pi assistant message) falls through cheaply: the
+ * context_cleared / settings_changed / plan branches match on the inner type, the
+ * provider usage/rate-limit hooks return null for a frame they don't recognize, the
+ * compaction scan self-filters by shape (isCompactBoundary), and usage folding
+ * additionally requires an AGENT-source row.
  */
-export function applyNotificationMetadata(agentId: string, parsed: ParsedMessageContent, stores: AgentMessageStores): void {
+export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores): void {
   if (parsed.topLevel === null)
     return
   const { agentSessionStore, chatStore, tabStore } = stores
+  const plugin = providerFor(msg.agentProvider)
   const innerMsg = getInnerMessage(parsed)
   const innerType = innerMsg?.type as string | undefined
-  const innerMethod = innerMsg?.method as string | undefined
 
   if (innerType === 'context_cleared') {
     agentSessionStore.clearContextUsage(agentId)
@@ -233,20 +235,29 @@ export function applyNotificationMetadata(agentId: string, parsed: ParsedMessage
     agentSessionStore.clearThinkingTokens(agentId)
   }
 
-  if (innerType === 'rate_limit_event' || innerMethod === CODEX_RATE_LIMITS_METHOD) {
-    const rls = extractRateLimitInfo(parsed)
-    if (rls.length > 0) {
-      const rateLimits: Record<string, RateLimitInfo> = {}
-      for (const rl of rls)
-        rateLimits[rl.key] = rl.info
-      agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)
-    }
+  // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
+  // frame they don't recognize), so no rate_limit_event / account-rateLimits / tokenUsage wire
+  // token is matched here.
+  const rls = plugin?.rateLimitsFromMessage?.(parsed)
+  if (rls && rls.length > 0) {
+    const rateLimits: Record<string, RateLimitInfo> = {}
+    for (const rl of rls)
+      rateLimits[rl.key] = rl.info
+    agentSessionStore.updateInfo(agentId, { rateLimits })
   }
 
-  if (innerMethod === 'thread/tokenUsage/updated') {
-    const codexUsage = extractCodexTokenUsage(parsed)
-    if (codexUsage)
-      agentSessionStore.updateInfo(agentId, codexUsage as Record<string, unknown>)
+  // Usage metadata (context usage + cumulative cost) for every AGENT-source message, in one pass:
+  // the neutral wrapper owns the subagent-skip / cost / normalized-context_usage guards and delegates
+  // the raw per-provider shape (Codex tokenUsage notification, Claude/Pi message.usage) to the plugin.
+  // This is the sole call site, so a provider implements contextUsageFromMessage once and the guards
+  // never live in a plugin. The AGENT-source gate is authoritative: every provider's usage frame
+  // (Claude assistant, Pi message_end, Codex thread/tokenUsage/updated) is persisted AGENT-source, so
+  // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
+  // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
+  if (msg.source === MessageSource.AGENT) {
+    const usage = extractContextUsage(parsed, p => plugin?.contextUsageFromMessage?.(p) ?? null)
+    if (usage)
+      agentSessionStore.updateInfo(agentId, usage)
   }
 
   // A completed compaction boundary makes the prior context-usage reading stale: the
@@ -255,17 +266,14 @@ export function applyNotificationMetadata(agentId: string, parsed: ParsedMessage
   // token count (post_tokens, or pre - tokens_saved), and reset the component fields
   // since the boundary carries no input/cache breakdown -- contextTokens is
   // authoritative for the grid. Preserve the known context window so the percentage
-  // denominator survives. Boundaries arrive consolidated (wrapper) or, when live and
-  // standalone, as a bare system message; gate on those shapes so common assistant
-  // messages skip the scan.
-  if (parsed.wrapper !== null || innerType === 'system' || innerMethod === 'thread/compacted') {
-    const postTokens = extractCompactionContextTokens(parsed)
-    if (postTokens !== undefined) {
-      const existing = agentSessionStore.getInfo(agentId).contextUsage
-      agentSessionStore.updateInfo(agentId, {
-        contextUsage: compactionContextUsage(postTokens, existing),
-      })
-    }
+  // denominator survives. isCompactBoundary is a neutral shape-based scan; it returns
+  // undefined (a no-op) for the common assistant message that carries no boundary.
+  const postTokens = extractCompactionContextTokens(parsed)
+  if (postTokens !== undefined) {
+    const existing = agentSessionStore.getInfo(agentId).contextUsage
+    agentSessionStore.updateInfo(agentId, {
+      contextUsage: compactionContextUsage(postTokens, existing),
+    })
   }
 
   if (innerType === 'settings_changed') {
@@ -320,15 +328,16 @@ export function handleResultDivider(
   // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
   // not-yet-relaunched id) would mis-key the primary-model lookup. The confirmed
   // currentValue is the model the completed turn actually used.
+  const plugin = providerFor(msg.agentProvider)
   const modelId = optionGroup(tabStore.getAgentTab(agentId)?.optionGroups, OPTION_ID_MODEL)?.currentValue
-  const meta = extractResultMetadata(parsed, modelId)
+  const meta = extractResultMetadata(parsed, modelId, p => plugin?.resultSubtype?.(p))
   if (!meta)
     return
   // A persisted turn-end result divider clears the provider's tracked live turn-id
   // (only Codex tracks one), so the thinking indicator stops after a reconnect or
   // missed live event. The provider plugin owns WHICH subtype ends a turn; the hook
   // owns the action (clearing the session-info field).
-  if (providerFor(msg.agentProvider)?.resultDividerEndsActiveTurn?.(meta.subtype)) {
+  if (plugin?.resultDividerEndsActiveTurn?.(meta.subtype)) {
     agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
   }
   if (meta.subtype && catchUpPhase === 'live') {
@@ -368,28 +377,28 @@ export function clearCompletedSpanStream(
   parsed: ParsedMessageContent,
   chatStore: AgentMessageStores['chatStore'],
 ): void {
-  if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.source === MessageSource.AGENT) {
-    const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-    const isCompletedReasoning = item?.type === 'reasoning'
-      && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
-    if ((item?.type === 'commandExecution' || item?.type === 'fileChange') && item.status === 'completed') {
+  // The neutral gate is just "an AGENT-source span row"; the provider plugin owns whether the row's
+  // item shape marks the span COMPLETED (Codex: a commandExecution/fileChange with completed status,
+  // or a reasoning item that now carries summary/content). Delegating the span-type vocabulary to the
+  // hook -- rather than duplicating Codex's commandExecution/fileChange/reasoning names here -- means a
+  // future provider that gains command streams needs only its own commandSpanSuperseded, not an edit
+  // to a shared allowlist that would silently skip it. commandSpanSuperseded already returns true only
+  // for those item shapes, so the removed allowlist was redundant with the hook's own check.
+  if (msg.spanId && msg.source === MessageSource.AGENT) {
+    if (providerFor(msg.agentProvider)?.commandSpanSuperseded?.(parsed))
       chatStore.clearCommandStream(agentId, msg.spanId)
-    }
-    else if (isCompletedReasoning) {
-      chatStore.clearCommandStream(agentId, msg.spanId)
-    }
   }
 }
 
 /**
- * Method-specific lifecycle handling + assistant-usage extraction for a persisted
- * message. Gated on AGENT source rather than category because some lifecycle items
- * (e.g. Codex `thread/started`) classify as `hidden` -- a category-only gate would
- * silently skip them. Clears a stale Codex turn id on thread/started, dismisses the
- * plan streaming UI on a plan item (the general streaming-clear already dropped the
- * text buffer), and folds any extracted token usage into the session info.
+ * Method-specific lifecycle handling for a persisted message. Gated on AGENT source rather than
+ * category because some lifecycle items (e.g. Codex `thread/started`) classify as `hidden` -- a
+ * category-only gate would silently skip them. Clears a stale Codex turn id on thread/started and
+ * dismisses the plan streaming UI on a plan item (the general streaming-clear already dropped the
+ * text buffer). Usage/cost extraction is NOT here -- it runs once for every message in
+ * applyNotificationMetadata (extractContextUsage), the single home for session usage metadata.
  */
-export function applyAgentLifecycleAndUsage(
+export function applyAgentLifecycle(
   agentId: string,
   msg: AgentChatMessage,
   parsed: ParsedMessageContent,
@@ -397,28 +406,18 @@ export function applyAgentLifecycleAndUsage(
 ): void {
   if (msg.source !== MessageSource.AGENT)
     return
-  const method = parsed.parentObject?.method as string | undefined
-  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-  if (method === 'thread/started') {
-    // A new Codex thread starts idle. Clear any stale turn ID that may have been
-    // restored from localStorage so the chat can show its empty state instead of a
-    // phantom thinking indicator.
-    agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
-  }
-  if (item?.type === 'plan') {
-    agentSessionStore.updateInfo(agentId, { streamingType: '' })
-  }
-  const usage = extractAssistantUsage(parsed)
-  if (usage) {
-    agentSessionStore.updateInfo(agentId, usage as Record<string, unknown>)
-  }
+  // The provider plugin owns the lifecycle frames (Codex clears its live turn id on thread/started
+  // and the plan streaming indicator on a plan item); the service just applies the returned patch.
+  const lifecyclePatch = providerFor(msg.agentProvider)?.lifecycleSessionInfo?.(parsed)
+  if (lifecyclePatch)
+    agentSessionStore.updateInfo(agentId, lifecyclePatch)
 }
 
 /**
  * Process one persisted `agentMessage` frame as a sequence of named steps: the ephemeral
  * session-info short-circuit, notification metadata, the windowed append + thinking-token
  * / streaming-text clears + background trim, the completed-span stream reclaim, the
- * method-specific lifecycle/usage, and the turn-end result divider. Extracted from the
+ * method-specific lifecycle, and the turn-end result divider. Extracted from the
  * switch arm so the pipeline matches the sibling extractions (handleAgentSessionInfo /
  * applyNotificationMetadata / handleResultDivider) instead of one arm dwarfing the rest.
  * The caller marks the agent live BEFORE this (that step is shared with the other arms).
@@ -444,7 +443,7 @@ export function handleAgentMessage(
 
   // Notification metadata (context_cleared / rate_limit / token-usage / compaction
   // / settings_changed / plan), independent of the persisted-message handling.
-  applyNotificationMetadata(agentId, parsed, stores)
+  applyNotificationMetadata(agentId, msg, parsed, stores)
 
   const messageInWindow = chatStore.addMessage(agentId, msg)
   // Main-agent output means the current thinking phase produced something,
@@ -488,9 +487,9 @@ export function handleAgentMessage(
   if (messageInWindow)
     clearCompletedSpanStream(agentId, msg, parsed, chatStore)
 
-  // Method-specific lifecycle handling and assistant-usage extraction (self-gated
-  // on AGENT source so a lifecycle item that classifies as `hidden` isn't skipped).
-  applyAgentLifecycleAndUsage(agentId, msg, parsed, agentSessionStore)
+  // Method-specific lifecycle handling (self-gated on AGENT source so a lifecycle item that
+  // classifies as `hidden` isn't skipped). Usage/cost already folded in applyNotificationMetadata.
+  applyAgentLifecycle(agentId, msg, parsed, agentSessionStore)
 
   // Play turn-end sound when a result divider (with subtype) arrives, and
   // rehydrate contextWindow / total_cost_usd. Each provider plugin classifies its
@@ -667,10 +666,18 @@ export function handleAgentInactive(
  */
 export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chatStore: ReturnType<typeof createChatStore>): void {
   const text = TEXT_DECODER.decode(value.delta)
-  if (value.spanId)
-    chatStore.appendCommandStream(agentId, value.spanId, value.method, text)
-  else
+  if (value.spanId) {
+    // The provider plugin maps its delta method to a segment kind (Codex `item/...` methods);
+    // unknown methods default to plain output. Dispatch on the chunk's OWN authoritative provider
+    // (the backend stamps AgentStreamChunk.agentProvider on every chunk) -- never a tab lookup,
+    // which can still be undefined while a tab is bare from the reconciler, silently degrading
+    // every Codex delta to `output`.
+    const segmentKind = pluginFor(value.agentProvider)?.commandStreamSegmentKind?.(value.method) ?? 'output'
+    chatStore.appendCommandStream(agentId, value.spanId, segmentKind, text)
+  }
+  else {
     chatStore.streamingText.set(agentId, chatStore.streamingText.get(agentId) + text)
+  }
 }
 
 /**

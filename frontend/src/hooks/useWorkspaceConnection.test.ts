@@ -2,11 +2,12 @@ import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStr
 import type { AgentTab, TerminalTab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { agentWatchEntry, applyAgentLifecycleAndUsage, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/useWorkspaceConnection'
+import { agentWatchEntry, applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/useWorkspaceConnection'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -437,7 +438,11 @@ describe('codex result replay handling', () => {
         agentProvider: AgentProvider.CODEX,
       } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
 
-      const meta = extractResultMetadata(parseMessageContent(msg))
+      const meta = extractResultMetadata(
+        parseMessageContent(msg),
+        undefined,
+        p => providerFor(AgentProvider.CODEX)?.resultSubtype?.(p),
+      )
       if (meta && msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed')
         agentSessionStore.updateInfo('agent-1', { codexTurnId: '' })
 
@@ -545,6 +550,95 @@ describe('context usage refresh on compaction boundary', () => {
         cacheReadInputTokens: 0,
         contextTokens: 8000,
       })
+      dispose()
+    })
+  })
+})
+
+describe('applyNotificationMetadata usage folding', () => {
+  // The unified context-usage path: usage/cost fold into session info here (the single call site),
+  // via extractContextUsage delegating the raw per-provider shape to Provider.contextUsageFromMessage
+  // while the shared wrapper owns the neutral guards (subagent skip, prefer-normalized, cost).
+  function stores() {
+    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), tabStore: createTabStore() }
+  }
+  function msgOf(content: unknown, agentProvider: AgentProvider) {
+    return {
+      id: 'm1',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify(content)),
+      contentCompression: ContentCompression.NONE,
+      seq: 1n,
+      agentProvider,
+    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  }
+
+  // Distinct agent ids per case: the session store persists through localStorage, so a shared id
+  // would leak one case's usage into the next.
+  it('folds a Claude assistant message.usage + cost into session info', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = msgOf({ type: 'assistant', total_cost_usd: 0.05, message: { usage: { input_tokens: 1000, cache_read_input_tokens: 200 } } }, AgentProvider.CLAUDE_CODE)
+      applyNotificationMetadata('u-claude', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-claude').contextUsage).toEqual({ inputTokens: 1000, cacheCreationInputTokens: 0, cacheReadInputTokens: 200 })
+      expect(s.agentSessionStore.getInfo('u-claude').totalCostUsd).toBe(0.05)
+      dispose()
+    })
+  })
+
+  it('folds a Codex thread/tokenUsage/updated notification into session info', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = msgOf({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { last: { inputTokens: 10, cachedInputTokens: 5 }, modelContextWindow: 4096 } } }, AgentProvider.CODEX)
+      applyNotificationMetadata('u-codex', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-codex').contextUsage).toEqual({ inputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 5, contextWindow: 4096 })
+      dispose()
+    })
+  })
+
+  it('folds a Pi message_end message.usage into session info', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = msgOf({ type: 'message_end', message: { usage: { input: 100, output: 10, cacheRead: 20, cacheWrite: 5, totalTokens: 130 } } }, AgentProvider.PI)
+      applyNotificationMetadata('u-pi', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-pi').contextUsage).toEqual({ inputTokens: 100, cacheCreationInputTokens: 5, cacheReadInputTokens: 20, outputTokens: 10, contextTokens: 130 })
+      dispose()
+    })
+  })
+
+  it('does NOT fold a subagent message (parent_tool_use_id) — the neutral skip guard survives the moved call site', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = msgOf({ type: 'assistant', parent_tool_use_id: 'toolu_x', total_cost_usd: 0.03, message: { usage: { input_tokens: 500 } } }, AgentProvider.CLAUDE_CODE)
+      applyNotificationMetadata('u-subagent', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-subagent').contextUsage).toBeUndefined()
+      expect(s.agentSessionStore.getInfo('u-subagent').totalCostUsd).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('prefers a backend-normalized context_usage over the raw message.usage fallback', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      // Carries BOTH a normalized context_usage and a raw message.usage; the normalized value wins
+      // and the provider hook is never consulted (guard owned by the shared wrapper).
+      const msg = msgOf({ type: 'message_end', context_usage: { input_tokens: 100, cache_read_input_tokens: 20 }, message: { usage: { input: 999 } } }, AgentProvider.PI)
+      applyNotificationMetadata('u-normalized', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-normalized').contextUsage).toEqual({ inputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 20 })
+      dispose()
+    })
+  })
+
+  it('does NOT fold usage/cost from a non-AGENT (LEAPMUX) row — the source gate survives the moved call site', () => {
+    // Every provider persists its usage frames AGENT-source; a LEAPMUX/USER row carrying
+    // total_cost_usd / context_usage / message.usage must be ignored, exactly as the old
+    // applyAgentLifecycleAndUsage (msg.source === AGENT) gate ensured before this extraction moved.
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = { ...msgOf({ type: 'assistant', total_cost_usd: 0.05, context_usage: { input_tokens: 100 }, message: { usage: { input_tokens: 1000 } } }, AgentProvider.CLAUDE_CODE), source: MessageSource.LEAPMUX }
+      applyNotificationMetadata('u-leapmux', msg, parseMessageContent(msg), s)
+      expect(s.agentSessionStore.getInfo('u-leapmux').contextUsage).toBeUndefined()
+      expect(s.agentSessionStore.getInfo('u-leapmux').totalCostUsd).toBeUndefined()
       dispose()
     })
   })
@@ -1184,7 +1278,7 @@ describe('orphaned command-stream sweep across catch-up', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
       chatStore.addMessage('agent-1', makeSpanMessage('m1', 1n, 'span1'))
-      chatStore.appendCommandStream('agent-1', 'span1', 'item/commandExecution/output', 'output') // marks span1 renderable
+      chatStore.appendCommandStream('agent-1', 'span1', 'output', 'output') // marks span1 renderable
 
       // A mid-stream delete spares the still-buffered stream and records it as an
       // orphan (clearing now would lose the in-flight segments).
@@ -1277,6 +1371,8 @@ describe('agentMessage sub-handlers', () => {
   })
 
   /** A span (commandExecution/fileChange/reasoning) row carrying its `item` payload. */
+  // Command streams (and the item-shape completion check) are a Codex feature, so span fixtures
+  // carry the Codex provider -- clearCompletedSpanStream dispatches commandSpanSuperseded per plugin.
   function spanMessage(item: unknown, spanType: string, spanId = 'span1') {
     return {
       id: 'm1',
@@ -1286,13 +1382,14 @@ describe('agentMessage sub-handlers', () => {
       seq: 1n,
       spanId,
       spanType,
+      agentProvider: AgentProvider.CODEX,
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
   it('clearCompletedSpanStream reclaims a COMPLETED span command stream', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
-      chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+      chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
       expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
 
       // The persisted row reports the commandExecution span completed -> its buffered
@@ -1307,7 +1404,7 @@ describe('agentMessage sub-handlers', () => {
   it('clearCompletedSpanStream leaves an IN-PROGRESS span stream buffered', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
-      chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+      chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
 
       // A still-running span (status != completed) must keep its live stream.
       const msg = spanMessage({ type: 'commandExecution', status: 'in_progress' }, 'commandExecution')
@@ -1330,7 +1427,7 @@ describe('agentMessage sub-handlers', () => {
         seq: BigInt(i + 1),
       })))
       stores.chatStore.trimNewestEnd('a1', 30) // hasMoreNewer=true; seq 60 is recorded but not inserted.
-      stores.chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+      stores.chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
       const dropped = {
         ...spanMessage({ type: 'commandExecution', status: 'completed' }, 'commandExecution'),
         id: 'dropped-complete',
@@ -1345,12 +1442,12 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('applyAgentLifecycleAndUsage clears a stale Codex turn id on thread/started', () => {
+  it('applyAgentLifecycle clears a stale Codex turn id on thread/started', () => {
     createRoot((dispose) => {
       const agentSessionStore = createAgentSessionStore()
       agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
-      const msg = agentMessage({ method: 'thread/started' })
-      applyAgentLifecycleAndUsage('a1', msg, parseMessageContent(msg), agentSessionStore)
+      const msg = agentMessage({ method: 'thread/started' }, AgentProvider.CODEX)
+      applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
       // A new thread starts idle: the stale turn id is cleared so the chat shows its
       // empty state instead of a phantom thinking indicator.
       expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('')
@@ -1358,7 +1455,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('applyAgentLifecycleAndUsage skips a non-AGENT message (the source gate)', () => {
+  it('applyAgentLifecycle skips a non-AGENT message (the source gate)', () => {
     createRoot((dispose) => {
       const agentSessionStore = createAgentSessionStore()
       agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
@@ -1366,7 +1463,7 @@ describe('agentMessage sub-handlers', () => {
       // turn id survives -- the gate that keeps a hidden-classified lifecycle item from
       // being processed off a non-AGENT row.
       const msg = { ...agentMessage({ method: 'thread/started' }), source: MessageSource.USER }
-      applyAgentLifecycleAndUsage('a1', msg, parseMessageContent(msg), agentSessionStore)
+      applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
       expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('turn-123')
       dispose()
     })
@@ -1510,8 +1607,8 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('accumulates free-form streaming text when there is no spanId', () => {
       createRoot((dispose) => {
         const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc('hello '), spanId: '', method: '' } as unknown as AgentStreamChunk, chatStore)
-        handleStreamChunk('a1', { delta: enc('world'), spanId: '', method: '' } as unknown as AgentStreamChunk, chatStore)
+        handleStreamChunk('a1', { delta: enc('hello '), spanId: '', method: '', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
+        handleStreamChunk('a1', { delta: enc('world'), spanId: '', method: '', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
         expect(chatStore.streamingText.get('a1')).toBe('hello world')
         dispose()
       })
@@ -1520,9 +1617,39 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('routes a spanId chunk to the command-stream buffer, not the free-form text', () => {
       createRoot((dispose) => {
         const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc('out'), spanId: 's1', method: 'bash' } as unknown as AgentStreamChunk, chatStore)
+        handleStreamChunk('a1', { delta: enc('out'), spanId: 's1', method: 'bash', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
         expect(chatStore.streamingText.get('a1')).toBe('') // NOT the free-form text
         expect(chatStore.getCommandStream('a1', 's1').map(seg => seg.text).join('')).toContain('out')
+        dispose()
+      })
+    })
+
+    it('resolves the segment kind from the CHUNK\'s own agentProvider, not a tab lookup', () => {
+      // Regression guard: the chunk carries its authoritative provider (backend stamps it on every
+      // AgentStreamChunk). A Codex reasoning-summary delta must map to `reasoning_summary` purely
+      // from the chunk -- no tab is registered here, so a tab-provider lookup would resolve
+      // undefined and mis-bucket every Codex delta as plain `output`.
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        handleStreamChunk('a1', { delta: enc('pondering'), spanId: 's1', method: 'item/reasoning/summaryTextDelta', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
+        const segs = chatStore.getCommandStream('a1', 's1')
+        expect(segs).toHaveLength(1)
+        expect(segs[0].kind).toBe('reasoning_summary')
+        dispose()
+      })
+    })
+
+    it('preserves a content-less reasoning_summary_break delta when the chunk provider maps it', () => {
+      // `item/reasoning/summaryPartAdded` carries empty text and maps to `reasoning_summary_break`;
+      // the store keeps it (the `!text && kind !== 'reasoning_summary_break'` guard). If the kind
+      // degraded to `output` (the tab-lookup failure mode this dispatch avoids, when the tab is
+      // still bare), the empty delta would be dropped entirely.
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        handleStreamChunk('a1', { delta: enc(''), spanId: 's1', method: 'item/reasoning/summaryPartAdded', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
+        const segs = chatStore.getCommandStream('a1', 's1')
+        expect(segs).toHaveLength(1)
+        expect(segs[0].kind).toBe('reasoning_summary_break')
         dispose()
       })
     })

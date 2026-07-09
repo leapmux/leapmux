@@ -29,15 +29,6 @@ import { getOrCreate } from '~/lib/getOrCreate'
 // empty row to a thinking bubble. renderable spans are a SUBSET of buffered ones.
 // ---------------------------------------------------------------------------
 
-// Map a command-stream delta method to its segment kind; unknown methods are
-// plain output.
-const METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
-  'item/commandExecution/terminalInteraction': 'interaction',
-  'item/reasoning/summaryTextDelta': 'reasoning_summary',
-  'item/reasoning/textDelta': 'reasoning_content',
-  'item/reasoning/summaryPartAdded': 'reasoning_summary_break',
-}
-
 export function createCommandStreamStore(deps: {
   /** Bump the agent's message version so the auto-scroll effect wakes on a stream change. */
   onMutate: (agentId: string) => void
@@ -154,10 +145,11 @@ export function createCommandStreamStore(deps: {
       reclaim(spanId)
   }
   return {
-    append(agentId: string, spanId: string, method: string, text: string) {
+    // segmentKind is resolved by the caller from the provider plugin
+    // (Provider.commandStreamSegmentKind), so this store holds no provider delta-method vocabulary.
+    append(agentId: string, spanId: string, segmentKind: CommandStreamSegment['kind'], text: string) {
       if (!spanId)
         return
-      const segmentKind: CommandStreamSegment['kind'] = METHOD_TO_SEGMENT_KIND[method] ?? 'output'
       if (!text && segmentKind !== 'reasoning_summary_break')
         return
       // Vivify the agent's span map first (see ensureAgentRecord): the per-span path

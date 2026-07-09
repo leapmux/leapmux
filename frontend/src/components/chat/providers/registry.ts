@@ -14,7 +14,8 @@ import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 /**
@@ -134,6 +135,14 @@ export interface ResultDividerModel {
   detail?: string
 }
 
+/**
+ * The role a message plays in a tool span: the tool_use `opener`, the `result`, or `other`
+ * (the chatSpanIndex pairs a tool_use bubble with its result by this). Providers mark opener
+ * vs result differently -- Claude by an Anthropic `tool_use`/`tool_result` content block, Pi by
+ * a flat envelope `type` -- so the classifier is the per-provider {@link Provider.spanRole} hook.
+ */
+export type SpanRole = 'opener' | 'result' | 'other'
+
 export interface Provider {
   /**
    * Extra per-provider settings to seed into a new agent's OpenAgent request.
@@ -163,6 +172,15 @@ export interface Provider {
 
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
+
+  /**
+   * Classify a message's role within a tool span (opener / result / other) from this provider's
+   * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
+   * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
+   * Omit for providers whose spans have no distinct opener/result marker (Codex / ACP emit only
+   * tool_use openers) -- the caller defaults to `'other'` and files them first-seen-is-opener.
+   */
+  spanRole?: (parsed: ParsedMessageContent) => SpanRole
 
   /**
    * Decide whether a persisted AGENT message should clear the live thinking-token
@@ -293,6 +311,63 @@ export interface Provider {
    * knowledge in the provider plugin rather than string-matched in the hook.
    */
   resultDividerEndsActiveTurn?: (subtype: string | undefined) => boolean
+
+  // --- Session-metadata extraction ------------------------------------------------------------
+  // These hooks let the connection pipeline (useWorkspaceConnection) fold provider-native
+  // notification / lifecycle / usage frames into the neutral AgentSessionInfo without parsing
+  // any provider's wire shape in shared code. Each self-gates (returns null/false for a frame it
+  // doesn't recognize) and returns neutral data; the shared caller owns the store writes.
+
+  /**
+   * Extract rate-limit tiers from a provider's rate-limit frame (Claude `rate_limit_event`,
+   * Codex `account/rateLimits/updated`). Returns keyed entries the caller folds into
+   * `AgentSessionInfo.rateLimits`, or null/[] when the frame carries none.
+   */
+  rateLimitsFromMessage?: (parsed: ParsedMessageContent) => { key: string, info: RateLimitInfo }[] | null
+
+  /**
+   * Extract this provider's context usage from a message, reading whatever shape carries it: a
+   * Codex `thread/tokenUsage/updated` notification (`params.tokenUsage.last`), or a Claude/Pi
+   * assistant message's raw `message.usage` (Claude `input_tokens`/`cache_*`, Pi
+   * `input`/`cacheWrite`). Returns null for a message that carries no usage in this provider's
+   * shape. The shared `extractContextUsage` wrapper owns the provider-neutral guards (subagent
+   * skip, cost, backend-normalized `context_usage` preference) and only falls through to this hook
+   * when no normalized usage is present, so the guards never live in a provider.
+   */
+  contextUsageFromMessage?: (parsed: ParsedMessageContent) => ContextUsageInfo | null
+
+  /**
+   * Derive a result-divider subtype the shared reader can't read off `inner.subtype` because it
+   * lives in a provider-native shape (Codex's `turn.status` → `turn_completed`). Takes the whole
+   * parsed message (like the sibling session-metadata hooks, unwrapping via getInnerMessage itself)
+   * and returns undefined when the message carries no provider-specific subtype; the caller keeps the
+   * neutral `inner.subtype`.
+   */
+  resultSubtype?: (parsed: ParsedMessageContent) => string | undefined
+
+  /**
+   * Fold a provider lifecycle frame into a session-info patch: Codex clears its live turn id on
+   * `thread/started` and clears the plan streaming indicator on a `plan` item. Returns null for a
+   * frame with no lifecycle side effect. The caller applies the patch via `updateInfo`. Typed as
+   * `Partial<AgentSessionInfo>` so a mistyped session-info key is a compile error, not a silent
+   * junk-key write.
+   */
+  lifecycleSessionInfo?: (parsed: ParsedMessageContent) => Partial<AgentSessionInfo> | null
+
+  /**
+   * Report whether a persisted span row supersedes its in-flight command stream, from the
+   * provider's item shape (Codex: a completed `commandExecution`/`fileChange`, or a `reasoning`
+   * item that now carries summary/content). The caller owns the neutral span/source gate and the
+   * stream reclaim. Command streams are a Codex-only feature today.
+   */
+  commandSpanSuperseded?: (parsed: ParsedMessageContent) => boolean
+
+  /**
+   * Map a command-stream delta's JSON-RPC method to its segment kind (Codex `item/...` methods).
+   * Returns null for a method with no special kind; the caller defaults to `'output'`. Keeps the
+   * provider's delta-method vocabulary in the plugin rather than a map in the shared store.
+   */
+  commandStreamSegmentKind?: (method: string) => CommandStreamSegment['kind'] | null
 
   /**
    * Extract `Question[]` from an `AskUserQuestion` control request payload.

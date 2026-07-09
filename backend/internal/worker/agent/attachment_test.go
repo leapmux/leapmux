@@ -229,6 +229,84 @@ func TestNormalizeAttachmentsForProvider_ReasonixRejectsNonText(t *testing.T) {
 	}
 }
 
+func TestNormalizeAttachmentsForProvider_ClaudeRejectsBinaryAcceptsRest(t *testing.T) {
+	// Claude Code has no binary content block but accepts text, image, and PDF.
+	_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, []*leapmuxv1.Attachment{
+		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude code does not support binary attachments")
+
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
+		{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+	})
+	require.NoError(t, err)
+	require.Len(t, normalized, 3)
+}
+
+func TestNormalizeAttachmentsForProvider_CodexRejectsPDFAndBinary(t *testing.T) {
+	// Codex and Pi share rejectPDFAndBinaryAttachment; exercise BOTH branches for Codex so the
+	// shared helper's PDF and binary paths are each covered under the Codex label.
+	cases := map[string]struct {
+		att  *leapmuxv1.Attachment
+		want string
+	}{
+		"pdf":    {&leapmuxv1.Attachment{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}, "codex does not support PDF attachments"},
+		"binary": {&leapmuxv1.Attachment{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}, "codex does not support binary attachments"},
+	}
+	for kind, tc := range cases {
+		t.Run(kind, func(t *testing.T) {
+			_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, []*leapmuxv1.Attachment{tc.att})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNormalizeAttachmentsForProvider_PiRejectsPDFAndBinary(t *testing.T) {
+	cases := map[string]struct {
+		att  *leapmuxv1.Attachment
+		want string
+	}{
+		"pdf":    {&leapmuxv1.Attachment{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}, "pi does not support PDF attachments"},
+		"binary": {&leapmuxv1.Attachment{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}, "pi does not support binary attachments"},
+	}
+	for kind, tc := range cases {
+		t.Run(kind, func(t *testing.T) {
+			_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, []*leapmuxv1.Attachment{tc.att})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) {
+	// Cursor, Kilo, Goose, OpenCode (all ACP with no restrictive hook) and an unknown/UNSPECIFIED
+	// provider (via the ProviderFor noop fallback) accept the full text+image+PDF+binary set -- the
+	// switch-default behavior preserved after moving policy behind the Provider interface.
+	fullSet := []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
+		{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
+	}
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED,
+	} {
+		t.Run(provider.String(), func(t *testing.T) {
+			normalized, err := NormalizeAttachmentsForProvider(provider, fullSet)
+			require.NoError(t, err)
+			require.Len(t, normalized, 4)
+		})
+	}
+}
+
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
 	ctx := context.Background()
 	sink := &testSink{}

@@ -1,6 +1,6 @@
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { registerACPProvider } from './acp/registerACPProvider'
+import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
 import { opencodeControlResponseDisplay } from './opencode/questionAnswers'
 
 interface OpenCodeProtocolOptions {

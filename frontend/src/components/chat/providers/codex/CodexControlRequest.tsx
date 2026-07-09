@@ -1,28 +1,22 @@
 import type { Component } from 'solid-js'
-import type { CodexDecision } from '../providers/codex/controlResponse'
+import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
 
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from './types'
+import type { CodexDecision } from './controlResponse'
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
-import * as styles from '../ControlRequestBanner.css'
-import { codexDecisionKey, codexDecisionLabel } from '../providers/codex/controlResponse'
-import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
-import { CollapsibleText } from './CollapsibleText'
-import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
-import { sendResponse } from './types'
+import * as styles from '../../ControlRequestBanner.css'
+import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { CollapsibleText } from '../../controls/CollapsibleText'
+import { createPlanApprovalState, PlanApprovalCheckboxes } from '../../controls/PlanApprovalCheckboxes'
+import { sendResponse, toRpcId } from '../../controls/types'
+import { codexDecisionKey, codexDecisionLabel } from './controlResponse'
 
 /** Extract Codex approval params from the control request payload. */
 function getCodexParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined
-}
-
-/** Convert a string request ID to a numeric JSON-RPC id when possible. */
-export function toRpcId(requestId: string): number | string {
-  const numId = Number(requestId)
-  return Number.isFinite(numId) ? numId : requestId
 }
 
 /**

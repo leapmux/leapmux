@@ -1,12 +1,12 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps } from './types'
+import type { ActionsProps, ContentProps } from '../../controls/types'
 
 import { Match, Switch } from 'solid-js'
 import { getToolName } from '~/utils/controlResponse'
-import * as styles from '../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
-import { ExitPlanModeActions, ExitPlanModeContent } from './ExitPlanModeControl'
-import { GenericToolActions, GenericToolContent } from './GenericToolControl'
+import * as styles from '../../ControlRequestBanner.css'
+import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { ExitPlanModeActions, ExitPlanModeContent } from '../../controls/ExitPlanModeControl'
+import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
 
 /** Claude Code control request content dispatcher. */
 export const ClaudeCodeControlContent: Component<ContentProps> = (props) => {
