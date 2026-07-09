@@ -82,9 +82,16 @@ type OutputSink interface {
 	ReserveSpanColor(spanID, parentSpanID string) int32
 	BroadcastStreamChunk(content []byte, spanID string, method string)
 	BroadcastStreamEnd(spanID string)
-	PersistControlRequest(requestID string, payload []byte)
+	// PersistControlRequest stores the pending control request and returns the fresh per-instance
+	// claim_token it minted for it. The caller threads that token straight into the paired
+	// BroadcastControlRequest so the live broadcast carries the SAME token that was persisted --
+	// without a second DB round-trip to read it back (and without the readback-failure window that
+	// would broadcast an empty token). Empty only when the sink mints none (test fakes).
+	PersistControlRequest(requestID string, payload []byte) (claimToken string)
 	DeleteControlRequest(requestID string)
-	BroadcastControlRequest(requestID string, payload []byte)
+	// BroadcastControlRequest fans the control request out to live windows, carrying the claim_token
+	// PersistControlRequest returned so the frontend can echo it in its answer (AgentControlRequest.claim_token).
+	BroadcastControlRequest(requestID string, payload []byte, claimToken string)
 	BroadcastControlCancel(requestID string)
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)

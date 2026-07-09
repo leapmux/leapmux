@@ -57,6 +57,24 @@ describe('opencode classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
   })
 
+  // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
+  // agnostic and lives in classifyMessage (see messageClassification.test.ts); this plugin test
+  // covers only OpenCode's own controlResponseDisplay derivation.
+  it('wires controlResponseDisplay: question answers, else the ACP permission path', () => {
+    expect(plugin.controlResponseDisplay!({
+      provider: 'OPENCODE',
+      requestId: 'q1',
+      request: { type: 'question.asked', properties: { questions: [{ header: 'Task' }] } },
+      response: { result: { answers: [['Build']] } },
+    })).toEqual({ kind: 'label', text: 'Task: Build' })
+    expect(plugin.controlResponseDisplay!({
+      provider: 'OPENCODE',
+      requestId: '7',
+      request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
+      response: { result: { outcome: { optionId: 'proceed_once' } } },
+    })).toEqual({ kind: 'label', text: 'Allow once' })
+  })
+
   it('classifies agent_thought_chunk as assistant_thinking', () => {
     const parent = {
       sessionUpdate: 'agent_thought_chunk',

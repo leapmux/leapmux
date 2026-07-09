@@ -4,6 +4,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import * as chatStyles from './messageStyles.css'
+import { isPersistedControlResponse } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 import './providers'
 
@@ -75,9 +76,19 @@ export function classifyMessage(
   context?: ClassificationContext,
 ): MessageCategory {
   const plugin = pluginFor(input.agentProvider)
-  if (plugin)
-    return plugin.classify(input, context)
-  return { kind: 'unsupported_provider' }
+  if (!plugin)
+    return { kind: 'unsupported_provider' }
+
+  // A persisted control-response row ({isSynthetic, controlResponse}) is a Leapmux-NEUTRAL synthetic
+  // shape, not a provider wire format, so its classification lives here once instead of being
+  // re-hardcoded in every plugin's classify (where a new provider plugin could forget it and render
+  // the row as raw JSON). It is persisted as a standalone row, never inside a notification thread, so
+  // guard on !input.wrapper to preserve the plugins' wrapper-first precedence: a notification thread
+  // whose first message somehow looks synthetic still classifies as a notification, not this.
+  if (!input.wrapper && isPersistedControlResponse(input.parentObject))
+    return { kind: 'control_response' }
+
+  return plugin.classify(input, context)
 }
 
 /** Classify a message, returning both the parsed content and category. */

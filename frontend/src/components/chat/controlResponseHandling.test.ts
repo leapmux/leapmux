@@ -234,6 +234,28 @@ describe('handleControlSend', () => {
     })
   })
 
+  it('threads the active request\'s per-instance claimToken to onControlResponse', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [{ requestId: 'req-1', agentId: 'test-agent', payload: { request: { tool_name: 'Bash', tool_input: {} } }, claimToken: 'instance-token-7' }],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+
+      result.handleControlSend('please stop')
+
+      // The 3rd arg is the answered instance's claim token, captured from the active request so the
+      // worker's idempotency claim keys on THIS instance (not a store re-derivation that can miss).
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      expect(onControlResponse.mock.calls[0][2]).toBe('instance-token-7')
+      dispose()
+    })
+  })
+
   it('does not pass attachments to control responses', () => {
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     const attachments = [makeAttachment()]

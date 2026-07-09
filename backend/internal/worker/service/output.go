@@ -676,6 +676,47 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.spanTrackers.Delete(agentID)
 	h.todos.Delete(agentID)
 	h.cleanupAutoContinue(agentID)
+	// The control-response answer claims are DURABLE rows (control_response_answers), not in-memory
+	// state, so there is nothing to reclaim here -- a reused request_id is deduped per INSTANCE by its
+	// claim_token (no release needed) and rows are cleaned up in bulk with the agent via ON DELETE CASCADE.
+}
+
+// claimControlResponseAnswer atomically records that (agentID, requestID, claimToken)'s answer is being
+// persisted and reports whether THIS call is the first to claim it. A later duplicate answer for the
+// same request INSTANCE -- an RPC retry, or a second window answering before it received the cancel
+// broadcast, BOTH echoing the same claim_token -- gets false, so the caller skips persisting a second
+// answer row and its scroll-rail dot. Handlers run concurrently (DispatchAsync, no per-agent lock), so
+// the claim -- a single INSERT serialized by the (agent_id, request_id, claim_token) primary key -- is
+// also what decides who deletes the pending request and applies the once-only plan-mode effects.
+//
+// claimToken (minted per PersistControlRequest, echoed by the frontend from the AgentControlRequest it
+// answers) is what makes the dedup INSTANCE-scoped: a REUSED request_id -- a Codex/ACP JSON-RPC counter
+// that reset across a plan-exec restart, or a Claude follow-up -- carries a FRESH token per instance, so
+// the new instance's genuine answer claims a distinct key while a stale duplicate of the PRIOR instance
+// (old token) still loses. No release-on-reissue is needed. An empty claimToken (a pre-token answer, or a
+// frontend lookup miss) degrades to request_id-only dedup for that answer.
+//
+// The claim is a DURABLE row (control_response_answers) cleaned up in bulk with its agent via ON DELETE
+// CASCADE. Because nothing else clears it, it survives BOTH a subprocess restart AND a worker-PROCESS
+// restart, so a duplicate straddling either is still deduped instead of re-persisting (#258) -- no
+// in-memory tracker to lose. On a query error it fails OPEN (returns true): dropping the user's answer
+// on a transient DB error is the worse outcome. The fail-open cost is NOT merely a duplicate row -- a
+// fail-open winner runs the FULL winner path (persist AND re-forward / re-restart). It bites when a
+// genuine DUPLICATE's claim query errors (the first answer already claimed cleanly, so only the
+// duplicate's INSERT need fail): fail-open then treats that duplicate as a fresh winner. That is rare by
+// construction -- SQLite writes are serialized under a 60s busy_timeout (see sqlitedb.Open), so a claim
+// error means a genuine DB failure, not routine write contention -- and the lesser evil accepts it.
+func (h *OutputHandler) claimControlResponseAnswer(agentID, requestID, claimToken string) bool {
+	rows, err := h.queries.ClaimControlResponseAnswer(bgCtx(), db.ClaimControlResponseAnswerParams{
+		AgentID:    agentID,
+		RequestID:  requestID,
+		ClaimToken: claimToken,
+	})
+	if err != nil {
+		slog.Warn("claim control response answer", "agent_id", agentID, "request_id", requestID, "error", err)
+		return true
+	}
+	return rows > 0
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
@@ -724,10 +765,12 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
 // (this handler included) has fully finished BEFORE registering the new provider, so a
 // relaunch's old-process onExit can only ever clear requests that genuinely belong to the
 // process that just went away -- never the freshly-restarted one's. It deliberately does NOT
-// touch the in-memory per-agent trackers (CleanupAgent): those carry timeline state (the open
-// notification thread, the to-do list, span hierarchy) that must SURVIVE a relaunch, or two
-// settings-change notifications bracketing a model/effort switch land in separate threads and
-// can no longer consolidate/cancel.
+// touch the TIMELINE per-agent trackers (CleanupAgent): the open notification thread, the to-do
+// list, and the span hierarchy must SURVIVE a relaunch, or two settings-change notifications
+// bracketing a model/effort switch land in separate threads and can no longer consolidate/cancel.
+// The durable control-response answer claims are likewise untouched here -- a duplicate straddling the
+// restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
+// per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 	deletedIDs, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
@@ -738,9 +781,12 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 	}
 }
 
-// ClearAgentRuntimeState removes every piece of state tied to a dying agent:
-// pending control_requests in the DB plus the in-memory trackers cleared by
-// CleanupAgent. Call it only when the agent is PERMANENTLY gone (close, context
+// ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
+// control_requests in the DB plus the in-memory trackers cleared by CleanupAgent.
+// It leaves the durable control-response answer claims intact, so a duplicate answer
+// straddling a transient restart stays deduped.
+//
+// Call it when the current subprocess instance is being torn down (close, context
 // clear, plan-exec restart) -- NOT from the per-exit onExit handler, which a
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
@@ -890,14 +936,25 @@ func (s *agentOutputSink) BroadcastStreamEnd(spanID string) {
 	})
 }
 
-func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte) {
+func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte) string {
+	// Mint a fresh per-INSTANCE claim token. A reused request_id (a Codex/ACP counter that reset
+	// across a plan-exec restart, or a Claude follow-up) gets a distinct token here, so the answer's
+	// idempotency claim is scoped to THIS instance -- the genuine answer to the new instance claims a
+	// fresh key while a stale duplicate of the prior instance (old token) still loses. The token is
+	// stored on the row so the replay to a reconnecting window (ListControlRequestsByAgentID) carries
+	// it, AND returned to the caller so the paired live BroadcastControlRequest carries the SAME token
+	// the frontend echoes back -- without a second GetControlRequest to read back what we just wrote
+	// (and without the readback-failure window that would broadcast an empty token).
+	claimToken := id.Generate()
 	if err := s.h.queries.CreateControlRequest(bgCtx(), db.CreateControlRequestParams{
-		AgentID:   s.agentID,
-		RequestID: requestID,
-		Payload:   payload,
+		AgentID:    s.agentID,
+		RequestID:  requestID,
+		Payload:    payload,
+		ClaimToken: claimToken,
 	}); err != nil {
 		slog.Error("persist control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
 	}
+	return claimToken
 }
 
 func (s *agentOutputSink) DeleteControlRequest(requestID string) {
@@ -907,11 +964,14 @@ func (s *agentOutputSink) DeleteControlRequest(requestID string) {
 	})
 }
 
-func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte) {
+func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
+	// claimToken is the per-instance token PersistControlRequest just minted and returned, threaded
+	// straight through by the paired caller so the frontend can echo it in its answer (see
+	// AgentControlRequest.claim_token) -- no readback of the row we just wrote.
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
-			ControlRequest: buildAgentControlRequest(s.agentID, s.agentProvider, requestID, payload),
+			ControlRequest: buildAgentControlRequest(s.agentID, s.agentProvider, requestID, payload, claimToken),
 		},
 	})
 }

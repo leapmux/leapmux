@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE } from './controlResponse'
+import { buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE, decodeControlBehaviorEnvelope, decodeControlResponseBehavior, normalizeRejectionMessage } from './controlResponse'
 
 // Reach the deny reason nested in the control_response envelope:
 // { response: { response: { behavior, message } } }.
@@ -34,5 +34,43 @@ describe('builddenyresponse', () => {
     // -- if it drifts, the backend can no longer collapse a bare deny and the "Rejected by user."
     // placeholder leaks into the transcript/rail as if it were typed feedback.
     expect(CONTROL_REJECTED_BY_USER_MESSAGE).toBe('Rejected by user.')
+  })
+})
+
+describe('normalizerejectionmessage', () => {
+  it('trims a typed reason and collapses the sentinel to ""', () => {
+    expect(normalizeRejectionMessage('  looks unsafe  ')).toBe('looks unsafe')
+    expect(normalizeRejectionMessage(CONTROL_REJECTED_BY_USER_MESSAGE)).toBe('')
+    expect(normalizeRejectionMessage(`  ${CONTROL_REJECTED_BY_USER_MESSAGE}  `)).toBe('')
+    expect(normalizeRejectionMessage('   ')).toBe('')
+  })
+})
+
+describe('decodecontrolbehaviorenvelope', () => {
+  it('decodes an allow envelope with the request id', () => {
+    expect(decodeControlBehaviorEnvelope({ response: { request_id: ' r ', response: { behavior: ' allow ' } } }))
+      .toEqual({ requestId: 'r', behavior: 'allow', message: '' })
+  })
+
+  it('decodes a deny envelope with a typed reason', () => {
+    expect(decodeControlBehaviorEnvelope({ response: { request_id: 'r', response: { behavior: 'deny', message: '  not this way  ' } } }))
+      .toEqual({ requestId: 'r', behavior: 'deny', message: 'not this way' })
+  })
+
+  it('collapses the sentinel message of a bare deny', () => {
+    expect(decodeControlBehaviorEnvelope({ response: { response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE } } }))
+      .toEqual({ requestId: '', behavior: 'deny', message: '' })
+  })
+
+  it('returns null for a non-envelope (e.g. a JSON-RPC decision) or an unrecognized behavior', () => {
+    expect(decodeControlBehaviorEnvelope({ result: { decision: 'accept' } })).toBeNull()
+    expect(decodeControlBehaviorEnvelope({ response: { response: { behavior: 'maybe' } } })).toBeNull()
+    expect(decodeControlBehaviorEnvelope('nope')).toBeNull()
+  })
+
+  it('is the shared reader behind the byte-oriented decodeControlResponseBehavior', () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ response: { request_id: 'r', response: { behavior: 'deny', message: 'x' } } }))
+    expect(decodeControlResponseBehavior(bytes)).toBe('deny')
+    expect(decodeControlResponseBehavior(new TextEncoder().encode('not json'))).toBeNull()
   })
 })

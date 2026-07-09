@@ -3,6 +3,7 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
+import type { ControlResponseDeriver } from './persistedControlResponse'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -23,8 +24,9 @@ import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, ren
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
-import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
+import { CONTROL_RESPONSE_FEEDBACK_LEAD, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 import {
   toolInputText,
@@ -343,6 +345,37 @@ export function UserContentMessage(props: { parsed: unknown, context?: RenderCon
 }
 
 /**
+ * Render a persisted control-response row (issue #258). The provider plugin's
+ * `controlResponseDisplay` owns the native-payload -> label/feedback derivation (one source of
+ * truth with the scroll-rail preview); this is the shared markup for the two display kinds. A
+ * feedback block renders the user's typed reason as markdown under the "Sent feedback:" lead; a
+ * label renders line-broken plain text (a multi-question answer joins its lines with `\n`). Returns
+ * null when `parsed` isn't a control-response envelope, so `renderMessageContent` falls through to
+ * its raw-JSON safety net.
+ */
+export function renderControlResponseRow(
+  parsed: unknown,
+  context: RenderContext | undefined,
+  display: ControlResponseDeriver | undefined,
+): JSX.Element | null {
+  const cr = parsePersistedControlResponse(parsed)
+  if (!cr)
+    return null
+  const d = resolveControlResponseDisplay(cr, display)
+  if (d.kind === 'feedback') {
+    return (
+      <div class={controlResponseMessage}>
+        <div>
+          <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
+          <MarkdownText text={d.message} context={context} />
+        </div>
+      </div>
+    )
+  }
+  return <div class={`${controlResponseMessage} ${controlResponseLabel}`}>{d.text}</div>
+}
+
+/**
  * Render a message's content.
  *
  * All rendering goes through the message's own provider plugin's `renderMessage`.
@@ -375,6 +408,16 @@ export function renderMessageContent(
     const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
     if (result !== null)
       return result
+
+    // A persisted control-response row is provider-neutral in the renderer layer: every plugin's
+    // classify maps it to `control_response`, and the plugin's controlResponseDisplay (when set)
+    // supplies the per-provider label. Dispatched here -- once -- rather than in each plugin's
+    // renderMessage, so a plugin only implements the derivation, not the markup.
+    if (category?.kind === 'control_response') {
+      const row = renderControlResponseRow(parsed, context, plugin?.controlResponseDisplay)
+      if (row !== null)
+        return row
+    }
   }
   catch (err) { logger.warn('Failed to render message content:', err) }
   return <span>{typeof parsedOrRawJson === 'string' ? parsedOrRawJson : JSON.stringify(parsedOrRawJson)}</span>

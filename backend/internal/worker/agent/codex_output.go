@@ -519,8 +519,8 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				},
 			})
 			if err == nil {
-				a.sink.PersistControlRequest(requestID, payload)
-				a.sink.BroadcastControlRequest(requestID, payload)
+				claimToken := a.sink.PersistControlRequest(requestID, payload)
+				a.sink.BroadcastControlRequest(requestID, payload, claimToken)
 			}
 		}
 	}
@@ -602,8 +602,8 @@ func (a *CodexAgent) handleApprovalRequest(id string, content []byte) {
 		slog.Warn("codex approval request missing id", "agent_id", a.agentID)
 		return
 	}
-	a.sink.PersistControlRequest(id, content)
-	a.sink.BroadcastControlRequest(id, content)
+	claimToken := a.sink.PersistControlRequest(id, content)
+	a.sink.BroadcastControlRequest(id, content, claimToken)
 }
 
 // handleServerRequestResolved processes serverRequest/resolved notifications.

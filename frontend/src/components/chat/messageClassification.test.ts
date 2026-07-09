@@ -233,13 +233,34 @@ describe('classifyMessage', () => {
 
   // -- control_response -----------------------------------------------------
 
-  it('classifies synthetic message with controlResponse', () => {
-    const result = classifyMessage(input({ isSynthetic: true, controlResponse: { action: 'approve' } }))
-    expect(result.kind).toBe('control_response')
+  it('classifies a persisted control-response row as control_response for EVERY provider (before plugin dispatch)', () => {
+    // The {isSynthetic, controlResponse} row is a Leapmux-neutral synthetic shape classified once in
+    // classifyMessage -- not per plugin -- so it resolves identically for every provider and a new
+    // plugin can't forget it. Exercise a spread of provider plugins (Claude / Codex / an ACP question
+    // provider / Pi / Cursor) through the real dispatch.
+    for (const provider of [
+      AgentProvider.CLAUDE_CODE,
+      AgentProvider.CODEX,
+      AgentProvider.OPENCODE,
+      AgentProvider.PI,
+      AgentProvider.CURSOR,
+    ]) {
+      const row = { isSynthetic: true, controlResponse: { provider: 'X', requestId: 'r', response: { response: { behavior: 'allow' } } } }
+      expect(classifyMessage(input(row, null, provider)).kind).toBe('control_response')
+    }
+  })
+
+  it('does NOT short-circuit a control-response-shaped row that sits inside a notification thread', () => {
+    // The row is persisted standalone, never inside a thread, so the shared classifier guards on
+    // !wrapper to preserve each plugin's wrapper-first precedence: a thread whose first message
+    // happens to look synthetic still classifies as its plugin's kind, not control_response.
+    const row = { isSynthetic: true, controlResponse: { provider: 'X', response: {} } }
+    const wrapped = input(row, { old_seqs: [], messages: [row] }, AgentProvider.CLAUDE_CODE)
+    expect(classifyMessage(wrapped).kind).not.toBe('control_response')
   })
 
   it('does not classify non-synthetic with controlResponse', () => {
-    const result = classifyMessage(input({ controlResponse: { action: 'approve' } }))
+    const result = classifyMessage(input({ controlResponse: { provider: 'CLAUDE_CODE', response: {} } }))
     expect(result.kind).not.toBe('control_response')
   })
 

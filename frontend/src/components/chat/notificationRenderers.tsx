@@ -1,6 +1,4 @@
-/* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { JSXElement } from 'solid-js'
-import type { MessageContentRenderer } from './messageRenderers'
 import type { NotificationThreadEntry } from './providers/registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { CompactionDetail } from '~/lib/messageParser'
@@ -12,8 +10,6 @@ import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messag
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
-import { CONTROL_RESPONSE_APPROVED_LABEL, CONTROL_RESPONSE_FEEDBACK_LEAD, CONTROL_RESPONSE_REJECTED_LABEL } from './markPreviewShared'
-import { MarkdownText } from './messageRenderers'
 import {
   controlResponseMessage,
   resultDivider,
@@ -246,35 +242,10 @@ function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
   return m.type === 'system' && m.subtype === 'microcompact_boundary'
 }
 
-/** Handles control response messages: {"isSynthetic":true,"controlResponse":{"action":"approved"|"rejected","comment":"..."}} */
-export const controlResponseRenderer: MessageContentRenderer = {
-  render(parsed, context) {
-    if (!isObject(parsed) || !isObject(parsed.controlResponse))
-      return null
-
-    const cr = parsed.controlResponse as Record<string, unknown>
-    const action = cr.action as string
-    const comment = (cr.comment as string) || ''
-
-    // The three labels are shared with the scroll-rail dot preview (defaultMarkPreview) via the
-    // markPreviewShared constants, so the dot reads identically to this row it jumps to.
-    if (action === 'approved')
-      return <div class={controlResponseMessage}>{CONTROL_RESPONSE_APPROVED_LABEL}</div>
-
-    if (comment) {
-      return (
-        <div class={controlResponseMessage}>
-          <div>
-            <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
-            <MarkdownText text={comment} context={context} />
-          </div>
-        </div>
-      )
-    }
-
-    return <div class={controlResponseMessage}>{CONTROL_RESPONSE_REJECTED_LABEL}</div>
-  },
-}
+// Persisted control-response rows (issue #258) are rendered by renderControlResponseRow
+// (messageRenderers), dispatched from renderMessageContent's shared `control_response` branch via
+// the provider plugin's controlResponseDisplay -- the frontend owns the label text there, so this
+// module no longer carries a control-response renderer.
 
 // ---------------------------------------------------------------------------
 // Aggregate notification thread renderer

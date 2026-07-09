@@ -8,7 +8,6 @@ import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { renderMarkdownForContext, useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
-import { controlResponseRenderer } from '../../notificationRenderers'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
 import { taskNotificationRenderer } from '../../taskRenderers'
 import {
@@ -54,11 +53,11 @@ export function renderClaudeMessage(
       return planExecutionRenderer.render(parsed, context)
     case 'task_notification':
       return taskNotificationRenderer.render(parsed, context)
-    case 'control_response':
-      return controlResponseRenderer.render(parsed, context)
     case 'compact_summary':
     case 'hidden':
       return <span />
+    // 'control_response' is dispatched by renderMessageContent's shared branch (via the plugin's
+    // controlResponseDisplay), so it falls through to the default here.
     case 'unknown':
       return tryClaudeUnknownKindRenderers(parsed, context)
     default:

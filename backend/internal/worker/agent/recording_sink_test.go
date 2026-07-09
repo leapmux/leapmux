@@ -4,13 +4,17 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // controlRequestRecord captures a single PersistControlRequest /
-// BroadcastControlRequest call.
+// BroadcastControlRequest call. ClaimToken is the per-instance token the
+// sink minted (persist) or was handed (broadcast), so a test can assert the
+// broadcast carries the SAME token PersistControlRequest returned.
 type controlRequestRecord struct {
-	RequestID string
-	Payload   []byte
+	RequestID  string
+	Payload    []byte
+	ClaimToken string
 }
 
 // planUpdateRecord captures a single UpdatePlan call.
@@ -34,21 +38,25 @@ type recordingControlSink struct {
 	notifications     []map[string]interface{}
 }
 
-func (s *recordingControlSink) PersistControlRequest(requestID string, payload []byte) {
+func (s *recordingControlSink) PersistControlRequest(requestID string, payload []byte) string {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
+	claimToken := id.Generate()
 	s.persistedControls = append(s.persistedControls, controlRequestRecord{
-		RequestID: requestID,
-		Payload:   append([]byte(nil), payload...),
+		RequestID:  requestID,
+		Payload:    append([]byte(nil), payload...),
+		ClaimToken: claimToken,
 	})
+	return claimToken
 }
 
-func (s *recordingControlSink) BroadcastControlRequest(requestID string, payload []byte) {
+func (s *recordingControlSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	s.broadcastControls = append(s.broadcastControls, controlRequestRecord{
-		RequestID: requestID,
-		Payload:   append([]byte(nil), payload...),
+		RequestID:  requestID,
+		Payload:    append([]byte(nil), payload...),
+		ClaimToken: claimToken,
 	})
 }
 

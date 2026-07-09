@@ -81,6 +81,13 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	rec := sink.LastPersistedControl()
 	assert.Equal(t, "42", rec.RequestID)
 
+	// The claim token PersistControlRequest returns is threaded straight into the paired
+	// BroadcastControlRequest (no readback), so the live broadcast carries the SAME token that was
+	// persisted -- the token the frontend echoes in its idempotency claim.
+	bcast := sink.LastBroadcastControl()
+	assert.NotEmpty(t, rec.ClaimToken, "persist mints a claim token")
+	assert.Equal(t, rec.ClaimToken, bcast.ClaimToken, "the broadcast carries the token persist returned")
+
 	// Verify payload is the original content.
 	var parsed struct {
 		Method string `json:"method"`

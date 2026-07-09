@@ -49,8 +49,8 @@ func (a *CursorCLIAgent) handleAskQuestionRequest(raw []byte, requestID string) 
 	if !ok {
 		return
 	}
-	a.sink.PersistControlRequest(requestID, payload)
-	a.sink.BroadcastControlRequest(requestID, payload)
+	claimToken := a.sink.PersistControlRequest(requestID, payload)
+	a.sink.BroadcastControlRequest(requestID, payload, claimToken)
 }
 
 func (a *CursorCLIAgent) buildAskQuestionPayload(raw []byte) ([]byte, bool) {
@@ -130,6 +130,6 @@ func (a *CursorCLIAgent) handleCreatePlanRequest(raw []byte, requestID string) {
 		return
 	}
 
-	a.sink.PersistControlRequest(requestID, encoded)
-	a.sink.BroadcastControlRequest(requestID, encoded)
+	claimToken := a.sink.PersistControlRequest(requestID, encoded)
+	a.sink.BroadcastControlRequest(requestID, encoded, claimToken)
 }

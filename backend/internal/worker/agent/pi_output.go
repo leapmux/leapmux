@@ -343,8 +343,8 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 				"agent_id", a.agentID, "method", head.Method)
 			return
 		}
-		a.sink.PersistControlRequest(head.ID, raw)
-		a.sink.BroadcastControlRequest(head.ID, raw)
+		claimToken := a.sink.PersistControlRequest(head.ID, raw)
+		a.sink.BroadcastControlRequest(head.ID, raw, claimToken)
 		return
 	}
 

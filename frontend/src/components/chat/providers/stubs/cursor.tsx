@@ -4,10 +4,12 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { ACPControlActions, ACPControlContent } from '../../controls/ACPControlRequest'
 import { CursorControlActions, CursorControlContent, getCursorQuestions, isCursorAskQuestionPayload, isCursorControlPayload, sendCursorQuestionResponse } from '../../controls/CursorControlRequest'
 import { registerACPProvider } from '../acp/registerACPProvider'
+import { cursorControlResponseDisplay } from './cursorControlResponse'
 
 registerACPProvider({
   provider: AgentProvider.CURSOR,
   defaultPermissionMode: 'agent' as PermissionMode,
+  controlResponseDisplay: cursorControlResponseDisplay,
   // Cursor's ask-question payload is shaped differently from generic ACP, so
   // dispatch on payload type and fall through to the shared ACP UI when not.
   ControlContent: (props) => {

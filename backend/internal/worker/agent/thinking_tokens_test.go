@@ -155,7 +155,7 @@ func TestThinkingResetSink_ResetsOnFrontendClearBoundariesOnly(t *testing.T) {
 		// clears -- the estimate must not reset either.
 		{name: "AGENT notification (collapsed, no broadcast) does NOT reset", suppress: true, call: func(s OutputSink) { _, _ = s.PersistNotification(agent, nil) }, reset: false},
 		{name: "turn-end divider resets", call: func(s OutputSink) { _ = s.PersistTurnEnd(nil, SpanInfo{}) }, reset: true},
-		{name: "control request resets", call: func(s OutputSink) { s.BroadcastControlRequest("id", nil) }, reset: true},
+		{name: "control request resets", call: func(s OutputSink) { s.BroadcastControlRequest("id", nil, "") }, reset: true},
 		{name: "USER message does NOT reset", call: func(s OutputSink) { _ = s.PersistMessage(user, nil, SpanInfo{}) }, reset: false},
 		{name: "LEAPMUX notification does NOT reset", call: func(s OutputSink) { _, _ = s.PersistNotification(leapmux, nil) }, reset: false},
 		{name: "stream chunk does NOT reset", call: func(s OutputSink) { s.BroadcastStreamChunk(nil, "", "m") }, reset: false},

@@ -95,6 +95,9 @@ describe('pi classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_thinking' })
   })
 
+  // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
+  // agnostic and lives in classifyMessage (see messageClassification.test.ts), not this plugin.
+
   it('hides signature-only thinking blocks so tool-call message_end rows do not render empty thinking bubbles', () => {
     const parent = {
       type: 'message_end',

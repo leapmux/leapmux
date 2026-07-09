@@ -2986,8 +2986,8 @@ func (b *acpBase) handleRequestPermission(id string, content []byte) {
 		slog.Warn("acp requestPermission missing id", "agent_id", b.agentID)
 		return
 	}
-	b.sink.PersistControlRequest(id, content)
-	b.sink.BroadcastControlRequest(id, content)
+	claimToken := b.sink.PersistControlRequest(id, content)
+	b.sink.BroadcastControlRequest(id, content, claimToken)
 }
 
 // handleOutput dispatches a single parsed output line using the provider's

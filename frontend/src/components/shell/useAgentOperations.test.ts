@@ -4,6 +4,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as workerRpc from '~/api/workerRpc'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -602,6 +603,94 @@ describe('useAgentOperations', () => {
           ops.handleAgentClose('nonexistent')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
+  describe('handleControlResponse claim-token echo', () => {
+    const answer = (requestId: string) =>
+      new TextEncoder().encode(JSON.stringify({ response: { request_id: requestId, response: { behavior: 'allow' } } }))
+
+    it('echoes the pending request\'s per-instance claimToken so the worker dedups per instance', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          vi.mocked(workerRpc.sendControlResponse).mockClear()
+          controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'instance-token-1' })
+
+          await ops.handleControlResponse('a1', answer('r1'))
+
+          expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ agentId: 'a1', claimToken: 'instance-token-1' }),
+          )
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('echoes an empty claimToken when the request is not in the store AND none is threaded (degrades to id-only dedup)', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          vi.mocked(workerRpc.sendControlResponse).mockClear()
+
+          // No control request in the store for r-missing and no threaded token -> the echoed token is ''.
+          await ops.handleControlResponse('a1', answer('r-missing'))
+
+          expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ agentId: 'a1', claimToken: '' }),
+          )
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('uses the threaded (answer-site) claimToken even when the request has already left the store', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          vi.mocked(workerRpc.sendControlResponse).mockClear()
+
+          // The request is NOT in the store (a prior answer / cancel already removed it), so the store
+          // lookup would miss and fall back to ''. The token captured at the answer site is threaded in
+          // and is authoritative, so the worker still claims on the answered INSTANCE rather than dropping
+          // to an empty-token key (which could double-win or drop the answer).
+          await ops.handleControlResponse('a1', answer('r-gone'), 'threaded-token-9')
+
+          expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ agentId: 'a1', claimToken: 'threaded-token-9' }),
+          )
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('the threaded claimToken takes precedence over the store entry', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          vi.mocked(workerRpc.sendControlResponse).mockClear()
+          controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'stale-store-token' })
+
+          await ops.handleControlResponse('a1', answer('r1'), 'fresh-answer-token')
+
+          expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ agentId: 'a1', claimToken: 'fresh-answer-token' }),
+          )
         }
         finally {
           dispose()

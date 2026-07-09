@@ -11,6 +11,7 @@ import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
+import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
@@ -219,19 +220,35 @@ export interface Provider {
   ) => string | null
 
   /**
-   * Short plaintext preview of a MARKED message's content (user inputs, control
-   * responses) for the chat scroll rail's dot-hover tooltip. Sibling of
-   * {@link extractQuotableText}: each provider knows its own wire shapes, so preview
-   * extraction is a per-provider concern. Providers whose marked rows are all in the
-   * Leapmux-neutral shapes (`{content}`, `{controlResponse}`) delegate to the shared
-   * `defaultMarkPreview`; Claude also reads its Anthropic `message.content[]` tool_result
-   * blocks. Return null when there is no previewable text (the rail then shows a
-   * mark-type label). See chatMarkPreview.ts.
+   * Short plaintext preview of a MARKED user-send row for the chat scroll rail's dot-hover
+   * tooltip. Sibling of {@link extractQuotableText}: each provider knows its own wire shapes, so
+   * preview extraction is a per-provider concern. Providers whose marked user sends are the
+   * Leapmux-neutral `{content}` shape delegate to the shared `defaultMarkPreview`; Claude also
+   * reads its Anthropic `message.content[]` tool_result blocks. Persisted control-response rows
+   * are NOT previewed here -- they classify as `control_response` and the rail resolves their
+   * preview through {@link controlResponseDisplay} (see chatMarkPreview.ts). Return null when
+   * there is no previewable text (the rail then shows a mark-type label).
    */
   previewText?: (
     category: MessageCategory,
     parsed: ParsedMessageContent,
   ) => string | null
+
+  /**
+   * Derive the human-facing display for a persisted control-response row
+   * (`{isSynthetic, controlResponse:{provider, requestId, request, response}}` -- see
+   * persistedControlResponse.ts). Each provider knows its own native request/response wire shapes
+   * (Codex JSON-RPC decisions, ACP permission options, OpenCode question answers, Pi extension-UI
+   * responses, ...) and turns them into a label or a feedback block.
+   *
+   * The SINGLE label source for BOTH surfaces that show the row: the transcript renderer
+   * (renderControlResponseRow, dispatched from renderMessageContent's shared `control_response`
+   * branch) and the scroll rail's dot preview (messageMarkPreviewText), so the two cannot drift.
+   * Return null when the payload isn't recognizable -- the caller then degrades via
+   * {@link fallbackControlResponseDisplay} (coarse Approved/Rejected from the neutral behavior
+   * envelope, else the generic "Responded" label).
+   */
+  controlResponseDisplay?: ControlResponseDeriver
 
   /**
    * Build the wire-format content string to interrupt the agent.

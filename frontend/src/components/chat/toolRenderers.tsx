@@ -32,7 +32,6 @@ import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import {
-  controlResponseTag,
   toolBodyBorder,
   toolBodyContent,
   toolHeaderActions,
@@ -48,22 +47,6 @@ import {
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 import { spanColorKey } from './widgets/SpanLines'
 import { spanLineColors } from './widgets/SpanLines.css'
-
-/** Inline control response tag (Approved / Rejected) for tool headers. */
-export function ControlResponseTag(props: { response?: { action: string, comment: string } }): JSX.Element {
-  return (
-    <Show when={props.response}>
-      {cr => (
-        <Tooltip text={cr().comment || undefined}>
-          <span class={controlResponseTag}>
-            {'\u00B7 '}
-            {cr().action === 'approved' ? 'Approved' : cr().comment ? `Rejected: ${cr().comment}` : 'Rejected'}
-          </span>
-        </Tooltip>
-      )}
-    </Show>
-  )
-}
 
 /** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
 export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {

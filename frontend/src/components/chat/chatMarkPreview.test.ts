@@ -50,10 +50,41 @@ describe('message mark preview text', () => {
     expect(messageMarkPreviewText(messageOf({ content: 'jump here' }))).toBe('jump here')
   })
 
-  it('resolves a non-Claude (Codex) control-response answer via its plugin\'s neutral previewText', () => {
-    // Codex marks are the Leapmux-neutral `{content}` synthetic answer row; its plugin's
-    // previewText delegates to the shared default, so this resolves through the plugin.
-    expect(messageMarkPreviewText(messageOf({ content: 'Allow once' }, AgentProvider.CODEX))).toBe('Allow once')
+  it('resolves a persisted Codex control-response row to its decision label', () => {
+    // A structured {isSynthetic, controlResponse} row resolves through the plugin's
+    // controlResponseDisplay -- Codex maps result.decision "accept" to "Allow".
+    const row = messageOf({
+      isSynthetic: true,
+      controlResponse: {
+        provider: 'CODEX',
+        requestId: '7',
+        request: { method: 'item/commandExecution/requestApproval' },
+        response: { jsonrpc: '2.0', id: 7, result: { decision: 'accept' } },
+      },
+    }, AgentProvider.CODEX)
+    expect(messageMarkPreviewText(row)).toBe('Allow')
+  })
+
+  it('resolves a Claude deny-with-feedback row to the "Sent feedback:" preview', () => {
+    const row = messageOf({
+      isSynthetic: true,
+      controlResponse: {
+        provider: 'CLAUDE_CODE',
+        requestId: 'r',
+        request: { request: { tool_name: 'Bash' } },
+        response: { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'use ripgrep instead' } } },
+      },
+    })
+    expect(messageMarkPreviewText(row)).toBe('Sent feedback:\nuse ripgrep instead')
+  })
+
+  it('degrades a malformed control-response row to the generic label', () => {
+    // Neither a recognizable decision nor a behavior envelope -> the fallback ladder's terminal.
+    const row = messageOf({
+      isSynthetic: true,
+      controlResponse: { provider: 'CODEX', response: {} },
+    }, AgentProvider.CODEX)
+    expect(messageMarkPreviewText(row)).toBe('Responded')
   })
 
   it('returns null for a message with no previewable text', () => {
