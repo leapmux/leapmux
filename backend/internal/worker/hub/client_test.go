@@ -356,6 +356,40 @@ func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
 	assert.Same(t, resp, captured, "callback should receive the original response message verbatim")
 }
 
+// The Hub delivers the worker's owner on every connect; without this dispatch arm
+// handleMessage falls through to the "unhandled hub message" warn and the worker
+// never learns who owns it -- leaving requireWorkerOwner to fail closed against the
+// worker's own legitimate user, permanently and indistinguishably from a genuine
+// cross-tenant refusal.
+func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
+	c := New("http://localhost:0")
+	var captured string
+	c.OnWorkerIdentity = func(registeredBy string) { captured = registeredBy }
+
+	c.handleMessage(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1"},
+		},
+	})
+
+	assert.Equal(t, "owner-1", captured, "OnWorkerIdentity should receive the Hub's owner")
+}
+
+// The optional-callback contract: a client with no identity consumer wired (tests,
+// minimal embeddings) must consume the message without panicking.
+func TestHandleMessage_WorkerIdentity_NilCallbackIsSafe(t *testing.T) {
+	c := New("http://localhost:0")
+	require.Nil(t, c.OnWorkerIdentity)
+
+	assert.NotPanics(t, func() {
+		c.handleMessage(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1"},
+			},
+		})
+	})
+}
+
 // TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe documents
 // the optional-callback contract. Clients with no reconciler wired
 // (tests, minimal embeddings) must still consume the response without
@@ -371,4 +405,62 @@ func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
 			},
 		})
 	})
+}
+
+// The worker owner is sourced ONLY from the Hub's connect-time WorkerIdentity
+// greeting; if a proxy strips the oneof, a partial upgrade drops it, or a Hub
+// bug never sends it, requireWorkerOwner would deny every machine-scoped RPC
+// for the connection's life with no recovery short of a reconnect. A watchdog
+// force-closes the stream when the greeting does not arrive in time, so the
+// reconnect backoff re-runs the greeting on a fresh stream.
+func TestWatchForIdentity_ForceCancelsWhenIdentityMissing(t *testing.T) {
+	old := workerIdentityTimeout
+	workerIdentityTimeout = 20 * time.Millisecond
+	defer func() { workerIdentityTimeout = old }()
+
+	c := New("http://localhost:0")
+	var cancelled atomic.Bool
+	c.connCancel = func() { cancelled.Store(true) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.watchForIdentity(ctx)
+
+	require.Eventually(t, func() bool { return cancelled.Load() },
+		1*time.Second, 5*time.Millisecond,
+		"watchdog must force-cancel the connection when WorkerIdentity is not delivered")
+}
+
+func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
+	old := workerIdentityTimeout
+	workerIdentityTimeout = 20 * time.Millisecond
+	defer func() { workerIdentityTimeout = old }()
+
+	c := New("http://localhost:0")
+	c.identityReceived.Store(true)
+	var cancelled atomic.Bool
+	c.connCancel = func() { cancelled.Store(true) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.watchForIdentity(ctx)
+
+	time.Sleep(80 * time.Millisecond)
+	assert.False(t, cancelled.Load(),
+		"watchdog must not fire once WorkerIdentity has been received")
+}
+
+// The flag the watchdog reads must be set on every greeting, so the watchdog
+// stops as soon as the Hub delivers the identity.
+func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
+	c := New("http://localhost:0")
+	c.OnWorkerIdentity = func(string) {}
+	assert.False(t, c.identityReceived.Load())
+	c.handleMessage(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1"},
+		},
+	})
+	assert.True(t, c.identityReceived.Load(),
+		"identityReceived must be set when WorkerIdentity arrives")
 }

@@ -11,6 +11,7 @@ import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
  */
 function addTunnelMockInitScript(page: import('@playwright/test').Page) {
   return page.addInitScript(() => {
+    const win = window as any
     const tunnels: Array<{
       id: string
       workerId: string
@@ -21,9 +22,26 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       targetPort: number
     }> = []
     let nextId = 1
+    let orgEventsSocket: WebSocket | undefined
+    const intentionallyClosedSockets = new WeakSet<WebSocket>()
 
-    ;(window as any).__TAURI_INTERNALS__ = {}
-    ;(window as any).__TAURI_INVOKE__ = (cmd: string, args?: any) => {
+    const closeOrgEventsSocket = () => {
+      if (!orgEventsSocket)
+        return
+      intentionallyClosedSockets.add(orgEventsSocket)
+      orgEventsSocket.close()
+      orgEventsSocket = undefined
+    }
+
+    const bytesToBase64 = (data: ArrayBuffer) => {
+      const bytes = new Uint8Array(data)
+      let binary = ''
+      for (const byte of bytes)
+        binary += String.fromCharCode(byte)
+      return btoa(binary)
+    }
+
+    win.__TAURI_INVOKE__ = (cmd: string, args?: any) => {
       switch (cmd) {
         case 'create_tunnel': {
           const config = args.config
@@ -62,10 +80,92 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               localSolo: false,
             },
           })
+        case 'open_orgevents_relay': {
+          closeOrgEventsSocket()
+          const params = new URLSearchParams({ org_id: args.orgId })
+          for (const workspaceId of args.workspaceIds ?? [])
+            params.append('workspace_ids', workspaceId)
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+          const socket = new WebSocket(
+            `${protocol}//${window.location.host}/ws/orgevents?${params}`,
+            ['orgevents-relay'],
+          )
+          orgEventsSocket = socket
+          socket.binaryType = 'arraybuffer'
+          socket.addEventListener('message', (event) => {
+            win.__TAURI_INTERNALS__.emitEvent('orgevents:message', bytesToBase64(event.data))
+          })
+          socket.addEventListener('close', () => {
+            if (!intentionallyClosedSockets.has(socket))
+              win.__TAURI_INTERNALS__.emitEvent('orgevents:close', undefined)
+          })
+          return new Promise<void>((resolve, reject) => {
+            socket.addEventListener('open', () => resolve(), { once: true })
+            socket.addEventListener('error', () => reject(new Error('org-events relay failed')), { once: true })
+          })
+        }
+        case 'close_orgevents_relay':
+          closeOrgEventsSocket()
+          return Promise.resolve()
         default:
           return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
       }
     }
+
+    // Tauri v2 routes all APIs through __TAURI_INTERNALS__. The callback and
+    // window metadata are required before app.tsx registers native listeners
+    // and restores window geometry; mocking only the legacy
+    // __TAURI_INVOKE__ hook leaves the app on the launcher screen.
+    const callbacks = new Map<number, (payload: any) => unknown>()
+    const eventListeners = new Map<string, Set<number>>()
+    let nextCallbackId = 1
+    const unregisterCallback = (id: number) => callbacks.delete(id)
+    const unregisterListener = (event: string, id: number) => {
+      eventListeners.get(event)?.delete(id)
+      unregisterCallback(id)
+    }
+    const emitEvent = (event: string, payload: unknown) => {
+      for (const id of eventListeners.get(event) ?? [])
+        callbacks.get(id)?.({ event, id, payload })
+    }
+
+    win.__TAURI_INTERNALS__ = {
+      callbacks,
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      transformCallback: (callback: (payload: any) => unknown) => {
+        const id = nextCallbackId++
+        callbacks.set(id, callback)
+        return id
+      },
+      unregisterCallback,
+      runCallback: (id: number, payload: any) => callbacks.get(id)?.(payload),
+      emitEvent,
+      invoke: (cmd: string, args: any = {}) => {
+        if (cmd === 'plugin:event|listen') {
+          const listeners = eventListeners.get(args.event) ?? new Set<number>()
+          listeners.add(args.handler)
+          eventListeners.set(args.event, listeners)
+          return Promise.resolve(args.handler)
+        }
+        if (cmd === 'plugin:event|unlisten') {
+          unregisterListener(args.event, args.eventId)
+          return Promise.resolve()
+        }
+        if (cmd === 'plugin:event|emit') {
+          emitEvent(args.event, args.payload)
+          return Promise.resolve()
+        }
+        if (cmd === 'plugin:window|is_fullscreen' || cmd === 'plugin:window|is_maximized')
+          return Promise.resolve(false)
+        if (cmd.startsWith('plugin:window|'))
+          return Promise.resolve()
+        return win.__TAURI_INVOKE__(cmd, args)
+      },
+    }
+    win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener }
   })
 }
 

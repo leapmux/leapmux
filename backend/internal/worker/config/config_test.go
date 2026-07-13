@@ -25,7 +25,6 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/worker"), cfg.DataDir)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
-		assert.Equal(t, 0, cfg.MaxMessageSize)
 		assert.Equal(t, "info", cfg.LogLevel)
 	})
 

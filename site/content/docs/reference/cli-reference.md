@@ -66,8 +66,7 @@ leapmux solo [flags]
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
-| `-max-message-size` | `0` (= 16 MiB) | Max reassembled channel message size in bytes |
-| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
+| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
 | `-api-timeout-seconds` | `10` | General API timeout |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
@@ -121,8 +120,6 @@ This table lists the most common flags. The full set — including all PostgreSQ
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-max-message-size` | `0` (= 16 MiB) | Max reassembled channel message size in bytes |
-| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
 | `-api-timeout-seconds` | `10` | General API timeout |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
@@ -178,7 +175,6 @@ leapmux worker -hub https://hub.example.com
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-max-message-size` | `0` (= 16 MiB) | Max reassembled channel message size in bytes |
 | `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-api-timeout-seconds` | `10` | JSON-RPC request timeout |
@@ -255,7 +251,6 @@ leapmux admin <group> <command> [flags]
 
 | Group | Commands |
 |-------|----------|
-| `org` | `list` |
 | `user` | `list`, `get`, `create`, `update`, `delete`, `reset-password`, `grant-admin`, `revoke-admin`, `list-sessions` |
 | `session` | `list`, `revoke`, `revoke-user`, `purge-expired` |
 | `worker` | `list`, `get`, `deregister`; subgroup `reg-key`: `list`, `revoke`, `purge-expired` |

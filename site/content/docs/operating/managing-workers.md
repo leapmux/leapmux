@@ -274,7 +274,7 @@ Operators manage all Workers on a Hub (not just their own) with `leapmux admin w
 | Command | Purpose |
 | --- | --- |
 | `leapmux admin worker list` | List Workers. Filters: `--user-id`, `--username`, `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
-| `leapmux admin worker get --id <id>` | Show one Worker's details and access grants (includes soft-deleted Workers for auditing). |
+| `leapmux admin worker get --id <id>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
 | `leapmux admin worker deregister --id <id>` | Force-deregister a Worker. |
 | `leapmux admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
 | `leapmux admin worker reg-key revoke --id <id>` | Revoke a registration key. |

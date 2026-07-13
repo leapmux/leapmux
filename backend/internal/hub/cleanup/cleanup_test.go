@@ -57,7 +57,7 @@ func TestRun_CleansUpOldRecords(t *testing.T) {
 
 	// Create a user + org.
 	orgID := id.Generate()
-	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testorg", IsPersonal: true})
+	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testorg"})
 	require.NoError(t, err)
 	hash, err := password.Hash("TestPassword1!")
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestRun_RetainsRecentlyDeleted(t *testing.T) {
 
 	// Create and soft-delete a user (recent, within retention).
 	orgID := id.Generate()
-	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testorg", IsPersonal: true})
+	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testorg"})
 	require.NoError(t, err)
 	hash, err := password.Hash("TestPassword1!")
 	require.NoError(t, err)

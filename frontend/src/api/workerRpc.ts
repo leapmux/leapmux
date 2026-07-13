@@ -68,11 +68,12 @@ import type {
   RelocateFileTabPathResponse,
   RevokeFileTabPathResponse,
 } from '~/generated/leapmux/v1/workspace_private_pb'
-import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
+import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
-import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
+import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
+import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
@@ -179,7 +180,6 @@ import {
   RevokeFileTabPathRequestSchema,
   RevokeFileTabPathResponseSchema,
 } from '~/generated/leapmux/v1/workspace_private_pb'
-import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { ChannelManager } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
@@ -192,16 +192,27 @@ const channelRpcClient = createClient(ChannelService, transport)
 
 // Module-level callbacks set by the UI layer (AppShell).
 let confirmKeyPinFn: ((workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>) | null = null
-let getUserIdFn: (() => string) | null = null
 
 /** Register the key-pin confirmation callback (called by AppShell). */
 export function setConfirmKeyPin(fn: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>): void {
   confirmKeyPinFn = fn
 }
 
-/** Register the user ID getter callback (called by AppShell). */
-export function setGetUserId(fn: () => string): void {
-  getUserIdFn = fn
+// The identity this page believes it is authenticated as. Set by AppShell, which
+// owns the auth context; the singleton below is constructed at import time, long
+// before that context exists, so it cannot read the store itself.
+let expectedUserIdFn: (() => string | undefined) | null = null
+
+/**
+ * Register the expected-identity provider (called by AppShell).
+ *
+ * This is a CROSS-CHECK against the Hub's answer, never a source of identity: the
+ * Hub authenticates every channel open and names the user, and that answer is
+ * always authoritative. What this catches is the page and the Hub disagreeing —
+ * see `expectedUserId` in `~/lib/channel`.
+ */
+export function setExpectedUserId(fn: () => string | undefined): void {
+  expectedUserIdFn = fn
 }
 
 class BrowserChannelTransport implements ChannelTransport {
@@ -217,19 +228,19 @@ class BrowserChannelTransport implements ChannelTransport {
     }
   }
 
-  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {
+  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }> {
     const resp = await channelRpcClient.openChannel({ workerId, handshakePayload })
-    return { channelId: resp.channelId, handshakePayload: resp.handshakePayload }
+    return { channelId: resp.channelId, handshakePayload: resp.handshakePayload, userId: resp.userId }
   }
 
   async closeChannel(channelId: string): Promise<void> {
     await channelRpcClient.closeChannel({ channelId })
   }
 
-  createWebSocket(): WebSocket {
+  createWebSocket(): ChannelSocket {
     const capabilities = getCapabilities()
     if (isTauriApp() && capabilities.hubTransport === 'proxy') {
-      return new TauriRelayWebSocket() as unknown as WebSocket
+      return new TauriRelayWebSocket()
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -245,128 +256,11 @@ class BrowserChannelTransport implements ChannelTransport {
     }
     return confirmKeyPinFn(workerId, expectedFingerprint, actualFingerprint)
   }
-
-  getUserId(): string {
-    if (!getUserIdFn) {
-      throw new Error('getUserId not registered')
-    }
-    return getUserIdFn()
-  }
-}
-
-/**
- * TauriRelayWebSocket provides a WebSocket-like interface that bridges through
- * Tauri IPC and events. Binary data is base64-encoded at the
- * boundary.
- */
-type WSEventType = 'open' | 'close' | 'message' | 'error'
-interface WSListener { handler: EventListener, once: boolean }
-
-class TauriRelayWebSocket {
-  readyState: number = WebSocket.CONNECTING
-  binaryType: BinaryType = 'arraybuffer'
-
-  onopen: ((ev: Event) => void) | null = null
-  onmessage: ((ev: MessageEvent) => void) | null = null
-  onclose: ((ev: CloseEvent) => void) | null = null
-  onerror: ((ev: Event) => void) | null = null
-
-  private listeners = new Map<WSEventType, WSListener[]>()
-  private sendQueue: Promise<void> = Promise.resolve()
-  private unlistenMessage: (() => void) | null = null
-  private unlistenClose: (() => void) | null = null
-
-  constructor() {
-    Promise.all([
-      platformBridge.onEvent('channel:message', (payload: unknown) => {
-        const b64 = payload as string
-        const ev = { data: base64ToArrayBuffer(b64) } as MessageEvent
-        this.onmessage?.(ev)
-        this.dispatch('message', ev)
-      }),
-      platformBridge.onEvent('channel:close', () => {
-        this.readyState = WebSocket.CLOSED
-        const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
-        this.onclose?.(ev)
-        this.dispatch('close', ev)
-      }),
-    ]).then(async ([unlistenMessage, unlistenClose]) => {
-      this.unlistenMessage = unlistenMessage
-      this.unlistenClose = unlistenClose
-      await platformBridge.openChannelRelay()
-      this.readyState = WebSocket.OPEN
-      const ev = {} as Event
-      this.onopen?.(ev)
-      this.dispatch('open', ev)
-    }).catch((err: unknown) => {
-      this.unlistenMessage?.()
-      this.unlistenClose?.()
-      this.unlistenMessage = null
-      this.unlistenClose = null
-      this.readyState = WebSocket.CLOSED
-      const ev = new ErrorEvent('error', { message: String(err) })
-      this.onerror?.(ev)
-      this.dispatch('error', ev)
-    })
-  }
-
-  addEventListener(type: string, listener: EventListener, opts?: { once?: boolean }): void {
-    const t = type as WSEventType
-    let list = this.listeners.get(t)
-    if (!list) {
-      list = []
-      this.listeners.set(t, list)
-    }
-    list.push({ handler: listener, once: opts?.once ?? false })
-  }
-
-  removeEventListener(type: string, listener: EventListener): void {
-    const list = this.listeners.get(type as WSEventType)
-    if (!list)
-      return
-    const idx = list.findIndex(l => l.handler === listener)
-    if (idx >= 0)
-      list.splice(idx, 1)
-  }
-
-  private dispatch(type: WSEventType, ev: Event): void {
-    const list = this.listeners.get(type)
-    if (!list)
-      return
-    // Iterate a copy since once-listeners mutate the array.
-    for (const entry of [...list]) {
-      entry.handler(ev)
-      if (entry.once)
-        this.removeEventListener(type, entry.handler)
-    }
-  }
-
-  send(data: ArrayBuffer | Uint8Array): void {
-    // Serialize sends through a promise chain to preserve ordering.
-    // Tauri command dispatch is async, so without
-    // serialization, messages can arrive at the Hub out of order,
-    // which breaks the Noise protocol's sequential nonce counter.
-    const b64 = arrayBufferToBase64(data)
-    this.sendQueue = this.sendQueue.then(
-      () => platformBridge.sendChannelMessage(b64),
-    ).catch((err) => { log.warn('channel relay send failed', { error: String(err) }) })
-  }
-
-  close(): void {
-    platformBridge.closeChannelRelay()
-    this.readyState = WebSocket.CLOSED
-    this.unlistenMessage?.()
-    this.unlistenClose?.()
-    this.unlistenMessage = null
-    this.unlistenClose = null
-    const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
-    this.onclose?.(ev)
-    this.dispatch('close', ev)
-  }
 }
 
 export const channelManager = new ChannelManager(new BrowserChannelTransport(), {
   rpcTimeoutFn: apiLoadingTimeoutMs,
+  expectedUserId: () => expectedUserIdFn?.(),
 })
 
 // ---------------------------------------------------------------------------

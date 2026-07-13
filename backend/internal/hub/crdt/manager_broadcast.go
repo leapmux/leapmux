@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -258,18 +257,23 @@ func (m *Manager) broadcastBatchToSubscriber(
 	}
 
 	// Emit one EntityMaterialized / EntityRemoved per affected entity.
+	// Range over key AND transition so the per-(subscriber × entity) visibility
+	// test does not re-hash the key the range just handed it (the `visible`
+	// closure above re-looks-up AffectedEntities[ref]; inlining the value here
+	// skips S×E redundant lookups across a broadcast).
 	// The shared event pointer is safe to fan out: subscribers treat
 	// it as read-only and the WS writer marshals on its own thread.
-	for ref := range res.AffectedEntities {
-		v := visible(ref)
-		if v.preVisible == v.postVisible {
+	for ref, trans := range res.AffectedEntities {
+		preVisible := sub.Filter.IsAllowed(trans.Pre)
+		postVisible := sub.Filter.IsAllowed(trans.Post)
+		if preVisible == postVisible {
 			continue
 		}
-		if !v.preVisible && v.postVisible {
+		if !preVisible && postVisible {
 			if evt := materialized(ref); evt != nil {
 				_ = sub.Send(evt)
 			}
-		} else if v.preVisible && !v.postVisible {
+		} else if preVisible && !postVisible {
 			if evt := removed(ref); evt != nil {
 				_ = sub.Send(evt)
 			}
@@ -426,7 +430,7 @@ func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchOrgEvent) 
 // Locking discipline: this helper is called from the lifecycle-outbox
 // consumer goroutine (`applyLifecycleCreate` runs on the
 // workspace_service request handler, NOT the manager goroutine). To
-// avoid holding the manager write lock across `m.auth.CanReadWorkspace`
+// avoid holding the manager write lock across `m.auth.CanAccessWorkspace`
 // — which may be DB-backed and would stall every concurrent
 // submit/commit — the call is staged: snapshot the subscriber set
 // under RLock, evaluate the ACL outside any manager lock, then
@@ -438,18 +442,17 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 	if workspaceID == "" {
 		return nil
 	}
-	// Serialize the whole read-ACL-then-apply against CommitWorkspaceAccessTransition
-	// under the same lock it uses. Without this, an expand that resolved read access
-	// for a subscriber could re-add that subscriber to the workspace's filter AFTER
-	// a concurrent unshare of the same workspace committed and revoked them -- a
-	// lost-update TOCTOU that leaves a revoked reader receiving the workspace's ops,
-	// and which the transition's post-commit re-classify (already run) never
-	// reconverges. aclTransitionMu is the lock the transition holds across its own
-	// DB commit and is NOT m.projection, so serializing here does not block broadcasts.
-	// Lock order aclTransitionMu -> subscribers is consistent with the transition's
-	// aclTransitionMu -> projection -> subscribers, so no inversion is introduced.
-	m.aclTransitionMu.Lock()
-	defer m.aclTransitionMu.Unlock()
+	// Serialize the whole read-ACL-then-apply against SubscribeWithACL's
+	// resolve+register under the same lock it uses. Without this, a subscriber
+	// that resolved its filter before this workspace's create committed but
+	// registered after this expand ran would be missed by both (the expand
+	// only visits already-registered subscribers) and never see the workspace
+	// until reconnect. subscribeExpandMu is NOT m.projection, so serializing
+	// here does not block broadcasts. Lock order subscribeExpandMu ->
+	// subscribers is consistent with SubscribeWithACL's subscribeExpandMu ->
+	// projection -> m.mu, so no inversion is introduced.
+	m.subscribeExpandMu.Lock()
+	defer m.subscribeExpandMu.Unlock()
 	type candidate struct {
 		sub    *Subscriber
 		userID string
@@ -465,21 +468,22 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 		candidates = append(candidates, candidate{sub: sub, userID: sub.UserID})
 	})
 
-	// Resolve read access for every candidate. The batch-capable checker (the
-	// production crdtAuthChecker) loads the workspace once and does a single grant
-	// lookup for all candidate users, instead of a per-subscriber workspace-load +
-	// grant round-trip. A checker without the batch capability falls back to the
-	// per-candidate check; a nil checker allows every may-see candidate. Keyed by
-	// subscriber pointer so the MutateEach membership test below is O(1), not an
-	// O(subscribers x allowed) linear scan.
+	// Resolve read access once per DISTINCT candidate user, then map the
+	// answers back onto subscribers. accessWorkspaceForUsers owns the
+	// batch-capable-vs-per-user dispatch and its "propagate the lookup error,
+	// never fold to deny" contract, so this path cannot drift from the scoped
+	// checker's own batch forwarding (it used to re-implement both arms here).
+	// The batch-capable checker (the production crdtAuthChecker) loads the
+	// workspace once for all candidate users instead of a per-subscriber
+	// round-trip; a nil checker allows every may-see candidate. `allowed` is
+	// keyed by subscriber pointer so the MutateEach membership test below is
+	// O(1), not an O(subscribers x allowed) linear scan.
 	allowed := make(map[*Subscriber]struct{}, len(candidates))
-	batcher, canBatch := m.auth.(workspaceReaderBatch)
-	switch {
-	case m.auth == nil:
+	if m.auth == nil {
 		for _, c := range candidates {
 			allowed[c.sub] = struct{}{}
 		}
-	case canBatch:
+	} else {
 		userIDs := make([]string, 0, len(candidates))
 		seen := make(map[string]struct{}, len(candidates))
 		for _, c := range candidates {
@@ -489,7 +493,7 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 			seen[c.userID] = struct{}{}
 			userIDs = append(userIDs, c.userID)
 		}
-		readable, err := batcher.CanReadWorkspaceForUsers(ctx, m.orgID, workspaceID, userIDs)
+		readable, err := accessWorkspaceForUsers(ctx, m.auth, m.orgID, workspaceID, userIDs)
 		if err != nil {
 			// Surface the lookup failure so the caller (workspace-create) can retry
 			// instead of treating a transient DB error as "nobody may read" and
@@ -498,19 +502,6 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 		}
 		for _, c := range candidates {
 			if readable[c.userID] {
-				allowed[c.sub] = struct{}{}
-			}
-		}
-	default:
-		for _, c := range candidates {
-			readable, err := m.auth.CanReadWorkspace(ctx, m.orgID, workspaceID, c.userID)
-			if err != nil {
-				// Surface a transient lookup failure so the caller
-				// (workspace-create expansion) retries instead of dropping the
-				// seed, matching the batch path above.
-				return fmt.Errorf("resolve workspace read access for %s: %w", workspaceID, err)
-			}
-			if readable {
 				allowed[c.sub] = struct{}{}
 			}
 		}
@@ -538,280 +529,53 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 	return nil
 }
 
-// CommitWorkspaceAccessTransition applies a workspace ACL change to both the DB
-// and the in-memory subscriber projections, WITHOUT holding the org-wide
-// projection lock across the DB commit -- so a share/unshare no longer stalls the
-// org's op-broadcast pipeline for the transaction's duration. allowedUserIDs must
-// be the complete post-commit reader set.
-//
-// The lock-free-across-commit safety rests on phase ordering, not on one big
-// lock:
-//   - REVOKES are applied to in-memory filters BEFORE the commit, so a user
-//     losing access stops receiving this workspace's ops before the unshare is
-//     even durable -- no broadcast can deliver to a just-revoked reader. If the
-//     commit then fails, the revokes are rolled back (the change never persisted,
-//     so those readers keep their access).
-//   - GRANTS are applied AFTER the commit, so a broadcast can never deliver this
-//     workspace's ops to a grant that never persisted; the grantee catches up via
-//     the grant projection. The post-commit pass re-classifies both directions,
-//     which also revokes any already-registered subscriber whose visibility this
-//     transition flipped. A NEW org-events subscriber cannot slip in with a stale
-//     pre-commit filter: SubscribeWithACL serializes its resolve+register under
-//     this same aclTransitionMu, so it either registered (pre-commit filter) BEFORE
-//     this transition -- caught by the passes here as an already-registered
-//     subscriber -- or resolves AFTER this transition releases the lock, reading the
-//     post-commit ACL directly.
-//
-// aclTransitionMu serializes the whole three-phase sequence so two transitions of
-// the same workspace cannot interleave; it is not m.projection, so holding it
-// across the commit does not block broadcasts.
-func (m *Manager) CommitWorkspaceAccessTransition(
-	workspaceID string,
-	allowedUserIDs map[string]struct{},
-	commit func() error,
-) error {
-	if workspaceID == "" {
-		return fmt.Errorf("workspace ID is required")
-	}
-	isAllowed := func(sub *Subscriber) bool {
-		if !subscriberMaySeeWorkspace(sub, workspaceID) {
-			return false
-		}
-		_, allowed := allowedUserIDs[sub.UserID]
-		return allowed
-	}
-
-	m.aclTransitionMu.Lock()
-	defer m.aclTransitionMu.Unlock()
-
-	// Phase 1 -- revokes, before the commit (applyGrants=false).
-	m.projection.Lock()
-	revoked := m.applyWorkspaceVisibilityLocked(workspaceID, isAllowed, false)
-	m.projection.Unlock()
-
-	// Phase 2 -- the DB commit, with NO manager lock held.
-	if err := commit(); err != nil {
-		// The ACL change did not persist: undo the premature Phase 1 revokes so
-		// those readers keep their access.
-		m.projection.Lock()
-		m.regrantWorkspaceLocked(workspaceID, revoked)
-		m.projection.Unlock()
-		return err
-	}
-
-	// Phase 3 -- grants (and straggler revokes), after the commit (applyGrants=true).
-	m.projection.Lock()
-	m.applyWorkspaceVisibilityLocked(workspaceID, isAllowed, true)
-	m.projection.Unlock()
-	return nil
-}
-
-// applyWorkspaceVisibilityLocked publishes the minimum grant/revoke plan for one
-// workspace and returns the subscribers it revoked (so a failed ACL commit can
-// undo exactly them). The caller must hold projection so filter mutation and
-// event publication are atomic with respect to subscriptions and CRDT broadcasts.
-//
-// applyGrants gates the grant half of the plan: CommitWorkspaceAccessTransition's
-// pre-commit revoke pass passes false (apply only revokes -- a grant must never be
-// published for an ACL change that has not yet persisted), and its post-commit
-// pass passes true (grants, plus any straggler revoke). Revokes are always applied.
-func (m *Manager) applyWorkspaceVisibilityLocked(workspaceID string, isAllowed func(*Subscriber) bool, applyGrants bool) []*Subscriber {
-	// Classify each subscriber's transition ONCE into a grant/revoke plan: a
-	// subscriber needs a grant when it should now see the workspace but its filter
-	// does not yet admit it, and a revoke in the opposite case; an unchanged
-	// subscriber is skipped. Keyed by subscriber pointer so the MutateEach apply
-	// below is an O(1) membership test. The plan still describes the right
-	// subscribers even though the controller lock is released between this classify
-	// (ForEachLocked) pass and the apply (MutateEach) pass: MutateEach visits only
-	// LIVE subscribers, so one that unsubscribed in the gap is silently skipped
-	// (Remove takes only the controller lock, NOT projection), and no NEW subscriber
-	// can appear (Add runs under the projection lock the caller holds) -- one that
-	// somehow did would be absent from the plan and skipped anyway. The verdict
-	// cannot drift either: isAllowed(sub) is a pure function of the subscriber's
-	// immutable scope/requested fields and the fixed workspaceID/isAllowed argument,
-	// and the apply only sets or deletes the single workspaceID key, so a concurrent
-	// single-key filter mutation in the gap (contractSubscribersForWorkspace, which
-	// holds neither projection nor aclTransitionMu) cannot corrupt the outcome.
-	// (Mirrors the classify-then-apply shape of ExpandSubscribersForWorkspace above.)
-	grants := map[*Subscriber]struct{}{}
-	revokes := map[*Subscriber]struct{}{}
-	needsWorkspaceUniverse := false
-	m.subscribers.ForEachLocked(func(sub *Subscriber) {
-		allowed := isAllowed(sub)
-		if sub.Filter.IsAllowed(workspaceID) == allowed {
-			return
-		}
-		if allowed {
-			grants[sub] = struct{}{}
-			return
-		}
-		revokes[sub] = struct{}{}
-		needsWorkspaceUniverse = needsWorkspaceUniverse || sub.Filter.WorkspaceIDs == nil
-	})
-	if !applyGrants {
-		// Defer grants to the post-commit pass; apply only revokes now.
-		grants = nil
-	}
-	if len(grants) == 0 && len(revokes) == 0 {
-		return nil
-	}
-
-	var workspaceIDs []string
-	// Hold m.mu.RLock across the filter conversion below (the MutateEach) so the
-	// workspace-universe snapshot and the see-all -> explicit materialization are
-	// atomic with respect to a concurrent workspace create (MutateInternal takes
-	// m.mu.Lock, not m.projection, on a request goroutine). Releasing the lock
-	// before the conversion would let a workspace committed in the window be
-	// dropped from a revoked see-all subscriber's now-explicit filter and never
-	// re-admitted -- that workspace's own ExpandSubscribersForWorkspace skips a
-	// still-see-all subscriber. Lock order stays projection > m.mu > controller:
-	// the MutateEach callback takes no m.mu, and the production Send is a
-	// non-blocking buffered-channel push, so the widened read hold cannot stall
-	// under the controller lock.
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if needsWorkspaceUniverse {
-		workspaceIDs = make([]string, 0, len(m.state.GetWorkspaces()))
-		for id := range m.state.GetWorkspaces() {
-			workspaceIDs = append(workspaceIDs, id)
-		}
-	}
-	var grantEvent *MarshaledEvent
-	if len(grants) > 0 {
-		grantEvent = m.workspaceGrantEventLocked(workspaceID)
-	}
-	var revokeEvent *MarshaledEvent
-	if len(revokes) > 0 {
-		revokeEvent = NewMarshaledEvent(&leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_WorkspaceProjection{
-				WorkspaceProjection: &leapmuxv1.WorkspaceProjectionChanged{
-					WorkspaceId: workspaceID,
-					Change: &leapmuxv1.WorkspaceProjectionChanged_Revoked{
-						Revoked: &emptypb.Empty{},
-					},
-				},
-			},
-		})
-	}
-
-	// Correctness depends on the Subscriber.Send contract being upheld strictly:
-	// Send MUST return promptly (non-blocking) and MUST NOT re-enter the
-	// SubscriberController or the manager's projection lock. This MutateEach is the
-	// only place Send runs while the SubscriberController's exclusive (write) lock
-	// is held; broadcastTo / broadcastBatch instead fan out over the lock-free
-	// subscriber Snapshot -- but they still Send while holding m.projection, so the
-	// same contract is load-bearing there too. The production Send (ws_orgevents.go)
-	// is a non-blocking buffered-channel push whose full-buffer drop path cancels
-	// the subscriber's ctx and returns ErrSubscriberSlow -- it does NOT
-	// synchronously Remove/unsub the subscriber (that fires later via the WS
-	// handler's deferred unsub). A blocking Send would stall every subscriber under
-	// whichever lock is held; a Send that called back into the controller
-	// (Add/Remove/MutateEach) or re-took m.projection would deadlock.
-	var revoked []*Subscriber
-	m.subscribers.MutateEach(func(sub *Subscriber) {
-		if _, ok := grants[sub]; ok {
-			if sub.Filter.WorkspaceIDs != nil {
-				sub.Filter.WorkspaceIDs[workspaceID] = true
-			}
-			_ = sub.Send(grantEvent)
-			return
-		}
-		if _, ok := revokes[sub]; !ok {
-			return
-		}
-		if sub.Filter.WorkspaceIDs == nil {
-			sub.Filter.WorkspaceIDs = make(map[string]bool, len(workspaceIDs))
-			for _, id := range workspaceIDs {
-				sub.Filter.WorkspaceIDs[id] = true
-			}
-		}
-		delete(sub.Filter.WorkspaceIDs, workspaceID)
-		_ = sub.Send(revokeEvent)
-		revoked = append(revoked, sub)
-	})
-	return revoked
-}
-
-// workspaceGrantEventLocked builds the WorkspaceProjectionChanged_Granted event
-// carrying the full current projection of workspaceID, so a newly-admitted
-// subscriber materializes the workspace it just gained. Caller holds m.mu (read).
-func (m *Manager) workspaceGrantEventLocked(workspaceID string) *MarshaledEvent {
-	projection := m.materializedLocked(SubscriberFilter{WorkspaceIDs: map[string]bool{workspaceID: true}})
-	return NewMarshaledEvent(&leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_WorkspaceProjection{
-			WorkspaceProjection: &leapmuxv1.WorkspaceProjectionChanged{
-				WorkspaceId: workspaceID,
-				Change: &leapmuxv1.WorkspaceProjectionChanged_Granted{
-					Granted: projection,
-				},
-			},
-		},
-	})
-}
-
-// regrantWorkspaceLocked re-admits workspaceID into the filters of exactly the
-// given subscribers and re-sends them the workspace projection. Used ONLY to roll
-// back a pre-commit revoke pass when the ACL commit fails: the change never
-// persisted, so those subscribers keep their access. A subscriber that Phase 1
-// converted from see-all (nil filter) to explicit stays explicit here (re-admitted
-// via the explicit map) -- functionally equivalent, and the same end state a
-// committed revoke would leave; a subscriber that has since unsubscribed is a
-// harmless no-op (MutateEach only visits live subscribers). Caller holds
-// projection.
-func (m *Manager) regrantWorkspaceLocked(workspaceID string, subs []*Subscriber) {
-	if len(subs) == 0 {
-		return
-	}
-	target := make(map[*Subscriber]struct{}, len(subs))
-	for _, s := range subs {
-		target[s] = struct{}{}
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	grantEvent := m.workspaceGrantEventLocked(workspaceID)
-	m.subscribers.MutateEach(func(sub *Subscriber) {
-		if _, ok := target[sub]; !ok {
-			return
-		}
-		if sub.Filter.WorkspaceIDs != nil {
-			sub.Filter.WorkspaceIDs[workspaceID] = true
-		}
-		_ = sub.Send(grantEvent)
-	})
-}
-
 // contractSubscribersForWorkspace removes `workspaceID` from every subscriber's
 // Filter. Used by the lifecycle-create rollback (undo the optimistic expand when
 // the seed batch is rejected) and by lifecycle-delete (drop a deleted workspace
 // from long-lived filters), so a stray filter entry can't point at a workspace
 // that no longer exists in `m.state`.
 //
-// This is the ONE filter-mutator that takes only the SubscriberController lock
-// (via MutateEach) and NOT aclTransitionMu, unlike ExpandSubscribersForWorkspace
-// and CommitWorkspaceAccessTransition. That is safe because it only ever DELETES a
-// single key: MutateEach serializes the map writes themselves, and a concurrent
-// CommitWorkspaceAccessTransition's classify-then-apply tolerates exactly this --
-// applyWorkspaceVisibilityLocked only sets or deletes the same single workspaceID
-// key and its isAllowed verdict is a pure function of immutable subscriber fields,
-// so an interleaved single-key delete here cannot corrupt its outcome (see the
-// classify/apply comment there). Note the safety is NOT the service layer's
-// per-workspace sharingLocks: the outbox drain processes ALL of the org's pending
-// create/delete rows and CreateWorkspace/RenameWorkspace take no sharingLock, so a
-// contract for workspace V can run under an UNRELATED workspace's lock and is not
-// guaranteed a disjoint key. (To make the serialization uniform rather than resting
-// on that single-key argument, this could route through aclTransitionMu like the
-// other two; callers hold no manager lock here, so aclTransitionMu -> subscribers
-// preserves the documented lock order.)
+// It takes subscribeExpandMu -- the SAME lock ExpandSubscribersForWorkspace and
+// SubscribeWithACL hold -- so the contract is serialized against BOTH the
+// expand pass and a newly-registering subscriber. Two races would otherwise be
+// open. The single-key delete itself cannot corrupt a concurrent expand's
+// outcome (MutateEach serializes the map writes, and a create and a delete of
+// the SAME workspace never overlap: the workspace must exist before it can be
+// deleted, and SubmitLifecycle drains the outbox sequentially under
+// lifecycleMu). The one that DOES need this lock is the phantom-key race against
+// a subscriber whose SubscribeWithACL.resolve() read the pre-delete ACL (W still
+// present) but which registers after this contract ran: without shared
+// serialization it would keep W as a stale filter key no pass ever removes.
+// Holding subscribeExpandMu closes both against SubscribeWithACL's resolve+
+// register and against the expand pass, so the serialization is uniform rather
+// than resting on the single-key argument alone.
+//
+// Lock order holds: both callers (applyLifecycleCreate's rollback, which runs
+// only after ExpandSubscribersForWorkspace has released subscribeExpandMu, and
+// applyLifecycleDelete) hold lifecycleMu and no subscribeExpandMu here, so this
+// takes the documented lifecycleMu -> subscribeExpandMu -> subscribers edge that
+// ExpandSubscribersForWorkspace already takes; nothing acquires lifecycleMu
+// while holding subscribeExpandMu.
 func (m *Manager) contractSubscribersForWorkspace(workspaceID string) {
 	if workspaceID == "" {
 		return
 	}
+	m.subscribeExpandMu.Lock()
+	defer m.subscribeExpandMu.Unlock()
 	m.subscribers.MutateEach(func(sub *Subscriber) {
 		if sub.Filter.WorkspaceIDs == nil {
 			return
 		}
 		delete(sub.Filter.WorkspaceIDs, workspaceID)
 	})
+}
+
+// ContractSubscribersForWorkspaceForTest exposes contractSubscribersForWorkspace
+// to the package's external tests so they can assert its serialization against
+// SubscribeWithACL directly, without staging a delete through the lifecycle
+// outbox. Production callers reach it via the lifecycle apply path only.
+func (m *Manager) ContractSubscribersForWorkspaceForTest(workspaceID string) {
+	m.contractSubscribersForWorkspace(workspaceID)
 }
 
 // BroadcastWorkspaceCreated / Renamed / Deleted are called by the

@@ -1,7 +1,6 @@
 import { create } from '@bufbuild/protobuf'
-import { EmptySchema } from '@bufbuild/protobuf/wkt'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HLCSchema, NodeKind, NodeRecordSchema, OrgMaterializedSchema, WorkspaceContentsRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
 import {
   BatchCommittedSchema,
   BatchRejectionReason,
@@ -10,7 +9,6 @@ import {
   EntityMaterializedSchema,
   EntityRemovedSchema,
   TabIdentSchema,
-  WorkspaceProjectionChangedSchema,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { HLCClock } from './hlc'
@@ -217,100 +215,6 @@ describe('pendingOpsManager', () => {
     expect(mgr.state.pendingBatches[0].ops.length).toBe(1)
     const remaining = mgr.state.pendingBatches[0].ops[0]
     expect(remaining.body.case).toBe('setNodeRegister')
-  })
-
-  it('workspace projection revoke removes only that workspace and its pending ops', () => {
-    const root1 = create(NodeRecordSchema, { nodeId: 'root1' })
-    const root2 = create(NodeRecordSchema, { nodeId: 'root2' })
-    mgr.bootstrap({
-      orgId: 'org',
-      nodes: { root1, root2 },
-      tabs: {},
-      floatingWindows: {},
-      workspaces: {
-        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
-        w2: create(WorkspaceContentsRecordSchema, { workspaceId: 'w2', rootNodeId: 'root2' }),
-      },
-      currentEpoch: 1n,
-    })
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
-    mgr.submit(newBatch([
-      setNodeKind(ctx, 'root1', NodeKind.SPLIT),
-      setNodeKind(ctx, 'root2', NodeKind.GRID),
-    ]))
-
-    const result = mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
-      workspaceId: 'w1',
-      change: { case: 'revoked', value: create(EmptySchema) },
-    }))
-
-    expect(result.droppedPending).toBe(true)
-    expect(mgr.state.confirmedState.workspaces.w1).toBeUndefined()
-    expect(mgr.state.confirmedState.nodes.root1).toBeUndefined()
-    expect(mgr.state.confirmedState.workspaces.w2).toBeDefined()
-    expect(mgr.state.confirmedState.nodes.root2).toBeDefined()
-    expect(mgr.state.pendingBatches).toHaveLength(1)
-    expect(mgr.state.pendingBatches[0]!.ops).toHaveLength(1)
-    const remainingBody = mgr.state.pendingBatches[0]!.ops[0]!.body
-    expect(remainingBody.case).toBe('setNodeRegister')
-    if (remainingBody.case === 'setNodeRegister')
-      expect(remainingBody.value.nodeId).toBe('root2')
-  })
-
-  it('workspace projection grant installs existing state without replacing unrelated state', () => {
-    mgr.bootstrap({
-      orgId: 'org',
-      nodes: { root2: create(NodeRecordSchema, { nodeId: 'root2' }) },
-      tabs: {},
-      floatingWindows: {},
-      workspaces: {
-        w2: create(WorkspaceContentsRecordSchema, { workspaceId: 'w2', rootNodeId: 'root2' }),
-      },
-      currentEpoch: 1n,
-    })
-    const projection = create(OrgMaterializedSchema, {
-      orgId: 'org',
-      nodes: { root1: create(NodeRecordSchema, { nodeId: 'root1' }) },
-      workspaces: {
-        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
-      },
-      currentEpoch: 1n,
-    })
-
-    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
-      workspaceId: 'w1',
-      change: { case: 'granted', value: projection },
-    }))
-
-    expect(mgr.state.confirmedState.workspaces.w1).toBeDefined()
-    expect(mgr.state.confirmedState.nodes.root1).toBeDefined()
-    expect(mgr.state.confirmedState.workspaces.w2).toBeDefined()
-    expect(mgr.state.confirmedState.nodes.root2).toBeDefined()
-  })
-
-  it('ignores malformed workspace projection transitions without deleting state', () => {
-    mgr.bootstrap({
-      orgId: 'org',
-      nodes: { root1: create(NodeRecordSchema, { nodeId: 'root1' }) },
-      tabs: {},
-      floatingWindows: {},
-      workspaces: {
-        w1: create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root1' }),
-      },
-      currentEpoch: 1n,
-    })
-
-    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, { workspaceId: 'w1' }))
-    mgr.consumeWorkspaceProjection(create(WorkspaceProjectionChangedSchema, {
-      workspaceId: 'w1',
-      change: {
-        case: 'granted',
-        value: create(OrgMaterializedSchema, { orgId: 'org', currentEpoch: 1n }),
-      },
-    }))
-
-    expect(mgr.state.confirmedState.workspaces.w1).toBeDefined()
-    expect(mgr.state.confirmedState.nodes.root1).toBeDefined()
   })
 
   it('notify is invoked after every state-mutating method', () => {

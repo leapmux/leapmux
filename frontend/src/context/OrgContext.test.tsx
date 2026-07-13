@@ -1,13 +1,14 @@
-import { render, waitFor } from '@solidjs/testing-library'
+import type { User } from '~/generated/leapmux/v1/auth_pb'
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { OrgProvider, useOrg } from '~/context/OrgContext'
 
-// Mock the orgClient
-const mockListMyOrgs = vi.fn()
-vi.mock('~/api/clients', () => ({
-  orgClient: {
-    listMyOrgs: (...args: unknown[]) => mockListMyOrgs(...args),
-  },
+// Mock AuthContext to return a controlled user
+let mockUser: Pick<User, 'orgId' | 'orgName'> | null = null
+vi.mock('~/context/AuthContext', () => ({
+  useAuth: () => ({
+    user: () => mockUser,
+  }),
 }))
 
 // Mock useParams to return a controlled orgSlug
@@ -23,97 +24,65 @@ function OrgStateCapture(props: { onState: (state: ReturnType<typeof useOrg>) =>
   return <div data-testid="capture">captured</div>
 }
 
+function renderOrgState(): ReturnType<typeof useOrg> {
+  let capturedState: ReturnType<typeof useOrg> | null = null
+  render(() => (
+    <OrgProvider>
+      <OrgStateCapture onState={(s) => { capturedState = s }} />
+    </OrgProvider>
+  ))
+  expect(capturedState).not.toBeNull()
+  return capturedState!
+}
+
 describe('orgContext', () => {
-  it('notFound is true when slug does not match any org', async () => {
-    mockOrgSlug = 'nonexistent-org'
-    mockListMyOrgs.mockResolvedValue({
-      orgs: [
-        { id: 'org-1', name: 'my-org' },
-      ],
-    })
+  it('derives orgId and slug from the auth user and route param', () => {
+    mockOrgSlug = 'alice'
+    mockUser = { orgId: 'org-1', orgName: 'alice' }
 
-    let capturedState: ReturnType<typeof useOrg> | null = null
+    const state = renderOrgState()
 
-    render(() => (
-      <OrgProvider>
-        <OrgStateCapture onState={(s) => { capturedState = s }} />
-      </OrgProvider>
-    ))
-
-    await waitFor(() => {
-      expect(capturedState).not.toBeNull()
-      expect(capturedState!.loading()).toBe(false)
-    })
-
-    expect(capturedState!.notFound()).toBe(true)
-    expect(capturedState!.orgId()).toBe('')
+    expect(state.slug()).toBe('alice')
+    expect(state.orgId()).toBe('org-1')
   })
 
-  it('notFound is false when slug matches an org', async () => {
-    mockOrgSlug = 'my-org'
-    mockListMyOrgs.mockResolvedValue({
-      orgs: [
-        { id: 'org-1', name: 'my-org' },
-      ],
-    })
+  it('notFound is true when slug does not match the user org', () => {
+    mockOrgSlug = 'someone-else'
+    mockUser = { orgId: 'org-1', orgName: 'alice' }
 
-    let capturedState: ReturnType<typeof useOrg> | null = null
+    const state = renderOrgState()
 
-    render(() => (
-      <OrgProvider>
-        <OrgStateCapture onState={(s) => { capturedState = s }} />
-      </OrgProvider>
-    ))
-
-    await waitFor(() => {
-      expect(capturedState).not.toBeNull()
-      expect(capturedState!.loading()).toBe(false)
-    })
-
-    expect(capturedState!.notFound()).toBe(false)
-    expect(capturedState!.orgId()).toBe('org-1')
+    expect(state.notFound()).toBe(true)
   })
 
-  it('notFound is false during loading', async () => {
+  it('notFound is false when slug matches the user org', () => {
+    mockOrgSlug = 'alice'
+    mockUser = { orgId: 'org-1', orgName: 'alice' }
+
+    const state = renderOrgState()
+
+    expect(state.notFound()).toBe(false)
+  })
+
+  it('notFound is false when the slug matches the org case-insensitively', () => {
+    // orgName mirrors the store-normalized (lowercased) username, but the slug
+    // is the verbatim URL param: a user hand-typing or bookmarking their own org
+    // URL with any capital must not be shown a not-found page for their own org.
+    mockOrgSlug = 'Alice'
+    mockUser = { orgId: 'org-1', orgName: 'alice' }
+
+    const state = renderOrgState()
+
+    expect(state.notFound()).toBe(false)
+  })
+
+  it('notFound is false while the user is not loaded', () => {
     mockOrgSlug = 'any-org'
-    // Never resolve to keep loading state
-    mockListMyOrgs.mockReturnValue(new Promise(() => {}))
+    mockUser = null
 
-    let capturedState: ReturnType<typeof useOrg> | null = null
+    const state = renderOrgState()
 
-    render(() => (
-      <OrgProvider>
-        <OrgStateCapture onState={(s) => { capturedState = s }} />
-      </OrgProvider>
-    ))
-
-    await waitFor(() => {
-      expect(capturedState).not.toBeNull()
-    })
-
-    // While loading, notFound should be false
-    expect(capturedState!.loading()).toBe(true)
-    expect(capturedState!.notFound()).toBe(false)
-  })
-
-  it('notFound is false when fetch errors', async () => {
-    mockOrgSlug = 'any-org'
-    mockListMyOrgs.mockRejectedValue(new Error('network error'))
-
-    let capturedState: ReturnType<typeof useOrg> | null = null
-
-    render(() => (
-      <OrgProvider>
-        <OrgStateCapture onState={(s) => { capturedState = s }} />
-      </OrgProvider>
-    ))
-
-    await waitFor(() => {
-      expect(capturedState).not.toBeNull()
-      expect(capturedState!.loading()).toBe(false)
-    })
-
-    // On error, notFound should be false (we don't know if the org exists)
-    expect(capturedState!.notFound()).toBe(false)
+    expect(state.notFound()).toBe(false)
+    expect(state.orgId()).toBe('')
   })
 })

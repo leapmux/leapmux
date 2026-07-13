@@ -20,32 +20,37 @@ message Request {
     SetWindowSizeRequest set_window_size = 11;
     GetBuildInfoRequest get_build_info = 12;
     CheckFullDiskAccessRequest check_full_disk_access = 13;
-    GetSidecarInfoRequest get_sidecar_info = 28;
-    GetStartupInfoRequest get_startup_info = 27;
-    OpenFullDiskAccessSettingsRequest open_full_disk_access_settings = 14;
-    ConnectSoloRequest connect_solo = 15;
-    ConnectDistributedRequest connect_distributed = 16;
-    ProxyHttpRequest proxy_http = 17;
-    OpenChannelRelayRequest open_channel_relay = 18;
-    SendChannelMessageRequest send_channel_message = 19;
-    CloseChannelRelayRequest close_channel_relay = 20;
-    SwitchModeRequest switch_mode = 21;
-    // Fields 22–23 reserved (removed get_hub_url, is_connected).
+    GetSidecarInfoRequest get_sidecar_info = 14;
+    GetStartupInfoRequest get_startup_info = 15;
+    OpenFullDiskAccessSettingsRequest open_full_disk_access_settings = 16;
+    ConnectSoloRequest connect_solo = 17;
+    ConnectDistributedRequest connect_distributed = 18;
+    ProxyHttpRequest proxy_http = 19;
+    OpenChannelRelayRequest open_channel_relay = 20;
+    SendChannelMessageRequest send_channel_message = 21;
+    CloseChannelRelayRequest close_channel_relay = 22;
+    SwitchModeRequest switch_mode = 23;
     CreateTunnelRequest create_tunnel = 24;
     DeleteTunnelRequest delete_tunnel = 25;
     ListTunnelsRequest list_tunnels = 26;
-    ShutdownRequest shutdown = 29;
-    ListEditorsRequest list_editors = 30;
-    OpenInEditorRequest open_in_editor = 31;
+    ShutdownRequest shutdown = 27;
+    ListEditorsRequest list_editors = 28;
+    OpenInEditorRequest open_in_editor = 29;
     // OrgEvents relay: the webview cannot directly dial the
     // unix-socket hub for /ws/orgevents, so the sidecar opens the WS
     // on its behalf and proxies inbound frames as Tauri events.
     // Mirrors the OpenChannelRelay / CloseChannelRelay pattern but
     // is read-only — the frontend never writes to /ws/orgevents.
-    OpenOrgEventsRelayRequest open_org_events_relay = 32;
-    CloseOrgEventsRelayRequest close_org_events_relay = 33;
-    CliPathStatusRequest cli_path_status = 34;
-    CliInstallSymlinkRequest cli_install_symlink = 35;
+    OpenOrgEventsRelayRequest open_org_events_relay = 30;
+    CloseOrgEventsRelayRequest close_org_events_relay = 31;
+    CliPathStatusRequest cli_path_status = 32;
+    CliInstallSymlinkRequest cli_install_symlink = 33;
+    // Tear down every tunnel and its pooled E2EE channels WITHOUT dropping the
+    // sidecar<->Hub connection. The frontend fires this on a logout / auth
+    // change so a distributed-mode user switch cannot leave the previous user's
+    // tunnels relaying (or their cached channels reusable) under the old
+    // identity -- the sidecar has no identity of its own to key that on.
+    ResetTunnelsRequest reset_tunnels = 34;
   }
 }
 
@@ -57,11 +62,32 @@ message CheckFullDiskAccessRequest {}
 message GetSidecarInfoRequest {}
 message OpenFullDiskAccessSettingsRequest {}
 message ConnectSoloRequest {}
-message OpenChannelRelayRequest {}
-message CloseChannelRelayRequest {}
-message CloseOrgEventsRelayRequest {}
+// relay_id names WHICH relay the caller means (both for the channel relay below and
+// for the org-events relay further down). The frontend already tracks a
+// per-wrapper id to decide who owns the relay, but that decision was made in JS and
+// never crossed the wire, so the sidecar had to infer the caller's intent from the
+// order its requests arrived in.
+//
+// It cannot: RPCSession dispatches every request on its own goroutine with no
+// ordering (see desktop/go/rpc.go), so a close sent for relay A can execute AFTER a
+// later open adopted the relay as B -- tearing down the relay B just took ownership
+// of. The teardown cancels the relay context before the read loop can emit, so no
+// channel:close event ever reaches the frontend: the socket stays readyState=OPEN
+// forever, ensureWebSocket keeps early-returning, and every worker call fails until
+// the page is reloaded.
+//
+// Carrying the id lets the sidecar compare against the current owner and ignore a
+// stale close, which makes the ordering mechanical rather than a property of the
+// Go scheduler.
+message OpenChannelRelayRequest {
+  uint64 relay_id = 1;
+}
+message CloseChannelRelayRequest {
+  uint64 relay_id = 1;
+}
 message SwitchModeRequest {}
 message ListTunnelsRequest {}
+message ResetTunnelsRequest {}
 message ShutdownRequest {}
 message CliPathStatusRequest {}
 
@@ -81,9 +107,20 @@ message CliInstallSymlinkRequest {
 // establish. `workspace_ids` is empty for the standard "all my
 // workspaces" subscription; non-empty narrows the filter exactly
 // like the URL-query equivalent on the direct WebSocket path.
+//
+// relay_id carries the same ownership claim as the channel relay's (see above), and
+// additionally orders the OPENS: the sidecar force-restarts the org-events relay on
+// every open, so an open that ran late must abandon its own dial rather than restart
+// over a newer one. The frontend hands out ids in dispatch order, which is the only
+// order that reflects the caller's intent.
 message OpenOrgEventsRelayRequest {
-  string org_id = 1;
-  repeated string workspace_ids = 2;
+  uint64 relay_id = 1;
+  string org_id = 2;
+  repeated string workspace_ids = 3;
+}
+
+message CloseOrgEventsRelayRequest {
+  uint64 relay_id = 1;
 }
 
 message ListEditorsRequest {
@@ -137,15 +174,15 @@ message Response {
     SetWindowSizeResponse set_window_size = 11;
     BuildInfo build_info = 12;
     BoolValue bool_value = 13;
+    LifecycleResult lifecycle = 14;
     ProxyHttpResponse proxy_http = 15;
-    StringValue string_value = 16;
-    CreateTunnelResponse create_tunnel = 17;
-    ListTunnelsResponse list_tunnels = 18;
-    StartupInfo startup_info = 19;
-    SidecarInfo sidecar_info = 20;
-    ListEditorsResponse list_editors = 21;
-    CliPathStatusResponse cli_path_status = 22;
-    CliInstallSymlinkResponse cli_install_symlink = 23;
+    CreateTunnelResponse create_tunnel = 16;
+    ListTunnelsResponse list_tunnels = 17;
+    StartupInfo startup_info = 18;
+    SidecarInfo sidecar_info = 19;
+    ListEditorsResponse list_editors = 20;
+    CliPathStatusResponse cli_path_status = 21;
+    CliInstallSymlinkResponse cli_install_symlink = 22;
   }
 }
 
@@ -203,11 +240,20 @@ message CliInstallSymlinkResponse {
 
 message SetWindowSizeResponse {}
 message BoolValue { bool value = 1; }
-message StringValue { string value = 1; }
+message LifecycleResult {
+  SidecarInfo sidecar_info = 1;
+  // Cleanup failures are post-commit warnings. Top-level Response.error means
+  // the requested lifecycle transition did not commit.
+  repeated string cleanup_errors = 2;
+}
+
+message HeaderValues {
+  repeated string values = 1;
+}
 
 message ProxyHttpResponse {
   int32 status = 1;
-  map<string, string> headers = 2;
+  map<string, HeaderValues> headers = 2;
   bytes body = 3;
 }
 
@@ -272,13 +318,21 @@ message ChannelMessageEvent {
   bytes data = 1;
 }
 
-message ChannelCloseEvent {}
+message ChannelCloseEvent {
+  uint32 code = 1;
+  string reason = 2;
+  bool was_clean = 3;
+}
 
 message OrgEventsMessageEvent {
   bytes data = 1;
 }
 
-message OrgEventsCloseEvent {}
+message OrgEventsCloseEvent {
+  uint32 code = 1;
+  string reason = 2;
+  bool was_clean = 3;
+}
 
 message SidecarLogEvent {
   string level = 1;
@@ -324,8 +378,6 @@ message TunnelConfig {
   int32 target_port = 4;
   string bind_addr = 5;
   int32 bind_port = 6;
-  string hub_url = 7;
-  string user_id = 8;
 }
 
 message TunnelInfo {

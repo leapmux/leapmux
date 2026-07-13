@@ -14,7 +14,7 @@ import (
 func (s *Suite) testCleanup(t *testing.T) {
 	t.Run("hard delete expired sessions", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-sess-user")
 
 		// Create an expired session.
@@ -35,7 +35,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete workspaces before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", false)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-ws-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Old WS")
 
@@ -61,7 +61,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete workers before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-worker-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -81,7 +81,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete expired registration keys before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-keys-org", true)
+		orgID := SeedOrg(t, st, "cleanup-keys-org")
 		user := SeedUser(t, st, orgID, "cleanup-keys-user")
 
 		// Create a key whose expires_at is already in the past — this is
@@ -105,7 +105,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete registration keys skips live", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-live-keys-org", true)
+		orgID := SeedOrg(t, st, "cleanup-live-keys-org")
 		user := SeedUser(t, st, orgID, "cleanup-live-keys-user")
 
 		// Create a live key (expires in the future). Even with an old
@@ -133,7 +133,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("clear stale pending emails", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-stale-pending-org", true)
+		orgID := SeedOrg(t, st, "cleanup-stale-pending-org")
 		user := SeedUser(t, st, orgID, "cleanup-stale-pending-user")
 
 		// Seed a pending verification whose expires_at is in the past.
@@ -165,7 +165,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("clear stale pending emails skips live ones", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-live-pending-org", true)
+		orgID := SeedOrg(t, st, "cleanup-live-pending-org")
 		user := SeedUser(t, st, orgID, "cleanup-live-pending-user")
 
 		// A live (future-dated) pending verification must NOT be cleared
@@ -192,7 +192,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete users before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-del-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -211,7 +211,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete orgs before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-del-org", false)
+		orgID := SeedOrg(t, st, "cleanup-del-org")
 
 		err := st.Orgs().SoftDelete(ctx, orgID)
 		require.NoError(t, err)
@@ -225,6 +225,100 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		_, err = st.Orgs().GetByIDIncludeDeleted(ctx, orgID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("hard delete orgs waits for referencing users", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org-with-soft-deleted-user")
+		user := SeedUser(t, st, orgID, "user-referencing-org")
+
+		// Soft-delete both the user and the org it references and backdate them
+		// past the retention cutoff. This mirrors the real cleanup shape: deleting
+		// a user now soft-deletes its personal org in the same transaction, so both
+		// become eligible for hard-delete together -- and the chunked users step
+		// (LIMIT 1000) can leave a straggler soft-deleted user behind when the orgs
+		// step runs.
+		require.NoError(t, st.Users().Delete(ctx, user.ID))
+		require.NoError(t, st.Orgs().SoftDelete(ctx, orgID))
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, user.ID, time.Now().Add(-48*time.Hour)))
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityOrgs, orgID, time.Now().Add(-48*time.Hour)))
+		cutoff := time.Now().Add(-24 * time.Hour)
+
+		// A referencing user -- even a soft-deleted one -- must keep the org from
+		// being hard-deleted. users.org_id has no ON DELETE clause, so deleting the
+		// org while a user references it would abort on a foreign-key violation
+		// (and, where FKs are not enforced, leak a dangling user reference).
+		n, err := st.Cleanup().HardDeleteOrgsBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "an org a soft-deleted user still references must not be hard-deleted")
+
+		// Once the referencing user is hard-deleted, the org is hard-deletable.
+		n, err = st.Cleanup().HardDeleteUsersBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		n, err = st.Cleanup().HardDeleteOrgsBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		_, err = st.Orgs().GetByIDIncludeDeleted(ctx, orgID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("hard delete users waits for referencing workspaces and workers", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org-user-fk-gate")
+		cutoff := time.Now().Add(-24 * time.Hour)
+		back := time.Now().Add(-48 * time.Hour)
+
+		// A soft-deleted user whose workspace has not yet been hard-deleted. Its
+		// workspaces.owner_user_id references the user with no ON DELETE, so hard
+		// deleting the user would abort on a foreign-key violation.
+		wsUser := SeedUser(t, st, orgID, "user-with-straggler-ws")
+		wsID := SeedWorkspace(t, st, orgID, wsUser.ID, "Straggler WS")
+		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: wsUser.ID})
+		require.NoError(t, err)
+		require.NoError(t, st.Users().Delete(ctx, wsUser.ID))
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, wsUser.ID, back))
+
+		// A soft-deleted user whose worker has not yet been hard-deleted.
+		// workers.registered_by is the symmetric no-ON-DELETE reference.
+		wkUser := SeedUser(t, st, orgID, "user-with-straggler-wk")
+		wk := SeedWorker(t, st, wkUser.ID)
+		require.NoError(t, st.Workers().MarkDeleted(ctx, wk.ID))
+		require.NoError(t, st.Users().Delete(ctx, wkUser.ID))
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, wkUser.ID, back))
+
+		// A soft-deleted user with no straggler references at all.
+		cleanUser := SeedUser(t, st, orgID, "user-fk-free")
+		require.NoError(t, st.Users().Delete(ctx, cleanUser.ID))
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, cleanUser.ID, back))
+
+		// Without the gate this aborts the whole batch on the FK violation (err != nil,
+		// 0 rows), so the FK-free user is never reaped despite being eligible. The gate
+		// skips the two referenced users and reaps only the clean one.
+		n, err := st.Cleanup().HardDeleteUsersBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n, "one straggler reference must not poison the whole users batch")
+
+		_, err = st.Users().GetByIDIncludeDeleted(ctx, cleanUser.ID)
+		assert.ErrorIs(t, err, store.ErrNotFound, "the FK-free user must be reaped")
+		_, err = st.Users().GetByIDIncludeDeleted(ctx, wsUser.ID)
+		require.NoError(t, err, "a user still referenced by a workspace must not be reaped yet")
+		_, err = st.Users().GetByIDIncludeDeleted(ctx, wkUser.ID)
+		require.NoError(t, err, "a user still referenced by a worker must not be reaped yet")
+
+		// Once the referencing rows drain, the blocked users become reapable.
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityWorkspaces, wsID, back))
+		_, err = st.Cleanup().HardDeleteWorkspacesBefore(ctx, cutoff)
+		require.NoError(t, err)
+		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityWorkers, wk.ID, back))
+		_, err = st.Cleanup().HardDeleteWorkersBefore(ctx, cutoff)
+		require.NoError(t, err)
+
+		n, err = st.Cleanup().HardDeleteUsersBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), n, "both previously-blocked users are reaped once their references drain")
 	})
 
 	t.Run("delete expired oauth states", func(t *testing.T) {
@@ -311,7 +405,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("cleanup idempotent", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "idem-org", false)
+		orgID := SeedOrg(t, st, "idem-org")
 
 		err := st.Orgs().SoftDelete(ctx, orgID)
 		require.NoError(t, err)
@@ -334,7 +428,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("cleanup respects cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cutoff-org", false)
+		orgID := SeedOrg(t, st, "cutoff-org")
 
 		err := st.Orgs().SoftDelete(ctx, orgID)
 		require.NoError(t, err)
@@ -360,7 +454,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete expired sessions preserves active sessions", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-active-sess-user")
 
 		// Create an active session.
@@ -386,15 +480,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete workspaces cascades to children", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", false)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-ws-cascade-user")
 		worker := SeedWorker(t, st, user.ID)
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Cascade WS")
 
 		// Create child records.
-		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: wsID, UserID: user.ID,
-		}))
 		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
 			OrgID: orgID, WorkspaceID: wsID, WorkerID: worker.ID,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "f1",
@@ -419,10 +510,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 
 		// Verify children are gone.
-		access, err := st.WorkspaceAccess().ListByWorkspaceID(ctx, wsID)
-		require.NoError(t, err)
-		assert.Empty(t, access)
-
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
 			UserID: user.ID, WorkspaceID: wsID,
 		})
@@ -435,15 +522,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete workers cascades to children", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-wk-cascade-user")
 		worker := SeedWorker(t, st, user.ID)
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Worker WS")
 
 		// Create child records.
-		require.NoError(t, st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID: worker.ID, UserID: user.ID, GrantedBy: user.ID,
-		}))
 		require.NoError(t, st.WorkerNotifications().Create(ctx, store.CreateWorkerNotificationParams{
 			ID: id.Generate(), WorkerID: worker.ID,
 			Type:    leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER,
@@ -463,10 +547,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 
 		// Verify children are gone.
-		grants, err := st.WorkerAccessGrants().List(ctx, worker.ID)
-		require.NoError(t, err)
-		assert.Empty(t, grants)
-
 		notifs, err := st.WorkerNotifications().ListPendingByWorker(ctx, worker.ID)
 		require.NoError(t, err)
 		assert.Empty(t, notifs)
@@ -474,18 +554,16 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	t.Run("hard delete users cascades to remaining children", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", false)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-user-cascade")
 
-		// Create a second user to own the worker and workspace that will outlive
-		// the user being deleted (simulating the real cleanup order where
-		// workspaces/workers are cleaned before users).
+		// Create a second user to own the workspace that will outlive the user
+		// being deleted (simulating the real cleanup order where workspaces are
+		// cleaned before users).
 		otherUser := SeedUser(t, st, orgID, "cleanup-other-user")
-		worker := SeedWorker(t, st, otherUser.ID)
 		wsID := SeedWorkspace(t, st, orgID, otherUser.ID, "User WS")
 
-		// Create child records for user (not covered by workspace/worker cleanup).
-		SeedOrgMember(t, st, orgID, user.ID, leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER)
+		// Create child records for user (not covered by workspace cleanup).
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID: secID, UserID: user.ID, Name: "UserSec",
@@ -494,12 +572,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		}))
 		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "a0",
-		}))
-		require.NoError(t, st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID: worker.ID, UserID: user.ID, GrantedBy: user.ID,
-		}))
-		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: wsID, UserID: user.ID,
 		}))
 		prov := SeedOAuthProvider(t, st, "cleanup-user-cascade-prov")
 		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
@@ -520,12 +592,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 
 		// Verify children are gone.
-		members, err := st.OrgMembers().ListByOrgID(ctx, orgID)
-		require.NoError(t, err)
-		for _, m := range members {
-			assert.NotEqual(t, user.ID, m.UserID, "org member for deleted user should be cleaned up")
-		}
-
 		sections, err := st.WorkspaceSections().ListByUserID(ctx, user.ID)
 		require.NoError(t, err)
 		assert.Empty(t, sections)
@@ -533,18 +599,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 		require.NoError(t, err)
 		assert.Empty(t, items)
-
-		grants, err := st.WorkerAccessGrants().List(ctx, worker.ID)
-		require.NoError(t, err)
-		for _, g := range grants {
-			assert.NotEqual(t, user.ID, g.UserID, "worker access grant for deleted user should be cleaned up")
-		}
-
-		access, err := st.WorkspaceAccess().ListByWorkspaceID(ctx, wsID)
-		require.NoError(t, err)
-		for _, a := range access {
-			assert.NotEqual(t, user.ID, a.UserID, "workspace access for deleted user should be cleaned up")
-		}
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
 			UserID: user.ID, ProviderID: prov.ID,
@@ -556,15 +610,9 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Empty(t, links)
 	})
 
-	t.Run("hard delete orgs cascades to org members", func(t *testing.T) {
+	t.Run("hard delete orgs reaps backdated soft-deleted orgs", func(t *testing.T) {
 		st := s.NewStore(t)
-		// Use a separate org for the user's home org so the test org can be
-		// deleted without FK violations (users.org_id → orgs(id) is RESTRICT).
-		homeOrgID := SeedOrg(t, st, "cleanup-home-org", true)
-		user := SeedUser(t, st, homeOrgID, "cleanup-org-cascade-user")
-
-		orgID := SeedOrg(t, st, "cleanup-cascade-org", false)
-		SeedOrgMember(t, st, orgID, user.ID, leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER)
+		orgID := SeedOrg(t, st, "cleanup-cascade-org")
 
 		// Soft-delete and backdate.
 		require.NoError(t, st.Orgs().SoftDelete(ctx, orgID))
@@ -574,15 +622,14 @@ func (s *Suite) testCleanup(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
-		// Verify org members are gone.
-		members, err := st.OrgMembers().ListByOrgID(ctx, orgID)
-		require.NoError(t, err)
-		assert.Empty(t, members)
+		// The org row is hard-deleted.
+		_, err = st.Orgs().GetByIDIncludeDeleted(ctx, orgID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
 	t.Run("hard delete workers preserves non-deleted workers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cleanup-org", true)
+		orgID := SeedOrg(t, st, "cleanup-org")
 		user := SeedUser(t, st, orgID, "cleanup-alive-worker-user")
 		alive := SeedWorker(t, st, user.ID)
 		dead := SeedWorker(t, st, user.ID)

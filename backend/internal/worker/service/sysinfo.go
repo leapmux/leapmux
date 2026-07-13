@@ -10,7 +10,7 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
-func registerSysInfoHandlers(d *channel.Dispatcher, svc *Context) {
+func registerSysInfoHandlers(d ownerOnlyRegistrar, svc *Context) {
 	d.Register("GetWorkerSystemInfo", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		homeDir, _ := os.UserHomeDir()
 		sendProtoResponse(sender, &leapmuxv1.GetWorkerSystemInfoResponse{

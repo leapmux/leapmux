@@ -25,12 +25,7 @@ vi.mock('./CollapsibleSidebar', () => ({
 vi.mock('./useWorkspaceOperations', () => ({
   useWorkspaceOperations: () => ({
     buildSectionGroups: (sections: any[]) => sections.map(section => ({ section })),
-    sharingWorkspaceId: () => null,
   }),
-}))
-
-vi.mock('~/components/workspace/WorkspaceSharingDialog', () => ({
-  WorkspaceSharingDialog: () => null,
 }))
 
 afterEach(() => {
@@ -85,7 +80,6 @@ function makeProps() {
     workers: [],
     workerInfoFn: vi.fn(),
     channelStatusFn: vi.fn(),
-    currentUserId: 'user-1',
     onAddTunnel: vi.fn(),
     onDeregisterWorker: vi.fn(),
   }

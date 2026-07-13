@@ -1,6 +1,7 @@
 import { useNavigate } from '@solidjs/router'
 import { createEffect } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { isSetupRequired, isSoloMode } from '~/lib/systemInfo'
 
 export default function IndexRoute() {
@@ -13,7 +14,7 @@ export default function IndexRoute() {
 
     const user = auth.user()
     if (user) {
-      navigate(`/o/${user.username}`, { replace: true })
+      navigate(orgHomePath(user.orgName), { replace: true })
     }
     else if (isSetupRequired()) {
       navigate('/setup', { replace: true })

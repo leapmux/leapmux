@@ -18,7 +18,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 
 		var orgID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-org", false)
+			orgID = SeedOrg(t, tx, "tx-org")
 			return nil
 		})
 		require.NoError(t, err)
@@ -34,7 +34,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 
 		var orgID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-rollback-org", false)
+			orgID = SeedOrg(t, tx, "tx-rollback-org")
 			return errors.New("intentional error")
 		})
 		require.Error(t, err)
@@ -48,7 +48,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 		st := s.NewStore(t)
 
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID := SeedOrg(t, tx, "tx-multi-org", true)
+			orgID := SeedOrg(t, tx, "tx-multi-org")
 			SeedUser(t, tx, orgID, "tx-multi-user")
 			return nil
 		})
@@ -65,7 +65,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 		st := s.NewStore(t)
 
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID := SeedOrg(t, tx, "tx-read-org", true)
+			orgID := SeedOrg(t, tx, "tx-read-org")
 
 			// Read within the same transaction should see the org.
 			org, err := tx.Orgs().GetByID(ctx, orgID)
@@ -91,7 +91,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 		userID := id.Generate()
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
 			if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-				ID: orgID, Name: "rollback-multi-org", IsPersonal: false,
+				ID: orgID, Name: "rollback-multi-org",
 			}); err != nil {
 				return err
 			}
@@ -119,7 +119,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 
 		var orgID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-isolation-org", false)
+			orgID = SeedOrg(t, tx, "tx-isolation-org")
 			user := SeedUser(t, tx, orgID, "tx-isolation-user")
 
 			// Verify data is visible inside the transaction.
@@ -137,7 +137,7 @@ func (s *Suite) testTransactions(t *testing.T) {
 
 	t.Run("registration key consume rolls back with outer transaction", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tx-registration-key-org", true)
+		orgID := SeedOrg(t, st, "tx-registration-key-org")
 		user := SeedUser(t, st, orgID, "tx-registration-key-user")
 		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
 

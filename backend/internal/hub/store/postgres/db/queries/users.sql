@@ -1,6 +1,6 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, org_id, username, password_hash, display_name, email, email_verified, password_set, is_admin)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+INSERT INTO users (id, org_id, username, password_hash, display_name, display_name_folded, email, email_verified, password_set, is_admin)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
@@ -45,26 +45,22 @@ SELECT EXISTS(
     AND id != sqlc.arg(exclude_user_id)
 );
 
--- name: ListUsersByOrgID :many
-SELECT * FROM users WHERE org_id = $1 AND deleted_at IS NULL ORDER BY created_at;
-
--- name: ListUsersByIDs :many
-SELECT * FROM users
-WHERE id = ANY(sqlc.arg(user_ids)::TEXT[])
-  AND deleted_at IS NULL;
-
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor)::timestamptz IS NULL OR created_at < sqlc.narg(cursor))
 ORDER BY created_at DESC LIMIT sqlc.arg('limit');
 
+-- The query arg is pre-folded (store.FoldSearchText) by the Go glue, and username
+-- and email are already stored lowercased, so a plain LIKE (not ILIKE) against the
+-- pre-folded display_name_folded column matches case-insensitively -- identically to
+-- SQLite/MySQL, which fold the same way in Go rather than in the DB's collation.
 -- name: SearchUsers :many
 SELECT * FROM users
 WHERE deleted_at IS NULL
   AND (sqlc.narg(query)::text IS NULL
-   OR username ILIKE sqlc.narg(query) || '%'
-   OR display_name ILIKE sqlc.narg(query) || '%'
-   OR email ILIKE sqlc.narg(query) || '%')
+   OR username LIKE sqlc.narg(query) || '%'
+   OR display_name_folded LIKE sqlc.narg(query) || '%'
+   OR email LIKE sqlc.narg(query) || '%')
   AND (sqlc.narg(cursor)::timestamptz IS NULL OR created_at < sqlc.narg(cursor))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit');
@@ -80,8 +76,8 @@ WHERE id = $2;
 -- the same way. No row match -> no event.
 
 -- name: UpdateUserProfile :one
-UPDATE users SET username = $1, display_name = $2, updated_at = NOW()
-WHERE id = $3
+UPDATE users SET username = $1, display_name = $2, display_name_folded = $3, updated_at = NOW()
+WHERE id = $4
 RETURNING id, updated_at;
 
 -- name: UpdateUserEmail :one
@@ -102,10 +98,44 @@ RETURNING id, updated_at;
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = NOW() WHERE id = $1;
 
+-- name: SoftDeleteUserPersonalOrg :exec
+-- Soft-delete the personal org whose id is the given user's org_id. Paired with
+-- DeleteUser inside userStore.Delete so a user soft-delete can never leave the org
+-- name occupying the partial unique index idx_orgs_name -- which would fail a later
+-- re-signup of the freed username. The subquery has no deleted_at guard, so it
+-- resolves the org_id whether or not the user row is already soft-deleted.
+UPDATE orgs SET deleted_at = NOW()
+WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = $1);
+
+-- name: RenameUserPersonalOrg :exec
+-- Rename the personal org whose id is the given user's org_id to mirror a
+-- username change. Paired with UpdateUserProfile inside userStore.UpdateProfile
+-- so a username change can never leave the org name (and thus the /o/ slug)
+-- stale: the org name mirrors the username under idx_orgs_name, and this makes
+-- the pairing a property of the store rather than a step each caller must
+-- repeat -- mirroring SoftDeleteUserPersonalOrg's pairing with DeleteUser. The
+-- subquery has no deleted_at guard, matching SoftDeleteUserPersonalOrg.
+-- Idempotent for a display-name-only edit: the org name already equals the
+-- (unchanged, normalized) username, so this sets it to the same value.
+UPDATE orgs SET name = sqlc.arg(org_name)
+WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = sqlc.arg(user_id));
+
 -- name: HardDeleteUsersBefore :execresult
 -- NOTE: Use CTE form (not LIMIT in subquery) for CockroachDB compatibility.
+-- A user is hard-deletable only once nothing references it via a no-ON-DELETE
+-- foreign key. workspaces.owner_user_id and workers.registered_by both REFERENCE
+-- users(id) with no ON DELETE, so a user still referenced by a (possibly
+-- soft-deleted, not-yet-hard-deleted) workspace or worker would abort this whole
+-- DELETE on a foreign-key violation -- poisoning every FK-free user in the same
+-- LIMIT 1000 chunk. Gating keeps the workspaces/workers -> users delete order
+-- correct under bulk deletes; the user is reaped on a later pass once its
+-- stragglers drain. Mirrors the NOT EXISTS users gate on HardDeleteOrgsBefore.
 WITH to_delete AS (
-    SELECT u.id FROM users u WHERE u.deleted_at IS NOT NULL AND u.deleted_at < $1 LIMIT 1000
+    SELECT u.id FROM users u
+    WHERE u.deleted_at IS NOT NULL AND u.deleted_at < $1
+      AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_user_id = u.id)
+      AND NOT EXISTS (SELECT 1 FROM workers wk WHERE wk.registered_by = u.id)
+    LIMIT 1000
 )
 DELETE FROM users WHERE id IN (SELECT id FROM to_delete);
 

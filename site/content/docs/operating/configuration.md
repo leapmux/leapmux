@@ -193,11 +193,21 @@ The TLS modes:
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `max_message_size` | `0` | Maximum reassembled channel message size in bytes (`0` = 16 MiB default). |
-| `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
 | `api_timeout_seconds` | `10` | General API timeout in seconds (`<=0` falls back to 10). |
 | `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
 | `worktree_create_timeout_seconds` | `60` | Worktree creation timeout in seconds (`<=0` falls back to 60). |
+
+### Solo and dev extras (worker-scoped)
+
+`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. They are rejected by `leapmux hub`, which has no Worker to configure.
+
+| Config key | Default | Meaning |
+| --- | --- | --- |
+| `encryption_mode` | `post-quantum` | E2EE mode for the bundled Worker: `classic` or `post-quantum`. See [Encryption mode](#encryption-mode). |
+| `use_login_shell` | `true` | Wrap the bundled Worker's agent invocation in the user's login shell. |
+| `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel for the bundled Worker (`0` = 4 default). |
+
+> **Note:** `max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
 
 ### Keys with no CLI flag
 
@@ -239,7 +249,6 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `max_message_size` | `0` | Maximum reassembled channel message size in bytes (`0` = 16 MiB default). |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
 | `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
 | `api_timeout_seconds` | `10` | JSON-RPC request timeout in seconds (`<=0` falls back to 10). |

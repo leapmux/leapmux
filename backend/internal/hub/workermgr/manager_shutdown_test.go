@@ -31,9 +31,9 @@ func TestNotifyShutdown_SendsToAllWorkers(t *testing.T) {
 		}
 	}
 
-	m.Register(makeMockConn("w1"))
-	m.Register(makeMockConn("w2"))
-	m.Register(makeMockConn("w3"))
+	_, _ = m.Register(makeMockConn("w1"))
+	_, _ = m.Register(makeMockConn("w2"))
+	_, _ = m.Register(makeMockConn("w3"))
 
 	m.NotifyShutdown(context.Background(), 10)
 
@@ -52,7 +52,7 @@ func TestNotifyShutdown_CustomRetryDelay(t *testing.T) {
 	m := New()
 
 	var received *leapmuxv1.ConnectResponse
-	m.Register(&Conn{
+	_, _ = m.Register(&Conn{
 		WorkerID: "w1",
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			received = msg
@@ -81,7 +81,7 @@ func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
 	var mu sync.Mutex
 
 	// First worker: send fails.
-	m.Register(&Conn{
+	_, _ = m.Register(&Conn{
 		WorkerID: "w-fail",
 		SendFn: func(_ *leapmuxv1.ConnectResponse) error {
 			mu.Lock()
@@ -92,7 +92,7 @@ func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
 	})
 
 	// Second worker: send succeeds.
-	m.Register(&Conn{
+	_, _ = m.Register(&Conn{
 		WorkerID: "w-ok",
 		SendFn: func(_ *leapmuxv1.ConnectResponse) error {
 			mu.Lock()
@@ -114,7 +114,7 @@ func TestNotifyShutdown_DoesNotHoldManagerLockDuringSend(t *testing.T) {
 	m := New()
 	started := make(chan struct{})
 	release := make(chan struct{})
-	m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+	_, _ = m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -129,7 +129,7 @@ func TestNotifyShutdown_DoesNotHoldManagerLockDuringSend(t *testing.T) {
 
 	registered := make(chan struct{})
 	go func() {
-		m.Register(&Conn{WorkerID: "new"})
+		_, _ = m.Register(&Conn{WorkerID: "new"})
 		close(registered)
 	}()
 	select {
@@ -146,7 +146,7 @@ func TestNotifyShutdown_ReturnsWhenContextExpires(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+	_, _ = m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil

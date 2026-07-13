@@ -14,7 +14,7 @@ import { createEffect, createMemo, createSignal, Match, on, Show, Switch, untrac
 import { workerClient } from '~/api/clients'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs } from '~/api/transport'
-import { channelManager, getGitFileStatus, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
+import { channelManager, getGitFileStatus, renameAgent, setConfirmKeyPin, setExpectedUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
@@ -46,6 +46,7 @@ import { createIdentityCache } from '~/lib/identityCache'
 import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
@@ -204,7 +205,13 @@ export const AppShell: ParentComponent = (props) => {
       keyPinConfirmDialog.open({ workerId, expectedFingerprint, actualFingerprint, resolve })
     }),
   )
-  setGetUserId(() => auth.user()?.id ?? '')
+
+  // Tell the channel manager who this page thinks it is, so an open the Hub
+  // authenticates as someone else fails instead of silently driving that user's
+  // session with this page's UI. Read lazily: it must reflect the CURRENT user, not
+  // whoever was signed in when the shell mounted — which is the whole divergence
+  // this catches.
+  setExpectedUserId(() => auth.user()?.id)
 
   // Publish `--vvh` (visible viewport height in px) for mobile layout.
   // No-op on desktop beyond a one-time write of window.innerHeight.
@@ -306,6 +313,12 @@ export const AppShell: ParentComponent = (props) => {
       // flight). Surface a warn-toast so the user understands their
       // recent action didn't take effect.
       showWarnToast('A pending change was discarded because the affected item left your view.')
+    },
+    onFatalClose: () => {
+      // The org-events stream closed with a terminal code (e.g. the session
+      // expired / access was revoked), so useOrgEvents stopped retrying rather
+      // than loop. Tell the user to reload instead of silently going stale.
+      showWarnToast('Live updates disconnected. Reload the page to reconnect.')
     },
   })
 
@@ -651,7 +664,7 @@ export const AppShell: ParentComponent = (props) => {
 
   // Whether the active workspace can be mutated
   const isActiveWorkspaceMutatable = createMemo(() =>
-    isWorkspaceMutatable(activeWorkspace() ?? undefined, auth.user()?.id ?? '', isActiveWorkspaceArchived()),
+    isWorkspaceMutatable(activeWorkspace() ?? undefined, isActiveWorkspaceArchived()),
   )
 
   // Active tab derived state
@@ -884,7 +897,7 @@ export const AppShell: ParentComponent = (props) => {
       navigate(`/o/${params.orgSlug}/workspace/${nextWorkspaceId}`)
     }
     else {
-      navigate(`/o/${params.orgSlug}`)
+      navigate(orgHomePath(params.orgSlug))
     }
   }
 
@@ -1035,7 +1048,6 @@ export const AppShell: ParentComponent = (props) => {
     get workers() { return workers() },
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
-    currentUserId: auth.user()?.id ?? '',
     onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
     onRegisterWorker: () => setShowRegisterWorker(true),
@@ -1233,7 +1245,7 @@ export const AppShell: ParentComponent = (props) => {
         <Match when={workspaceNotFound()}>
           <NotFoundPage
             message="The workspace you're looking for doesn't exist or you don't have access."
-            linkHref={`/o/${params.orgSlug}`}
+            linkHref={orgHomePath(params.orgSlug)}
             linkText="Go to Dashboard"
           />
         </Match>
@@ -1392,8 +1404,6 @@ export const AppShell: ParentComponent = (props) => {
         {target => (
           <AddTunnelDialog
             workerId={target().id}
-            hubURL={window.location.origin}
-            userId={auth.user()?.id ?? ''}
             onClose={() => setAddTunnelTarget(null)}
             onCreated={() => setAddTunnelTarget(null)}
           />

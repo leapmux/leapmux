@@ -10,9 +10,24 @@ async function getKeyPin(page: Page, workerId: string) {
     const raw = localStorage.getItem(key)
     if (!raw)
       return null
-    const pins = JSON.parse(raw)
+    const pins = JSON.parse(raw).v
     return pins[wid] ?? null
   }, [KEY_PINS_STORAGE_KEY, workerId] as const)
+}
+
+/** Replace one pin while preserving the browser-storage expiry envelope. */
+async function replaceKeyPin(page: Page, workerId: string, publicKeyHex: string) {
+  await page.evaluate(([key, wid, replacement]) => {
+    const raw = localStorage.getItem(key)
+    if (!raw)
+      throw new Error('key-pin storage was not initialized')
+    const wrapped = JSON.parse(raw)
+    wrapped.v[wid] = {
+      publicKeyHex: replacement,
+      firstSeen: Date.now() - 86400000,
+    }
+    localStorage.setItem(key, JSON.stringify(wrapped))
+  }, [KEY_PINS_STORAGE_KEY, workerId, publicKeyHex] as const)
 }
 
 test.describe('Key Pinning', () => {
@@ -28,6 +43,7 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify the key was pinned in the consolidated leapmux:key-pins map.
+    await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
     const pin = await getKeyPin(page, workerId)
 
     expect(pin).not.toBeNull()
@@ -50,26 +66,19 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify key is pinned.
+    await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
     const pin = await getKeyPin(page, workerId)
     expect(pin).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await page.evaluate(([key, wid]) => {
-      const raw = localStorage.getItem(key)
-      const pins = raw ? JSON.parse(raw) : {}
-      pins[wid] = {
-        publicKeyHex: 'aa'.repeat(32), // 64 hex chars of 'aa'
-        firstSeen: Date.now() - 86400000,
-      }
-      localStorage.setItem(key, JSON.stringify(pins))
-    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
+    await replaceKeyPin(page, workerId, 'aa'.repeat(32))
 
     // Reload the page to destroy the in-memory ChannelManager and force a new channel open.
     await page.reload()
 
     // The key pinning dialog should appear.
     const dialog = page.locator('[data-testid="key-pin-mismatch-dialog"]')
-    await expect(dialog).toBeVisible({ timeout: 30_000 })
+    await expect(dialog).toBeVisible()
 
     // Verify the dialog shows different expected and actual fingerprints.
     const expectedFp = await page.locator('[data-testid="expected-fingerprint"]').textContent()
@@ -108,23 +117,17 @@ test.describe('Key Pinning', () => {
     await page.goto(workspace.workspaceUrl)
     await waitForWorkspaceReady(page)
 
+    await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
+
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await page.evaluate(([key, wid]) => {
-      const raw = localStorage.getItem(key)
-      const pins = raw ? JSON.parse(raw) : {}
-      pins[wid] = {
-        publicKeyHex: 'bb'.repeat(32),
-        firstSeen: Date.now() - 86400000,
-      }
-      localStorage.setItem(key, JSON.stringify(pins))
-    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
+    await replaceKeyPin(page, workerId, 'bb'.repeat(32))
 
     // Reload to trigger new channel open.
     await page.reload()
 
     // The key pinning dialog should appear.
     const dialog = page.locator('[data-testid="key-pin-mismatch-dialog"]')
-    await expect(dialog).toBeVisible({ timeout: 30_000 })
+    await expect(dialog).toBeVisible()
 
     // Click "Reject".
     await page.locator('[data-testid="key-pin-reject"]').click()

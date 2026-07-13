@@ -47,7 +47,6 @@ type Config struct {
 	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
 	DBCacheSize                int    `koanf:"db_cache_size" json:"db_cache_size"`
 	DBMmapSize                 int    `koanf:"db_mmap_size" json:"db_mmap_size"`
-	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
 	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
 	APITimeoutSeconds          int    `koanf:"api_timeout_seconds" json:"api_timeout_seconds"`
@@ -93,9 +92,12 @@ func (c *Config) APITimeout() time.Duration {
 
 // State holds the worker's persistent state (saved to disk after registration).
 type State struct {
-	WorkerID         string `json:"worker_id"`
-	AuthToken        string `json:"auth_token"`
-	RegisteredBy     string `json:"registered_by,omitempty"`
+	WorkerID  string `json:"worker_id"`
+	AuthToken string `json:"auth_token"`
+	// No registered_by: the Hub delivers the worker's owner on every connect
+	// (leapmuxv1.WorkerIdentity), so persisting a copy would be a second source of
+	// truth for the fact every machine-scoped gate keys on -- and a file that lost
+	// it left the worker denying its own legitimate owner, permanently.
 	PublicKey        string `json:"public_key,omitempty"`         // Base64-encoded X25519 public key
 	PrivateKey       string `json:"private_key,omitempty"`        // Base64-encoded X25519 private key
 	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`   // Base64-encoded ML-KEM-1024 decapsulation key
@@ -166,7 +168,6 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
 	fs.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
 	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
-	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.Int("api-timeout-seconds", DefaultAPITimeoutSeconds, "JSON-RPC request timeout in seconds")
@@ -184,7 +185,6 @@ func Load(args []string) (*Config, bool, error) {
 		"log-level":                     "Worker options",
 		"encryption-mode":               "Worker options",
 		"use-login-shell":               "Worker options",
-		"max-message-size":              "Timeout and limit options",
 		"max-incomplete-chunked":        "Timeout and limit options",
 		"agent-startup-timeout-seconds": "Timeout and limit options",
 		"api-timeout-seconds":           "Timeout and limit options",
@@ -209,7 +209,6 @@ func Load(args []string) (*Config, bool, error) {
 		"db-max-conns":                  "db_max_conns",
 		"db-cache-size":                 "db_cache_size",
 		"db-mmap-size":                  "db_mmap_size",
-		"max-message-size":              "max_message_size",
 		"max-incomplete-chunked":        "max_incomplete_chunked",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
 		"api-timeout-seconds":           "api_timeout_seconds",
@@ -226,7 +225,6 @@ func Load(args []string) (*Config, bool, error) {
 		"db_max_conns":                  sqlitedb.DefaultMaxConns,
 		"db_cache_size":                 0,
 		"db_mmap_size":                  0,
-		"max_message_size":              0,
 		"max_incomplete_chunked":        0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
 		"api_timeout_seconds":           DefaultAPITimeoutSeconds,

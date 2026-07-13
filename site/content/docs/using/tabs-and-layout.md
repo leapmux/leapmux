@@ -7,7 +7,7 @@ weight: 4
 
 The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes), fill each tile with **tabs** (agents, terminals, or files), arrange those tiles as splits or grids, and — when you need a pane to float above everything else — pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.
 
-The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across everyone in the workspace. (Focus and floating-window stacking order stay local to your client.) See [Collaboration & Presence](/docs/using/collaboration/) for what does and doesn't sync.
+The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync & Presence](/docs/using/collaboration/) for what does and doesn't sync.
 
 For the concept-level model of organizations, workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 

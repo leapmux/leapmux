@@ -52,35 +52,18 @@ func RunWhoami(rawCtx any, args []string) error {
 	})
 }
 
-// RunWorkspaceList enumerates accessible workspaces. The resolver
+// RunWorkspaceList enumerates the caller's own workspaces. The resolver
 // can derive --org-id from any of --tab-id / --workspace-id /
 // --worker-id / --user-id so scripts running inside a worker-spawned
 // agent don't have to know their org id explicitly.
-//
-// With --all-orgs it instead lists every workspace the caller can read
-// (owner OR explicit grant) across every org -- including workspaces
-// owned by an org the caller is not a member of (cross-org
-// collaboration). That listing is not org-scoped, so no --org-id
-// resolution is needed; each row carries its own org_id (and
-// created_by), so a script can filter to shares or by org.
 func RunWorkspaceList(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
-	var allOrgs bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.BoolVar(&allOrgs, "all-orgs", false, "list every workspace you can access across all orgs (owner or shared) instead of just your current org's")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
-	}
-	if allOrgs {
-		return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, _ resolve.Resolved) error {
-			var resp leapmuxv1.ListAllAccessibleWorkspacesResponse
-			return hubCallUnaryEmitOn(ctx, c, "ListAllAccessibleWorkspaces", "",
-				&leapmuxv1.ListAllAccessibleWorkspacesRequest{}, &resp,
-				func() any { return resp.GetWorkspaces() })
-		})
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.ListWorkspacesResponse

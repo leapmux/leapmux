@@ -21,8 +21,23 @@ type Conn struct {
 	Stream         *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
 	SendFn         func(*leapmuxv1.ConnectResponse) error // Optional: overrides Stream.Send for testing.
 	Cancel         context.CancelFunc
-	mu             sync.Mutex
-	closed         atomic.Bool
+
+	// Greeting, when non-nil, is sent by Register BEFORE the connection is
+	// published -- so it is guaranteed to reach the worker ahead of anything any
+	// other goroutine can send, because until Register returns nothing else can find
+	// this conn to send on.
+	//
+	// It is DATA on the conn rather than a call the caller sequences itself because
+	// that ordering is the whole value: the Hub greets a worker with its identity
+	// (leapmuxv1.WorkerIdentity), which the worker needs before the first ChannelOpen
+	// creates a session, since every machine-scoped handler gates on it. A caller that
+	// sent the greeting itself would have to remember to do so before Register, and a
+	// later edit reordering the two lines would turn a permanent, obvious outage into
+	// an intermittent race -- strictly worse. Here it cannot be reordered.
+	Greeting *leapmuxv1.ConnectResponse
+
+	mu     sync.Mutex
+	closed atomic.Bool
 }
 
 // ErrConnectionClosed is returned when a sender races worker disconnect.
@@ -88,9 +103,21 @@ func New() *Manager {
 	}
 }
 
-// Register adds a worker connection. Replaces any existing connection.
-// Returns true if an existing connection was replaced.
-func (m *Manager) Register(c *Conn) bool {
+// Register adds a worker connection, replacing any existing one, and reports
+// whether it replaced one.
+//
+// A non-nil c.Greeting is sent FIRST, before the connection is published. That
+// ordering is the point: until this returns, no other goroutine can look the conn up
+// to send on it, so the greeting is mechanically the worker's first message. A failed
+// greeting is returned and the conn is NOT published -- a stream that cannot carry
+// its greeting cannot carry a channel either, and publishing it would advertise a
+// worker as reachable on a connection already known to be broken.
+func (m *Manager) Register(c *Conn) (bool, error) {
+	if c.Greeting != nil {
+		if err := c.Send(c.Greeting); err != nil {
+			return false, err
+		}
+	}
 	m.mu.Lock()
 	replaced := m.conns[c.WorkerID]
 	m.conns[c.WorkerID] = c
@@ -101,7 +128,7 @@ func (m *Manager) Register(c *Conn) bool {
 	if replaced != nil && replaced != c {
 		replaced.Fence()
 	}
-	return replaced != nil
+	return replaced != nil, nil
 }
 
 // Unregister removes the given worker connection only if it is still the

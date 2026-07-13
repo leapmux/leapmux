@@ -24,7 +24,7 @@ func (s *Suite) testOrgOpBatches(t *testing.T) {
 	// generator change in any of them surfaces immediately.
 	t.Run("list after zero watermark on empty journal", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "opbatch-empty-org", false)
+		orgID := SeedOrg(t, st, "opbatch-empty-org")
 
 		rows, err := st.OrgOpBatches().ListAfter(ctx, store.ListOrgOpBatchesAfterParams{
 			OrgID:             orgID,

@@ -13,7 +13,7 @@ mod tabfix_linux;
 use base64::Engine;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::{fs::PermissionsExt, net::UnixStream};
@@ -45,7 +45,14 @@ const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
 #[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
-const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
+// Must stay in sync with maxFrameSize in desktop/go/frame.go: it must exceed the
+// 16 MiB org-events read limit plus its Frame/Event envelope so a full-size
+// OrgMaterialized bootstrap is not rejected on read.
+const MAX_FRAME_SIZE: u64 = 20 * 1024 * 1024; // 20 MiB
+                                              // A base-128 varint carries 7 bits per byte, so a u64 length prefix needs at
+                                              // most 10 bytes. A reader that has consumed this many without seeing a
+                                              // terminating byte is being fed a malformed (or malicious) prefix.
+const MAX_VARINT_BYTES: usize = 10;
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 // CONNECT_TIMEOUT is the outer loop budget for "endpoint reachable +
@@ -59,22 +66,97 @@ const SIDECAR_INITIAL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT";
 const ENV_BINARY_HASH: &str = "LEAPMUX_DESKTOP_BINARY_HASH";
 
+/// The shell's own record of the dev sidecar it last bootstrapped, written for
+/// human/debug inspection and read back by nothing.
+///
+/// It deliberately carries NO pid. The only code that ever read one was
+/// `force_kill_sidecar`, which this shell no longer has: on the adopt path the pid
+/// could only ever be the one the PEER reported about itself over a predictable
+/// socket, which made "kill the pid in the metadata" an arbitrary-process-kill
+/// primitive at the developer's uid. The adopt path also has no child to ask, so
+/// there is no honest value to record there -- and a field nothing reads cannot be
+/// misused, whereas one that merely LOOKS authoritative invites the next reader to
+/// trust it.
 #[derive(Serialize)]
 struct SidecarMetadata {
     endpoint: String,
-    pid: u32,
     binary_hash: String,
     protocol_version: String,
 }
 
 // --- Frame read/write utilities ---
+//
+// The sync and async halves below are two transports over ONE wire format: the
+// sync half drives stdio (and, on Windows, the named pipe via SyncPipeReader/
+// SyncPipeWriter), the async half drives tokio streams. Every decision that is
+// part of the FORMAT -- the encoding, the size cap, the decode error mapping,
+// the varint state machine -- lives in the shared helpers here and is called by
+// both, so the twins can only ever differ in their I/O loop. See the
+// `#[cfg(any(windows, test))]` gates on the async half: `test` is what makes
+// them compile and run off Windows, so drift fails CI in front of its author
+// instead of on the one OS nobody built.
+//
+// This section is already self-delimited by this banner and has no dependency
+// beyond `mod proto` and the two consts above -- the proposed first extraction
+// out of this 4000+-line file into its own frame.rs module. See
+// https://github.com/leapmux/leapmux/issues/282.
 
-fn write_frame(w: &mut impl Write, frame: &proto::Frame) -> io::Result<()> {
-    let mut buf = Vec::with_capacity(frame.encoded_len() + 10);
+/// Encodes `frame` into a length-delimited buffer ready to hand to a writer.
+fn encode_frame(frame: &proto::Frame) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(frame.encoded_len() + MAX_VARINT_BYTES);
     frame.encode_length_delimited(&mut buf).map_err(|err| {
         io::Error::new(io::ErrorKind::InvalidData, format!("encode frame: {err}"))
     })?;
-    w.write_all(&buf)?;
+    Ok(buf)
+}
+
+/// Checks a decoded length prefix against `MAX_FRAME_SIZE` and narrows it to a
+/// payload length.
+///
+/// Callers MUST call this BEFORE allocating the payload buffer: rejecting the
+/// size is what stops a peer from making us allocate gigabytes off a bogus
+/// varint, and a check that runs after the allocation protects nothing. The cap
+/// is also what makes the `as usize` narrowing lossless on every target we
+/// build for.
+fn frame_len(size: u64) -> io::Result<usize> {
+    if size > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
+        ));
+    }
+    Ok(size as usize)
+}
+
+/// Decodes a frame body -- the bytes AFTER the length prefix, exactly
+/// `frame_len` of them.
+fn decode_frame(data: &[u8]) -> io::Result<proto::Frame> {
+    proto::Frame::decode(data)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
+}
+
+/// Folds one wire byte into an in-progress varint decode.
+///
+/// Returns `Some(value)` when `b` terminates the varint (high bit clear), and
+/// `None` when more bytes are needed -- so a reader keeps only its own read
+/// loop and shares the state machine.
+fn varint_step(x: &mut u64, s: &mut u32, b: u8) -> Option<u64> {
+    if b < 0x80 {
+        return Some(*x | (b as u64) << *s);
+    }
+    *x |= ((b & 0x7f) as u64) << *s;
+    *s += 7;
+    None
+}
+
+/// The error a reader returns once a varint has run past `MAX_VARINT_BYTES`
+/// without terminating.
+fn varint_overflow() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "varint overflow")
+}
+
+fn write_frame(w: &mut impl Write, frame: &proto::Frame) -> io::Result<()> {
+    w.write_all(&encode_frame(frame)?)?;
     w.flush()
 }
 
@@ -82,36 +164,23 @@ fn write_frame(w: &mut impl Write, frame: &proto::Frame) -> io::Result<()> {
 // an `io::Read` stream. For streaming stdio reads we must manually decode the
 // varint length prefix, then `read_exact` the payload before decoding.
 fn read_frame(r: &mut impl Read) -> io::Result<proto::Frame> {
-    let size = read_varint(r)?;
-    if size > MAX_FRAME_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
-        ));
-    }
-    let mut data = vec![0u8; size as usize];
+    let len = frame_len(read_varint(r)?)?;
+    let mut data = vec![0u8; len];
     r.read_exact(&mut data)?;
-    proto::Frame::decode(data.as_slice())
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
+    decode_frame(&data)
 }
 
 fn read_varint(r: &mut impl Read) -> io::Result<u64> {
     let mut x: u64 = 0;
     let mut s: u32 = 0;
     let mut buf = [0u8; 1];
-    for _ in 0..10 {
+    for _ in 0..MAX_VARINT_BYTES {
         r.read_exact(&mut buf)?;
-        let b = buf[0];
-        if b < 0x80 {
-            return Ok(x | (b as u64) << s);
+        if let Some(v) = varint_step(&mut x, &mut s, buf[0]) {
+            return Ok(v);
         }
-        x |= ((b & 0x7f) as u64) << s;
-        s += 7;
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "varint overflow",
-    ))
+    Err(varint_overflow())
 }
 
 // --- Tauri types ---
@@ -188,7 +257,7 @@ struct BuildInfoResponse {
 #[derive(Serialize)]
 struct ProxyHttpResponsePayload {
     status: i32,
-    headers: HashMap<String, String>,
+    headers: HashMap<String, Vec<String>>,
     body: String,
 }
 
@@ -213,14 +282,18 @@ struct TunnelConfigInput {
     target_port: i32,
     bind_addr: String,
     bind_port: i32,
-    #[serde(rename = "hubURL")]
-    hub_url: String,
-    user_id: String,
 }
 
 // --- Sidecar process ---
 
 type PendingResponse = oneshot::Sender<Result<proto::Response, String>>;
+// Every `.lock().unwrap()` on this map (and on DesktopShell.state /
+// SaveStreamRegistry.handles below) panics on every subsequent access once a
+// panic-while-holding-the-guard poisons it -- there is no PoisonError handling
+// or parking_lot in this crate. Currently low-severity (all critical sections
+// here are shallow map/field ops), but worth one consistent policy across all
+// production sites rather than an ad-hoc fix per site. See
+// https://github.com/leapmux/leapmux/issues/277.
 type PendingMap = Arc<Mutex<HashMap<u64, PendingResponse>>>;
 
 #[derive(Clone)]
@@ -244,6 +317,8 @@ struct DesktopShell {
     close_in_progress: AtomicBool,
     exit_in_progress: AtomicBool,
     webview_zoom: AtomicU64,
+    // Poisoning wedges every command touching shell state permanently; see the
+    // PendingMap comment above and https://github.com/leapmux/leapmux/issues/277.
     state: Mutex<ShellState>,
 }
 
@@ -318,22 +393,47 @@ fn bootstrap_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
 #[cfg(any(unix, windows))]
 fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
     #[cfg(unix)]
-    let endpoint = dev_sidecar_endpoint();
+    let (endpoint, private_endpoint) = (dev_sidecar_endpoint(), private_dev_sidecar_endpoint());
     #[cfg(windows)]
-    let endpoint = dev_sidecar_endpoint()?;
+    let (endpoint, private_endpoint) = (dev_sidecar_endpoint()?, private_dev_sidecar_endpoint()?);
     let metadata_path = dev_sidecar_metadata_path();
     let binary_hash = hash_sidecar_binary(sidecar_path)?;
 
-    if let Ok(Some((reader, writer, info))) = try_connect_dev_sidecar(&endpoint) {
-        if info.protocol_version == SIDECAR_PROTOCOL_VERSION && info.binary_hash == binary_hash {
-            write_sidecar_metadata(&metadata_path, &endpoint, info.pid as u32, &binary_hash)?;
+    // Whatever is already on the endpoint decides how we proceed. The one thing we
+    // never do is kill it: on this path the peer is by definition NOT our child, so
+    // the only PID available would be the one it reports about itself -- the
+    // arbitrary-process-kill primitive `force_kill_sidecar` used to be. When we cannot
+    // reclaim the endpoint we move to a private one instead, so a stale or foreign
+    // holder is routed around rather than blocking the launch.
+    let mut endpoint = endpoint;
+    match try_connect_dev_sidecar(&endpoint) {
+        Ok(Some((reader, writer, info)))
+            if info.protocol_version == SIDECAR_PROTOCOL_VERSION
+                && info.binary_hash == binary_hash =>
+        {
+            write_sidecar_metadata(&metadata_path, &endpoint, &binary_hash)?;
             return Ok(SidecarBootstrap {
                 child: None,
                 reader,
                 writer,
             });
         }
-        request_sidecar_shutdown(&endpoint, info.pid as u32)?;
+        // Ours, but a stale build or protocol. Ask it to go; if it ignores us, leave
+        // it holding the path.
+        Ok(Some(_)) => {
+            if !request_sidecar_shutdown(&endpoint) {
+                endpoint = private_endpoint;
+            }
+        }
+        // Nothing is listening: the endpoint is ours to take.
+        Ok(None) => {}
+        // Unreachable or answered by another user (see require_same_user_peer). Their
+        // socket is not ours to unlink -- /tmp is sticky -- so binding here would just
+        // fail. Take a private endpoint.
+        Err(err) => {
+            eprintln!("leapmux: cannot use dev sidecar endpoint {endpoint}: {err}");
+            endpoint = private_endpoint;
+        }
     }
     cleanup_dev_sidecar_artifacts(&endpoint, &metadata_path);
 
@@ -361,7 +461,7 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
                 if info.binary_hash != binary_hash {
                     return Err("spawned sidecar reported an unexpected binary hash".to_string());
                 }
-                write_sidecar_metadata(&metadata_path, &endpoint, info.pid as u32, &binary_hash)?;
+                write_sidecar_metadata(&metadata_path, &endpoint, &binary_hash)?;
                 return Ok(SidecarBootstrap {
                     child: Some(child),
                     reader,
@@ -479,7 +579,11 @@ fn connect_and_handshake_dev_sidecar(
         None => return Ok(None),
     };
     let (r, w) = tokio::io::split(client);
-    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w }, info)))
+    Ok(Some((
+        SyncPipeReader { inner: r },
+        SyncPipeWriter { inner: w },
+        info,
+    )))
 }
 
 #[cfg(windows)]
@@ -512,55 +616,51 @@ async fn windows_handshake_async(
     Ok(Some((client, info)))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     frame: &proto::Frame,
 ) -> io::Result<()> {
-    let mut buf = Vec::with_capacity(frame.encoded_len() + 10);
-    frame.encode_length_delimited(&mut buf).map_err(|err| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("encode frame: {err}"))
-    })?;
-    w.write_all(&buf).await?;
+    w.write_all(&encode_frame(frame)?).await?;
     w.flush().await
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<proto::Frame> {
-    let size = read_varint_async(r).await?;
-    if size > MAX_FRAME_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
-        ));
-    }
-    let mut data = vec![0u8; size as usize];
+    // frame_len rejects an oversize prefix before the vec! below allocates.
+    let len = frame_len(read_varint_async(r).await?)?;
+    let mut data = vec![0u8; len];
     r.read_exact(&mut data).await?;
-    proto::Frame::decode(data.as_slice())
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
+    decode_frame(&data)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 async fn read_varint_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<u64> {
     let mut x: u64 = 0;
     let mut s: u32 = 0;
     let mut buf = [0u8; 1];
-    for _ in 0..10 {
+    for _ in 0..MAX_VARINT_BYTES {
         r.read_exact(&mut buf).await?;
-        let b = buf[0];
-        if b < 0x80 {
-            return Ok(x | (b as u64) << s);
+        if let Some(v) = varint_step(&mut x, &mut s, buf[0]) {
+            return Ok(v);
         }
-        x |= ((b & 0x7f) as u64) << s;
-        s += 7;
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "varint overflow",
-    ))
+    Err(varint_overflow())
 }
 
-fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
+/// Asks whatever is listening on `endpoint` to shut down, and reports whether it
+/// actually went away.
+///
+/// It deliberately does NOT force-kill. This runs on the path where the peer
+/// reported a protocol/binary mismatch, which means it is emphatically *not* this
+/// shell's child -- so the only PID available is the one the peer reported over
+/// the socket about itself. Trusting that made this an arbitrary-process-kill
+/// primitive running at the developer's uid: anything able to answer on the
+/// endpoint (the dev socket lives at a predictable path) could name any PID it
+/// liked and have the shell SIGTERM then SIGKILL it. A stale sidecar that ignores
+/// a cooperative shutdown is a dev-box annoyance; killing an arbitrary process is
+/// not an acceptable way to resolve it.
+fn request_sidecar_shutdown(endpoint: &str) -> bool {
     if let Ok(Some((mut reader, mut writer))) = connect_sidecar_endpoint(endpoint) {
         let frame = proto::Frame {
             message: Some(proto::frame::Message::Request(proto::Request {
@@ -575,15 +675,233 @@ fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
     let deadline = Instant::now() + DEV_SIDECAR_SHUTDOWN_TIMEOUT;
     while Instant::now() < deadline {
         if is_sidecar_gone(endpoint) {
-            return Ok(());
+            return true;
         }
         thread::sleep(Duration::from_millis(100));
     }
 
-    force_kill_sidecar(pid)?;
+    // Name the KERNEL-verified holder pid so the developer can stop it by hand.
+    // We deliberately do NOT kill it: adopting/killing on a self-reported
+    // identity is the arbitrary-process-kill primitive this shell gave up (see
+    // above). The kernel pid is trustworthy (unlike a wire-reported one) but is
+    // used only to make this message actionable.
+    let holder = match endpoint_holder_pid(endpoint) {
+        Some(pid) => format!("process {pid}"),
+        None => "an unidentified process".to_string(),
+    };
+    eprintln!(
+        "leapmux: a sidecar ({holder}) is holding {endpoint} and did not shut down \
+         when asked; starting on a private endpoint instead. Stop it manually if it \
+         should not be running -- in SOLO mode it also holds the shared DB's runtime \
+         lease, so ConnectSolo will keep failing until it is gone (a launcher-mode \
+         orphan only costs the sidecar-reuse optimisation)."
+    );
+    false
+}
+
+/// A dev sidecar endpoint private to THIS shell process.
+///
+/// The shared per-user endpoint is what lets a dev reload reuse a running sidecar, so
+/// it is the default. But it is only a cache: when it cannot be reclaimed -- a wedged
+/// leftover that ignores a cooperative shutdown, or another user's socket -- the
+/// launch must still succeed. Suffixing our own PID gives a path nothing else holds,
+/// so a fresh sidecar always starts. In LAUNCHER mode a single unkillable orphan then
+/// costs only the reuse optimisation. In SOLO mode it costs more: the orphan also
+/// holds the shared user-data DB's runtime lease, so the fresh sidecar's ConnectSolo
+/// fails against the locked DB until the orphan is stopped by hand (surfaced by the
+/// request_sidecar_shutdown diagnostic, which names the kernel-verified holder pid).
+///
+/// The previous behaviour, aborting the launch, made one leftover from a SIGKILLed
+/// `task test-e2e` run block every subsequent `task dev` until the dev hunted it down
+/// by hand.
+#[cfg(unix)]
+fn private_dev_sidecar_endpoint() -> String {
+    dev_sidecar_runtime_dir()
+        .join(format!(
+            "{}-sidecar-{}.sock",
+            sidecar_identity(),
+            std::process::id()
+        ))
+        .display()
+        .to_string()
+}
+
+#[cfg(unix)]
+/// Refuses a dev sidecar socket answered by anyone but this user.
+///
+/// Everything downstream of the connect trusts the peer on its own word: the shell
+/// adopts whatever answers here as its sidecar if it self-reports a matching protocol
+/// version and binary hash — and a hash is exactly as forgeable as the PID that
+/// `force_kill_sidecar` used to trust before it was deleted for that reason. The
+/// endpoint sits at a predictable path (the shell derives it from
+/// `std::env::temp_dir()`), so "whoever bound it first" is not an authorization.
+///
+/// The Go side hardens the *bind* (see `requirePrivateDir` in
+/// desktop/go/socket_unix.go, which refuses a socket dir it does not own): this is
+/// the same boundary from the connect side, and it must be checked here too, because
+/// an honest sidecar refusing to bind a squatted directory does nothing to stop this
+/// shell from connecting to whatever a squatter bound instead.
+///
+/// `peer_cred` reads the credentials the KERNEL recorded for the peer, so unlike the
+/// hash it is not something the peer can assert. Dev-only, like the endpoint itself:
+/// a bundled build spawns its own child over stdio pipes and never comes here.
+#[cfg(unix)]
+fn require_same_user_peer(stream: &UnixStream, endpoint: &str) -> Result<(), String> {
+    require_peer_uid(
+        socket_peer_uid(stream)?,
+        unsafe { libc::getuid() },
+        endpoint,
+    )
+}
+
+/// The refusal decision itself, split from the socket so it can be tested against a
+/// foreign uid — binding a socket as another user needs root, so the branch that
+/// actually matters here is otherwise reachable only in production.
+#[cfg(unix)]
+fn require_peer_uid(peer_uid: u32, our_uid: u32, endpoint: &str) -> Result<(), String> {
+    if peer_uid != our_uid {
+        return Err(format!(
+            "refusing sidecar at {endpoint}: it is answered by uid {peer_uid}, not {our_uid}; \
+             something else is holding this endpoint"
+        ));
+    }
     Ok(())
 }
 
+/// Reads the peer's uid from a connected Unix socket.
+///
+/// std's `UnixStream::peer_cred` is still unstable, so this goes to libc. The two
+/// families expose the same fact through different calls: Linux via the `SO_PEERCRED`
+/// socket option, macOS/BSD via `getpeereid(3)`.
+#[cfg(all(unix, target_os = "linux"))]
+fn socket_peer_uid(stream: &UnixStream) -> Result<u32, String> {
+    use std::os::fd::AsRawFd;
+
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are live, correctly sized, and only written by the
+    // kernel on success; the fd is owned by `stream` for the duration of the call.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "read sidecar socket peer credentials: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(cred.uid)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn socket_peer_uid(stream: &UnixStream) -> Result<u32, String> {
+    use std::os::fd::AsRawFd;
+
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: both out-params are live for the call and only written on success; the
+    // fd is owned by `stream` for the duration.
+    let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if rc != 0 {
+        return Err(format!(
+            "read sidecar socket peer credentials: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(uid)
+}
+
+/// The KERNEL-recorded pid of the socket peer -- the process actually on the
+/// other end, not a pid it reported about itself over the wire. Used only to
+/// make the "an orphan is holding the endpoint" diagnostic actionable
+/// (`request_sidecar_shutdown`); it is NOT an authorization signal and nothing
+/// is killed by it. Linux reads it from the `SO_PEERCRED` ucred whose uid we
+/// already consult; macOS/BSD from `LOCAL_PEERPID`. Returns None on any error
+/// rather than failing the caller: a missing pid only weakens a log line.
+#[cfg(all(unix, target_os = "linux"))]
+fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: as in socket_peer_uid -- kernel writes `cred`/`len` on success; the
+    // fd is owned by `stream` for the call.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if rc != 0 || cred.pid <= 0 {
+        return None;
+    }
+    Some(cred.pid as u32)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid`/`len` are live for the call and only written on success; the fd
+    // is owned by `stream`. LOCAL_PEERPID reports the kernel-recorded peer pid.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if rc != 0 || pid <= 0 {
+        return None;
+    }
+    Some(pid as u32)
+}
+
+/// The kernel-verified pid holding `endpoint`, for diagnostics only (see
+/// socket_peer_pid). On unix it opens a throwaway connection and reads the
+/// peer pid; on Windows it is not yet available (GetNamedPipeServerProcessId,
+/// tracked in https://github.com/leapmux/leapmux/issues/273), so the diagnostic
+/// falls back to naming no pid there.
+#[cfg(unix)]
+fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
+    let stream = UnixStream::connect(endpoint).ok()?;
+    socket_peer_pid(&stream)
+}
+
+#[cfg(windows)]
+fn endpoint_holder_pid(_endpoint: &str) -> Option<u32> {
+    None
+}
+
+// The sidecar-IPC layer exists as per-platform twins (unix socket vs Windows
+// named pipe) scattered through this file: connect_sidecar_endpoint,
+// is_sidecar_gone, sidecar_identity, the *_dev_sidecar_endpoint pair, the
+// peer-credential helpers, and cleanup_dev_sidecar_artifacts. Grouping the twins
+// into sidecar_ipc_unix.rs / sidecar_ipc_windows.rs so the two OS
+// implementations are diffable side-by-side is tracked in
+// https://github.com/leapmux/leapmux/issues/296 (distinct from the frame-codec
+// extraction in #282).
 #[cfg(unix)]
 fn connect_sidecar_endpoint(
     endpoint: &str,
@@ -598,6 +916,7 @@ fn connect_sidecar_endpoint(
         }
         Err(err) => return Err(format!("connect desktop sidecar socket: {err}")),
     };
+    require_same_user_peer(&stream, endpoint)?;
     let reader = stream
         .try_clone()
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
@@ -653,24 +972,6 @@ fn fetch_sidecar_info(
 }
 
 #[cfg(unix)]
-fn force_kill_sidecar(pid: u32) -> Result<(), String> {
-    let status = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()
-        .map_err(|err| format!("terminate stale sidecar: {err}"))?;
-    if !status.success() {
-        let kill_status = Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .status()
-            .map_err(|err| format!("kill stale sidecar: {err}"))?;
-        if !kill_status.success() {
-            return Err(format!("failed to kill stale sidecar process {pid}"));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
 fn cleanup_dev_sidecar_artifacts(endpoint: &str, metadata_path: &Path) {
     let _ = fs::remove_file(endpoint);
     let _ = fs::remove_file(metadata_path);
@@ -679,12 +980,10 @@ fn cleanup_dev_sidecar_artifacts(endpoint: &str, metadata_path: &Path) {
 fn write_sidecar_metadata(
     metadata_path: &Path,
     endpoint: &str,
-    pid: u32,
     binary_hash: &str,
 ) -> Result<(), String> {
     let metadata = SidecarMetadata {
         endpoint: endpoint.to_string(),
-        pid,
         binary_hash: binary_hash.to_string(),
         protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
     };
@@ -756,8 +1055,8 @@ fn sidecar_identity() -> String {
 }
 
 fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
-    let file =
-        fs::File::open(sidecar_path).map_err(|err| format!("read desktop sidecar binary: {err}"))?;
+    let file = fs::File::open(sidecar_path)
+        .map_err(|err| format!("read desktop sidecar binary: {err}"))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
@@ -782,23 +1081,21 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
 // handles. A blocked long-lived ReadFile would prevent any concurrent
 // WriteFile from making progress and deadlock the reader/writer threads.
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE,
-        HLOCAL,
+        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_PIPE_BUSY, HANDLE, HLOCAL,
     },
     Security::{
         Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
         TOKEN_USER,
     },
-    System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_TERMINATE,
-    },
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
 #[cfg(windows)]
@@ -810,7 +1107,7 @@ type SidecarWriter = SyncPipeWriter;
 // threads both call `block_on` on this runtime, and `current_thread` would
 // serialize them through the runtime mutex (defeating the parallelism the
 // FILE_OBJECT-lock fix exists to enable).
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn pipe_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -852,16 +1149,31 @@ impl Write for SyncPipeWriter {
     }
 }
 
-// Returns Ok(None) when the pipe doesn't exist — caller's "try again later"
-// signal. ERROR_PIPE_BUSY gets a short retry loop; any other error is fatal.
+/// Outcome of a named-pipe connect attempt. The THREE states must stay
+/// distinct: a pipe that does not exist (`NotFound`) and a pipe whose every
+/// server instance is momentarily busy (`Busy`) are opposite facts about the
+/// sidecar's liveness -- NotFound means it is gone, Busy means it is alive and
+/// serving -- and collapsing both to "no client" (the old `Ok(None)`) let a
+/// live-but-busy sidecar read as gone during the shutdown poll, so the shell
+/// double-spawned onto an endpoint a zombie still held.
 #[cfg(windows)]
-async fn open_named_pipe_client(pipe_name: &str) -> Result<Option<NamedPipeClient>, String> {
+enum PipeConnect {
+    Connected(NamedPipeClient),
+    NotFound,
+    Busy,
+}
+
+// ERROR_PIPE_BUSY gets a short retry loop; if every instance stays busy across
+// the retries the pipe is alive but saturated, reported as Busy (NOT NotFound).
+// ERROR_FILE_NOT_FOUND is NotFound; any other error is fatal.
+#[cfg(windows)]
+async fn open_named_pipe_client(pipe_name: &str) -> Result<PipeConnect, String> {
     const MAX_BUSY_RETRIES: u32 = 3;
     for _ in 0..=MAX_BUSY_RETRIES {
         match ClientOptions::new().open(pipe_name) {
-            Ok(client) => return Ok(Some(client)),
+            Ok(client) => return Ok(PipeConnect::Connected(client)),
             Err(err) if err.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => {
-                return Ok(None);
+                return Ok(PipeConnect::NotFound);
             }
             Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -870,46 +1182,51 @@ async fn open_named_pipe_client(pipe_name: &str) -> Result<Option<NamedPipeClien
             Err(err) => return Err(format!("open named pipe {pipe_name}: {err}")),
         }
     }
-    Ok(None)
+    // Retries exhausted while every instance was busy: alive, not gone.
+    Ok(PipeConnect::Busy)
 }
 
 #[cfg(windows)]
 fn is_sidecar_gone(pipe_name: &str) -> bool {
+    // ONLY NotFound means gone. A Busy pipe is a live sidecar whose instances
+    // are all in use -- reporting it gone here is exactly what let the shell
+    // abandon a healthy-but-busy sidecar mid-shutdown-poll and double-spawn.
     pipe_runtime().block_on(async {
-        matches!(open_named_pipe_client(pipe_name).await, Ok(None))
+        matches!(open_named_pipe_client(pipe_name).await, Ok(PipeConnect::NotFound))
     })
 }
 
+// NOTE: this has no peer-identity check, unlike the unix path's
+// require_same_user_peer -- see https://github.com/leapmux/leapmux/issues/273.
+//
+// The same weakness applies: the dev pipe name is predictable, and adoption is gated
+// only on the peer's self-reported protocol version and binary hash, which a squatter
+// can echo (the same reasoning that retired force_kill_sidecar's peer-reported PID).
+// Closing it here needs GetNamedPipeServerProcessId plus a token comparison against
+// our own user, rather than the one getsockopt/getpeereid call the unix side needs.
+// Until that lands, a Windows dev box is exposed to a local squatter on this
+// endpoint; the bootstrap at least routes around a pipe it cannot use (see
+// private_dev_sidecar_endpoint) instead of adopting blindly on a connect error.
 #[cfg(windows)]
 fn connect_sidecar_endpoint(
     pipe_name: &str,
 ) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
     let client = match pipe_runtime().block_on(open_named_pipe_client(pipe_name))? {
-        Some(client) => client,
-        None => return Ok(None),
+        PipeConnect::Connected(client) => client,
+        // Gone: the caller's "try again later / endpoint is free" signal.
+        PipeConnect::NotFound => return Ok(None),
+        // Alive but saturated. NOT free to take -- surfaced as an error so the
+        // bootstrap routes around it onto a private endpoint rather than
+        // colliding on an endpoint a live sidecar still holds.
+        PipeConnect::Busy => {
+            return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
+        }
     };
     let (r, w) = tokio::io::split(client);
-    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w })))
-}
-
-#[cfg(windows)]
-fn force_kill_sidecar(pid: u32) -> Result<(), String> {
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle.is_null() {
-            return Err(format!(
-                "open sidecar process {pid}: error {}",
-                GetLastError()
-            ));
-        }
-        let ok = TerminateProcess(handle, 1);
-        let err = if ok == 0 { GetLastError() } else { 0 };
-        CloseHandle(handle);
-        if ok == 0 {
-            return Err(format!("terminate sidecar process {pid}: error {err}"));
-        }
-    }
-    Ok(())
+    Ok(Some((
+        SyncPipeReader { inner: r },
+        SyncPipeWriter { inner: w },
+    )))
 }
 
 #[cfg(windows)]
@@ -917,6 +1234,17 @@ fn cleanup_dev_sidecar_artifacts(_endpoint: &str, metadata_path: &Path) {
     // Named pipes release themselves when the server closes the listener;
     // only the metadata file persists on disk.
     let _ = fs::remove_file(metadata_path);
+}
+
+/// Windows counterpart of the unix private endpoint (see there for why it exists).
+/// Named pipes carry no filesystem path, so the PID goes in the pipe name.
+#[cfg(windows)]
+fn private_dev_sidecar_endpoint() -> Result<String, String> {
+    Ok(format!(
+        "\\\\.\\pipe\\leapmux-desktop-{}-sidecar-{}",
+        sidecar_identity()?,
+        std::process::id()
+    ))
 }
 
 #[cfg(windows)]
@@ -970,7 +1298,20 @@ fn current_user_sid() -> Result<String, String> {
             return Err(format!("open process token: error {}", GetLastError()));
         }
         let mut needed: u32 = 0;
-        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+        // The size-probe call is EXPECTED to fail with ERROR_INSUFFICIENT_BUFFER
+        // (that is how it reports the required size in `needed`). Checking its
+        // return distinguishes that expected failure from a real one: without
+        // the check, any other failure leaves `needed` at 0, the second call
+        // runs against an empty buffer, and the error reported below is the
+        // SECOND call's -- masking the true cause (a bad token handle, a denied
+        // query) that feeds sidecar_identity's pipe naming.
+        if GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) == 0 {
+            let probe_err = GetLastError();
+            if probe_err != ERROR_INSUFFICIENT_BUFFER {
+                CloseHandle(token);
+                return Err(format!("probe token user info size: error {probe_err}"));
+            }
+        }
         let mut buffer = vec![0u8; needed as usize];
         let ok = GetTokenInformation(
             token,
@@ -999,7 +1340,6 @@ fn current_user_sid() -> Result<String, String> {
         Ok(sid)
     }
 }
-
 
 impl DesktopShell {
     fn new(app_handle: AppHandle) -> Result<Self, String> {
@@ -1060,9 +1400,8 @@ impl DesktopShell {
     }
 
     async fn request_shutdown_async(&self) {
-        let shutdown = self.send_request_async(proto::request::Method::Shutdown(
-            proto::ShutdownRequest {},
-        ));
+        let shutdown =
+            self.send_request_async(proto::request::Method::Shutdown(proto::ShutdownRequest {}));
         let _ = tokio::time::timeout(Duration::from_secs(5), shutdown).await;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -1089,12 +1428,7 @@ impl DesktopShell {
         }
     }
 
-    async fn save_window_size(
-        &self,
-        width: u32,
-        height: u32,
-        mode: String,
-    ) -> Result<(), String> {
+    async fn save_window_size(&self, width: u32, height: u32, mode: String) -> Result<(), String> {
         let _ = self
             .send_request_async(proto::request::Method::SetWindowSize(
                 proto::SetWindowSizeRequest {
@@ -1124,6 +1458,20 @@ impl DesktopShell {
     }
 }
 
+// send_sidecar_request awaits the response with NO per-request timeout, and
+// that is deliberate -- do not add one. The transport is a local pipe/socket to
+// a child (or same-user dev) process on this machine: there is no network to
+// time out, and the reader/writer threads already fail every pending request
+// the moment the transport itself errors. The remaining unbounded case is a
+// sidecar that is CONNECTED but wedged (deadlocked, not reading), and we treat
+// a hanging sidecar as a hanging application: a synthetic timeout would only
+// convert that hang into per-command errors against a process that still holds
+// the solo Hub's DB lease, inviting a doomed reconnect loop. The bounded
+// exceptions are the initial handshake (SIDECAR_INITIAL_HANDSHAKE_TIMEOUT,
+// where the peer has not yet proven live) and Shutdown (request_shutdown_async,
+// where the caller is about to exit regardless). `proxy_http` in particular
+// must stay unbounded here: it carries Hub RPCs whose own server-side budgets
+// (agent startup, worktree creation) are the real timeouts.
 async fn send_sidecar_request(
     sidecar: &SidecarProcess,
     method: proto::request::Method,
@@ -1164,6 +1512,19 @@ fn sidecar_info_from_response(
     match resp.result {
         Some(proto::response::Result::SidecarInfo(info)) => Ok(info),
         _ => Err(format!("unexpected response for {context}")),
+    }
+}
+
+fn lifecycle_from_response(
+    resp: proto::Response,
+) -> Result<(proto::SidecarInfo, Vec<String>), String> {
+    let resp = check_response(resp)?;
+    match resp.result {
+        Some(proto::response::Result::Lifecycle(result)) => result
+            .sidecar_info
+            .map(|info| (info, result.cleanup_errors))
+            .ok_or_else(|| "lifecycle response missing sidecar info".to_string()),
+        _ => Err("unexpected lifecycle response".to_string()),
     }
 }
 
@@ -1243,8 +1604,11 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
             let _ = app_handle.emit("channel:message", b64);
         }
-        proto::event::Payload::ChannelClose(_) => {
-            let _ = app_handle.emit("channel:close", Value::Null);
+        proto::event::Payload::ChannelClose(close) => {
+            let _ = app_handle.emit(
+                "channel:close",
+                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+            );
         }
         proto::event::Payload::OrgEventsMessage(msg) => {
             // Forward the hub's length-prefixed WatchOrgEvent frame
@@ -1253,8 +1617,11 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
             let _ = app_handle.emit("orgevents:message", b64);
         }
-        proto::event::Payload::OrgEventsClose(_) => {
-            let _ = app_handle.emit("orgevents:close", Value::Null);
+        proto::event::Payload::OrgEventsClose(close) => {
+            let _ = app_handle.emit(
+                "orgevents:close",
+                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+            );
         }
         proto::event::Payload::SidecarLog(log) => {
             let payload = json!({
@@ -1307,8 +1674,7 @@ fn resolve_sidecar_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     // Next to the main executable. Covers macOS bundled apps (where the
     // sidecar is placed in Contents/MacOS/) and Linux unbundled runs where
     // the sidecar has been copied beside leapmux-desktop.
-    let exe = std::env::current_exe()
-        .map_err(|err| format!("resolve current exe: {err}"))?;
+    let exe = std::env::current_exe().map_err(|err| format!("resolve current exe: {err}"))?;
     if let Some(dir) = exe.parent() {
         let path = dir.join(&sidecar_name);
         if path.exists() {
@@ -1503,7 +1869,11 @@ async fn proxy_http(
     match resp.result {
         Some(proto::response::Result::ProxyHttp(r)) => Ok(ProxyHttpResponsePayload {
             status: r.status,
-            headers: r.headers,
+            headers: r
+                .headers
+                .into_iter()
+                .map(|(name, values)| (name, values.values))
+                .collect(),
             body: base64::engine::general_purpose::STANDARD.encode(&r.body),
         }),
         _ => Err("unexpected response for proxy_http".to_string()),
@@ -1578,12 +1948,18 @@ async fn cli_install_symlink(
     }
 }
 
+// relay_id names which frontend relay wrapper is asking, so the sidecar can ignore
+// a close that a later open has already superseded. See the proto's comment on
+// OpenChannelRelayRequest.
 #[tauri::command]
-async fn open_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+async fn open_channel_relay(
+    shell: State<'_, Arc<DesktopShell>>,
+    relay_id: u64,
+) -> Result<(), String> {
     check_response(
         shell
             .send_request_async(proto::request::Method::OpenChannelRelay(
-                proto::OpenChannelRelayRequest {},
+                proto::OpenChannelRelayRequest { relay_id },
             ))
             .await?,
     )?;
@@ -1608,11 +1984,14 @@ async fn send_channel_message(
 }
 
 #[tauri::command]
-async fn close_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+async fn close_channel_relay(
+    shell: State<'_, Arc<DesktopShell>>,
+    relay_id: u64,
+) -> Result<(), String> {
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseChannelRelay(
-                proto::CloseChannelRelayRequest {},
+                proto::CloseChannelRelayRequest { relay_id },
             ))
             .await?,
     )?;
@@ -1622,6 +2001,7 @@ async fn close_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), 
 #[tauri::command]
 async fn open_orgevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    relay_id: u64,
     org_id: String,
     workspace_ids: Vec<String>,
 ) -> Result<(), String> {
@@ -1629,6 +2009,7 @@ async fn open_orgevents_relay(
         shell
             .send_request_async(proto::request::Method::OpenOrgEventsRelay(
                 proto::OpenOrgEventsRelayRequest {
+                    relay_id,
                     org_id,
                     workspace_ids,
                 },
@@ -1639,11 +2020,14 @@ async fn open_orgevents_relay(
 }
 
 #[tauri::command]
-async fn close_orgevents_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+async fn close_orgevents_relay(
+    shell: State<'_, Arc<DesktopShell>>,
+    relay_id: u64,
+) -> Result<(), String> {
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseOrgEventsRelay(
-                proto::CloseOrgEventsRelayRequest {},
+                proto::CloseOrgEventsRelayRequest { relay_id },
             ))
             .await?,
     )?;
@@ -1662,8 +2046,6 @@ async fn create_tunnel(
         target_port: config.target_port,
         bind_addr: config.bind_addr,
         bind_port: config.bind_port,
-        hub_url: config.hub_url,
-        user_id: config.user_id,
     };
 
     let resp = check_response(
@@ -1695,6 +2077,18 @@ async fn delete_tunnel(
         shell
             .send_request_async(proto::request::Method::DeleteTunnel(
                 proto::DeleteTunnelRequest { tunnel_id },
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_tunnels(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::ResetTunnels(
+                proto::ResetTunnelsRequest {},
             ))
             .await?,
     )?;
@@ -1907,6 +2301,9 @@ struct SaveStreamRegistry {
     /// Starts at 1 so a freshly constructed registry never hands out 0 —
     /// keeps "0 == sentinel" assumptions on the JS side safe.
     next_id: AtomicU64,
+    // Poisoning makes every future download panic, and kills the 60s gc_idle
+    // task permanently on its next tick; see the PendingMap comment above and
+    // https://github.com/leapmux/leapmux/issues/277.
     handles: Mutex<HashMap<u64, OpenSaveStream>>,
 }
 
@@ -1946,6 +2343,72 @@ impl SaveStreamRegistry {
         self.handles.lock().unwrap().remove(&id)
     }
 
+    /// Finalize the save: take the handle, ensure no write is still in flight,
+    /// then atomic-rename the `.tmp` onto the final path. On any failure the
+    /// partial `.tmp` is discarded.
+    ///
+    /// The in-flight-write check is load-bearing. `write_chunk` clones the
+    /// per-handle `Arc<Mutex<File>>` and writes with the registry lock
+    /// released, so a duplicated/overlapping `file_save_write` (a buggy or
+    /// retrying JS pump that does not await the previous write) could still be
+    /// holding a clone when commit runs. Committing anyway would, on Windows,
+    /// fail the rename with an opaque "used by another process" error, and on
+    /// Unix SUCCEED while the in-flight write appends to the just-renamed file
+    /// -- silent corruption. So after `take` (which removes the registry's own
+    /// clone, and after which `write_chunk` can create no new one -- its
+    /// `get_mut` returns None), `Arc::try_unwrap` is the reliable
+    /// sole-ownership test: if it fails, a write clone is live, and commit
+    /// fails loudly and discards the partial rather than racing it.
+    fn commit(&self, id: u64) -> Result<(), String> {
+        let Some(stream) = self.take(id) else {
+            return Err(format!("unknown save handle {id}"));
+        };
+        let OpenSaveStream {
+            file,
+            tmp_path,
+            final_path,
+            last_write_at: _,
+        } = stream;
+        // Sole-ownership check: see the method doc. Arc::try_unwrap returns the
+        // inner Mutex only when this is the last reference.
+        let file = match Arc::try_unwrap(file) {
+            Ok(file) => file,
+            Err(_) => {
+                discard_partials(&tmp_path);
+                return Err(format!(
+                    "save handle {id} has a write still in progress; commit refused"
+                ));
+            }
+        };
+        // No `sync_all` before the rename -- intentional. A `sync_all` on a
+        // multi-hundred-MB save blocks for seconds while the OS flushes the
+        // page cache, and neither flow has a contract that needs it: the
+        // Downloads variant only ever writes to a path that was empty when we
+        // picked the name (so a power-loss window between rename and OS flush
+        // just loses the new file, it can't corrupt anything else), and the
+        // Save-as variant's overwrite is already non-atomic at the
+        // user-content level (the user picked a path knowing it would be
+        // replaced, and can re-save on crash). Don't add a sync here without
+        // matching the latency cost to a concrete guarantee we actually need to
+        // make.
+        //
+        // Drop the File before the rename: Windows refuses `rename`/
+        // `remove_file` while the handle is open. try_unwrap above proved this
+        // is the sole owner, so this drop releases the underlying File.
+        drop(file);
+        // `std::fs::rename` replaces the destination on both Unix and Windows.
+        // For save-as that overwrites the user's prior content (the path they
+        // chose). For the Downloads flow the final path was empty when we
+        // picked the name (`open_unique_tmp` skips candidates whose final
+        // already exists); a file appearing there mid-stream is a TOCTOU race
+        // we accept.
+        let result = std::fs::rename(&tmp_path, &final_path).map_err(|err| format!("rename: {err}"));
+        if result.is_err() {
+            discard_partials(&tmp_path);
+        }
+        result
+    }
+
     fn write_chunk(&self, id: u64, bytes: &[u8]) -> Result<(), String> {
         // Lock the registry only long enough to refresh the idle
         // timestamp and clone the per-handle Arc, then drop the
@@ -1983,6 +2446,13 @@ impl SaveStreamRegistry {
     /// written to during the scan window is fine — a racing
     /// `write_chunk` refreshes `last_write_at`, and the take in phase
     /// 2 re-checks against `max_idle` and skips it.
+    ///
+    /// This cleanup is in-memory only: it (and `cleanup_all` on graceful
+    /// exit) covers a dead JS pump or a normal quit, but a hard process
+    /// death (SIGKILL, crash, power loss) takes this registry down with it
+    /// and orphans the `.tmp` on disk forever, forcing a spurious "(N)"
+    /// suffix on the next same-name download (see `open_unique_tmp`). See
+    /// https://github.com/leapmux/leapmux/issues/285 for an on-disk sweep.
     fn gc_idle(&self, max_idle: Duration) {
         let now = Instant::now();
         let stale_ids: Vec<u64> = {
@@ -2000,9 +2470,7 @@ impl SaveStreamRegistry {
             let stream = {
                 let mut guard = self.handles.lock().unwrap();
                 match guard.get(&id) {
-                    Some(h) if now.duration_since(h.last_write_at) >= max_idle => {
-                        guard.remove(&id)
-                    }
+                    Some(h) if now.duration_since(h.last_write_at) >= max_idle => guard.remove(&id),
                     _ => None,
                 }
             };
@@ -2071,6 +2539,11 @@ struct SaveStreamHandle {
 /// the bytes stream into. The candidate itself is skipped if it already
 /// exists, preserving the "don't silently overwrite a user file in
 /// Downloads" behavior.
+///
+/// A stale orphaned `.tmp` left by a hard process crash is indistinguishable
+/// from a live reservation, so it forces "(N)" suffixes on later downloads of
+/// the same name until it's manually removed. See
+/// https://github.com/leapmux/leapmux/issues/285.
 fn open_unique_tmp(
     dir: PathBuf,
     filename: String,
@@ -2080,7 +2553,9 @@ fn open_unique_tmp(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ext = as_path.extension().map(|s| s.to_string_lossy().into_owned());
+    let ext = as_path
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned());
     for i in 0..MAX_SAVE_COLLISION_ATTEMPTS {
         let candidate_name = if i == 0 {
             filename.clone()
@@ -2210,50 +2685,7 @@ async fn file_save_commit(
 ) -> Result<(), String> {
     let handle_id = read_handle_id(&request)?;
     let registry = registry.inner().clone();
-    run_blocking(move || {
-        let Some(stream) = registry.take(handle_id) else {
-            return Err(format!("unknown save handle {handle_id}"));
-        };
-        let OpenSaveStream {
-            file,
-            tmp_path,
-            final_path,
-            last_write_at: _,
-        } = stream;
-        // No `sync_all` before the rename — intentional. A `sync_all`
-        // on a multi-hundred-MB save blocks for seconds while the OS
-        // flushes the page cache, and neither flow has a contract that
-        // needs it: the Downloads variant only ever writes to a path
-        // that was empty when we picked the name (so a power-loss
-        // window between rename and OS flush just loses the new file,
-        // it can't corrupt anything else), and the Save-as variant's
-        // overwrite is already non-atomic at the user-content level
-        // (the user picked a path knowing it would be replaced, and
-        // can re-save on crash). Don't add a sync here without
-        // matching the latency cost to a concrete guarantee we
-        // actually need to make.
-        //
-        // Drop the Arc<Mutex<File>> before the rename: Windows refuses
-        // `rename`/`remove_file` while the handle is open. `take` above
-        // removed the registry's clone, so unless a concurrent
-        // `write_chunk` is still holding a clone (impossible while the
-        // caller awaits each write sequentially) this drop releases
-        // the underlying File.
-        drop(file);
-        // `std::fs::rename` replaces the destination on both Unix and
-        // Windows. For save-as that overwrites the user's prior content
-        // (the path they chose). For the Downloads flow the final path
-        // was empty when we picked the name (`open_unique_tmp` skips
-        // candidates whose final already exists); a file appearing
-        // there mid-stream is a TOCTOU race we accept.
-        let result = std::fs::rename(&tmp_path, &final_path)
-            .map_err(|err| format!("rename: {err}"));
-        if result.is_err() {
-            discard_partials(&tmp_path);
-        }
-        result
-    })
-    .await
+    run_blocking(move || registry.commit(handle_id)).await
 }
 
 /// Discard the save identified by `handle-id`: drop the open file and
@@ -2281,23 +2713,37 @@ async fn switch_mode(
     shell: State<'_, Arc<DesktopShell>>,
     window: WebviewWindow,
 ) -> Result<(), String> {
-    let resp = check_response(
-        shell
-            .send_request_async(proto::request::Method::SwitchMode(
-                proto::SwitchModeRequest {},
-            ))
-            .await?,
-    )?;
-    let info = sidecar_info_from_response(resp, "switch_mode")?;
+    let response = shell
+        .send_request_async(proto::request::Method::SwitchMode(
+            proto::SwitchModeRequest {},
+        ))
+        .await?;
+    let (info, cleanup_errors) = lifecycle_from_response(response)?;
     apply_sidecar_info(&shell.state, info);
 
     let local_app_url = shell.state.lock().unwrap().local_app_url.clone();
-    let target_url =
-        Url::parse(&local_app_url).map_err(|err| format!("parse launcher url: {err}"))?;
-    window
-        .navigate(target_url)
-        .map_err(|err| format!("navigate to launcher: {err}"))?;
+    let (target_url, cleanup_message) = launcher_url(&local_app_url, &cleanup_errors)?;
+    if let Err(err) = window.navigate(target_url) {
+        if cleanup_message.is_empty() {
+            return Err(format!("navigate to launcher: {err}"));
+        }
+        return Err(format!(
+            "navigate to launcher: {err}; cleanup also failed: {cleanup_message}"
+        ));
+    }
     Ok(())
+}
+
+fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, String), String> {
+    let mut target_url =
+        Url::parse(local_app_url).map_err(|err| format!("parse launcher url: {err}"))?;
+    let cleanup_message = cleanup_errors.join("\n");
+    if !cleanup_message.is_empty() {
+        target_url
+            .query_pairs_mut()
+            .append_pair("cleanup_error", &cleanup_message);
+    }
+    Ok((target_url, cleanup_message))
 }
 
 // restart_app is macOS-only: only the Full Disk Access flow needs the app
@@ -2366,7 +2812,9 @@ fn set_menu_item_accelerator(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let menu = app.menu().ok_or_else(|| "app menu is not available".to_string())?;
+        let menu = app
+            .menu()
+            .ok_or_else(|| "app menu is not available".to_string())?;
         let app_menu = menu
             .get(APP_SUBMENU_ID)
             .and_then(|item| item.as_submenu().cloned());
@@ -2531,23 +2979,12 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ],
     )?;
 
-    let help_menu = Submenu::with_id_and_items(
-        app,
-        HELP_SUBMENU_ID,
-        "Help",
-        true,
-        &[&open_web_inspector],
-    )?;
+    let help_menu =
+        Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "Help", true, &[&open_web_inspector])?;
 
     Menu::with_items(
         app,
-        &[
-            &app_menu,
-            &edit_menu,
-            &view_menu,
-            &window_menu,
-            &help_menu,
-        ],
+        &[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu],
     )
 }
 
@@ -2701,6 +3138,7 @@ fn main() {
             close_orgevents_relay,
             create_tunnel,
             delete_tunnel,
+            reset_tunnels,
             list_tunnels,
             list_editors,
             open_in_editor,
@@ -2741,6 +3179,79 @@ fn main() {
         });
 }
 
+/// A test-only global allocator that records the largest single allocation made
+/// on each thread.
+///
+/// It exists for `read_frame_async_rejects_oversize_varint_before_allocating`.
+/// That test's contract -- reject an oversize length prefix *without allocating
+/// the payload* -- cannot be pinned by asserting on the returned error: the very
+/// same "frame too large" surfaces whether the `MAX_FRAME_SIZE` check runs
+/// before the payload `vec!` or after it. Only measuring the allocation tells
+/// the two apart, and the difference is the whole point of the check: a peer
+/// that sends a bogus varint must not be able to make us allocate gigabytes.
+#[cfg(test)]
+mod alloc_probe {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        // Deliberately thread-local rather than a global counter: the test
+        // harness runs tests in parallel threads, and a shared counter would
+        // make one test's allocations visible to another. `const` init keeps
+        // this free of a destructor, so the allocator can't re-enter TLS setup.
+        static PEAK: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn record(size: usize) {
+        // `try_with` (not `with`): the allocator stays live during TLS
+        // teardown, after PEAK has been destroyed. Nothing to record then.
+        let _ = PEAK.try_with(|peak| peak.set(peak.get().max(size)));
+    }
+
+    pub struct PeakTracking;
+
+    // SAFETY: every method forwards to `System` with the same arguments it was
+    // given; the only added work is recording the requested size.
+    unsafe impl GlobalAlloc for PeakTracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+
+        // `vec![0u8; n]` lands here, not in `alloc`, via the zeroing
+        // specialization -- which is exactly the allocation under test.
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            record(new_size);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    /// Runs `f` on the current thread, returning its value alongside the
+    /// largest single allocation it requested.
+    ///
+    /// Only allocations on the calling thread are counted, so `f` must do the
+    /// work itself rather than hand it to another thread. `Runtime::block_on`
+    /// qualifies: it drives the future on the caller.
+    pub fn peak_alloc_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        PEAK.with(|peak| peak.set(0));
+        let out = f();
+        (out, PEAK.with(|peak| peak.get()))
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static PEAK_TRACKING_ALLOCATOR: alloc_probe::PeakTracking = alloc_probe::PeakTracking;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2755,6 +3266,164 @@ mod tests {
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // A private endpoint must be distinct from the shared one, and stable within a
+    // process.
+    //
+    // The shared per-user endpoint is a reuse CACHE, not a requirement: when it cannot
+    // be reclaimed -- a wedged leftover that ignores a cooperative shutdown, or another
+    // user's socket -- the launch falls back here rather than aborting. Aborting is
+    // what one SIGKILLed `task test-e2e` leftover used to do to every later `task dev`,
+    // and the alternative (killing it) is the arbitrary-process-kill primitive this
+    // shell deliberately gave up.
+    #[cfg(unix)]
+    #[test]
+    fn private_dev_sidecar_endpoint_is_distinct_and_stable() {
+        let shared = dev_sidecar_endpoint();
+        let private = private_dev_sidecar_endpoint();
+        assert_ne!(
+            private, shared,
+            "the fallback must not collide with the squatted path"
+        );
+        assert_eq!(
+            private,
+            private_dev_sidecar_endpoint(),
+            "stable within a process"
+        );
+        assert!(
+            private.contains(&std::process::id().to_string()),
+            "the fallback is keyed on OUR pid, so nothing else holds it: {private}"
+        );
+        assert!(
+            private.ends_with(".sock"),
+            "still a unix socket path: {private}"
+        );
+    }
+
+    // The dev sidecar socket sits at a predictable path, and everything downstream of
+    // the connect trusts the peer's self-reported protocol version and binary hash --
+    // a hash being exactly as forgeable as the PID force_kill_sidecar used to trust.
+    // The peer's uid is the one fact it cannot assert, so the connect must check it.
+    // The REFUSAL is the branch that matters, and binding a socket as another user
+    // needs root -- so it is driven through require_peer_uid directly. Without this the
+    // only coverage is the accept path, which would pass just as well if the check
+    // always returned Ok.
+    #[cfg(unix)]
+    #[test]
+    fn require_peer_uid_refuses_a_foreign_owner() {
+        let us = unsafe { libc::getuid() };
+        let err = require_peer_uid(us + 1, us, "/tmp/leapmux-desktop/x.sock")
+            .expect_err("a socket answered by another uid must be refused");
+        assert!(err.contains("refusing sidecar"), "{err}");
+        assert!(
+            err.contains(&(us + 1).to_string()),
+            "names the squatter's uid: {err}"
+        );
+
+        // root answering is still not us.
+        require_peer_uid(0, us, "/tmp/leapmux-desktop/x.sock")
+            .expect_err("uid 0 is not this user either");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn require_peer_uid_accepts_our_own_uid() {
+        let us = unsafe { libc::getuid() };
+        require_peer_uid(us, us, "/tmp/leapmux-desktop/x.sock").expect("our own uid is accepted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn require_same_user_peer_accepts_our_own_socket() {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("leapmux-peercred-{counter}.sock"));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind");
+        let accepted = thread::spawn(move || listener.accept().map(|(s, _)| s));
+
+        let stream = UnixStream::connect(&path).expect("connect");
+        // We bound the listener ourselves, so the peer IS us.
+        require_same_user_peer(&stream, path.to_str().unwrap())
+            .expect("our own socket is accepted");
+
+        drop(accepted.join().expect("accept thread").expect("accept"));
+        let _ = fs::remove_file(&path);
+    }
+
+    // ...and the uid it reports is the kernel's, not anything the peer chose: it must
+    // match this process, since that is what the check compares against.
+    #[cfg(unix)]
+    #[test]
+    fn socket_peer_uid_reports_the_kernel_recorded_owner() {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("leapmux-peeruid-{counter}.sock"));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind");
+        let accepted = thread::spawn(move || listener.accept().map(|(s, _)| s));
+
+        let stream = UnixStream::connect(&path).expect("connect");
+        let uid = socket_peer_uid(&stream).expect("peer uid");
+        assert_eq!(
+            uid,
+            unsafe { libc::getuid() },
+            "the peer of our own socket is us"
+        );
+
+        drop(accepted.join().expect("accept thread").expect("accept"));
+        let _ = fs::remove_file(&path);
+    }
+
+    // socket_peer_pid / endpoint_holder_pid report the KERNEL-recorded peer pid,
+    // used only to make the "an orphan holds the endpoint" diagnostic actionable.
+    // The peer of a socket we connect to ourselves is this process, so both must
+    // report our own pid.
+    #[cfg(unix)]
+    #[test]
+    fn endpoint_holder_pid_reports_the_kernel_recorded_peer() {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("leapmux-peerpid-{counter}.sock"));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind");
+        // Accept exactly the two connections this test makes: the direct
+        // socket_peer_pid read below, and endpoint_holder_pid's own throwaway
+        // connection. The accepted streams are held until the thread ends so the
+        // peers stay connected while their pids are read.
+        let acceptor = thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                if let Ok((stream, _)) = listener.accept() {
+                    held.push(stream);
+                }
+            }
+            held
+        });
+
+        let stream = UnixStream::connect(&path).expect("connect");
+        assert_eq!(
+            socket_peer_pid(&stream),
+            Some(std::process::id()),
+            "the peer of our own socket is this process"
+        );
+        assert_eq!(
+            endpoint_holder_pid(path.to_str().expect("utf8 path")),
+            Some(std::process::id()),
+            "endpoint_holder_pid names the kernel-recorded holder"
+        );
+
+        drop(stream);
+        let _ = acceptor.join();
+        let _ = fs::remove_file(&path);
+    }
+
+    // A path nothing is listening on has no holder pid (rather than erroring).
+    #[cfg(unix)]
+    #[test]
+    fn endpoint_holder_pid_is_none_for_an_absent_endpoint() {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("leapmux-peerpid-absent-{counter}.sock"));
+        let _ = fs::remove_file(&path);
+        assert_eq!(endpoint_holder_pid(path.to_str().expect("utf8 path")), None);
+    }
 
     // ---- Unix-specific helpers and tests ----
 
@@ -3025,7 +3694,7 @@ mod tests {
         assert!(!is_sidecar_gone(&pipe_name));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     #[test]
     fn read_frame_async_roundtrips_multibyte_varint_frame() {
         // A frame whose encoded body exceeds 127 bytes forces the
@@ -3063,42 +3732,98 @@ mod tests {
         });
     }
 
-    #[cfg(windows)]
+    // frame_len and varint_step are the two decisions the sync and async readers
+    // SHARE. The reader tests above reach them only through a socket, and only at
+    // sizes a real frame happens to take -- so the boundary itself (exactly at the
+    // cap vs. one byte over) is asserted here, where it can be stated exactly.
+    #[test]
+    fn frame_len_admits_the_cap_and_refuses_one_byte_past_it() {
+        assert_eq!(frame_len(0).expect("an empty frame is a frame"), 0);
+        // Exactly at the cap is legal: the check is `>`, not `>=`, and a frame of
+        // precisely MAX_FRAME_SIZE must still be readable.
+        assert_eq!(
+            frame_len(MAX_FRAME_SIZE).expect("a frame at the cap is legal"),
+            MAX_FRAME_SIZE as usize
+        );
+
+        let err = frame_len(MAX_FRAME_SIZE + 1).expect_err("one byte past the cap is refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("frame too large"),
+            "operators and the sync reader's tests key on this text: {err}"
+        );
+
+        // A bogus varint is the case the cap exists for: u64::MAX must be refused as
+        // a size rather than narrowed by `as usize` into a plausible allocation.
+        frame_len(u64::MAX).expect_err("a bogus length prefix is refused, not truncated");
+    }
+
+    #[test]
+    fn varint_step_terminates_on_a_clear_high_bit_and_accumulates_otherwise() {
+        // Single byte, high bit clear: terminates immediately with its own value.
+        let (mut x, mut s) = (0u64, 0u32);
+        assert_eq!(varint_step(&mut x, &mut s, 0x01), Some(1));
+
+        // Two bytes: the first only accumulates (returns None and advances the
+        // shift), the second terminates and contributes its bits at that shift.
+        // 0xAC 0x02 is protobuf's canonical varint for 300.
+        let (mut x, mut s) = (0u64, 0u32);
+        assert_eq!(varint_step(&mut x, &mut s, 0xAC), None, "high bit set: more bytes needed");
+        assert_eq!(s, 7, "each continuation byte carries 7 payload bits");
+        assert_eq!(varint_step(&mut x, &mut s, 0x02), Some(300));
+    }
+
+    #[cfg(any(windows, test))]
     #[test]
     fn read_frame_async_rejects_oversize_varint_before_allocating() {
         // A length prefix exceeding MAX_FRAME_SIZE must be rejected without
         // attempting to allocate the payload, so a peer can't make us
         // allocate gigabytes by sending a bogus varint.
-        pipe_runtime().block_on(async {
-            let (mut writer, mut reader) = tokio::io::duplex(64);
-            let mut buf = Vec::new();
-            let mut v: u64 = MAX_FRAME_SIZE + 1;
-            loop {
-                let byte = (v & 0x7f) as u8;
-                v >>= 7;
-                if v == 0 {
-                    buf.push(byte);
-                    break;
+        //
+        // The error assertions below are necessary but NOT sufficient: the same
+        // error surfaces even if the check runs after the `vec!`. So measure the
+        // allocation too -- that, and only that, pins the ordering that gives
+        // the check its value. `pipe_runtime()` is resolved outside the probe so
+        // one-time runtime construction isn't attributed to the read.
+        let runtime = pipe_runtime();
+        let (_, peak) = alloc_probe::peak_alloc_of(|| {
+            runtime.block_on(async {
+                let (mut writer, mut reader) = tokio::io::duplex(64);
+                let mut buf = Vec::new();
+                let mut v: u64 = MAX_FRAME_SIZE + 1;
+                loop {
+                    let byte = (v & 0x7f) as u8;
+                    v >>= 7;
+                    if v == 0 {
+                        buf.push(byte);
+                        break;
+                    }
+                    buf.push(byte | 0x80);
                 }
-                buf.push(byte | 0x80);
-            }
-            tokio::io::AsyncWriteExt::write_all(&mut writer, &buf)
-                .await
-                .expect("write varint");
-            drop(writer);
+                tokio::io::AsyncWriteExt::write_all(&mut writer, &buf)
+                    .await
+                    .expect("write varint");
+                drop(writer);
 
-            let err = read_frame_async(&mut reader)
-                .await
-                .expect_err("oversize frame must error");
-            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-            assert!(
-                err.to_string().contains("frame too large"),
-                "unexpected error message: {err}"
-            );
+                let err = read_frame_async(&mut reader)
+                    .await
+                    .expect_err("oversize frame must error");
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string().contains("frame too large"),
+                    "unexpected error message: {err}"
+                );
+            })
         });
+        assert!(
+            (peak as u64) < MAX_FRAME_SIZE,
+            "read_frame_async allocated {peak} bytes for a rejected {} byte prefix; \
+             the MAX_FRAME_SIZE check must run BEFORE the payload is allocated",
+            MAX_FRAME_SIZE + 1
+        );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     #[test]
     fn read_frame_async_returns_eof_when_peer_closes() {
         // The reader thread distinguishes UnexpectedEof from real errors so
@@ -3168,11 +3893,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("leapmux-test-metadata-{counter}.json"));
         let _ = fs::remove_file(&path);
 
-        write_sidecar_metadata(&path, "\\\\.\\pipe\\test", 4242, "hash-abc")
-            .expect("write metadata");
+        write_sidecar_metadata(&path, "\\\\.\\pipe\\test", "hash-abc").expect("write metadata");
         let data = fs::read_to_string(&path).expect("read metadata");
         assert!(data.contains("\\\\\\\\.\\\\pipe\\\\test"));
-        assert!(data.contains("\"pid\": 4242"));
         assert!(data.contains("\"binary_hash\": \"hash-abc\""));
         assert!(data.contains(&format!(
             "\"protocol_version\": \"{SIDECAR_PROTOCOL_VERSION}\""
@@ -3214,20 +3937,18 @@ mod tests {
             next_id: AtomicU64::new(1),
         };
 
-        let responder = thread::spawn(move || {
-            loop {
-                if let Some(tx) = pending.lock().unwrap().remove(&1) {
-                    let _ = tx.send(Ok(proto::Response {
-                        id: 1,
-                        error: String::new(),
-                        result: Some(proto::response::Result::BoolValue(proto::BoolValue {
-                            value: true,
-                        })),
-                    }));
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
+        let responder = thread::spawn(move || loop {
+            if let Some(tx) = pending.lock().unwrap().remove(&1) {
+                let _ = tx.send(Ok(proto::Response {
+                    id: 1,
+                    error: String::new(),
+                    result: Some(proto::response::Result::BoolValue(proto::BoolValue {
+                        value: true,
+                    })),
+                }));
+                break;
             }
+            thread::sleep(Duration::from_millis(100));
         });
 
         let resp = tauri::async_runtime::block_on(send_sidecar_request(
@@ -3259,7 +3980,11 @@ mod tests {
         ));
     }
 
-    fn sidecar_info(mode: proto::SidecarShellMode, connected: bool, hub_url: &str) -> proto::SidecarInfo {
+    fn sidecar_info(
+        mode: proto::SidecarShellMode,
+        connected: bool,
+        hub_url: &str,
+    ) -> proto::SidecarInfo {
         proto::SidecarInfo {
             protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
             binary_hash: "test-hash".to_string(),
@@ -3299,10 +4024,88 @@ mod tests {
 
     #[test]
     fn shell_mode_from_proto_falls_back_to_launcher_on_unspecified() {
-        // Forward-compat: an older sidecar or an unknown enum value must
-        // not silently flip the shell into Solo/Distributed.
+        // Untrusted sidecar state must not silently flip the shell into
+        // Solo/Distributed when no valid mode was supplied.
         let info = sidecar_info(proto::SidecarShellMode::Unspecified, true, "https://hub");
         assert_eq!(shell_mode_from_proto(&info), ShellMode::Launcher);
+    }
+
+    #[test]
+    fn lifecycle_response_preserves_launcher_state_and_cleanup_errors() {
+        let info = sidecar_info(proto::SidecarShellMode::Launcher, false, "");
+        let response = proto::Response {
+            id: 1,
+            error: String::new(),
+            result: Some(proto::response::Result::Lifecycle(proto::LifecycleResult {
+                sidecar_info: Some(info.clone()),
+                cleanup_errors: vec!["lease release failed".to_string()],
+            })),
+        };
+
+        let (actual_info, cleanup_errors) =
+            lifecycle_from_response(response).expect("valid lifecycle response");
+        assert_eq!(actual_info, info);
+        assert_eq!(cleanup_errors, vec!["lease release failed"]);
+    }
+
+    #[test]
+    fn launcher_url_carries_all_cleanup_errors_and_preserves_existing_query() {
+        let (url, message) = launcher_url(
+            "http://localhost:4328/app?source=desktop",
+            &[
+                "lease release failed".to_string(),
+                "hub stop failed".to_string(),
+            ],
+        )
+        .expect("valid launcher url");
+
+        assert_eq!(message, "lease release failed\nhub stop failed");
+        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query.get("source").map(String::as_str), Some("desktop"));
+        assert_eq!(
+            query.get("cleanup_error").map(String::as_str),
+            Some(message.as_str())
+        );
+    }
+
+    #[test]
+    fn launcher_url_omits_empty_cleanup_warning() {
+        let (url, message) =
+            launcher_url("http://localhost:4328/app", &[]).expect("valid launcher url");
+
+        assert!(message.is_empty());
+        assert!(url.query().is_none());
+    }
+
+    #[test]
+    fn switch_mode_response_rejects_top_level_transition_error() {
+        let response = proto::Response {
+            id: 1,
+            error: "save config failed".to_string(),
+            result: None,
+        };
+
+        assert_eq!(
+            lifecycle_from_response(response).expect_err("transition must fail"),
+            "save config failed"
+        );
+    }
+
+    #[test]
+    fn switch_mode_response_requires_sidecar_info() {
+        let response = proto::Response {
+            id: 1,
+            error: String::new(),
+            result: Some(proto::response::Result::Lifecycle(proto::LifecycleResult {
+                sidecar_info: None,
+                cleanup_errors: Vec::new(),
+            })),
+        };
+
+        assert_eq!(
+            lifecycle_from_response(response).expect_err("sidecar info is required"),
+            "lifecycle response missing sidecar info"
+        );
     }
 
     #[test]
@@ -3342,7 +4145,11 @@ mod tests {
 
         apply_sidecar_info(
             &state,
-            sidecar_info(proto::SidecarShellMode::Distributed, true, "https://hub.example"),
+            sidecar_info(
+                proto::SidecarShellMode::Distributed,
+                true,
+                "https://hub.example",
+            ),
         );
 
         let guard = state.lock().unwrap();
@@ -3413,8 +4220,7 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut answered = 0u64;
             while answered < N && Instant::now() < deadline {
-                let ids: Vec<u64> =
-                    { responder_pending.lock().unwrap().keys().copied().collect() };
+                let ids: Vec<u64> = { responder_pending.lock().unwrap().keys().copied().collect() };
                 for id in ids {
                     if let Some(tx) = responder_pending.lock().unwrap().remove(&id) {
                         let _ = tx.send(Ok(proto::Response {
@@ -3506,10 +4312,7 @@ mod tests {
         assert_eq!(first, Err("desktop sidecar disconnected".to_string()));
 
         assert!(
-            wait_until(
-                || sidecar.writer_tx.is_closed(),
-                Duration::from_secs(1),
-            ),
+            wait_until(|| sidecar.writer_tx.is_closed(), Duration::from_secs(1),),
             "writer channel never closed"
         );
 
@@ -3553,5 +4356,65 @@ mod tests {
         // real in-flight send_sidecar_request relies on to unblock.
         let dropped = tauri::async_runtime::block_on(phantom_rx);
         assert!(dropped.is_err(), "phantom oneshot should be dropped");
+    }
+
+    fn save_test_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("leapmux-save-{pid}-{counter}"));
+        let final_path = base.with_extension("txt");
+        (tmp_path_for(&final_path), final_path)
+    }
+
+    // The happy path: a handle with no write in flight commits by atomic-rename,
+    // and the final file carries what was written.
+    #[test]
+    fn save_stream_commit_renames_when_no_write_in_flight() {
+        let registry = SaveStreamRegistry::new();
+        let (tmp_path, final_path) = save_test_paths();
+        let mut file = std::fs::File::create(&tmp_path).expect("create tmp");
+        use std::io::Write;
+        file.write_all(b"hello").expect("seed tmp");
+        drop(file);
+        let reopened = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp_path)
+            .expect("reopen tmp");
+        let handle = registry.insert(reopened, tmp_path.clone(), final_path.clone());
+
+        registry.commit(handle.id).expect("commit must succeed");
+        assert!(!tmp_path.exists(), "the tmp file is renamed away");
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"hello");
+        let _ = std::fs::remove_file(&final_path);
+    }
+
+    // A write still in flight when commit runs (a duplicated/racing
+    // file_save_write holding a clone of the handle's Arc) must make commit FAIL
+    // LOUDLY and discard the partial -- not rename it. On Unix the old code
+    // renamed successfully while the in-flight write corrupted the committed
+    // file; try_unwrap catches the live clone before that can happen.
+    #[test]
+    fn save_stream_commit_refuses_when_a_write_is_in_flight() {
+        let registry = SaveStreamRegistry::new();
+        let (tmp_path, final_path) = save_test_paths();
+        let file = std::fs::File::create(&tmp_path).expect("create tmp");
+        let handle = registry.insert(file, tmp_path.clone(), final_path.clone());
+
+        // Simulate an overlapping write_chunk: hold a clone of the handle's Arc.
+        let in_flight_clone = {
+            let guard = registry.handles.lock().unwrap();
+            guard.get(&handle.id).unwrap().file.clone()
+        };
+
+        let err = registry
+            .commit(handle.id)
+            .expect_err("commit must refuse while a write clone is live");
+        assert!(
+            err.contains("write still in progress"),
+            "unexpected error: {err}"
+        );
+        assert!(!tmp_path.exists(), "the partial tmp is discarded, not left behind");
+        assert!(!final_path.exists(), "no corrupt file is renamed into place");
+        drop(in_flight_clone);
     }
 }

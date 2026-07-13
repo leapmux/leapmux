@@ -27,8 +27,6 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/hub"), cfg.DataDir)
 		assert.Equal(t, "", cfg.DevFrontend)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.SQLiteDBConfig().MaxConns)
-		assert.Equal(t, 0, cfg.MaxMessageSize)
-		assert.Equal(t, 0, cfg.MaxIncompleteChunked)
 		assert.Equal(t, "info", cfg.LogLevel)
 	})
 
@@ -172,8 +170,7 @@ func TestLoadWithOptions(t *testing.T) {
 	t.Run("config file values for all fields work with CLIFlags restriction", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "solo.yaml")
-		yamlContent := `max_message_size: 1024
-max_incomplete_chunked: 8
+		yamlContent := `smtp_port: 2525
 signup_enabled: true
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
@@ -182,8 +179,10 @@ signup_enabled: true
 			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, 1024, cfg.MaxMessageSize)
-		assert.Equal(t, 8, cfg.MaxIncompleteChunked)
+		// A config-file field that is NOT in CLIFlags is still loaded: the
+		// restriction narrows which CLI flags are registered, not which config keys
+		// are read.
+		assert.Equal(t, 2525, cfg.SmtpPort)
 		assert.True(t, cfg.SignupEnabled)
 	})
 
@@ -204,6 +203,46 @@ signup_enabled: true
 			FlagSetName: "leapmux",
 		})
 		require.NoError(t, err)
+	})
+
+	t.Run("ExtraFlags register, default, and group under their Category", func(t *testing.T) {
+		extras := []ExtraFlagDef{
+			{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", StrDefault: "0", Category: "Timeout and limit options"},
+			{Name: "encryption-mode", KoanfKey: "encryption_mode", StrDefault: "post-quantum"},
+		}
+		cfg, _, err := LoadWithOptions([]string{"-max-incomplete-chunked", "8"}, LoadOptions{
+			CLIFlags:   []string{"listen"},
+			ExtraFlags: extras,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "8", cfg.Extras["max_incomplete_chunked"])
+		// An unset extra still lands in Extras at its declared default.
+		assert.Equal(t, "post-quantum", cfg.Extras["encryption_mode"])
+	})
+
+	t.Run("ExtraFlags read from the config file too", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "solo.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("max_incomplete_chunked: 16\n"), 0o644))
+
+		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{
+			CLIFlags: []string{"listen"},
+			ExtraFlags: []ExtraFlagDef{
+				{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", StrDefault: "0", Category: "Timeout and limit options"},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "16", cfg.Extras["max_incomplete_chunked"],
+			"solo.yaml is the only config file solo reads; the embedded worker's cap must be settable there")
+	})
+
+	t.Run("the hub does not define max-incomplete-chunked", func(t *testing.T) {
+		// The Hub has no chunk-count cap to tune: channelmgr's interleaving guard
+		// admits one in-flight chunked sequence per channel+direction, which is
+		// strictly stronger than any count cap. The flag is solo-only (worker-scoped);
+		// re-adding it to allFlags would resurrect a dead hub knob.
+		_, _, err := LoadWithOptions([]string{"-max-incomplete-chunked", "8"}, LoadOptions{})
+		assert.Error(t, err, "the hub must not accept a flag it cannot act on")
 	})
 
 	t.Run("version flag works with options", func(t *testing.T) {

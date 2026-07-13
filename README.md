@@ -61,7 +61,7 @@ The binary runs in several modes:
 | `leapmux hub` | Central service only (auth, relay, database) |
 | `leapmux worker` | Connects to a remote Hub |
 | `leapmux dev` | Hub + Worker on all interfaces, login required |
-| `leapmux admin` | CLI for orgs, users, workers, OAuth, encryption keys, and the database |
+| `leapmux admin` | CLI for users, workers, OAuth, encryption keys, and the database |
 
 Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise_NK multiplexed over a single Hub-relayed WebSocket; Worker↔Hub uses gRPC. The Hub routes traffic but can't read Frontend↔Worker content. The wire format is Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/).
 

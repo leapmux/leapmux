@@ -13,7 +13,7 @@ import (
 func (s *Suite) testWorkspaceSections(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-user")
 
 		secID := id.Generate()
@@ -46,7 +46,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("list by user id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-list-user")
 
 		for i, name := range []string{"Sec A", "Sec B"} {
@@ -68,7 +68,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("rename", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-rename-user")
 
 		secID := id.Generate()
@@ -97,7 +97,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("rename wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-rename-wrong")
 
 		secID := id.Generate()
@@ -122,7 +122,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update position", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-pos-user")
 
 		secID := id.Generate()
@@ -150,7 +150,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update sidebar position", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-sidebar-user")
 
 		secID := id.Generate()
@@ -180,7 +180,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-del-user")
 
 		secID := id.Generate()
@@ -207,7 +207,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete section with items succeeds at store level", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-notempty-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "ws-notempty")
 
@@ -245,7 +245,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("has default for user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-count-user")
 
 		// Create an in-progress section (default type).
@@ -288,7 +288,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("list by user id empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-listempty-user")
 
 		sections, err := st.WorkspaceSections().ListByUserID(ctx, user.ID)
@@ -299,7 +299,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update sidebar position wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-sbwrong-user")
 
 		secID := id.Generate()
@@ -331,7 +331,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete non custom type fails", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-delnc-user")
 
 		secID := id.Generate()
@@ -360,7 +360,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("has default for user false", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org", true)
+		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-countzero-user")
 
 		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, user.ID)

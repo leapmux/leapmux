@@ -56,7 +56,7 @@ func ValidateBatch(
 		AffectedEntities: map[EntityRef]EntityWorkspaceTransition{},
 	}
 	// Memoize per-batch auth lookups. Each predicate is backed by a DB
-	// fetch (workspaces / worker_access_grants); a batch with N ops
+	// fetch (workspaces / workers); a batch with N ops
 	// touching the same workspace would otherwise issue N round-trips on
 	// the manager goroutine, blocking every other submitter for the org.
 	if !internal {

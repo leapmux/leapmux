@@ -93,20 +93,16 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
 	require.NoError(t, err)
 
-	// Should auto-create all default sections: In progress, Shared, Archived, Workers (left), Files, To-dos (right).
+	// Should auto-create all default sections: In progress, Archived, Workers (left), Files, To-dos (right).
 	sections := resp.Msg.GetSections()
-	require.Len(t, sections, 6)
+	require.Len(t, sections, 5)
 
-	var hasInProgress, hasShared, hasArchived, hasWorkers, hasFiles, hasTodos bool
+	var hasInProgress, hasArchived, hasWorkers, hasFiles, hasTodos bool
 	for _, s := range sections {
 		switch s.GetSectionType() {
 		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS:
 			hasInProgress = true
 			assert.Equal(t, "In progress", s.GetName())
-			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
-		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_SHARED:
-			hasShared = true
-			assert.Equal(t, "Shared", s.GetName())
 			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
 		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
 			hasArchived = true
@@ -127,7 +123,6 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 		}
 	}
 	assert.True(t, hasInProgress, "missing in_progress section")
-	assert.True(t, hasShared, "missing shared section")
 	assert.True(t, hasArchived, "missing archived section")
 	assert.True(t, hasWorkers, "missing workers section")
 	assert.True(t, hasFiles, "missing files section")
@@ -151,7 +146,7 @@ func TestSectionService_CreateSection(t *testing.T) {
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 7)
+	require.Len(t, listResp.Msg.GetSections(), 6)
 }
 
 func TestSectionService_CreateSection_EmptyName(t *testing.T) {
@@ -215,10 +210,10 @@ func TestSectionService_DeleteSection(t *testing.T) {
 		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
 	require.NoError(t, err)
 
-	// Verify it's gone (back to 6 default sections).
+	// Verify it's gone (back to 5 default sections).
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 6)
+	require.Len(t, listResp.Msg.GetSections(), 5)
 }
 
 func TestSectionService_DeleteSection_WithItems(t *testing.T) {

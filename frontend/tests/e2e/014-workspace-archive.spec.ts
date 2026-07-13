@@ -252,9 +252,14 @@ test.describe('Workspace Archive', () => {
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
       await expect(fileTab).toBeVisible()
 
-      // Verify file mention button IS visible before archive
-      const fileMentionButton = page.locator('[data-testid="file-mention-button"]')
+      // Verify the mention action IS available before archive. It lives in
+      // the file viewer's actions dropdown, so open that first.
+      const fileActionsTrigger = page.locator('[data-testid="file-actions-trigger"]')
+      const fileMentionButton = page.locator('[data-testid="file-actions-mention-button"]')
+      await fileActionsTrigger.click()
       await expect(fileMentionButton).toBeVisible()
+      // Close the menu before interacting with the sidebar.
+      await page.keyboard.press('Escape')
 
       // Archive the workspace
       const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
@@ -268,7 +273,9 @@ test.describe('Workspace Archive', () => {
       // Click the file tab to view it again (it may have switched to agent tab)
       await fileTab.click()
 
-      // File mention button should NOT be visible
+      // The actions menu still exists (save/copy items), but the mention
+      // item must be gone in an archived workspace.
+      await fileActionsTrigger.click()
       await expect(fileMentionButton).not.toBeVisible()
     }
     finally {

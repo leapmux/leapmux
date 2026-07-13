@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -65,13 +64,12 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 
 	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:         orgID,
-			Name:       TestAdminUsername,
-			IsPersonal: true,
+			ID:   orgID,
+			Name: TestAdminUsername,
 		}); err != nil {
 			return err
 		}
-		if err := tx.Users().Create(ctx, store.CreateUserParams{
+		return tx.Users().Create(ctx, store.CreateUserParams{
 			ID:           userID,
 			OrgID:        orgID,
 			Username:     TestAdminUsername,
@@ -80,13 +78,6 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 			Email:        "",
 			PasswordSet:  true,
 			IsAdmin:      true,
-		}); err != nil {
-			return err
-		}
-		return tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-			OrgID:  orgID,
-			UserID: userID,
-			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
 		})
 	}))
 }
@@ -106,26 +97,18 @@ func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string
 
 	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:         orgID,
-			Name:       username,
-			IsPersonal: true,
+			ID:   orgID,
+			Name: username,
 		}); err != nil {
 			return err
 		}
-		if err := tx.Users().Create(ctx, store.CreateUserParams{
+		return tx.Users().Create(ctx, store.CreateUserParams{
 			ID:           userID,
 			OrgID:        orgID,
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  username,
 			PasswordSet:  true,
-		}); err != nil {
-			return err
-		}
-		return tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-			OrgID:  orgID,
-			UserID: userID,
-			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
 		})
 	}))
 	return userID

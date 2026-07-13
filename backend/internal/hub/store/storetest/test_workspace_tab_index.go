@@ -17,7 +17,7 @@ import (
 func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 	t.Run("bulk upsert and delete owned and rendered", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "bulk-tabidx-org", false)
+		orgID := SeedOrg(t, st, "bulk-tabidx-org")
 		user := SeedUser(t, st, orgID, "bulk-tabidx-user")
 		worker := SeedWorker(t, st, user.ID)
 		wsA := SeedWorkspace(t, st, orgID, user.ID, "A")
@@ -86,7 +86,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 
 	t.Run("list rendered by workspace ids", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tabidx-org", false)
+		orgID := SeedOrg(t, st, "tabidx-org")
 		user := SeedUser(t, st, orgID, "tabidx-user")
 		worker := SeedWorker(t, st, user.ID)
 		wsA := SeedWorkspace(t, st, orgID, user.ID, "A")
@@ -136,5 +136,39 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		assert.ElementsMatch(t, []string{"b1"}, byWS[wsB])
 		assert.Empty(t, byWS[wsUnreferenced])
 		assert.Empty(t, byWS["missing"])
+	})
+
+	t.Run("locate accessible rendered is owner-only", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "locate-tabidx-org")
+		owner := SeedUser(t, st, orgID, "locate-owner")
+		other := SeedUser(t, st, orgID, "locate-other")
+		worker := SeedWorker(t, st, owner.ID)
+		wsID := SeedWorkspace(t, st, orgID, owner.ID, "Locate WS")
+		require.NoError(t, st.WorkspaceTabIndex().UpsertRendered(ctx, store.UpsertRenderedTabParams{
+			OrgID: orgID, WorkspaceID: wsID, WorkerID: worker.ID,
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "loc1", TileID: "tile", Position: "a0",
+		}))
+
+		// The owner locates the tab.
+		row, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: owner.ID,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, wsID, row.WorkspaceID)
+
+		// A non-owner -- even in the same org -- gets ErrNotFound.
+		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: other.ID,
+		})
+		assert.ErrorIs(t, err, store.ErrNotFound, "locate must be owner-only")
+
+		// The owner cannot locate a tab in a soft-deleted workspace.
+		_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: owner.ID})
+		require.NoError(t, err)
+		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: owner.ID,
+		})
+		assert.ErrorIs(t, err, store.ErrNotFound, "a soft-deleted workspace's tabs are unreachable")
 	})
 }

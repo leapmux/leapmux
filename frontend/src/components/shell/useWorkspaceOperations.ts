@@ -2,11 +2,10 @@ import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createSectionStore } from '~/stores/section.store'
 
-import { createMemo, createSignal } from 'solid-js'
+import { createSignal } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { useAuth } from '~/context/AuthContext'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
 import { isWorkspaceSection } from './sectionUtils'
@@ -31,12 +30,10 @@ export interface UseWorkspaceOperationsProps {
 }
 
 export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
-  const auth = useAuth()
   const store = props.sectionStore
 
   const [renamingWorkspaceId, setRenamingWorkspaceId] = createSignal<string | null>(null)
   const [renameValue, setRenameValue] = createSignal('')
-  const [sharingWorkspaceId, setSharingWorkspaceId] = createSignal<string | null>(null)
 
   // Per-workspace loading state (ref-counted to handle concurrent operations).
   const [loadingCounts, setLoadingCounts] = createSignal<Map<string, number>>(new Map())
@@ -72,15 +69,6 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
   // Workspace grouping
   // ---------------------------------------------------------------------------
 
-  const currentUserId = createMemo(() => auth.user()?.id ?? '')
-
-  const ownedWorkspaces = createMemo(() =>
-    props.workspaces().filter(w => w.createdBy === currentUserId()),
-  )
-  const sharedWorkspaces = createMemo(() =>
-    props.workspaces().filter(w => w.createdBy !== currentUserId()),
-  )
-
   /**
    * Build section groups for a given set of sections.
    * Each group pairs a section with the workspaces it contains.
@@ -110,12 +98,12 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
           return a.workspaceId.localeCompare(b.workspaceId)
         })
       return sectionItems
-        .map(i => ownedWorkspaces().find(w => w.id === i.workspaceId))
+        .map(i => props.workspaces().find(w => w.id === i.workspaceId))
         .filter((w): w is Workspace => w != null)
     }
 
     const assignedIds = new Set(store.state.items.map(i => i.workspaceId))
-    const unassigned = ownedWorkspaces().filter(w => !assignedIds.has(w.id))
+    const unassigned = props.workspaces().filter(w => !assignedIds.has(w.id))
 
     for (const section of sections) {
       if (isWorkspaceSection(section.sectionType)) {
@@ -124,9 +112,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
           section,
           workspaces: section.sectionType === SectionType.WORKSPACES_IN_PROGRESS
             ? [...sectionWorkspaces, ...unassigned]
-            : section.sectionType === SectionType.WORKSPACES_SHARED
-              ? sharedWorkspaces()
-              : sectionWorkspaces,
+            : sectionWorkspaces,
         })
       }
       else {
@@ -272,7 +258,6 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   const canAddToSection = (section: Section): boolean => {
     return section.sectionType !== SectionType.WORKSPACES_ARCHIVED
-      && section.sectionType !== SectionType.WORKSPACES_SHARED
       && isWorkspaceSection(section.sectionType)
   }
 
@@ -316,20 +301,12 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const wsId = dragId.slice(3)
     const fromSectionId = draggable.data?.sectionId as string
 
-    // Don't allow dragging from the Shared section
-    const fromSection = store.state.sections.find(s => s.id === fromSectionId)
-    if (fromSection?.sectionType === SectionType.WORKSPACES_SHARED)
-      return
-
     let targetSectionId: string
     let position: string
 
     if (dropId.startsWith('ws-')) {
       const targetWsId = dropId.slice(3)
       targetSectionId = droppable.data?.sectionId as string
-      const targetSection = store.state.sections.find(s => s.id === targetSectionId)
-      if (targetSection?.sectionType === SectionType.WORKSPACES_SHARED)
-        return
 
       if (fromSectionId === targetSectionId) {
         const items = store.getItemsForSection(targetSectionId)
@@ -344,8 +321,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
     else if (dropId.startsWith('section-')) {
       targetSectionId = dropId.slice(8)
-      const targetSection = store.state.sections.find(s => s.id === targetSectionId)
-      if (targetSection?.sectionType === SectionType.WORKSPACES_SHARED || fromSectionId === targetSectionId)
+      if (fromSectionId === targetSectionId)
         return
       const items = store.getItemsForSection(targetSectionId)
       const lastItem = items.at(-1)
@@ -381,24 +357,14 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     return group?.workspaces ?? []
   }
 
-  const isGroupShared = (sectionId: string, groups: SectionGroup[]): boolean => {
-    const group = groups.find(g => g.section.id === sectionId)
-    return group?.section.sectionType === SectionType.WORKSPACES_SHARED
-  }
-
   return {
     // Signals
     renamingWorkspaceId,
     renameValue,
-    sharingWorkspaceId,
-    setSharingWorkspaceId,
-    currentUserId,
-    sharedWorkspaces,
 
     // Grouping
     buildSectionGroups,
     getWorkspacesForGroup,
-    isGroupShared,
 
     // Operations
     startRename,

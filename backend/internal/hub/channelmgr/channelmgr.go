@@ -76,11 +76,14 @@ type Manager struct {
 }
 
 // New creates a new channel Manager.
-func New(opts ...Option) *Manager {
-	cfg := defaultConfig()
-	for _, opt := range opts {
-		opt(cfg)
-	}
+func New() *Manager {
+	// The reassembled-message ceiling is a fixed protocol constant, not an
+	// operator knob: the tunnel client and the browser hardcode
+	// channelwire.DefaultMaxMessageSize, so a Hub configured with any other value
+	// would silently accept a message those receivers then reject (or vice versa),
+	// poisoning an otherwise-healthy channel. One constant, asserted everywhere.
+	// Reintroducing the knob with end-to-end propagation is tracked in
+	// https://github.com/leapmux/leapmux/issues/291.
 	return &Manager{
 		channels:          make(map[string]*channel),
 		channelsByUser:    make(map[string]map[string]struct{}),
@@ -88,35 +91,8 @@ func New(opts ...Option) *Manager {
 		channelsBySession: make(map[string]map[string]struct{}),
 		channelsByBearer:  make(map[auth.BearerRef]map[string]struct{}),
 		userSenders:       make(map[string]map[string]*userConn),
-		ChunkTracker:      newChunkTracker(cfg.maxMessageSize, cfg.maxIncompleteChunked),
+		ChunkTracker:      newChunkTracker(channelwire.DefaultMaxMessageSize),
 	}
-}
-
-// config holds optional configuration for the Manager.
-type config struct {
-	maxMessageSize       int
-	maxIncompleteChunked int
-}
-
-func defaultConfig() *config {
-	return &config{
-		maxMessageSize:       channelwire.DefaultMaxMessageSize,
-		maxIncompleteChunked: channelwire.DefaultMaxIncompleteChunked,
-	}
-}
-
-// Option configures a Manager.
-type Option func(*config)
-
-// WithMaxMessageSize sets the maximum reassembled message size.
-func WithMaxMessageSize(size int) Option {
-	return func(c *config) { c.maxMessageSize = size }
-}
-
-// WithMaxIncompleteChunked sets the maximum number of in-flight chunked
-// sequences per channel.
-func WithMaxIncompleteChunked(n int) Option {
-	return func(c *config) { c.maxIncompleteChunked = n }
 }
 
 type AuthInfo struct {
@@ -318,6 +294,12 @@ func (m *Manager) useChannel(
 	// The liveness re-check, authorize callback, and ConnID bind run under m.mu;
 	// scope them to a closure with a deferred Unlock so a panicking authorize
 	// releases the manager-wide lock instead of freezing the whole manager.
+	//
+	// The ConnID re-bind below is the ONLY mutation forcing m.mu.Lock() here --
+	// every reader/writer of ch.ConnID already holds this channel's opMu, so
+	// making ConnID opMu-guarded would let this take m.mu.RLock() instead,
+	// demoting a global write lock taken once per frontend->worker frame to a
+	// read lock. See https://github.com/leapmux/leapmux/issues/279.
 	info, ok := func() (ChannelInfo, bool) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -1011,9 +993,15 @@ func (m *Manager) RelayWorkerMessage(msg *leapmuxv1.ChannelMessage, workerID str
 	sender := m.getConnSender(ch.UserID, ch.ConnID)
 	m.mu.RUnlock()
 
+	// An out-of-spec flags value is a protocol violation refused like any
+	// other chunk-tracking failure, not misread as a final chunk (see
+	// channelwire.ChunkContinuation).
+	more, validFlags := channelwire.ChunkContinuation(msg.GetFlags())
+	if !validFlags {
+		return true, fmt.Errorf("out-of-spec channel message flags: %d", msg.GetFlags())
+	}
 	if err := m.ChunkTracker.Track(
-		msg.GetChannelId(), "w2fe", msg.GetCorrelationId(), len(msg.GetCiphertext()),
-		msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		msg.GetChannelId(), "w2fe", msg.GetCorrelationId(), len(msg.GetCiphertext()), more,
 	); err != nil {
 		return true, err
 	}

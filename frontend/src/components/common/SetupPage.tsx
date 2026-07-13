@@ -3,6 +3,7 @@ import type { Component } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { isSetupRequired, loadSystemInfo } from '~/lib/systemInfo'
 import { cardNarrow } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -35,7 +36,7 @@ export const SetupPage: Component = () => {
             onSuccess={(resp, slug) => {
               loadSystemInfo(true)
               auth.setAuth(resp.user!)
-              navigate(`/o/${slug}`, { replace: true })
+              navigate(orgHomePath(slug), { replace: true })
             }}
           />
         </div>

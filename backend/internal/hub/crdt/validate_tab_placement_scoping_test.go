@@ -15,10 +15,7 @@ import (
 // so any auth shim works.
 type allowAllAuth struct{}
 
-func (allowAllAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
-	return true, nil
-}
-func (allowAllAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+func (allowAllAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
 func (allowAllAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {

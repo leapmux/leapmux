@@ -40,7 +40,6 @@ export interface SectionDefContext {
   // Workspace operations
   wsOps: WorkspaceOperations
   getWorkspacesForGroup: (sectionId: string) => Workspace[]
-  isGroupShared: (sectionId: string) => boolean
   activeWorkspaceId: string | null
   onNewWorkspace: (sectionId: string | null) => void
   onSelectWorkspace: (id: string) => void
@@ -84,7 +83,6 @@ export interface SectionDefContext {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
-  currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
   onRegisterWorker: () => void
@@ -105,7 +103,6 @@ export function buildSectionDef(
   const sectionId = section.id
 
   if (isWorkspaceSection(sectionType)) {
-    const isShared = sectionType === SectionType.WORKSPACES_SHARED
     return {
       id: sectionId,
       title: section.name,
@@ -114,7 +111,6 @@ export function buildSectionDef(
       defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
       collapsible: true,
       draggable: true,
-      visible: !isShared || ctx.wsOps.sharedWorkspaces().length > 0,
       headerActions: ctx.wsOps.canAddToSection(section)
         ? (
             <IconButton
@@ -137,13 +133,10 @@ export function buildSectionDef(
           workspaces={ctx.getWorkspacesForGroup(sectionId)}
           sectionId={sectionId}
           activeWorkspaceId={ctx.activeWorkspaceId}
-          currentUserId={ctx.wsOps.currentUserId()}
-          isVirtual={ctx.isGroupShared(sectionId)}
           sections={ctx.sectionStore.state.sections}
           onSelect={ctx.onSelectWorkspace}
           onRename={ctx.wsOps.startRename}
           onMoveTo={ctx.wsOps.moveWorkspace}
-          onShare={id => ctx.wsOps.setSharingWorkspaceId(id)}
           onArchive={ctx.wsOps.archiveWorkspace}
           onUnarchive={ctx.wsOps.unarchiveWorkspace}
           onDelete={ctx.wsOps.deleteWorkspace}
@@ -291,7 +284,6 @@ export function buildSectionDef(
           workers={ctx.workers}
           workerInfo={ctx.workerInfoFn}
           channelStatus={ctx.channelStatusFn}
-          currentUserId={ctx.currentUserId}
           onAddTunnel={ctx.onAddTunnel}
           onDeregister={ctx.onDeregisterWorker}
         />

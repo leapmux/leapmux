@@ -95,8 +95,8 @@ func (s *WorkspaceService) GetTab(
 
 // LocateTab finds a tab by (tab_type, tab_id) without a workspace
 // filter. The store layer scopes the search to workspaces the user
-// owns or has a share grant for, so the lookup is safe across orgs
-// without leaking other users' tabs. Used by the `leapmux remote` CLI
+// owns, so the lookup is safe across orgs without leaking other users'
+// tabs. Used by the `leapmux remote` CLI
 // to derive a spawning tab's full context (org / workspace / tile /
 // worker) from just the env-injected tab id.
 func (s *WorkspaceService) LocateTab(
@@ -217,12 +217,11 @@ func (s *WorkspaceService) LocateTile(
 	return nil, notFound
 }
 
-// locateTileOrgCandidates returns the orgs LocateTile should search, most-likely
-// first. A delegation bearer is pinned to a single workspace, so only that
-// workspace's org is searched (its existence is verified up front, collapsing a
-// denied or missing scope to NotFound). A regular caller's tile may live in a
-// workspace shared from another org, so its home org is searched first (the common
-// case), then every other org it can read a workspace in, deduped.
+// locateTileOrgCandidates returns the orgs LocateTile should search. A
+// delegation bearer is pinned to a single workspace, so only that workspace's
+// org is searched (its existence is verified up front, collapsing a denied or
+// missing scope to NotFound). A regular caller's workspaces all live in their
+// own (personal) org, so that is the only candidate.
 func (s *WorkspaceService) locateTileOrgCandidates(ctx context.Context, user *auth.UserInfo) ([]string, error) {
 	if user.Credential.IsDelegation() {
 		ws, err := loadWorkspaceForRead(ctx, s.store, user.Credential.WorkspaceScopeID(), user)
@@ -234,27 +233,7 @@ func (s *WorkspaceService) locateTileOrgCandidates(ctx context.Context, user *au
 		}
 		return []string{ws.OrgID}, nil
 	}
-	workspaces, err := s.store.Workspaces().ListAllAccessible(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accessible workspaces: %w", err))
-	}
-	orgIDs := make([]string, 0, len(workspaces)+1)
-	seen := make(map[string]struct{}, len(workspaces)+1)
-	add := func(orgID string) {
-		if orgID == "" {
-			return
-		}
-		if _, dup := seen[orgID]; dup {
-			return
-		}
-		seen[orgID] = struct{}{}
-		orgIDs = append(orgIDs, orgID)
-	}
-	add(user.OrgID) // home org first: the common case
-	for i := range workspaces {
-		add(workspaces[i].OrgID)
-	}
-	return orgIDs, nil
+	return []string{user.OrgID}, nil
 }
 
 func workspaceTabToProto(row *store.WorkspaceTabRow) *leapmuxv1.WorkspaceTab {

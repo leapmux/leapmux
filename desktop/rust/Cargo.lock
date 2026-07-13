@@ -2038,6 +2038,7 @@ dependencies = [
  "dirs",
  "gdk",
  "gtk",
+ "libc",
  "prost",
  "prost-build",
  "serde",

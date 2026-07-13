@@ -93,7 +93,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, cfg), opts)
+		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, cfg, nil), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
@@ -169,7 +169,7 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 
 func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, mode leapmuxv1.EncryptionMode) {
 	t.Helper()
-	env.workerMgr.Register(&workermgr.Conn{
+	_, _ = env.workerMgr.Register(&workermgr.Conn{
 		WorkerID:       workerID,
 		EncryptionMode: mode,
 	})
@@ -307,7 +307,7 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 			return nil
 		},
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
 	// OpenChannel should fail with timeout because mock worker doesn't respond.
 	// Use a short timeout context.
@@ -403,7 +403,7 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 100 * time.Millisecond })
 	sent := make(chan *leapmuxv1.ConnectResponse, 1)
-	wMgr.Register(&workermgr.Conn{
+	_, _ = wMgr.Register(&workermgr.Conn{
 		WorkerID: workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sent <- msg
@@ -449,7 +449,7 @@ func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) 
 func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			env.sent <- msg
@@ -504,7 +504,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			env.sent <- msg
@@ -542,7 +542,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			env.sent <- msg
@@ -596,7 +596,7 @@ func TestCloseChannelsByBearer_DoesNotBlockOnWorkerSend(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	blocked := make(chan struct{})
 	started := make(chan struct{})
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(*leapmuxv1.ConnectResponse) error {
 			close(started)
@@ -632,7 +632,7 @@ func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t
 	env := setupDirectOpenChannelEnv(t)
 	blocked := make(chan struct{})
 	blockedStarted := make(chan struct{}, 1)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(*leapmuxv1.ConnectResponse) error {
 			select {
@@ -647,7 +647,7 @@ func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t
 
 	healthyWorkerID := id.Generate()
 	healthySent := make(chan *leapmuxv1.ConnectResponse, 1)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: healthyWorkerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			healthySent <- msg
@@ -688,7 +688,7 @@ func TestCloseChannelsByUserRevocation_BoundsBlockedWorkerSenders(t *testing.T) 
 	const workerCount = 20
 	for i := 0; i < workerCount; i++ {
 		workerID := id.Generate()
-		env.worker.Register(&workermgr.Conn{
+		_, _ = env.worker.Register(&workermgr.Conn{
 			WorkerID: workerID,
 			SendFn: func(*leapmuxv1.ConnectResponse) error {
 				current := active.Add(1)
@@ -843,7 +843,7 @@ func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 			return nil
 		},
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
 	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
@@ -881,7 +881,7 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 			return nil
 		},
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
 	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
@@ -933,7 +933,7 @@ func TestPrepareWorkspaceAccess_Success(t *testing.T) {
 		WorkerID: workerID,
 		SendFn:   env.autoAckChannelAccessUpdate(sentMsgs),
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
 	// Register a channel for the admin user on this worker.
 	channelID := id.Generate()
@@ -1000,11 +1000,11 @@ func TestPrepareWorkspaceAccess_DoesNotWidenDelegationChannel(t *testing.T) {
 		Credential: auth.SessionCredential("session-1"),
 	}, nil)
 	env.channels.RegisterWithAuthInfo(delegationChannelID, env.workerID, env.user.ID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential("delegation-token-1", env.workspaceID),
+		Credential: auth.DelegationCredential("delegation-token-1", env.workspaceID, "worker-mint"),
 	}, nil)
 
 	sent := make(chan *leapmuxv1.ConnectResponse, 10)
-	env.worker.Register(&workermgr.Conn{
+	_, _ = env.worker.Register(&workermgr.Conn{
 		WorkerID: env.workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sent <- msg
@@ -1071,7 +1071,7 @@ func TestPrepareWorkspaceAccess_AckTimeout(t *testing.T) {
 			return nil
 		},
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
 	channelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(channelID, workerID, adminUser.ID, channelmgr.AuthInfo{}, nil)
@@ -1127,14 +1127,14 @@ func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
 		WorkerID: worker1ID,
 		SendFn:   env.autoAckChannelAccessUpdate(sent1),
 	}
-	env.workerMgr.Register(conn1)
+	_, _ = env.workerMgr.Register(conn1)
 
 	sent2 := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn2 := &workermgr.Conn{
 		WorkerID: worker2ID,
 		SendFn:   env.autoAckChannelAccessUpdate(sent2),
 	}
-	env.workerMgr.Register(conn2)
+	_, _ = env.workerMgr.Register(conn2)
 
 	// Register channels: one on each worker.
 	ch1ID := id.Generate()
@@ -1212,7 +1212,12 @@ func TestPrepareWorkspaceAccess_NoAccessToWorkspace(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
-func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
+// A Worker serves only the user it is registered to. Owning a workspace never
+// conveys a reach into someone else's Worker, so a caller naming their OWN
+// workspace but another user's worker is still refused here. This pins the
+// verifyWorkerAccess guard in PrepareWorkspaceAccess: the workspace checks
+// above it bound WHICH workspace may be named, not WHICH worker.
+func TestPrepareWorkspaceAccess_OwnWorkspaceDoesNotConveyWorkerAccess(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	adminToken := env.adminToken(t)
@@ -1222,62 +1227,76 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
 
 	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
 
-	// Simulate worker online with auto-ack for ChannelAccessUpdate.
+	// Worker is online and would auto-ack any ChannelAccessUpdate, so a leak
+	// would show up as a delivered message rather than a timeout.
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
 		SendFn:   env.autoAckChannelAccessUpdate(sentMsgs),
 	}
-	env.workerMgr.Register(conn)
+	_, _ = env.workerMgr.Register(conn)
 
-	// Create workspace owned by admin.
-	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
-
-	// Create user2 and grant workspace access.
+	// user2 owns a workspace of their own -- enough to pass the workspace
+	// load-and-authorize check, so the worker guard is what refuses below.
 	user2ID, user2Token := env.createSecondUser(t)
-	err = env.store.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-		WorkspaceID: wsID,
-		UserID:      user2ID,
-	})
+	user2, err := env.store.Users().GetByID(ctx, user2ID)
 	require.NoError(t, err)
+	wsUser2 := env.createWorkspace(t, user2ID, user2.OrgID)
 
-	// Register a channel for user2 on this worker.
+	// Even with a channel registered for user2 on admin's worker -- a state
+	// OpenChannel could never produce, since it asks this same question --
+	// prepare-access must refuse.
 	channelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(channelID, workerID, user2ID, channelmgr.AuthInfo{}, nil)
 
-	// user2 should succeed because they have explicit workspace access.
 	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
 		&leapmuxv1.PrepareWorkspaceAccessRequest{
 			WorkerId:    workerID,
-			WorkspaceId: wsID,
+			WorkspaceId: wsUser2,
 		}, user2Token))
+	require.Error(t, err)
+	// NotFound, not PermissionDenied: the guard refuses to confirm that a
+	// worker the caller cannot use even exists.
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	// Nothing may reach the worker for a refused caller.
+	select {
+	case msg := <-sentMsgs:
+		require.Failf(t, "no message should reach the worker", "got %v", msg)
+	default:
+	}
+
+	// The worker's owner is still served on their own workspace and channel.
+	wsAdmin := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+	adminChannelID := id.Generate()
+	env.channelMgr.RegisterWithAuthInfo(adminChannelID, workerID, adminUser.ID, channelmgr.AuthInfo{}, nil)
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsAdmin,
+		}, adminToken))
 	require.NoError(t, err)
 
 	select {
 	case msg := <-sentMsgs:
 		update := msg.GetChannelAccessUpdate()
 		require.NotNil(t, update)
-		assert.Equal(t, channelID, update.GetChannelId())
-		assert.Equal(t, wsID, update.GetWorkspaceId())
+		assert.Equal(t, adminChannelID, update.GetChannelId())
+		assert.Equal(t, wsAdmin, update.GetWorkspaceId())
 	default:
-		require.Fail(t, "expected a ChannelAccessUpdate for user2's channel")
+		t.Fatal("expected a ChannelAccessUpdate for the worker's owner")
 	}
 }
 
-func TestPrepareWorkspaceAccess_SharedWorkspaceLoadsWorkspaceOnce(t *testing.T) {
+// TestPrepareWorkspaceAccess_LoadsWorkspaceOnce pins the single-load shape of
+// the authorization path: the owner check reuses the loaded workspace row
+// rather than fetching it a second time.
+func TestPrepareWorkspaceAccess_LoadsWorkspaceOnce(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	ctx := context.Background()
-	ownerID := id.Generate()
-	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: ownerID, OrgID: env.user.OrgID, Username: "workspace-owner-" + ownerID[:8],
-	}))
 	workspaceID := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: env.user.OrgID, OwnerUserID: ownerID, Title: "shared",
-	}))
-	require.NoError(t, env.store.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-		WorkspaceID: workspaceID,
-		UserID:      env.user.ID,
+		ID: workspaceID, OrgID: env.user.OrgID, OwnerUserID: env.user.ID, Title: "mine",
 	}))
 
 	countingStore := &workspaceLookupCountingStore{Store: env.store}
@@ -1290,7 +1309,7 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceLoadsWorkspaceOnce(t *testing.T) 
 		}),
 	)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), countingStore.getByIDCalls.Load(), "shared-workspace authorization must reuse the loaded row")
+	assert.Equal(t, int32(1), countingStore.getByIDCalls.Load(), "workspace authorization must reuse the loaded row")
 }
 
 func TestPrepareWorkspaceAccess_WorkerOffline(t *testing.T) {
@@ -1342,24 +1361,21 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	t.Helper()
 	ctx := context.Background()
 
-	adminUser, err := e.store.Users().GetByUsername(ctx, "admin")
-	require.NoError(t, err)
-
+	orgID := id.Generate()
+	require.NoError(t, e.store.Orgs().Create(ctx, store.CreateOrgParams{
+		ID:   orgID,
+		Name: "user2",
+	}))
 	userID = id.Generate()
 	hash, _ := password.Hash("testpass2")
 	_ = e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,
-		OrgID:        adminUser.OrgID,
+		OrgID:        orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
 		PasswordSet:  true,
 		IsAdmin:      false,
-	})
-	_ = e.store.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-		OrgID:  adminUser.OrgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
 	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2")
 	require.NoError(t, loginErr)

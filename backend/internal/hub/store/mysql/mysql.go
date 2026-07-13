@@ -118,14 +118,10 @@ func normalizeMySQLDSN(dsn string) (string, error) {
 	return cfg.FormatDSN(), nil
 }
 
-func (s *mysqlStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
-func (s *mysqlStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
-func (s *mysqlStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
-func (s *mysqlStore) OrgMembers() store.OrgMemberStore { return &orgMemberStore{conn: s.conn} }
-func (s *mysqlStore) Workers() store.WorkerStore       { return &workerStore{conn: s.conn} }
-func (s *mysqlStore) WorkerAccessGrants() store.WorkerAccessGrantStore {
-	return &workerAccessGrantStore{conn: s.conn}
-}
+func (s *mysqlStore) Orgs() store.OrgStore         { return &orgStore{conn: s.conn} }
+func (s *mysqlStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
+func (s *mysqlStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
+func (s *mysqlStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
 func (s *mysqlStore) WorkerNotifications() store.WorkerNotificationStore {
 	return &workerNotificationStore{conn: s.conn}
 }
@@ -133,9 +129,6 @@ func (s *mysqlStore) RegistrationKeys() store.RegistrationKeyStore {
 	return &registrationKeyStore{conn: s.conn}
 }
 func (s *mysqlStore) Workspaces() store.WorkspaceStore { return &workspaceStore{conn: s.conn} }
-func (s *mysqlStore) WorkspaceAccess() store.WorkspaceAccessStore {
-	return &workspaceAccessStore{conn: s.conn}
-}
 func (s *mysqlStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 	return &workspaceTabIndexStore{conn: s.conn}
 }

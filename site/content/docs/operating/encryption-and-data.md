@@ -20,7 +20,7 @@ LeapMux keeps three kinds of persistent state:
 
 | Data | Where it lives | Encrypted at rest? |
 | --- | --- | --- |
-| Accounts, orgs, workspaces, members, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
+| Accounts, personal orgs, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
 | OAuth provider client secrets and per-user OAuth access/refresh tokens | Hub database | **Yes** — encrypted with the keystore key |
 | API-token / delegation-token secrets | Hub database | No — stored as HMAC-SHA256 **hashes** (peppered), never as plaintext or reversible ciphertext |
 | Worker public keys (for the E2EE handshake) | Hub database | No — public material, stored in the clear |

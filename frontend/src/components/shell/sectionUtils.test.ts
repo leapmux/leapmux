@@ -15,10 +15,6 @@ describe('isMoveTargetSection', () => {
     expect(isMoveTargetSection(SectionType.WORKSPACES_ARCHIVED)).toBe(false)
   })
 
-  it('returns false for SHARED', () => {
-    expect(isMoveTargetSection(SectionType.WORKSPACES_SHARED)).toBe(false)
-  })
-
   it('returns false for FILES', () => {
     expect(isMoveTargetSection(SectionType.FILES)).toBe(false)
   })
@@ -33,25 +29,15 @@ describe('isMoveTargetSection', () => {
 })
 
 describe('isWorkspaceMutatable', () => {
-  const userId = 'user-1'
-
-  it('returns true for owner on non-archived workspace', () => {
-    expect(isWorkspaceMutatable({ createdBy: userId }, userId, false)).toBe(true)
-  })
-
-  it('returns false for non-owner', () => {
-    expect(isWorkspaceMutatable({ createdBy: 'other-user' }, userId, false)).toBe(false)
+  it('returns true for a non-archived workspace', () => {
+    expect(isWorkspaceMutatable({ createdBy: 'user-1' }, false)).toBe(true)
   })
 
   it('returns false for archived workspace', () => {
-    expect(isWorkspaceMutatable({ createdBy: userId }, userId, true)).toBe(false)
+    expect(isWorkspaceMutatable({ createdBy: 'user-1' }, true)).toBe(false)
   })
 
   it('returns false when workspace is undefined', () => {
-    expect(isWorkspaceMutatable(undefined, userId, false)).toBe(false)
-  })
-
-  it('returns false for non-owner on archived workspace', () => {
-    expect(isWorkspaceMutatable({ createdBy: 'other-user' }, userId, true)).toBe(false)
+    expect(isWorkspaceMutatable(undefined, false)).toBe(false)
   })
 })

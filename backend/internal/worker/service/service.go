@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -36,6 +37,12 @@ import (
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
 // Context holds shared dependencies for all service implementations.
+//
+// The name collides with the stdlib context.Context it sits beside in every
+// handler signature, and the struct mixes injected wiring with mutable runtime
+// state; renaming it is filed as
+// https://github.com/leapmux/leapmux/issues/274 -- a dedicated mechanical
+// rename rather than a rider on an unrelated change.
 type Context struct {
 	DB                  *sql.DB
 	Queries             *db.Queries
@@ -53,7 +60,21 @@ type Context struct {
 	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
-	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
+
+	// registeredBy is the user who registered this worker -- the fact
+	// requireWorkerOwner gates every machine-scoped RPC family (file, git, sysinfo,
+	// tunnel) on. The Hub delivers it on every Connect (leapmuxv1.WorkerIdentity);
+	// see UpdateRegisteredBy.
+	//
+	// Atomic rather than a plain field because the two accesses genuinely race: the
+	// connect loop writes it once per connection, while handlers read it per-RPC on
+	// goroutines DispatchAsync spawned. Within ONE connection the spawn orders them,
+	// but a RECONNECT does not -- Manager.CloseAll cancels session contexts without
+	// waiting for in-flight handlers, so a handler from the previous connection can
+	// still be inside requireWorkerOwner when the next connection's receive loop
+	// writes. The value is identical every time, which is exactly what makes a plain
+	// field's race invisible until the detector or a torn read finds it.
+	registeredBy atomic.Pointer[string]
 
 	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
 	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
@@ -441,16 +462,144 @@ func (svc *Context) persistTerminalOnExit(tid string, exitCode int) bool {
 	return true
 }
 
+// ownerOnlyRegistrar registers handlers that ONLY the worker's registered owner
+// may call.
+//
+// It exists so the machine-scoped families cannot register an ungated handler by
+// accident: they are handed this instead of the raw *channel.Dispatcher, so the
+// gate is a property of where the handler is registered rather than a line each
+// author must remember. Both Register and RegisterTracked are wrapped -- gating
+// only one would leave a silent hole (git uses both).
+type ownerOnlyRegistrar struct {
+	d   *channel.Dispatcher
+	svc *Context
+}
+
+func (r ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		if !requireWorkerOwner(r.svc, userID, sender) {
+			return
+		}
+		handler(ctx, userID, req, sender)
+	}
+}
+
+func (r ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc) {
+	r.d.Register(method, r.gate(handler))
+}
+
+func (r ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
+	r.d.RegisterTracked(method, r.gate(handler))
+}
+
+// SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
+//
+// This is the SEED path only: the startup DB/config value, which is a cache the
+// first connect overrides. The Hub owns workers.registered_by and is the only
+// authority, so the connect loop must use UpdateRegisteredBy instead -- it carries
+// the empty-owner refusal a seed does not need (nothing to clobber before the
+// first store).
+func (svc *Context) SetRegisteredBy(userID string) {
+	svc.registeredBy.Store(&userID)
+}
+
+// UpdateRegisteredBy applies an owner the Hub delivered on connect.
+//
+// Both worker entry points (worker.Run's connect loop and the standalone
+// `leapmux worker` command) wire this as their OnWorkerIdentity handler, so the
+// compare/warn/store policy lives once next to the state it guards rather than
+// being copy-pasted per entry point -- which is exactly how one of them would end
+// up missing the empty guard below.
+//
+// An empty identity is refused rather than stored: requireWorkerOwner denies an
+// empty owner, so clobbering a good owner with "" would make the worker deny its
+// own legitimate user for the life of the connection, indistinguishably from a
+// real cross-tenant refusal -- the failure this owner became Hub-pushed to avoid.
+// Keeping the previous owner is the safe direction: the Hub cannot legitimately
+// un-own a live worker (deregistration flows through OnDeregister instead), so an
+// empty push is a bug or a truncated payload, never an instruction.
+func (svc *Context) UpdateRegisteredBy(userID string) {
+	if userID == "" {
+		slog.Warn("hub delivered an empty worker owner, keeping current",
+			"current", svc.RegisteredBy())
+		return
+	}
+	if prev := svc.RegisteredBy(); prev != "" && prev != userID {
+		slog.Warn("hub reported a different worker owner",
+			"previous", prev, "current", userID)
+	}
+	svc.registeredBy.Store(&userID)
+}
+
+// RegisteredBy returns the user who registered this worker, or "" if the Hub has not
+// delivered it yet. requireWorkerOwner refuses "" outright, so an undelivered
+// identity fails closed rather than matching another empty id.
+func (svc *Context) RegisteredBy() string {
+	if p := svc.registeredBy.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// requireWorkerOwner gates a handler on the caller being the worker's own
+// registered owner, rejecting everyone else.
+//
+// It is the right gate for the families whose reach is the MACHINE rather than a
+// workspace -- tunnels (arbitrary TCP out of the host), the file and git handlers
+// (any absolute path; validate.SanitizePath normalizes and blocks traversal, it
+// does not confine to a root), and sysinfo (which discloses the owner's home
+// path). The owner already has all of this: their agents run as them on their own
+// machine, so granting it over the channel adds nothing. Anyone ELSE holding a
+// channel must not have it -- notably a delegation bearer, which is pinned to one
+// workspace and is handed to a prompt-injectable agent. The Hub only ever opens a
+// channel for the worker's own owner, so this gate is defence in depth today; it is
+// what keeps any future way of reaching a worker failing closed rather than
+// silently exposing the filesystem.
+//
+// Workspace-scoped families (agent, terminal, tab moves, cleanup) must NOT use
+// this: they legitimately serve non-owners and gate on the Hub-supplied
+// accessible-workspace set instead (requireAccessibleWorkspace and friends).
+// An empty id on either side is refused rather than matched. Comparing two empty
+// strings succeeds, so a worker whose owner never got populated would admit a caller
+// the Hub named with an empty user id -- a gate whose whole purpose is to fail
+// closed, failing open on the one input it cannot judge. An empty owner now means
+// only "the Hub has not delivered WorkerIdentity yet", which no handler can observe
+// (identity precedes the first ChannelOpen on the same stream), but the refusal
+// stays as the layer that makes that ordering non-load-bearing. Its sibling in this
+// package's Hub counterpart (verifyDelegationWorkerScope) refuses an unrecorded
+// minter for the same reason.
+func requireWorkerOwner(svc *Context, userID string, sender *channel.Sender) bool {
+	owner := svc.RegisteredBy()
+	if userID != "" && owner != "" && userID == owner {
+		return true
+	}
+	sendPermissionDenied(sender, "only the worker owner may use this")
+	return false
+}
+
 // RegisterAll registers all service handlers with the dispatcher.
+//
+// The machine-scoped families receive the ownerOnlyRegistrar, so their owner-only
+// gate is a property of registration -- a handler cannot join them ungated. The
+// workspace-scoped families (terminal, agent, cleanup, tab-move) still take the
+// raw dispatcher and gate by hand inside each handler (requireAccessibleWorkspace
+// and friends), because their workspace id is derived four different ways (request
+// field, loaded entity row, store lookup, dual source+dest) and no single
+// registrar-level extractor models all of them. Making that gate structural too
+// for the request-field subset is tracked in
+// https://github.com/leapmux/leapmux/issues/289.
 func RegisterAll(d *channel.Dispatcher, svc *Context) {
-	registerFileHandlers(d, svc)
-	registerGitHandlers(d, svc)
+	registerPingHandler(d, svc)
+	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
+	ownerOnly := ownerOnlyRegistrar{d: d, svc: svc}
+	registerFileHandlers(ownerOnly, svc)
+	registerGitHandlers(ownerOnly, svc)
 	registerTerminalHandlers(d, svc)
 	registerAgentHandlers(d, svc)
 	registerCleanupHandlers(d, svc)
 	registerTabMoveHandlers(d, svc)
-	registerSysInfoHandlers(d, svc)
-	registerTunnelHandlers(d, svc)
+	registerSysInfoHandlers(ownerOnly, svc)
+	registerTunnelHandlers(ownerOnly)
 }
 
 // optionGroupLabelInGroups returns the display label of the option group with the

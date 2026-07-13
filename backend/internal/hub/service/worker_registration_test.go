@@ -97,7 +97,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	mux.Handle(connectorPath, connectorHandler)
 
 	notif := notifier.New(st, wMgr, pendingReqs, cfg)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg, nil)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -185,7 +185,6 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, regResp.Msg.GetWorkerId())
 	assert.NotEmpty(t, regResp.Msg.GetAuthToken())
-	assert.NotEmpty(t, regResp.Msg.GetRegisteredBy())
 
 	// A second Register with the same key must fail — the key was
 	// soft-deleted as part of the consume txn.
@@ -193,10 +192,12 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
-	// Worker row exists and has registered_by = key.created_by.
+	// Worker row exists and has registered_by = key.created_by. The response does
+	// not carry the owner -- the Hub delivers it on connect (WorkerIdentity) instead
+	// of at registration, so the DB row is the only place to assert it.
 	w, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
 	require.NoError(t, err)
-	assert.Equal(t, regResp.Msg.GetRegisteredBy(), w.RegisteredBy)
+	assert.NotEmpty(t, w.RegisteredBy, "the worker row must record the key creator as its owner")
 }
 
 func TestRegister_AtomicConsume_RaceProducesOneWinner(t *testing.T) {
@@ -611,4 +612,69 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	})
+}
+
+// The Hub must send WorkerIdentity as the FIRST message on every Connect stream.
+//
+// It is the worker's only source for its own owner: requireWorkerOwner gates every
+// machine-scoped family (file, git, sysinfo, tunnel) on it, and the worker keeps no
+// local copy -- a cached copy is what previously went missing and left the worker
+// permanently denying its own legitimate user. Identity must also PRECEDE the
+// connection being published to the worker manager, so it cannot be overtaken by a
+// frontend-driven ChannelOpen on the same stream; asserting it is the first frame the
+// worker receives is how that ordering stays true.
+func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+
+	// Register a worker so it has an auth token and a recorded owner.
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
+		authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+	require.NoError(t, err)
+
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	require.NoError(t, err)
+	require.NotEmpty(t, worker.RegisteredBy)
+
+	// Connect needs gRPC-over-h2c (a bidi stream), which httptest's HTTP/1 server
+	// cannot serve -- mirror the unix-socket harness above.
+	socketURL := locallistentest.UniqueListenURL(t, "hub-identity")
+	ln, err := locallisten.Listen(socketURL)
+	require.NoError(t, err)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: env.mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
+
+	dial, err := locallisten.Dialer(socketURL)
+	require.NoError(t, err)
+	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
+	t.Cleanup(httpClient.CloseIdleConnections)
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
+		httpClient, "http://localhost", connect.WithGRPC())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream := connectorClient.Connect(ctx)
+	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+
+	first, err := stream.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, first.GetWorkerIdentity(),
+		"the FIRST message on the stream must be WorkerIdentity, not the heartbeat echo")
+	assert.Equal(t, worker.RegisteredBy, first.GetWorkerIdentity().GetRegisteredBy(),
+		"the Hub must name the worker's recorded owner")
+	require.NoError(t, stream.CloseRequest())
 }

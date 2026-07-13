@@ -15,16 +15,14 @@ import (
 // allowAll returns an AuthChecker that accepts every workspace.
 type allowAll struct{}
 
-func (allowAll) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
-func (allowAll) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error)  { return true, nil }
-func (allowAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)      { return true, nil }
+func (allowAll) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+func (allowAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)       { return true, nil }
 
 // denyAll returns an AuthChecker that rejects every workspace.
 type denyAll struct{}
 
-func (denyAll) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
-func (denyAll) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error)  { return false, nil }
-func (denyAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)      { return false, nil }
+func (denyAll) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
+func (denyAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)       { return false, nil }
 
 // onlyOwner returns an AuthChecker that accepts only workspaces
 // owned by the given principal id.
@@ -32,10 +30,7 @@ type onlyOwner struct {
 	allowed map[string]bool // workspaceID set
 }
 
-func (o onlyOwner) CanWriteWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
-	return o.allowed[workspaceID], nil
-}
-func (o onlyOwner) CanReadWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
+func (o onlyOwner) CanAccessWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
 	return o.allowed[workspaceID], nil
 }
 func (o onlyOwner) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
@@ -49,10 +44,7 @@ type workerScope struct {
 	workers map[string]bool
 }
 
-func (workerScope) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) {
-	return true, nil
-}
-func (workerScope) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (workerScope) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
 	return true, nil
 }
 func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
@@ -64,10 +56,7 @@ func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) (boo
 // failure must NOT collapse into a permanent FORBIDDEN op-rejection.
 type erroringAuth struct{ err error }
 
-func (e erroringAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
-	return false, e.err
-}
-func (e erroringAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+func (e erroringAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
 	return false, e.err
 }
 func (e erroringAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
@@ -81,7 +70,7 @@ func (e erroringAuth) CanUseWorker(context.Context, string, string, string) (boo
 // on a brief DB hiccup.
 func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
-	// A live tab whose tombstone triggers a CanWriteWorkspace(preWS=w1) check.
+	// A live tab whose tombstone triggers a CanAccessWorkspace(preWS=w1) check.
 	pre.Tabs["tA"] = &leapmuxv1.TabRecord{
 		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:    "tA",
@@ -107,10 +96,7 @@ func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.
 // validateWorkerRefs' CanUseWorker call.
 type workerRefErrorAuth struct{ err error }
 
-func (workerRefErrorAuth) CanWriteWorkspace(context.Context, string, string, string) (bool, error) {
-	return true, nil
-}
-func (workerRefErrorAuth) CanReadWorkspace(context.Context, string, string, string) (bool, error) {
+func (workerRefErrorAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
 func (w workerRefErrorAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {

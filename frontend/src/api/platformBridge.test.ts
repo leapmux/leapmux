@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { observeWindowMode, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, observeWindowMode, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -12,6 +12,33 @@ vi.mock('~/lib/shortcuts/platform', () => ({
   isMac: isMacMock,
   getPlatform: () => (isMacMock() ? 'mac' : 'linux'),
 }))
+
+describe('desktopFetch', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('preserves repeated response header values', async () => {
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http') {
+        return {
+          status: 200,
+          headers: { 'x-repeated': ['one', 'two'] },
+          body: '',
+        }
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const response = await desktopFetch('https://hub.example/test')
+    expect(response.headers.get('x-repeated')).toBe('one, two')
+  })
+})
 
 describe('readClipboardImage', () => {
   let originalGetContext: typeof HTMLCanvasElement.prototype.getContext
@@ -276,6 +303,37 @@ describe('cliInstallSymlink', () => {
   })
 })
 
+describe('resetTunnels', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('invokes the sidecar reset_tunnels command on desktop', async () => {
+    let invoked = 0
+    mockIPC((cmd) => {
+      if (cmd === 'reset_tunnels') {
+        invoked++
+        return undefined
+      }
+      throw new Error(`unmocked: ${cmd}`)
+    })
+    await platformBridge.resetTunnels()
+    expect(invoked).toBe(1)
+  })
+
+  it('is a no-op off the desktop (no sidecar to reset)', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    // No mockIPC handler is installed, so any invoke would throw: resolving
+    // cleanly proves the web path never reaches the IPC layer.
+    await expect(platformBridge.resetTunnels()).resolves.toBeUndefined()
+  })
+})
+
 describe('restoreWindowGeometry', () => {
   let calls: Array<{ cmd: string, args: Record<string, unknown> }>
 
@@ -408,6 +466,47 @@ describe('restoreWindowGeometry', () => {
 
     const saves = calls.filter(c => c.cmd === 'save_window_geometry')
     expect(saves).toHaveLength(1)
+  })
+})
+
+// The relay ids the sidecar fences on are only useful if they reach it: an open or
+// close that dropped its id would be indistinguishable from any other attempt's, and
+// the sidecar would be back to inferring intent from goroutine scheduling order.
+describe('orgevents relay bridge', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('forwards the relay id with the org subscription on open', async () => {
+    const calls: Array<{ cmd: string, args: unknown }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args })
+      return null
+    })
+
+    await platformBridge.openOrgEventsRelay(42, 'org-1', ['ws-1'])
+
+    expect(calls).toEqual([{
+      cmd: 'open_orgevents_relay',
+      args: { relayId: 42, orgId: 'org-1', workspaceIds: ['ws-1'] },
+    }])
+  })
+
+  it('forwards the relay id on close', async () => {
+    const calls: Array<{ cmd: string, args: unknown }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args })
+      return null
+    })
+
+    await platformBridge.closeOrgEventsRelay(42)
+
+    expect(calls).toEqual([{ cmd: 'close_orgevents_relay', args: { relayId: 42 } }])
   })
 })
 
@@ -554,5 +653,25 @@ describe('windowExitFullscreen', () => {
   it('is inert outside the Tauri app (no window global)', async () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     await expect(windowExitFullscreen()).resolves.toBeUndefined()
+  })
+})
+
+describe('parseRelayClosePayload', () => {
+  it('passes through a well-formed sidecar close payload', () => {
+    expect(parseRelayClosePayload({ code: 1000, reason: 'bye', wasClean: true }))
+      .toEqual({ code: 1000, reason: 'bye', wasClean: true })
+  })
+
+  it('defaults each field when the payload is missing or wrong-typed', () => {
+    // The untyped Tauri event boundary can deliver anything; every field is
+    // guarded and code defaults to 1006 (abnormal closure), the shared wire
+    // default both relay-close paths agree on.
+    expect(parseRelayClosePayload(null)).toEqual({ code: 1006, reason: '', wasClean: false })
+    expect(parseRelayClosePayload({ code: '1000', reason: 42, wasClean: 'yes' }))
+      .toEqual({ code: 1006, reason: '', wasClean: false })
+  })
+
+  it('does not treat a truthy-but-non-true wasClean as clean', () => {
+    expect(parseRelayClosePayload({ wasClean: 1 }).wasClean).toBe(false)
   })
 })

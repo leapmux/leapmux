@@ -427,23 +427,6 @@ You restored `hub.db` but not the matching `encryption.key`, or restored a key f
 **Fix**
 Restore the `encryption.key` from the same backup as the database. For planned key rotation, use `leapmux admin encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/operating/encryption-and-data/).
 
-## Sharing and collaboration
-
-### A shared workspace appears empty
-
-**Symptom**
-Someone shared a workspace with you. You can see the tabs and layout, but agent chats, terminals, and files appear empty or won't load.
-
-**Cause**
-Sharing grants **routing permission via the Hub only** — it does not hand over content. The Hub never has plaintext. To read agent/terminal/file content you must open your **own** end-to-end-encrypted channel to the Worker. Also, the Worker that hosts the content may simply be offline.
-
-**Fix**
-- Open the agent or terminal tab to trigger your own encrypted channel to the Worker. Layout geometry and titles come from the Hub (so the tabs show), but content streams only over your channel.
-- Confirm the hosting Worker is online; if it isn't, opening a channel fails with **"worker is offline"**. Bring the Worker back up.
-- The first time you connect to that Worker you may get the TOFU first-use pin (silent) or, if its key changed, the **"Worker public key changed"** dialog — handle it as above.
-
-See [Collaboration & Presence](/docs/using/collaboration/) and [Workspaces](/docs/using/workspaces/).
-
 ## Terminals and `leapmux remote`
 
 For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Remote Control CLI](/docs/operating/remote-control-cli/).

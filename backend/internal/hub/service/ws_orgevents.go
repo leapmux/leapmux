@@ -83,6 +83,19 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing org_id", http.StatusBadRequest)
 		return
 	}
+	// Refuse a foreign org id before touching the registry. Without this the
+	// caller-supplied org_id would let any authenticated user drive
+	// registry.Get (which performs no authorization) into bootstrapping an
+	// arbitrary tenant's CRDT Manager and then pin it janitor-immune by
+	// registering a live subscriber -- a resource-materialization vector, even
+	// though the empty ACL filter suppresses every workspace-scoped payload.
+	// ResolveOrgID is the same pure "foreign org -> NotFound" comparison the
+	// ConnectRPC workspace path uses; org_id is non-empty here, so it either
+	// equals the caller's personal org or fails closed.
+	if _, err := auth.ResolveOrgID(user, orgID); err != nil {
+		http.Error(w, "organization not found", http.StatusNotFound)
+		return
+	}
 	workspaceIDs := []string{}
 	if raw := r.URL.Query().Get("workspace_ids"); raw != "" {
 		for _, w := range strings.Split(raw, ",") {
@@ -139,7 +152,7 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ClientID:              presenceClientID(user),
 		RequestedWorkspaceIDs: requested,
 		WorkspaceScopeID:      user.Credential.WorkspaceScopeID(),
-		// Filter is resolved and installed under aclTransitionMu by
+		// Filter is resolved and installed under subscribeExpandMu by
 		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {
 			select {
@@ -161,16 +174,19 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	// Resolve the workspace filter and register the subscriber atomically under
-	// the manager's ACL-transition lock. This closes the resolve-then-register
-	// window: an unshare that commits while this connection is being set up either
-	// is seen by the resolve (workspace already excluded) or catches this
-	// now-registered subscriber in its revoke pass -- it can no longer leave the
-	// subscriber holding a stale filter that keeps receiving a revoked workspace's
-	// ops. The resolve reads the DB ACL under that lock; its failure closes the
-	// just-accepted socket. Only a delegation-scope PermissionDenied is a genuine
+	// the manager's subscribe/expand lock. This closes the resolve-then-register
+	// window: a workspace create that commits while this connection is being set
+	// up either is seen by the resolve (workspace already included) or catches
+	// this now-registered subscriber in its expand pass -- it can no longer leave
+	// the subscriber holding a stale filter that misses the new workspace until
+	// reconnect. The resolve reads the DB ACL under that lock; its failure closes
+	// the just-accepted socket. Only a delegation-scope PermissionDenied is a genuine
 	// authorization failure (policy violation); anything else -- a transient store
-	// error -- is an internal error the client retries on reconnect. Keying on the
-	// specific authz code keeps this robust if the callee's error coding changes.
+	// error -- closes with TryAgainLater so the client classifies it as a
+	// recoverable close and reconnects (see channelwire.isRecoverableCloseCode;
+	// StatusInternalError is terminal there and would surface as a fatal stream
+	// error instead). Keying on the specific authz code keeps this robust if the
+	// callee's error coding changes.
 	initial, unsub, err := mgr.SubscribeWithACL(sub, func() (map[string]bool, error) {
 		return resolveAllowedWorkspacesSetForUser(ctx, h.store, orgID, workspaceIDs, user)
 	})
@@ -179,7 +195,7 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = wsConn.Close(websocket.StatusPolicyViolation, "forbidden")
 		} else {
 			slog.Error("orgevents: resolve allowed workspaces failed", "user_id", user.ID, "error", err)
-			_ = wsConn.Close(websocket.StatusInternalError, "internal server error")
+			_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 		}
 		return
 	}

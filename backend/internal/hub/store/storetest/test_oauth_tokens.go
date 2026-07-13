@@ -12,7 +12,7 @@ import (
 func (s *Suite) testOAuthTokens(t *testing.T) {
 	t.Run("upsert and get", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-user")
 		prov := SeedOAuthProvider(t, st, "ot-prov")
 		provID := prov.ID
@@ -52,7 +52,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("upsert overwrites", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-overwrite-user")
 		prov := SeedOAuthProvider(t, st, "ot-overwrite-prov")
 		provID := prov.ID
@@ -80,7 +80,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("list expiring", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-expiring-user")
 		prov := SeedOAuthProvider(t, st, "ot-expiring-prov")
 		provID := prov.ID
@@ -103,7 +103,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("list and count by key version", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-kv-user")
 		prov := SeedOAuthProvider(t, st, "ot-kv-prov")
 		provID := prov.ID
@@ -134,7 +134,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("delete by provider", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-dbp-user")
 		prov := SeedOAuthProvider(t, st, "ot-dbp-prov")
 		provID := prov.ID
@@ -162,7 +162,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("delete by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-dbu-user")
 		prov := SeedOAuthProvider(t, st, "ot-dbu-prov")
 		provID := prov.ID
@@ -190,7 +190,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("delete by user and provider", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-dbup-user")
 		p1 := SeedOAuthProvider(t, st, "ot-dbup-prov1")
 		p2 := SeedOAuthProvider(t, st, "ot-dbup-prov2")
@@ -230,7 +230,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 	t.Run("delete by provider preserves other providers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ot-org", true)
+		orgID := SeedOrg(t, st, "ot-org")
 		user := SeedUser(t, st, orgID, "ot-dbppres-user")
 		prov1 := SeedOAuthProvider(t, st, "ot-dbppres-prov1")
 		prov2 := SeedOAuthProvider(t, st, "ot-dbppres-prov2")

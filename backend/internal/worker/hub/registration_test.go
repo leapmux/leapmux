@@ -45,9 +45,8 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("hub down"))
 			}
 			return connect.NewResponse(&leapmuxv1.RegisterResponse{
-				WorkerId:     "worker-123",
-				AuthToken:    "auth-token-abc",
-				RegisteredBy: "user-1",
+				WorkerId:  "worker-123",
+				AuthToken: "auth-token-abc",
 			}), nil
 		},
 	}
@@ -61,7 +60,6 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	assert.Equal(t, int32(failCount+1), attempts.Load(), "Register call count")
 	assert.Equal(t, "worker-123", result.WorkerID)
 	assert.Equal(t, "auth-token-abc", result.AuthToken)
-	assert.Equal(t, "user-1", result.RegisteredBy)
 }
 
 func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {

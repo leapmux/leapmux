@@ -30,7 +30,6 @@ Manage LeapMux resources.
 Usage: leapmux admin <group> <command> [flags]
 
 Groups:
-  org               Manage organizations
   user              Manage users
   session           Manage sessions
   worker            Manage workers
@@ -89,28 +88,6 @@ Shared validation across user commands:
 The revocation commands only mutate database rows; they never reach into the running Hub's process. How fast a *running* Hub reacts depends on which rows you touched.
 
 **Watcher-driven (default ~2s).** `session revoke`, `session revoke-user`, `user reset-password`, `user delete`, `api-token revoke`, and `delegation-token revoke` record durable revocation events in the same database transaction as the revoke. On its next sweep (default ~2s) the Hub's **revocation watcher** publishes and consumes those events, then tears down the cached sessions or bearers and closes the open channels cross-process. You do not need to restart or signal the Hub.
-
----
-
-## `org` — organizations
-
-### `org list`
-
-List organizations.
-
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--query` | (empty) | Search query (prefix match on org name). |
-| `--limit` | `50` | Page size. |
-| `--cursor` | (empty) | Pagination cursor (`created_at` in RFC3339Nano). |
-
-Columns: `ID  NAME  PERSONAL  CREATED` (`PERSONAL` is `yes`/`no`). Empty result prints `No organizations found.`
-
-```bash
-leapmux admin org list --query acme
-```
-
-> **Note:** There is no `org create` in the admin CLI. Every user gets a personal org automatically when created (see `user create` below). Shared/team organizations are created and managed through the web UI — see [Organizations & Members](/docs/using/organizations/).
 
 ---
 
@@ -180,7 +157,7 @@ leapmux admin user update --username alice --email alice@newcorp.com --email-ver
 | `--id` / `--username` | Lookup. |
 | `--force` | Required to delete an admin user. |
 
-Deleting an admin without `--force` errors: `user %q is an admin; pass --force to confirm deletion`. In a single transaction the command marks the user's Workers deleted, removes Worker access grants, soft-deletes their workspaces, deletes their sessions, **revokes all the user's credentials** (API tokens + delegation tokens), removes org membership, deletes the user, and soft-deletes the personal org. On success: `Deleted user "alice" (id: ...) and personal org ...`.
+Deleting an admin without `--force` errors: `user %q is an admin; pass --force to confirm deletion`. In a single transaction the command marks the user's Workers deleted, soft-deletes their workspaces, deletes their sessions, **revokes all the user's credentials** (API tokens + delegation tokens), deletes the user, and soft-deletes the personal org. On success: `Deleted user "alice" (id: ...) and personal org ...`.
 
 ```bash
 leapmux admin user delete --username bob
@@ -292,7 +269,7 @@ leapmux admin worker list --status all --username alice
 | --- | --- |
 | `--id` | Worker ID (required). Empty: `--id is required`. |
 
-This **includes soft-deleted Workers** so you can audit deregistrations. Not found: `worker not found: <id>`. Prints `ID`, `Registered by`, `Status`, `Auto-registered` (yes/no), `Created at`, `Last seen at`, then an access-grants block (`USER_ID  GRANTED_BY  CREATED`) or `No access grants.`
+This **includes soft-deleted Workers** so you can audit deregistrations. Not found: `worker not found: <id>`. Prints `ID`, `Registered by`, `Status`, `Auto-registered` (yes/no), `Created at`, and `Last seen at`.
 
 ### `worker deregister`
 

@@ -45,16 +45,20 @@ func fromDBUsers(rows []gendb.User) []store.User {
 }
 
 func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
-		ID:            p.ID,
-		OrgID:         p.OrgID,
-		Username:      store.NormalizeUsername(p.Username),
-		PasswordHash:  p.PasswordHash,
-		DisplayName:   p.DisplayName,
-		Email:         store.NormalizeEmail(p.Email),
-		EmailVerified: p.EmailVerified,
-		PasswordSet:   p.PasswordSet,
-		IsAdmin:       p.IsAdmin,
+		ID:                p.ID,
+		OrgID:             p.OrgID,
+		Username:          store.NormalizeUsername(p.Username),
+		PasswordHash:      p.PasswordHash,
+		DisplayName:       p.DisplayName,
+		DisplayNameFolded: store.FoldSearchText(p.DisplayName),
+		Email:             store.NormalizeEmail(p.Email),
+		EmailVerified:     p.EmailVerified,
+		PasswordSet:       p.PasswordSet,
+		IsAdmin:           p.IsAdmin,
 	}))
 }
 
@@ -147,25 +151,6 @@ func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 func (s *userStore) Count(ctx context.Context) (int64, error) {
 	n, err := s.conn.q.CountUsers(ctx)
 	return n, mapErr(err)
-}
-
-func (s *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.User, error) {
-	rows, err := s.conn.q.ListUsersByOrgID(ctx, orgID)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBUsers(rows), nil
-}
-
-func (s *userStore) ListByIDs(ctx context.Context, ids []string) ([]store.User, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	rows, err := s.conn.q.ListUsersByIDs(ctx, ids)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBUsers(rows), nil
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]store.User, error) {
@@ -261,13 +246,31 @@ func updatedUserResult(id string, updatedAt time.Time, valid bool, err error) (s
 // changed, so a display-name-only edit updates the row without an event and a
 // missing id is a no-op with no event.
 func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfileParams) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *pgConn) (string, time.Time, bool, error) {
 		row, err := conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
-			Username:    store.NormalizeUsername(p.Username),
-			DisplayName: p.DisplayName,
-			ID:          p.ID,
+			Username:          store.NormalizeUsername(p.Username),
+			DisplayName:       p.DisplayName,
+			DisplayNameFolded: store.FoldSearchText(p.DisplayName),
+			ID:                p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, err)
+		if err != nil {
+			return updatedUserResult("", time.Time{}, false, err)
+		}
+		// Pair the username with a personal-org rename in the same transaction so
+		// the org name (and /o/ slug) can never go stale -- mirroring the DeleteUser
+		// + SoftDeleteUserPersonalOrg pairing in Delete. Idempotent for a
+		// display-name-only edit (see RenameUserPersonalOrg's query doc), so it
+		// runs unconditionally rather than only when the username changed.
+		if err := mapErr(conn.q.RenameUserPersonalOrg(ctx, gendb.RenameUserPersonalOrgParams{
+			OrgName: store.NormalizeUsername(p.Username),
+			UserID:  p.ID,
+		})); err != nil {
+			return "", time.Time{}, false, err
+		}
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, nil)
 	})
 }
 
@@ -359,7 +362,16 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.DeleteUser(ctx, id))
+	// The personal-org soft-delete is paired with the user delete in one
+	// transaction (rationale in store.DeleteUserWithPersonalOrg).
+	return store.DeleteUserWithPersonalOrg(ctx, s.conn.withTransaction,
+		func(ctx context.Context, conn *pgConn) error {
+			return mapErr(conn.q.SoftDeleteUserPersonalOrg(ctx, id))
+		},
+		func(ctx context.Context, conn *pgConn) error {
+			return mapErr(conn.q.DeleteUser(ctx, id))
+		},
+	)
 }
 
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID string) (int64, error) {

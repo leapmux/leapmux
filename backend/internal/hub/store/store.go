@@ -16,13 +16,10 @@ type Store interface {
 	Orgs() OrgStore
 	Users() UserStore
 	Sessions() SessionStore
-	OrgMembers() OrgMemberStore
 	Workers() WorkerStore
-	WorkerAccessGrants() WorkerAccessGrantStore
 	WorkerNotifications() WorkerNotificationStore
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
-	WorkspaceAccess() WorkspaceAccessStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
 	OrgOpBatches() OrgOpBatchesStore
 	OrgState() OrgStateStore
@@ -75,17 +72,27 @@ type Migrator interface {
 	MigrateTo(ctx context.Context, version int64) error
 }
 
+// OrgStore manages personal organizations: exactly one per user, created
+// with the account, soft-deleted with it. The org's name mirrors the username
+// and is renamed ONLY by userStore.UpdateProfile's paired RenameUserPersonalOrg
+// query (in the same transaction as the user rename), so there is no standalone
+// org-rename method on this interface: exposing one would let a store-level
+// caller rename an org without its user and desync the /o/ slug -- the exact
+// stale-slug bug the pairing exists to prevent.
 type OrgStore interface {
 	Create(ctx context.Context, p CreateOrgParams) error
 	GetByID(ctx context.Context, id string) (*Org, error)
+	// GetByIDIncludeDeleted returns the org row even when soft-deleted. It is
+	// how the cross-dialect cleanup suite tells a hard-deleted org (gone) from a
+	// soft-deleted one (present) -- GetByID reports NotFound for both -- mirroring
+	// the same method on UserStore and WorkerStore.
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Org, error)
-	GetByName(ctx context.Context, name string) (*Org, error)
-	HasAny(ctx context.Context) (bool, error)
-	ListAll(ctx context.Context, p ListAllOrgsParams) ([]Org, error)
-	Search(ctx context.Context, p SearchOrgsParams) ([]Org, error)
-	UpdateName(ctx context.Context, p UpdateOrgNameParams) error
+	// SoftDelete soft-deletes an org directly. This is NOT the production path:
+	// a personal org is soft-deleted only as part of deleting its user, via
+	// userStore.Delete's transactional SoftDeleteUserPersonalOrg (see
+	// DeleteUserWithPersonalOrg). This standalone method exercises the org
+	// soft-delete SQL across dialects and seeds cleanup-sweep fixtures.
 	SoftDelete(ctx context.Context, id string) error
-	SoftDeleteNonPersonal(ctx context.Context, id string) error
 }
 
 type UserStore interface {
@@ -107,14 +114,6 @@ type UserStore interface {
 	GetPrefs(ctx context.Context, id string) (string, error)
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
-	ListByOrgID(ctx context.Context, orgID string) ([]User, error)
-	// ListByIDs returns the live (non-deleted) user rows whose id is
-	// in `ids`. Missing or deleted ids are silently dropped from the
-	// result — callers diff against the input slice when they need to
-	// detect absence. Empty `ids` returns nil with no DB call. Used by
-	// share-flow validators that need to verify a batch of user refs
-	// without paying N round-trips.
-	ListByIDs(ctx context.Context, ids []string) ([]User, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) ([]User, error)
 	Search(ctx context.Context, p SearchUsersParams) ([]User, error)
 	UpdateProfile(ctx context.Context, p UpdateUserProfileParams) error
@@ -127,6 +126,12 @@ type UserStore interface {
 	PromotePendingEmail(ctx context.Context, id string) error
 	ClearPendingEmail(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
+	// Delete soft-deletes the user AND its personal org (the org whose id is the
+	// user's org_id) in the same call. The pairing is mechanical rather than
+	// caller-remembered: leaving the org behind would keep its name occupying the
+	// partial unique index idx_orgs_name and fail a later re-signup of the freed
+	// username. Since every user has exactly one personal org (name mirroring the
+	// username), soft-deleting that org is always correct.
 	Delete(ctx context.Context, id string) error
 	// RevokeUserTokens advances the user's tokens_revoked_at marker
 	// plus auth_generation epoch and emits a durable user-token
@@ -166,17 +171,6 @@ type SessionStore interface {
 	ValidateWithUser(ctx context.Context, id string) (*SessionWithUser, error)
 }
 
-type OrgMemberStore interface {
-	Create(ctx context.Context, p CreateOrgMemberParams) error
-	GetByOrgAndUser(ctx context.Context, orgID, userID string) (*OrgMember, error)
-	ListByOrgID(ctx context.Context, orgID string) ([]OrgMemberWithUser, error)
-	ListOrgsByUserID(ctx context.Context, userID string) ([]Org, error)
-	UpdateRole(ctx context.Context, p UpdateOrgMemberRoleParams) error
-	Delete(ctx context.Context, p DeleteOrgMemberParams) error
-	CountByRole(ctx context.Context, p CountOrgMembersByRoleParams) (int64, error)
-	IsMember(ctx context.Context, p IsOrgMemberParams) (bool, error)
-}
-
 type WorkerStore interface {
 	Create(ctx context.Context, p CreateWorkerParams) error
 	GetByID(ctx context.Context, id string) (*Worker, error)
@@ -188,7 +182,6 @@ type WorkerStore interface {
 	GetPublicKey(ctx context.Context, id string) (*WorkerPublicKeys, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) ([]Worker, error)
-	ListOwned(ctx context.Context, p ListOwnedWorkersParams) ([]Worker, error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) ([]WorkerWithOwner, error)
 	SetStatus(ctx context.Context, p SetWorkerStatusParams) error
 	UpdateLastSeen(ctx context.Context, id string) error
@@ -197,16 +190,6 @@ type WorkerStore interface {
 	ForceDeregister(ctx context.Context, id string) (int64, error)
 	MarkDeleted(ctx context.Context, id string) error
 	MarkAllDeletedByUser(ctx context.Context, registeredBy string) error
-}
-
-type WorkerAccessGrantStore interface {
-	Grant(ctx context.Context, p GrantWorkerAccessParams) error
-	Revoke(ctx context.Context, p RevokeWorkerAccessParams) error
-	List(ctx context.Context, workerID string) ([]WorkerAccessGrant, error)
-	HasAccess(ctx context.Context, p HasWorkerAccessParams) (bool, error)
-	DeleteByWorker(ctx context.Context, workerID string) error
-	DeleteByUser(ctx context.Context, userID string) error
-	DeleteByUserInOrg(ctx context.Context, p DeleteWorkerAccessGrantsByUserInOrgParams) error
 }
 
 type WorkerNotificationStore interface {
@@ -271,31 +254,12 @@ type WorkspaceStore interface {
 	// requested-workspace paths (`tab list`, `/ws/orgevents`
 	// subscribe) use this to verify a batch of refs in a single query.
 	ListByIDs(ctx context.Context, ids []string) ([]Workspace, error)
+	// ListAccessible returns every non-deleted workspace the user owns
+	// within the given org, newest first.
 	ListAccessible(ctx context.Context, p ListAccessibleWorkspacesParams) ([]Workspace, error)
-	// ListAllAccessible returns every non-deleted workspace the user can read
-	// (owner OR explicit grant) across ALL orgs -- the org-unfiltered
-	// counterpart of ListAccessible. It surfaces workspaces shared with a user
-	// who is not a member of the owning org (cross-org collaboration) alongside
-	// the user's own workspaces in every org.
-	ListAllAccessible(ctx context.Context, userID string) ([]Workspace, error)
 	Rename(ctx context.Context, p RenameWorkspaceParams) (int64, error)
 	SoftDelete(ctx context.Context, p SoftDeleteWorkspaceParams) (int64, error)
 	SoftDeleteAllByUser(ctx context.Context, ownerUserID string) error
-}
-
-type WorkspaceAccessStore interface {
-	Grant(ctx context.Context, p GrantWorkspaceAccessParams) error
-	BulkGrant(ctx context.Context, params []GrantWorkspaceAccessParams) error
-	Revoke(ctx context.Context, p RevokeWorkspaceAccessParams) error
-	ListByWorkspaceID(ctx context.Context, workspaceID string) ([]WorkspaceAccess, error)
-	HasAccess(ctx context.Context, p HasWorkspaceAccessParams) (bool, error)
-	// ListForUserIn returns the subset of `workspaceIDs` for which
-	// userID holds a workspace_access grant. Used by the
-	// /ws/orgevents subscribe path to filter a batch of requested
-	// workspaces without one HasAccess call per id. Empty
-	// `workspaceIDs` returns an empty slice with no DB call.
-	ListForUserIn(ctx context.Context, userID string, workspaceIDs []string) ([]string, error)
-	Clear(ctx context.Context, workspaceID string) error
 }
 
 // WorkspaceTabIndexStore is the materialized derived view of every
@@ -344,11 +308,10 @@ type WorkspaceTabIndexStore interface {
 	ListRenderedByWorkspaceIDs(ctx context.Context, workspaceIDs []string) ([]WorkspaceTabRow, error)
 	GetRendered(ctx context.Context, p GetRenderedTabParams) (*WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
-	// (tab_type, tab_id) across every workspace the user can access
-	// (owner or share grant). Returns ErrNotFound when no accessible
-	// workspace contains the tab. Backs WorkspaceService.LocateTab so
-	// the CLI can resolve a tab's full context (org / workspace /
-	// tile / worker) from just the id.
+	// (tab_type, tab_id) across every workspace the user owns.
+	// Returns ErrNotFound when no owned workspace contains the tab.
+	// Backs WorkspaceService.LocateTab so the CLI can resolve a tab's
+	// full context (org / workspace / tile / worker) from just the id.
 	LocateAccessibleRendered(ctx context.Context, p LocateAccessibleRenderedTabParams) (*WorkspaceTabRow, error)
 }
 

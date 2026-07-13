@@ -21,18 +21,9 @@ enum TabType {
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
-  // ListAllAccessibleWorkspaces returns every workspace the caller can read
-  // (owner OR explicit grant) across every org -- including workspaces owned by
-  // an org the caller is not a member of (cross-org collaboration). Unlike the
-  // org-scoped ListWorkspaces, it is not filtered by org; each returned
-  // Workspace carries its own org_id so the caller can route follow-up reads to
-  // the owning org.
-  rpc ListAllAccessibleWorkspaces(ListAllAccessibleWorkspacesRequest) returns (ListAllAccessibleWorkspacesResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
-  rpc UpdateWorkspaceSharing(UpdateWorkspaceSharingRequest) returns (UpdateWorkspaceSharingResponse);
-  rpc ListWorkspaceShares(ListWorkspaceSharesRequest) returns (ListWorkspaceSharesResponse);
   // ListTabs returns the materialized tab list across one or more
   // workspaces. Reads `workspace_tab_rendered`.
   rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
@@ -77,12 +68,6 @@ message ListWorkspacesResponse {
   PageResponse page = 2;
 }
 
-message ListAllAccessibleWorkspacesRequest {}
-
-message ListAllAccessibleWorkspacesResponse {
-  repeated Workspace workspaces = 1;
-}
-
 message GetWorkspaceRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -98,32 +83,6 @@ message Workspace {
   string created_by = 3;
   string title = 4;
   string created_at = 5;
-  ShareMode share_mode = 6;
-}
-
-// --- Workspace Sharing ---
-
-message UpdateWorkspaceSharingRequest {
-  string workspace_id = 1;
-  ShareMode share_mode = 2;
-  repeated string user_ids = 3;
-}
-
-message UpdateWorkspaceSharingResponse {}
-
-message ListWorkspaceSharesRequest {
-  string workspace_id = 1;
-}
-
-message ListWorkspaceSharesResponse {
-  ShareMode share_mode = 1;
-  repeated WorkspaceShareMember members = 2;
-}
-
-message WorkspaceShareMember {
-  string user_id = 1;
-  string username = 2;
-  string display_name = 3;
 }
 
 // --- Workspace Rename & Delete ---
@@ -316,10 +275,10 @@ message GetTabResponse {
 // --- LocateTab (cross-workspace single-tab lookup) ---
 //
 // Like GetTab but without a workspace_id filter: the hub looks for
-// the tab across every workspace the caller can access (owner or
-// share grant). Used when only the tab id is known — `leapmux remote`
-// derives org / workspace / tile / worker from this single hop.
-// Returns NotFound when no accessible workspace contains the tab.
+// the tab across every workspace the caller owns. Used when only the
+// tab id is known — `leapmux remote` derives org / workspace / tile /
+// worker from this single hop. Returns NotFound when no accessible
+// workspace contains the tab.
 
 message LocateTabRequest {
   TabType tab_type = 1;

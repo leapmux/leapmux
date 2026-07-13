@@ -50,13 +50,6 @@ const rootAdminDescription = "Manage LeapMux resources."
 var adminTree = adminGroup{
 	Subgroups: []adminGroup{
 		{
-			Name:    "org",
-			Summary: "Manage organizations",
-			Commands: []adminCommand{
-				{Name: "list", Summary: "List organizations", Run: runOrgList},
-			},
-		},
-		{
 			Name:    "user",
 			Summary: "Manage users",
 			Commands: []adminCommand{

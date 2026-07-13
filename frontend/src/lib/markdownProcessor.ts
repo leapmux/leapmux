@@ -1,6 +1,7 @@
 import type { Root } from 'hast'
 import type { Root as MdastRoot } from 'mdast'
 import type { HighlighterCore } from 'shiki/core'
+import type { Processor } from 'unified'
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import rehypeStringify from 'rehype-stringify'
 import remarkGfm from 'remark-gfm'
@@ -8,6 +9,7 @@ import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
+import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
 
@@ -33,6 +35,15 @@ import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
  * they never use.
  */
 
+// Case-sensitive on purpose: only a lowercase `http(s)://` scheme is treated as
+// an external link (given target=_blank + a safe rel below). Anything else --
+// including a mixed-case scheme like `HttPs://`, which IS a valid http URL under
+// RFC 3986 -- falls through to the unwrap branch and becomes plain text. That is
+// the conservative outcome for a largely agent-authored (and thus
+// prompt-injectable) document: a scheme we did not recognize as external is not
+// turned INTO an external link. The paired image blocker
+// (rehypeBlockRemoteImages) uses a case-insensitive scheme test, so the two end
+// up handling mixed-case schemes the same conservative way via different routes.
 const HTTP_URL_RE = /^https?:\/\//
 
 /**
@@ -56,7 +67,11 @@ function remarkLowercaseCodeLang() {
   }
 }
 
-/** Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s) links. */
+/**
+ * Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s)
+ * links. Also the single source of the link-hardening rule for the placeholder anchors
+ * rehypeBlockRemoteImages emits, which is why it runs AFTER that plugin.
+ */
 function rehypeExternalLinks() {
   return (tree: Root) => {
     visit(tree, 'element', (node, index, parent) => {
@@ -78,13 +93,33 @@ function rehypeExternalLinks() {
 }
 
 /**
+ * Append the shared security-hardening + stringify tail every markdown pipeline
+ * ends with: block remote images, then harden links, then stringify. Runs
+ * rehypeExternalLinks AFTER rehypeBlockRemoteImages so the blocked-image
+ * placeholder's `<a href>` is owned by the link-hardening pass.
+ *
+ * Centralizing the tail makes remote-image blocking a PROPERTY of any pipeline built
+ * here, not a line each pipeline author must remember: a remote `<img>` is an
+ * outbound request the page makes on its own, and agent-authored markdown is
+ * prompt-injectable, so a render path that forgot the blocker would exfiltrate
+ * conversation content and the user's IP. A future third render path cannot forget
+ * it as long as it ends with this helper.
+ */
+function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeline: P) {
+  return pipeline
+    .use(rehypeBlockRemoteImages)
+    .use(rehypeExternalLinks)
+    .use(rehypeStringify)
+}
+
+/**
  * Build the full markdown->HTML processor (remark + GFM + rehype + Shiki + link
- * hardening) around a Shiki highlighter instance. Takes the highlighter so the
- * main thread can pass its synchronous instance and the worker its own — the rest
- * of the chain (and thus the output) is identical.
+ * hardening + remote-image blocking) around a Shiki highlighter instance. Takes the
+ * highlighter so the main thread can pass its synchronous instance and the worker its
+ * own — the rest of the chain (and thus the output) is identical.
  */
 export function createMarkdownProcessor(highlighter: HighlighterCore) {
-  return unified()
+  const base = unified()
     .use(remarkParse)
     .use(remarkGfm)
     .use(remarkLowercaseCodeLang)
@@ -112,8 +147,7 @@ export function createMarkdownProcessor(highlighter: HighlighterCore) {
           console.warn('[markdownProcessor] Shiki failed to highlight a code block:', error)
       },
     })
-    .use(rehypeExternalLinks)
-    .use(rehypeStringify)
+  return withHardeningTail(base)
 }
 
 /**
@@ -122,12 +156,12 @@ export function createMarkdownProcessor(highlighter: HighlighterCore) {
  * Shiki throws. Code blocks render as plain `<pre><code class="language-x">` —
  * container-styled but not theme-colored until the highlighted result swaps in.
  */
-export const plainMarkdownProcessor = unified()
-  .use(remarkParse)
-  .use(remarkGfm)
-  .use(remarkRehype)
-  .use(rehypeExternalLinks)
-  .use(rehypeStringify)
+export const plainMarkdownProcessor = withHardeningTail(
+  unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkRehype),
+)
 
 /**
  * Render `text` through `processor` (highlighted), degrading to the plain

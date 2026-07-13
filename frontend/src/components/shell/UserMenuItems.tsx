@@ -1,15 +1,13 @@
 import type { Component } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
-import { For, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { useAuth } from '~/context/AuthContext'
-import { useOrg } from '~/context/OrgContext'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
-import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
+import { dangerMenuItem } from '~/styles/shared.css'
 import { motion } from '~/styles/tokens'
-import * as styles from './UserMenuItems.css'
 import {
   setShowAboutDialog,
   setShowPreferencesDialog,
@@ -24,7 +22,6 @@ export const AppAboutMenuItem: Component = () => (
 
 export const UserMenuItems: Component = () => {
   const auth = useAuth()
-  const org = useOrg()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -71,24 +68,6 @@ export const UserMenuItems: Component = () => {
 
       <Show when={!isSoloMode()}>
         <hr />
-        <li class={menuSectionHeader}>Switch Organization</li>
-        <div class={styles.orgList}>
-          <For each={org.orgs()}>
-            {o => (
-              <button
-                role="menuitem"
-                class={styles.orgItem}
-                data-active={o.name === org.slug() ? '' : undefined}
-                onClick={() => navigate(`/o/${o.name}`)}
-              >
-                {o.name}
-                <Show when={o.isPersonal}>
-                  <span class={styles.personalTag}>(personal)</span>
-                </Show>
-              </button>
-            )}
-          </For>
-        </div>
         <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
           Log out
         </button>

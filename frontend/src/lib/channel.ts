@@ -5,8 +5,8 @@
  *   1. Fetch Worker's handshake params (keys + encryption mode) via ChannelTransport.getWorkerHandshakeParams
  *   2. Check key pinning (TOFU model) — prompt user on mismatch
  *   3. Perform Noise_NK handshake via ChannelTransport.openChannel
- *   4. Send UserIdClaim as first encrypted message, wait for verification
- *   5. Connect a single shared WebSocket relay for all encrypted traffic
+ *   4. Connect a single shared WebSocket relay for all encrypted traffic
+ *   5. Round-trip a no-op Ping to prove the session decrypts in both directions
  *   6. Encrypt/decrypt ChannelMessages using per-channel Noise sessions
  *
  * Platform-specific RPC and WebSocket creation is abstracted behind the
@@ -26,7 +26,6 @@ import {
   HubControlFrameSchema,
   InnerMessageSchema,
   InnerRpcRequestSchema,
-  UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
 import { formatErrorMessage } from './errors'
@@ -34,11 +33,45 @@ import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
+import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, Reassembler } from './reassembler'
 
 const log = createLogger('channel')
 
+// safeCall invokes a user-supplied listener callback and swallows any throw so
+// one throwing listener cannot break the iteration that notifies the rest. The
+// state, error, and stream-teardown loops all fan out to consumer callbacks; an
+// uncaught throw in one would leave later listeners unnotified and teardown
+// half-done (a leaked Hub-side channel, a stranded pending request). It mirrors
+// the per-callback isolation handleHubControl already applies to frame
+// callbacks.
+function safeCall(fn: () => void, description: string): void {
+  try {
+    fn()
+  }
+  catch (err) {
+    log.warn('listener threw; continuing with the remaining listeners', { what: description, error: err })
+  }
+}
+
 /** Reserved channel ID for Hub-originated control frames. */
 const HUB_CONTROL_CHANNEL_ID = '_hub'
+
+/**
+ * The largest wire correlation id this client will route. See handleMessage: ids are
+ * plain numbers here, so anything past the exact-integer range is dropped rather than
+ * rounded onto another request's handler.
+ */
+const MAX_SAFE_CORRELATION_ID = BigInt(Number.MAX_SAFE_INTEGER)
+
+/**
+ * The no-op inner RPC openChannel round-trips to prove the E2EE session decrypts
+ * in both directions before returning the channel. Must match the worker's
+ * registered handler — the Go side keeps this name in `channelwire.PingMethod`,
+ * and both sides pin it to the cross-language fixture
+ * (testdata/channelwire_limits.json) so a rename on one reddens CI here instead
+ * of desyncing the open-time Ping the other end expects.
+ */
+export const PING_METHOD = 'Ping'
 
 export type KeyPinDecision = 'accept' | 'reject'
 
@@ -47,7 +80,7 @@ export type KeyPinDecision = 'accept' | 'reject'
  * - `transport`: WebSocket disconnect/timeout, channel closed by server (connection-level)
  * - `stream`: Backend stream error (carries backend error code)
  * - `rpc`: Backend RPC error (carries backend error code)
- * - `client`: Client-side issues (channel not open, message too large, claim rejected)
+ * - `client`: Client-side issues (channel not open, message too large)
  */
 export type ChannelErrorSource = 'transport' | 'stream' | 'rpc' | 'client'
 
@@ -70,6 +103,27 @@ export interface WorkerKeyBundle {
   slhdsaPublicKey: Uint8Array
 }
 
+/**
+ * The narrow slice of the WebSocket surface ChannelManager actually drives. Both a
+ * native browser WebSocket and the Tauri IPC relay wrapper (TauriRelayWebSocket)
+ * satisfy this structurally, so the transport can hand either back without an
+ * `as unknown as WebSocket` double-cast -- a cast that erases the type and would let
+ * a future read of a member this wrapper doesn't forward (bufferedAmount, url,
+ * protocol) compile and silently return undefined on the Tauri path.
+ */
+export interface ChannelSocket {
+  readyState: number
+  // `send` takes exactly what ChannelManager writes -- an ArrayBuffer-backed
+  // Uint8Array (or ArrayBuffer). Spelling the buffer generic keeps a native
+  // WebSocket, whose send wants a BufferSource, assignable to this shape.
+  send: (data: Uint8Array<ArrayBuffer> | ArrayBuffer) => void
+  close: (code?: number, reason?: string) => void
+  // `(ev: any)` keeps the listener loose enough that a native WebSocket's overloaded,
+  // WebSocketEventMap-typed add/removeEventListener satisfy this interface.
+  addEventListener: (type: string, listener: (ev: any) => void, opts?: { once?: boolean }) => void
+  removeEventListener: (type: string, listener: (ev: any) => void) => void
+}
+
 /** Transport interface for platform-specific RPC and WebSocket creation. */
 export interface ChannelTransport {
   /**
@@ -77,13 +131,11 @@ export interface ChannelTransport {
    * trip. Both are needed before every OpenChannel, so they travel together.
    */
   getWorkerHandshakeParams: (workerId: string) => Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }>
-  openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array }>
+  openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }>
   closeChannel: (channelId: string) => Promise<void>
-  createWebSocket: () => WebSocket
+  createWebSocket: () => ChannelSocket
   /** Called when a previously-pinned worker public key changes. */
   confirmKeyPin: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>
-  /** Returns the current user ID for the UserIdClaim post-handshake check. */
-  getUserId: () => string
 }
 
 interface KeyPin { publicKeyHex: string, firstSeen: number }
@@ -103,33 +155,37 @@ interface StreamListener {
 /** Maximum channel age before re-handshake. */
 const CHANNEL_MAX_AGE_MS = 60 * 60 * 1000 // 1 hour
 
-/** Maximum plaintext bytes per Noise transport message (65535 - 16 byte auth tag). */
-const MAX_CHUNK_SIZE = 65535 - 16
-
-/** Default maximum reassembled message size (16 MiB). */
-const DEFAULT_MAX_MESSAGE_SIZE = 16 * 1024 * 1024
-
-/** Maximum number of in-flight chunked sequences per channel. */
-const MAX_INCOMPLETE_CHUNKED = 4
-
-interface ChunkBuffer {
-  parts: Uint8Array[]
-  total: number
-}
-
 interface ActiveChannel {
   channelId: string
   workerId: string
   session: Session
+  /**
+   * The identity the Hub authenticated this channel's open as. Recorded because
+   * channels are POOLED for up to CHANNEL_MAX_AGE_MS: the open-time cross-check
+   * only proves who the page was when the channel was created, so getOrOpenChannel
+   * re-compares this before handing a pooled channel out (see its identity check).
+   */
+  userId: string
   pendingRequests: Map<number, PendingRequest>
   streamListeners: Map<number, StreamListener>
-  reassembly: Map<number, ChunkBuffer>
+  reassembly: Reassembler
   nextRequestId: number
-  closed: boolean
+  /**
+   * Lifecycle state, gating pool handout -- a single field rather than separate
+   * `verified`/`closed` booleans, whose fourth combination (verified AND closed)
+   * no gate ever distinguished:
+   *   - 'opening': present in `channels` so the open-time Ping's reply can route
+   *     (handleMessage looks the channel up by id), but NOT open for business.
+   *     hasOpenChannel and getOrOpenChannel skip it, so a racing caller waits on
+   *     the open (openingChannels dedups it onto the same one) instead of being
+   *     handed a session that may yet prove dead.
+   *   - 'verified': the Ping round-tripped, so the channel may be served.
+   *   - 'closed': torn down. Every path that sets this also deletes the channel
+   *     from `channels`, so a channel is only ever observed 'closed' transiently
+   *     by a caller mid-teardown.
+   */
+  state: 'opening' | 'verified' | 'closed'
   openedAt: number
-  /** Pending claim verification resolve/reject. */
-  claimResolve?: () => void
-  claimReject?: (err: Error) => void
 }
 
 /**
@@ -154,15 +210,58 @@ export interface ChannelManagerOpts {
    * the current frontend-multiplied deadline from `loadTimeouts()`.
    */
   rpcTimeoutFn?: () => number
+  /**
+   * The identity this page believes it is authenticated as, resolved lazily on
+   * every open. When it returns a value that disagrees with the identity the Hub
+   * authenticated the open as, the open fails.
+   *
+   * This is a CROSS-CHECK, not a source of identity: the Hub's answer is always
+   * authoritative and is never overridden by this. What it catches is the two
+   * silently diverging — a tab rendered as user A whose shared cookie jar has since
+   * been re-authenticated as B (a logout/login in another tab, an impersonation
+   * switch, an admin "view as") opens a channel the Hub authenticates as B, and A's
+   * UI then drives B's session on every worker B can reach. Comparing is not
+   * asserting: a stale local id can still never speak for the channel, the open just
+   * fails loudly instead of proceeding on a disagreement the page cannot see.
+   *
+   * Returns undefined when the page has no expectation (before auth resolves), which
+   * skips the check.
+   */
+  expectedUserId?: () => string | undefined
 }
 
-/** ChannelManager manages encrypted E2EE channels to Workers. */
+/**
+ * Encode an InnerRpcRequest into its InnerMessage envelope plaintext — the one
+ * wire-encoding step `call` and `stream` share, so the request framing can only
+ * be defined in one place.
+ */
+function buildRequestPlaintext(method: string, payload: Uint8Array): Uint8Array {
+  const innerReq = create(InnerRpcRequestSchema, {
+    method,
+    payload,
+  })
+  const envelope = create(InnerMessageSchema, {
+    kind: { case: 'request', value: innerReq },
+  })
+  return toBinary(InnerMessageSchema, envelope)
+}
+
+/**
+ * ChannelManager manages encrypted E2EE channels to Workers.
+ *
+ * It currently braids five responsibilities -- WebSocket transport lifecycle, Noise
+ * crypto/handshake, channel pooling + identity re-check, RPC dispatch/streaming, and
+ * reassembly delivery. The chunked-reassembly state machine was extracted to
+ * `reassembler.ts`; decomposing the remaining transport / session / RPC-multiplexer
+ * seams is a larger, entangled refactor tracked in
+ * https://github.com/leapmux/leapmux/issues/292 (key-pinning extraction is #283).
+ */
 export class ChannelManager {
   private transport: ChannelTransport
   private channels = new Map<string, ActiveChannel>()
   /** In-flight openChannel promises per worker, for deduplication. */
   private openingChannels = createInflightCache<string, string>()
-  private ws: WebSocket | null = null
+  private ws: ChannelSocket | null = null
   private wsPromise: Promise<void> | null = null
   private handshake1: typeof initiatorHandshake1
   private handshake2: typeof initiatorHandshake2
@@ -170,8 +269,19 @@ export class ChannelManager {
   private classicHS2: typeof classicHandshake2
   private maxMessageSize: number
   private rpcTimeoutFn: () => number
+  private expectedUserIdFn: () => string | undefined
   /** Workers whose keys were rejected by the user during this session. */
   private rejectedWorkers = new Set<string>()
+  /**
+   * Bumped by every closeAll. An in-flight openChannel captures it before its
+   * first await and re-checks it before registering the channel: closeAll's
+   * eager release snapshots this.channels, so an open still parked on an await
+   * when the snapshot was taken would otherwise register AFTER it and survive
+   * the release -- the identity-transition TOCTOU the eager release exists to
+   * close (the lazy staleReason re-check still prevents cross-user REUSE, but
+   * the leaked channel and its socket would linger).
+   */
+  private closeGeneration = 0
 
   // Observability hooks
   private stateListeners = new Set<() => void>()
@@ -186,6 +296,7 @@ export class ChannelManager {
     this.classicHS2 = opts?.classicHandshake2 ?? classicHandshake2
     this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
     this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
+    this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
   }
 
   /** Subscribe to channel state changes (open/close). Returns an unsubscribe function. */
@@ -212,113 +323,241 @@ export class ChannelManager {
     }
   }
 
-  /** Check if any non-closed channel exists for a worker. */
+  /**
+   * Check if a usable channel exists for a worker.
+   *
+   * An open still awaiting its verification Ping does not count: it is in `channels`
+   * only so the ping's reply can route, and its session is not yet known to work.
+   *
+   * A channel whose Hub-authenticated identity has drifted from who this page now is
+   * (a logout/login or impersonation switch left an up-to-an-hour-old channel
+   * authenticated as another user) does NOT count either: getOrOpenChannel would
+   * reject and reopen it on the next RPC, so reporting "connected" for it would show
+   * a live link the current user cannot actually use as themselves. The aged /
+   * needs-rekey reasons in staleReason are deliberately NOT applied here -- their
+   * rotation is transparent to the caller, so a channel mid-rekey or a minute past
+   * the age cap is still "connected" for indicator purposes.
+   */
   hasOpenChannel(workerId: string): boolean {
     for (const ch of this.channels.values()) {
-      if (ch.workerId === workerId && !ch.closed)
+      if (ch.workerId === workerId && ch.state === 'verified'
+        && !this.identityMismatch(this.expectedUserIdFn(), ch.userId)) {
         return true
+      }
     }
     return false
   }
 
   private notifyStateChange(): void {
-    for (const cb of this.stateListeners) cb()
+    for (const cb of this.stateListeners) {
+      safeCall(() => cb(), 'state change listener')
+    }
   }
 
   private notifyError(workerId: string, error: ChannelError): void {
-    for (const cb of this.errorListeners) cb(workerId, error)
+    for (const cb of this.errorListeners) {
+      safeCall(() => cb(workerId, error), 'error listener')
+    }
   }
 
   /**
    * Open an encrypted channel to a Worker.
-   * Performs the Noise_NK handshake, key pinning check, UserIdClaim verification,
-   * and connects the shared WebSocket relay.
+   * Performs the Noise_NK handshake, key pinning check, connects the shared
+   * WebSocket relay, and verifies the session with a Ping round trip.
    */
   async openChannel(workerId: string): Promise<string> {
+    // Captured before the first await; see closeGeneration.
+    const openedGeneration = this.closeGeneration
     // 1. Get Worker's handshake params (keys + live encryption mode) in one RPC.
     const { keys: keyBundle, encryptionMode: mode } = await this.transport.getWorkerHandshakeParams(workerId)
 
-    // 2. Key pinning (TOFU model) — pin composite key.
-    const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
-    const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const allPins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
-    const pinned = allPins[workerId] ?? null
+    // 2. Key pinning (TOFU model) — resolve the pin now, record it once the channel
+    //    is proven (see commitPin below).
+    const commitPin = await this.resolveKeyPin(workerId, keyBundle)
 
-    if (pinned && pinned.publicKeyHex !== publicKeyHex) {
-      // Auto-reject if the user already rejected this worker in this session.
-      if (this.rejectedWorkers.has(workerId)) {
-        throw new ChannelError('client', 'Worker public key rejected by user')
-      }
-
-      // Key mismatch — ask user.
-      const { keyFingerprintHex } = await import('./fingerprint')
-      const decision = await this.transport.confirmKeyPin(
-        workerId,
-        keyFingerprintHex(pinned.publicKeyHex),
-        keyFingerprintHex(publicKeyHex),
-      )
-      if (decision === 'reject') {
-        this.rejectedWorkers.add(workerId)
-        throw new ChannelError('client', 'Worker public key rejected by user')
-      }
-      // User accepted the new key.
-      allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      localStorageSet(KEY_KEY_PINS, allPins)
-    }
-
-    // 3. Perform handshake based on encryption mode.
-    let session: Session
-    let result: { channelId: string, handshakePayload: Uint8Array }
+    // 3. Build handshake message 1 based on encryption mode. Completing the
+    //    handshake (message 2) is deferred into the try below: it runs only after
+    //    the Hub has registered the channel, so a malformed or forged handshake-2
+    //    — wrong length, bad AEAD tag, invalid SLH-DSA signature — must roll that
+    //    registration back like every later failure.
+    let message1: Uint8Array
+    let finishHandshake: (handshakePayload: Uint8Array) => Session
 
     if (mode === EncryptionMode.CLASSIC) {
       // Classical Noise_NK (X25519 only).
       const hs = this.classicHS1(keyBundle.x25519PublicKey)
-      result = await this.transport.openChannel(workerId, hs.message1)
-      session = this.classicHS2(hs.handshakeState, result.handshakePayload)
+      message1 = hs.message1
+      finishHandshake = payload => this.classicHS2(hs.handshakeState, payload)
     }
     else {
       // Post-quantum hybrid Noise_NK (X25519 + ML-KEM + SLH-DSA).
       const hs = this.handshake1(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey)
-      result = await this.transport.openChannel(workerId, hs.message1)
-      session = this.handshake2(hs.handshakeState, result.handshakePayload, keyBundle.slhdsaPublicKey)
+      message1 = hs.message1
+      finishHandshake = payload => this.handshake2(hs.handshakeState, payload, keyBundle.slhdsaPublicKey)
     }
 
-    // 4. Ensure shared WebSocket is connected.
-    await this.ensureWebSocket()
+    const result = await this.transport.openChannel(workerId, message1)
 
-    const channel: ActiveChannel = {
-      channelId: result.channelId,
-      workerId,
-      session,
-      pendingRequests: new Map(),
-      streamListeners: new Map(),
-      reassembly: new Map(),
-      nextRequestId: 1,
-      closed: false,
-      openedAt: Date.now(),
+    // From here on the Hub has REGISTERED a channel and the Worker holds a live Noise
+    // session, so every failure exit must tell the Hub to drop it. Without that, a
+    // retry loop against a bad worker (a flaky relay failing the ping) strands a
+    // channel per attempt -- on the Hub's index and as a Worker session plus its
+    // goroutine and per-channel caps -- until the credential is revoked or the
+    // process restarts. The Go client of this protocol rolls back at exactly this
+    // boundary (backend/tunnel/channel.go's `rollback` flag +
+    // rollbackRegisteredChannel).
+    let registered = true
+    const rollback = async () => {
+      if (!registered)
+        return
+      registered = false
+      try {
+        await this.transport.closeChannel(result.channelId)
+      }
+      catch {
+        // Best effort: the open is already failing and the Hub expires channels with
+        // the credential that opened them, so a failed rollback must not mask the
+        // real error.
+      }
     }
 
-    this.channels.set(result.channelId, channel)
-
-    // 5. Pin key on first use (TOFU).
-    if (!pinned) {
-      allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      localStorageSet(KEY_KEY_PINS, allPins)
-    }
-
-    // 6. Send UserIdClaim as first encrypted message.
     try {
-      await this.sendUserIdClaim(channel)
+      // Complete the Noise handshake. Verification of the Worker's handshake-2
+      // message throws on tampering or corruption, and the Hub has already
+      // registered the channel, so this sits inside the rollback's coverage — the
+      // Go client covers the same step the same way (handshaker.finish runs under
+      // the rollback defer in backend/tunnel/channel.go).
+      const session = finishHandshake(result.handshakePayload)
+
+      // Reject a hub that did not name the authenticated user, rather than falling
+      // back to a locally-asserted identity: the whole point of binding to the
+      // Hub-authenticated id is that a stale local one (an account or impersonation
+      // switch) can never be asserted. The Go client of this protocol enforces the
+      // same invariant at the same boundary (backend/tunnel/channel.go, "hub
+      // returned an empty authenticated user id").
+      if (!result.userId) {
+        throw new ChannelError('transport', 'open channel: hub returned an empty authenticated user id')
+      }
+
+      // Cross-check the Hub's answer against who this page thinks it is. Taking the
+      // identity and DISCARDING it — which is what this did before — means a tab
+      // rendered as A whose cookie jar is now B opens a channel the Hub
+      // authenticates as B and silently drives B's session with A's UI. The Hub
+      // still wins; the open just fails instead of proceeding on a disagreement.
+      const expectedUserId = this.expectedUserIdFn()
+      if (this.identityMismatch(expectedUserId, result.userId)) {
+        throw new ChannelError(
+          'transport',
+          `open channel: hub authenticated this channel as ${result.userId}, not the expected ${expectedUserId}`,
+        )
+      }
+
+      // 4. Ensure shared WebSocket is connected.
+      await this.ensureWebSocket()
+
+      // A closeAll that ran while this open was parked on an await has already
+      // snapshotted this.channels; registering now would slip past it (see
+      // closeGeneration). Thrown inside the try so the catch below rolls the
+      // Hub-registered channel back.
+      if (this.closeGeneration !== openedGeneration) {
+        throw new ChannelError('transport', 'open channel: superseded by a concurrent closeAll')
+      }
+
+      const channel: ActiveChannel = {
+        channelId: result.channelId,
+        workerId,
+        session,
+        userId: result.userId,
+        pendingRequests: new Map(),
+        streamListeners: new Map(),
+        reassembly: new Reassembler(this.maxMessageSize),
+        nextRequestId: 1,
+        state: 'opening',
+        openedAt: Date.now(),
+      }
+
+      // The channel must be in the map for the ping's reply to route (handleMessage
+      // looks the channel up by id), but it goes in 'opening': the 'verified' state
+      // is what hasOpenChannel and getOrOpenChannel gate on, so a caller racing this
+      // open cannot be handed the channel before the ping proves it.
+      this.channels.set(result.channelId, channel)
+
+      // 5. Prove the session works end to end before handing the channel out.
+      await this.verifySession(channel)
+
+      // 6. Pin the key (TOFU on first use, or the key the user just accepted).
+      //    Deliberately last: a key is only worth remembering once a channel to it
+      //    has actually proven itself, and until here every exit rolls the open back.
+      commitPin()
     }
     catch (err) {
-      // Claim failed — close channel.
-      channel.closed = true
-      this.channels.delete(result.channelId)
+      // Evict the channel if it already entered the pool. verifySession above
+      // cleans up after itself, but a throw after the channel reached 'verified'
+      // (say a future commitPin that can fail) would otherwise leave a verified ghost that
+      // getOrOpenChannel serves for up to CHANNEL_MAX_AGE_MS while every RPC on it
+      // times out against the Hub registration the rollback below drops. evictGhost
+      // is a no-op when verifySession already removed the channel.
+      this.evictGhost(
+        result.channelId,
+        err instanceof ChannelError ? err : new ChannelError('transport', `open channel: ${formatErrorMessage(err)}`),
+      )
+      await rollback()
       throw err
     }
 
+    // The channel is the caller's now; closeChannel owns the Hub-side teardown.
+    registered = false
+
     this.notifyStateChange()
     return result.channelId
+  }
+
+  /**
+   * Prove the session works end to end before the channel is handed out, and
+   * mark it verified.
+   *
+   * The Noise_NK handshake only proves THIS side can encrypt to the worker's
+   * static key; it proves nothing about the worker's session decrypting, or its
+   * replies decrypting back here. Without a round trip now, a session broken in
+   * either direction opens "successfully" and fails on the caller's first real
+   * call -- and channels are reused (getOrOpenChannel caches by worker), so the
+   * broken one is served to every later caller until something evicts it. One
+   * ping keeps the failure at the open, where it is attributable. On failure the
+   * channel is evicted here so it never leaves this method verified.
+   */
+  private async verifySession(channel: ActiveChannel): Promise<void> {
+    try {
+      await this.call(channel.channelId, PING_METHOD, new Uint8Array())
+    }
+    catch (err) {
+      const failure = err instanceof ChannelError
+        ? err
+        : new ChannelError('transport', `verify channel session: ${formatErrorMessage(err)}`)
+      this.evictGhost(channel.channelId, failure)
+      throw failure
+    }
+    channel.state = 'verified'
+  }
+
+  /**
+   * Remove a stranded channel from the pool and fail every request that slipped
+   * onto it, once. It is the single teardown for a channel that entered
+   * `channels` but must not be served: the ping-failure and post-verification
+   * failure paths of openChannel both route through here so they cannot drift.
+   *
+   * Draining is not optional cleanup: once the channel is gone from `channels`,
+   * neither closeChannel nor the WS teardown can reach a caller who slipped a
+   * request onto it while the open was in flight -- left alone they would sit in
+   * a map no one reads until their own RPC timeout fired ~15s later. A no-op when
+   * the channel is not (or no longer) in the pool, so calling it twice is safe.
+   */
+  private evictGhost(channelId: string, err: ChannelError): void {
+    const ghost = this.channels.get(channelId)
+    if (!ghost)
+      return
+    ghost.state = 'closed'
+    this.channels.delete(channelId)
+    this.drainChannel(ghost, err, 'error')
   }
 
   /** Close an encrypted channel (does not close the shared WebSocket). */
@@ -327,25 +566,8 @@ export class ChannelManager {
     if (!ch)
       return
 
-    ch.closed = true
-
-    // Reject pending requests.
-    for (const [, pending] of ch.pendingRequests) {
-      pending.reject(new ChannelError('client', 'channel closed'))
-    }
-    ch.pendingRequests.clear()
-
-    // End active streams.
-    for (const [, listener] of ch.streamListeners) {
-      listener.onEnd()
-    }
-    ch.streamListeners.clear()
-    ch.reassembly.clear()
-
-    // Reject pending claim verification.
-    ch.claimReject?.(new ChannelError('client', 'channel closed'))
-    ch.claimResolve = undefined
-    ch.claimReject = undefined
+    ch.state = 'closed'
+    this.drainChannel(ch, new ChannelError('client', 'channel closed'), 'end')
 
     this.channels.delete(channelId)
 
@@ -375,7 +597,7 @@ export class ChannelManager {
    */
   call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
     const ch = this.channels.get(channelId)
-    if (!ch || ch.closed) {
+    if (!ch || ch.state === 'closed') {
       return Promise.reject(new ChannelError('client', 'channel not open'))
     }
     if (signal?.aborted) {
@@ -399,7 +621,7 @@ export class ChannelManager {
           signal.removeEventListener('abort', abortListener)
       }
       const timer = setTimeout(() => {
-        ch.pendingRequests.delete(requestId)
+        this.unregisterRequest(ch, requestId)
         cleanup()
         log.debug('inner RPC request timed out', { channel_id: ch.channelId, id: requestId, method })
         reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${channelId})`))
@@ -422,9 +644,11 @@ export class ChannelManager {
       if (signal) {
         abortListener = () => {
           // Drop the pending entry so the eventual InnerRpcResponse
-          // is treated as orphan + ignored. cleanup() also clears
-          // the timer + this listener so no double-resolve fires.
-          ch.pendingRequests.delete(requestId)
+          // is treated as orphan + ignored (and with it any partial
+          // reassembly, which existed only to feed this request).
+          // cleanup() also clears the timer + this listener so no
+          // double-resolve fires.
+          this.unregisterRequest(ch, requestId)
           cleanup()
           log.debug('inner RPC request aborted by caller', { channel_id: ch.channelId, id: requestId, method })
           reject(signal.reason instanceof Error ? signal.reason : new ChannelError('client', `RPC call '${method}' aborted`))
@@ -432,16 +656,21 @@ export class ChannelManager {
         signal.addEventListener('abort', abortListener, { once: true })
       }
 
-      const innerReq = create(InnerRpcRequestSchema, {
-        method,
-        payload,
-      })
-
-      const envelope = create(InnerMessageSchema, {
-        kind: { case: 'request', value: innerReq },
-      })
-      const plaintext = toBinary(InnerMessageSchema, envelope)
-      this.sendEncryptedMessage(ch, plaintext, requestId)
+      const plaintext = buildRequestPlaintext(method, payload)
+      // The registration and the timer are already installed, and a throw out of a
+      // Promise executor rejects the promise WITHOUT unwinding them -- the entry would
+      // linger until the timeout fired and the timer would burn for its full duration
+      // on a request that never reached the wire. Undo both here, then let
+      // onSendFailure decide whether the channel itself is still usable.
+      try {
+        this.sendEncryptedMessage(ch, plaintext, requestId)
+      }
+      catch (err) {
+        this.unregisterRequest(ch, requestId)
+        cleanup()
+        this.onSendFailure(ch, err)
+        reject(err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err)))
+      }
     })
   }
 
@@ -456,7 +685,7 @@ export class ChannelManager {
     onError: (cb: (err: Error) => void) => void
   } {
     const ch = this.channels.get(channelId)
-    if (!ch || ch.closed) {
+    if (!ch || ch.state === 'closed') {
       throw new ChannelError('client', 'channel not open')
     }
 
@@ -473,16 +702,19 @@ export class ChannelManager {
       onError: err => errorCb?.(err),
     })
 
-    const innerReq = create(InnerRpcRequestSchema, {
-      method,
-      payload,
-    })
-
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'request', value: innerReq },
-    })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
-    this.sendEncryptedMessage(ch, plaintext, requestId)
+    const plaintext = buildRequestPlaintext(method, payload)
+    // The listener is registered but the handle -- and with it the requestId the caller
+    // would need to removeStreamListener -- has not been returned yet, so a throw here
+    // leaves an entry NOBODY can ever reach or clean up; it would outlive the caller
+    // and only die with the channel. Unregister before rethrowing.
+    try {
+      this.sendEncryptedMessage(ch, plaintext, requestId)
+    }
+    catch (err) {
+      this.unregisterRequest(ch, requestId)
+      this.onSendFailure(ch, err)
+      throw err
+    }
 
     return {
       requestId,
@@ -495,14 +727,16 @@ export class ChannelManager {
   /** Get an open channel for a worker, or open a new one. */
   async getOrOpenChannel(workerId: string): Promise<string> {
     for (const [channelId, ch] of this.channels) {
-      if (ch.workerId === workerId && !ch.closed) {
-        // Check time-based expiry.
-        if (Date.now() - ch.openedAt > CHANNEL_MAX_AGE_MS) {
-          await this.closeChannel(channelId)
-          break
-        }
-        // Check nonce-based rekey need.
-        if (ch.session.send.needsRekey()) {
+      // `state === 'verified'` and not merely "not closed": an open in progress has
+      // already put its channel here so the verification Ping's reply can route, but
+      // that session is unproven. Skipping it drops through to openingChannels.run
+      // below, which dedups this caller onto the very same in-flight open -- so a
+      // racer waits for the ping instead of being handed the channel the ping might
+      // yet reject.
+      if (ch.workerId === workerId && ch.state === 'verified') {
+        const reason = this.staleReason(ch)
+        if (reason) {
+          log.debug('reopening stale pooled channel', { channel_id: channelId, worker_id: workerId, reason })
           await this.closeChannel(channelId)
           break
         }
@@ -513,10 +747,51 @@ export class ChannelManager {
     return this.openingChannels.run(workerId, () => this.openChannel(workerId))
   }
 
+  /**
+   * Why a verified pooled channel can no longer be reused, or null if it still
+   * can. The three reasons a channel is rotated out of the pool live in one place
+   * so the reuse path (and any future caller) share one policy: it aged past
+   * CHANNEL_MAX_AGE_MS, its send session needs a rekey, or the identity it was
+   * opened under drifted -- this tab logged out and back in as B (or a shared
+   * cookie jar was re-authenticated elsewhere) while this up-to-an-hour-old channel
+   * is still the one the Hub authenticated as A, and serving it would run every
+   * worker RPC B's page issues as A. This is the pooled-read half of the open-time
+   * identity cross-check; the Hub stays authoritative and the stale channel is just
+   * closed and reopened.
+   */
+  private staleReason(ch: ActiveChannel): 'expired' | 'needs-rekey' | 'identity-drift' | null {
+    if (Date.now() - ch.openedAt > CHANNEL_MAX_AGE_MS) {
+      return 'expired'
+    }
+    if (ch.session.send.needsRekey()) {
+      return 'needs-rekey'
+    }
+    if (this.identityMismatch(this.expectedUserIdFn(), ch.userId)) {
+      return 'identity-drift'
+    }
+    return null
+  }
+
+  /**
+   * Whether the identity this page expects disagrees with the one the Hub
+   * authenticated. An `undefined` `expected` is NOT a mismatch: the page has no
+   * expectation yet (e.g. before the auth context resolves) and the Hub stays
+   * authoritative. An EMPTY-STRING `expected` IS a mismatch against any non-empty
+   * Hub identity: only the "not resolved yet" case (undefined) may skip the check,
+   * whereas `''` is a degenerate/corrupt id we must not silently treat as "no
+   * expectation" and serve a channel bound to a different user for. `actual` is the
+   * Hub-authenticated id, which the Hub never leaves empty. This is the one
+   * comparison the open-time reject and the pooled-reuse eviction share, so the
+   * skip semantics cannot drift apart.
+   */
+  private identityMismatch(expected: string | undefined, actual: string): boolean {
+    return expected !== undefined && expected !== actual
+  }
+
   /** Check if a channel is open. */
   isOpen(channelId: string): boolean {
     const ch = this.channels.get(channelId)
-    return ch !== undefined && !ch.closed
+    return ch !== undefined && ch.state !== 'closed'
   }
 
   /** Get the worker ID for a channel. */
@@ -526,9 +801,15 @@ export class ChannelManager {
 
   /** Close all channels and the shared WebSocket. */
   closeAll(): void {
-    for (const [channelId] of this.channels) {
+    // First, invalidate every in-flight open (see closeGeneration): the
+    // snapshot below cannot see a channel that has not registered yet.
+    this.closeGeneration++
+    // Snapshot the ids before iterating: closeChannel deletes from this.channels,
+    // and a listener it notifies could in principle open a channel mid-loop. ES
+    // makes deleting the current entry safe, but a newly-added entry would be
+    // visited by a live iterator; iterating a snapshot makes the intent explicit.
+    for (const channelId of [...this.channels.keys()])
       void this.closeChannel(channelId)
-    }
     this.closeWebSocket()
   }
 
@@ -582,11 +863,18 @@ export class ChannelManager {
   removeStreamListener(channelId: string, requestId: number): void {
     const ch = this.channels.get(channelId)
     if (ch) {
-      ch.streamListeners.delete(requestId)
+      this.unregisterRequest(ch, requestId)
     }
   }
 
   // ---- Key pinning utilities ----
+  //
+  // The whole TOFU key-pinning policy (this section, resolveKeyPin below,
+  // rejectedWorkers, and the KeyPin/KeyPinMap types) is a candidate to extract
+  // into its own module, mirroring the Go client's KeyPinStore interface
+  // (backend/tunnel/channel.go) / tofupins.store implementation -- entanglement
+  // with the rest of ChannelManager is limited to three call sites (see
+  // openChannel). See https://github.com/leapmux/leapmux/issues/283.
 
   /** Remove a pinned key for a worker. */
   static clearKeyPin(workerId: string): void {
@@ -602,23 +890,119 @@ export class ChannelManager {
 
   // ---- Private methods ----
 
-  /** Send a UserIdClaim and wait for the response. */
-  private sendUserIdClaim(ch: ActiveChannel): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      ch.claimResolve = resolve
-      ch.claimReject = reject
+  /**
+   * Resolve the TOFU key pin for a worker, prompting the user on a mismatch.
+   *
+   * Returns the `commit` the caller runs once the channel is proven, which records
+   * this worker's key. Splitting the decision from the write is what keeps the write
+   * correct: `openChannel` awaits the prompt, the handshake, and the WebSocket
+   * between the two, and KEY_KEY_PINS holds EVERY worker's pin in one value. Reading
+   * the whole map before those awaits and writing it back after would make the open
+   * an unserialized read-modify-write over shared state -- and opens to different
+   * workers are not serialized (openingChannels is keyed by worker), so two
+   * interleaving opens would each write back a map snapshot taken before the other's
+   * pin existed, silently dropping it. A dropped pin is not a lost preference: the
+   * next open reads no pin, takes the first-use branch, and re-pins whatever key the
+   * Hub serves WITHOUT prompting -- exactly the substitution the prompt defends
+   * against. So `commit` re-reads the map and mutates only this worker's entry, all
+   * synchronously, and no snapshot ever crosses an await.
+   *
+   * This closes the intra-tab race only; localStorage offers no compare-and-swap, so
+   * two browser TABS opening channels at the same instant can still clobber each
+   * other's pin. Narrowing the window to a single synchronous block is as far as this
+   * API goes.
+   *
+   * Throws when the user rejects the new key.
+   */
+  private async resolveKeyPin(workerId: string, keyBundle: WorkerKeyBundle): Promise<() => void> {
+    const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
+    const publicKeyHex = bytesToHex(compositeKeyBytes)
+    const pinned = localStorageGet<KeyPinMap>(KEY_KEY_PINS)?.[workerId] ?? null
 
-      const claim = create(UserIdClaimSchema, {
-        userId: this.transport.getUserId(),
-        timestampMs: BigInt(Date.now()),
-      })
+    const commit = () => {
+      const pins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
+      pins[workerId] = { publicKeyHex, firstSeen: Date.now() }
+      localStorageSet(KEY_KEY_PINS, pins)
+    }
 
-      const envelope = create(InnerMessageSchema, {
-        kind: { case: 'userIdClaim', value: claim },
-      })
-      const plaintext = toBinary(InnerMessageSchema, envelope)
-      this.sendEncryptedMessage(ch, plaintext, 0)
-    })
+    if (!pinned) {
+      // First use: trust and record it.
+      return commit
+    }
+
+    if (pinned.publicKeyHex === publicKeyHex) {
+      // The key we already trust; nothing to write.
+      return () => {}
+    }
+
+    // Auto-reject if the user already rejected this worker in this session.
+    if (this.rejectedWorkers.has(workerId)) {
+      throw new ChannelError('client', 'Worker public key rejected by user')
+    }
+
+    // Key mismatch — ask user.
+    const { keyFingerprintHex } = await import('./fingerprint')
+    const decision = await this.transport.confirmKeyPin(
+      workerId,
+      keyFingerprintHex(pinned.publicKeyHex),
+      keyFingerprintHex(publicKeyHex),
+    )
+    if (decision === 'reject') {
+      this.rejectedWorkers.add(workerId)
+      throw new ChannelError('client', 'Worker public key rejected by user')
+    }
+    // User accepted the new key.
+    return commit
+  }
+
+  /**
+   * Fail every waiter on a channel and release its buffers.
+   *
+   * `streamTermination` differs by caller and is the reason this takes a parameter
+   * rather than assuming: a local close is an orderly end its consumer asked for,
+   * while a transport failure or a dead session is an error the consumer must see.
+   * Callers own removing the channel from `channels`; this only settles what is
+   * registered on it.
+   */
+  private drainChannel(ch: ActiveChannel, err: ChannelError, streamTermination: 'end' | 'error'): void {
+    for (const [, pending] of ch.pendingRequests) {
+      pending.reject(err)
+    }
+    ch.pendingRequests.clear()
+
+    for (const [, listener] of ch.streamListeners) {
+      if (streamTermination === 'end')
+        safeCall(() => listener.onEnd(), 'stream onEnd listener')
+      else
+        safeCall(() => listener.onError(err), 'stream onError listener')
+    }
+    ch.streamListeners.clear()
+
+    ch.reassembly.clear()
+  }
+
+  /**
+   * Decide a channel's fate after sendEncryptedMessage threw.
+   *
+   * Only a session-level failure kills the channel. `encrypt` throwing means the Noise
+   * send state is finished (the nonce ceiling), and a chunked send that threw midway
+   * has already put chunks on the wire, leaving the peer's receive nonce ahead of ours
+   * -- either way every later send on this channel is garbage. Cancelling it is what
+   * lets pooled callers re-resolve onto a fresh one: getOrOpenChannel caches by worker
+   * and nothing else evicts a channel before its CHANNEL_MAX_AGE_MS check, so a
+   * poisoned session left in the pool would be handed to every later caller and fail
+   * identically for up to an hour. The Go client cancels the same way.
+   *
+   * A `client` ChannelError -- today, a payload over maxMessageSize -- is the opposite
+   * case: the session never encrypted a byte and is untouched, so tearing the channel
+   * down would punish every other caller for one bad call.
+   */
+  private onSendFailure(ch: ActiveChannel, err: unknown): void {
+    if (err instanceof ChannelError && err.source === 'client')
+      return
+    log.error('encrypting a channel message failed, closing the channel', { channel_id: ch.channelId, error: err })
+    ch.state = 'closed'
+    void this.closeChannel(ch.channelId)
   }
 
   /** Ensure the shared WebSocket is connected. */
@@ -655,11 +1039,28 @@ export class ChannelManager {
         this.wsPromise = null
 
         ws.addEventListener('message', (event: MessageEvent) => {
-          this.handleWebSocketMessage(event)
+          // Same stale-socket fence as the close handler below: a superseded
+          // socket can still deliver frames it buffered before it was replaced,
+          // and routing them into the shared channel map would let a stale
+          // CLOSE-flag frame drain a live channel -- or a stale data frame
+          // advance a channel's Noise receive nonce -- on the successor's
+          // watch. useOrgEvents guards its message handler the same way.
+          if (this.ws === ws) {
+            this.handleWebSocketMessage(event)
+          }
         })
 
         ws.addEventListener('close', () => {
-          this.handleWebSocketClose()
+          // Only the CURRENT socket's close tears the transport down. A stale
+          // socket's close fires after readyState already flipped it out of the
+          // OPEN fast path above, so a concurrent ensureWebSocket may have
+          // opened and installed a successor as this.ws in the window -- acting
+          // on the stale close here would drain the successor's channels, null
+          // this.ws, and orphan the still-OPEN successor. onOpen/onError capture
+          // `ws` for the same reason; the close handler must too.
+          if (this.ws === ws) {
+            this.handleWebSocketClose()
+          }
         })
 
         resolve()
@@ -730,10 +1131,17 @@ export class ChannelManager {
       protocolVersion: 1,
       channelId: ch.channelId,
       ciphertext,
-      correlationId: requestId,
+      // uint64 on the wire; see the decode boundary in handleMessage for why ids
+      // stay plain numbers on this side.
+      correlationId: BigInt(requestId),
       flags,
     })
-    log.debug('sending channel message', { channel_id: ch.channelId, correlation_id: requestId })
+    // Guarded like the receive-side sites (see handleMessage): this runs for
+    // every outbound frame -- and once per chunk of a chunked send -- and
+    // Logger.debug evaluates its args (a fresh object literal) before checking
+    // whether debug logging is on.
+    if (log.isDebug())
+      log.debug('sending channel message', { channel_id: ch.channelId, correlation_id: requestId })
     const data = toBinary(ChannelMessageSchema, msg)
 
     // Wire format: [4 bytes big-endian length][protobuf data]
@@ -742,8 +1150,16 @@ export class ChannelManager {
     buf.set(data, 4)
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      log.error('Cannot send channel message: WebSocket not open')
-      return
+      // Throw rather than log-and-return: call()/stream() wrap the send in a
+      // try/catch that unregisters the just-registered pending request /
+      // stream listener and rejects the caller. Swallowing this here would
+      // leave that request live until its ~15s RPC timeout (or, for a stream,
+      // forever) if the close event that would otherwise drain it is delayed or
+      // superseded by a successor socket. A non-'client' source makes
+      // onSendFailure tear the pooled channel down so the next call re-opens.
+      // this.ws is only ever an OPEN-or-later socket (it is assigned in onOpen),
+      // so a non-OPEN readyState here means CLOSING/CLOSED -- a dead transport.
+      throw new ChannelError('transport', 'cannot send channel message: WebSocket not open')
     }
     this.ws.send(buf)
   }
@@ -767,14 +1183,27 @@ export class ChannelManager {
 
   private handleMultiplexedMessage(data: ArrayBuffer): void {
     const buf = new Uint8Array(data)
-    if (buf.length < 4)
+    // A framing violation is dropped, but never silently: a systematic
+    // Hub<->browser framing desync would otherwise surface only as
+    // unexplained RPC timeouts, unlike every other rejection in this file,
+    // which logs.
+    if (buf.length < 4) {
+      log.warn('dropping WebSocket frame shorter than its length prefix', { length: buf.length })
       return
+    }
 
     const length = new DataView(buf.buffer, buf.byteOffset).getUint32(0)
-    if (length !== buf.length - 4)
+    if (length !== buf.length - 4) {
+      log.warn('dropping WebSocket frame with a mismatched length prefix', { declared: length, actual: buf.length - 4 })
       return
+    }
 
-    const msg: ChannelMessage = fromBinary(ChannelMessageSchema, buf.slice(4))
+    // Zero-copy view past the 4-byte length prefix. fromBinary decodes
+    // synchronously and protobuf-es aliases the `ciphertext` bytes field as a
+    // subarray of this input; both are safe because each inbound WS frame owns a
+    // fresh, never-reused ArrayBuffer and ciphertext is consumed (decrypt /
+    // hub-control parse) before the frame is dropped -- so no copy is needed.
+    const msg: ChannelMessage = fromBinary(ChannelMessageSchema, buf.subarray(4))
 
     if (msg.channelId === HUB_CONTROL_CHANNEL_ID) {
       this.handleHubControl(msg)
@@ -806,23 +1235,17 @@ export class ChannelManager {
     if (!ch)
       return
 
-    log.debug('received channel message', { channel_id: channelId, correlation_id: msg.correlationId })
+    // Guard the payload build behind isDebug: handleMessage runs for every inbound
+    // frame (RPC response, stream chunk, tunnel data/credit), and the debug args --
+    // a fresh object literal plus a bigint->string conversion -- are evaluated at the
+    // call site regardless of whether debug logging is on (see Logger.debug).
+    if (log.isDebug())
+      log.debug('received channel message', { channel_id: channelId, correlation_id: String(msg.correlationId) })
 
     // Close sentinel: CLOSE flag.
     if (msg.flags === ChannelMessageFlags.CLOSE) {
-      for (const [, pending] of ch.pendingRequests) {
-        pending.reject(new ChannelError('transport', 'channel closed by server'))
-      }
-      ch.pendingRequests.clear()
-      for (const [, listener] of ch.streamListeners) {
-        listener.onError(new ChannelError('transport', 'channel closed by server'))
-      }
-      ch.streamListeners.clear()
-      ch.reassembly.clear()
-      ch.claimReject?.(new ChannelError('transport', 'channel closed by server'))
-      ch.claimResolve = undefined
-      ch.claimReject = undefined
-      ch.closed = true
+      this.drainChannel(ch, new ChannelError('transport', 'channel closed by server'), 'error')
+      ch.state = 'closed'
       this.channels.delete(channelId)
       this.notifyStateChange()
       return
@@ -839,56 +1262,53 @@ export class ChannelManager {
       return
     }
 
-    // Handle chunked reassembly.
-    let plaintext: Uint8Array
-    if (msg.flags === ChannelMessageFlags.MORE) {
-      // More chunks to come — buffer this one.
-      let buf = ch.reassembly.get(msg.correlationId)
-      if (!buf) {
-        if (ch.reassembly.size >= MAX_INCOMPLETE_CHUNKED) {
-          log.error('Too many incomplete chunked messages', { channel_id: channelId, correlation_id: msg.correlationId })
-          this.rejectPendingRequest(ch, msg.correlationId, 'client', 'too many incomplete chunked messages')
-          return
-        }
-        buf = { parts: [], total: 0 }
-        ch.reassembly.set(msg.correlationId, buf)
-      }
-      buf.parts.push(decrypted)
-      buf.total += decrypted.length
-      if (buf.total > this.maxMessageSize) {
-        log.error('Chunked message exceeds max size', { channel_id: channelId, correlation_id: msg.correlationId, size: buf.total })
-        ch.reassembly.delete(msg.correlationId)
-        const errMsg = `chunked message too large: ${buf.total} bytes exceeds ${this.maxMessageSize} byte limit`
-        this.rejectPendingRequest(ch, msg.correlationId, 'client', errMsg)
-        return
-      }
+    // correlation_id is uint64 on the wire so the id space cannot wrap (see
+    // channel.proto), which protobuf-es surfaces as a bigint. Convert once here
+    // rather than making every request registry, stream listener, and reassembly key
+    // a bigint: ids are allocated as a plain counter and never approach 2^53, where a
+    // JS number stops being exact -- at the ~640 ids/sec a saturated tunnel burns,
+    // reaching it takes ~450,000 years.
+    //
+    // A value past the safe range is therefore not one this client ever allocated, so
+    // routing it would mean rounding it onto some OTHER request's handler. Drop the
+    // message instead.
+    //
+    // This runs AFTER the decrypt, and must: Noise nonces are implicit and sequential,
+    // so skipping a ciphertext leaves our receive nonce behind the peer's send nonce
+    // and every subsequent message fails to decrypt. Dropping the plaintext costs one
+    // message; dropping the ciphertext would cost the channel.
+    if (msg.correlationId > MAX_SAFE_CORRELATION_ID) {
+      log.error('dropping channel message with an out-of-range correlation id', {
+        channel_id: channelId,
+        correlation_id: String(msg.correlationId),
+      })
+      return
+    }
+    const correlationId = Number(msg.correlationId)
+
+    // An out-of-spec flags value (e.g. MORE|CLOSE combined, which no
+    // conformant sender emits) is a protocol violation dropped here rather
+    // than misread as "final chunk" -- which would hand a truncated assembly
+    // to the InnerMessage decoder. Mirrors the Go receivers
+    // (channelwire.ChunkContinuation); CLOSE was already handled above. Runs
+    // after the decrypt so the drop does not desync the receive nonce.
+    if (msg.flags !== ChannelMessageFlags.UNSPECIFIED && msg.flags !== ChannelMessageFlags.MORE) {
+      log.warn('dropping channel message with out-of-spec flags', {
+        channel_id: channelId,
+        correlation_id: correlationId,
+        flags: msg.flags,
+      })
       return
     }
 
-    // Final chunk or single non-chunked message.
-    const buf = ch.reassembly.get(msg.correlationId)
-    if (buf) {
-      buf.parts.push(decrypted)
-      buf.total += decrypted.length
-      if (buf.total > this.maxMessageSize) {
-        log.error('Chunked message exceeds max size', { channel_id: channelId, correlation_id: msg.correlationId, size: buf.total })
-        ch.reassembly.delete(msg.correlationId)
-        const errMsg = `chunked message too large: ${buf.total} bytes exceeds ${this.maxMessageSize} byte limit`
-        this.rejectPendingRequest(ch, msg.correlationId, 'client', errMsg)
-        return
-      }
-      const full = new Uint8Array(buf.total)
-      let offset = 0
-      for (const part of buf.parts) {
-        full.set(part, offset)
-        offset += part.length
-      }
-      plaintext = full
-      ch.reassembly.delete(msg.correlationId)
-    }
-    else {
-      plaintext = decrypted
-    }
+    // Feed the frame through chunk reassembly. A null result means it did not
+    // complete a message (a buffered MORE chunk, or a dropped chunk for a
+    // poisoned/unknown/over-cap id, or an oversize breach); a complete message
+    // returns its full plaintext. Test with `=== null`, NOT falsiness: a zero-length
+    // payload is a valid complete message that must still dispatch.
+    const plaintext = this.reassemble(ch, correlationId, msg.flags, decrypted)
+    if (plaintext === null)
+      return
 
     // Deserialize the InnerMessage envelope.
     let envelope
@@ -901,126 +1321,216 @@ export class ChannelManager {
     }
 
     switch (envelope.kind.case) {
-      case 'response': {
-        const resp = envelope.kind.value
-        log.debug('received inner RPC response', {
-          channel_id: channelId,
-          correlation_id: msg.correlationId,
-          is_error: resp.isError,
-          error_code: resp.errorCode,
-          error_message: resp.errorMessage,
-          payload_len: resp.payload.length,
-        })
-        const pending = ch.pendingRequests.get(msg.correlationId)
-        if (pending) {
-          ch.pendingRequests.delete(msg.correlationId)
-          if (resp.isError) {
-            const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
-            this.notifyError(ch.workerId, err)
-            pending.reject(err)
-          }
-          else {
-            pending.resolve(resp)
-          }
-        }
+      case 'response':
+        this.deliverResponse(ch, correlationId, envelope.kind.value)
         break
-      }
-
-      case 'stream': {
-        const streamMsg = envelope.kind.value
-        log.debug('received inner stream message', {
-          channel_id: channelId,
-          correlation_id: msg.correlationId,
-          end: streamMsg.end,
-          is_error: streamMsg.isError,
-          error_code: streamMsg.errorCode,
-          error_message: streamMsg.errorMessage,
-          payload_len: streamMsg.payload.length,
-        })
-        const listener = ch.streamListeners.get(msg.correlationId)
-        if (listener) {
-          if (streamMsg.isError) {
-            const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, streamMsg.errorCode)
-            this.notifyError(ch.workerId, err)
-            listener.onError(err)
-            ch.streamListeners.delete(msg.correlationId)
-          }
-          else if (streamMsg.end) {
-            listener.onEnd()
-            ch.streamListeners.delete(msg.correlationId)
-          }
-          else {
-            listener.onMessage(streamMsg)
-          }
-        }
+      case 'stream':
+        this.deliverStream(ch, correlationId, envelope.kind.value)
         break
-      }
-
-      case 'userIdClaimResponse': {
-        const claimResp = envelope.kind.value
-        log.debug('received user_id_claim_response', { channel_id: channelId, correlation_id: msg.correlationId, success: claimResp.success })
-        if (!claimResp.success) {
-          ch.closed = true
-          this.channels.delete(channelId)
-          ch.claimReject?.(new ChannelError('client', claimResp.errorMessage || 'User ID claim rejected'))
-        }
-        else {
-          ch.claimResolve?.()
-        }
-        ch.claimResolve = undefined
-        ch.claimReject = undefined
-        break
-      }
-
       default:
         log.warn('Unknown inner message type', envelope.kind.case)
     }
+  }
+
+  /**
+   * Feed one decrypted frame into the correlation id's reassembly state and return
+   * the complete message plaintext, or null when this frame did not complete one --
+   * a buffered MORE chunk, a dropped chunk (poisoned/unknown/over-cap id), or an
+   * oversize breach. A single non-chunked frame returns its own bytes unchanged.
+   * Callers MUST test the result with `=== null`, not falsiness: a zero-length
+   * payload is a valid complete message.
+   *
+   * The DECISION (buffer / drop / breach / deliver) lives in Reassembler.accept;
+   * this method is the DISPATCH -- logging with channel context, rejecting the
+   * owning request on a breach, returning the plaintext on a deliver -- mirroring
+   * the Go split (reassembleLocked decides under the lock, reassemble dispatches
+   * outside it). hasHandler lets accept check the handler registry without
+   * Reassembler knowing about the ChannelManager's request/stream maps.
+   */
+  private reassemble(
+    ch: ActiveChannel,
+    correlationId: number,
+    flags: ChannelMessageFlags,
+    decrypted: Uint8Array,
+  ): Uint8Array | null {
+    const out = ch.reassembly.accept(
+      correlationId,
+      decrypted,
+      flags === ChannelMessageFlags.MORE,
+      id => ch.pendingRequests.has(id) || ch.streamListeners.has(id),
+    )
+    switch (out.kind) {
+      case 'deliver':
+        return out.plaintext
+      case 'buffered':
+      case 'drop-poisoned':
+        return null
+      case 'drop-unknown':
+        log.warn('dropped chunk for an unknown correlation id', { channel_id: ch.channelId, correlation_id: correlationId })
+        return null
+      case 'too-many':
+        // The in-flight cap and the size cap are distinct outcomes, so the log
+        // wording and the rejection message are chosen by kind -- not by
+        // string-matching a message accept produced.
+        log.error('Too many incomplete chunked messages', { channel_id: ch.channelId, correlation_id: correlationId })
+        this.failReassembly(ch, correlationId, 'too many incomplete chunked messages')
+        return null
+      case 'too-large':
+        log.error('Chunked message exceeds max size', { channel_id: ch.channelId, correlation_id: correlationId, size: out.size })
+        this.failReassembly(ch, correlationId, `chunked message too large: ${out.size} bytes exceeds ${this.maxMessageSize} byte limit`)
+        return null
+    }
+  }
+
+  /** Route a completed InnerRpcResponse to its pending request. */
+  private deliverResponse(ch: ActiveChannel, correlationId: number, resp: InnerRpcResponse): void {
+    // Guard the payload build behind isDebug, as handleMessage does: this runs
+    // once per inbound RPC response, and the object literal (plus the payload
+    // length read) is evaluated at the call site regardless of whether debug
+    // logging is on (see Logger.debug).
+    if (log.isDebug()) {
+      log.debug('received inner RPC response', {
+        channel_id: ch.channelId,
+        correlation_id: correlationId,
+        is_error: resp.isError,
+        error_code: resp.errorCode,
+        error_message: resp.errorMessage,
+        payload_len: resp.payload.length,
+      })
+    }
+    const pending = ch.pendingRequests.get(correlationId)
+    if (pending) {
+      this.unregisterRequest(ch, correlationId)
+      if (resp.isError) {
+        const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
+        this.notifyError(ch.workerId, err)
+        pending.reject(err)
+      }
+      else {
+        pending.resolve(resp)
+      }
+    }
+  }
+
+  /** Route an InnerStreamMessage to its stream listener. */
+  private deliverStream(ch: ActiveChannel, correlationId: number, streamMsg: InnerStreamMessage): void {
+    // Guard the payload build behind isDebug, as handleMessage does: this runs
+    // once per inbound stream frame (the per-chunk hot path), and the object
+    // literal (plus the payload length read) is evaluated at the call site
+    // regardless of whether debug logging is on (see Logger.debug).
+    if (log.isDebug()) {
+      log.debug('received inner stream message', {
+        channel_id: ch.channelId,
+        correlation_id: correlationId,
+        end: streamMsg.end,
+        is_error: streamMsg.isError,
+        error_code: streamMsg.errorCode,
+        error_message: streamMsg.errorMessage,
+        payload_len: streamMsg.payload.length,
+      })
+    }
+    const listener = ch.streamListeners.get(correlationId)
+    if (listener) {
+      // Unregister BEFORE invoking the terminal callback, and isolate every
+      // listener call with safeCall, mirroring drainChannel: a throwing app
+      // callback must not skip unregisterRequest (which would pin the stream's
+      // reassembly buffer and its incomplete-chunked cap slot for the channel's
+      // life) or unwind into the WebSocket message dispatch.
+      if (streamMsg.isError) {
+        const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, streamMsg.errorCode)
+        this.notifyError(ch.workerId, err)
+        this.unregisterRequest(ch, correlationId)
+        safeCall(() => listener.onError(err), 'stream onError listener')
+      }
+      else if (streamMsg.end) {
+        this.unregisterRequest(ch, correlationId)
+        safeCall(() => listener.onEnd(), 'stream onEnd listener')
+      }
+      else {
+        safeCall(() => listener.onMessage(streamMsg), 'stream onMessage listener')
+      }
+    }
+  }
+
+  /**
+   * Drop every handler registered for a request and, with them, its reassembly buffer.
+   *
+   * A correlation id is either a pending unary or a stream, never both, so clearing
+   * both maps is safe and keeps the rule -- a reassembly buffer lives and dies with the
+   * request that owns it -- in ONE place instead of at each of the six sites that
+   * retire a request. Left behind, a partial reassembly pins up to maxMessageSize and
+   * holds a slot of the incomplete-chunked cap for the channel's whole life, because
+   * nothing else ever reaps it: the buffer's only reader was the handler just removed.
+   */
+  private unregisterRequest(ch: ActiveChannel, correlationId: number): void {
+    ch.pendingRequests.delete(correlationId)
+    ch.streamListeners.delete(correlationId)
+    ch.reassembly.drop(correlationId)
+  }
+
+  /**
+   * Report a reassembly-limit breach to the request that owns the id, then tombstone
+   * the id so the rest of its chunks are dropped in silence.
+   *
+   * Order matters: reporting unregisters the request, which reaps its buffer, so
+   * poisoning first would leave nothing behind. Poisoning after is what keeps chunks
+   * 2..N of the rejected message RECOGNISED — a 16 MiB message is ~256 frames, and
+   * without the tombstone each one re-enters the unknown-id path and logs.
+   */
+  private failReassembly(ch: ActiveChannel, correlationId: number, message: string): void {
+    this.rejectPendingRequest(ch, correlationId, 'client', message)
+    ch.reassembly.poison(correlationId)
   }
 
   /** Reject a pending request or error an active stream. */
   private rejectPendingRequest(ch: ActiveChannel, correlationId: number, source: ChannelErrorSource, message: string): void {
     const pending = ch.pendingRequests.get(correlationId)
     if (pending) {
-      ch.pendingRequests.delete(correlationId)
+      this.unregisterRequest(ch, correlationId)
       pending.reject(new ChannelError(source, message))
       return
     }
     const listener = ch.streamListeners.get(correlationId)
     if (listener) {
-      ch.streamListeners.delete(correlationId)
-      listener.onError(new ChannelError(source, message))
+      this.unregisterRequest(ch, correlationId)
+      // Isolate the app callback: failReassembly poisons the id AFTER this returns,
+      // and a throwing onError would unwind out of failReassembly -> reassemble ->
+      // handleMessage, skipping the poison. The id would then be un-tombstoned (its
+      // buffer already reaped by unregisterRequest above), so every remaining chunk
+      // of the rejected message re-enters the unknown-id path and logs -- the exact
+      // per-chunk storm the tombstone exists to prevent. safeCall matches the
+      // isolation deliverStream/drainChannel already apply to onError elsewhere.
+      safeCall(() => listener.onError(new ChannelError(source, message)), 'stream onError listener')
     }
   }
 
   /** Handle shared WebSocket close: tear down all channels. */
   private handleWebSocketClose(): void {
     this.ws = null
-    this.wsPromise = null
 
-    for (const [channelId, ch] of this.channels) {
-      // Reject all pending requests.
-      for (const [, pending] of ch.pendingRequests) {
-        pending.reject(new ChannelError('transport', 'channel disconnected'))
-      }
-      ch.pendingRequests.clear()
+    // A successor dial started in the gap between this socket's readyState leaving
+    // OPEN and this queued close event firing owns this.wsPromise: the socket that
+    // just closed nulled wsPromise in its own onOpen, so a non-null promise here can
+    // only belong to a newer ensureWebSocket. Nulling it -- or clearing the
+    // per-worker open dedup -- would orphan that successor's still-dialing socket (an
+    // idle Hub connection once it opens) and let a duplicate channel-open start. This
+    // completes the `this.ws === ws` guard at the close listener, which already skips
+    // a close whose successor has fully OPENED but not one still DIALING.
+    const successorDialing = this.wsPromise !== null
 
-      // End all streams.
-      for (const [, listener] of ch.streamListeners) {
-        listener.onError(new ChannelError('transport', 'channel disconnected'))
-      }
-      ch.streamListeners.clear()
-      ch.reassembly.clear()
-
-      // Reject pending claim verification.
-      ch.claimReject?.(new ChannelError('transport', 'channel disconnected'))
-      ch.claimResolve = undefined
-      ch.claimReject = undefined
-
-      ch.closed = true
+    for (const channelId of [...this.channels.keys()]) {
+      const ch = this.channels.get(channelId)
+      if (!ch)
+        continue
+      this.drainChannel(ch, new ChannelError('transport', 'channel disconnected'), 'error')
+      ch.state = 'closed'
       this.channels.delete(channelId)
     }
 
-    this.openingChannels.clear()
+    if (!successorDialing) {
+      this.wsPromise = null
+      this.openingChannels.clear()
+    }
     this.notifyStateChange()
   }
 }

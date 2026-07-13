@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/require"
@@ -26,13 +25,12 @@ func RequireConflict(t *testing.T, err error) {
 var ctx = context.Background()
 
 // SeedOrg creates an org and returns its ID.
-func SeedOrg(t *testing.T, st store.Store, name string, isPersonal bool) string {
+func SeedOrg(t *testing.T, st store.Store, name string) string {
 	t.Helper()
 	orgID := id.Generate()
 	err := st.Orgs().Create(ctx, store.CreateOrgParams{
-		ID:         orgID,
-		Name:       name,
-		IsPersonal: isPersonal,
+		ID:   orgID,
+		Name: name,
 	})
 	require.NoError(t, err)
 	return orgID
@@ -58,17 +56,6 @@ func SeedUser(t *testing.T, st store.Store, orgID, username string) *store.User 
 	user, err := st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	return user
-}
-
-// SeedOrgMember creates an org membership.
-func SeedOrgMember(t *testing.T, st store.Store, orgID, userID string, role leapmuxv1.OrgMemberRole) {
-	t.Helper()
-	err := st.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   role,
-	})
-	require.NoError(t, err)
 }
 
 // SeedRegistrationKey creates a worker_registration_keys row owned by

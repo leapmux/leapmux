@@ -55,31 +55,6 @@ func parseMySQLCursor(cursor string) (any, time.Time, error) {
 	return t, t, nil
 }
 
-func listAllOrgsParams(cursor string, limit int64) (gendb.ListAllOrgsParams, error) {
-	column1, createdAt, err := parseMySQLCursor(cursor)
-	if err != nil {
-		return gendb.ListAllOrgsParams{}, err
-	}
-	return gendb.ListAllOrgsParams{
-		Column1:   column1,
-		CreatedAt: createdAt,
-		Limit:     int32(limit),
-	}, nil
-}
-
-func searchOrgsParams(query *string, cursor string, limit int64) (gendb.SearchOrgsParams, error) {
-	column3, createdAt, err := parseMySQLCursor(cursor)
-	if err != nil {
-		return gendb.SearchOrgsParams{}, err
-	}
-	return gendb.SearchOrgsParams{
-		Query:     ptrconv.PtrToNullString(query),
-		Column3:   column3,
-		CreatedAt: createdAt,
-		Limit:     int32(limit),
-	}, nil
-}
-
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
 	column1, createdAt, err := parseMySQLCursor(cursor)
 	if err != nil {
@@ -88,7 +63,7 @@ func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, e
 	return gendb.ListAllUsersParams{
 		Column1:   column1,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -98,10 +73,13 @@ func searchUsersParams(query *string, cursor string, limit int64) (gendb.SearchU
 		return gendb.SearchUsersParams{}, err
 	}
 	return gendb.SearchUsersParams{
-		Query:     ptrconv.PtrToNullString(query),
+		// Fold the search term the same way the write path folds display_name_folded,
+		// so the plain-LIKE match is case-insensitive (and cross-dialect consistent) for
+		// non-ASCII names. A nil query stays nil (SearchUsers reads it as "no filter").
+		Query:     ptrconv.PtrToNullString(store.FoldSearchQuery(query)),
 		Column5:   column5,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -114,22 +92,7 @@ func listWorkersByUserIDParams(registeredBy, cursor string, limit int64) (gendb.
 		RegisteredBy: registeredBy,
 		Column2:      column2,
 		CreatedAt:    createdAt,
-		Limit:        int32(limit),
-	}, nil
-}
-
-func listOwnedWorkersParams(userID, cursor string, limit int64) (gendb.ListOwnedWorkersParams, error) {
-	column2, createdAt, err := parseMySQLCursor(cursor)
-	if err != nil {
-		return gendb.ListOwnedWorkersParams{}, err
-	}
-	return gendb.ListOwnedWorkersParams{
-		UserID:      userID,
-		Column2:     column2,
-		CreatedAt:   createdAt,
-		Column5:     column2,
-		CreatedAt_2: createdAt,
-		Limit:       int32(limit),
+		Limit:        int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -141,7 +104,7 @@ func listWorkersAdminAllParams(cursor string, limit int64) (gendb.ListWorkersAdm
 	return gendb.ListWorkersAdminAllParams{
 		Column1:   column1,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -154,7 +117,7 @@ func listWorkersAdminByStatusParams(status leapmuxv1.WorkerStatus, cursor string
 		Status:    status,
 		Column2:   column2,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -167,7 +130,7 @@ func listWorkersAdminByUserParams(userID, cursor string, limit int64) (gendb.Lis
 		UserID:    userID,
 		Column2:   column2,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -181,7 +144,7 @@ func listWorkersAdminByUserAndStatusParams(userID string, status leapmuxv1.Worke
 		Status:    status,
 		Column3:   column3,
 		CreatedAt: createdAt,
-		Limit:     int32(limit),
+		Limit:     int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -193,6 +156,6 @@ func listAllActiveSessionsParams(cursor string, limit int64) (gendb.ListAllActiv
 	return gendb.ListAllActiveSessionsParams{
 		Column1:      column1,
 		LastActiveAt: lastActiveAt,
-		Limit:        int32(limit),
+		Limit:        int32(store.ClampListLimit(limit)),
 	}, nil
 }

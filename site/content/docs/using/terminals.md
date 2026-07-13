@@ -86,7 +86,7 @@ leapmux remote tab open --type terminal \
 
 The **Shell** dropdown is populated per-Worker by querying the Worker for the shells it has installed. While the list is loading it shows **"Loading shells..."**; if the Worker reports none it shows **"No shells available"**. Each option shows the shell's path, and the default shell is labelled `<path> (default)`.
 
-The shell list is per-Worker. Switching organization or workspace while staying on the same Worker does **not** re-fetch it; switching to a different Worker does, and resets any shell override you had selected.
+The shell list is per-Worker. Switching workspace while staying on the same Worker does **not** re-fetch it; switching to a different Worker does, and resets any shell override you had selected.
 
 ### How the Worker builds the list
 

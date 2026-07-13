@@ -5,6 +5,7 @@ import { A, useNavigate } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { cardNarrow } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -72,7 +73,7 @@ export const SignupPage: Component = () => {
                   }
                   else {
                     auth.setAuth(resp.user!)
-                    navigate(`/o/${slug}`, { replace: true })
+                    navigate(orgHomePath(slug), { replace: true })
                   }
                 }}
               />

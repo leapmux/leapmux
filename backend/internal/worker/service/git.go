@@ -95,7 +95,7 @@ func runBranchMutationCustom(parent context.Context, timeout time.Duration, send
 }
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
-func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
+func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 	d.Register("GetGitInfo", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.GetGitInfoRequest
 		if err := unmarshalRequest(req, &r); err != nil {

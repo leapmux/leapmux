@@ -1,10 +1,10 @@
 -- +goose Up
 
--- Organizations (tenants)
+-- Personal organizations: exactly one per user, created with the account,
+-- soft-deleted with it. name mirrors the username (renamed together).
 CREATE TABLE orgs (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
-    is_personal INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     deleted_at  DATETIME
 );
@@ -18,6 +18,12 @@ CREATE TABLE users (
     username       TEXT NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
+    -- Unicode-casefolded (Go strings.ToLower) copy of display_name, maintained on
+    -- every write, so admin SearchUsers matches non-ASCII names case-insensitively
+    -- and identically across SQLite/Postgres/MySQL. SQLite's built-in LOWER/LIKE
+    -- fold only ASCII, so a bare LIKE on display_name would diverge from Postgres
+    -- ILIKE / MySQL LOWER; querying this pre-folded column with a plain LIKE does not.
+    display_name_folded      TEXT NOT NULL DEFAULT '',
     email                    TEXT NOT NULL DEFAULT '',
     email_verified           INTEGER NOT NULL DEFAULT 0,
     pending_email            TEXT NOT NULL DEFAULT '',
@@ -61,16 +67,6 @@ CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_a
 -- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.
 CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin AND deleted_at IS NULL;
 
--- Multi-org membership (M:N junction)
-CREATE TABLE org_members (
-    org_id    TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role                INTEGER NOT NULL DEFAULT 1,
-    joined_at           DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (org_id, user_id)
-);
-CREATE INDEX idx_org_members_user_id ON org_members(user_id);
-
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              TEXT PRIMARY KEY,
@@ -106,6 +102,10 @@ CREATE TABLE workers (
     deleted_at    DATETIME
 );
 CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC) WHERE deleted_at IS NULL;
+-- Full (non-partial) registered_by index for the cleanup FK gate:
+-- HardDeleteUsersBefore probes NOT EXISTS a worker (INCLUDING soft-deleted rows)
+-- referencing the user, which the partial index above (deleted_at IS NULL) cannot serve.
+CREATE INDEX idx_workers_registered_by ON workers(registered_by);
 -- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
 -- (registered_by, status, created_at) index because registered_by is the
 -- leading column.
@@ -169,16 +169,6 @@ CREATE TABLE workspace_section_items (
 );
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
--- Cross-user Worker access grants (for workspace sharing)
-CREATE TABLE worker_access_grants (
-    worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    granted_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (worker_id, user_id)
-);
-CREATE INDEX idx_worker_access_grants_user_id ON worker_access_grants(user_id);
-
 -- Workspaces (hub-owned registry)
 CREATE TABLE workspaces (
     id            TEXT PRIMARY KEY,
@@ -192,19 +182,6 @@ CREATE TABLE workspaces (
 CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id) WHERE is_deleted = 0;
 CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
-
--- Workspace read-only sharing ACL
-CREATE TABLE workspace_access (
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (workspace_id, user_id)
-);
--- Point index for the cross-org "shared with me" lookup (the grant branch of
--- ListAllAccessibleWorkspaces), which keys on user_id. The PK leads with
--- workspace_id, so it cannot serve a user_id-only probe. (MySQL gets this index
--- automatically from the user_id foreign key; SQLite does not index FK columns.)
-CREATE INDEX idx_workspace_access_user_id ON workspace_access(user_id);
 
 -- CRDT op-batch journal. The per-org CRDT manager appends every committed
 -- batch here in the same transaction that updates the in-memory state and
@@ -528,13 +505,11 @@ DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;
-DROP TABLE IF EXISTS org_recent_op_ids;
+DROP TABLE IF EXISTS org_recent_batch_ids;
 DROP TABLE IF EXISTS workspace_tab_rendered;
 DROP TABLE IF EXISTS workspace_tab_owned;
 DROP TABLE IF EXISTS org_state;
-DROP TABLE IF EXISTS org_ops;
-DROP TABLE IF EXISTS workspace_access;
-DROP TABLE IF EXISTS worker_access_grants;
+DROP TABLE IF EXISTS org_op_batches;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
@@ -542,6 +517,5 @@ DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
-DROP TABLE IF EXISTS org_members;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS orgs;

@@ -350,6 +350,53 @@ func (s delayedAcquireRevocationEvents) AcquireHubRuntimeLease(
 	return s.RevocationEventStore.AcquireHubRuntimeLease(ctx, p)
 }
 
+type cancelablePublishRevocationEvents struct {
+	store.RevocationEventStore
+	entered chan struct{}
+	exited  chan struct{}
+}
+
+type cancelableAcquireRevocationEvents struct {
+	store.RevocationEventStore
+	entered chan struct{}
+	exited  chan struct{}
+}
+
+func (s *cancelableAcquireRevocationEvents) AcquireHubRuntimeLease(
+	ctx context.Context,
+	_ store.AcquireHubRuntimeLeaseParams,
+) (int64, error) {
+	close(s.entered)
+	<-ctx.Done()
+	close(s.exited)
+	return 0, ctx.Err()
+}
+
+func (s *cancelablePublishRevocationEvents) PublishPending(ctx context.Context, _ int32) (int64, error) {
+	close(s.entered)
+	<-ctx.Done()
+	close(s.exited)
+	return 0, ctx.Err()
+}
+
+type releaseDeadlineRevocationEvents struct {
+	store.RevocationEventStore
+	releaseBudget chan time.Duration
+}
+
+func (s *releaseDeadlineRevocationEvents) ReleaseHubRuntimeLease(
+	ctx context.Context,
+	holderID string,
+) (int64, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		s.releaseBudget <- 0
+	} else {
+		s.releaseBudget <- time.Until(deadline)
+	}
+	return s.RevocationEventStore.ReleaseHubRuntimeLease(ctx, holderID)
+}
+
 func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
@@ -783,6 +830,160 @@ func TestWatcher_SlowTeardownDoesNotSelfFence(t *testing.T) {
 		s := blocking.bearerSnapshot()
 		return len(s) == 1 && s[0] == tokenID
 	}, 2*time.Second, 10*time.Millisecond, "the revocation must complete once teardown unblocks")
+}
+
+func TestWatcher_CloseDuringSlowTeardownPreventsPostCloseRenewal(t *testing.T) {
+	env := setupUnseeded(t)
+	blocking := newBlockingCloser()
+	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(env.cache, blocking, nil),
+		revocationwatcher.WithLeaseDuration(time.Second),
+		revocationwatcher.WithInterval(10*time.Millisecond),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+
+	tokenID := env.seedAPIToken(t)
+	_, err := env.st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	w.StartLoop(context.Background())
+
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("teardown never started")
+	}
+
+	closeCtx, cancelClose := context.WithCancel(context.Background())
+	cancelClose()
+	require.ErrorIs(t, w.Close(closeCtx), context.Canceled)
+	blocking.release()
+
+	select {
+	case err := <-w.Errors():
+		t.Fatalf("watcher touched the released lease after Close returned: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestWatcher_CloseCancelsPublicRunOnceWithoutWaiting(t *testing.T) {
+	env := setupUnseeded(t)
+	events := &cancelablePublishRevocationEvents{
+		RevocationEventStore: env.st.RevocationEvents(),
+		entered:              make(chan struct{}),
+		exited:               make(chan struct{}),
+	}
+	w := revocationwatcher.New(
+		injectedRevocationStore{Store: env.st, events: events},
+		auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.RunOnce(runCtx) }()
+	select {
+	case <-events.entered:
+	case <-time.After(time.Second):
+		t.Fatal("RunOnce never reached the store")
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancelClose()
+	// Close cancels the RunOnce through operationsCtx and returns WITHOUT waiting
+	// for the in-flight store mutation: only the owned loop is drained via
+	// stopLoop, and a directly-invoked RunOnce (no production caller) unwinds on
+	// its own via the cancelled context.
+	require.NoError(t, w.Close(closeCtx))
+
+	// The mutation unwinds (its context was cancelled) and RunOnce reports the
+	// error -- but only after Close has already returned.
+	require.Error(t, <-runErr)
+	select {
+	case <-events.exited:
+	case <-time.After(time.Second):
+		t.Fatal("RunOnce store mutation did not unwind after Close cancelled it")
+	}
+}
+
+func TestWatcher_CloseCancelsAndDrainsConcurrentSeed(t *testing.T) {
+	env := setupUnseeded(t)
+	events := &cancelableAcquireRevocationEvents{
+		RevocationEventStore: env.st.RevocationEvents(),
+		entered:              make(chan struct{}),
+		exited:               make(chan struct{}),
+	}
+	w := revocationwatcher.New(
+		injectedRevocationStore{Store: env.st, events: events},
+		auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+	)
+
+	seedErr := make(chan error, 1)
+	go func() { seedErr <- w.SeedCursor(context.Background()) }()
+	select {
+	case <-events.entered:
+	case <-time.After(time.Second):
+		t.Fatal("SeedCursor never reached the store")
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), time.Second)
+	defer cancelClose()
+	require.NoError(t, w.Close(closeCtx))
+	select {
+	case <-events.exited:
+	default:
+		t.Fatal("Close returned while lease acquisition was still running")
+	}
+	require.Error(t, <-seedErr)
+}
+
+func TestWatcher_CloseGivesLeaseReleaseFreshBudgetAfterSweepDrain(t *testing.T) {
+	env := setupUnseeded(t)
+	blocking := newBlockingCloser()
+	events := &releaseDeadlineRevocationEvents{
+		RevocationEventStore: env.st.RevocationEvents(),
+		releaseBudget:        make(chan time.Duration, 1),
+	}
+	w := revocationwatcher.New(
+		injectedRevocationStore{Store: env.st, events: events},
+		auth.NewCredentialLifecycleEffects(env.cache, blocking, nil),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+
+	tokenID := env.seedAPIToken(t)
+	_, err := env.st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.RunOnce(context.Background()) }()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("RunOnce never reached the lifecycle effect")
+	}
+
+	time.AfterFunc(75*time.Millisecond, blocking.release)
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelClose()
+	require.NoError(t, w.Close(closeCtx))
+	require.Error(t, <-runErr)
+
+	remaining := <-events.releaseBudget
+	require.Greater(t, remaining, 4*time.Second,
+		"lease deletion needs a fresh cleanup budget after waiting for the sweep")
+}
+
+func TestWatcher_ClosedWatcherRejectsSeedAndStart(t *testing.T) {
+	env := setupUnseeded(t)
+	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil))
+	require.NoError(t, w.Close(context.Background()))
+
+	require.ErrorIs(t, w.SeedCursor(context.Background()), revocationwatcher.ErrClosed)
+	require.ErrorIs(t, w.RunOnce(context.Background()), revocationwatcher.ErrClosed)
+	w.StartLoop(context.Background())
+	select {
+	case err := <-w.Errors():
+		t.Fatalf("StartLoop on a closed watcher must be a no-op, got: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestWatcher_SeedRejectsRegistrationThatExceedsLocalLeaseBudget(t *testing.T) {

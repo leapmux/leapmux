@@ -7,7 +7,7 @@ const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: strin
 
 // Per-test mutable orgId so the orgId-tracking test can drive a change
 // from outside the hook. Default `'org-1'` matches the value used
-// across the rest of the suite; tests that exercise org switches set
+// across the rest of the suite; tests that exercise orgId changes set
 // it explicitly.
 const [orgId, setOrgId] = createSignal('org-1')
 
@@ -572,10 +572,10 @@ describe('useGitPathInfo', () => {
   })
 
   it('does not refire the probe when orgId notifies with an unchanged value', async () => {
-    // OrgContext can re-emit the same orgId (e.g. after a `listMyOrgs`
-    // refetch returns the same list). The tracked tuple goes through a
-    // memo with `shallowEqualArrays`, so identity churn upstream that
-    // doesn't change the value tuple must NOT fire a redundant RPC.
+    // OrgContext can re-emit the same orgId (e.g. after a `refreshUser`
+    // re-sets the auth user with the same org). The tracked tuple goes
+    // through a memo with `shallowEqualArrays`, so identity churn upstream
+    // that doesn't change the value tuple must NOT fire a redundant RPC.
     getGitInfo.mockResolvedValue(gitResp({ currentBranch: 'main' }))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -599,10 +599,10 @@ describe('useGitPathInfo', () => {
   })
 
   it('refires the probe when orgId changes even if workerId and path are unchanged', async () => {
-    // The fetch closure reads `org.orgId()` at call time, so an org
-    // switch without a workerId/path change would otherwise bake the
+    // The fetch closure reads `org.orgId()` at call time, so an orgId
+    // change without a workerId/path change would otherwise bake the
     // stale orgId into the next RPC. Tracking orgId in the on() tuple
-    // forces a refresh tied to the org switch.
+    // forces a refresh tied to the change.
     getGitInfo
       .mockResolvedValueOnce(gitResp({ currentBranch: 'main' }))
       .mockResolvedValueOnce(gitResp({ currentBranch: 'main' }))

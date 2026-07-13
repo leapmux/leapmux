@@ -28,7 +28,7 @@ every chapter, or start with the cards below.
 
 {{< cards >}}
   {{< card link="/docs/getting-started/" title="Getting Started" icon="book-open" subtitle="Introduction, architecture, installation, and your first agent session." >}}
-  {{< card link="/docs/using/" title="Using LeapMux" icon="view-grid" subtitle="Accounts, workspaces, agents, terminals, files, collaboration, and shortcuts." >}}
+  {{< card link="/docs/using/" title="Using LeapMux" icon="view-grid" subtitle="Accounts, workspaces, agents, terminals, files, device sync, and shortcuts." >}}
   {{< card link="/docs/operating/" title="Running & Operating" icon="server" subtitle="Run modes, configuration, administration, encryption, and the security model." >}}
   {{< card link="/docs/reference/" title="Reference" icon="collection" subtitle="CLI cheat-sheet, troubleshooting, FAQ, glossary, and legal." >}}
 {{< /cards >}}

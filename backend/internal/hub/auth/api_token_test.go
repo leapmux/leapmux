@@ -30,7 +30,7 @@ func seedUser(t *testing.T, st store.Store) string {
 	t.Helper()
 	ctx := context.Background()
 	orgID := id.Generate()
-	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "test-org-" + orgID, IsPersonal: true}))
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "test-org-" + orgID}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,

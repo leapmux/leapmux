@@ -9,6 +9,10 @@ type CredentialIdentity struct {
 	kind        credentialKind
 	id          string
 	workspaceID string
+	// workerID is the worker that MINTED a delegation token. It bounds where the
+	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
+	// for every other kind.
+	workerID string
 }
 
 type credentialKind uint8
@@ -35,12 +39,45 @@ func APICredential(tokenID string) CredentialIdentity {
 	return CredentialIdentity{kind: credentialAPI, id: tokenID}
 }
 
-// DelegationCredential identifies a workspace-scoped delegation_tokens row.
-func DelegationCredential(tokenID, workspaceID string) CredentialIdentity {
-	if tokenID == "" || workspaceID == "" {
-		panic("auth: delegation credential requires token and workspace IDs")
+// DelegationCredential identifies a workspace-scoped delegation_tokens row minted
+// by workerID.
+//
+// The minting worker is part of the credential because it bounds where the token
+// may be used: a worker mints a token carrying the identity of whichever user its
+// tab was spawned for, which for a shared workspace is NOT the worker's own owner.
+// Without the minter recorded here, such a token authenticates as that user
+// everywhere -- including against that user's OWN workers, which the minting
+// worker has no business reaching. See ChannelService.verifyDelegationWorkerScope.
+//
+// The minter is required exactly like the other two: delegation_tokens.worker_id is
+// NOT NULL and the sole mint path always records it, so an empty one can only mean a
+// code path dropped it. Rejecting it here fails at the bug. WorkerScopeID's
+// fail-closed contract below stays as defence in depth for a credential built some
+// other way -- but a constructor that validates two of its three required fields
+// leaves the security-relevant one to be caught as a runtime denial that reads
+// exactly like a genuine cross-tenant refusal.
+func DelegationCredential(tokenID, workspaceID, workerID string) CredentialIdentity {
+	if tokenID == "" || workspaceID == "" || workerID == "" {
+		panic("auth: delegation credential requires token, workspace, and minting worker IDs")
 	}
-	return CredentialIdentity{kind: credentialDelegation, id: tokenID, workspaceID: workspaceID}
+	return CredentialIdentity{kind: credentialDelegation, id: tokenID, workspaceID: workspaceID, workerID: workerID}
+}
+
+// WorkerScopeID returns the worker that minted a delegation credential, or an
+// empty string for other kinds.
+//
+// For a delegation credential it is never empty: DelegationCredential rejects an
+// empty minter, and the store cannot produce one either (delegation_tokens.worker_id
+// is NOT NULL and references workers(id)). The one way to get an empty minter on a
+// delegation kind is an in-package struct literal that bypasses the constructor --
+// which is why verifyDelegationWorkerScope still refuses an empty minter rather than
+// treating "unknown" as "unscoped". Both layers fail closed, so forgetting to thread
+// the minter through cannot re-open the cross-tenant hole this field exists to close.
+func (c CredentialIdentity) WorkerScopeID() string {
+	if c.kind == credentialDelegation {
+		return c.workerID
+	}
+	return ""
 }
 
 // SessionID returns the session row ID, or an empty string for other kinds.

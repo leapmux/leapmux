@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // Run creates the personal org and passwordless solo user when the database
@@ -30,46 +29,27 @@ func Run(ctx context.Context, st store.Store, soloMode bool) error {
 		return nil
 	}
 
-	orgID := id.Generate()
-	userID := id.Generate()
-
-	if err := st.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:         orgID,
-			Name:       usernames.Solo,
-			IsPersonal: true,
-		}); err != nil {
-			return fmt.Errorf("create personal org: %w", store.NewConflictError(err, store.ConflictEntityOrg))
-		}
-
-		if err := tx.Users().Create(ctx, store.CreateUserParams{
-			ID:          userID,
-			OrgID:       orgID,
-			Username:    usernames.Solo,
-			DisplayName: "Solo",
-			Email:       "",
-			PasswordSet: true,
-			IsAdmin:     true,
-		}); err != nil {
-			return fmt.Errorf("create user: %w", store.NewConflictError(err, store.ConflictEntityUser))
-		}
-
-		if err := tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-			OrgID:  orgID,
-			UserID: userID,
-			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-		}); err != nil {
-			return fmt.Errorf("create org member: %w", err)
-		}
-
-		return nil
-	}); err != nil {
+	// Route through the same personal-org + user pairing every other create path
+	// uses (SignUp, OAuth signup, admin user create) rather than re-inlining the
+	// transaction: the org name mirrors the username, the conflict wrapping is
+	// identical, and CreateUserWithOrg is the one place that pairing lives, so a
+	// future change to it (a new invariant, extra cleanup) reaches bootstrap too
+	// instead of drifting. usernames.Solo is a routable slug, so the store-level
+	// CreateUserParams.Validate accepts it; the empty email makes the helper's
+	// ClearCompetingPendingEmails a no-op.
+	user, err := service.CreateUserWithOrg(ctx, st, service.CreateUserParams{
+		Username:    usernames.Solo,
+		DisplayName: "Solo",
+		PasswordSet: true,
+		IsAdmin:     true,
+	})
+	if err != nil {
 		return err
 	}
 
 	slog.Info("bootstrap: created personal org and user",
-		"org_id", orgID,
-		"user_id", userID,
+		"org_id", user.OrgID,
+		"user_id", user.ID,
 		"username", usernames.Solo,
 	)
 

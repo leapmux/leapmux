@@ -5,20 +5,27 @@ import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
 import { useTunnel } from '~/context/TunnelContext'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
+import { isLoopbackAddress, normalizeBindAddr } from '~/lib/ipAddress'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
 
 interface AddTunnelDialogProps {
   workerId: string
-  hubURL: string
-  userId: string
   onClose: () => void
   onCreated: (tunnel: TunnelInfo) => void
 }
 
+// Ports are typed as free text (`inputMode="numeric"` is a keyboard hint, not
+// validation), so this must reject every non-decimal spelling Number() would happily
+// convert: "0x50" -> 80, "1e3" -> 1000, "80.0" -> 80, "+80" -> 80. Accepting those
+// silently creates a tunnel on a port the user never typed, and the sidecar's range
+// check cannot catch it because the substituted port is in range.
 function isValidPort(value: string): boolean {
-  const n = Number(value)
-  return Number.isInteger(n) && n >= 1 && n <= 65535
+  const s = value.trim()
+  if (!/^\d{1,5}$/.test(s))
+    return false
+  const n = Number(s)
+  return n >= 1 && n <= 65535
 }
 
 export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
@@ -55,10 +62,16 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
     return null
   })
 
+  // The sidecar refuses a non-loopback bind address, because neither tunnel
+  // listener authenticates: binding 0.0.0.0 would expose an open gateway into the
+  // worker's network to the whole LAN. Mirror that here so the user sees why up
+  // front rather than a failed create.
   const bindAddrError = createMemo(() => {
-    const v = bindAddr().trim()
+    const v = normalizeBindAddr(bindAddr())
     if (!v)
       return 'Required'
+    if (!isLoopbackAddress(v))
+      return 'Must be a loopback address (127.0.0.1 or ::1) — the tunnel listener is unauthenticated'
     return null
   })
 
@@ -87,10 +100,11 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
         type: tunnelType(),
         targetAddr: tunnelType() === 'port_forward' ? targetAddr().trim() : '',
         targetPort: tunnelType() === 'port_forward' ? Number(targetPort()) : 0,
-        bindAddr: bindAddr().trim(),
+        // Normalized, not raw: the validator strips a `[::1]` bracket pair, so the
+        // submitted value must too or the sidecar's net.ParseIP rejects what the
+        // dialog just called valid.
+        bindAddr: normalizeBindAddr(bindAddr()),
         bindPort: effectiveBindPort,
-        hubURL: props.hubURL,
-        userId: props.userId,
       })
       props.onCreated(tunnel)
     })

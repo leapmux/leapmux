@@ -1,4 +1,3 @@
-import type { JSX } from 'solid-js'
 import type { SectionDefContext } from './buildSectionDef'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
@@ -15,8 +14,7 @@ import type { TabItemOps } from '~/stores/tab.types'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
-import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
-import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
+import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
 import { buildSectionDef } from './buildSectionDef'
 import { useWorkspaceOperations } from './useWorkspaceOperations'
@@ -91,7 +89,6 @@ export interface SidebarCommonProps {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
-  currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
   /** Open the "register a new worker" dialog from the Workers section header. */
@@ -104,7 +101,7 @@ export interface SidebarCommonProps {
 
 /**
  * Shared setup for both sidebars: workspace operations, section grouping,
- * section definition context, and the sharing dialog.
+ * and section definition context.
  */
 export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
   const store = props.sectionStore
@@ -170,8 +167,6 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     wsOps,
     getWorkspacesForGroup: sectionId =>
       wsOps.getWorkspacesForGroup(sectionId, sectionGroups()),
-    isGroupShared: sectionId =>
-      wsOps.isGroupShared(sectionId, sectionGroups()),
     get activeWorkspaceId() { return props.activeWorkspaceId },
     onNewWorkspace: props.onNewWorkspace,
     onSelectWorkspace: props.onSelectWorkspace,
@@ -203,7 +198,6 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get workers() { return props.workers },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,
-    currentUserId: props.currentUserId,
     onAddTunnel: props.onAddTunnel,
     onDeregisterWorker: props.onDeregisterWorker,
     onRegisterWorker: props.onRegisterWorker,
@@ -217,29 +211,12 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     )
   }
 
-  /** Render the workspace sharing dialog (used by both sidebars). */
-  const renderSharingDialog = (): JSX.Element => (
-    <Show when={wsOps.sharingWorkspaceId()}>
-      {workspaceId => (
-        <WorkspaceSharingDialog
-          workspaceId={workspaceId()}
-          onClose={() => wsOps.setSharingWorkspaceId(null)}
-          onSaved={() => {
-            wsOps.setSharingWorkspaceId(null)
-            props.onRefreshWorkspaces()
-          }}
-        />
-      )}
-    </Show>
-  )
-
   return {
     store,
     wsOps,
     sections,
     sectionGroups,
     buildSectionDefs,
-    renderSharingDialog,
     expandSectionRef: (fn: (sectionId: string) => void) => { expandSection = fn },
   }
 }

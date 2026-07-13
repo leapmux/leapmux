@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +59,7 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 		SkipBanner: true,
 	})
 	require.NoError(t, err)
-	t.Cleanup(inst.Stop)
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 
 	hubURL = "http://" + addr
 	localListenURL = inst.LocalListenURL()
@@ -136,11 +138,11 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, userID, workerID := startTestSolo(t)
+	hubURL, _, _, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -148,13 +150,44 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 	payload, err := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
 	require.NoError(t, err)
 
-	resp, err := ch.CallRPC("GetWorkerSystemInfo", payload)
+	resp, err := ch.CallRPC(ctx, "GetWorkerSystemInfo", payload)
 	require.NoError(t, err)
 
 	var sysInfo leapmuxv1.GetWorkerSystemInfoResponse
 	require.NoError(t, proto.Unmarshal(resp.GetPayload(), &sysInfo))
 	assert.NotEmpty(t, sysInfo.GetOs())
 	assert.NotEmpty(t, sysInfo.GetArch())
+}
+
+func TestChannelLifetimeCanOutliveHandshakeContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	hubURL, _, _, workerID := startTestSolo(t)
+	operationCtx, cancelOperation := context.WithCancel(context.Background())
+	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
+	t.Cleanup(cancelLifetime)
+
+	ch, err := tunnel.OpenChannel(operationCtx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext: lifetimeCtx,
+	})
+	require.NoError(t, err)
+	t.Cleanup(ch.Close)
+	cancelOperation()
+	require.NoError(t, ch.Context().Err(), "completed handshake context must not own the established channel")
+
+	payload, err := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
+	require.NoError(t, err)
+	_, err = ch.CallRPC(lifetimeCtx, "GetWorkerSystemInfo", payload)
+	require.NoError(t, err)
+
+	cancelLifetime()
+	select {
+	case <-ch.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("channel did not stop with its lifetime context")
+	}
 }
 
 func TestChannelTunnelEchoFlow(t *testing.T) {
@@ -165,24 +198,42 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, userID, workerID := startTestSolo(t)
+	hubURL, _, _, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
 	// Open a tunnel connection to the echo server.
 	openPayload, err := proto.Marshal(&leapmuxv1.OpenTunnelConnRequest{
+		ConnId:     "echo-flow-conn",
 		TargetAddr: echoHost,
 		TargetPort: echoPort,
 	})
 	require.NoError(t, err)
 
-	// Use SendRPCNoWait with pendingCh to atomically register before sending,
-	// avoiding a race where the response arrives before RegisterPending.
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait("OpenTunnelConn", openPayload, respCh)
+	dataCh := make(chan []byte, 16)
+	eofCh := make(chan struct{}, 1)
+	reqID, err := ch.SendRPCNoWait(ctx, "OpenTunnelConn", openPayload, tunnel.RPCHandlers{
+		Response: respCh,
+		Stream: func(msg *leapmuxv1.InnerStreamMessage) {
+			var event leapmuxv1.TunnelConnEvent
+			if err := proto.Unmarshal(msg.GetPayload(), &event); err != nil {
+				return
+			}
+			if len(event.GetData()) > 0 {
+				dataCh <- event.GetData()
+			}
+			if event.GetEof() {
+				select {
+				case eofCh <- struct{}{}:
+				default:
+				}
+			}
+		},
+	})
 	require.NoError(t, err)
 
 	// Wait for the unary response.
@@ -198,24 +249,6 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 
 		ch.UnregisterPending(reqID)
 
-		// Register for stream events (Worker → us).
-		dataCh := make(chan []byte, 16)
-		eofCh := make(chan struct{}, 1)
-		ch.RegisterStream(reqID, func(msg *leapmuxv1.InnerStreamMessage) {
-			var event leapmuxv1.TunnelConnEvent
-			if err := proto.Unmarshal(msg.GetPayload(), &event); err != nil {
-				return
-			}
-			if len(event.GetData()) > 0 {
-				dataCh <- event.GetData()
-			}
-			if event.GetEof() {
-				select {
-				case eofCh <- struct{}{}:
-				default:
-				}
-			}
-		})
 		defer ch.UnregisterStream(reqID)
 
 		// Send data through the tunnel.
@@ -223,7 +256,7 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 			ConnId: connID,
 			Data:   []byte("hello tunnel"),
 		})
-		_, err := ch.SendRPCNoWait("SendTunnelData", sendPayload)
+		_, err := ch.SendRPCNoWait(ctx, "SendTunnelData", sendPayload, tunnel.RPCHandlers{})
 		require.NoError(t, err)
 
 		// Wait for echo data from the stream.
@@ -236,7 +269,7 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 
 		// Close the tunnel connection.
 		closePayload, _ := proto.Marshal(&leapmuxv1.CloseTunnelConnRequest{ConnId: connID})
-		_, err = ch.SendRPCNoWait("CloseTunnelConn", closePayload)
+		_, err = ch.SendRPCNoWait(ctx, "CloseTunnelConn", closePayload, tunnel.RPCHandlers{})
 		require.NoError(t, err)
 
 	case <-time.After(30 * time.Second):
@@ -253,10 +286,10 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, userID, workerID := startTestSolo(t)
+	hubURL, _, _, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -322,12 +355,22 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 
 		// Open tunnel connection via E2EE channel.
 		openPayload, _ := proto.Marshal(&leapmuxv1.OpenTunnelConnRequest{
+			ConnId:     "socks-flow-conn",
 			TargetAddr: targetAddrStr,
 			TargetPort: targetPortVal,
 		})
 
 		respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-		reqID, sendErr := ch.SendRPCNoWait("OpenTunnelConn", openPayload, respCh)
+		dataCh := make(chan []byte, 16)
+		reqID, sendErr := ch.SendRPCNoWait(ctx, "OpenTunnelConn", openPayload, tunnel.RPCHandlers{
+			Response: respCh,
+			Stream: func(msg *leapmuxv1.InnerStreamMessage) {
+				var event leapmuxv1.TunnelConnEvent
+				if proto.Unmarshal(msg.GetPayload(), &event) == nil && len(event.GetData()) > 0 {
+					dataCh <- event.GetData()
+				}
+			},
+		})
 		if sendErr != nil {
 			proxyDone <- sendErr
 			return
@@ -349,14 +392,6 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 		// Send SOCKS5 success reply.
 		_, _ = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
-		// Register for stream events.
-		dataCh := make(chan []byte, 16)
-		ch.RegisterStream(reqID, func(msg *leapmuxv1.InnerStreamMessage) {
-			var event leapmuxv1.TunnelConnEvent
-			if proto.Unmarshal(msg.GetPayload(), &event) == nil && len(event.GetData()) > 0 {
-				dataCh <- event.GetData()
-			}
-		})
 		defer ch.UnregisterStream(reqID)
 
 		// Bidirectional forwarding.
@@ -377,7 +412,10 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 			}
 		}()
 
-		// Client -> Worker.
+		// Client -> Worker. Assign the per-conn monotonic write sequence the
+		// worker applies in order (as tunnel.Conn.Write does), so chunked SOCKS
+		// traffic is not reordered or wedged by the worker's ordered write gate.
+		var writeSeq atomic.Uint64
 		go func() {
 			defer func() { done <- struct{}{} }()
 			buf := make([]byte, 32*1024)
@@ -387,8 +425,9 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 					payload, _ := proto.Marshal(&leapmuxv1.SendTunnelDataRequest{
 						ConnId: connID,
 						Data:   buf[:n],
+						Seq:    writeSeq.Add(1) - 1,
 					})
-					if _, err := ch.SendRPCNoWait("SendTunnelData", payload); err != nil {
+					if _, err := ch.SendRPCNoWait(ctx, "SendTunnelData", payload, tunnel.RPCHandlers{}); err != nil {
 						return
 					}
 				}
@@ -399,8 +438,8 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 		}()
 
 		<-done
-		closePayload, _ := proto.Marshal(&leapmuxv1.CloseTunnelConnRequest{ConnId: connID})
-		_, _ = ch.SendRPCNoWait("CloseTunnelConn", closePayload)
+		closePayload, _ := proto.Marshal(&leapmuxv1.CloseTunnelConnRequest{ConnId: connID, Seq: writeSeq.Load()})
+		_, _ = ch.SendRPCNoWait(ctx, "CloseTunnelConn", closePayload, tunnel.RPCHandlers{})
 		proxyDone <- nil
 	}()
 
@@ -458,21 +497,58 @@ func TestChannelMultipleRPCs(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, userID, workerID := startTestSolo(t)
+	hubURL, _, _, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
 	// Send multiple RPCs to verify the channel handles sequential calls.
 	for i := 0; i < 5; i++ {
 		payload, _ := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
-		resp, err := ch.CallRPC("GetWorkerSystemInfo", payload)
+		resp, err := ch.CallRPC(ctx, "GetWorkerSystemInfo", payload)
 		require.NoError(t, err, "RPC %d failed", i)
 
 		var sysInfo leapmuxv1.GetWorkerSystemInfoResponse
 		require.NoError(t, proto.Unmarshal(resp.GetPayload(), &sysInfo))
 		assert.NotEmpty(t, sysInfo.GetOs())
+	}
+}
+
+func TestChannelConcurrentRPCs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	hubURL, _, _, workerID := startTestSolo(t)
+	ctx := context.Background()
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	require.NoError(t, err)
+	t.Cleanup(ch.Close)
+
+	const calls = 32
+	start := make(chan struct{})
+	errCh := make(chan error, calls)
+	var wg sync.WaitGroup
+	for range calls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			payload, marshalErr := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
+			if marshalErr != nil {
+				errCh <- marshalErr
+				return
+			}
+			_, callErr := ch.CallRPC(ctx, "GetWorkerSystemInfo", payload)
+			errCh <- callErr
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for callErr := range errCh {
+		require.NoError(t, callErr)
 	}
 }

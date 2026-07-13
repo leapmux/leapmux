@@ -6,17 +6,14 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
-import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkspaceContextMenuProps {
-  isOwner: boolean
   isArchived: boolean
   sections: Section[]
   currentSectionId: string | undefined
   onRename: () => void
   onMoveTo: (sectionId: string) => void
-  onShare: () => void
   onArchive: () => void
   onUnarchive: () => void
   onDelete: () => void
@@ -25,11 +22,9 @@ interface WorkspaceContextMenuProps {
 export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props) => {
   return (
     <DropdownMenu trigger={rowContextMenuTrigger()}>
-      <Show when={props.isOwner}>
-        <button role="menuitem" onClick={() => props.onRename()}>
-          Rename
-        </button>
-      </Show>
+      <button role="menuitem" onClick={() => props.onRename()}>
+        Rename
+      </button>
 
       <Show when={!props.isArchived && props.sections.some(s => s.id !== props.currentSectionId && isMoveTargetSection(s.sectionType))}>
         <DropdownMenu
@@ -53,12 +48,6 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         </DropdownMenu>
       </Show>
 
-      <Show when={props.isOwner && !isSoloMode()}>
-        <button role="menuitem" onClick={() => props.onShare()}>
-          Share...
-        </button>
-      </Show>
-
       <Show when={!props.isArchived}>
         <button role="menuitem" onClick={() => props.onArchive()}>
           Archive
@@ -71,12 +60,10 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         </button>
       </Show>
 
-      <Show when={props.isOwner}>
-        <hr />
-        <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDelete()}>
-          Delete
-        </button>
-      </Show>
+      <hr />
+      <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDelete()}>
+        Delete
+      </button>
     </DropdownMenu>
   )
 }

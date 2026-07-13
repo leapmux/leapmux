@@ -18,6 +18,13 @@ var (
 	// ErrSectionNotEmpty is returned when attempting to delete a
 	// workspace section that still contains items.
 	ErrSectionNotEmpty = errors.New("section not empty")
+
+	// ErrInvalidArgument is returned when a store method receives input that
+	// violates a store-level invariant (e.g. an empty username, which would blank
+	// both users.username and the mirroring personal-org name). The service layer
+	// validates the same constraints upstream; the store re-checks so a store-level
+	// caller that bypasses the service cannot land the invariant violation.
+	ErrInvalidArgument = errors.New("invalid argument")
 )
 
 // ConflictEntity identifies the entity type that caused a uniqueness

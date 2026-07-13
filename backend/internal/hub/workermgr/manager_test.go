@@ -2,6 +2,7 @@ package workermgr
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -100,11 +101,17 @@ func TestRegister_ReturnsReplacedFlag(t *testing.T) {
 	conn3 := &Conn{WorkerID: "w2"}
 
 	// First registration for w1: not a replacement.
-	assert.False(t, m.Register(conn1))
+	replaced, err := m.Register(conn1)
+	require.NoError(t, err)
+	assert.False(t, replaced)
 	// Second registration for w1: replaces conn1.
-	assert.True(t, m.Register(conn2))
+	replaced, err = m.Register(conn2)
+	require.NoError(t, err)
+	assert.True(t, replaced)
 	// First registration for w2: not a replacement.
-	assert.False(t, m.Register(conn3))
+	replaced, err = m.Register(conn3)
+	require.NoError(t, err)
+	assert.False(t, replaced)
 
 	// Verify conn2 is the current connection for w1.
 	assert.Equal(t, conn2, m.Get("w1"))
@@ -122,9 +129,11 @@ func TestRegister_FencesReplacedConnection(t *testing.T) {
 		oldSends++
 		return nil
 	}, Cancel: func() { cancelled = true }}
-	m.Register(oldConn)
+	_, _ = m.Register(oldConn)
 
-	assert.True(t, m.Register(&Conn{WorkerID: "w1"}))
+	replaced2, err2 := m.Register(&Conn{WorkerID: "w1"})
+	require.NoError(t, err2)
+	assert.True(t, replaced2)
 	assert.ErrorIs(t, oldConn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
 	assert.Zero(t, oldSends)
 	assert.True(t, cancelled)
@@ -185,7 +194,7 @@ func TestUnregisterStopsRoutingBeforeWaitingForInFlightSend(t *testing.T) {
 		return nil
 	}}
 	mgr := New()
-	mgr.Register(conn)
+	_, _ = mgr.Register(conn)
 	go func() { _ = conn.Send(&leapmuxv1.ConnectResponse{}) }()
 	<-started
 	unregistered := make(chan bool, 1)
@@ -223,4 +232,62 @@ func TestClearDeregistering(t *testing.T) {
 
 	// ClearDeregistering on non-existent key should not panic.
 	m.ClearDeregistering("nonexistent")
+}
+
+// Register must send a Conn's Greeting BEFORE publishing it.
+//
+// The ordering is the greeting's entire purpose: the Hub greets a worker with its
+// own identity, which the worker needs before the first ChannelOpen creates a
+// session (every machine-scoped handler gates on it). Until Register publishes the
+// conn, nothing else can look it up to send on -- so a greeting sent here is
+// mechanically first. This pins that the send happens on the pre-publication side.
+func TestRegisterSendsGreetingBeforePublishing(t *testing.T) {
+	m := New()
+
+	var sentWhilePublished []bool
+	conn := &Conn{
+		WorkerID: "w1",
+		Greeting: &leapmuxv1.ConnectResponse{},
+	}
+	conn.SendFn = func(*leapmuxv1.ConnectResponse) error {
+		// If the conn were already published, Get would find it.
+		sentWhilePublished = append(sentWhilePublished, m.Get("w1") != nil)
+		return nil
+	}
+
+	replaced, err := m.Register(conn)
+	require.NoError(t, err)
+	assert.False(t, replaced)
+
+	require.Len(t, sentWhilePublished, 1, "the greeting must be sent exactly once")
+	assert.False(t, sentWhilePublished[0],
+		"the greeting must be sent BEFORE the conn is published, or a ChannelOpen can precede it")
+}
+
+// A conn whose greeting cannot be delivered must NOT be published: a stream that
+// cannot carry its greeting cannot carry a channel either, and publishing it would
+// advertise the worker as reachable on a connection already known to be broken.
+func TestRegisterDoesNotPublishOnGreetingFailure(t *testing.T) {
+	m := New()
+	boom := errors.New("stream gone")
+	conn := &Conn{
+		WorkerID: "w1",
+		Greeting: &leapmuxv1.ConnectResponse{},
+		SendFn:   func(*leapmuxv1.ConnectResponse) error { return boom },
+	}
+
+	replaced, err := m.Register(conn)
+	require.ErrorIs(t, err, boom)
+	assert.False(t, replaced)
+
+	assert.Nil(t, m.Get("w1"), "a conn whose greeting failed must not be published")
+}
+
+// A conn with no greeting registers exactly as before -- the field is optional.
+func TestRegisterWithoutGreetingPublishes(t *testing.T) {
+	m := New()
+	replaced, err := m.Register(&Conn{WorkerID: "w1"})
+	require.NoError(t, err)
+	assert.False(t, replaced)
+	assert.NotNil(t, m.Get("w1"))
 }

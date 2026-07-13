@@ -4,11 +4,11 @@
 -- Username and email case-insensitivity is handled at the application layer.
 SET NAMES utf8mb4 COLLATE utf8mb4_bin;
 
--- Organizations (tenants)
+-- Personal organizations: exactly one per user, created with the account,
+-- soft-deleted with it. name mirrors the username (renamed together).
 CREATE TABLE orgs (
     id          VARCHAR(255) PRIMARY KEY,
     name        VARCHAR(255) NOT NULL,
-    is_personal BOOLEAN NOT NULL DEFAULT FALSE,
     created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     deleted_at  DATETIME(3),
     -- Generated column for partial unique index emulation
@@ -25,6 +25,11 @@ CREATE TABLE users (
     username       VARCHAR(255) NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL,
+    -- Unicode-casefolded (Go strings.ToLower) copy of display_name, maintained on
+    -- every write, so admin SearchUsers matches non-ASCII names case-insensitively
+    -- and identically across SQLite/Postgres/MySQL (SQLite folds only ASCII, so a
+    -- plain LIKE on this pre-folded column keeps the three dialects in agreement).
+    display_name_folded      VARCHAR(255) NOT NULL DEFAULT '',
     email                    VARCHAR(255) NOT NULL DEFAULT '',
     email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
     pending_email            VARCHAR(255) NOT NULL DEFAULT '',
@@ -68,18 +73,6 @@ CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_a
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
 -- MySQL has no partial indexes; the composite covers the filter and sort.
 CREATE INDEX idx_users_is_admin ON users(is_admin, created_at);
-
--- Multi-org membership (M:N junction)
-CREATE TABLE org_members (
-    org_id    VARCHAR(255) NOT NULL,
-    user_id   VARCHAR(255) NOT NULL,
-    role      INT NOT NULL DEFAULT 1,
-    joined_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (org_id, user_id),
-    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_org_members_user_id ON org_members(user_id);
 
 -- Auth sessions
 CREATE TABLE user_sessions (
@@ -202,29 +195,6 @@ CREATE TABLE workspace_section_items (
     FOREIGN KEY (section_id) REFERENCES workspace_sections(id) ON DELETE CASCADE
 );
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
-
--- Cross-user Worker access grants (for workspace sharing)
-CREATE TABLE worker_access_grants (
-    worker_id  VARCHAR(255) NOT NULL,
-    user_id    VARCHAR(255) NOT NULL,
-    granted_by VARCHAR(255) NOT NULL,
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (worker_id, user_id),
-    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_worker_access_grants_user_id ON worker_access_grants(user_id);
-
--- Workspace read-only sharing ACL
-CREATE TABLE workspace_access (
-    workspace_id VARCHAR(255) NOT NULL,
-    user_id      VARCHAR(255) NOT NULL,
-    created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (workspace_id, user_id),
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
 
 -- See sqlite migration for full rationale on the CRDT schema.
 CREATE TABLE org_op_batches (
@@ -509,8 +479,6 @@ DROP TABLE IF EXISTS workspace_tab_rendered;
 DROP TABLE IF EXISTS workspace_tab_owned;
 DROP TABLE IF EXISTS org_state;
 DROP TABLE IF EXISTS org_op_batches;
-DROP TABLE IF EXISTS workspace_access;
-DROP TABLE IF EXISTS worker_access_grants;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
@@ -518,6 +486,5 @@ DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
-DROP TABLE IF EXISTS org_members;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS orgs;

@@ -3,26 +3,38 @@ package channelmgr
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	testMaxMessageSize       = 1024 * 1024 // 1 MiB
-	testMaxIncompleteChunked = 2
-	dirFe2w                  = "fe2w"
+	testMaxMessageSize = 1024 * 1024 // 1 MiB
+	dirFe2w            = "fe2w"
 )
+
+// TestNew_UsesFixedMessageCeiling pins that the Hub's reassembled-message ceiling
+// is the shared protocol constant, not an operator-tunable value. The tunnel
+// client and the browser hardcode channelwire.DefaultMaxMessageSize, so a Hub
+// that accepted any other ceiling would silently reject a message those receivers
+// admit (or vice versa) -- the drift a config knob here once allowed.
+func TestNew_UsesFixedMessageCeiling(t *testing.T) {
+	m := New()
+	require.NotNil(t, m.ChunkTracker)
+	assert.Equal(t, channelwire.DefaultMaxMessageSize, m.ChunkTracker.maxMessageSize,
+		"the Hub relay must enforce the shared message ceiling, not a configurable one")
+}
 
 // validChunkSize returns a ciphertext length that fits within one Noise
 // transport message and whose estimated plaintext fits within the given budget.
 func validChunkSize(plaintextBytes int) int {
-	return plaintextBytes + noiseAuthTagSize
+	return plaintextBytes + channelwire.NoiseAEADAuthTagSize
 }
 
 // TestTrack_SingleChunkMessage verifies that a non-chunked (flags=UNSPECIFIED,
 // more=false) message is accepted and leaves no tracking state.
 func TestTrack_SingleChunkMessage(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	err := ct.Track("ch1", dirFe2w, 1, validChunkSize(100), false)
 	require.NoError(t, err)
@@ -36,8 +48,8 @@ func TestTrack_SingleChunkMessage(t *testing.T) {
 // TestTrack_MultiChunk verifies that a sequence of MORE chunks followed by a
 // final chunk (more=false) is accepted and cleans up all tracking state.
 func TestTrack_MultiChunk(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
-	corrID := uint32(42)
+	ct := newChunkTracker(testMaxMessageSize)
+	corrID := uint64(42)
 
 	// Three MORE chunks.
 	for i := 0; i < 3; i++ {
@@ -64,8 +76,8 @@ func TestTrack_MultiChunk(t *testing.T) {
 // exceeding maxMessageSize is rejected on a MORE chunk.
 func TestTrack_MaxSizeExceeded_OnMoreChunk(t *testing.T) {
 	maxSize := 500
-	ct := newChunkTracker(maxSize, testMaxIncompleteChunked)
-	corrID := uint32(1)
+	ct := newChunkTracker(maxSize)
+	corrID := uint64(1)
 
 	// First chunk: 400 bytes plaintext — within limit.
 	err := ct.Track("ch1", dirFe2w, corrID, validChunkSize(400), true)
@@ -76,23 +88,21 @@ func TestTrack_MaxSizeExceeded_OnMoreChunk(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds max size")
 
-	// After rejection the sequence must be removed so the correlationID can be
-	// reused without leaking state.
+	// After rejection the sequence AND the now-empty channel/direction state must
+	// be removed, matching the success path -- a breach that returns before
+	// Track's own cleanupEmpty must not strand an empty entry until RemoveChannel.
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	if dirs, ok := ct.channels["ch1"]; ok {
-		if state, ok := dirs[dirFe2w]; ok {
-			assert.NotContains(t, state.sequences, corrID)
-		}
-	}
+	assert.NotContains(t, ct.channels, "ch1",
+		"a mid-sequence breach must clean up the empty channel state")
 }
 
 // TestTrack_MaxSizeExceeded_OnFinalChunk verifies that cumulative plaintext
 // exceeding maxMessageSize is rejected on the final (more=false) chunk.
 func TestTrack_MaxSizeExceeded_OnFinalChunk(t *testing.T) {
 	maxSize := 500
-	ct := newChunkTracker(maxSize, testMaxIncompleteChunked)
-	corrID := uint32(1)
+	ct := newChunkTracker(maxSize)
+	corrID := uint64(1)
 
 	// First chunk: 400 bytes plaintext — within limit.
 	err := ct.Track("ch1", dirFe2w, corrID, validChunkSize(400), true)
@@ -102,93 +112,23 @@ func TestTrack_MaxSizeExceeded_OnFinalChunk(t *testing.T) {
 	err = ct.Track("ch1", dirFe2w, corrID, validChunkSize(200), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds max size")
-}
 
-// TestTrack_MaxIncompleteExceeded verifies that starting more concurrent chunked
-// sequences than maxIncompleteChunked is rejected.
-func TestTrack_MaxIncompleteExceeded(t *testing.T) {
-	// Allow exactly 2 concurrent incomplete sequences.
-	ct := newChunkTracker(testMaxMessageSize, 2)
-
-	// Start first sequence.
-	err := ct.Track("ch1", dirFe2w, 1, validChunkSize(10), true)
-	require.NoError(t, err)
-
-	// inProgressID is now 1; starting a second sequence while 1 is in progress
-	// would trigger the interleaving guard first. Complete sequence 1's
-	// in-progress designation by starting it, then switch channels or use a
-	// different direction so inProgressID resets between sequences.
-	//
-	// To exercise the maxIncomplete path independently of the interleaving
-	// check, we use different directions (each direction has its own state).
-	err = ct.Track("ch1", "w2fe", 2, validChunkSize(10), true)
-	require.NoError(t, err)
-
-	// Both slots are used. A third distinct direction would be on a separate
-	// state map entry, so the limit applies per (channelID, direction) pair.
-	// To hit the limit within one direction, we need to finish the inProgress
-	// sequence and start a second one, then a third.
-	//
-	// Use a fresh tracker with limit=2 and a single direction.
-	ct2 := newChunkTracker(testMaxMessageSize, 2)
-
-	// Sequence A — becomes inProgressID.
-	require.NoError(t, ct2.Track("ch1", dirFe2w, 10, validChunkSize(10), true))
-	// Sequence B — different correlationID while A is in-progress → interleaving
-	// error fires first. We need to exhaust the sequences map without triggering
-	// interleaving, which means we must first complete A's in-progress lock.
-	//
-	// The code sets inProgressID = correlationID on first encounter. A second
-	// distinct correlationID triggers interleaving. So to fill the sequences map
-	// to maxIncompleteChunked without interleaving interference, we use the same
-	// correlationID for multiple chunks (only one sequence per correlationID) and
-	// rely on a tracker where maxIncompleteChunked = 1.
-	ct3 := newChunkTracker(testMaxMessageSize, 1)
-	require.NoError(t, ct3.Track("ch1", dirFe2w, 10, validChunkSize(10), true))
-	// Sequence map is full (1 entry = limit). Trying to add another correlationID
-	// would first hit interleaving, not the limit. Verify by using a second
-	// correlationID that is different from inProgressID (10):
-	err = ct3.Track("ch1", dirFe2w, 99, validChunkSize(10), true)
-	require.Error(t, err)
-	// Either interleaving or max-incomplete; both are valid rejection reasons.
-	assert.True(t,
-		contains(err.Error(), "interleaving") || contains(err.Error(), "too many incomplete"),
-		"unexpected error: %v", err)
-}
-
-// TestTrack_MaxIncompleteExceeded_Direct directly fills the sequences map to
-// the limit using the same inProgressID, then attempts a new correlationID.
-func TestTrack_MaxIncompleteExceeded_Direct(t *testing.T) {
-	// Use maxIncomplete=2 but inject state directly so we can test the limit
-	// without the interleaving guard getting in the way.
-	ct := newChunkTracker(testMaxMessageSize, 2)
-
-	// Manually populate two sequences so the map is full and inProgressID is 0
-	// (simulating sequences that arrived with a prior inProgressID that has been
-	// cleared, e.g. the previous in-progress sequence completed).
+	// The breach on the final chunk must also clean up the now-empty channel
+	// state, the same as a successful final chunk does.
 	ct.mu.Lock()
-	dirs := make(map[string]*channelChunkState)
-	ct.channels["ch1"] = dirs
-	state := &channelChunkState{
-		sequences: map[uint32]*chunkSequence{
-			1: {estimatedPlaintext: 10},
-			2: {estimatedPlaintext: 10},
-		},
-		inProgressID: 0, // no current in-progress, so interleaving check is skipped
-	}
-	dirs[dirFe2w] = state
-	ct.mu.Unlock()
-
-	// Now try to add a third sequence — must be rejected with too-many-incomplete.
-	err := ct.Track("ch1", dirFe2w, 3, validChunkSize(10), true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "too many incomplete")
+	defer ct.mu.Unlock()
+	assert.NotContains(t, ct.channels, "ch1",
+		"a final-chunk breach must clean up the empty channel state")
 }
 
 // TestTrack_InterleavingRejected verifies that a chunk for correlationID B is
 // rejected while correlationID A is still the in-progress sequence.
+//
+// This -- not a count cap -- is what bounds the Hub's in-flight chunk state:
+// admitting a new correlation id requires that none is in progress, so a
+// channel+direction holds at most one sequence at a time.
 func TestTrack_InterleavingRejected(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	// Start sequence A (correlationID 1).
 	err := ct.Track("ch1", dirFe2w, 1, validChunkSize(100), true)
@@ -214,7 +154,7 @@ func TestTrack_InterleavingRejected_TableDriven(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+			ct := newChunkTracker(testMaxMessageSize)
 
 			require.NoError(t, ct.Track(tc.channelID, tc.direction, 1, validChunkSize(50), true))
 
@@ -228,7 +168,7 @@ func TestTrack_InterleavingRejected_TableDriven(t *testing.T) {
 // TestTrack_RemoveChannel verifies that RemoveChannel clears all tracking state
 // for the given channelID, including in-flight sequences.
 func TestTrack_RemoveChannel(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	// Start a sequence on ch1 in two directions.
 	require.NoError(t, ct.Track("ch1", "fe2w", 1, validChunkSize(100), true))
@@ -247,7 +187,7 @@ func TestTrack_RemoveChannel(t *testing.T) {
 // TestTrack_RemoveChannel_NonExistent verifies that RemoveChannel on an unknown
 // channelID does not panic.
 func TestTrack_RemoveChannel_NonExistent(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 	assert.NotPanics(t, func() {
 		ct.RemoveChannel("does-not-exist")
 	})
@@ -256,7 +196,7 @@ func TestTrack_RemoveChannel_NonExistent(t *testing.T) {
 // TestTrack_ChunkCiphertextTooLarge verifies that a single chunk whose
 // ciphertext exceeds maxChunkCiphertext is rejected immediately.
 func TestTrack_ChunkCiphertextTooLarge(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	tests := []struct {
 		name          string
@@ -279,7 +219,7 @@ func TestTrack_ChunkCiphertextTooLarge(t *testing.T) {
 // TestTrack_ChunkCiphertextAtLimit verifies that a ciphertext exactly at
 // maxChunkCiphertext is accepted.
 func TestTrack_ChunkCiphertextAtLimit(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	err := ct.Track("ch1", dirFe2w, 1, maxChunkCiphertext, true)
 	require.NoError(t, err)
@@ -288,8 +228,8 @@ func TestTrack_ChunkCiphertextAtLimit(t *testing.T) {
 // TestTrack_SameCorrelationID_ContinuesAfterFirst verifies that subsequent MORE
 // chunks with the same correlationID accumulate correctly without errors.
 func TestTrack_SameCorrelationID_ContinuesAfterFirst(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
-	corrID := uint32(7)
+	ct := newChunkTracker(testMaxMessageSize)
+	corrID := uint64(7)
 
 	chunkPlaintext := 100
 	chunkCount := 5
@@ -316,7 +256,7 @@ func TestTrack_SameCorrelationID_ContinuesAfterFirst(t *testing.T) {
 // TestTrack_DifferentChannels verifies that tracking state for different
 // channelIDs is fully isolated.
 func TestTrack_DifferentChannels(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	// ch1 starts a sequence with correlationID 1.
 	require.NoError(t, ct.Track("ch1", dirFe2w, 1, validChunkSize(100), true))
@@ -335,7 +275,7 @@ func TestTrack_DifferentChannels(t *testing.T) {
 // TestTrack_DifferentDirections verifies that "fe2w" and "w2fe" are tracked
 // independently within the same channelID.
 func TestTrack_DifferentDirections(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	// Start sequence on fe2w with correlationID 1.
 	require.NoError(t, ct.Track("ch1", "fe2w", 1, validChunkSize(100), true))
@@ -355,7 +295,7 @@ func TestTrack_DifferentDirections(t *testing.T) {
 // non-chunked message for a channelID that has no tracked state does not panic
 // or produce an error.
 func TestTrack_CleanupEmpty_SingleChunkOnTrackedChannel(t *testing.T) {
-	ct := newChunkTracker(testMaxMessageSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(testMaxMessageSize)
 
 	// Start a sequence so the channel appears in the map.
 	require.NoError(t, ct.Track("ch1", dirFe2w, 1, validChunkSize(100), true))
@@ -375,7 +315,7 @@ func TestTrack_CleanupEmpty_SingleChunkOnTrackedChannel(t *testing.T) {
 // succeeds (i.e. inProgressID is properly reset).
 func TestTrack_InProgressResetAfterMaxSizeRejection(t *testing.T) {
 	maxSize := 100
-	ct := newChunkTracker(maxSize, testMaxIncompleteChunked)
+	ct := newChunkTracker(maxSize)
 
 	// Start a sequence with correlationID 1.
 	err := ct.Track("ch1", dirFe2w, 1, validChunkSize(60), true)
@@ -400,15 +340,87 @@ func TestTrack_InProgressResetAfterMaxSizeRejection(t *testing.T) {
 	assert.Empty(t, ct.channels)
 }
 
-// contains is a helper to avoid importing strings in test assertions.
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-			return false
-		}())
+// TestTrack_CorrelationIDZeroRejected verifies that correlation id 0 -- the
+// reserved "no sequence in progress" sentinel for inProgressID -- is refused
+// outright, in both directions and regardless of the MORE flag. Both id
+// allocators skip 0, so no well-behaved peer sends it; the Hub relays a
+// peer-supplied id and must reject the sentinel rather than trust the convention.
+func TestTrack_CorrelationIDZeroRejected(t *testing.T) {
+	for _, direction := range []string{"fe2w", "w2fe"} {
+		for _, more := range []bool{true, false} {
+			ct := newChunkTracker(testMaxMessageSize)
+			err := ct.Track("ch1", direction, 0, validChunkSize(100), more)
+			require.Error(t, err, "id 0 must be rejected (dir=%s more=%v)", direction, more)
+			assert.Contains(t, err.Error(), "correlation id 0")
+
+			// Rejecting the sentinel must leave no tracking state behind.
+			ct.mu.Lock()
+			assert.Empty(t, ct.channels)
+			ct.mu.Unlock()
+		}
+	}
+}
+
+// TestTrack_CorrelationIDZeroCannotBypassInterleaving is the regression test for
+// the sentinel-collision bug. Before id 0 was rejected, a MORE chunk under id 0
+// set inProgressID back to 0 (== "none in progress"), so a second sequence under
+// a different id slipped past the single-in-flight interleaving guard -- two
+// concurrent chunked sequences on one channel+direction, the exact interleaving
+// the tracker exists to forbid. With id 0 refused, the map can never hold two.
+func TestTrack_CorrelationIDZeroCannotBypassInterleaving(t *testing.T) {
+	ct := newChunkTracker(testMaxMessageSize)
+
+	// A malicious peer tries to open a sequence under the sentinel id 0.
+	require.Error(t, ct.Track("ch1", dirFe2w, 0, validChunkSize(100), true),
+		"id 0 must never open a sequence")
+
+	// The rejected id 0 left inProgressID at the sentinel without a live
+	// sequence, so a legitimate sequence proceeds normally...
+	require.NoError(t, ct.Track("ch1", dirFe2w, 7, validChunkSize(100), true))
+	// ...and a second concurrent id is still refused by the interleaving guard,
+	// with only the one legitimate sequence ever tracked.
+	err := ct.Track("ch1", dirFe2w, 9, validChunkSize(100), true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "interleaving")
+
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	assert.Len(t, ct.channels["ch1"][dirFe2w].sequences, 1,
+		"at most one in-flight sequence -- id 0 must not have opened a second")
+}
+
+// TestTrack_OneSequenceInFlightPerChannelDirection pins the invariant the Hub
+// actually enforces, in both directions: while one correlation id is in
+// progress a second is refused, and completing the first frees the slot for it.
+// A count cap over this rule would be unreachable dead code -- the map can never
+// hold two sequences for one channel+direction.
+func TestTrack_OneSequenceInFlightPerChannelDirection(t *testing.T) {
+	for _, direction := range []string{"fe2w", "w2fe"} {
+		t.Run(direction, func(t *testing.T) {
+			ct := newChunkTracker(testMaxMessageSize)
+
+			// Sequence A is in progress.
+			require.NoError(t, ct.Track("ch1", direction, 1, validChunkSize(100), true))
+
+			// B is refused while A is in flight...
+			err := ct.Track("ch1", direction, 2, validChunkSize(100), true)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "interleaving")
+
+			// ...and only one sequence is ever tracked, so no count cap could fire.
+			ct.mu.Lock()
+			assert.Len(t, ct.channels["ch1"][direction].sequences, 1,
+				"at most one in-flight sequence per channel+direction")
+			ct.mu.Unlock()
+
+			// Completing A frees the slot for B.
+			require.NoError(t, ct.Track("ch1", direction, 1, validChunkSize(100), false))
+			require.NoError(t, ct.Track("ch1", direction, 2, validChunkSize(100), true))
+
+			ct.mu.Lock()
+			assert.Len(t, ct.channels["ch1"][direction].sequences, 1)
+			assert.Equal(t, uint64(2), ct.channels["ch1"][direction].inProgressID)
+			ct.mu.Unlock()
+		})
+	}
 }

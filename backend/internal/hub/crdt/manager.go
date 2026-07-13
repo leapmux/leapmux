@@ -57,10 +57,27 @@ type SubmitInput struct {
 	OriginClient string
 	// WorkspaceScopeID, when non-empty, narrows client-auth checks to
 	// this single workspace. Delegation bearers use it so a principal
-	// with broader owner/share grants cannot submit ops against a
-	// sibling workspace through a scoped remote session.
+	// owning other workspaces cannot submit ops against a sibling
+	// workspace through a scoped remote session.
 	WorkspaceScopeID string
-	Internal         bool
+	// WorkerScope, when non-nil, narrows which WORKER ids this principal's ops
+	// may reference to those the delegation token's minting worker is entitled to
+	// reach. It is the sibling of WorkspaceScopeID: that one bounds WHERE a bearer
+	// may write, this one bounds WHICH MACHINE it may bind a tab to.
+	//
+	// It is a predicate rather than an id because the rule (target IS the minter,
+	// or the token's user owns the minter) lives in the auth package, which this
+	// package deliberately does not import -- the same reason AuthChecker is an
+	// interface here. nil means unbounded, which is what a session or API
+	// credential gets.
+	//
+	// Without it a leaked token minted by worker A carrying its user's identity
+	// can point a tab at ANY worker that user owns through SetTabRegisterOp,
+	// because CanUseWorker only asks "may this USER use this worker". That is
+	// the same cross-machine reach ChannelService.verifyWorkerAccess refuses
+	// one layer over.
+	WorkerScope func(workerID string) bool
+	Internal    bool
 }
 
 // Manager owns one org's CRDT state and its journal, and coordinates
@@ -102,20 +119,57 @@ type Manager struct {
 	stateWriteMu sync.Mutex
 	subscribers  *SubscriberController
 	projection   sync.Mutex
-	// aclTransitionMu serializes whole workspace ACL transitions
-	// (CommitWorkspaceAccessTransition) end to end, so two shares of the same
-	// workspace cannot interleave their revoke/commit/grant phases and let the
-	// in-memory filter order diverge from the DB-commit order. It is taken OUTSIDE
-	// projection (aclTransitionMu -> projection -> m.mu) and, unlike projection, is
-	// NOT held across the DB commit's op-broadcast-blocking window -- only this one
-	// call site takes it, and it never takes projection before it, so there is no
-	// inversion.
-	aclTransitionMu sync.Mutex
-	presenceCtl     *PresenceController
-	auth            AuthChecker
-	journal         Journal
-	now             func() time.Time
-	logger          *slog.Logger
+	// subscribeExpandMu serializes SubscribeWithACL's resolve+register against
+	// ExpandSubscribersForWorkspace's read-ACL-then-apply (workspace create).
+	// Without it, a subscriber that resolved its filter BEFORE a concurrent
+	// CreateWorkspace committed, but registered AFTER that workspace's expand
+	// pass ran, would permanently miss the workspace until reconnect (the
+	// expand only visits already-registered subscribers). It is taken OUTSIDE
+	// projection (subscribeExpandMu -> projection -> m.mu) and never held
+	// across a DB commit's op-broadcast-blocking window.
+	subscribeExpandMu sync.Mutex
+	// lifecycleMu serializes SubmitLifecycle drains against each other. Every
+	// workspace lifecycle RPC drains the outbox post-commit on its own request
+	// goroutine, so without this two mutations in the same org drain
+	// concurrently -- and the per-row apply logic is written against a single
+	// sequential consumer (contractSubscribersForWorkspace's single-key-delete
+	// safety argument, applyLifecycleCreate's optimistic state add, and the
+	// fixed "lifecycle-<op>-<ws>" batch ids all assume a create and a delete of
+	// the same workspace are never in flight at once). It is held across
+	// ListPending too, so a drain that starts while another is in flight
+	// observes the first drain's consume-marks instead of re-listing and
+	// re-applying its rows. Lock order: lifecycleMu is outermost of the
+	// lifecycle path (lifecycleMu -> stateWriteMu / subscribeExpandMu ->
+	// projection -> m.mu); nothing acquires lifecycleMu while holding another
+	// manager lock.
+	lifecycleMu sync.Mutex
+	// undecodableLogged tracks lifecycle_outbox row IDs whose decode failure has
+	// already been logged at Error, so a row whose MarkLifecycleOutboxConsumed
+	// keeps failing transiently is not re-logged on every subsequent drain. The
+	// commit's contract is one Error log per corrupt row; without this a corrupt
+	// row whose consume races a long-lived DB write fault would re-decode,
+	// re-fail, and re-log on every lifecycle RPC in the org for as long as the
+	// fault lasts. Guarded by lifecycleMu (every access is inside SubmitLifecycle).
+	// Entries are removed once the row is successfully consumed, so the set is
+	// bounded by the number of currently-stuck corrupt rows.
+	undecodableLogged map[int64]bool
+	// applyFailedLogged tracks lifecycle_outbox row IDs whose applyLifecycleRow
+	// failure has already been logged at Error. A row that fails to apply is NOT
+	// consumed -- it retries on the next drain, since an apply failure is most
+	// often transient (a create whose read-ACL lookup faulted) -- so without this
+	// dedup a persistently-failing row re-logs Error on every lifecycle RPC in
+	// the org for as long as the fault lasts, exactly the amplification
+	// undecodableLogged exists to prevent for decode failures. The row is still
+	// retried (and re-pay the store lookup); only the log is deduped. Mirrors
+	// undecodableLogged: one Error then Warn, cleared once the row succeeds so
+	// the set stays bounded by the number of currently-stuck rows. Guarded by
+	// lifecycleMu.
+	applyFailedLogged map[int64]bool
+	presenceCtl       *PresenceController
+	auth              AuthChecker
+	journal           Journal
+	now               func() time.Time
+	logger            *slog.Logger
 
 	// clearGrace seeds presenceCtl at construction. Held on Manager
 	// (rather than only inside the controller) so WithPresenceClearGrace
@@ -126,6 +180,13 @@ type Manager struct {
 	internalCh chan submitJob
 	stop       chan struct{}
 	done       chan struct{}
+	// stopOnce makes Stop safe to call concurrently: two callers (e.g. the
+	// registry's Shutdown and a test, or SweepIdle racing a manual Stop) would
+	// otherwise both pass the select-default arm and both close(m.stop), the
+	// second panicking with 'close of closed channel'. Once guarantees the
+	// close lands exactly once; both callers still wait on <-m.done and run
+	// the idempotent teardown (PresenceController.Shutdown and auditWG.Wait).
+	stopOnce sync.Once
 
 	// activity guards lastActivity. Kept on its own mutex (rather than
 	// piggybacking m.mu) so the registry's idle-eviction janitor can
@@ -404,8 +465,10 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // touchActivity stamps the manager as freshly active. Called on every
-// Submit / SubmitInternal entry point so the Registry's idle-eviction
-// janitor only stops managers that genuinely haven't seen traffic.
+// Submit / SubmitInternal entry point AND by Registry.Get when it hands out
+// an existing manager, so the Registry's idle-eviction janitor only stops
+// managers that genuinely haven't been referenced -- and never stops one a
+// concurrent Get just returned.
 func (m *Manager) touchActivity() {
 	m.activity.Lock()
 	m.lastActivity = m.now()
@@ -436,13 +499,13 @@ func (m *Manager) WaitForAudits() {
 // deferred-clear timers are stopped so they don't fire on a defunct
 // manager. Background audit goroutines are drained before returning
 // so their log breadcrumbs always make it out.
+//
+// Concurrent calls are safe: stopOnce closes m.stop exactly once, and both
+// the presence-controller shutdown and the audit WaitGroup wait are idempotent,
+// so two callers racing Stop each wait for the goroutine to exit without one
+// of them panicking on a double close.
 func (m *Manager) Stop() {
-	select {
-	case <-m.stop:
-		return
-	default:
-	}
-	close(m.stop)
+	m.stopOnce.Do(func() { close(m.stop) })
 	<-m.done
 	m.presenceCtl.Shutdown()
 	m.auditWG.Wait()
@@ -452,12 +515,20 @@ func (m *Manager) Stop() {
 // goroutine.
 func (m *Manager) Submit(ctx context.Context, input SubmitInput) ([]*leapmuxv1.BatchResult, error) {
 	resp := make(chan submitResponse, 1)
+	// Touch activity BEFORE the channel send so the idle janitor cannot evict
+	// this manager in the window between the send and the stamp: once the job is
+	// in submitCh the manager goroutine may pick it up and respond at any time,
+	// but the stamp is what keeps SweepIdle from reaping the manager out from
+	// under the in-flight submit. (Sending first then stamping inverted that
+	// ordering and left a narrow race where a Submit to a manager whose
+	// lastActivity had gone stale could be stranded if the janitor fired in the
+	// gap.)
+	m.touchActivity()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case m.submitCh <- submitJob{input: input, respCh: resp}:
 	}
-	m.touchActivity()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -478,6 +549,9 @@ func (m *Manager) SubmitInternal(ctx context.Context, input SubmitInput) ([]*lea
 		input.OriginClient = m.hubClientID
 	}
 	resp := make(chan submitResponse, 1)
+	// See Submit: touch activity before the send so the idle janitor cannot
+	// evict the manager between the send and the stamp.
+	m.touchActivity()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -499,25 +573,26 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 }
 
 // SubscribeWithACL resolves a subscriber's workspace filter and registers it
-// atomically under aclTransitionMu, closing the resolve-then-register TOCTOU.
+// atomically under subscribeExpandMu, closing the resolve-then-register TOCTOU.
 //
 // resolve reads the DB ACL and returns the allowed workspace set; it runs while
-// this holds aclTransitionMu, the SAME lock CommitWorkspaceAccessTransition holds
-// across a share/unshare. That serialization means a concurrent transition of a
-// workspace in the filter is ordered either FULLY before resolve() -- so resolve
-// reads the post-commit ACL and the workspace is already excluded -- or FULLY
-// after this Add -- so the transition's revoke pass sees the now-registered
-// subscriber. Without it, a filter resolved from the pre-commit ACL could be
-// Added after the whole transition finished, and the post-commit reclassify (which
-// only visits already-registered subscribers) would miss it, leaking a
-// just-unshared workspace's snapshot and ops until the subscriber reconnected.
+// this holds subscribeExpandMu, the SAME lock ExpandSubscribersForWorkspace
+// holds across a workspace-create expansion. That serialization means a
+// concurrent create of a workspace the user owns is ordered either FULLY before
+// resolve() -- so resolve reads the post-commit ACL and the workspace is already
+// included -- or FULLY after this Add -- so the create's expand pass sees the
+// now-registered subscriber. Without it, a filter resolved from the pre-commit
+// ACL could be Added after the whole expansion finished, and the expand (which
+// only visits already-registered subscribers) would miss it, so the subscriber
+// would never see the new workspace until it reconnected.
 //
-// resolve's error is returned unregistered so the caller can reject the connection
-// before streaming any events. Lock order aclTransitionMu -> projection -> m.mu is
-// preserved because Subscribe (called here) takes only projection and m.mu.
+// resolve's error is returned unregistered so the caller can reject the
+// connection before streaming any events. Lock order
+// subscribeExpandMu -> projection -> m.mu is preserved because Subscribe
+// (called here) takes only projection and m.mu.
 func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]bool, error)) (initial *leapmuxv1.OrgMaterialized, unsub func(), err error) {
-	m.aclTransitionMu.Lock()
-	defer m.aclTransitionMu.Unlock()
+	m.subscribeExpandMu.Lock()
+	defer m.subscribeExpandMu.Unlock()
 	allowed, err := resolve()
 	if err != nil {
 		return nil, nil, err
@@ -532,10 +607,11 @@ func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]b
 // formats it).
 //
 // The production org-events path registers through SubscribeWithACL, which
-// resolves the filter and calls this Add while holding aclTransitionMu so a
-// concurrent ACL transition cannot leave a straggler with a stale pre-commit
-// filter (see SubscribeWithACL). A direct Subscribe (tests, or a caller that has
-// already resolved a filter under no such lock) does NOT get that guarantee.
+// resolves the filter and calls this Add while holding subscribeExpandMu so a
+// concurrent workspace-create expansion cannot leave a straggler with a stale
+// pre-commit filter (see SubscribeWithACL). A direct Subscribe (tests, or a
+// caller that has already resolved a filter under no such lock) does NOT get
+// that guarantee.
 //
 // Subscribers with a non-empty ClientID contribute to a refcount keyed
 // on that id. The first Subscribe cancels any pending deferred clear;
@@ -543,24 +619,18 @@ func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]b
 // reconnect inside the grace window keeps the client's presence
 // entries intact so the active-client gate doesn't flicker.
 func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.OrgMaterialized, unsub func()) {
-	// The whole sequence runs under m.projection -- the same lock broadcasts and
-	// each visibility phase of an ACL transition (share/unshare) take -- so a
-	// subscriber's registration + initial snapshot are atomic with respect to any
-	// concurrent broadcast and any single grant/revoke phase: the filter captured
-	// by Add and the materialized baseline can never straddle a filter mutation.
-	// (CommitWorkspaceAccessTransition applies revokes and grants in separate
-	// projection-held phases around a lock-free DB commit. A subscription whose Add
-	// lands DURING that transition is re-classified by its post-commit phase; a
-	// subscription serialized against the transition via SubscribeWithACL resolves
-	// the correct pre- or post-commit ACL. The post-commit reclassify only visits
-	// already-registered subscribers, which is why the production path must go
-	// through SubscribeWithACL rather than resolving a filter and Adding it here
-	// unserialized.) The cost is
-	// that the O(N) materializedLocked clone below is serialized against broadcasts
-	// for that duration (a large-org connect briefly stalls the org's commit/
-	// broadcast pipeline); relaxing it -- computing the snapshot outside
-	// m.projection -- would reopen exactly that straddle window, so it is held
-	// deliberately.
+	// The whole sequence runs under m.projection -- the same lock broadcasts
+	// take -- so a subscriber's registration + initial snapshot are atomic with
+	// respect to any concurrent broadcast: the filter captured by Add and the
+	// materialized baseline can never straddle a filter mutation. (The
+	// production path must go through SubscribeWithACL rather than resolving a
+	// filter and Adding it here unserialized -- a workspace-create expansion
+	// only visits already-registered subscribers; see SubscribeWithACL.) The
+	// cost is that the O(N) materializedLocked clone below is serialized
+	// against broadcasts for that duration (a large-org connect briefly stalls
+	// the org's commit/broadcast pipeline); relaxing it -- computing the
+	// snapshot outside m.projection -- would reopen exactly that straddle
+	// window, so it is held deliberately.
 	//
 	// Within that, m.mu is only RLocked for the clone. materializedLocked walks
 	// every visible node/tab/floating-window for the subscriber's filter; taking
@@ -772,7 +842,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	}
 
 	// 4-10. Validate against working copy.
-	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, scopedAuthChecker(m.auth, in.WorkspaceScopeID))
+	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, scopedAuthChecker(m.auth, in.WorkspaceScopeID, in.WorkerScope))
 	if res.Err != nil {
 		// A permission lookup failed transiently (store error), not a genuine
 		// deny: return it so Submit surfaces a retryable error instead of a
@@ -813,17 +883,23 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	// out.
 	//
 	// The audit fires in a background goroutine: m.auth.CanUseWorker
-	// hits the DB (workers + worker_access_grants) and we don't want
+	// hits the DB (workers) and we don't want
 	// to serialise every other client in the org behind that lookup.
 	// preState is the pre-commit state captured above; once stored in
 	// m.state's history it's immutable, so the goroutine can safely
 	// read from it after the manager mutex is released. auditWG
 	// drains on Stop() so log breadcrumbs always make it out.
 	if !in.Internal && containsTombstoneTab(batch) {
+		// Resolve the tombstoned tabs' worker ids from preState NOW, before
+		// spawning, so the audit goroutine captures only this small map instead
+		// of the whole (potentially multi-MB) OrgCrdtState. After m.state =
+		// working below, preState is otherwise GC-eligible; capturing it in the
+		// goroutine would pin the old generation for the CanUseWorker DB lookup.
+		workerIDs := tombstonedTabWorkerIDs(batch, preState)
 		m.auditWG.Add(1)
 		go func() {
 			defer m.auditWG.Done()
-			m.auditOrphanTabTombstones(in, batch, res, preState)
+			m.auditOrphanTabTombstones(in, batch, res, workerIDs)
 		}()
 	}
 

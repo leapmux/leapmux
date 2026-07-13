@@ -150,20 +150,11 @@ export async function signUpViaAPI(
  * Get the admin user's personal org ID via the Connect API.
  */
 export async function getAdminOrgId(hubUrl: string, cookie: string): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.OrgService/ListMyOrgs`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({}),
-  })
-  if (!res.ok) {
-    throw new Error(`getAdminOrgId failed: ${res.status}`)
-  }
-  const data = await res.json() as { orgs: Array<{ id: string, name: string, isPersonal?: boolean }> }
-  const org = data.orgs.find(o => o.isPersonal) ?? data.orgs[0]
-  if (!org) {
+  const orgId = (await getCurrentUser(hubUrl, cookie)).orgId
+  if (!orgId) {
     throw new Error('No org found for admin user')
   }
-  return org.id
+  return orgId
 }
 
 /**
@@ -189,25 +180,6 @@ export async function getWorkerId(hubUrl: string, cookie: string): Promise<strin
       throw new Error('Worker never came online within 30s')
     }
     await new Promise(r => setTimeout(r, 500))
-  }
-}
-
-/**
- * Invite a user to an org via the Connect API.
- */
-export async function inviteToOrgViaAPI(
-  hubUrl: string,
-  cookie: string,
-  orgId: string,
-  username: string,
-): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.OrgService/InviteOrgMember`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ orgId, username, role: 'ORG_MEMBER_ROLE_MEMBER' }),
-  })
-  if (!res.ok) {
-    throw new Error(`inviteToOrgViaAPI failed: ${res.status}`)
   }
 }
 
@@ -450,26 +422,6 @@ export async function createWorkspaceViaAPI(
     throw new Error('createWorkspaceViaAPI: no workspace ID in response')
   }
   return workspaceId
-}
-
-/**
- * Update workspace sharing via the hub's WorkspaceService.
- */
-export async function shareWorkspaceViaAPI(
-  hubUrl: string,
-  cookie: string,
-  workspaceId: string,
-  shareMode: 'SHARE_MODE_PRIVATE' | 'SHARE_MODE_ORG' | 'SHARE_MODE_MEMBERS',
-  userIds?: string[],
-): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/UpdateWorkspaceSharing`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ workspaceId, shareMode, userIds }),
-  })
-  if (!res.ok) {
-    throw new Error(`shareWorkspaceViaAPI failed: ${res.status}`)
-  }
 }
 
 /**

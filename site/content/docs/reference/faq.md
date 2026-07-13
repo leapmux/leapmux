@@ -17,15 +17,15 @@ See [Running LeapMux](/docs/operating/running-leapmux/) for the run modes and [C
 
 ## Is solo mode multi-user?
 
-No. Solo mode is single-user by design. Every request is auto-authenticated as the admin without credentials, so it offers no protection against another process that can reach the port. Workspace sharing is disabled in solo mode (the share dialog is hidden, and the backend rejects sharing with `workspace sharing is not available in solo mode`).
+No. Solo mode is single-user by design. Every request is auto-authenticated as the admin without credentials, so it offers no protection against another process that can reach the port.
 
 > **Warning:** If you ever bind solo mode to a non-loopback address, anyone who can reach the port has full admin access with no password. LeapMux logs a warning when this happens. For multi-user or networked use, run `leapmux hub` instead, or place solo behind a firewall, VPN (Tailscale/WireGuard), or SSH tunnel.
 
-For real multi-user setups see [Organizations & Members](/docs/using/organizations/) and [Managing Workers](/docs/operating/managing-workers/).
+For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/) and [Managing Workers](/docs/operating/managing-workers/).
 
 ## Where is my data stored?
 
-Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts, organizations, workspace metadata (titles, tab positions, tiling geometry), and Worker public keys.
+Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts, personal organizations, workspace metadata (titles, tab positions, tiling geometry), and Worker public keys.
 
 Default locations:
 

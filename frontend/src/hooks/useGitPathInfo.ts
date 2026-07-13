@@ -224,11 +224,11 @@ export function useGitPathInfo(
   }
 
   // Track orgId alongside workerId/path: the fetch closure reads orgId
-  // out of the org context, so an org switch without a workerId/path
+  // out of the org context, so an orgId change without a workerId/path
   // change must still refire the probe (otherwise the stale orgId is
   // baked into the RPC). Stamp the tuple through a memo with
-  // value-comparing equality so identity churn upstream (e.g. the org
-  // list refetching to the same value) doesn't refire the probe.
+  // value-comparing equality so identity churn upstream (e.g. the auth
+  // user re-loading to the same value) doesn't refire the probe.
   //
   // The seed is a STATIC empty tuple, not another `[workerId(), path(),
   // org.orgId()]` expression: Solid's createMemo second arg is the

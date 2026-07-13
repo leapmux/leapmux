@@ -43,7 +43,6 @@ const defaultWorkerInfo: WorkerInfo = {
 function renderSection(opts?: {
   workers?: Worker[]
   tunnels?: TunnelInfo[]
-  currentUserId?: string
 }) {
   const workers = opts?.workers ?? [makeWorker('w1')]
   const onAddTunnel = vi.fn()
@@ -68,7 +67,6 @@ function renderSection(opts?: {
         workers={workers}
         workerInfo={() => defaultWorkerInfo}
         channelStatus={() => 'connected' as ChannelStatus}
-        currentUserId={opts?.currentUserId ?? 'user-1'}
         onAddTunnel={onAddTunnel}
         onDeregister={onDeregister}
       />
@@ -127,7 +125,6 @@ describe('workerSectionContent', () => {
           workers={[makeWorker('w1')]}
           workerInfo={() => null}
           channelStatus={() => 'connected' as ChannelStatus}
-          currentUserId="user-1"
           onAddTunnel={vi.fn()}
           onDeregister={vi.fn()}
         />

@@ -57,6 +57,53 @@ func TestRegistry_SweepIdle_StopsAndReboots(t *testing.T) {
 	assert.Equal(t, int32(2), factoryCalls.Load())
 }
 
+// TestRegistry_Get_RefreshesActivityAgainstSweep closes the Get-then-evict
+// race: a Get that hands out an existing manager stamps activity, so a manager
+// that was otherwise idle-evictable is kept alive by the recent reference and a
+// caller can never be handed a manager a concurrent sweep is about to Stop.
+//
+// The setup makes the manager stale (idle past the TTL) and then Gets it: with
+// the activity stamp on Get, the immediately-following sweep must treat it as
+// fresh and leave it in place, so the next Get returns the SAME instance. Without
+// the stamp, the stale manager would be swept between the two Gets and the second
+// Get would re-bootstrap a different one.
+func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
+	var factoryCalls atomic.Int32
+	journal := newFakeJournal()
+
+	factory := func(_ context.Context, orgID string) (*crdt.Manager, error) {
+		factoryCalls.Add(1)
+		mgr := crdt.NewManager(orgID, journal, allowAll{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(context.Background()))
+		return mgr, nil
+	}
+
+	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(10*time.Millisecond))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	mgr1, err := registry.Get(context.Background(), "org-1")
+	require.NoError(t, err)
+	require.Equal(t, int32(1), factoryCalls.Load())
+
+	// Let the manager go stale (its only activity was the Bootstrap stamp).
+	time.Sleep(15 * time.Millisecond)
+
+	// A Get of the stale manager must refresh its activity...
+	mgr1Again, err := registry.Get(context.Background(), "org-1")
+	require.NoError(t, err)
+	require.Same(t, mgr1, mgr1Again, "the stale manager is still the one returned")
+	require.Equal(t, int32(1), factoryCalls.Load(), "Get must not re-bootstrap a still-present manager")
+
+	// ...so an immediately-following sweep leaves it in place rather than
+	// evicting the manager the caller just received.
+	registry.SweepIdle()
+
+	mgr1Third, err := registry.Get(context.Background(), "org-1")
+	require.NoError(t, err)
+	assert.Same(t, mgr1, mgr1Third, "a manager a recent Get returned must survive the next sweep")
+	assert.Equal(t, int32(1), factoryCalls.Load(), "no eviction, so no re-bootstrap")
+}
+
 // TestRegistry_SweepIdle_KeepsManagersWithSubscribers documents the
 // safety net: a manager with a live subscriber is never evicted, even
 // if its last submit predates the idleTTL window.

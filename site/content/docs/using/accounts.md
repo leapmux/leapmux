@@ -46,7 +46,7 @@ A few things are special about this first account:
 - It is **always created as an administrator**.
 - Its email is **marked verified immediately**, even when email verification is otherwise required for everyone else.
 - The username `admin` is **allowed** here (it is reserved in public signup and OAuth completion). The username `solo` is reserved everywhere and cannot be used.
-- Each new user — including this one — gets a personal organization named after the username, with that user as the org **Owner**. See [Organizations & Members](/docs/using/organizations/).
+- Each new user — including this one — gets a personal organization named after the username. See [Your personal organization](#your-personal-organization).
 
 > **Note:** The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
 
@@ -186,6 +186,18 @@ Usernames are GitHub-style slugs, enforced identically in the browser and on the
 
 > **Note:** Your username doubles as the name of your personal organization. Changing your username also renames that org — LeapMux warns you when you edit it.
 
+## Your personal organization
+
+Every account has exactly one **personal organization**. It is created automatically when the account is created and deleted with it — you never create, join, or leave one yourself. Its name is a slug equal to your username, and the whole app lives under it in the URL:
+
+```text
+/o/{username}
+```
+
+Renaming your username renames the personal organization (and its URL prefix) along with it; LeapMux warns you about this when you edit the username in your profile.
+
+A personal organization is not a team: it has no members or roles beyond you, and there is nothing to invite anyone to or switch between. It exists to scope your URLs and the event stream your workspaces sync over. See [Concepts & Architecture](/docs/getting-started/concepts/) for how it fits into the object hierarchy.
+
 ## Sessions and signing out
 
 When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` cookie that your browser sends on every request. Key facts:
@@ -233,7 +245,6 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 ## Where to go next
 
-- [Organizations & Members](/docs/using/organizations/) — your personal org, roles, and switching orgs.
 - [Settings & Preferences](/docs/using/settings/) — the full Profile dialog and other preferences.
 - [Authentication Providers](/docs/operating/authentication-providers/) — configuring OAuth/OIDC as an operator.
 - [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode and the `--signup-enabled` / `--email-verification-required` flags.

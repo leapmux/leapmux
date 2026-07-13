@@ -6,6 +6,7 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -54,7 +55,7 @@ export const LoginPage: Component = () => {
           navigate(redirect, { replace: true })
         }
         else {
-          navigate(`/o/${user.username}`, { replace: true })
+          navigate(orgHomePath(user.orgName), { replace: true })
         }
       }
     }

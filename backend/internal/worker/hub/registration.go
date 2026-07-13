@@ -16,15 +16,16 @@ import (
 
 // RegistrationResult contains the credentials obtained after registration.
 type RegistrationResult struct {
-	WorkerID     string
-	AuthToken    string
-	RegisteredBy string
+	WorkerID  string
+	AuthToken string
 }
 
 // Register presents `registrationKey` as a bearer credential to the
 // hub's `WorkerConnectorService.Register` RPC and receives permanent
-// worker credentials (auth token + worker ID + registered_by) in
-// response.
+// worker credentials (auth token + worker ID) in response. The
+// registering user (`registered_by`) is no longer returned here; the
+// hub delivers worker ownership via the WorkerIdentity greeting on every
+// Connect, so the worker keeps no cached copy of it (see UpdateRegisteredBy).
 //
 // Network errors (hub unreachable) are retried with exponential backoff
 // because they typically reflect transient transport issues. Application
@@ -70,14 +71,13 @@ func registerWithClient(
 
 		resp, err := client.Register(ctx, req)
 		if err == nil {
-			slog.Info("worker registered",
-				"worker_id", resp.Msg.GetWorkerId(),
-				"registered_by", resp.Msg.GetRegisteredBy(),
-			)
+			// The owner is not recorded here: the Hub delivers it on every Connect
+			// (WorkerIdentity), so the worker never caches a copy that could go stale
+			// or go missing.
+			slog.Info("worker registered", "worker_id", resp.Msg.GetWorkerId())
 			return &RegistrationResult{
-				WorkerID:     resp.Msg.GetWorkerId(),
-				AuthToken:    resp.Msg.GetAuthToken(),
-				RegisteredBy: resp.Msg.GetRegisteredBy(),
+				WorkerID:  resp.Msg.GetWorkerId(),
+				AuthToken: resp.Msg.GetAuthToken(),
 			}, nil
 		}
 
