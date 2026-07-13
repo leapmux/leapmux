@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,7 +30,7 @@ import (
 type teardownEnv struct {
 	store         store.Store
 	validator     *auth.TokenValidator
-	cache         *auth.SessionCache
+	cache         *auth.AuthContextRegistry
 	server        *httptest.Server
 	channelMgr    *channelmgr.Manager
 	channelSvc    *service.ChannelService
@@ -61,10 +60,10 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	_, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
 	t.Cleanup(sc.Stop)
 
-	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
+	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
 
-	delegationHandler := service.NewWorkerDelegationHandler(st, tv, sc).
-		WithChannelCloser(channelSvc)
+	delegationHandler := service.NewWorkerDelegationHandler(
+		st, tv, auth.NewCredentialLifecycleEffects(sc, channelSvc, nil))
 	delegationHandler.RegisterRoutes(mux)
 
 	srv := httptest.NewServer(mux)
@@ -174,7 +173,9 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 	// running fake worker; the post-condition we care about is that
 	// a registered bearer-keyed channel is dropped on revoke.
 	channelID := id.Generate()
-	env.channelMgr.RegisterWithBearer(channelID, env.workerID, env.userID, tokenID, nil)
+	env.channelMgr.RegisterWithAuthInfo(channelID, env.workerID, env.userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(tokenID, "test-workspace"),
+	}, nil)
 	require.True(t, env.channelMgr.Exists(channelID))
 
 	workerSent := env.captureWorker()
@@ -201,7 +202,7 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 		require.NotNil(t, cc, "worker must receive ChannelCloseNotification")
 		assert.Equal(t, channelID, cc.GetChannelId())
 	case <-time.After(time.Second):
-		t.Fatal("expected ChannelClose notification on the worker channel")
+		require.Fail(t, "expected ChannelClose notification on the worker channel")
 	}
 }
 
@@ -217,9 +218,13 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 	otherBearerCh := id.Generate()
 	cookieCh := id.Generate()
 
-	env.channelMgr.RegisterWithBearer(revokedCh, env.workerID, env.userID, revokedToken, nil)
-	env.channelMgr.RegisterWithBearer(otherBearerCh, env.workerID, env.userID, otherToken, nil)
-	env.channelMgr.Register(cookieCh, env.workerID, env.userID, nil)
+	env.channelMgr.RegisterWithAuthInfo(revokedCh, env.workerID, env.userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(revokedToken, "test-workspace"),
+	}, nil)
+	env.channelMgr.RegisterWithAuthInfo(otherBearerCh, env.workerID, env.userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(otherToken, "test-workspace"),
+	}, nil)
+	env.channelMgr.RegisterWithAuthInfo(cookieCh, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)
 
 	env.captureWorker()
 
@@ -236,10 +241,9 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 	assert.True(t, env.channelMgr.Exists(cookieCh), "cookie channel must survive")
 }
 
-// TestChannelService_CloseChannelsByUserNotifiesWorkers exercises the
-// helper used by credential-rotation paths (ChangePassword): every
-// channel for the user goes away and every owning worker is told.
-func TestChannelService_CloseChannelsByUserNotifiesWorkers(t *testing.T) {
+// TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers verifies
+// generation-aware credential rotation closes old channels and notifies workers.
+func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.T) {
 	env := setupTeardownEnv(t)
 	tokenID := env.seedDelegationRow(t)
 
@@ -260,9 +264,11 @@ func TestChannelService_CloseChannelsByUserNotifiesWorkers(t *testing.T) {
 		PublicKey: []byte("k2-32-bytes-padding-padding-okok"), MlkemPublicKey: []byte("m2"), SlhdsaPublicKey: []byte("s2"),
 	}))
 
-	env.channelMgr.RegisterWithBearer(chA, workerA, env.userID, tokenID, nil)
-	env.channelMgr.RegisterWithBearer(chB, workerB, env.userID, "", nil) // cookie-style
-	env.channelMgr.RegisterWithBearer(chOther, workerA, otherUserID, "", nil)
+	env.channelMgr.RegisterWithAuthInfo(chA, workerA, env.userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(tokenID, "test-workspace"),
+	}, nil)
+	env.channelMgr.RegisterWithAuthInfo(chB, workerB, env.userID, channelmgr.AuthInfo{}, nil)
+	env.channelMgr.RegisterWithAuthInfo(chOther, workerA, otherUserID, channelmgr.AuthInfo{}, nil)
 
 	closesA := make(chan *leapmuxv1.ConnectResponse, 4)
 	closesB := make(chan *leapmuxv1.ConnectResponse, 4)
@@ -285,7 +291,7 @@ func TestChannelService_CloseChannelsByUserNotifiesWorkers(t *testing.T) {
 		},
 	})
 
-	closed := env.channelSvc.CloseChannelsByUser(env.userID)
+	closed := env.channelSvc.CloseChannelsByUserRevocation(env.userID, 1)
 	assert.Equal(t, 2, closed, "both of the user's channels should be torn down")
 	assert.False(t, env.channelMgr.Exists(chA))
 	assert.False(t, env.channelMgr.Exists(chB))
@@ -296,13 +302,13 @@ func TestChannelService_CloseChannelsByUserNotifiesWorkers(t *testing.T) {
 	case msg := <-closesA:
 		assert.Equal(t, chA, msg.GetChannelClose().GetChannelId())
 	case <-time.After(time.Second):
-		t.Fatal("worker A did not receive close")
+		require.Fail(t, "worker A did not receive close")
 	}
 	select {
 	case msg := <-closesB:
 		assert.Equal(t, chB, msg.GetChannelClose().GetChannelId())
 	case <-time.After(time.Second):
-		t.Fatal("worker B did not receive close")
+		require.Fail(t, "worker B did not receive close")
 	}
 }
 
@@ -312,99 +318,9 @@ func TestChannelService_CloseChannelsByUserNotifiesWorkers(t *testing.T) {
 func TestChannelService_CloseChannelsByBearer_EmptyTokenIDIsNoop(t *testing.T) {
 	env := setupTeardownEnv(t)
 	chCookie := id.Generate()
-	env.channelMgr.RegisterWithBearer(chCookie, env.workerID, env.userID, "", nil)
-	assert.Equal(t, 0, env.channelSvc.CloseChannelsByBearer(""))
+	env.channelMgr.RegisterWithAuthInfo(chCookie, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)
+	assert.Equal(t, 0, env.channelSvc.CloseChannelsByBearer(auth.NewBearerRef(auth.BearerKindAPI, "")))
 	assert.True(t, env.channelMgr.Exists(chCookie))
-}
-
-// TestPropagateUserRevocation_RevokesActiveDelegationRows is the
-// happy path for the auth helper that hub-side credential-rotation
-// paths use. Every active delegation row for the user must be
-// revoked; rows for OTHER users must be left alone; the bearer
-// cache for the user's tokens must be evicted so subsequent
-// validations fail immediately rather than after sessionCacheTTL.
-func TestPropagateUserRevocation_RevokesActiveDelegationRows(t *testing.T) {
-	env := setupTeardownEnv(t)
-	otherUserID := id.Generate()
-	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID: otherUserID, OrgID: env.orgID, Username: "other-" + id.Generate()[:6],
-	}))
-
-	mySecret := auth.MintAccessSecret()
-	myToken := id.Generate()
-	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:               myToken,
-		UserID:           env.userID,
-		WorkerID:         env.workerID,
-		WorkspaceID:      env.workspaceID,
-		IssuedForTabID:   env.tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       env.validator.HashSecret(mySecret),
-		ExpiresAt:        time.Now().Add(time.Hour),
-	}))
-	otherToken := id.Generate()
-	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:               otherToken,
-		UserID:           otherUserID,
-		WorkerID:         env.workerID,
-		WorkspaceID:      env.workspaceID,
-		IssuedForTabID:   env.tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
-		ExpiresAt:        time.Now().Add(time.Hour),
-	}))
-
-	// Prime the cache for myToken so we can prove the eviction.
-	bearer := auth.FormatBearer(auth.BearerKindDelegation, myToken, mySecret)
-	if _, err := env.validator.ValidateBearer(context.Background(), bearer); err != nil {
-		t.Fatalf("priming validation failed: %v", err)
-	}
-
-	count, err := auth.PropagateUserRevocation(context.Background(), env.store, env.cache, env.userID)
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, count, int64(1), "at least the user's one active delegation row must be revoked")
-
-	// myToken is now revoked.
-	row, err := env.store.DelegationTokens().GetByID(context.Background(), myToken)
-	require.NoError(t, err)
-	require.NotNil(t, row.RevokedAt)
-
-	// otherToken is untouched.
-	otherRow, err := env.store.DelegationTokens().GetByID(context.Background(), otherToken)
-	require.NoError(t, err)
-	assert.Nil(t, otherRow.RevokedAt, "another user's tokens must not be revoked")
-
-	// Cache eviction means the next validation observes the revoke
-	// immediately, not after sessionCacheTTL.
-	_, err = env.validator.ValidateBearer(context.Background(), bearer)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-}
-
-// TestPropagateUserRevocation_NoActiveTokensIsNoop keeps the helper
-// safe to call indiscriminately: a user with no live delegation rows
-// must not error, and must report zero rows revoked.
-func TestPropagateUserRevocation_NoActiveTokensIsNoop(t *testing.T) {
-	env := setupTeardownEnv(t)
-	count, err := auth.PropagateUserRevocation(context.Background(), env.store, env.cache, env.userID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), count)
-}
-
-// TestPropagateUserRevocation_EmptyUserIDIsNoop guards the safety
-// check: a buggy caller that passes "" must NOT bulk-revoke every
-// row in the table.
-func TestPropagateUserRevocation_EmptyUserIDIsNoop(t *testing.T) {
-	env := setupTeardownEnv(t)
-	tokenID := env.seedDelegationRow(t)
-
-	count, err := auth.PropagateUserRevocation(context.Background(), env.store, env.cache, "")
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), count)
-
-	row, err := env.store.DelegationTokens().GetByID(context.Background(), tokenID)
-	require.NoError(t, err)
-	assert.Nil(t, row.RevokedAt, "empty userID must not touch any rows")
 }
 
 // mustJSON marshals body to a no-op-Close ReadCloser suitable for

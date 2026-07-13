@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -85,36 +84,21 @@ func validateCustomKeybindingsJSON(raw string) error {
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	store         store.Store
-	cfg           *config.Config
-	sessionCache  *auth.SessionCache
-	mail          mail.Sender
-	renderer      mail.Renderer
-	channelCloser UserChannelCloser
-}
-
-// UserChannelCloser is the subset of *ChannelService that user-revocation
-// paths use to tear down any E2EE channels owned by the affected user.
-// Plumbed via WithChannelCloser so credential-rotation paths
-// (ChangePassword) close channels in lock-step with delegation-token
-// revocation rather than letting them outlive the password change.
-type UserChannelCloser interface {
-	CloseChannelsByUser(userID string) int
+	store     store.Store
+	cfg       *config.Config
+	lifecycle *auth.CredentialLifecycleEffects
+	mail      mail.Sender
+	renderer  mail.Renderer
 }
 
 // NewUserService creates a new UserService. renderer carries the hub's
 // public URL used to build absolute deep-links in the verification
 // emails sent on email-change and resend.
-func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache, sender mail.Sender, renderer mail.Renderer) *UserService {
-	return &UserService{store: st, cfg: cfg, sessionCache: sc, mail: sender, renderer: renderer}
-}
-
-// WithChannelCloser wires the per-user channel teardown that fires
-// alongside credential rotation. Returns the receiver so the hub
-// bootstrap can chain after construction.
-func (s *UserService) WithChannelCloser(c UserChannelCloser) *UserService {
-	s.channelCloser = c
-	return s
+func NewUserService(st store.Store, cfg *config.Config, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer) *UserService {
+	if lifecycle == nil {
+		panic("user service requires credential lifecycle effects")
+	}
+	return &UserService{store: st, cfg: cfg, lifecycle: lifecycle, mail: sender, renderer: renderer}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -154,12 +138,37 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		}
 	}
 
-	if err := s.store.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
-		Username:    newUsername,
-		DisplayName: displayName,
-		ID:          user.ID,
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			Username:    newUsername,
+			DisplayName: displayName,
+			ID:          user.ID,
+		}); err != nil {
+			return err
+		}
+		if !usernameChanged {
+			return nil
+		}
+		return tx.Orgs().UpdateName(ctx, store.UpdateOrgNameParams{
+			Name: newUsername,
+			ID:   user.OrgID,
+		})
 	}); err != nil {
+		// The pre-check above is only a fast path: two profile updates racing for
+		// the same free slug both pass it, then one loses at the unique index
+		// (idx_users_username), which the store surfaces as ErrConflict. Map that
+		// to the same clear "already taken" error the pre-check returns rather than
+		// leaking an opaque 500.
+		if errors.Is(err, store.ErrConflict) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username %q is already taken", newUsername))
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Drop the local cached UserInfo only when a cached field (username) changed;
+	// a display-name-only edit touches nothing UserInfo caches. This mirrors the
+	// store's gated durable event so both invalidation paths agree.
+	if usernameChanged {
+		s.lifecycle.UserInfoInvalidated(user.ID)
 	}
 
 	resp := &leapmuxv1.UpdateProfileResponse{
@@ -169,14 +178,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		PendingEmail: user.PendingEmail,
 	}
 
-	// Rename the personal org to match the new username.
 	if usernameChanged {
-		if err := s.store.Orgs().UpdateName(ctx, store.UpdateOrgNameParams{
-			Name: newUsername,
-			ID:   user.OrgID,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
 		resp.OrgName = newUsername
 	}
 
@@ -213,26 +215,18 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
-	// Admin: immediate change, trusted.
-	if userInfo.IsAdmin {
-		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, true); err != nil {
+	// Immediate change with no verification round-trip: an admin edit is
+	// trusted-verified, and a non-admin edit made when verification isn't
+	// required lands unverified (verified == userInfo.IsAdmin). Admin is checked
+	// first via the disjunct, so an admin under a verification-required
+	// deployment still gets a trusted immediate change. Both flush cached
+	// UserInfo (UserInfo.Email is cached) so the new value is observable on the
+	// very next request rather than after sessionCacheTTL.
+	if userInfo.IsAdmin || !s.cfg.EmailVerificationRequired {
+		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, userInfo.IsAdmin); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		// UserInfo.Email is cached; flush all sessions so the new value
-		// is observable on the very next request rather than after
-		// sessionCacheTTL.
-		s.sessionCache.EvictByUserID(user.ID)
-		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
-			VerificationRequired: false,
-		}), nil
-	}
-
-	// Non-admin, verification not required: immediate change, unverified.
-	if !s.cfg.EmailVerificationRequired {
-		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, false); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		s.sessionCache.EvictByUserID(user.ID)
+		s.lifecycle.UserInfoInvalidated(user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
@@ -316,7 +310,7 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	// Flush all sessions so the new Email + EmailVerified are picked up
 	// across every device the user is signed in on, not just the one
 	// that hit /verify-email.
-	s.sessionCache.EvictByUserID(userInfo.ID)
+	s.lifecycle.UserInfoInvalidated(userInfo.ID)
 
 	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
 	if err != nil {
@@ -337,25 +331,8 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
 	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// OAuth-only users (password_set == false) can set a password without providing
-	// the current one. Users with a password must verify it first.
-	if user.PasswordSet {
-		match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
-		}
-		if !match {
-			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
-		}
 	}
 
 	hashed, err := password.Hash(req.Msg.GetNewPassword())
@@ -363,41 +340,102 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	if err := s.store.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
-		PasswordHash: hashed,
-		ID:           user.ID,
+	var user *store.User
+	var committedAuthGeneration int64
+	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
+		var err error
+		user, err = tx.Users().GetByID(ctx, userInfo.ID)
+		if err != nil {
+			return fmt.Errorf("query user: %w", err)
+		}
+		// OAuth-only users can set a password without a current one. For
+		// password users, verify while holding the same auth-state lock used
+		// by login so the checked hash cannot change before commit.
+		if user.PasswordSet {
+			match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+			}
+			if !match {
+				return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
+			}
+		}
+		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+			PasswordHash: hashed,
+			ID:           user.ID,
+		}); err != nil {
+			return fmt.Errorf("update password: %w", err)
+		}
+		sessionID := userInfo.Credential.SessionID()
+		if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
+			UserID: user.ID,
+			KeepID: sessionID,
+		}); err != nil {
+			return fmt.Errorf("delete other sessions: %w", err)
+		}
+		if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+			return err
+		}
+		if sessionID != "" {
+			n, err := tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
+				SessionID: sessionID,
+				UserID:    user.ID,
+			})
+			if err != nil {
+				return fmt.Errorf("refresh current session auth generation: %w", err)
+			}
+			// n==0 means the acting session was concurrently deleted (a
+			// same-user logout / admin force-logout does not contend on this
+			// user-auth lock) after the tx began. The password change itself is
+			// valid and there is no surviving session row left to restamp, so do
+			// not roll the whole change back. The post-tx restamp is a true no-op
+			// for a same-process logout (which already tore down this Hub's
+			// in-memory leases/channels for the session); if the logout happened
+			// on another Hub, this Hub may still hold the deleted session's
+			// in-memory holders until the durable session-revoked event replays,
+			// and the restamp briefly re-stamps those before the following
+			// UserRevoked and the replayed SessionRevoked tear them down -- benign
+			// and self-healing. n>1 is impossible (session id is unique) and
+			// indicates corruption, so it stays fatal.
+			if n > 1 {
+				return fmt.Errorf("refresh current session auth generation: updated %d rows", n)
+			}
+		}
+		updatedUser, err := tx.Users().GetByID(ctx, user.ID)
+		if err != nil {
+			return fmt.Errorf("query updated user auth generation: %w", err)
+		}
+		committedAuthGeneration = updatedUser.AuthGeneration
+		return nil
 	}); err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Invalidate all other sessions so stolen sessions can't survive a
-	// password change. Keep the current session alive.
-	_ = s.store.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
-		UserID: user.ID,
-		KeepID: userInfo.SessionID,
-	})
-
-	// Evict all cached sessions for this user so that deleted sessions
-	s.sessionCache.EvictByUserID(user.ID)
-
-	// Propagate the revocation to the worker layer so spawned-agent
-	// delegation bearers minted under the old password die instead of
-	// outliving it. We deliberately do NOT do this on per-session
-	// Logout — only on credential rotation.
-	if _, err := auth.PropagateUserRevocation(ctx, s.store, s.sessionCache, user.ID); err != nil {
-		// Non-fatal: rows have a TTL, so the worst case is a brief
-		// window where stale delegation bearers still validate. The
-		// password change itself succeeded; surface as a warning.
-		slog.Warn("propagate user revocation after password change", "user_id", user.ID, "error", err)
-	}
-	// Hard-close any open E2EE channels for this user. OpenChannel
-	// validates the bearer once and then rides the Noise session, so
-	// without this step a channel authorized by the just-revoked
-	// delegation row would keep working until the worker process
-	// exited.
-	if s.channelCloser != nil {
-		s.channelCloser.CloseChannelsByUser(user.ID)
-	}
+	// The acting session survives at the new generation (RefreshAuthGeneration
+	// above), so re-stamp both its leases and its channels to that generation
+	// before the user-wide revocation below -- which cancels older-generation
+	// leases and closes older-generation channels -- would otherwise tear down
+	// the surviving session's own live WebSocket connections and channels.
+	//
+	// This restamp-before-revoke ordering is enforced only on the in-process
+	// path. The same-process revocation watcher independently replays the durable
+	// user_tokens event and also calls UserRevoked; that replay is gated on a
+	// publish sweep plus several DB round-trips, so it lands long after this
+	// synchronous restamp. If it ever won the race it would tear down the acting
+	// session's own connections -- but the session survives durably at the new
+	// generation, so the client reconnects with its still-valid cookie and
+	// rebuilds its context: a spurious transient disconnect, never a lost
+	// revocation or a forced logout.
+	// Restamp the acting session (empty SessionID for a non-cookie caller, which
+	// then only revokes) before evicting every credential older than the committed
+	// generation; RevokeUserPreservingSession enforces that preserve-before-revoke
+	// ordering in one call. A concurrent login committed afterward already belongs
+	// to this generation and survives.
+	s.lifecycle.RevokeUserPreservingSession(user.ID, userInfo.Credential.SessionID(), committedAuthGeneration)
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }
@@ -453,6 +491,27 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(&leapmuxv1.UnlinkOAuthProviderResponse{}), nil
 }
 
+// preferencesToProto maps a stored preference record to its proto form. Shared
+// by GetPreferences and UpdatePreferences so the update response echoes exactly
+// what was persisted -- the SANITIZED theme/terminalTheme and the round-tripped
+// scalar fields -- rather than the raw request values (which would report an
+// unsanitized theme the store never kept, drifting from the next GetPreferences).
+func preferencesToProto(sp storedPreferences) *leapmuxv1.UserPreferences {
+	return &leapmuxv1.UserPreferences{
+		Theme:                 sp.Theme,
+		TerminalTheme:         sp.TerminalTheme,
+		UiFontCustomEnabled:   sp.UIFontCustomEnabled,
+		MonoFontCustomEnabled: sp.MonoFontCustomEnabled,
+		UiFonts:               sp.UIFonts,
+		MonoFonts:             sp.MonoFonts,
+		DiffView:              leapmuxv1.DiffView(sp.DiffView),
+		TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
+		TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
+		DebugLogging:          sp.DebugLogging,
+		CustomKeybindingsJson: sp.CustomKeybindingsJSON,
+	}
+}
+
 func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[leapmuxv1.GetPreferencesRequest]) (*connect.Response[leapmuxv1.GetPreferencesResponse], error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -470,19 +529,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetPreferencesResponse{
-		Preferences: &leapmuxv1.UserPreferences{
-			Theme:                 sp.Theme,
-			TerminalTheme:         sp.TerminalTheme,
-			UiFontCustomEnabled:   sp.UIFontCustomEnabled,
-			MonoFontCustomEnabled: sp.MonoFontCustomEnabled,
-			UiFonts:               sp.UIFonts,
-			MonoFonts:             sp.MonoFonts,
-			DiffView:              leapmuxv1.DiffView(sp.DiffView),
-			TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
-			TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
-			DebugLogging:          sp.DebugLogging,
-			CustomKeybindingsJson: sp.CustomKeybindingsJSON,
-		},
+		Preferences: preferencesToProto(sp),
 	}), nil
 }
 
@@ -622,19 +669,10 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Echo the persisted record, not the raw request: the response must report the
+	// SANITIZED theme/terminalTheme that were actually stored (SanitizeSlug above),
+	// so a client re-reading preferences sees the same values it was just handed.
 	return connect.NewResponse(&leapmuxv1.UpdatePreferencesResponse{
-		Preferences: &leapmuxv1.UserPreferences{
-			Theme:                 req.Msg.GetTheme(),
-			TerminalTheme:         req.Msg.GetTerminalTheme(),
-			UiFontCustomEnabled:   req.Msg.GetUiFontCustomEnabled(),
-			MonoFontCustomEnabled: req.Msg.GetMonoFontCustomEnabled(),
-			UiFonts:               req.Msg.GetUiFonts(),
-			MonoFonts:             req.Msg.GetMonoFonts(),
-			DiffView:              req.Msg.GetDiffView(),
-			TurnEndSound:          req.Msg.GetTurnEndSound(),
-			TurnEndSoundVolume:    req.Msg.TurnEndSoundVolume,
-			DebugLogging:          req.Msg.GetDebugLogging(),
-			CustomKeybindingsJson: customKeybindingsJSON,
-		},
+		Preferences: preferencesToProto(sp),
 	}), nil
 }

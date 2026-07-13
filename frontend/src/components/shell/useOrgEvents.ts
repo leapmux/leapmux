@@ -7,6 +7,13 @@ import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { WatchOrgEventSchema } from '~/generated/leapmux/v1/org_ops_pb'
 import { base64ToUint8Array } from '~/lib/base64'
+import { createExponentialBackoff } from '~/lib/retry'
+
+const RECONNECT_BASE_DELAY_MS = 250
+const RECONNECT_MAX_DELAY_MS = 5_000
+// Single-key backoff: the hook drives one connection at a time, so one key is
+// enough to escalate the reconnect delay across attempts and reset it on success.
+const RECONNECT_KEY = 'orgevents'
 
 /**
  * useOrgEvents opens a single per-org WebSocket connection at
@@ -43,10 +50,10 @@ export interface UseOrgEventsOpts {
   /** Called when an EntityRemoved drops a pending op (caller may toast). */
   onPendingDropped?: () => void
   /**
-   * Called when WorkspaceCreated / WorkspaceRenamed / WorkspaceDeleted
-   * arrives. The callback typically re-fetches the org's workspace
-   * list so the sidebar reflects the lifecycle change. Routed through
-   * a single hook so the workspace store, section store, and registry
+   * Called when workspace lifecycle or visibility changes arrive. The
+   * callback typically re-fetches the org's workspace list so the sidebar
+   * reflects creates, renames, deletes, grants, and revocations. Routed
+   * through a single hook so the workspace store, section store, and registry
    * each get their refresh in one place.
    */
   onWorkspaceLifecycleChanged?: () => void
@@ -90,6 +97,18 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
   let socket: WebSocket | undefined
   // Cleanup hooks for the Tauri sidecar relay path; null in browser mode.
   let bridgeCleanup: (() => void) | undefined
+  // Shared exponential-backoff helper (jitter restored, vs the previous
+  // hand-rolled `base * 2 ** attempts`) replacing the per-attempt counter.
+  const reconnectBackoff = createExponentialBackoff<string>({
+    initialMs: RECONNECT_BASE_DELAY_MS,
+    maxMs: RECONNECT_MAX_DELAY_MS,
+  })
+  // Tracks whether a reconnect timer is armed but not yet fired, so tearDown can
+  // distinguish an abandoned pending retry (reset the backoff streak) from the
+  // fired retry that is itself re-running this effect (keep the streak growing).
+  let reconnectPending = false
+  let connectionGeneration = 0
+  let disposed = false
 
   const decodeFrame = (raw: Uint8Array): WatchOrgEvent | null => {
     // Length-prefixed frame: 4-byte BE uint32 + payload bytes. The
@@ -97,7 +116,10 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
     // so a single message carries exactly one event.
     if (raw.length < 4)
       return null
-    const len = (raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]
+    // `>>> 0` forces an unsigned 32-bit length: a high top byte (frame >= 2 GiB)
+    // would otherwise sign-extend to a negative length that slips past the
+    // bounds check below and yields a garbage subarray.
+    const len = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0
     if (4 + len > raw.length)
       return null
     try {
@@ -109,18 +131,43 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
   }
 
   const tearDown = () => {
-    if (socket) {
+    connectionGeneration++
+    // Cancel a still-pending reconnect (org switch, manual reconnect, dispose)
+    // and drop its backoff streak. A retry that already fired cleared
+    // reconnectPending before re-running this effect, so its grown delay is
+    // preserved for the next attempt; only a genuinely pending (abandoned) timer
+    // is reset here.
+    if (reconnectPending) {
+      reconnectBackoff.reset(RECONNECT_KEY)
+      reconnectPending = false
+    }
+    const closingSocket = socket
+    socket = undefined
+    if (closingSocket) {
       try {
-        socket.close()
+        closingSocket.close()
       }
       catch {}
-      socket = undefined
     }
     if (bridgeCleanup) {
       bridgeCleanup()
       bridgeCleanup = undefined
     }
     setBootstrapped(false)
+  }
+
+  const scheduleReconnect = (orgId: string, generation: number) => {
+    if (disposed || generation !== connectionGeneration || opts.orgId() !== orgId)
+      return
+    // schedule() no-ops when a timer is already armed for this key, so a paired
+    // close+error for one disconnect still yields a single retry. It grows the
+    // delay per attempt and adds jitter; a successful bootstrap resets it.
+    reconnectPending = true
+    reconnectBackoff.schedule(RECONNECT_KEY, () => {
+      reconnectPending = false
+      if (!disposed && generation === connectionGeneration && opts.orgId() === orgId)
+        setReconnectKey(key => key + 1)
+    })
   }
 
   // The effect depends on both orgId AND reconnectKey so that
@@ -130,6 +177,20 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
     tearDown()
     if (!orgId)
       return
+    const generation = connectionGeneration
+
+    // Decode one relay frame and dispatch it, resetting the reconnect streak on
+    // the bootstrap (initial) frame. Shared by the desktop-bridge and native
+    // WebSocket transports so the initial-frame backoff-reset rule can't drift
+    // between them.
+    const handleFrame = (raw: Uint8Array) => {
+      const evt = decodeFrame(raw)
+      if (!evt)
+        return
+      if (evt.event.case === 'initial')
+        reconnectBackoff.reset(RECONNECT_KEY)
+      dispatchEvent(opts, evt, setBootstrapped, setClock)
+    }
 
     // Desktop sidecar path: the webview can't open a native WS to
     // the unix-socket hub in solo mode, so the Go sidecar dials
@@ -140,7 +201,10 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
       const workspaceIds = opts.allowedWorkspaceIds?.() ?? []
       let unsubMessage: (() => void) | undefined
       let unsubClose: (() => void) | undefined
-      let disposed = false
+      // Per-attempt cancellation flag for this async bridge setup, distinct
+      // from the hook-level `disposed` above; named apart so an edit here
+      // can't silently read the wrong scope's flag.
+      let attemptDisposed = false
       // Open the relay, then attach event listeners. Order matters
       // less than for native WS — the sidecar buffers a few frames
       // on its own pending channel — but listening before open is
@@ -150,19 +214,17 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
         platformBridge.onEvent('orgevents:message', (b64) => {
           if (typeof b64 !== 'string')
             return
-          const raw = base64ToUint8Array(b64)
-          const evt = decodeFrame(raw)
-          if (evt)
-            dispatchEvent(opts, evt, setBootstrapped, setClock)
+          handleFrame(base64ToUint8Array(b64))
         }),
         platformBridge.onEvent('orgevents:close', () => {
           setBootstrapped(false)
+          scheduleReconnect(orgId, generation)
         }),
       ])
         .then(([m, c]) => {
           unsubMessage = m as () => void
           unsubClose = c as () => void
-          if (disposed) {
+          if (attemptDisposed) {
             unsubMessage?.()
             unsubClose?.()
             return
@@ -170,11 +232,10 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
           return platformBridge.openOrgEventsRelay(orgId, workspaceIds)
         })
         .catch(() => {
-          // openOrgEventsRelay failures surface as the orgevents:close
-          // event from the sidecar; nothing else to do here.
+          scheduleReconnect(orgId, generation)
         })
       bridgeCleanup = () => {
-        disposed = true
+        attemptDisposed = true
         unsubMessage?.()
         unsubClose?.()
         platformBridge.closeOrgEventsRelay().catch(() => {})
@@ -185,28 +246,53 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
     const url = opts.buildWsUrl
       ? opts.buildWsUrl(orgId, opts.allowedWorkspaceIds?.() ?? [])
       : defaultBuildWsUrl(orgId, opts.allowedWorkspaceIds?.() ?? [])
-    const ws = new WebSocket(url, ['orgevents-relay'])
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(url, ['orgevents-relay'])
+    }
+    catch {
+      scheduleReconnect(orgId, generation)
+      return
+    }
     ws.binaryType = 'arraybuffer'
     socket = ws
     ws.addEventListener('message', (ev) => {
+      // Same stale-connection guard the close/error handlers use: a frame
+      // already queued on a socket that reconnect() (or teardown) has
+      // superseded must not reach handleFrame -- a stale `initial` would
+      // reset currentEpoch to the old snapshot's value the reconnect is
+      // refreshing (re-arming the epoch loop) and a stale batch/presence
+      // would be applied twice into the still-live PendingOpsManager.
+      if (socket !== ws || generation !== connectionGeneration)
+        return
       if (!(ev.data instanceof ArrayBuffer))
         return
-      const evt = decodeFrame(new Uint8Array(ev.data))
-      if (evt)
-        dispatchEvent(opts, evt, setBootstrapped, setClock)
+      handleFrame(new Uint8Array(ev.data))
     })
     ws.addEventListener('close', () => {
-      // Closed: the outer effect will re-open on the next orgId tick
-      // (e.g. user signs back in). For now just clear bootstrap.
+      if (socket !== ws || generation !== connectionGeneration)
+        return
+      socket = undefined
       setBootstrapped(false)
+      scheduleReconnect(orgId, generation)
     })
     ws.addEventListener('error', () => {
-      // Errors close automatically on most browsers; treat as a clean
-      // close so the reconnect logic in the parent effect can re-open.
+      if (socket !== ws || generation !== connectionGeneration)
+        return
+      setBootstrapped(false)
+      scheduleReconnect(orgId, generation)
+      try {
+        ws.close()
+      }
+      catch {}
     })
   }))
 
-  onCleanup(tearDown)
+  onCleanup(() => {
+    disposed = true
+    tearDown()
+    reconnectBackoff.cancelAll()
+  })
 
   const reconnect = (): Promise<void> => {
     tearDown()
@@ -260,6 +346,16 @@ function dispatchEvent(
         if (result.droppedPending)
           opts.onPendingDropped?.()
       }
+      break
+    }
+    case 'workspaceProjection': {
+      const pending = opts.pending()
+      if (pending) {
+        const result = pending.consumeWorkspaceProjection(e.value)
+        if (result.droppedPending)
+          opts.onPendingDropped?.()
+      }
+      opts.onWorkspaceLifecycleChanged?.()
       break
     }
     case 'presence':

@@ -2,8 +2,22 @@
 INSERT INTO delegation_tokens (
     id, user_id, worker_id, workspace_id, agent_id, terminal_id,
     issued_for_tab_id, issued_for_tab_type, secret_hash, refresh_hash,
-    expires_at, refresh_expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    expires_at, refresh_expires_at, auth_generation
+) VALUES (
+    sqlc.arg(id),
+    sqlc.arg(user_id),
+    sqlc.arg(worker_id),
+    sqlc.arg(workspace_id),
+    sqlc.arg(agent_id),
+    sqlc.arg(terminal_id),
+    sqlc.arg(issued_for_tab_id),
+    sqlc.arg(issued_for_tab_type),
+    sqlc.arg(secret_hash),
+    sqlc.arg(refresh_hash),
+    sqlc.arg(expires_at),
+    sqlc.arg(refresh_expires_at),
+    (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
+);
 
 -- name: GetDelegationTokenByID :one
 SELECT * FROM delegation_tokens WHERE id = ?;
@@ -20,41 +34,25 @@ WHERE user_id = ?
   AND expires_at > NOW(3)
 ORDER BY created_at DESC;
 
--- name: RevokeDelegationTokensByUser :execresult
+-- name: RevokeDelegationTokensByUserFast :execresult
 UPDATE delegation_tokens
-SET revoked_at = NOW(3)
+SET revoked_at = CURRENT_TIMESTAMP(6)
 WHERE user_id = ? AND revoked_at IS NULL;
-
--- name: ListDelegationTokensRevokedSince :many
-SELECT id, user_id, revoked_at FROM delegation_tokens
-WHERE revoked_at IS NOT NULL AND revoked_at > ?
-ORDER BY revoked_at ASC;
-
--- name: MaxDelegationTokenRevokedAt :one
--- Mirror of MaxAPITokenRevokedAt for delegation_tokens. ORDER BY +
--- LIMIT 1 lets sqlc infer the return type from the underlying column.
-SELECT revoked_at FROM delegation_tokens
-WHERE revoked_at IS NOT NULL
-ORDER BY revoked_at DESC
-LIMIT 1;
 
 -- name: TouchDelegationToken :exec
 UPDATE delegation_tokens
 SET last_used_at = NOW(3)
 WHERE id = ?;
 
--- name: RotateDelegationTokenRefresh :exec
-UPDATE delegation_tokens
-SET refresh_hash = sqlc.arg(new_refresh_hash),
-    refresh_expires_at = sqlc.arg(new_refresh_expires_at),
-    previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at)
-WHERE id = sqlc.arg(id);
+-- name: GetLiveDelegationTokenForUpdate :one
+SELECT id, user_id FROM delegation_tokens
+WHERE id = ? AND revoked_at IS NULL
+FOR UPDATE;
 
--- name: RevokeDelegationToken :execresult
+-- name: RevokeDelegationTokenAt :execresult
 UPDATE delegation_tokens
-SET revoked_at = NOW(3)
-WHERE id = ? AND revoked_at IS NULL;
+SET revoked_at = sqlc.arg(revoked_at)
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
 
 -- name: DeleteRevokedDelegationTokensBefore :execresult
 DELETE FROM delegation_tokens

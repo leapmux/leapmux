@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -34,8 +33,8 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 	}))
 }
 
-func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
-	row, err := s.conn.q.ConsumeCLIAuthorizationCode(ctx, code)
+func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, code)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -43,6 +42,11 @@ func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*
 	return &out, nil
 }
 
-func (s *cliAuthorizationCodeStore) DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error) {
-	return s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, timeToTs(cutoff))
+func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.ConsumeCLIAuthorizationCode(ctx, code)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBCLIAuthorizationCode(row)
+	return &out, nil
 }

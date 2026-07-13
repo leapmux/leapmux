@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,22 +45,25 @@ type pgTestHelper struct {
 	pool *pgxpool.Pool
 }
 
-func (h *pgTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	if err := store.ValidateEntity(entity); err != nil {
-		return err
-	}
-	query := fmt.Sprintf("UPDATE %s SET deleted_at = $1 WHERE id = $2", entity)
-	_, err := h.pool.Exec(ctx, query, deletedAt, id)
+func (h *pgTestHelper) exec(ctx context.Context, query string, args ...any) error {
+	_, err := h.pool.Exec(ctx, query, args...)
 	return err
 }
 
+func (h *pgTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
+	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.ParameterStyleDollar, entity, id, deletedAt)
+}
+
 func (h *pgTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	if err := store.ValidateEntity(entity); err != nil {
-		return err
-	}
-	query := fmt.Sprintf("UPDATE %s SET created_at = $1 WHERE id = $2", entity)
-	_, err := h.pool.Exec(ctx, query, createdAt, id)
-	return err
+	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleDollar, entity, id, createdAt)
+}
+
+func (h *pgTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
+	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
+}
+
+func (h *pgTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
+	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleDollar, column, id, at)
 }
 
 func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
@@ -72,6 +74,9 @@ func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
 		if _, err := h.pool.Exec(ctx, "DELETE FROM "+t); err != nil {
 			return err
 		}
+	}
+	if _, err := h.pool.Exec(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
+		return err
 	}
 	return nil
 }

@@ -15,9 +15,14 @@ import {
   WorkspacePrivateEventSchema,
 } from '~/generated/leapmux/v1/workspace_private_pb'
 import { createLogger } from '~/lib/logger'
-import { sleep } from '~/lib/sleep'
+import { createExponentialBackoff } from '~/lib/retry'
 
 const log = createLogger('workspacePrivateEvents')
+
+// One stream per call, so a single fixed backoff key suffices.
+const RECONNECT_KEY = 'reconnect'
+const RECONNECT_INITIAL_MS = 250
+const RECONNECT_MAX_MS = 8000
 
 interface OpenStreamOpts {
   workspaceId: string
@@ -44,21 +49,35 @@ interface OpenStreamOpts {
 export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
   let stopped = false
   let currentClose: (() => void) | null = null
+  // Resolver for a pending reconnect wait, so teardown can wake the loop
+  // immediately instead of letting it sit out the full backoff delay.
+  let wakeReconnect: (() => void) | null = null
 
-  const reconnectBackoff = (() => {
-    let ms = 250
-    return () => {
-      const v = ms
-      ms = Math.min(ms * 2, 8000)
-      return v
-    }
-  })()
+  // Shared jittered backoff (matching useOrgEvents / useWorkspaceConnection)
+  // in place of the previous hand-rolled, jitter-free doubling closure.
+  const reconnectBackoff = createExponentialBackoff<string>({
+    initialMs: RECONNECT_INITIAL_MS,
+    maxMs: RECONNECT_MAX_MS,
+  })
 
   const start = async () => {
     // eslint-disable-next-line no-unmodified-loop-condition
     while (!stopped) {
+      // A fresh (re)connect: reset the backoff streak once this attempt proves
+      // healthy by delivering its first event (the worker's bootstrap replay or
+      // a live update), mirroring useOrgEvents' reset-on-bootstrap so a merely
+      // opened-then-immediately-dropped stream keeps backing off.
+      let healthy = false
       try {
         const channelId = await channelManager.getOrOpenChannel(opts.workerId)
+        // Teardown may have run while we were awaiting the (genuinely async,
+        // E2EE) channel open. At that instant currentClose was still null, so
+        // the returned cleanup closed nothing -- bail before registering the
+        // stream listener, or it would stay subscribed and keep firing the
+        // opts.on* callbacks into a torn-down caller (mirrors useOrgEvents'
+        // attemptDisposed guard).
+        if (stopped)
+          return
         const req = create(WatchWorkspacePrivateEventsRequestSchema, { workspaceId: opts.workspaceId })
         const payload = toBinary(WatchWorkspacePrivateEventsRequestSchema, req)
         const handle = channelManager.stream(channelId, 'WatchWorkspacePrivateEvents', payload)
@@ -66,6 +85,10 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
 
         await new Promise<void>((resolve) => {
           handle.onMessage((msg) => {
+            if (!healthy) {
+              healthy = true
+              reconnectBackoff.reset(RECONNECT_KEY)
+            }
             try {
               const evt = fromBinary(WorkspacePrivateEventSchema, msg.payload)
               switch (evt.event?.case) {
@@ -112,7 +135,13 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
       currentClose = null
       if (stopped)
         return
-      await sleep(reconnectBackoff())
+      // Wait out the jittered backoff before retrying; teardown resolves this
+      // early via wakeReconnect so a stopped stream doesn't linger.
+      await new Promise<void>((resolve) => {
+        wakeReconnect = resolve
+        reconnectBackoff.schedule(RECONNECT_KEY, resolve)
+      })
+      wakeReconnect = null
     }
   }
 
@@ -120,6 +149,9 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
 
   return () => {
     stopped = true
+    reconnectBackoff.cancelAll()
+    wakeReconnect?.()
+    wakeReconnect = null
     try {
       currentClose?.()
     }

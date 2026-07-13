@@ -88,9 +88,7 @@ Shared validation across user commands:
 
 The revocation commands only mutate database rows; they never reach into the running Hub's process. How fast a *running* Hub reacts depends on which rows you touched.
 
-**Watcher-driven (default ~2s).** `session revoke-user`, `user reset-password`, `api-token revoke`, and `delegation-token revoke` bump a column the Hub's **revocation watcher** polls — `users.tokens_revoked_at` for the first two, and each token's own `revoked_at` for the last two. On its next sweep (default ~2s) the watcher tears down the cached bearers and closes the open channels cross-process. You do not need to restart or signal the Hub.
-
-**Session-cache TTL (~30s).** `session revoke` (a single session by ID) is the exception. It deletes one session row, but the watcher does **not** poll the `sessions` table — sessions are validated through an in-memory cache the admin CLI cannot evict from another process. A running Hub therefore keeps honoring that session until its cache entry expires, which is up to the session-cache TTL (~30s). For an immediate cross-process kill of a single user's access, use `session revoke-user` instead (it is watcher-driven).
+**Watcher-driven (default ~2s).** `session revoke`, `session revoke-user`, `user reset-password`, `user delete`, `api-token revoke`, and `delegation-token revoke` record durable revocation events in the same database transaction as the revoke. On its next sweep (default ~2s) the Hub's **revocation watcher** publishes and consumes those events, then tears down the cached sessions or bearers and closes the open channels cross-process. You do not need to restart or signal the Hub.
 
 ---
 
@@ -242,7 +240,7 @@ Revoke one session by ID.
 
 Not found: `session not found: <id>`. Success: `Revoked session <id>`.
 
-> **Note:** Unlike `session revoke-user`, this command is **not** watcher-driven — a running Hub keeps honoring the session until its in-memory session-cache entry expires (~30s). See [Revocation and the running Hub](#revocation-and-the-running-hub).
+> **Note:** This command is watcher-driven: it records a durable session revocation event so a running Hub evicts the session cache entry and closes channels on the watcher's next sweep.
 
 ### `session revoke-user`
 

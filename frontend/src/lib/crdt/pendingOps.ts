@@ -8,6 +8,7 @@ import type {
   EntityRemoved,
   OpBatch,
   OrgOp,
+  WorkspaceProjectionChanged,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { clone, create } from '@bufbuild/protobuf'
 import {
@@ -19,7 +20,7 @@ import {
 } from '~/generated/leapmux/v1/org_crdt_pb'
 import { BatchRejectionReason } from '~/generated/leapmux/v1/org_ops_pb'
 import { applyOp, newState } from './apply'
-import { hlcClone } from './hlc'
+import { hlcClone, hlcCmp } from './hlc'
 
 /**
  * PendingOpsState captures the local layered view: confirmed (from
@@ -34,23 +35,32 @@ export interface PendingOpsState {
   currentEpoch: bigint
 }
 
-/** Reasons for rejection that should NOT auto-retry; client surfaces a toast. */
-const NON_RETRYABLE_REJECTIONS = new Set<BatchRejectionReason>([
-  BatchRejectionReason.BATCH_REJECTION_FORBIDDEN_WORKSPACE,
-  BatchRejectionReason.BATCH_REJECTION_UNKNOWN_WORKSPACE,
-  BatchRejectionReason.BATCH_REJECTION_TOMBSTONED_TARGET,
-  BatchRejectionReason.BATCH_REJECTION_OP_ID_COLLISION,
-  BatchRejectionReason.BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED,
-  BatchRejectionReason.BATCH_REJECTION_HUB_ONLY_OP,
-  BatchRejectionReason.BATCH_REJECTION_TAB_PLACEMENT_INVALID,
-  BatchRejectionReason.BATCH_REJECTION_INCOMPLETE_RECORD,
-  BatchRejectionReason.BATCH_REJECTION_ROOT_NODE_PROTECTED,
-  BatchRejectionReason.BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE,
-  BatchRejectionReason.BATCH_REJECTION_FLOATING_MOVE_WITH_DESCENDANTS,
-  BatchRejectionReason.BATCH_REJECTION_VALUE_DOMAIN,
-  BatchRejectionReason.BATCH_REJECTION_PARENT_IMMUTABLE,
-  BatchRejectionReason.BATCH_REJECTION_ROOT_IMMUTABLE,
-  BatchRejectionReason.BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES,
+/**
+ * Reasons a rejected batch MAY auto-retry without user intervention.
+ * Everything else -- including any reason added to the proto later -- is
+ * permanent by default, so a newly-introduced server-side rejection can never
+ * be silently treated as loop-eligible (an allowlist fails safe where the old
+ * denylist failed open: it had already drifted, misclassifying the permanent
+ * INVALID_WORKER_REF as retryable). Only EPOCH_REQUIRED is requeued
+ * automatically -- after a reconnect refreshes currentEpoch; STALE_EPOCH and
+ * every validation/permission denial require the user to re-issue the action.
+ */
+const RETRYABLE_REJECTIONS = new Set<BatchRejectionReason>([
+  BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
+])
+
+/**
+ * Reasons whose rejection means the client's epoch is stale or missing, so a
+ * reconnect must refresh `currentEpoch` before any retry can land. Kept beside
+ * RETRYABLE_REJECTIONS so the two orthogonal rejection classifications --
+ * "may auto-retry" and "needs an epoch refresh first" -- both live in the module
+ * that owns rejection classification, instead of the second one drifting as a
+ * hardcoded switch in the submitter layer. STALE_EPOCH needs the refresh but is
+ * NOT retryable (the user re-issues); EPOCH_REQUIRED needs both.
+ */
+const EPOCH_REFRESH_REJECTIONS = new Set<BatchRejectionReason>([
+  BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
+  BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
 ])
 
 /** PendingOpsManager is the local CRDT-aware queue. */
@@ -160,19 +170,44 @@ export class PendingOpsManager {
     this.notify?.()
   }
 
-  /** Apply a BatchRejection. Drops the batch from the pending list. */
-  consumeBatchRejected(batchId: string, rejection: BatchRejection): { reason: number, offendingOpId: string, retryable: boolean } {
-    const idx = this.state.pendingBatches.findIndex(b => b.batchId === batchId)
-    if (idx >= 0) {
-      this.state.pendingBatches.splice(idx, 1)
-      this.recomputeSpeculative()
-      this.notify?.()
-    }
+  /**
+   * Apply a BatchRejection.
+   *
+   * A RETRYABLE rejection (EPOCH_REQUIRED) is NOT terminal -- the submitter
+   * requeues the batch -- so its optimistic ops are KEPT in the pending list and
+   * stay applied to speculativeState: the edit remains visible across the
+   * reconnect+retry window (no revert-then-reapply flicker, no transient
+   * worker/CRDT divergence), and the retry's BatchCommitted reconciles it just
+   * like any in-flight batch. A non-retryable rejection (a permanent denial,
+   * STALE_EPOCH, or a transport give-up passing reason 0) IS terminal, so the
+   * batch is dropped and its optimistic ops reverted. If the submitter later
+   * gives up on a kept retryable batch (retry cap, or no reconnect handler to
+   * refresh the epoch), it calls revertPendingBatch to drop it then.
+   */
+  consumeBatchRejected(batchId: string, rejection: BatchRejection): { reason: number, offendingOpId: string, retryable: boolean, needsEpochRefresh: boolean } {
+    const retryable = RETRYABLE_REJECTIONS.has(rejection.reason)
+    if (!retryable)
+      this.revertPendingBatch(batchId)
     return {
       reason: rejection.reason,
       offendingOpId: rejection.offendingOpId,
-      retryable: !NON_RETRYABLE_REJECTIONS.has(rejection.reason),
+      retryable,
+      needsEpochRefresh: EPOCH_REFRESH_REJECTIONS.has(rejection.reason),
     }
+  }
+
+  /**
+   * Drop a pending batch and revert its optimistic ops from speculativeState.
+   * Used for a terminal rejection and when the submitter finally gives up on a
+   * retryable batch whose optimistic ops it had kept applied.
+   */
+  revertPendingBatch(batchId: string): void {
+    const idx = this.state.pendingBatches.findIndex(b => b.batchId === batchId)
+    if (idx < 0)
+      return
+    this.state.pendingBatches.splice(idx, 1)
+    this.recomputeSpeculative()
+    this.notify?.()
   }
 
   /**
@@ -265,6 +300,57 @@ export class PendingOpsManager {
     return { droppedPending }
   }
 
+  /** Atomically replace or remove one workspace's delivered projection. */
+  consumeWorkspaceProjection(evt: WorkspaceProjectionChanged): { droppedPending: boolean } {
+    const workspaceId = evt.workspaceId
+    if (!workspaceId)
+      return { droppedPending: false }
+    if (evt.change.case !== 'granted' && evt.change.case !== 'revoked')
+      return { droppedPending: false }
+    if (evt.change.case === 'granted' && !evt.change.value.workspaces[workspaceId])
+      return { droppedPending: false }
+
+    const confirmedEntities = workspaceEntityIDs(this.state.confirmedState, workspaceId)
+    const speculativeEntities = this.state.speculativeState === this.state.confirmedState
+      ? confirmedEntities
+      : workspaceEntityIDs(this.state.speculativeState, workspaceId)
+    const affected = mergeWorkspaceEntityIDs(confirmedEntities, speculativeEntities)
+    const projection = evt.change.case === 'granted' ? evt.change.value : undefined
+    replaceWorkspaceProjection(this.state.confirmedState, workspaceId, confirmedEntities, projection)
+
+    if (projection) {
+      if (projection.maxHlc && hlcCmp(projection.maxHlc, this.state.confirmedState.maxHlc) > 0)
+        this.state.confirmedState.maxHlc = hlcClone(projection.maxHlc)
+      if (projection.currentEpoch > this.state.currentEpoch) {
+        this.state.currentEpoch = projection.currentEpoch
+        this.state.confirmedState.currentEpoch = projection.currentEpoch
+      }
+      this.clock.observe(projection.maxHlc)
+    }
+
+    const droppedPending = this.dropPendingByPredicate((op) => {
+      const body = op.body
+      switch (body.case) {
+        case 'setNodeRegister':
+        case 'tombstoneNode':
+          return affected.nodes.has(body.value.nodeId)
+        case 'setTabRegister':
+        case 'tombstoneTab':
+          return affected.tabs.has(body.value.tabId)
+        case 'setFloatingWindowRegister':
+        case 'tombstoneFloatingWindow':
+          return affected.floatingWindows.has(body.value.windowId)
+        case 'setWorkspaceRootNode':
+          return body.value.workspaceId === workspaceId
+        default:
+          return false
+      }
+    })
+    this.recomputeSpeculative()
+    this.notify?.()
+    return { droppedPending }
+  }
+
   /** dropPendingByPredicate removes every op for which `pred` returns true and returns whether any ops were dropped. */
   private dropPendingByPredicate(pred: (op: OrgOp) => boolean): boolean {
     let dropped = false
@@ -303,14 +389,130 @@ export class PendingOpsManager {
   }
 }
 
+interface WorkspaceStateProjection {
+  nodes: Record<string, NodeRecord>
+  tabs: Record<string, TabRecord>
+  floatingWindows: Record<string, FloatingWindowRecord>
+  workspaces: Record<string, WorkspaceContentsRecord>
+}
+
+interface WorkspaceEntityIDs {
+  nodes: Set<string>
+  tabs: Set<string>
+  floatingWindows: Set<string>
+}
+
+function workspaceEntityIDs(state: WorkspaceStateProjection, workspaceId: string): WorkspaceEntityIDs {
+  const roots = new Set<string>()
+  const workspaceRoot = state.workspaces[workspaceId]?.rootNodeId
+  if (workspaceRoot)
+    roots.add(workspaceRoot)
+
+  const floatingWindows = new Set<string>()
+  for (const [id, floatingWindow] of Object.entries(state.floatingWindows)) {
+    if (floatingWindow.workspaceId?.value !== workspaceId)
+      continue
+    floatingWindows.add(id)
+    const rootNodeId = floatingWindow.rootNodeId
+    if (rootNodeId)
+      roots.add(rootNodeId)
+  }
+
+  const children = new Map<string, string[]>()
+  for (const [id, node] of Object.entries(state.nodes)) {
+    const parentId = node.parentId
+    if (!parentId)
+      continue
+    const siblings = children.get(parentId)
+    if (siblings)
+      siblings.push(id)
+    else
+      children.set(parentId, [id])
+  }
+  const nodes = new Set<string>()
+  const queue = [...roots]
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const id = queue[cursor]!
+    if (nodes.has(id) || !state.nodes[id])
+      continue
+    nodes.add(id)
+    // Enqueue children one at a time rather than `queue.push(...children)`: a
+    // spread of a very large child list would exceed the engine's max argument
+    // count and throw, and this is allocation-free besides.
+    for (const child of children.get(id) ?? [])
+      queue.push(child)
+  }
+  const tabs = new Set<string>()
+  for (const [id, tab] of Object.entries(state.tabs)) {
+    const tileId = tab.tileId?.value
+    if (tileId && nodes.has(tileId))
+      tabs.add(id)
+  }
+  return { nodes, tabs, floatingWindows }
+}
+
+function mergeWorkspaceEntityIDs(a: WorkspaceEntityIDs, b: WorkspaceEntityIDs): WorkspaceEntityIDs {
+  return {
+    nodes: new Set([...a.nodes, ...b.nodes]),
+    tabs: new Set([...a.tabs, ...b.tabs]),
+    floatingWindows: new Set([...a.floatingWindows, ...b.floatingWindows]),
+  }
+}
+
+function replaceWorkspaceProjection(
+  state: OrgCrdtState,
+  workspaceId: string,
+  previous: WorkspaceEntityIDs,
+  projection?: WorkspaceStateProjection,
+): void {
+  delete state.workspaces[workspaceId]
+  for (const id of previous.nodes)
+    delete state.nodes[id]
+  for (const id of previous.tabs)
+    delete state.tabs[id]
+  for (const id of previous.floatingWindows)
+    delete state.floatingWindows[id]
+  if (!projection)
+    return
+
+  const workspace = projection.workspaces[workspaceId]
+  if (!workspace)
+    return
+  state.workspaces[workspaceId] = clone(WorkspaceContentsRecordSchema, workspace)
+  const entities = workspaceEntityIDs(projection, workspaceId)
+  copySelectedRecords(state.nodes, projection.nodes, entities.nodes, record => clone(NodeRecordSchema, record))
+  copySelectedRecords(state.tabs, projection.tabs, entities.tabs, record => clone(TabRecordSchema, record))
+  copySelectedRecords(
+    state.floatingWindows,
+    projection.floatingWindows,
+    entities.floatingWindows,
+    record => clone(FloatingWindowRecordSchema, record),
+  )
+}
+
+function copySelectedRecords<T>(
+  target: Record<string, T>,
+  source: Record<string, T>,
+  ids: ReadonlySet<string>,
+  copy: (record: T) => T,
+): void {
+  for (const id of ids) {
+    const record = source[id]
+    if (record)
+      target[id] = copy(record)
+  }
+}
+
 /**
  * applySpeculative wraps applyOp with the speculative HLC selection
  * shared by both submit() and recomputeSpeculative(): prefer the
  * canonical HLC (assigned by the hub on commit) when present,
  * otherwise fall back to the local client_hlc as a per-apply override.
- * The op itself is never mutated — wire-emit reads the same batch
- * object later, and the hub rejects ops that arrive with canonical_hlc
- * pre-set.
+ * applySpeculative never mutates the op — it passes the client_hlc as a
+ * per-apply override rather than writing op.canonicalHlc — so wire-emit
+ * reads the same batch object later and the hub still rejects ops that
+ * arrive with canonical_hlc pre-set. (canonicalHlc IS written, but only
+ * by consumeBatchCommitted on commit, after which the op is never re-sent.)
  */
 function applySpeculative(state: OrgCrdtState, op: OrgOp): void {
   applyOp(state, op, op.canonicalHlc ? undefined : (op.clientHlc ?? undefined))

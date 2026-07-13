@@ -37,6 +37,7 @@ type Store interface {
 	PendingOAuthSignups() PendingOAuthSignupStore
 	APITokens() APITokenStore
 	DelegationTokens() DelegationTokenStore
+	RevocationEvents() RevocationEventStore
 	DeviceAuthorizations() DeviceAuthorizationStore
 	CLIAuthorizationCodes() CLIAuthorizationCodeStore
 	Cleanup() CleanupStore
@@ -47,6 +48,12 @@ type Store interface {
 	// RunInTransaction executes fn within a transaction. The provided
 	// Store is bound to the transaction.
 	RunInTransaction(ctx context.Context, fn func(tx Store) error) error
+
+	// RunInUserAuthTransaction executes fn in a transaction after locking the
+	// user's auth-state row. Credential creation, password rotation, and
+	// user-wide revocation must use this boundary so their commit order is the
+	// credential validity order. Nested calls reuse the current transaction.
+	RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx Store) error) error
 
 	// Close releases any resources (connection pools, etc.).
 	Close() error
@@ -121,39 +128,39 @@ type UserStore interface {
 	ClearPendingEmail(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
 	Delete(ctx context.Context, id string) error
-	// BumpTokensRevokedAt advances the user's tokens_revoked_at high-
-	// water mark. The hub's revocation watcher polls this column to
-	// drive `EvictByUserID` + `EvictBearersByUserID` +
-	// `CloseChannelsByUser` so the in-memory cache + open channels
-	// die in lock-step with admin-CLI mutations. Returns the number
-	// of rows affected (0 when the user is already deleted or
-	// missing). Idempotent under repeated calls.
-	BumpTokensRevokedAt(ctx context.Context, userID string) (int64, error)
-	// ListWithTokensRevokedSince returns users whose tokens_revoked_at
-	// moved past the supplied high-water mark, ordered ascending.
-	// Used by the watcher to find rows to act on; the caller updates
-	// the watermark with the max returned value.
-	ListWithTokensRevokedSince(ctx context.Context, since time.Time) ([]UserTokensRevoked, error)
-	// MaxTokensRevokedAt returns the most recent tokens_revoked_at
-	// across all users (or zero time when none). The revocation
-	// watcher seeds its user-side watermark with this at hub bootstrap.
-	MaxTokensRevokedAt(ctx context.Context) (time.Time, error)
-}
-
-// UserTokensRevoked is the projection ListWithTokensRevokedSince
-// returns: just the user id and the high-water-mark timestamp.
-type UserTokensRevoked struct {
-	UserID          string
-	TokensRevokedAt time.Time
+	// RevokeUserTokens advances the user's tokens_revoked_at marker
+	// plus auth_generation epoch and emits a durable user-token
+	// revocation event in the same transaction. Returns the number of
+	// rows affected (0 when no user row matches the id). The UPDATE has no
+	// deleted_at guard, but the sole production caller
+	// (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
+	// LockUserAuthState filters `deleted_at IS NULL` -- so a
+	// revoke-after-soft-delete aborts the transaction before this runs rather
+	// than firing teardown. Every revoke path revokes BEFORE soft-deleting, so
+	// that ordering is not exercised; a delete flow must not be reordered to
+	// soft-delete-then-revoke or the cross-process teardown is lost.
+	// Idempotent with respect to missing rows, but each successful revoke is
+	// a fresh revocation event because channels opened after an earlier
+	// revoke still need the newer epoch.
+	RevokeUserTokens(ctx context.Context, userID string) (int64, error)
 }
 
 type SessionStore interface {
 	Create(ctx context.Context, p CreateSessionParams) error
 	GetByID(ctx context.Context, id string) (*UserSession, error)
-	Touch(ctx context.Context, p TouchSessionParams) error
+	// Touch conditionally slides a session's expiry forward and returns the
+	// number of rows updated. The UPDATE is guarded by last_active_at so a
+	// recently-touched session matches zero rows; callers must gate any
+	// in-memory lifecycle extension on rowsAffected > 0 so cached deadlines
+	// never advance past the un-updated DB expiry.
+	Touch(ctx context.Context, p TouchSessionParams) (int64, error)
 	Delete(ctx context.Context, id string) (int64, error)
 	DeleteByUser(ctx context.Context, userID string) error
 	DeleteOthers(ctx context.Context, p DeleteOtherSessionsParams) error
+	// RefreshAuthGeneration moves the kept current session onto the
+	// user's latest auth_generation after a password change. Other
+	// sessions remain deleted or stale.
+	RefreshAuthGeneration(ctx context.Context, p RefreshSessionAuthGenerationParams) (int64, error)
 	ListByUserID(ctx context.Context, userID string) ([]UserSession, error)
 	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams) ([]ActiveSession, error)
 	ValidateWithUser(ctx context.Context, id string) (*SessionWithUser, error)
@@ -265,6 +272,12 @@ type WorkspaceStore interface {
 	// subscribe) use this to verify a batch of refs in a single query.
 	ListByIDs(ctx context.Context, ids []string) ([]Workspace, error)
 	ListAccessible(ctx context.Context, p ListAccessibleWorkspacesParams) ([]Workspace, error)
+	// ListAllAccessible returns every non-deleted workspace the user can read
+	// (owner OR explicit grant) across ALL orgs -- the org-unfiltered
+	// counterpart of ListAccessible. It surfaces workspaces shared with a user
+	// who is not a member of the owning org (cross-org collaboration) alongside
+	// the user's own workspaces in every org.
+	ListAllAccessible(ctx context.Context, userID string) ([]Workspace, error)
 	Rename(ctx context.Context, p RenameWorkspaceParams) (int64, error)
 	SoftDelete(ctx context.Context, p SoftDeleteWorkspaceParams) (int64, error)
 	SoftDeleteAllByUser(ctx context.Context, ownerUserID string) error
@@ -393,32 +406,18 @@ type APITokenStore interface {
 	GetByID(ctx context.Context, id string) (*APIToken, error)
 	ListByUser(ctx context.Context, p ListAPITokensByUserParams) ([]APIToken, error)
 	Touch(ctx context.Context, id string) error
-	RotateRefresh(ctx context.Context, p RotateAPITokenRefreshParams) error
+	// RotateRefresh atomically replaces the access/refresh secrets and emits a
+	// cache-only rotation event when its compare-and-swap succeeds.
+	RotateRefresh(ctx context.Context, p RotateAPITokenRefreshParams) (int64, error)
 	Revoke(ctx context.Context, id string) (int64, error)
-	// RevokeByUser bulk-revokes every live api_tokens row for userID.
-	// Hooked from admin commands that kill the user's auth basis
-	// (delete, password reset, force-logout-all) so api bearers die
-	// alongside delegation tokens.
+	// RevokeByUser bulk-revokes every live api_tokens row for userID and
+	// returns the count of rows affected. Hooked from admin commands that
+	// kill the user's auth basis (delete, password reset,
+	// force-logout-all) so api bearers die alongside delegation tokens.
+	// It emits no per-token events: the user-wide RevokeUserTokens event
+	// (generation-bearing) invalidates every credential atomically, so
+	// per-row events would be redundant.
 	RevokeByUser(ctx context.Context, userID string) (int64, error)
-	// ListRevokedSince returns rows whose revoked_at moved past the
-	// watcher's high-water mark. Same shape as DelegationTokenStore.
-	ListRevokedSince(ctx context.Context, since time.Time) ([]TokenRevocationRecord, error)
-	// MaxRevokedAt returns the most recent revoked_at across all rows,
-	// or the zero time when no rows have been revoked. The revocation
-	// watcher calls this once at hub bootstrap to seed its watermark
-	// in O(1) instead of materializing every historical row via
-	// ListRevokedSince.
-	MaxRevokedAt(ctx context.Context) (time.Time, error)
-	DeleteRevokedBefore(ctx context.Context, cutoff time.Time) (int64, error)
-}
-
-// TokenRevocationRecord is the projection ListRevokedSince returns
-// for both api_tokens and delegation_tokens — only the fields the
-// watcher needs to act.
-type TokenRevocationRecord struct {
-	ID        string
-	UserID    string
-	RevokedAt time.Time
 }
 
 // DelegationTokenStore manages worker-minted ephemeral tokens.
@@ -428,26 +427,89 @@ type DelegationTokenStore interface {
 	ListByUser(ctx context.Context, userID string) ([]DelegationToken, error)
 	ListActiveByUser(ctx context.Context, userID string) ([]DelegationToken, error)
 	Touch(ctx context.Context, id string) error
-	RotateRefresh(ctx context.Context, p RotateDelegationTokenRefreshParams) error
 	Revoke(ctx context.Context, id string) (int64, error)
-	// RevokeByUser bulk-revokes every non-revoked, non-expired
-	// delegation token for the given user. Returns the count of rows
-	// affected. Hooked from auth flows (logout, password change,
+	// RevokeByUser bulk-revokes every non-revoked delegation token for
+	// the given user (already-expired but not-yet-revoked rows are
+	// revoked too -- harmless, since an expired token cannot
+	// authenticate). Returns the count of rows affected. Hooked from
+	// auth flows (logout, password change,
 	// account deactivation) so the plan's "user-session revocation
 	// propagated by hub" requirement holds: the spawned-agent
 	// bearers tied to that user die at the hub the moment the user's
-	// auth basis goes away.
+	// auth basis goes away. Like the api-token counterpart it emits no
+	// per-token events; the user-wide RevokeUserTokens event carries the
+	// generation-bearing signal.
 	RevokeByUser(ctx context.Context, userID string) (int64, error)
-	// ListRevokedSince returns rows revoked after the watcher's
-	// high-water mark. The hub's revocation watcher uses this to
-	// pick up admin-CLI revocations that mutate the row directly.
-	ListRevokedSince(ctx context.Context, since time.Time) ([]TokenRevocationRecord, error)
-	// MaxRevokedAt returns the most recent revoked_at across all rows
-	// (or zero time when none). See the matching method on
-	// APITokenStore for the bootstrap-seed rationale.
-	MaxRevokedAt(ctx context.Context) (time.Time, error)
-	DeleteRevokedBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// Credential lifecycle event kinds persisted in revocation_events.kind.
+const (
+	RevocationEventKindSession          = "session"
+	RevocationEventKindAPIToken         = "api_token"
+	RevocationEventKindAPITokenRotation = "api_token_rotation"
+	RevocationEventKindDelegationToken  = "delegation_token"
+	RevocationEventKindUserTokens       = "user_tokens"
+	// RevocationEventKindUserInfo is a cache-invalidation signal rather
+	// than a credential revocation: an admin changed a user's cached
+	// profile state (e.g. IsAdmin), so consumers must drop their cached
+	// UserInfo without logging the user out. It carries
+	// SubjectID=UserID=the user id and generation 0 (not generation-bearing).
+	RevocationEventKindUserInfo = "user_info"
+)
+
+// RevocationEvent is a durable credential lifecycle fact before publication.
+// IDs are generated by application code; watcher cursors never use this id.
+type RevocationEvent struct {
+	ID                 string
+	Kind               string
+	SubjectID          string
+	UserID             string
+	RevokedAt          time.Time
+	UserAuthGeneration int64
+	CreatedAt          time.Time
+}
+
+// PublishedRevocationEvent is the watcher-facing stream record. Seq is
+// assigned gaplessly when pending events are published.
+type PublishedRevocationEvent struct {
+	Seq         int64
+	Event       RevocationEvent
+	PublishedAt time.Time
+}
+
+type AcquireHubRuntimeLeaseParams struct {
+	HolderID     string
+	PublishLimit int32
+	// LeaseDuration is applied relative to the database's current time.
+	LeaseDuration time.Duration
+}
+
+type RenewHubRuntimeLeaseParams struct {
+	HolderID  string
+	CursorSeq int64
+	// LeaseDuration is applied relative to the database's current time.
+	LeaseDuration time.Duration
+}
+
+type CompactRevocationEventsParams struct {
+	Cutoff time.Time
+}
+
+// RevocationEventStore manages durable pending revocation events and their
+// published sequence numbers. PublishPending atomically assigns gapless seq
+// values under the singleton sequence row lock.
+type RevocationEventStore interface {
+	PublishPending(ctx context.Context, limit int32) (int64, error)
+	// AcquireHubRuntimeLease publishes at most PublishLimit pending events and
+	// records the resulting sequence fence while acquiring the singleton Hub
+	// lease. It returns ErrHubAlreadyRunning while another live holder exists.
+	AcquireHubRuntimeLease(ctx context.Context, p AcquireHubRuntimeLeaseParams) (int64, error)
+	// RenewHubRuntimeLease atomically advances the cursor and renews the live
+	// singleton lease. It returns false after expiry, takeover, or removal.
+	RenewHubRuntimeLease(ctx context.Context, p RenewHubRuntimeLeaseParams) (bool, error)
+	ReleaseHubRuntimeLease(ctx context.Context, holderID string) (int64, error)
+	ListPublishedAfter(ctx context.Context, afterSeq int64, limit int32) ([]PublishedRevocationEvent, error)
+	MaxPublishedSeq(ctx context.Context) (int64, error)
 }
 
 // DeviceAuthorizationStore manages RFC 8628 device-code grants.
@@ -460,14 +522,13 @@ type DeviceAuthorizationStore interface {
 	Deny(ctx context.Context, deviceCode string) (int64, error)
 	Consume(ctx context.Context, deviceCode string) (int64, error)
 	TouchPoll(ctx context.Context, deviceCode string) error
-	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // CLIAuthorizationCodeStore manages local-redirect one-shot codes.
 type CLIAuthorizationCodeStore interface {
 	Create(ctx context.Context, p CreateCLIAuthorizationCodeParams) error
+	GetActive(ctx context.Context, code string) (*CLIAuthorizationCode, error)
 	Consume(ctx context.Context, code string) (*CLIAuthorizationCode, error)
-	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type WorkspaceSectionStore interface {
@@ -555,6 +616,9 @@ type CleanupStore interface {
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// CompactPublishedRevocationEvents removes an expired Hub runtime lease,
+	// then deletes retained events only through the live Hub cursor.
+	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)
 }
 
 // TestEntity identifies a table/collection for test helper operations.
@@ -597,6 +661,9 @@ type TestHelper interface {
 
 	// SetCreatedAt backdates the created_at timestamp for a record.
 	SetCreatedAt(ctx context.Context, entity TestEntity, id string, createdAt time.Time) error
+
+	// SetRevocationEventRevokedAt writes an exact revocation_events.revoked_at timestamp.
+	SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error
 
 	// TruncateAll deletes all data from all tables, preserving the schema.
 	// Metadata tables (e.g. goose_db_version, schema_version, meta) are

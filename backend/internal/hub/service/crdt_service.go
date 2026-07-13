@@ -48,11 +48,12 @@ func (s *CRDTService) SubmitOps(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	results, err := mgr.Submit(ctx, crdt.SubmitInput{
-		OrgID:        req.Msg.GetOrgId(),
-		Epoch:        req.Msg.GetEpoch(),
-		Batches:      req.Msg.GetBatches(),
-		PrincipalID:  user.ID,
-		OriginClient: user.ID,
+		OrgID:            req.Msg.GetOrgId(),
+		Epoch:            req.Msg.GetEpoch(),
+		Batches:          req.Msg.GetBatches(),
+		PrincipalID:      user.ID,
+		OriginClient:     user.ID,
+		WorkspaceScopeID: user.Credential.WorkspaceScopeID(),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -76,9 +77,20 @@ func (s *CRDTService) GetMaterialized(
 	if err != nil {
 		return nil, err
 	}
-	allowed, err := resolveAllowedWorkspacesSet(ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceIds(), user.ID)
+	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceIds(), user)
 	if err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+		// Only a delegation-scope PermissionDenied is a genuine authorization
+		// failure; everything else -- an uncoded transient store failure, or a
+		// coded CodeInternal should the resolver ever start wrapping its store
+		// errors -- is not the client's fault and must be a retryable Internal,
+		// never a permanent PermissionDenied that makes the frontend stop
+		// retrying a transient DB blip. Keying on the specific authz code rather
+		// than "any coded error" keeps this robust if the callee's error coding
+		// changes. Mirrors ws_orgevents and ListTabs.
+		if connect.CodeOf(err) == connect.CodePermissionDenied {
+			return nil, err
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	mgr, err := s.registry.Get(ctx, req.Msg.GetOrgId())
 	if err != nil {
@@ -90,13 +102,13 @@ func (s *CRDTService) GetMaterialized(
 }
 
 // UpdatePresence forwards the heartbeat to the manager. The
-// authenticated session id stamps the active-client identity; the
-// request body's client_id is ignored. SessionID distinguishes
-// browser tabs of the same user (each tab opens its own cookie
-// session via the auth flow); when SessionID is empty (e.g. an
-// `lmx_…` bearer), we fall back to the bearer token id, then to the
-// user id as a last resort. The fall-back chain keeps the gate
-// useful even when the caller isn't a cookie-session client.
+// authenticated, namespaced credential identity stamps the active
+// client; the request body's client_id is ignored. SessionID
+// distinguishes browser tabs of the same user (each tab opens its own
+// cookie session via the auth flow); when SessionID is empty (e.g. an
+// `lmx_…` bearer), we fall back to the bearer kind and token id, then
+// to the user id as a last resort. Disjoint namespaces prevent equal
+// raw ids from collapsing unrelated clients.
 func (s *CRDTService) UpdatePresence(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.UpdatePresenceRequest],
@@ -104,6 +116,18 @@ func (s *CRDTService) UpdatePresence(
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := requireDelegationWorkspace(user, req.Msg.GetWorkspaceId()); err != nil {
+		return nil, err
+	}
+	allowed, err := auth.WorkspaceCanReadInOrg(
+		ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId(), user.ID,
+	)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorize presence workspace: %w", err))
+	}
+	if !allowed {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("workspace access denied"))
 	}
 	mgr, err := s.registry.Get(ctx, req.Msg.GetOrgId())
 	if err != nil {
@@ -118,23 +142,21 @@ func (s *CRDTService) UpdatePresence(
 
 // presenceClientID derives the hub-side identity for an authenticated
 // user. Cookie sessions distinguish each browser tab, so SessionID is
-// preferred. Bearer-token clients fall back to the token id (one
-// active id per token). Finally, the user id is the last-resort
-// fallback so the gate stays usable even when both upstream signals
-// are empty. Same derivation is exposed to the client via
+// preferred. Bearer-token clients fall back to their kind and token id
+// (one active id per credential). Finally, the user id is the
+// last-resort fallback so the gate stays usable even when both upstream
+// signals are empty. The explicit namespaces make identities from the
+// three sources collision-free. The same derivation is exposed via
 // `OrgMaterialized.subscriber_client_id` so the active-client gate
 // has something to compare against locally.
 func presenceClientID(user *auth.UserInfo) string {
 	if user == nil {
 		return ""
 	}
-	if user.SessionID != "" {
-		return user.SessionID
+	if principal := user.Credential.PrincipalKey(); principal != "" {
+		return principal
 	}
-	if user.BearerTokenID != "" {
-		return user.BearerTokenID
-	}
-	return user.ID
+	return "user:" + user.ID
 }
 
 // ResolveAllowedWorkspacesForTest exposes resolveAllowedWorkspaces to
@@ -145,13 +167,15 @@ func ResolveAllowedWorkspacesForTest(ctx context.Context, st store.Store, orgID 
 	return resolveAllowedWorkspaces(ctx, st, orgID, requested, userID)
 }
 
-// resolveAllowedWorkspacesSet runs resolveAllowedWorkspaces and
-// returns its result as a map[string]bool, which is the shape both
-// CRDT subscriber filters and the orgevents WS handshake consume.
-// Returns nil set on empty list (allow-all semantics live in the
-// caller via the CRDT filter contract).
-func resolveAllowedWorkspacesSet(ctx context.Context, st store.Store, orgID string, requested []string, userID string) (map[string]bool, error) {
-	list, err := resolveAllowedWorkspaces(ctx, st, orgID, requested, userID)
+// ResolveAllowedWorkspacesForUserForTest exposes the delegation-aware
+// resolver for service tests that assert bearer scope cannot widen
+// the ordinary per-user workspace filter.
+func ResolveAllowedWorkspacesForUserForTest(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) ([]string, error) {
+	return resolveAllowedWorkspacesForUser(ctx, st, orgID, requested, user)
+}
+
+func resolveAllowedWorkspacesSetForUser(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) (map[string]bool, error) {
+	list, err := resolveAllowedWorkspacesForUser(ctx, st, orgID, requested, user)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +184,20 @@ func resolveAllowedWorkspacesSet(ctx context.Context, st store.Store, orgID stri
 		set[id] = true
 	}
 	return set, nil
+}
+
+func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) ([]string, error) {
+	if user == nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+	requested, emptyResult, err := delegationScopedWorkspaceRequest(user, requested)
+	if err != nil {
+		return nil, err
+	}
+	if emptyResult {
+		return nil, nil
+	}
+	return resolveAllowedWorkspaces(ctx, st, orgID, requested, user.ID)
 }
 
 // resolveAllowedWorkspaces is the per-user workspace filter used by
@@ -182,65 +220,9 @@ func resolveAllowedWorkspaces(ctx context.Context, st store.Store, orgID string,
 		}
 		return out, nil
 	}
-	// Dedup + drop empties so the bulk lookups stay tight and the
-	// access query doesn't ask the store about repeats.
-	dedup := make([]string, 0, len(requested))
-	seen := make(map[string]struct{}, len(requested))
-	for _, wsID := range requested {
-		if wsID == "" {
-			continue
-		}
-		if _, dup := seen[wsID]; dup {
-			continue
-		}
-		seen[wsID] = struct{}{}
-		dedup = append(dedup, wsID)
-	}
-	if len(dedup) == 0 {
-		return nil, nil
-	}
-	rows, err := st.Workspaces().ListByIDs(ctx, dedup)
-	if err != nil {
-		return nil, err
-	}
-	// Workspaces the caller owns are auto-granted; the rest need an
-	// explicit ACL row. Resolve both classes with at most two queries
-	// (the access list is skipped when every requested workspace is
-	// owned by the caller).
-	wsByID := make(map[string]*store.Workspace, len(rows))
-	for i := range rows {
-		wsByID[rows[i].ID] = &rows[i]
-	}
-	out := make([]string, 0, len(dedup))
-	var needCheck []string
-	for _, wsID := range dedup {
-		ws, ok := wsByID[wsID]
-		if !ok {
-			continue
-		}
-		if orgID != "" && ws.OrgID != orgID {
-			continue
-		}
-		if ws.OwnerUserID == userID {
-			out = append(out, wsID)
-			continue
-		}
-		needCheck = append(needCheck, wsID)
-	}
-	if len(needCheck) > 0 {
-		granted, err := st.WorkspaceAccess().ListForUserIn(ctx, userID, needCheck)
-		if err != nil {
-			return nil, err
-		}
-		grantedSet := make(map[string]struct{}, len(granted))
-		for _, id := range granted {
-			grantedSet[id] = struct{}{}
-		}
-		for _, wsID := range needCheck {
-			if _, ok := grantedSet[wsID]; ok {
-				out = append(out, wsID)
-			}
-		}
-	}
-	return out, nil
+	// A specific set was requested: resolve the canonical owner-or-grant read
+	// rule for these workspaces against this user. Centralized in auth so the
+	// per-op / batch-by-users / batch-by-workspaces read paths cannot drift; the
+	// delegation empty-orgID contract (skip the org binding) lives there too.
+	return auth.WorkspacesReadableByUser(ctx, st, orgID, userID, requested)
 }

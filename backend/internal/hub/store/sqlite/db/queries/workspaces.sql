@@ -28,6 +28,33 @@ WHERE w.is_deleted = 0
   AND (w.owner_user_id = sqlc.arg(user_id) OR wa.user_id IS NOT NULL)
 ORDER BY w.created_at DESC, w.id DESC;
 
+-- name: ListAllAccessibleWorkspaces :many
+-- Every non-deleted workspace the user can read -- owner OR explicit grant --
+-- across ALL orgs. The org-unfiltered counterpart of ListAccessibleWorkspaces:
+-- it surfaces workspaces shared with a user who is not a member of the owning
+-- org (cross-org collaboration) alongside the user's own workspaces in every org.
+--
+-- Built as a UNION of two index-driven seeks instead of one predicate over a
+-- LEFT JOIN. The old form ORed a base-table column against a LEFT-JOIN column
+-- (w.owner_user_id = ? OR wa.user_id IS NOT NULL), which no single index can
+-- satisfy, so the planner full-scanned the workspaces table. Splitting the OR
+-- lets each branch seek: the owner branch on idx_workspaces_owner_user_id, the
+-- grant branch on idx_workspace_access_user_id (joined back to workspaces by
+-- primary key). UNION (not UNION ALL) collapses a workspace the user both owns
+-- and was granted to a single row, preserving the old SELECT DISTINCT semantics.
+-- The trailing ORDER BY ranks the union result, so it names the output columns
+-- (created_at, id) rather than w.*; id is the deterministic tiebreaker for rows
+-- sharing a millisecond created_at.
+SELECT w.* FROM workspaces w
+WHERE w.is_deleted = 0
+  AND w.owner_user_id = sqlc.arg(user_id)
+UNION
+SELECT w.* FROM workspaces w
+INNER JOIN workspace_access wa ON w.id = wa.workspace_id
+WHERE w.is_deleted = 0
+  AND wa.user_id = sqlc.arg(user_id)
+ORDER BY created_at DESC, id DESC;
+
 -- name: RenameWorkspace :execresult
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
 

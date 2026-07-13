@@ -42,28 +42,34 @@ type User struct {
 	Prefs                 string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
+	TokensRevokedAt       *time.Time
+	AuthGeneration        int64
 	DeletedAt             *time.Time
 }
 
 // UserSession represents an authenticated session.
 type UserSession struct {
-	ID           string
-	UserID       string
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
-	LastActiveAt time.Time
-	UserAgent    string
-	IPAddress    string
+	ID             string
+	UserID         string
+	ExpiresAt      time.Time
+	CreatedAt      time.Time
+	LastActiveAt   time.Time
+	AuthGeneration int64
+	UserAgent      string
+	IPAddress      string
 }
 
 // SessionWithUser is the result of ValidateSessionWithUser (JOIN).
 type SessionWithUser struct {
-	UserID        string
-	OrgID         string
-	Username      string
-	IsAdmin       bool
-	EmailVerified bool
-	Email         string
+	UserID         string
+	OrgID          string
+	Username       string
+	IsAdmin        bool
+	EmailVerified  bool
+	Email          string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	AuthGeneration int64
 }
 
 // ActiveSession is a session with the owning username (for admin listing).
@@ -444,6 +450,11 @@ type TouchSessionParams struct {
 type DeleteOtherSessionsParams struct {
 	UserID string
 	KeepID string
+}
+
+type RefreshSessionAuthGenerationParams struct {
+	SessionID string
+	UserID    string
 }
 
 type ListAllActiveSessionsParams struct {
@@ -880,6 +891,7 @@ type APIToken struct {
 	PreviousRefreshExpiresAt *time.Time
 	Scope                    string
 	CreatedAt                time.Time
+	AuthGeneration           int64
 	LastUsedAt               *time.Time
 	LastRotatedAt            *time.Time
 	ExpiresAt                *time.Time
@@ -892,23 +904,22 @@ type APIToken struct {
 // hub or a sibling worker. Scope is (UserID, WorkspaceID); IssuedFor*
 // fields are provenance only.
 type DelegationToken struct {
-	ID                       string
-	UserID                   string
-	WorkerID                 string
-	WorkspaceID              string
-	AgentID                  string
-	TerminalID               string
-	IssuedForTabID           string
-	IssuedForTabType         int32
-	SecretHash               []byte
-	RefreshHash              []byte
-	PreviousRefreshHash      []byte
-	PreviousRefreshExpiresAt *time.Time
-	CreatedAt                time.Time
-	LastUsedAt               *time.Time
-	ExpiresAt                time.Time
-	RefreshExpiresAt         *time.Time
-	RevokedAt                *time.Time
+	ID               string
+	UserID           string
+	WorkerID         string
+	WorkspaceID      string
+	AgentID          string
+	TerminalID       string
+	IssuedForTabID   string
+	IssuedForTabType int32
+	SecretHash       []byte
+	RefreshHash      []byte
+	CreatedAt        time.Time
+	AuthGeneration   int64
+	LastUsedAt       *time.Time
+	ExpiresAt        time.Time
+	RefreshExpiresAt *time.Time
+	RevokedAt        *time.Time
 }
 
 // DeviceAuthorization is an in-flight RFC 8628 device-code grant.
@@ -977,14 +988,6 @@ type CreateDelegationTokenParams struct {
 	RefreshHash      []byte
 	ExpiresAt        time.Time
 	RefreshExpiresAt *time.Time
-}
-
-type RotateDelegationTokenRefreshParams struct {
-	ID                       string
-	NewRefreshHash           []byte
-	NewRefreshExpiresAt      *time.Time
-	PreviousRefreshHash      []byte
-	PreviousRefreshExpiresAt *time.Time
 }
 
 type CreateDeviceAuthorizationParams struct {

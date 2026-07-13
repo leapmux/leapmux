@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ import (
 type delegationEnv struct {
 	store           store.Store
 	validator       *auth.TokenValidator
-	cache           *auth.SessionCache
+	cache           *auth.AuthContextRegistry
 	server          *httptest.Server
 	handler         *service.WorkerDelegationHandler
 	userID          string
@@ -54,7 +55,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	h := service.NewWorkerDelegationHandler(st, tv, sc)
+	h := service.NewWorkerDelegationHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, nil, nil))
 	// Tests don't want production-grade backoff; shrink the
 	// AddTab-race propagation window so "tab missing" cases fail fast
 	// while still exercising the polling loop.
@@ -309,6 +310,9 @@ func TestWorkerDelegation_Mint_AllowsSharedWorkspaceAccess(t *testing.T) {
 	// Share env.workspaceID with another user who can therefore have
 	// delegation tokens minted for them.
 	otherUserID := hubtestutil.CreateTestUser(t, env.store, "shared-user", "p")
+	require.NoError(t, env.store.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
+		OrgID: env.orgID, UserID: otherUserID, Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	}))
 	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
 		WorkspaceID: env.workspaceID,
 		UserID:      otherUserID,
@@ -321,6 +325,61 @@ func TestWorkerDelegation_Mint_AllowsSharedWorkspaceAccess(t *testing.T) {
 	})
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// failWorkspaceGetStore forces Workspaces().GetByID to return a
+// non-NotFound store error, standing in for a transient DB failure during
+// the mint workspace-access check. Everything else delegates to the real store.
+type failWorkspaceGetStore struct {
+	store.Store
+	err error
+}
+
+func (s failWorkspaceGetStore) Workspaces() store.WorkspaceStore {
+	return failWorkspaceGet{WorkspaceStore: s.Store.Workspaces(), err: s.err}
+}
+
+type failWorkspaceGet struct {
+	store.WorkspaceStore
+	err error
+}
+
+func (w failWorkspaceGet) GetByID(context.Context, string) (*store.Workspace, error) {
+	return nil, w.err
+}
+
+// TestWorkerDelegation_Mint_StoreErrorIsRetryable500 pins that a transient
+// store error during the workspace-access check surfaces as a retryable 500,
+// not a permanent 403 -- a freshly-spawned agent treats 403 as a hard authz
+// denial (not retryable) and would fail the mint permanently on a brief DB blip.
+func TestWorkerDelegation_Mint_StoreErrorIsRetryable500(t *testing.T) {
+	env := setupDelegation(t)
+	failing := failWorkspaceGetStore{Store: env.store, err: errors.New("transient db failure")}
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	h := service.NewWorkerDelegationHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, nil, nil))
+	h.MintTabPropagationTimeout = 50 * time.Millisecond
+	h.MintTabPropagationStep = 5 * time.Millisecond
+	h.RegisterRoutes(mux)
+
+	buf, err := json.Marshal(map[string]any{
+		"user_id":           env.userID,
+		"workspace_id":      env.workspaceID,
+		"issued_for_tab_id": env.tabID,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/worker/delegation-tokens/mint", bytes.NewReader(buf))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+env.workerAuthToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode,
+		"a transient store error during the access check must be a retryable 500, not a permanent 403")
 }
 
 func TestWorkerDelegation_Mint_BoundsTTL(t *testing.T) {

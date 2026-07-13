@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/coder/websocket"
 
 	"github.com/leapmux/leapmux/channelwire"
@@ -38,11 +39,8 @@ import (
 // keeps the connection's subscription stable for its entire lifetime
 // — to change the workspace filter, the client reopens the WS.
 type OrgEventsHandler struct {
-	store          store.Store
-	registry       *crdt.Registry
-	soloUser       *auth.UserInfo
-	secureCookie   bool
-	tokenValidator *auth.TokenValidator
+	wsAuthenticator
+	registry *crdt.Registry
 }
 
 // NewOrgEventsHandler returns a handler ready to mount at
@@ -51,14 +49,18 @@ type OrgEventsHandler struct {
 func NewOrgEventsHandler(
 	st store.Store,
 	registry *crdt.Registry,
+	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie bool,
 ) *OrgEventsHandler {
 	return &OrgEventsHandler{
-		store:        st,
-		registry:     registry,
-		soloUser:     soloUser,
-		secureCookie: secureCookie,
+		wsAuthenticator: wsAuthenticator{
+			store:        st,
+			authLease:    newWebSocketAuthLease(authContexts),
+			soloUser:     soloUser,
+			secureCookie: secureCookie,
+		},
+		registry: registry,
 	}
 }
 
@@ -72,7 +74,7 @@ func (h *OrgEventsHandler) WithTokenValidator(v *auth.TokenValidator) *OrgEvents
 func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user, err := h.authenticate(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeHTTPAuthError(w, "organization events", err)
 		return
 	}
 
@@ -96,10 +98,12 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, err := resolveAllowedWorkspacesSet(r.Context(), h.store, orgID, workspaceIDs, user.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
+	var requested map[string]bool
+	if len(workspaceIDs) > 0 {
+		requested = make(map[string]bool, len(workspaceIDs))
+		for _, workspaceID := range workspaceIDs {
+			requested[workspaceID] = true
+		}
 	}
 
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -114,7 +118,12 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// envelope; 16 MiB is the same ceiling channelwire uses.
 	wsConn.SetReadLimit(16 * 1024 * 1024)
 
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cleanupLease, current := h.authLease.bind(r.Context(), user, wsConn)
+	if !current {
+		return
+	}
+	defer cleanupLease()
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// 64-deep buffer covers the bootstrap-burst window where a fresh
@@ -126,9 +135,12 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// every other subscriber in the org.
 	pending := make(chan *crdt.MarshaledEvent, 64)
 	sub := &crdt.Subscriber{
-		UserID:   user.ID,
-		ClientID: presenceClientID(user),
-		Filter:   crdt.SubscriberFilter{WorkspaceIDs: allowed},
+		UserID:                user.ID,
+		ClientID:              presenceClientID(user),
+		RequestedWorkspaceIDs: requested,
+		WorkspaceScopeID:      user.Credential.WorkspaceScopeID(),
+		// Filter is resolved and installed under aclTransitionMu by
+		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {
 			select {
 			case pending <- evt:
@@ -148,12 +160,35 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 	}
-	initial, unsub := mgr.Subscribe(sub)
+	// Resolve the workspace filter and register the subscriber atomically under
+	// the manager's ACL-transition lock. This closes the resolve-then-register
+	// window: an unshare that commits while this connection is being set up either
+	// is seen by the resolve (workspace already excluded) or catches this
+	// now-registered subscriber in its revoke pass -- it can no longer leave the
+	// subscriber holding a stale filter that keeps receiving a revoked workspace's
+	// ops. The resolve reads the DB ACL under that lock; its failure closes the
+	// just-accepted socket. Only a delegation-scope PermissionDenied is a genuine
+	// authorization failure (policy violation); anything else -- a transient store
+	// error -- is an internal error the client retries on reconnect. Keying on the
+	// specific authz code keeps this robust if the callee's error coding changes.
+	initial, unsub, err := mgr.SubscribeWithACL(sub, func() (map[string]bool, error) {
+		return resolveAllowedWorkspacesSetForUser(ctx, h.store, orgID, workspaceIDs, user)
+	})
+	if err != nil {
+		if connect.CodeOf(err) == connect.CodePermissionDenied {
+			_ = wsConn.Close(websocket.StatusPolicyViolation, "forbidden")
+		} else {
+			slog.Error("orgevents: resolve allowed workspaces failed", "user_id", user.ID, "error", err)
+			_ = wsConn.Close(websocket.StatusInternalError, "internal server error")
+		}
+		return
+	}
 	defer unsub()
 
 	// Stamp the hub-derived client identity so the frontend's
 	// active-client gate has something stable to compare against. The
-	// derivation (session id → bearer token id → user id) is shared
+	// namespaced derivation (session id → bearer kind/token id → user
+	// id) is shared
 	// with `UpdatePresence` and the manager's presence refcount, so
 	// both the local gate's comparison value and the server's
 	// disconnect-driven cleanup pivot on the same id.
@@ -216,16 +251,4 @@ func writeOrgEvent(ctx context.Context, ws *websocket.Conn, evt *crdt.MarshaledE
 		return fmt.Errorf("marshal orgevent: %w", err)
 	}
 	return channelwire.WriteFramedBytes(ctx, ws, data)
-}
-
-// authenticate resolves the caller via the shared HTTP auth ladder
-// (solo → bearer → cookie) so this endpoint stays interchangeable with
-// /ws/channel for credential plumbing.
-func (h *OrgEventsHandler) authenticate(r *http.Request) (*auth.UserInfo, error) {
-	return auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
-		Store:     h.store,
-		Validator: h.tokenValidator,
-		SoloUser:  h.soloUser,
-		Cookies:   []bool{h.secureCookie},
-	})
 }

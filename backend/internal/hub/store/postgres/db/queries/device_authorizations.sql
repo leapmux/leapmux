@@ -27,7 +27,8 @@ WHERE device_code = $1 AND consumed_at IS NULL;
 -- name: ConsumeDeviceAuthorization :execrows
 UPDATE device_authorizations
 SET consumed_at = NOW()
-WHERE device_code = $1 AND approved = 1 AND consumed_at IS NULL;
+WHERE device_code = $1 AND approved = 1 AND consumed_at IS NULL
+  AND expires_at > NOW();
 
 -- name: TouchDeviceAuthorizationPoll :exec
 UPDATE device_authorizations

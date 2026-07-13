@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -38,9 +38,15 @@ type mysqlConn struct {
 
 // Open opens a MySQL database, runs migrations, and returns a Store.
 // The DSN should be a go-sql-driver/mysql DSN string, e.g.
-// "user:password@tcp(host:port)/dbname?parseTime=true".
+// "user:password@tcp(host:port)/dbname". Open forces parseTime,
+// loc=UTC, and session time_zone='+00:00' because the schema stores
+// revocation cursors in DATETIME columns and compares them directly.
 func Open(cfg config.MySQLConfig) (store.Store, error) {
-	sqlDB, err := sql.Open("mysql", cfg.DSN)
+	dsn, err := normalizeMySQLDSN(cfg.DSN)
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
@@ -88,24 +94,28 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 	}, nil
 }
 
-// NewFromDB wraps an existing *sql.DB (already opened and migrated) into a
-// Store. The returned Store takes ownership of the DB handle; calling Close
-// on the Store will close the underlying *sql.DB.
-func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
-	mig, err := newMigrator(sqlDB)
+func normalizeMySQLDSN(dsn string) (string, error) {
+	cfg, err := mysqldriver.ParseDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("init mysql migrator: %w", err)
+		return "", fmt.Errorf("parse mysql dsn: %w", err)
 	}
-	return &mysqlStore{
-		conn: &mysqlConn{
-			shared: &mysqlShared{
-				db:       sqlDB,
-				migrator: mig,
-			},
-			exec: sqlDB,
-			q:    gendb.New(sqlDB),
-		},
-	}, nil
+	cfg.ParseTime = true
+	cfg.Loc = time.UTC
+	// Force CLIENT_FOUND_ROWS so an UPDATE reports the rows its WHERE MATCHED
+	// rather than the rows it CHANGED. sqlite's changes() and postgres's command
+	// tag both count matched rows, so this makes a no-op UPDATE (e.g. re-stamping
+	// a session already at the target auth_generation, or renaming to the current
+	// name) return a consistent rows-affected across all three backends. Without
+	// it, the shared rows-affected == 1 guards would spuriously see 0 on a
+	// matched-but-unchanged row on MySQL only. Enforced here -- overriding any
+	// user-supplied value -- alongside the other invariants so behavior cannot
+	// drift by deployment DSN.
+	cfg.ClientFoundRows = true
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
+	return cfg.FormatDSN(), nil
 }
 
 func (s *mysqlStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
@@ -160,6 +170,9 @@ func (s *mysqlStore) APITokens() store.APITokenStore { return &apiTokenStore{con
 func (s *mysqlStore) DelegationTokens() store.DelegationTokenStore {
 	return &delegationTokenStore{conn: s.conn}
 }
+func (s *mysqlStore) RevocationEvents() store.RevocationEventStore {
+	return newRevocationEventStore(s.conn)
+}
 func (s *mysqlStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
@@ -170,20 +183,44 @@ func (s *mysqlStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s
 func (s *mysqlStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	tx, err := s.conn.shared.db.BeginTx(ctx, nil)
+	if s.conn.inTx() {
+		return fn(s)
+	}
+	return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		return fn(&mysqlStore{conn: conn})
+	})
+}
+
+func (s *mysqlStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+	return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		if _, err := conn.q.LockUserAuthState(ctx, userID); err != nil {
+			return mapErr(err)
+		}
+		return fn(&mysqlStore{conn: conn})
+	})
+}
+
+func (c *mysqlConn) inTx() bool {
+	_, ok := c.exec.(*sql.Tx)
+	return ok
+}
+
+func (c *mysqlConn) withTransaction(ctx context.Context, fn func(tx *mysqlConn) error) error {
+	if c.inTx() {
+		return fn(c)
+	}
+	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	txStore := &mysqlStore{
-		conn: &mysqlConn{
-			shared: s.conn.shared,
-			exec:   tx,
-			q:      s.conn.q.WithTx(tx),
-		},
+	txConn := &mysqlConn{
+		shared: c.shared,
+		exec:   tx,
+		q:      c.q.WithTx(tx),
 	}
-	if err := fn(txStore); err != nil {
+	if err := fn(txConn); err != nil {
 		return err
 	}
 	return tx.Commit()

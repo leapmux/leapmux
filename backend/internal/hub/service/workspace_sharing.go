@@ -8,6 +8,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -38,9 +39,33 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 	if err != nil {
 		return nil, err
 	}
-	ws, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID)
+	// Owner-only surface: keep the delegation-bearer rejection visible at the
+	// handler alongside the sibling lifecycle mutations, so a delegation token
+	// can never reach it even if the procedure is ever added to the interceptor
+	// allowlist.
+	if err := rejectDelegationBearer(user, "workspace sharing mutation"); err != nil {
+		return nil, err
+	}
+	workspaceID := req.Msg.GetWorkspaceId()
+	unlock, err := s.sharingLocks.lock(ctx, workspaceID)
+	if err != nil {
+		return nil, workspaceLockError(err)
+	}
+	defer unlock()
+	ws, err := loadWorkspaceForOwnerWrite(ctx, s.store, workspaceID, user.ID)
 	if err != nil {
 		return nil, err
+	}
+	// Resolve the process-local manager before committing so a bootstrap
+	// failure cannot produce a successful ACL mutation with stale subscribers
+	// in this Hub. Registry intentionally has no cross-Hub coherence mechanism;
+	// this reconciles only subscribers owned by this process.
+	var mgr *crdt.Manager
+	if s.registry != nil {
+		mgr, err = s.registry.Get(ctx, ws.OrgID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get CRDT manager: %w", err))
+		}
 	}
 
 	// Single tx body for both branches: PRIVATE clears the shared set,
@@ -49,18 +74,16 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 	// (the outer loadWorkspaceForOwnerWrite is the contract gate;
 	// cooperative ownership doesn't change inside a single request).
 	var grantParams []store.GrantWorkspaceAccessParams
+	var desiredUserIDs []string
 	switch req.Msg.GetShareMode() {
 	case leapmuxv1.ShareMode_SHARE_MODE_PRIVATE:
 		// no grants — Clear-only
 	case leapmuxv1.ShareMode_SHARE_MODE_MEMBERS:
-		normalizedUserIDs := normalizeWorkspaceShareUserIDs(req.Msg.GetUserIds(), ws.OwnerUserID)
-		if err := s.validateWorkspaceShareUsers(ctx, s.store, normalizedUserIDs); err != nil {
-			return nil, err
-		}
-		grantParams = make([]store.GrantWorkspaceAccessParams, len(normalizedUserIDs))
-		for i, uid := range normalizedUserIDs {
+		desiredUserIDs = normalizeWorkspaceShareUserIDs(req.Msg.GetUserIds(), ws.OwnerUserID)
+		grantParams = make([]store.GrantWorkspaceAccessParams, len(desiredUserIDs))
+		for i, uid := range desiredUserIDs {
 			grantParams[i] = store.GrantWorkspaceAccessParams{
-				WorkspaceID: req.Msg.GetWorkspaceId(),
+				WorkspaceID: workspaceID,
 				UserID:      uid,
 			}
 		}
@@ -68,20 +91,60 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid share mode"))
 	}
 
-	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
-		}
-		if len(grantParams) > 0 {
-			if err := tx.WorkspaceAccess().BulkGrant(ctx, grantParams); err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
+	// Validate the target users before entering the commit: this is a pure
+	// existence precondition, not part of the atomic ACL-write-plus-filter-
+	// transition. Running it first lets an invalid request fail fast before any
+	// Phase-1 filter revoke, and shrinks the aclTransitionMu-serialized window
+	// (which serializes concurrent ACL transitions of this org). It does NOT
+	// hold m.projection -- CommitWorkspaceAccessTransition runs its DB commit
+	// with no manager lock held -- so it never blocks CRDT broadcasts or
+	// subscribes.
+	if err := validateWorkspaceShareUsers(ctx, s.store, desiredUserIDs); err != nil {
+		return nil, err
+	}
+
+	allowedUserIDs := make(map[string]struct{}, len(desiredUserIDs)+1)
+	allowedUserIDs[ws.OwnerUserID] = struct{}{}
+	for _, userID := range desiredUserIDs {
+		allowedUserIDs[userID] = struct{}{}
+	}
+	var removedUserIDs []string
+	commit := func() error {
+		return s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			current, err := tx.WorkspaceAccess().ListByWorkspaceID(ctx, workspaceID)
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("list current workspace access: %w", err))
 			}
-		}
-		return nil
-	})
+			desired := make(map[string]struct{}, len(grantParams))
+			for _, grant := range grantParams {
+				desired[grant.UserID] = struct{}{}
+			}
+			removedUserIDs = make([]string, 0, len(current))
+			for _, access := range current {
+				if _, retained := desired[access.UserID]; !retained {
+					removedUserIDs = append(removedUserIDs, access.UserID)
+				}
+			}
+			if err := tx.WorkspaceAccess().Clear(ctx, workspaceID); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
+			}
+			if len(grantParams) > 0 {
+				if err := tx.WorkspaceAccess().BulkGrant(ctx, grantParams); err != nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
+				}
+			}
+			return nil
+		})
+	}
+	if mgr != nil {
+		err = mgr.CommitWorkspaceAccessTransition(workspaceID, allowedUserIDs, commit)
+	} else {
+		err = commit()
+	}
 	if err != nil {
 		return nil, err
 	}
+	s.channelCloser.CloseChannelsByUsersForWorkspace(workspaceID, removedUserIDs)
 	return connect.NewResponse(&leapmuxv1.UpdateWorkspaceSharingResponse{}), nil
 }
 
@@ -93,7 +156,12 @@ func (s *WorkspaceService) ListWorkspaceShares(
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+	// Owner-only surface: reject delegation bearers at the handler, uniformly
+	// with the sharing mutation and the workspace lifecycle handlers.
+	if err := rejectDelegationBearer(user, "list workspace shares"); err != nil {
+		return nil, err
+	}
+	if _, err := loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 		return nil, err
 	}
 	accessEntries, err := s.store.WorkspaceAccess().ListByWorkspaceID(ctx, req.Msg.GetWorkspaceId())

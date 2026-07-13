@@ -38,12 +38,25 @@ type sqliteTestHelper struct {
 	db *sql.DB
 }
 
+func (h *sqliteTestHelper) exec(ctx context.Context, query string, args ...any) error {
+	_, err := h.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 func (h *sqliteTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	return sqlutil.SetDeletedAt(ctx, h.db, entity, id, deletedAt)
+	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, deletedAt)
 }
 
 func (h *sqliteTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	return sqlutil.SetCreatedAt(ctx, h.db, entity, id, createdAt)
+	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, createdAt)
+}
+
+func (h *sqliteTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
+	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, formatSQLiteTime(revokedAt))
+}
+
+func (h *sqliteTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
+	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, column, id, at)
 }
 
 func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
@@ -55,6 +68,9 @@ func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
 		if _, err := h.db.ExecContext(ctx, "DELETE FROM "+t); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
+	}
+	if _, err := h.db.ExecContext(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
+		return fmt.Errorf("reset revocation_event_sequence: %w", err)
 	}
 	return nil
 }

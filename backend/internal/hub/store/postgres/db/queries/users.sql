@@ -5,6 +5,18 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: LockUserAuthState :one
+SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL
+FOR UPDATE;
+
+-- LockUserRow acquires the row lock on a user WITHOUT the deleted_at filter
+-- LockUserAuthState applies, so a user_info mutation can serialize its
+-- before/after cached-field projection against a concurrent mutation on the same
+-- user (including a soft-deleted one). A no-op self-assign: it touches no cached
+-- field and not updated_at, and a missing row is a tolerated no-op.
+-- name: LockUserRow :exec
+UPDATE users SET auth_generation = auth_generation WHERE id = $1;
+
 -- name: GetUserByIDIncludeDeleted :one
 SELECT * FROM users WHERE id = $1;
 
@@ -61,21 +73,31 @@ LIMIT sqlc.arg('limit');
 UPDATE users SET password_hash = $1, password_set = TRUE, updated_at = NOW()
 WHERE id = $2;
 
--- name: UpdateUserProfile :exec
+-- The profile/email/email_verified/admin updates all RETURN id, updated_at so
+-- the store layer can atomically emit a user_info cache-invalidation event: each
+-- mutates a field cached in UserInfo (username, email, email_verified -- an auth
+-- gate -- and is_admin), so a stale cached UserInfo must be dropped cross-process
+-- the same way. No row match -> no event.
+
+-- name: UpdateUserProfile :one
 UPDATE users SET username = $1, display_name = $2, updated_at = NOW()
-WHERE id = $3;
+WHERE id = $3
+RETURNING id, updated_at;
 
--- name: UpdateUserEmail :exec
+-- name: UpdateUserEmail :one
 UPDATE users SET email = $1, email_verified = $2, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = NOW()
-WHERE id = $3;
+WHERE id = $3
+RETURNING id, updated_at;
 
--- name: UpdateUserEmailVerified :exec
+-- name: UpdateUserEmailVerified :one
 UPDATE users SET email_verified = $1, updated_at = NOW()
-WHERE id = $2;
+WHERE id = $2
+RETURNING id, updated_at;
 
--- name: UpdateUserAdmin :exec
+-- name: UpdateUserAdmin :one
 UPDATE users SET is_admin = $1, updated_at = NOW()
-WHERE id = $2;
+WHERE id = $2
+RETURNING id, updated_at;
 
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = NOW() WHERE id = $1;
@@ -108,14 +130,15 @@ WHERE id = $4;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1;
 
--- name: PromotePendingEmail :exec
+-- name: PromotePendingEmail :one
 UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
-WHERE id = $1 AND pending_email != '';
+WHERE id = $1 AND pending_email != ''
+RETURNING id, updated_at;
 
 -- ConsumeVerificationAttempt atomically charges one attempt against the
 -- user's pending verification, force-expiring on the 6th try, and
 -- returns the post-update row. Returns no rows when there's no pending
--- verification — callers map that to FailedPrecondition.
+-- verification -- callers map that to FailedPrecondition.
 -- name: ConsumeVerificationAttempt :one
 UPDATE users
 SET pending_email_attempts = pending_email_attempts + 1,
@@ -134,21 +157,17 @@ WHERE pending_email = $1 AND id != $2;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < $1;
 
--- name: BumpUserTokensRevokedAt :execrows
+-- name: BumpUserTokensRevokedAt :one
+-- The query itself has no deleted_at guard, so it would act on a
+-- soft-deleted row -- but the only caller (RevokeAllUserCredentials) runs
+-- inside RunInUserAuthTransaction, whose LockUserAuthState filters
+-- deleted_at IS NULL, so revoking an already-soft-deleted user aborts
+-- before this runs. Every revoke path revokes before soft-deleting, so
+-- that ordering is not exercised today. Only a missing id is a no-op.
 UPDATE users
-SET tokens_revoked_at = NOW(), updated_at = NOW()
-WHERE id = $1 AND deleted_at IS NULL;
-
--- name: ListUsersWithTokensRevokedSince :many
-SELECT id, tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL AND tokens_revoked_at > $1
-ORDER BY tokens_revoked_at ASC;
-
--- name: MaxUserTokensRevokedAt :one
--- Mirror of MaxAPITokenRevokedAt for users.tokens_revoked_at. Used
--- by the revocation watcher's bootstrap-time seed. ORDER BY + LIMIT 1
--- lets sqlc infer the return type from the underlying column.
-SELECT tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL
-ORDER BY tokens_revoked_at DESC
-LIMIT 1;
+SET tokens_revoked_at = revocation_clock.now_at,
+    auth_generation   = auth_generation + 1,
+    updated_at = revocation_clock.now_at
+FROM (SELECT clock_timestamp() AS now_at) AS revocation_clock
+WHERE id = $1
+RETURNING id, tokens_revoked_at, auth_generation;

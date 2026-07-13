@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -28,7 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.CredentialChannelCloser) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -37,7 +38,11 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	var closer auth.CredentialChannelCloser
+	if len(closers) > 0 {
+		closer = closers[0]
+	}
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, closer, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -46,6 +51,18 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
 	return client, st
+}
+
+func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
+	assert.Panics(t, func() {
+		service.NewAuthService(nil, nil, nil, nil, nil, mail.Renderer{})
+	})
+	assert.Panics(t, func() {
+		service.NewUserService(nil, nil, nil, nil, mail.Renderer{})
+	})
+	assert.Panics(t, func() {
+		service.NewWorkerDelegationHandler(nil, nil, nil)
+	})
 }
 
 // setupEmptyAuthTestServer creates a test auth server with an empty database
@@ -59,6 +76,19 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 	hubtestutil.CreateTestAdmin(t, st)
 	return client, st
 }
+
+type sessionCloseRecorder struct {
+	sessionIDs []string
+}
+
+func (r *sessionCloseRecorder) CloseChannelsBySession(sessionID string) int {
+	r.sessionIDs = append(r.sessionIDs, sessionID)
+	return 0
+}
+
+func (*sessionCloseRecorder) CloseChannelsByBearer(auth.BearerRef) int        { return 0 }
+func (*sessionCloseRecorder) CloseChannelsByUserRevocation(string, int64) int { return 0 }
+func (*sessionCloseRecorder) RestampSessionGeneration(string, int64)          {}
 
 func TestAuthService_LoginSuccess(t *testing.T) {
 	client, _ := setupAuthTestServer(t, testConfig())
@@ -205,7 +235,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -413,11 +443,11 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	cfg.SignupEnabled = true
 	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -562,7 +592,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -682,7 +712,9 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 }
 
 func TestAuthService_Logout(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	closer := &sessionCloseRecorder{}
+	client, st := setupAuthTestServerBase(t, testConfig(), closer)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	// Login.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -703,6 +735,7 @@ func TestAuthService_Logout(t *testing.T) {
 	logoutCookie := logoutResp.Header().Get("Set-Cookie")
 	assert.Contains(t, logoutCookie, auth.CookieName+"=")
 	assert.Contains(t, logoutCookie, "Max-Age=0")
+	assert.Equal(t, []string{token}, closer.sessionIDs)
 
 	// Token should be invalidated.
 	getUserReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -710,6 +743,66 @@ func TestAuthService_Logout(t *testing.T) {
 	_, err = client.GetCurrentUser(context.Background(), getUserReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+type sessionOverrideStore struct {
+	store.Store
+	sessions store.SessionStore
+}
+
+func (s sessionOverrideStore) Sessions() store.SessionStore {
+	return s.sessions
+}
+
+type sessionDeleteFailStore struct {
+	store.SessionStore
+}
+
+func (s sessionDeleteFailStore) Delete(context.Context, string) (int64, error) {
+	return 0, errors.New("forced session delete failure")
+}
+
+func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	wrapped := sessionOverrideStore{
+		Store: st,
+		sessions: sessionDeleteFailStore{
+			SessionStore: st.Sessions(),
+		},
+	}
+
+	mux := http.NewServeMux()
+	interceptor, sc := auth.NewInterceptor(wrapped, nil, false, false)
+	t.Cleanup(sc.Stop)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(wrapped, testConfig(), auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		Username: "admin",
+		Password: "admin123",
+	}))
+	require.NoError(t, err)
+	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
+
+	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
+	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.Logout(context.Background(), logoutReq)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	assert.Contains(t, err.(*connect.Error).Meta().Get("Set-Cookie"), "Max-Age=0",
+		"failed server-side revocation must still clear the browser's HttpOnly cookie")
+
+	getUserReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	getUserReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(context.Background(), getUserReq)
+	require.NoError(t, err, "failed logout must not report success while leaving deletion unapplied")
 }
 
 // --- Setup mode tests ---
@@ -819,7 +912,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 

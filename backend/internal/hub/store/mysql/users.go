@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -35,6 +36,8 @@ func fromDBUser(u gendb.User) store.User {
 		Prefs:                 u.Prefs,
 		CreatedAt:             u.CreatedAt,
 		UpdatedAt:             u.UpdatedAt,
+		TokensRevokedAt:       ptrconv.NullTimeToPtr(u.TokensRevokedAt),
+		AuthGeneration:        u.AuthGeneration,
 		DeletedAt:             ptrconv.NullTimeToPtr(u.DeletedAt),
 	}
 }
@@ -121,30 +124,32 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 	return exists, nil
 }
 
-// ConsumeVerificationAttempt does the UPDATE then re-reads the row.
-// MySQL has no UPDATE ... RETURNING (Postgres/SQLite do, and skip the
-// follow-up SELECT). The race here is fine: any concurrent attempt
-// going against the same user serializes on the row lock the UPDATE
-// takes, so the SELECT observes the post-increment state we just
-// committed.
+// ConsumeVerificationAttempt keeps MySQL's UPDATE and follow-up SELECT in one
+// transaction so the row lock protects the exact post-increment state returned
+// to this caller. PostgreSQL and SQLite use UPDATE ... RETURNING instead.
 func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string) (*store.User, error) {
-	res, err := s.conn.q.ConsumeVerificationAttempt(ctx, id)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	if rows == 0 {
-		return nil, store.ErrNotFound
-	}
-	u, err := s.conn.q.GetUserByID(ctx, id)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := fromDBUser(u)
-	return &out, nil
+	var out *store.User
+	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		res, err := conn.q.ConsumeVerificationAttempt(ctx, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return mapErr(err)
+		}
+		if rows == 0 {
+			return store.ErrNotFound
+		}
+		u, err := conn.q.GetUserByID(ctx, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		converted := fromDBUser(u)
+		out = &converted
+		return nil
+	})
+	return out, err
 }
 
 func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
@@ -208,12 +213,95 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]st
 	return fromDBUsers(rows), nil
 }
 
+// loadUserInfoCacheFields reads the current cached-UserInfo projection for id.
+// RunUserInfoMutation calls it before and after a mutation to derive whether a
+// user_info event fires; a missing row reports exists=false.
+func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (store.UserInfoCacheFields, bool, error) {
+	u, err := conn.q.GetUserByID(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.UserInfoCacheFields{}, false, nil
+	}
+	if err != nil {
+		return store.UserInfoCacheFields{}, false, mapErr(err)
+	}
+	return store.UserInfoCacheFieldsOf(fromDBUser(u)), true, nil
+}
+
+// runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
+// projection read, locked clock reading, and user_info event insert, so the
+// durable cache-invalidation is derived from the before/after cached-field
+// projection rather than a hand-computed flag. MySQL has no RETURNING, so it
+// locks the row FOR UPDATE to fix a single clock reading (shared by the UPDATE
+// and the emitted event) before running update; a missing id is a no-op. update
+// runs against the locked row and reports ok=false to force a no-op (e.g. a
+// promote that matched no pending email).
+func (s *userStore) runUserInfoMutation(ctx context.Context, id string, update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error)) error {
+	// Lock the user row before the before-read so a concurrent same-user mutation
+	// cannot commit between the before and after cached-field projections and hide
+	// a change (which would drop the durable user_info invalidation for that field).
+	lockThenTx := func(ctx context.Context, fn func(*mysqlConn) error) error {
+		return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+			if err := conn.q.LockUserRow(ctx, id); err != nil {
+				return mapErr(err)
+			}
+			return fn(conn)
+		})
+	}
+	return store.RunUserInfoMutation(ctx, lockThenTx,
+		func(ctx context.Context, conn *mysqlConn) (store.UserInfoCacheFields, bool, error) {
+			return loadUserInfoCacheFields(ctx, conn, id)
+		},
+		func(ctx context.Context, conn *mysqlConn) (string, time.Time, bool, error) {
+			row, err := conn.q.GetUserForUpdate(ctx, id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", time.Time{}, false, nil
+			}
+			if err != nil {
+				return "", time.Time{}, false, mapErr(err)
+			}
+			updatedAt := row.NowAt.UTC()
+			ok, err := update(ctx, conn, updatedAt)
+			if err != nil || !ok {
+				return "", time.Time{}, false, err
+			}
+			return row.ID, updatedAt, true, nil
+		},
+		func(ctx context.Context, conn *mysqlConn, userID string, updatedAt time.Time) error {
+			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, updatedAt, 0)
+		},
+	)
+}
+
+// requireSingleRowUpdate maps a rowsAffected result into the (changed, err) pair
+// a cached-field mutate closure returns: it propagates a store error and treats
+// anything but exactly one matched row as corruption (the row was locked live
+// moments earlier under the same tx), so a cached-field Update* can never
+// silently skip its invalidation event. action/id build the error message. The
+// n==0-is-a-no-op case (PromotePendingEmail) keeps its own body.
+func requireSingleRowUpdate(n int64, err error, action, id string) (bool, error) {
+	if err != nil {
+		return false, err
+	}
+	if n != 1 {
+		return false, fmt.Errorf("%s %q: updated %d rows after locking live row", action, id, n)
+	}
+	return true, nil
+}
+
+// UpdateProfile changes the username/display name; RunUserInfoMutation emits a
+// user_info cache-invalidation event iff a cached field (the username) actually
+// changed, so a display-name-only edit updates the row without an event and a
+// missing id is a no-op with no event.
 func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfileParams) error {
-	return mapErr(s.conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
-		Username:    store.NormalizeUsername(p.Username),
-		DisplayName: p.DisplayName,
-		ID:          p.ID,
-	}))
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+		n, err := rowsAffected(conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+			Username:    store.NormalizeUsername(p.Username),
+			DisplayName: p.DisplayName,
+			UpdatedAt:   updatedAt,
+			ID:          p.ID,
+		}))
+		return requireSingleRowUpdate(n, err, "update user profile", p.ID)
+	})
 }
 
 func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswordParams) error {
@@ -223,26 +311,48 @@ func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswo
 	}))
 }
 
+// UpdateEmail changes the email and its verified flag; runUserInfoMutation emits
+// a user_info cache-invalidation event iff a cached field (email/email_verified,
+// an auth gate) actually changed. A missing id is a no-op with no event.
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
-	return mapErr(s.conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
-		Email:         store.NormalizeEmail(p.Email),
-		EmailVerified: p.EmailVerified,
-		ID:            p.ID,
-	}))
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+		n, err := rowsAffected(conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+			Email:         store.NormalizeEmail(p.Email),
+			EmailVerified: p.EmailVerified,
+			UpdatedAt:     updatedAt,
+			ID:            p.ID,
+		}))
+		return requireSingleRowUpdate(n, err, "update user email", p.ID)
+	})
 }
 
+// UpdateEmailVerified flips the email_verified auth gate; runUserInfoMutation
+// emits a user_info cache-invalidation event iff the gate actually changed, so
+// the change is observed cross-process without waiting out the cache TTL. A
+// missing id is a no-op with no event.
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
-	return mapErr(s.conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
-		EmailVerified: p.EmailVerified,
-		ID:            p.ID,
-	}))
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+		n, err := rowsAffected(conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+			EmailVerified: p.EmailVerified,
+			UpdatedAt:     updatedAt,
+			ID:            p.ID,
+		}))
+		return requireSingleRowUpdate(n, err, "update user email verified", p.ID)
+	})
 }
 
+// UpdateAdmin flips the IsAdmin flag; runUserInfoMutation emits a user_info
+// cache-invalidation event iff is_admin actually changed, dropping a stale
+// cached UserInfo cross-process. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return mapErr(s.conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
-		IsAdmin: p.IsAdmin,
-		ID:      p.ID,
-	}))
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+		n, err := rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+			IsAdmin:   p.IsAdmin,
+			UpdatedAt: updatedAt,
+			ID:        p.ID,
+		}))
+		return requireSingleRowUpdate(n, err, "update user admin", p.ID)
+	})
 }
 
 func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsParams) error {
@@ -261,8 +371,27 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	}))
 }
 
+// PromotePendingEmail moves pending_email into email (email_verified=1). A row
+// with no pending email matches zero rows and is a no-op; otherwise
+// runUserInfoMutation emits a user_info cache-invalidation event iff the
+// promotion changed a cached field (email/email_verified, an auth gate) -- the
+// same guarantee its sibling UpdateEmail/UpdateEmailVerified give.
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.PromotePendingEmail(ctx, id))
+	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+		n, err := rowsAffected(conn.q.PromotePendingEmail(ctx, gendb.PromotePendingEmailParams{
+			UpdatedAt: updatedAt,
+			ID:        id,
+		}))
+		if err != nil {
+			return false, err
+		}
+		// A row with no pending email matches zero rows -- a no-op with no event
+		// (unlike the Update* siblings, which treat n != 1 as an error).
+		if n == 0 {
+			return false, nil
+		}
+		return true, nil
+	})
 }
 
 func (s *userStore) ClearPendingEmail(ctx context.Context, id string) error {
@@ -280,40 +409,30 @@ func (s *userStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteUser(ctx, id))
 }
 
-func (s *userStore) BumpTokensRevokedAt(ctx context.Context, userID string) (int64, error) {
-	return rowsAffected(s.conn.q.BumpUserTokensRevokedAt(ctx, userID))
-}
-
-func (s *userStore) ListWithTokensRevokedSince(ctx context.Context, since time.Time) ([]store.UserTokensRevoked, error) {
-	rows, err := s.conn.q.ListUsersWithTokensRevokedSince(ctx, sql.NullTime{Time: since.UTC(), Valid: true})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := make([]store.UserTokensRevoked, 0, len(rows))
-	for _, r := range rows {
-		if !r.TokensRevokedAt.Valid {
-			continue
+func (s *userStore) RevokeUserTokens(ctx context.Context, userID string) (int64, error) {
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
+		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
 		}
-		out = append(out, store.UserTokensRevoked{
-			UserID:          r.ID,
-			TokensRevokedAt: r.TokensRevokedAt.Time,
-		})
-	}
-	return out, nil
-}
-
-// MaxTokensRevokedAt returns the latest users.tokens_revoked_at, or
-// the zero time when no user has had their tokens revoked.
-func (s *userStore) MaxTokensRevokedAt(ctx context.Context) (time.Time, error) {
-	t, err := s.conn.q.MaxUserTokensRevokedAt(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, mapErr(err)
-	}
-	if !t.Valid {
-		return time.Time{}, nil
-	}
-	return t.Time, nil
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		updatedAt := row.NowAt.UTC()
+		revokedAt := updatedAt
+		nextGeneration := row.AuthGeneration + 1
+		n, err := rowsAffected(conn.q.SetUserTokensRevokedAt(ctx, gendb.SetUserTokensRevokedAtParams{
+			ID:              row.ID,
+			TokensRevokedAt: sql.NullTime{Time: revokedAt, Valid: true},
+			AuthGeneration:  nextGeneration,
+			UpdatedAt:       updatedAt,
+		}))
+		if err != nil {
+			return nil, err
+		}
+		if n != 1 {
+			return nil, fmt.Errorf("bump user token revocation %q: updated %d rows after locking live row", row.ID, n)
+		}
+		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, At: revokedAt, UserAuthGeneration: nextGeneration}, nil
+	}, emitCredentialEvent)
 }

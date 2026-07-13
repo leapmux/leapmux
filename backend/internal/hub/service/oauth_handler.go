@@ -141,12 +141,21 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 
 	oauthState, err := h.store.OAuthStates().Get(ctx, state)
 	if err != nil {
+		// A missing/unknown state is a genuine client error (expired or forged),
+		// but a transient store error should not masquerade as "invalid state"
+		// and force the user to restart the whole login -- surface it as
+		// retryable, matching the ErrNotFound split used below for the user link.
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.Error("oauth: load state", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
 	_ = h.store.OAuthStates().Delete(ctx, state)
 
-	if time.Now().UTC().After(oauthState.ExpiresAt) {
+	if auth.IsExpired(time.Now().UTC(), oauthState.ExpiresAt) {
 		http.Error(w, "state expired", http.StatusBadRequest)
 		return
 	}
@@ -206,6 +215,16 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// an existing user with the same verified email and link automatically.
 	if trustEmail {
 		existingUser, emailErr := h.store.Users().GetByEmail(ctx, claims.Email)
+		// Distinguish "no such user" (fall through to signup) from a transient
+		// store failure: on a DB blip, GetByEmail must NOT be read as absence, or
+		// a returning verified user is either turned into a permanent 403 (signup
+		// disabled) or duplicated into a fresh account (signup enabled). Mirror the
+		// ErrNotFound-vs-internal split the OAuthUserLinks().Get read above uses.
+		if emailErr != nil && !errors.Is(emailErr, store.ErrNotFound) {
+			slog.Error("oauth: look up user by email for auto-link", "error", emailErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		if emailErr == nil && existingUser.EmailVerified {
 			if err := h.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 				UserID:          existingUser.ID,

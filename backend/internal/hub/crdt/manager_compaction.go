@@ -20,7 +20,7 @@ func (m *Manager) TickHousekeeping(ctx context.Context) {
 // cleanup is event-driven (via subscriber disconnects + deferred
 // clear timers), not bound to this tick.
 func (m *Manager) tickHousekeeping(ctx context.Context) {
-	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.now().Add(-DedupTTL)); err != nil {
+	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.now()); err != nil {
 		m.logger.Warn("cleanup recent batch ids", "err", err)
 	}
 	m.maybeAdvanceEpoch(ctx)
@@ -28,6 +28,12 @@ func (m *Manager) tickHousekeeping(ctx context.Context) {
 }
 
 func (m *Manager) maybeAdvanceEpoch(ctx context.Context) {
+	// Hold stateWriteMu across the epoch read-modify-write so a concurrent
+	// MutateInternal (which may write current_epoch from a request goroutine)
+	// cannot race these bare reads or clobber the write below. See the
+	// stateWriteMu field on Manager.
+	m.stateWriteMu.Lock()
+	defer m.stateWriteMu.Unlock()
 	if m.state.GetEpochStartedAt() == nil {
 		return
 	}

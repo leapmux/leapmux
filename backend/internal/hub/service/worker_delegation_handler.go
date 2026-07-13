@@ -18,10 +18,8 @@ import (
 // workspace_id). The minted bearer is what spawned agents present when
 // calling into the hub or another worker through the cross-worker path.
 //
-// channelCloser is optional; when wired the revoke handler also tears
-// down every E2EE channel the revoked token authorized. Without it,
-// already-open channels keep operating until the agent process exits
-// because OpenChannel only validates the bearer at handshake time.
+// Revocation is routed through the required credential lifecycle effects so
+// cached validation, authenticated leases, and E2EE channels cannot drift.
 //
 // MintTabPropagationTimeout / MintTabPropagationStep govern the bounded
 // backoff used when the (workspace_id, tab_id, worker_id) row hasn't
@@ -31,8 +29,7 @@ import (
 type WorkerDelegationHandler struct {
 	store                     store.Store
 	validator                 *auth.TokenValidator
-	cache                     *auth.SessionCache
-	channelCloser             BearerChannelCloser
+	lifecycle                 *auth.CredentialLifecycleEffects
 	MintTabPropagationTimeout time.Duration
 	MintTabPropagationStep    time.Duration
 }
@@ -49,29 +46,17 @@ const DefaultMintTabPropagationTimeout = 2 * time.Second
 // hops, wide enough that hot-loop polling doesn't pummel the store.
 const DefaultMintTabPropagationStep = 50 * time.Millisecond
 
-// BearerChannelCloser is the subset of *ChannelService the
-// delegation handler needs to force-close channels on revoke. The
-// indirection keeps this handler easy to test in isolation.
-type BearerChannelCloser interface {
-	CloseChannelsByBearer(tokenID string) int
-}
-
-func NewWorkerDelegationHandler(st store.Store, v *auth.TokenValidator, cache *auth.SessionCache) *WorkerDelegationHandler {
+func NewWorkerDelegationHandler(st store.Store, v *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects) *WorkerDelegationHandler {
+	if lifecycle == nil {
+		panic("worker delegation handler requires credential lifecycle effects")
+	}
 	return &WorkerDelegationHandler{
 		store:                     st,
 		validator:                 v,
-		cache:                     cache,
+		lifecycle:                 lifecycle,
 		MintTabPropagationTimeout: DefaultMintTabPropagationTimeout,
 		MintTabPropagationStep:    DefaultMintTabPropagationStep,
 	}
-}
-
-// WithChannelCloser wires the bearer-keyed channel teardown that
-// fires alongside row-level revocation. Returns the receiver so the
-// hub bootstrap can chain the call after construction.
-func (h *WorkerDelegationHandler) WithChannelCloser(c BearerChannelCloser) *WorkerDelegationHandler {
-	h.channelCloser = c
-	return h
 }
 
 func (h *WorkerDelegationHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -140,9 +125,13 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// false here (auth.WorkspaceCanRead maps NotFound to false); we
 	// flatten both "no such workspace" and "no grant" into a 403 so
 	// the worker doesn't get a probing oracle for workspace IDs.
+	// A non-nil err is a real store failure (SQLITE_BUSY, network
+	// blip) -- surface it as a retryable 500, not a permanent 403,
+	// so a brief DB hiccup doesn't fail a legitimate lazy mint (the
+	// tab-ownership lookup above already maps store errors to 500).
 	hasAccess, err := auth.WorkspaceCanRead(r.Context(), h.store, req.WorkspaceID, req.UserID)
 	if err != nil {
-		http.Error(w, "user lacks workspace access", http.StatusForbidden)
+		http.Error(w, "workspace access check failed", http.StatusInternalServerError)
 		return
 	}
 	if !hasAccess {
@@ -219,14 +208,7 @@ func (h *WorkerDelegationHandler) handleRevoke(w http.ResponseWriter, r *http.Re
 		http.Error(w, "revoke failed", http.StatusInternalServerError)
 		return
 	}
-	h.cache.EvictBearer(req.TokenID)
-	// Tear down any open E2EE channels this delegation token
-	// authenticated. Without this step the worker keeps serving
-	// inner-RPCs over the existing Noise session until its process
-	// exits (the hub does not re-validate the bearer per inner RPC).
-	if h.channelCloser != nil {
-		h.channelCloser.CloseChannelsByBearer(req.TokenID)
-	}
+	h.lifecycle.BearerRevoked(auth.BearerKindDelegation, req.TokenID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

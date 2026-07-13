@@ -80,10 +80,10 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
                 <input type="radio" name="shareMode" value={String(ShareMode.PRIVATE)} checked={shareMode() === ShareMode.PRIVATE} onChange={() => setShareMode(ShareMode.PRIVATE)} />
                 <span>Private</span>
               </label>
-              <label>
-                <input type="radio" name="shareMode" value={String(ShareMode.ORG)} checked={shareMode() === ShareMode.ORG} onChange={() => setShareMode(ShareMode.ORG)} />
-                <span>All org members</span>
-              </label>
+              {/* ShareMode.ORG (org-wide sharing) is intentionally not offered: the
+                  backend implements only PRIVATE and explicit-member (MEMBERS)
+                  sharing, so selecting it returned "invalid share mode". Tracked as
+                  a follow-up feature. */}
               <label>
                 <input type="radio" name="shareMode" value={String(ShareMode.MEMBERS)} checked={shareMode() === ShareMode.MEMBERS} onChange={() => setShareMode(ShareMode.MEMBERS)} />
                 <span>Specific members</span>

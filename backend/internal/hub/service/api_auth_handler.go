@@ -5,9 +5,12 @@ package service
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -22,25 +25,28 @@ const (
 	// DeviceCodePollInterval is the recommended polling cadence the CLI
 	// honours; the hub returns slow_down to throttle pollers exceeding it.
 	DeviceCodePollInterval = 5 * time.Second
+	// RefreshWorkTimeout bounds detached singleflight work after the request
+	// that became the leader disconnects.
+	RefreshWorkTimeout = 15 * time.Second
 )
 
-// APIAuthHandler implements /auth/cli/*. It depends only on the store +
-// the TokenValidator (for HMAC-pepper hashing).
+// APIAuthHandler implements /auth/cli/*. Credential changes are routed through
+// lifecycle so cache, lease, and channel effects remain consistent.
 type APIAuthHandler struct {
-	store      store.Store
-	validator  *auth.TokenValidator
-	cache      *auth.SessionCache      // for EvictBearer on revoke
-	graceCache *auth.RefreshGraceCache // re-emit access pair on refresh retry
-	hubURL     string
+	store         store.Store
+	validator     *auth.TokenValidator
+	lifecycle     *auth.CredentialLifecycleEffects
+	hubURL        string
+	refreshFlight singleflight.Group
 }
 
 // NewAPIAuthHandler wires the handler. hubURL is used to build the
-// device-code verification URLs returned to the CLI. graceCache may be
-// nil — a missing cache is non-fatal (legitimate retries within the
-// grace window will fall through to invalid_grant) but degrades the
-// recovery story for torn rotations.
-func NewAPIAuthHandler(st store.Store, v *auth.TokenValidator, cache *auth.SessionCache, graceCache *auth.RefreshGraceCache, hubURL string) *APIAuthHandler {
-	return &APIAuthHandler{store: st, validator: v, cache: cache, graceCache: graceCache, hubURL: hubURL}
+// device-code verification URLs returned to the CLI.
+func NewAPIAuthHandler(st store.Store, v *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects, hubURL string) *APIAuthHandler {
+	if lifecycle == nil {
+		panic("API auth handler requires credential lifecycle effects")
+	}
+	return &APIAuthHandler{store: st, validator: v, lifecycle: lifecycle, hubURL: hubURL}
 }
 
 // RegisterRoutes mounts the handler's routes on the mux.
@@ -57,7 +63,7 @@ func (h *APIAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 // --- Helpers ---
 
 func (h *APIAuthHandler) requireSession(r *http.Request) *auth.UserInfo {
-	// /api/auth/* endpoints only accept session cookies; bearer/solo
+	// /auth/cli/* endpoints only accept session cookies; bearer/solo
 	// rungs are unwired by leaving Validator/SoloUser nil. Both
 	// cookie modes are tried so a session issued under TLS still
 	// works when the browser falls back to plain HTTP and vice versa.
@@ -78,10 +84,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeOAuthError(w http.ResponseWriter, status int, code, description string) {
-	writeJSON(w, status, map[string]string{
-		"error":             code,
-		"error_description": description,
-	})
+	writeJSON(w, status, oauthErrorBody(code, description))
+}
+
+type oauthErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+func oauthErrorBody(code, description string) oauthErrorResponse {
+	return oauthErrorResponse{
+		Error:            code,
+		ErrorDescription: description,
+	}
+}
+
+func writeInternalError(w http.ResponseWriter, operation string, err error) {
+	slog.Error(operation, "error", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func generateUserCode() string {

@@ -26,7 +26,7 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
 		// WorkspaceService surface.
 		"GetTab", "LocateTab", "LocateTile", "ListTabs",
-		"ListWorkspaces", "GetWorkspace",
+		"ListWorkspaces", "ListAllAccessibleWorkspaces", "GetWorkspace",
 		"CreateWorkspace", "RenameWorkspace", "DeleteWorkspace",
 		// OrgCRDT surface.
 		"SubmitOps", "UpdatePresence", "GetMaterialized",
@@ -198,20 +198,21 @@ func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
 // SubmitOps doesn't end up routed at ListWorkers.
 func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
 	cases := map[string]string{
-		"GetTab":          leapmuxv1connect.WorkspaceServiceGetTabProcedure,
-		"LocateTab":       leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
-		"LocateTile":      leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
-		"ListTabs":        leapmuxv1connect.WorkspaceServiceListTabsProcedure,
-		"SubmitOps":       leapmuxv1connect.OrgCRDTSubmitOpsProcedure,
-		"UpdatePresence":  leapmuxv1connect.OrgCRDTUpdatePresenceProcedure,
-		"ListWorkspaces":  leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
-		"GetWorkspace":    leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
-		"CreateWorkspace": leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
-		"RenameWorkspace": leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
-		"DeleteWorkspace": leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
-		"ListWorkers":     leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
-		"GetWorker":       leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
-		"GetUser":         leapmuxv1connect.UserServiceGetUserProcedure,
+		"GetTab":                      leapmuxv1connect.WorkspaceServiceGetTabProcedure,
+		"LocateTab":                   leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
+		"LocateTile":                  leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
+		"ListTabs":                    leapmuxv1connect.WorkspaceServiceListTabsProcedure,
+		"SubmitOps":                   leapmuxv1connect.OrgCRDTSubmitOpsProcedure,
+		"UpdatePresence":              leapmuxv1connect.OrgCRDTUpdatePresenceProcedure,
+		"ListWorkspaces":              leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
+		"ListAllAccessibleWorkspaces": leapmuxv1connect.WorkspaceServiceListAllAccessibleWorkspacesProcedure,
+		"GetWorkspace":                leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
+		"CreateWorkspace":             leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
+		"RenameWorkspace":             leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
+		"DeleteWorkspace":             leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
+		"ListWorkers":                 leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		"GetWorker":                   leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
+		"GetUser":                     leapmuxv1connect.UserServiceGetUserProcedure,
 	}
 	for method, want := range cases {
 		desc, err := hubrpc.Lookup(method)

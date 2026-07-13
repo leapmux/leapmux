@@ -51,11 +51,13 @@ test.describe('Workspace Sharing', () => {
       await wsItem.locator('button').first().click()
       await page.getByRole('menuitem', { name: 'Share' }).click()
 
-      // Dialog should appear
+      // Dialog should appear. Only Private and Specific members are offered --
+      // org-wide sharing (SHARE_MODE_ORG) is not implemented server-side, so the
+      // dialog no longer renders an "All org members" option.
       await expect(page.getByText('Workspace Sharing')).toBeVisible()
       await expect(page.getByText('Private')).toBeVisible()
-      await expect(page.getByText('All org members')).toBeVisible()
       await expect(page.getByText('Specific members')).toBeVisible()
+      await expect(page.getByText('All org members')).toHaveCount(0)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

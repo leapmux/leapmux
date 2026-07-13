@@ -2,6 +2,7 @@ package crdt_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -333,12 +334,150 @@ func TestExpandSubscribersForWorkspace_RespectsACL(t *testing.T) {
 	_, unsubDenied := mgr.Subscribe(deniedSub)
 	defer unsubDenied()
 
-	mgr.ExpandSubscribersForWorkspace(context.Background(), "w1")
+	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w1"))
 
 	assert.True(t, okSub.Filter.IsAllowed("w1"),
 		"expected ok-user's filter to widen — CanReadWorkspace returns true")
 	assert.False(t, deniedSub.Filter.IsAllowed("w1"),
 		"denied-user's filter must NOT widen — CanReadWorkspace returns false")
+}
+
+// TestExpandSubscribersForWorkspace_BatchPath exercises the batch-capable
+// dispatch: it must reach the SAME ACL verdict as the per-candidate fallback,
+// widen every subscription of an allowed user (dedup across duplicate user IDs),
+// and resolve all candidates in a single batch call rather than one per
+// subscriber.
+func TestExpandSubscribersForWorkspace_BatchPath(t *testing.T) {
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(170_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	auth := &perUserOwnerBatch{perUserOwner: perUserOwner{allowed: map[string]map[string]bool{
+		"ok-user": {"w1": true},
+	}}}
+	mgr := crdt.NewManager("org", j, auth, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	// Two subscriptions for the SAME allowed user (dedup) plus a denied user.
+	okSubs := []*crdt.Subscriber{
+		{UserID: "ok-user", Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"placeholder": true}}, Send: (&captureSubscriber{}).send},
+		{UserID: "ok-user", Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"placeholder": true}}, Send: (&captureSubscriber{}).send},
+	}
+	for _, sub := range okSubs {
+		_, unsub := mgr.Subscribe(sub)
+		defer unsub()
+	}
+	deniedSub := &crdt.Subscriber{
+		UserID: "denied-user",
+		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"placeholder": true}},
+		Send:   (&captureSubscriber{}).send,
+	}
+	_, unsubDenied := mgr.Subscribe(deniedSub)
+	defer unsubDenied()
+
+	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w1"))
+
+	for i, sub := range okSubs {
+		assert.True(t, sub.Filter.IsAllowed("w1"), "ok-user subscription %d must widen via the batch path", i)
+	}
+	assert.False(t, deniedSub.Filter.IsAllowed("w1"), "denied-user must NOT widen")
+	assert.Equal(t, 1, auth.batchCalls(),
+		"the batch checker must resolve every candidate in ONE call, not one per subscriber")
+}
+
+// erroringBatch is a batch-capable checker whose read-ACL lookup fails, standing
+// in for a transient store error.
+type erroringBatch struct {
+	perUserOwner
+	err error
+}
+
+func (e *erroringBatch) CanReadWorkspaceForUsers(_ context.Context, _, _ string, _ []string) (map[string]bool, error) {
+	return nil, e.err
+}
+
+func TestExpandSubscribersForWorkspace_PropagatesLookupError(t *testing.T) {
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(180_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	wantErr := errors.New("transient store failure")
+	auth := &erroringBatch{
+		perUserOwner: perUserOwner{allowed: map[string]map[string]bool{"ok-user": {"w1": true}}},
+		err:          wantErr,
+	}
+	mgr := crdt.NewManager("org", j, auth, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	sub := &crdt.Subscriber{
+		UserID: "ok-user",
+		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"placeholder": true}},
+		Send:   (&captureSubscriber{}).send,
+	}
+	_, unsub := mgr.Subscribe(sub)
+	defer unsub()
+
+	// A read-ACL LOOKUP failure must surface (so workspace-create retries the
+	// seed) rather than being swallowed as "deny" -- and the filter must NOT
+	// widen on error.
+	err := mgr.ExpandSubscribersForWorkspace(context.Background(), "w1")
+	require.ErrorIs(t, err, wantErr)
+	assert.False(t, sub.Filter.IsAllowed("w1"), "filter must not widen when the ACL lookup failed")
+}
+
+func TestExpandSubscribersForWorkspace_RespectsImmutableWorkspaceScope(t *testing.T) {
+	j := newFakeJournal()
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, time.Now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	sub := &crdt.Subscriber{
+		UserID:           "delegated-user",
+		WorkspaceScopeID: "w1",
+		Filter:           crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}},
+		Send:             (&captureSubscriber{}).send,
+	}
+	_, unsub := mgr.Subscribe(sub)
+	defer unsub()
+
+	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w2"))
+	assert.False(t, sub.Filter.IsAllowed("w2"),
+		"a scoped subscriber must not widen to a sibling workspace even when its user can read it")
+
+	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w1"))
+	assert.True(t, sub.Filter.IsAllowed("w1"),
+		"the immutable scope must still permit expansion to the pinned workspace")
 }
 
 // TestLifecycleDelete_TombstonesAllLeftoverContent ensures that
@@ -636,10 +775,39 @@ type perUserOwner struct {
 	allowed map[string]map[string]bool
 }
 
-func (p perUserOwner) CanWriteWorkspace(_ context.Context, _, workspaceID, principalID string) bool {
-	return p.allowed[principalID][workspaceID]
+func (p perUserOwner) CanWriteWorkspace(_ context.Context, _, workspaceID, principalID string) (bool, error) {
+	return p.allowed[principalID][workspaceID], nil
 }
-func (p perUserOwner) CanReadWorkspace(_ context.Context, _, workspaceID, principalID string) bool {
-	return p.allowed[principalID][workspaceID]
+func (p perUserOwner) CanReadWorkspace(_ context.Context, _, workspaceID, principalID string) (bool, error) {
+	return p.allowed[principalID][workspaceID], nil
 }
-func (perUserOwner) CanUseWorker(_ context.Context, _, _, _ string) bool { return true }
+func (perUserOwner) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+
+// perUserOwnerBatch adds the optional workspaceReaderBatch capability to
+// perUserOwner so the batch-dispatch path in ExpandSubscribersForWorkspace is
+// exercised (bare perUserOwner only drives the per-candidate fallback). It
+// counts batch calls so a test can assert one query resolves all candidates.
+type perUserOwnerBatch struct {
+	perUserOwner
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *perUserOwnerBatch) CanReadWorkspaceForUsers(_ context.Context, _, workspaceID string, userIDs []string) (map[string]bool, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	out := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		if p.allowed[userID][workspaceID] {
+			out[userID] = true
+		}
+	}
+	return out, nil
+}
+
+func (p *perUserOwnerBatch) batchCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}

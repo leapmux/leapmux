@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	cleanupInterval  = 1 * time.Hour
-	cleanupRetention = 7 * 24 * time.Hour
-	cleanupJitter    = 5 * time.Minute
+	cleanupInterval                = 1 * time.Hour
+	cleanupRetention               = 7 * 24 * time.Hour
+	cleanupJitter                  = 5 * time.Minute
+	maxRevocationCompactionBatches = 100
 )
 
 // StartLoop starts a background goroutine that periodically hard-deletes
@@ -27,7 +28,8 @@ func StartLoop(ctx context.Context, st store.Store) {
 }
 
 func run(ctx context.Context, st store.Store) {
-	cutoff := time.Now().UTC().Add(-cleanupRetention)
+	now := time.Now().UTC()
+	cutoff := now.Add(-cleanupRetention)
 	cs := st.Cleanup()
 
 	// Order respects FK dependencies: child rows before parent rows.
@@ -41,9 +43,9 @@ func run(ctx context.Context, st store.Store) {
 	cleanupStep("orgs", func() (int64, error) { return cs.HardDeleteOrgsBefore(ctx, cutoff) })
 	cleanupStep("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx) })
 	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx) })
-	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, time.Now().UTC()) })
+	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
 	cleanupStep("expired CLI authorization codes", func() (int64, error) {
-		return cs.DeleteExpiredCLIAuthorizationCodes(ctx, time.Now().UTC())
+		return cs.DeleteExpiredCLIAuthorizationCodes(ctx, now)
 	})
 	// Hard-delete API tokens that have been revoked for longer than the
 	// retention window. Same pattern as workspaces/users.
@@ -54,7 +56,30 @@ func run(ctx context.Context, st store.Store) {
 	cleanupStep("revoked delegation tokens", func() (int64, error) { return cs.DeleteRevokedDelegationTokensBefore(ctx, cutoff) })
 	// Expired delegation tokens (TTL passed without an explicit revoke)
 	// are also worth pruning eagerly since they accumulate one-per-spawn.
-	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, time.Now().UTC()) })
+	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, now) })
+	cleanupStep("published revocation events", func() (int64, error) {
+		var total int64
+		for range maxRevocationCompactionBatches {
+			if ctx.Err() != nil {
+				return total, nil
+			}
+			deleted, err := cs.CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+				Cutoff: cutoff,
+			})
+			total += deleted
+			// Drain until a batch deletes nothing rather than stopping on a partial
+			// page. The delete query caps each batch at its own internal LIMIT;
+			// terminating on deleted==0 keeps this loop correct no matter what that
+			// page size is, instead of assuming it equals the shared CleanupBatchLimit
+			// constant -- which is a separate source of truth that could silently
+			// drift from the SQL LIMIT and either stop compaction early (a slow leak)
+			// or fire an extra no-op query.
+			if err != nil || deleted == 0 {
+				return total, err
+			}
+		}
+		return total, nil
+	})
 }
 
 func cleanupStep(name string, fn func() (int64, error)) {

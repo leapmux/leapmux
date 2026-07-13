@@ -60,8 +60,9 @@ type Server struct {
 	localLn           net.Listener
 	listenURL         string
 	shutdownCh        chan struct{}
-	sessionCache      *auth.SessionCache
+	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
+	crdtRegistry      *crdt.Registry
 	revocationWatcher *revocationwatcher.Watcher
 }
 
@@ -145,7 +146,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		u, loadErr := auth.LoadSoloUser(context.Background(), st)
 		if loadErr != nil {
 			_ = st.Close()
-			closeTCP()
+			closeListeners()
 			return nil, fmt.Errorf("load solo user: %w", loadErr)
 		}
 		soloUser = u
@@ -167,9 +168,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	apiTokenPepper := ks.Pepper()
 	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
 	if tvErr != nil {
+		_ = st.Close()
+		closeListeners()
 		return nil, fmt.Errorf("create token validator: %w", tvErr)
 	}
-	authInterceptor, sessionCache := auth.NewInterceptorWithTokens(st, soloUser, tokenValidator, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	authInterceptor, authContexts := auth.NewInterceptorWithTokens(st, soloUser, tokenValidator, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	// Let a sliding cookie session (and a rotated bearer, via the credential
+	// lifecycle) extend its already-open channels' expiry, not just its leases
+	// (which the registry owns directly).
+	authContexts.SetChannelExpiryRescheduler(cMgr)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -204,10 +211,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// each have to thread cfg.BaseURL() through.
 	mailRenderer := mail.Renderer{HubURL: cfg.BaseURL()}
 
-	authSvc := service.NewAuthService(st, cfg, sessionCache, ks, mailSender, mailRenderer)
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
-	mux.Handle(authPath, authHandler)
-
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, cfg)
 
@@ -234,13 +237,19 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
-	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
+	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
+	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr)
 	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, connectOpts)
 	mux.Handle(channelPath, channelHandler)
 
+	authSvc := service.NewAuthService(st, cfg, lifecycle, ks, mailSender, mailRenderer)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
+	mux.Handle(authPath, authHandler)
+
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
-	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, soloUser, cfg.SecureCookies).
-		WithTokenValidator(tokenValidator)
+	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, cfg.SecureCookies).
+		WithTokenValidator(tokenValidator).
+		WithChannelCloseEnqueuer(channelSvc)
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
@@ -248,33 +257,24 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	oauthHandler.RegisterRoutes(mux)
 
 	// CLI auth HTTP endpoints (PKCE local-redirect + RFC 8628 device code).
-	// The grace cache lets refresh-rotation retries within RefreshReuseGrace
-	// re-emit the previously-issued (access, refresh) pair so a torn
-	// network response is recoverable.
-	graceCache, gcErr := auth.NewRefreshGraceCache(auth.RefreshReuseGrace)
-	if gcErr != nil {
-		return nil, fmt.Errorf("create refresh grace cache: %w", gcErr)
-	}
-	graceCache.StartJanitor(context.Background(), auth.RefreshReuseGrace)
-	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, sessionCache, graceCache, cfg.BaseURL())
+	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, lifecycle, cfg.BaseURL())
 	apiAuthHandler.RegisterRoutes(mux)
 
-	// Worker-issued delegation token mint/revoke endpoints. The
-	// channelSvc closer is wired so revoking a delegation token also
-	// tears down any open E2EE channels that were authorized by it.
-	delegationHandler := service.NewWorkerDelegationHandler(st, tokenValidator, sessionCache).
-		WithChannelCloser(channelSvc)
+	// Worker-issued delegation token mint/revoke endpoints. The credential
+	// lifecycle effects are wired so revoking a delegation token evicts its
+	// cached validation and authenticated leases and tears down any open E2EE
+	// channels authorized by it (lifecycle.BearerRevoked).
+	delegationHandler := service.NewWorkerDelegationHandler(st, tokenValidator, lifecycle)
 	delegationHandler.RegisterRoutes(mux)
 
 	orgSvc := service.NewOrgService(st, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	// UserService receives channelSvc so credential-rotation paths
-	// (ChangePassword) can hard-close every channel a user owns
-	// alongside the delegation-token revocation.
-	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender, mailRenderer).
-		WithChannelCloser(channelSvc)
+	// UserService drives credential-rotation paths (ChangePassword) through the
+	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
+	// channel a user owns alongside the delegation-token revocation.
+	userSvc := service.NewUserService(st, cfg, lifecycle, mailSender, mailRenderer)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -282,7 +282,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode, crdtRegistry)
+	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode, crdtRegistry, channelSvc)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
@@ -298,7 +298,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// (SubmitOps, UpdatePresence). The WS path bypasses HTTP/1.1
 	// chunked-stream buffering hazards (some proxies / Tauri's
 	// buffered fetch) that motivated retiring the streaming RPC.
-	orgEventsHandler := service.NewOrgEventsHandler(st, crdtRegistry, soloUser, cfg.SecureCookies).
+	orgEventsHandler := service.NewOrgEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies).
 		WithTokenValidator(tokenValidator)
 	mux.Handle("/ws/orgevents", orgEventsHandler)
 
@@ -320,8 +320,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	} else if cfg.DevFrontend != "" {
 		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
 		if proxyErr != nil {
+			authContexts.Stop()
+			crdtRegistry.Shutdown(10 * time.Second)
 			_ = st.Close()
-			closeTCP()
+			closeListeners()
 			return nil, fmt.Errorf("create dev proxy: %w", proxyErr)
 		}
 		mux.Handle("/", devProxy)
@@ -343,15 +345,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		},
 	}
 
-	// Watcher for cross-process revocations: admin CLI commands
-	// mutate `revoked_at` / `tokens_revoked_at` directly, and the
-	// watcher polls those columns to drive the matching cache
+	// Watcher for cross-process revocations: admin CLI commands mutate
+	// auth state and record durable revocation events, and the watcher
+	// publishes + consumes that stream to drive the matching cache
 	// eviction + channel teardown. In-process callers
 	// (UserService.ChangePassword, the per-token revoke handler)
 	// continue to invoke the close paths inline so they observe
 	// zero-latency revocation; the watcher is the cross-process
 	// safety net.
-	revWatcher := revocationwatcher.New(st, sessionCache, channelSvc)
+	revWatcher := revocationwatcher.New(st, lifecycle)
 
 	return &Server{
 		cfg:               cfg,
@@ -363,8 +365,9 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		localLn:           localLn,
 		listenURL:         listenURL,
 		shutdownCh:        shutdownCh,
-		sessionCache:      sessionCache,
+		authContexts:      authContexts,
 		workerMgr:         wMgr,
+		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 	}, nil
 }
@@ -448,35 +451,48 @@ func (s *Server) Serve(ctx context.Context) error {
 	tcpLn := s.tcpLn
 	localLn := s.localLn
 	listenURL := s.listenURL
+	serveCtx, cancelServe := context.WithCancelCause(ctx)
+	defer cancelServe(nil)
+
+	// Register the watcher before starting listeners or other background work.
+	// Without the singleton runtime lease, serving authenticated traffic would let
+	// cleanup compact revocations this process has not observed.
+	if err := s.revocationWatcher.SeedCursor(serveCtx); err != nil {
+		_ = localLn.Close()
+		if tcpLn != nil {
+			_ = tcpLn.Close()
+		}
+		s.authContexts.Stop()
+		s.crdtRegistry.Shutdown(10 * time.Second)
+		_ = s.store.Close()
+		return fmt.Errorf("seed revocation watcher: %w", err)
+	}
 
 	// Start background OAuth token refresh.
-	s.oauthHandler.StartTokenRefresh(ctx)
+	s.oauthHandler.StartTokenRefresh(serveCtx)
 
 	// Start periodic cleanup of soft-deleted records.
-	cleanup.StartLoop(ctx, s.store)
+	cleanup.StartLoop(serveCtx, s.store)
 
-	// Start the revocation watcher: polls api_tokens, delegation_tokens,
-	// and users for newly-revoked rows so admin-CLI mutations land in
-	// the hub's in-memory caches and channelmgr without an IPC.
-	// Seed watermarks past existing historical revocations so the
-	// first sweep skips the redundant teardowns for tokens whose
-	// channels were already torn down before this hub came up.
-	if err := s.revocationWatcher.SeedWatermarks(ctx); err != nil {
-		slog.Warn("revocation watcher: seed failed; falling back to zero watermarks", "error", err)
-	}
-	s.revocationWatcher.StartLoop(ctx)
+	// Start the revocation watcher: publishes and consumes the durable
+	// revocation stream so admin-CLI mutations land in the hub's
+	// in-memory caches and channelmgr without IPC. Seed past events that
+	// predate this process so the first sweep only handles fresh work.
+	s.revocationWatcher.StartLoop(serveCtx)
 
 	shutdownDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
+		<-serveCtx.Done()
 		slog.Info("hub shutting down...")
 
 		// 1. Reject all new RPCs and stop background tasks.
 		close(s.shutdownCh)
-		s.sessionCache.Stop()
+		s.authContexts.Stop()
 
 		// 2. Notify connected workers to delay reconnection.
-		s.workerMgr.NotifyShutdown(10)
+		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 2*time.Second)
+		s.workerMgr.NotifyShutdown(notifyCtx, 10)
+		cancelNotify()
 
 		// 3. Drain in-flight HTTP requests, then force-close any connections
 		// the drain left behind. On Windows each accepted named-pipe
@@ -517,20 +533,40 @@ func (s *Server) Serve(ctx context.Context) error {
 		slog.Info("hub listening", "local", listenURL)
 	}
 
-	if err := <-errCh; err != http.ErrServerClosed {
-		_ = s.store.Close()
-		return fmt.Errorf("serve: %w", err)
+	var serveErr error
+	remainingListeners := listenerCount
+	select {
+	case err := <-errCh:
+		remainingListeners--
+		if err != http.ErrServerClosed {
+			serveErr = fmt.Errorf("serve: %w", err)
+		}
+		cancelServe(err)
+	case err := <-s.revocationWatcher.Errors():
+		serveErr = fmt.Errorf("revocation watcher failed: %w", err)
+		cancelServe(err)
+	case <-serveCtx.Done():
 	}
-	// Wait for the remaining listener(s) to finish.
-	for i := 1; i < listenerCount; i++ {
+
+	// Shutdown closes every listener. Drain their results before releasing
+	// the store so no handler can race a closed database.
+	for i := 0; i < remainingListeners; i++ {
 		<-errCh
 	}
 
 	// 5. Wait for the shutdown goroutine to complete.
 	<-shutdownDone
 
-	// 6. Close store. The local listener and its accepted connections were
-	// released above by Shutdown+Close.
+	// 6. Stop CRDT managers while their journal store is still available.
+	s.crdtRegistry.Shutdown(10 * time.Second)
+
+	// 7. Stop the watcher before removing its durable cursor, then close the
+	// store. A bounded context prevents a broken backend from hanging shutdown.
+	watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := s.revocationWatcher.Close(watcherCloseCtx); err != nil && serveErr == nil {
+		serveErr = fmt.Errorf("close revocation watcher: %w", err)
+	}
+	cancelWatcherClose()
 	_ = s.store.Close()
-	return nil
+	return serveErr
 }

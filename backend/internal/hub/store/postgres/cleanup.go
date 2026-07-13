@@ -68,3 +68,10 @@ func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, 
 func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, timeToTs(cutoff))
 }
+
+func (s *cleanupStore) CompactPublishedRevocationEvents(
+	ctx context.Context,
+	p store.CompactRevocationEventsParams,
+) (int64, error) {
+	return newRevocationEventStore(s.conn).CompactPublished(ctx, p.Cutoff)
+}

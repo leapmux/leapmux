@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"connectrpc.com/connect"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -15,6 +17,9 @@ var (
 	ErrMissingBearer      = errors.New("missing bearer")
 	ErrInvalidWorkerToken = errors.New("invalid worker auth token")
 	ErrWorkerDeleted      = errors.New("worker deleted")
+	// ErrHTTPUnauthenticated distinguishes rejected credentials from
+	// infrastructure failures that HTTP handlers must surface as 500s.
+	ErrHTTPUnauthenticated = errors.New("http authentication failed")
 )
 
 // AuthenticateWorkerBearer resolves an HTTP "Authorization: Bearer …"
@@ -52,6 +57,7 @@ type HTTPAuthOpts struct {
 	Store     store.Store
 	Validator *TokenValidator
 	SoloUser  *UserInfo
+	Contexts  *AuthContextRegistry
 	// Cookies lists the secure modes to try, in order. Empty means
 	// "no cookie fallback" (handlers that only accept bearer/solo).
 	Cookies []bool
@@ -65,18 +71,21 @@ type HTTPAuthOpts struct {
 // Cookies cause that rung to no-op. Handlers that only support a
 // subset of the rungs pass the subset they want — e.g. the
 // `/ws/orgevents` and `/ws/channel` relays support all three;
-// the `/api/auth/*` endpoints support only cookies (and try both
+// the `/auth/cli/*` endpoints support only cookies (and try both
 // secure modes so a TLS-issued session still validates when the
 // browser falls back to plain HTTP and vice versa).
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
 	if opts.SoloUser != nil {
-		return opts.SoloUser, nil
+		return opts.Contexts.CurrentSyntheticUser(opts.SoloUser), nil
 	}
 	if opts.Validator != nil {
 		if bearer, ok := BearerToken(r.Header.Get("Authorization")); ok && IsLeapMuxBearer(bearer) {
 			user, err := opts.Validator.ValidateBearer(ctx, bearer)
 			if err != nil {
-				return nil, fmt.Errorf("unauthorized")
+				if connect.CodeOf(err) == connect.CodeUnauthenticated {
+					return nil, fmt.Errorf("%w: invalid bearer", ErrHTTPUnauthenticated)
+				}
+				return nil, fmt.Errorf("validate bearer: %w", err)
 			}
 			return user, nil
 		}
@@ -88,9 +97,12 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 		}
 		user, err := ValidateToken(ctx, opts.Store, token)
 		if err != nil {
-			return nil, fmt.Errorf("unauthorized")
+			if connect.CodeOf(err) == connect.CodeUnauthenticated {
+				return nil, fmt.Errorf("%w: invalid session", ErrHTTPUnauthenticated)
+			}
+			return nil, err
 		}
 		return user, nil
 	}
-	return nil, fmt.Errorf("no credentials")
+	return nil, fmt.Errorf("%w: no credentials", ErrHTTPUnauthenticated)
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -24,36 +23,37 @@ func NewCRDTAuthChecker(st store.Store) crdt.AuthChecker {
 	return &crdtAuthChecker{store: st}
 }
 
-func (a *crdtAuthChecker) CanWriteWorkspace(ctx context.Context, orgID, workspaceID, principalID string) bool {
-	if workspaceID == "" {
-		return false
-	}
-	ws, err := a.store.Workspaces().GetByID(ctx, workspaceID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return false
-		}
-		return false
-	}
-	if orgID != "" && ws.OrgID != orgID {
-		return false
-	}
-	return ws.OwnerUserID == principalID
+// CanWriteWorkspace defers to auth.WorkspaceCanWriteInOrg, the canonical
+// owner-only write predicate that shares the missing/out-of-org deny-vs-retry
+// prologue with the read path (CanReadWorkspace / WorkspaceCanReadInOrg). Owner
+// can always write; shared members are read-only (the shared-write ACL is not
+// yet implemented). A missing/out-of-org workspace stays a permanent FORBIDDEN
+// deny; a transient store error is surfaced so the validator retries the whole
+// submit rather than dropping the edit as permanently forbidden.
+func (a *crdtAuthChecker) CanWriteWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
+	return auth.WorkspaceCanWriteInOrg(ctx, a.store, orgID, workspaceID, principalID)
 }
 
-// CanReadWorkspace defers to auth.WorkspaceCanReadInOrg, the
-// canonical "owner OR explicit grant" predicate shared with the
-// channel/workspace/worker-delegation read paths. The org cross-
-// check guards against a stale subscriber on org A reading a
-// workspace that's been re-homed to org B. Errors are mapped to
-// "deny" — the CRDT validator path treats a transient DB hiccup
-// the same as a missing grant.
-func (a *crdtAuthChecker) CanReadWorkspace(ctx context.Context, orgID, workspaceID, principalID string) bool {
-	ok, err := auth.WorkspaceCanReadInOrg(ctx, a.store, orgID, workspaceID, principalID)
-	if err != nil {
-		return false
-	}
-	return ok
+// CanReadWorkspace defers to auth.WorkspaceCanReadInOrg, the canonical "owner OR
+// explicit grant" predicate shared with the channel/workspace/worker-delegation
+// read paths. The org cross-check guards against a stale subscriber on org A
+// reading a workspace that's been re-homed to org B. WorkspaceCanReadInOrg
+// already maps a missing/out-of-org workspace to (false, nil) and reserves a
+// non-nil error for a transient store failure, which the validator surfaces as
+// retryable rather than a permanent deny.
+func (a *crdtAuthChecker) CanReadWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
+	return auth.WorkspaceCanReadInOrg(ctx, a.store, orgID, workspaceID, principalID)
+}
+
+// CanReadWorkspaceForUsers is the batch form of CanReadWorkspace (the optional
+// crdt.workspaceReaderBatch capability): it resolves read access for many users
+// against one workspace in a single load + grant lookup, deferring to the same
+// auth.WorkspaceReadableByUsersInOrg rule that backs CanReadWorkspace. Unlike the
+// per-op CanReadWorkspace, a store error is PROPAGATED (not folded to "deny"): the
+// caller (workspace-create subscriber expansion) must retry on a transient lookup
+// failure rather than silently drop the new workspace's seed broadcast.
+func (a *crdtAuthChecker) CanReadWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
+	return auth.WorkspaceReadableByUsersInOrg(ctx, a.store, orgID, workspaceID, userIDs)
 }
 
 // CanUseWorker gates SetTabRegisterOp.worker_id writes: the
@@ -61,13 +61,18 @@ func (a *crdtAuthChecker) CanReadWorkspace(ctx context.Context, orgID, workspace
 // worker_access_grants row. Missing/deleted workers fail closed.
 // Empty workerID short-circuits true so callers can clear the
 // register without an extra round-trip.
-func (a *crdtAuthChecker) CanUseWorker(ctx context.Context, _, workerID, principalID string) bool {
+func (a *crdtAuthChecker) CanUseWorker(ctx context.Context, _, workerID, principalID string) (bool, error) {
 	if workerID == "" {
-		return true
+		return true, nil
 	}
 	w, ok, err := auth.WorkerCanUse(ctx, a.store, workerID, principalID)
-	if err != nil || !ok || w == nil {
-		return false
+	if err != nil {
+		// Transient lookup failure -- surface it so the validator retries rather
+		// than rejecting the worker ref as permanently invalid.
+		return false, err
 	}
-	return w.DeletedAt == nil
+	if !ok || w == nil {
+		return false, nil
+	}
+	return w.DeletedAt == nil, nil
 }

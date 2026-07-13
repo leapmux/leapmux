@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
@@ -113,18 +114,38 @@ func (memOutbox) MarkLifecycleOutboxConsumed(_ context.Context, _ int64, _ time.
 // matrix (that's covered inside crdt/validate_test.go).
 type allowAllAuth struct{}
 
-func (allowAllAuth) CanWriteWorkspace(_ context.Context, _, _, _ string) bool { return true }
-func (allowAllAuth) CanReadWorkspace(_ context.Context, _, _, _ string) bool  { return true }
-func (allowAllAuth) CanUseWorker(_ context.Context, _, _, _ string) bool      { return true }
+func (allowAllAuth) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+	return true, nil
+}
+func (allowAllAuth) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+	return true, nil
+}
+func (allowAllAuth) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+
+func TestCRDTAuthCheckerRejectsEmptyOrgID(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "org", false)
+	owner := storetest.SeedUser(t, st, orgID, "owner")
+	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "workspace")
+	checker := service.NewCRDTAuthChecker(st)
+
+	write, err := checker.CanWriteWorkspace(context.Background(), "", workspaceID, owner.ID)
+	require.NoError(t, err)
+	assert.False(t, write)
+	read, err := checker.CanReadWorkspace(context.Background(), "", workspaceID, owner.ID)
+	require.NoError(t, err)
+	assert.False(t, read)
+}
 
 // crdtServiceEnv bundles the bits a CRDT-service test needs: a
 // running manager (with a memJournal we can inspect), a registry that
 // hands out that single manager, and the service handler itself.
 type crdtServiceEnv struct {
-	journal *memJournal
-	mgr     *crdt.Manager
-	svc     *service.CRDTService
-	orgID   string
+	journal  *memJournal
+	mgr      *crdt.Manager
+	registry *crdt.Registry
+	svc      *service.CRDTService
+	orgID    string
 }
 
 func setupCRDTService(t *testing.T) *crdtServiceEnv {
@@ -183,7 +204,7 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	})
 	require.NoError(t, err)
 
-	return &crdtServiceEnv{journal: j, mgr: mgr, svc: svc, orgID: orgID}
+	return &crdtServiceEnv{journal: j, mgr: mgr, registry: registry, svc: svc, orgID: orgID}
 }
 
 // addTabOps builds the canonical 3-op SetTabRegister batch the tests
@@ -307,35 +328,141 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, ce.Code())
 }
 
-// TestCRDTService_UpdatePresence_ClientIDFallbackChain asserts the
-// session_id → bearer_token_id → user_id fall-back used to stamp the
-// presence row. A user with only a bearer (no session cookie) still
-// gets a stable presence identity that isn't blank.
-func TestCRDTService_UpdatePresence_ClientIDFallbackChain(t *testing.T) {
+func TestCRDTService_UpdatePresence_DelegationRejectsSiblingWorkspace(t *testing.T) {
+	env := setupCRDTService(t)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         "user-alice",
+		Credential: auth.DelegationCredential("test-delegation", "w1"),
+	})
+
+	_, err := env.svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: "w2",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"a delegated presence heartbeat must not advertise activity in a sibling workspace")
+}
+
+func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *testing.T) {
+	env := setupCRDTService(t)
+	st := hubtestutil.OpenTestStore(t)
+	orgID := env.orgID
+	require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
+		ID:   orgID,
+		Name: orgID,
+	}))
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	_ = storetest.SeedWorkspace(t, st, orgID, user.ID, "w1")
+	svc := service.NewCRDTService(st, env.registry, nil)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         user.ID,
+		OrgID:      orgID,
+		Credential: auth.DelegationCredential("test-delegation", "missing-workspace"),
+	})
+
+	resp, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{OrgId: orgID}))
+	require.NoError(t, err)
+	assert.Empty(t, resp.Msg.GetState().GetWorkspaces(),
+		"an empty delegated ACL must not be interpreted as the all-workspaces materialized filter")
+	assert.Empty(t, resp.Msg.GetState().GetNodes())
+	assert.Empty(t, resp.Msg.GetState().GetTabs())
+}
+
+func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *testing.T) {
+	t.Run("workspace must belong to requested org", func(t *testing.T) {
+		env := setupCRDTService(t)
+		st := hubtestutil.OpenTestStore(t)
+		otherOrgID := storetest.SeedOrg(t, st, "presence-other-org", false)
+		user := storetest.SeedUser(t, st, otherOrgID, "presence-owner")
+		workspaceID := storetest.SeedWorkspace(t, st, otherOrgID, user.ID, "Other org")
+		svc := service.NewCRDTService(st, env.registry, nil)
+
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: otherOrgID})
+		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+			OrgId: env.orgID, WorkspaceId: workspaceID,
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	})
+
+	t.Run("revoked grant invalidates delegated heartbeat", func(t *testing.T) {
+		env := setupCRDTService(t)
+		st := hubtestutil.OpenTestStore(t)
+		require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
+			ID: env.orgID, Name: "presence-grant-org",
+		}))
+		owner := storetest.SeedUser(t, st, env.orgID, "presence-owner")
+		grantee := storetest.SeedUser(t, st, env.orgID, "presence-grantee")
+		workspaceID := storetest.SeedWorkspace(t, st, env.orgID, owner.ID, "Shared")
+		require.NoError(t, st.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
+			WorkspaceID: workspaceID,
+			UserID:      grantee.ID,
+		}))
+		require.NoError(t, st.WorkspaceAccess().Revoke(context.Background(), store.RevokeWorkspaceAccessParams{
+			WorkspaceID: workspaceID,
+			UserID:      grantee.ID,
+		}))
+		svc := service.NewCRDTService(st, env.registry, nil)
+
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+			ID:         grantee.ID,
+			OrgID:      env.orgID,
+			Credential: auth.DelegationCredential("delegation-token", workspaceID),
+		})
+		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+			OrgId: env.orgID, WorkspaceId: workspaceID,
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	})
+}
+
+// TestCRDTService_UpdatePresence_ClientIDNamespaces asserts that
+// session, bearer-kind/token, and user fallback identities remain
+// distinct even when their raw IDs are equal.
+func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 	cases := []struct {
 		name     string
 		info     *auth.UserInfo
 		expected string
 	}{
 		{
-			name:     "session_id wins when set",
-			info:     &auth.UserInfo{ID: "u-1", SessionID: "sess-1", BearerTokenID: "tok-1"},
-			expected: "sess-1",
+			name:     "session uses its namespace",
+			info:     &auth.UserInfo{Credential: auth.SessionCredential("shared-id")},
+			expected: "session:shared-id",
 		},
 		{
-			name:     "bearer_token_id wins when session blank",
-			info:     &auth.UserInfo{ID: "u-2", SessionID: "", BearerTokenID: "tok-2"},
-			expected: "tok-2",
+			name:     "api bearer includes its kind",
+			info:     &auth.UserInfo{Credential: auth.APICredential("shared-id")},
+			expected: "bearer:61:shared-id",
 		},
 		{
-			name:     "user_id is the last resort",
-			info:     &auth.UserInfo{ID: "u-3"},
-			expected: "u-3",
+			name:     "delegation bearer includes its kind",
+			info:     &auth.UserInfo{Credential: auth.DelegationCredential("shared-id", "w1")},
+			expected: "bearer:64:shared-id",
+		},
+		{
+			name:     "user fallback has its own namespace",
+			info:     &auth.UserInfo{},
+			expected: "user:shared-id",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupCRDTService(t)
+			st := hubtestutil.OpenTestStore(t)
+			require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
+				ID: env.orgID, Name: env.orgID,
+			}))
+			require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+				ID: "shared-id", OrgID: env.orgID, Username: "presence-user",
+			}))
+			require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
+				ID: "w1", OrgID: env.orgID, OwnerUserID: "shared-id", Title: "Presence",
+			}))
+			tc.info.ID = "shared-id"
+			svc := service.NewCRDTService(st, env.registry, nil)
 
 			// Subscribe so we can capture the broadcast PresenceUpdate.
 			var (
@@ -359,7 +486,7 @@ func TestCRDTService_UpdatePresence_ClientIDFallbackChain(t *testing.T) {
 			defer unsub()
 
 			ctx := auth.WithUser(context.Background(), tc.info)
-			_, err := env.svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+			_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
 				OrgId: env.orgID, WorkspaceId: "w1",
 			}))
 			require.NoError(t, err)
@@ -427,4 +554,32 @@ func TestResolveAllowedWorkspaces_FiltersAndDedups(t *testing.T) {
 	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, alice.OrgID, []string{"", "w-alice", ""}, aliceID)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"w-alice"}, allowed)
+}
+
+func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
+	sibling := storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
+	info := &auth.UserInfo{
+		ID:         user.ID,
+		OrgID:      orgID,
+		Credential: auth.DelegationCredential("test-delegation", pinned),
+	}
+
+	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, nil, info)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{pinned}, allowed,
+		"an empty delegated workspace request must expand to the pinned workspace only")
+
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, []string{pinned}, info)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{pinned}, allowed)
+
+	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, []string{sibling}, info)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"explicit sibling workspace requests must fail closed instead of silently widening")
 }

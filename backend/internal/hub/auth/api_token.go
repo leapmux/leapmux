@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // TokenPrefix is the canonical leading marker for LeapMux bearer tokens
@@ -120,7 +122,7 @@ func ParseBearer(bearer string) (kind BearerKind, tokenID, secret string, err er
 		return 0, "", "", ErrInvalidToken
 	}
 	k := BearerKind(rest[0])
-	if !k.valid() {
+	if !k.IsValid() {
 		return 0, "", "", ErrInvalidToken
 	}
 	rest = rest[1:]
@@ -131,23 +133,11 @@ func ParseBearer(bearer string) (kind BearerKind, tokenID, secret string, err er
 	return k, rest[:idx], rest[idx+1:], nil
 }
 
-// BearerID extracts the stored row id from a "lmx_<kind><id>_<secret>"
-// string. Returns "" on malformed input. The kind char is part of the
-// bearer's wire format but NOT part of the row PK, so it's stripped
-// here.
-func BearerID(bearer string) string {
-	_, tokenID, _, err := ParseBearer(bearer)
-	if err != nil {
-		return ""
-	}
-	return tokenID
-}
-
-// valid reports whether kind is one of the registered bearer kinds.
+// IsValid reports whether kind is one of the registered bearer kinds.
 // A bearer with an unrecognised kind char is rejected outright —
 // the validator never queries the DB for tokens it doesn't know
 // how to look up.
-func (k BearerKind) valid() bool {
+func (k BearerKind) IsValid() bool {
 	switch k {
 	case BearerKindAPI, BearerKindDelegation:
 		return true
@@ -178,8 +168,15 @@ type MintedBearerPair struct {
 // hash + TTL derivation so api_token and delegation_token issuers
 // can't drift on shape.
 func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
-	access := MintAccessSecret()
-	refresh := MintAccessSecret()
+	return v.newBearerPair(kind, tokenID, MintAccessSecret(), MintAccessSecret(), now, accessTTL, refreshTTL)
+}
+
+// newBearerPair assembles a MintedBearerPair from already-chosen access and
+// refresh secrets. Both the fresh-mint (random secrets) and the deterministic
+// refresh-derivation (pepper-derived secrets) paths funnel through here so the
+// bearer wire format, secret hashing, and TTL derivation are defined once and
+// cannot drift between them.
+func (v *TokenValidator) newBearerPair(kind BearerKind, tokenID, access, refresh string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
 	return MintedBearerPair{
 		AccessBearer:     FormatBearer(kind, tokenID, access),
 		RefreshBearer:    FormatBearer(kind, tokenID, refresh),
@@ -190,8 +187,37 @@ func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now tim
 	}
 }
 
-// VerifyBearerSecret confirms a bearer's secret matches the stored row
-// hash, *without* rejecting already-revoked or already-expired rows.
+// DeriveRefreshBearerPair deterministically derives the next bearer pair from
+// the submitted refresh hash. Every Hub with the same pepper derives the same
+// pair, so a retry of a successfully rotated refresh can recover after process
+// failure or when load balancing sends it to another Hub.
+func (v *TokenValidator) DeriveRefreshBearerPair(
+	kind BearerKind,
+	tokenID string,
+	refreshHash []byte,
+	now time.Time,
+	accessTTL, refreshTTL time.Duration,
+) MintedBearerPair {
+	access := v.deriveRefreshSecret("access", kind, tokenID, refreshHash)
+	refresh := v.deriveRefreshSecret("refresh", kind, tokenID, refreshHash)
+	return v.newBearerPair(kind, tokenID, access, refresh, now, accessTTL, refreshTTL)
+}
+
+func (v *TokenValidator) deriveRefreshSecret(purpose string, kind BearerKind, tokenID string, refreshHash []byte) string {
+	mac := hmac.New(sha256.New, v.pepper)
+	mac.Write([]byte("leapmux-refresh-pair-v1"))
+	mac.Write([]byte{0, byte(kind), 0})
+	mac.Write([]byte(tokenID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(purpose))
+	mac.Write([]byte{0})
+	mac.Write(refreshHash)
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// VerifyBearerSecret confirms a bearer's secret matches a stored access,
+// current-refresh, or previous-refresh hash, *without* rejecting already-
+// revoked or already-expired rows.
 // It is the primitive RFC 7009-style revocation needs: the revocation
 // endpoint must reject callers who don't hold the secret (so a leaked
 // token_id alone can't tear down a victim's session), but should still
@@ -208,33 +234,42 @@ func (v *TokenValidator) VerifyBearerSecret(ctx context.Context, bearer string) 
 	if err != nil {
 		return 0, "", ErrInvalidToken
 	}
-	id, hash, lerr := v.lookupRow(ctx, kind, tokenID)
+	id, hashes, lerr := v.lookupRowSecretHashes(ctx, kind, tokenID)
 	if lerr != nil {
-		return 0, "", ErrInvalidToken
+		if errors.Is(lerr, store.ErrNotFound) {
+			return 0, "", ErrInvalidToken
+		}
+		return 0, "", lerr
 	}
-	if !hmac.Equal(v.HashSecret(secret), hash) {
+	presentedHash := v.HashSecret(secret)
+	matched := false
+	for _, hash := range hashes {
+		if len(hash) > 0 && hmac.Equal(presentedHash, hash) {
+			matched = true
+		}
+	}
+	if !matched {
 		return 0, "", ErrInvalidToken
 	}
 	return kind, id, nil
 }
 
-// lookupRow fetches the (row_id, secret_hash) for the bearer kind/id
-// pair without applying revocation/expiry checks. Returns an error if
-// the kind is unknown or the row doesn't exist.
-func (v *TokenValidator) lookupRow(ctx context.Context, kind BearerKind, tokenID string) (string, []byte, error) {
+// lookupRowSecretHashes fetches every access/refresh secret that is entitled
+// to revoke the bearer row, without applying revocation or expiry checks.
+func (v *TokenValidator) lookupRowSecretHashes(ctx context.Context, kind BearerKind, tokenID string) (string, [][]byte, error) {
 	switch kind {
 	case BearerKindAPI:
 		row, err := v.store.APITokens().GetByID(ctx, tokenID)
 		if err != nil {
 			return "", nil, err
 		}
-		return row.ID, row.SecretHash, nil
+		return row.ID, [][]byte{row.SecretHash, row.RefreshHash, row.PreviousRefreshHash}, nil
 	case BearerKindDelegation:
 		row, err := v.store.DelegationTokens().GetByID(ctx, tokenID)
 		if err != nil {
 			return "", nil, err
 		}
-		return row.ID, row.SecretHash, nil
+		return row.ID, [][]byte{row.SecretHash, row.RefreshHash}, nil
 	}
 	return "", nil, ErrInvalidToken
 }
@@ -245,132 +280,172 @@ func (v *TokenValidator) lookupRow(ctx context.Context, kind BearerKind, tokenID
 // always a single PK lookup rather than the older "try
 // api_tokens, fall back to delegation_tokens" pattern.
 //
-// The cache is keyed by tokenID; revocations call `EvictBearer` to
-// bust it immediately.
+// Request interceptors cache successful bearer validations. Revocation
+// paths apply CredentialLifecycleEffects to invalidate every cached secret and
+// terminate work authorized by the token row.
 func (v *TokenValidator) ValidateBearer(ctx context.Context, bearer string) (*UserInfo, error) {
 	kind, tokenID, secret, err := ParseBearer(bearer)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
-	fields, touch, after, err := v.loadValidateFields(ctx, kind, tokenID)
+	loaded, err := v.loadBearer(ctx, kind, tokenID)
 	if err != nil {
 		return nil, err
 	}
-	user, err := v.validateRow(ctx, fields, secret, after)
+	user, err := v.validateRow(ctx, loaded.fields, secret)
 	if err != nil {
 		return nil, err
 	}
-	touch()
+	user.Credential = loaded.credential
+	loaded.touch()
 	return user, nil
 }
 
-// loadValidateFields loads the per-kind row and projects it into the
-// shared validateRowFields plus the kind-specific after-closure and a
-// fire-and-forget Touch callback. Collapsing the per-kind path here
-// keeps ValidateBearer free of the error-wrapping boilerplate that
-// used to repeat in every case arm.
-func (v *TokenValidator) loadValidateFields(ctx context.Context, kind BearerKind, tokenID string) (validateRowFields, func(), func(*UserInfo), error) {
+type loadedBearer struct {
+	fields     validateRowFields
+	touch      func()
+	credential CredentialIdentity
+}
+
+// loadBearer projects each persisted bearer type into explicit shared
+// validation data plus its post-validation touch operation.
+func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenID string) (loadedBearer, error) {
 	switch kind {
 	case BearerKindAPI:
 		api, err := v.store.APITokens().GetByID(ctx, tokenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return validateRowFields{}, nil, nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 			}
-			return validateRowFields{}, nil, nil, connect.NewError(connect.CodeInternal, err)
+			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
 		}
-		return validateRowFields{
-				Revoked:    api.RevokedAt != nil,
-				Expired:    api.ExpiresAt != nil && time.Now().After(*api.ExpiresAt),
-				SecretHash: api.SecretHash,
-				UserID:     api.UserID,
-				RowID:      api.ID,
+		return loadedBearer{
+			fields: validateRowFields{
+				Revoked:        api.RevokedAt != nil,
+				Expired:        api.ExpiresAt != nil && IsExpired(time.Now(), *api.ExpiresAt),
+				SecretHash:     api.SecretHash,
+				UserID:         api.UserID,
+				RowID:          api.ID,
+				CreatedAt:      api.CreatedAt,
+				ExpiresAt:      ptrconv.DerefTime(api.ExpiresAt),
+				AuthGeneration: api.AuthGeneration,
 			},
-			func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
-			nil,
-			nil
+			touch:      func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
+			credential: APICredential(tokenID),
+		}, nil
 
 	case BearerKindDelegation:
 		del, err := v.store.DelegationTokens().GetByID(ctx, tokenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return validateRowFields{}, nil, nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 			}
-			return validateRowFields{}, nil, nil, connect.NewError(connect.CodeInternal, err)
+			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
 		}
-		return validateRowFields{
-				Revoked:    del.RevokedAt != nil,
-				Expired:    time.Now().After(del.ExpiresAt),
-				SecretHash: del.SecretHash,
-				UserID:     del.UserID,
-				RowID:      del.ID,
+		if del.WorkspaceID == "" {
+			// A delegation row must always carry a workspace scope. An empty
+			// scope is a data-integrity slip that would make
+			// DelegationCredential panic -- and this runs as the singleflight
+			// leader, so the panic re-fires into every follower collapsed onto
+			// the same bearer key. Treat the malformed row as an invalid token
+			// (permanent, not a retryable 500) instead.
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		}
+		return loadedBearer{
+			fields: validateRowFields{
+				Revoked:        del.RevokedAt != nil,
+				Expired:        IsExpired(time.Now(), del.ExpiresAt),
+				SecretHash:     del.SecretHash,
+				UserID:         del.UserID,
+				RowID:          del.ID,
+				CreatedAt:      del.CreatedAt,
+				ExpiresAt:      del.ExpiresAt,
+				AuthGeneration: del.AuthGeneration,
 			},
-			func() { _ = v.store.DelegationTokens().Touch(ctx, del.ID) },
-			// Pin the user info to the delegation's workspace scope.
-			// Callers (ChannelService.OpenChannel today; future authz
-			// checks tomorrow) avoid handing the bearer the user's full
-			// accessible-workspace list this way.
-			func(u *UserInfo) { u.DelegationWorkspaceID = del.WorkspaceID },
-			nil
+			touch:      func() { _ = v.store.DelegationTokens().Touch(ctx, del.ID) },
+			credential: DelegationCredential(tokenID, del.WorkspaceID),
+		}, nil
 	}
 
 	// parseBearer rejects unknown kinds; this case is unreachable but
 	// kept as defence-in-depth so a future kind addition surfaces here
 	// instead of silently falling through.
-	return validateRowFields{}, nil, nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+	return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+}
+
+// IsExpired treats expiry timestamps as exclusive upper bounds: a credential
+// is invalid at the recorded instant, not one clock tick afterward.
+func IsExpired(now, expiresAt time.Time) bool {
+	return !now.Before(expiresAt)
 }
 
 // validateRowFields is the union of fields ValidateBearer needs to
 // classify a token row (whether it lives in api_tokens or
-// delegation_tokens). lookupRow projects the per-table row into this
+// delegation_tokens). loadBearer projects the per-table row into this
 // shape so validateRow can stay table-agnostic.
 type validateRowFields struct {
-	Revoked    bool
-	Expired    bool
-	SecretHash []byte
-	UserID     string
-	RowID      string
+	Revoked        bool
+	Expired        bool
+	SecretHash     []byte
+	UserID         string
+	RowID          string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	AuthGeneration int64
 }
 
-// validateRow runs the shared revoked/expired/secret-match/load-user
-// path. Callers supply per-row policy via `f` and per-table side
-// effects (workspace pinning) via `after`.
-func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, secret string, after func(*UserInfo)) (*UserInfo, error) {
+// validateRow runs the shared secret-match/revoked/expired/load-user path.
+//
+// The secret is verified FIRST, before any revoked/expired state is surfaced.
+// token_id is non-secret (returned in JSON to /auth/cli/token, /auth/cli/refresh,
+// and the worker delegation-mint endpoint), so a caller who knows only a victim's
+// token_id must not be able to probe its existence or lifecycle: a wrong secret
+// yields a uniform ErrInvalidToken, indistinguishable from loadBearer's not-found
+// path. This mirrors the sibling VerifyBearerSecret, which is deliberately built to
+// never leak which check failed. A legitimate secret-holder still learns
+// revoked/expired below -- revocation and expiry leave secret_hash intact, so the
+// access secret keeps matching -- so refresh-on-expiry is unaffected.
+func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, secret string) (*UserInfo, error) {
+	if !hmac.Equal(v.HashSecret(secret), f.SecretHash) {
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+	}
 	if f.Revoked {
 		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
 	}
 	if f.Expired {
 		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenExpired)
 	}
-	if !hmac.Equal(v.HashSecret(secret), f.SecretHash) {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
-	}
 	user, err := v.loadUser(ctx, f.UserID)
 	if err != nil {
 		return nil, err
 	}
-	user.BearerTokenID = f.RowID
-	if after != nil {
-		after(user)
+	if f.AuthGeneration < user.UserAuthGeneration {
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
 	}
+	user.AuthenticatedAt = f.CreatedAt.UTC()
+	user.CredentialExpiresAt = DeadlineAt(f.ExpiresAt.UTC())
 	return user, nil
 }
 
 func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo, error) {
 	u, err := v.store.Users().GetByID(ctx, userID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user not found"))
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 	if u.DeletedAt != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user deleted"))
 	}
 	return &UserInfo{
-		ID:            u.ID,
-		OrgID:         u.OrgID,
-		Username:      u.Username,
-		IsAdmin:       u.IsAdmin,
-		Email:         u.Email,
-		EmailVerified: u.EmailVerified,
+		ID:                 u.ID,
+		OrgID:              u.OrgID,
+		Username:           u.Username,
+		IsAdmin:            u.IsAdmin,
+		Email:              u.Email,
+		EmailVerified:      u.EmailVerified,
+		UserAuthGeneration: u.AuthGeneration,
 	}, nil
 }
 
@@ -379,11 +454,11 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 // after-rotation (compromise). If reuse is detected the row is revoked
 // and ErrRefreshReused is returned.
 //
-// Returns the matched row on success along with whether the caller should
-// rotate (true for first use of current refresh, false for grace-window
-// retry — same access pair will be returned). Refreshes are only valid
-// against api_tokens (delegation tokens have a separate mint flow), so
-// a bearer with the wrong kind is rejected upfront.
+// Returns the matched row on success along with whether the refresh matched the
+// previous hash inside the grace window. A grace-window retry re-emits the
+// cached access pair; a current-refresh match rotates the row. Refreshes are
+// only valid against api_tokens (delegation tokens have a separate mint flow),
+// so a bearer with the wrong kind is rejected upfront.
 func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string) (row *store.APIToken, retry bool, err error) {
 	kind, tokenID, secret, perr := ParseBearer(refresh)
 	if perr != nil {
@@ -399,20 +474,51 @@ func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string)
 		}
 		return nil, false, err
 	}
+	hashed := v.HashSecret(secret)
+	currentMatches := len(row.RefreshHash) > 0 && hmac.Equal(hashed, row.RefreshHash)
+	previousMatches := len(row.PreviousRefreshHash) > 0 && hmac.Equal(hashed, row.PreviousRefreshHash)
+	if !currentMatches && !previousMatches {
+		return nil, false, ErrInvalidToken
+	}
 	if row.RevokedAt != nil {
 		return nil, false, ErrTokenRevoked
 	}
-	hashed := v.HashSecret(secret)
-	if len(row.RefreshHash) > 0 && hmac.Equal(hashed, row.RefreshHash) {
+	now := time.Now()
+	if currentMatches {
+		if row.RefreshExpiresAt != nil && IsExpired(now, *row.RefreshExpiresAt) {
+			return nil, false, ErrTokenExpired
+		}
+		if err := v.validateCredentialGeneration(ctx, row.UserID, row.AuthGeneration); err != nil {
+			return nil, false, err
+		}
 		return row, false, nil
 	}
-	if len(row.PreviousRefreshHash) > 0 && hmac.Equal(hashed, row.PreviousRefreshHash) {
-		// Within grace window → benign retry; outside → revoke.
-		if row.PreviousRefreshExpiresAt != nil && time.Now().Before(*row.PreviousRefreshExpiresAt) {
+	if previousMatches {
+		// Within grace window: benign retry; outside: revoke.
+		if row.PreviousRefreshExpiresAt != nil && !IsExpired(now, *row.PreviousRefreshExpiresAt) {
+			if err := v.validateCredentialGeneration(ctx, row.UserID, row.AuthGeneration); err != nil {
+				return nil, false, err
+			}
 			return row, true, nil
 		}
-		_, _ = v.store.APITokens().Revoke(ctx, row.ID)
+		if _, err := v.store.APITokens().Revoke(ctx, row.ID); err != nil {
+			return nil, false, fmt.Errorf("revoke reused refresh token: %w", err)
+		}
 		return nil, false, ErrRefreshReused
 	}
 	return nil, false, ErrInvalidToken
+}
+
+func (v *TokenValidator) validateCredentialGeneration(ctx context.Context, userID string, credentialGeneration int64) error {
+	u, err := v.store.Users().GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrTokenRevoked
+		}
+		return err
+	}
+	if u.DeletedAt != nil || credentialGeneration < u.AuthGeneration {
+		return ErrTokenRevoked
+	}
+	return nil
 }

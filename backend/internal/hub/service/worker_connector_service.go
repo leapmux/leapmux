@@ -156,10 +156,15 @@ func (s *WorkerConnectorService) Connect(
 		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Register the connection.
+	// Register the connection. Replacement cancels this derived context to
+	// terminate the superseded handler without affecting the request context of
+	// the newly connected worker.
+	connCtx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
 	conn := &workermgr.Conn{
 		WorkerID: worker.ID,
 		Stream:   stream,
+		Cancel:   cancelConn,
 	}
 	replaced := s.workerMgr.Register(conn)
 	if replaced {
@@ -170,6 +175,7 @@ func (s *WorkerConnectorService) Connect(
 		// disconnect and opens fresh channels to the new worker.
 		s.cleanupWorker(worker.ID)
 	}
+	ctx = connCtx
 	defer func() {
 		// Only run cleanup if this connection is still the registered one.
 		// A newer worker process may have already replaced it, in which
@@ -367,19 +373,22 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	// Route channel messages from worker to frontend.
 	if chMsg := msg.GetChannelMessageResp(); chMsg != nil {
 		if s.channelMgr != nil {
-			// Validate chunked message constraints before forwarding.
-			if err := s.channelMgr.ChunkTracker.Track(
-				chMsg.GetChannelId(), "w2fe",
-				chMsg.GetCorrelationId(),
-				len(chMsg.GetCiphertext()),
-				chMsg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-			); err != nil {
-				slog.Warn("channel relay: chunk validation failed",
+			matched, err := s.channelMgr.RelayWorkerMessage(chMsg, workerID)
+			if !matched {
+				slog.Warn("channel relay: worker sent message for an unowned channel",
+					"worker_id", workerID,
+					"channel_id", chMsg.GetChannelId(),
+				)
+				return nil
+			}
+			if err != nil {
+				slog.Warn("channel relay: terminal worker-to-frontend failure",
 					"worker_id", workerID,
 					"channel_id", chMsg.GetChannelId(),
 					"correlation_id", chMsg.GetCorrelationId(),
 					"error", err,
 				)
+				s.closeWorkerChannel(conn, workerID, chMsg.GetChannelId())
 				return nil
 			}
 
@@ -388,13 +397,6 @@ func (s *WorkerConnectorService) processWorkerMessage(
 				"channel_id", chMsg.GetChannelId(),
 				"correlation_id", chMsg.GetCorrelationId(),
 			)
-			if !s.channelMgr.SendToFrontend(chMsg) {
-				slog.Debug("failed to route channel message to frontend",
-					"worker_id", workerID,
-					"channel_id", chMsg.GetChannelId(),
-					"correlation_id", chMsg.GetCorrelationId(),
-				)
-			}
 		}
 		return nil
 	}
@@ -404,6 +406,19 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		"request_id", msg.GetRequestId(),
 	)
 	return nil
+}
+
+func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, workerID, channelID string) {
+	closed := s.channelMgr.CloseByIDIf(channelID, func(info channelmgr.ChannelInfo) bool {
+		return info.WorkerID == workerID
+	})
+	if len(closed) == 0 {
+		return
+	}
+	if err := conn.Send(newChannelCloseResponse(channelID)); err != nil {
+		slog.Debug("failed to close terminal worker channel",
+			"worker_id", workerID, "channel_id", channelID, "error", err)
+	}
 }
 
 // handleWorkspaceTabsSync compares the worker's reported tab state

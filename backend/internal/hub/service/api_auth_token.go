@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/pkce"
 )
 
-// OAuth 2.0 grant types accepted by /api/auth/token. Values are
+// OAuth 2.0 grant types accepted by /auth/cli/token. Values are
 // RFC-defined wire identifiers:
 //   - GrantTypeAuthorizationCode: RFC 6749 §4.1.3
 //   - GrantTypeDeviceCode: RFC 8628 §3.4
@@ -22,6 +23,8 @@ const (
 	GrantTypeAuthorizationCode = "authorization_code"
 	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
 )
+
+var errAuthorizationGrantUnavailable = errors.New("authorization grant unavailable")
 
 // --- Token endpoints ---
 
@@ -63,9 +66,13 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "code and code_verifier are required")
 		return
 	}
-	row, err := h.store.CLIAuthorizationCodes().Consume(r.Context(), code)
+	row, err := h.store.CLIAuthorizationCodes().GetActive(r.Context(), code)
 	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+		if errors.Is(err, store.ErrNotFound) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+		} else {
+			writeInternalError(w, "authorization code lookup failed", err)
+		}
 		return
 	}
 	expected := pkce.S256(verifier)
@@ -76,9 +83,40 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 	if deviceName == "" {
 		deviceName = row.DeviceName
 	}
-	resp, err := h.issueAPIToken(r.Context(), row.UserID, "cli", deviceName)
+	h.issueTokenResponse(w, r, row.UserID, deviceName,
+		"code expired or already consumed",
+		"authorization code token issuance failed",
+		func(tx store.Store) error {
+			if _, err := tx.CLIAuthorizationCodes().Consume(r.Context(), code); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return errAuthorizationGrantUnavailable
+				}
+				return fmt.Errorf("consume authorization code: %w", err)
+			}
+			return nil
+		})
+}
+
+// issueTokenResponse mints a CLI API token for an already-validated OAuth grant
+// and writes the RFC 6749/8628 token response: the token JSON on success,
+// invalid_grant with invalidGrantMsg when the single-use consume closure reports
+// the grant is gone (errAuthorizationGrantUnavailable), or an internal error
+// (internalMsg) otherwise. The authorization_code and device_code handlers share
+// this issue-and-map tail so they cannot drift on the error codes they must both
+// emit.
+func (h *APIAuthHandler) issueTokenResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	userID, deviceName, invalidGrantMsg, internalMsg string,
+	consume func(tx store.Store) error,
+) {
+	resp, err := h.issueAPIToken(r.Context(), userID, "cli", deviceName, consume)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, errAuthorizationGrantUnavailable) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", invalidGrantMsg)
+		} else {
+			writeInternalError(w, internalMsg, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -92,33 +130,59 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 	}
 	row, err := h.store.DeviceAuthorizations().Get(r.Context(), deviceCode)
 	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "unknown device_code")
+		if errors.Is(err, store.ErrNotFound) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "unknown device_code")
+		} else {
+			writeInternalError(w, "device authorization lookup failed", err)
+		}
 		return
 	}
 	// Throttle / expiry / already-consumed run before TouchPoll so a
 	// fast-polling client gets `slow_down` rather than burning the
-	// interval window. Approval-state guards run AFTER TouchPoll so a
-	// pending poll still advances `last_polled_at` and the next poll
-	// can detect the new interval.
+	// interval window. Pending and denied polls touch immediately. An
+	// approved poll also touches immediately -- before, and outside, the
+	// issuance transaction -- so last_polled_at advances (keeping the
+	// slow_down throttle honest) even when a transient token-insert
+	// failure rolls the transaction back. The grant stays retryable
+	// because only Consume, which remains inside the transaction, is
+	// single-use.
 	if code, desc, ok := h.preTouchPollOAuthError(row, time.Now()); ok {
 		writeOAuthError(w, http.StatusBadRequest, code, desc)
 		return
 	}
-	_ = h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode)
 	if code, desc, ok := h.postTouchPollOAuthError(row); ok {
+		if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode); err != nil {
+			writeInternalError(w, "device authorization poll update failed", err)
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, code, desc)
 		return
 	}
-	if _, err := h.store.DeviceAuthorizations().Consume(r.Context(), deviceCode); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Advance last_polled_at outside the issuance transaction so the
+	// throttle anchor moves forward even if issuance later fails and
+	// rolls back -- otherwise a client hammering an approved-but-
+	// transiently-failing grant would never get slow_down. Touch errors
+	// are internal, matching the pending/denied path above.
+	if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode); err != nil {
+		writeInternalError(w, "device authorization poll update failed", err)
 		return
 	}
-	resp, err := h.issueAPIToken(r.Context(), row.UserID, "cli", row.DeviceName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
+	h.issueTokenResponse(w, r, row.UserID, row.DeviceName,
+		"device_code expired or already consumed",
+		"device authorization token issuance failed",
+		func(tx store.Store) error {
+			// Consume is the single-use consumption that must stay atomic
+			// with token creation, so it -- and only it -- remains in the
+			// transaction.
+			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCode)
+			if err != nil {
+				return fmt.Errorf("consume device authorization: %w", err)
+			}
+			if affected != 1 {
+				return errAuthorizationGrantUnavailable
+			}
+			return nil
+		})
 }
 
 // preTouchPollOAuthError returns the OAuth-error code + description
@@ -128,19 +192,18 @@ func (h *APIAuthHandler) preTouchPollOAuthError(row *store.DeviceAuthorization, 
 	if row.ConsumedAt != nil {
 		return "invalid_grant", "device_code already used", true
 	}
-	if now.After(row.ExpiresAt) {
+	if auth.IsExpired(now, row.ExpiresAt) {
 		return "expired_token", "", true
 	}
-	if h.shouldThrottle(row) {
+	if h.shouldThrottle(row, now) {
 		return "slow_down", "", true
 	}
 	return "", "", false
 }
 
-// postTouchPollOAuthError returns the OAuth-error code + description
-// for the approval-state guards that must run AFTER TouchPoll, so a
-// pending poll still updates `last_polled_at` and the next poll's
-// throttle check has fresh state to compare against.
+// postTouchPollOAuthError returns the OAuth-error code + description for
+// approval-state guards whose responses must still update last_polled_at.
+// The caller performs that update before writing the returned OAuth error.
 func (h *APIAuthHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (string, string, bool) {
 	switch row.Approved {
 	case 0:
@@ -154,28 +217,7 @@ func (h *APIAuthHandler) postTouchPollOAuthError(row *store.DeviceAuthorization)
 	return "", "", false
 }
 
-// evictAPITokenArtifacts drops an api-token bearer from both the
-// validation cache and the refresh-grace cache. The grace cache holds
-// the previous (access, refresh) pair for benign retry; both must
-// die in lock-step or a revoked api token leaks a one-shot retry.
-// Shared between the refresh-reuse / refresh-revoked branches of
-// handleRefresh and the api-kind branch of handleRevoke.
-func (h *APIAuthHandler) evictAPITokenArtifacts(tokenID string) {
-	h.cache.EvictBearer(tokenID)
-	if h.graceCache != nil {
-		h.graceCache.Evict(tokenID)
-	}
-}
-
-// evictRefreshArtifacts is the convenience overload that resolves the
-// tokenID from a full refresh bearer (the form handleRefresh has on
-// hand). Both reuse-detected and revoked / expired branches of
-// handleRefresh need the same eviction sequence.
-func (h *APIAuthHandler) evictRefreshArtifacts(refresh string) {
-	h.evictAPITokenArtifacts(auth.BearerID(refresh))
-}
-
-func (h *APIAuthHandler) shouldThrottle(row *store.DeviceAuthorization) bool {
+func (h *APIAuthHandler) shouldThrottle(row *store.DeviceAuthorization, now time.Time) bool {
 	if row.LastPolledAt == nil {
 		return false
 	}
@@ -183,7 +225,95 @@ func (h *APIAuthHandler) shouldThrottle(row *store.DeviceAuthorization) bool {
 	if min <= 0 {
 		min = DeviceCodePollInterval
 	}
-	return time.Since(*row.LastPolledAt) < (min - 250*time.Millisecond)
+	return now.Sub(*row.LastPolledAt) < (min - 250*time.Millisecond)
+}
+
+type parsedRefreshBearer struct {
+	bearer     string
+	tokenID    string
+	secretHash []byte
+}
+
+func (h *APIAuthHandler) parseAPIRefreshBearer(refresh string) (parsedRefreshBearer, error) {
+	kind, tokenID, secret, err := auth.ParseBearer(refresh)
+	if err != nil {
+		return parsedRefreshBearer{}, err
+	}
+	if kind != auth.BearerKindAPI {
+		return parsedRefreshBearer{}, auth.ErrInvalidToken
+	}
+	return parsedRefreshBearer{
+		bearer:     refresh,
+		tokenID:    tokenID,
+		secretHash: h.validator.HashSecret(secret),
+	}, nil
+}
+
+func (b parsedRefreshBearer) flightKey() string {
+	return fmt.Sprintf("%d:%s:%x", len(b.tokenID), b.tokenID, b.secretHash)
+}
+
+type refreshResponse struct {
+	status int
+	body   any
+	err    error
+}
+
+type apiTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenID      string `json:"token_id"`
+	UserID       string `json:"user_id,omitempty"`
+	Username     string `json:"username,omitempty"`
+}
+
+func refreshOAuthError(status int, code, description string) refreshResponse {
+	return refreshResponse{status: status, body: oauthErrorBody(code, description)}
+}
+
+func refreshInternalError(err error) refreshResponse {
+	return refreshResponse{status: http.StatusInternalServerError, err: err}
+}
+
+func refreshTokenResponse(tokenID, accessBearer, refreshBearer string, expiresIn int) refreshResponse {
+	return refreshResponse{
+		status: http.StatusOK,
+		body: apiTokenResponse{
+			AccessToken:  accessBearer,
+			RefreshToken: refreshBearer,
+			ExpiresIn:    expiresIn,
+			TokenID:      tokenID,
+		},
+	}
+}
+
+func remainingExpiresIn(expiresAt, now time.Time) int {
+	remaining := expiresAt.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	return int(math.Ceil(remaining.Seconds()))
+}
+
+func (h *APIAuthHandler) refreshRetryResponse(row *store.APIToken, pair auth.MintedBearerPair) refreshResponse {
+	if row.ExpiresAt == nil {
+		return refreshInternalError(fmt.Errorf("API token %q has no access expiration", row.ID))
+	}
+	return refreshTokenResponse(
+		row.ID,
+		pair.AccessBearer,
+		pair.RefreshBearer,
+		remainingExpiresIn(*row.ExpiresAt, time.Now()),
+	)
+}
+
+func writeRefreshResponse(w http.ResponseWriter, resp refreshResponse) {
+	if resp.err != nil {
+		writeInternalError(w, "refresh token request failed", resp.err)
+		return
+	}
+	writeJSON(w, resp.status, resp.body)
 }
 
 func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -201,51 +331,44 @@ func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, retry, err := h.validator.ValidateAPIRefresh(r.Context(), refresh)
+	parsed, err := h.parseAPIRefreshBearer(refresh)
 	if err != nil {
-		switch {
-		case errors.Is(err, auth.ErrRefreshReused):
-			// Refuse to hand out the cached pair after a confirmed
-			// reuse — the validator has already revoked the row.
-			h.evictRefreshArtifacts(refresh)
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "refresh reuse detected; token revoked")
-		case errors.Is(err, auth.ErrTokenRevoked), errors.Is(err, auth.ErrTokenExpired):
-			h.evictRefreshArtifacts(refresh)
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "token revoked")
-		case errors.Is(err, auth.ErrInvalidToken):
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "")
-		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "")
 		return
+	}
+	flightCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), RefreshWorkTimeout)
+	defer cancel()
+	// Blocking Do (not DoChan + ctx select) is deliberate: a refresh rotates the
+	// token single-use, so once the flight starts, every caller -- including one
+	// whose client disconnected -- must run to completion and receive the same
+	// rotated pair, or it is left with a rotated-away refresh token and no
+	// replacement. flightCtx (WithoutCancel) already decouples the work from the
+	// leader's request cancellation. This is why it differs from the read-only
+	// bearer-validation singleflight, which is safe to abandon on disconnect.
+	result, _, _ := h.refreshFlight.Do(parsed.flightKey(), func() (any, error) {
+		return h.refresh(flightCtx, parsed), nil
+	})
+	writeRefreshResponse(w, result.(refreshResponse))
+}
+
+func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer) refreshResponse {
+	row, retry, err := h.validator.ValidateAPIRefresh(ctx, parsed.bearer)
+	if err != nil {
+		return h.refreshValidationError(parsed.tokenID, err)
 	}
 
 	now := time.Now()
+	pair := h.validator.DeriveRefreshBearerPair(
+		auth.BearerKindAPI,
+		row.ID,
+		parsed.secretHash,
+		now,
+		auth.AccessTokenTTL,
+		auth.RefreshTokenTTL,
+	)
 
 	if retry {
-		// The client is replaying a refresh whose response was lost in
-		// transit. Re-emit the same (access, refresh) pair we issued on
-		// the original rotation so the client can resume cleanly. We
-		// look the pair up in the encrypted in-process grace cache.
-		// If the cache has no entry (process restart, ttl drift), we
-		// must reject — issuing a fresh pair would invalidate the one
-		// the legitimate client may have received and is using.
-		if h.graceCache == nil {
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "retry not recoverable: grace cache unavailable")
-			return
-		}
-		access, refreshTok, err := h.graceCache.Get(row.ID)
-		if err != nil {
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "retry not recoverable: previous pair not cached")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token":  access,
-			"refresh_token": refreshTok,
-			"expires_in":    int(auth.AccessTokenTTL / time.Second),
-			"token_id":      row.ID,
-		})
-		return
+		return h.refreshRetryResponse(row, pair)
 	}
 
 	// First use of the current refresh: rotate both secrets in place
@@ -254,11 +377,10 @@ func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// newAccess) won't validate against `row.SecretHash`, which still
 	// hashes the rotated-out access secret. The previous refresh
 	// hash and its grace window get preserved so a racing retry can
-	// still re-emit the cached pair from h.graceCache.
-	pair := h.validator.MintBearerPair(auth.BearerKindAPI, row.ID, now, auth.AccessTokenTTL, auth.RefreshTokenTTL)
+	// deterministically derive and re-emit this same pair on any Hub.
 	prevHash := row.RefreshHash
 	prevExp := now.Add(auth.RefreshReuseGrace)
-	if err := h.store.APITokens().RotateRefresh(r.Context(), store.RotateAPITokenRefreshParams{
+	rotated, err := h.store.APITokens().RotateRefresh(ctx, store.RotateAPITokenRefreshParams{
 		ID:                       row.ID,
 		NewSecretHash:            pair.AccessHash,
 		NewExpiresAt:             &pair.AccessExpiresAt,
@@ -266,21 +388,61 @@ func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		NewRefreshExpiresAt:      &pair.RefreshExpiresAt,
 		PreviousRefreshHash:      prevHash,
 		PreviousRefreshExpiresAt: &prevExp,
-	}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.cache.EvictBearer(row.ID)
-
-	if h.graceCache != nil {
-		_ = h.graceCache.Put(row.ID, pair.AccessBearer, pair.RefreshBearer)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token":  pair.AccessBearer,
-		"refresh_token": pair.RefreshBearer,
-		"expires_in":    int(auth.AccessTokenTTL / time.Second),
-		"token_id":      row.ID,
 	})
+	if err != nil {
+		return refreshInternalError(err)
+	}
+	if rotated != 1 {
+		return h.recoverRefreshCASMiss(ctx, parsed)
+	}
+	// Pass the prolonged access expiry so the rotation not only invalidates the
+	// cached secret but extends the bearer's leases and channel expiries, since
+	// the row remains valid (with more lifetime) under the newly derived secret.
+	h.lifecycle.BearerRotatedExtending(auth.BearerKindAPI, row.ID, pair.AccessExpiresAt)
+
+	return refreshTokenResponse(
+		row.ID,
+		pair.AccessBearer,
+		pair.RefreshBearer,
+		remainingExpiresIn(pair.AccessExpiresAt, time.Now()),
+	)
+}
+
+func (h *APIAuthHandler) recoverRefreshCASMiss(ctx context.Context, parsed parsedRefreshBearer) refreshResponse {
+	row, retry, err := h.validator.ValidateAPIRefresh(ctx, parsed.bearer)
+	if err != nil {
+		return h.refreshValidationError(parsed.tokenID, err)
+	}
+	if !retry {
+		h.lifecycle.BearerRevoked(auth.BearerKindAPI, row.ID)
+		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "token revoked")
+	}
+	pair := h.validator.DeriveRefreshBearerPair(
+		auth.BearerKindAPI,
+		row.ID,
+		parsed.secretHash,
+		time.Now(),
+		auth.AccessTokenTTL,
+		auth.RefreshTokenTTL,
+	)
+	return h.refreshRetryResponse(row, pair)
+}
+
+func (h *APIAuthHandler) refreshValidationError(tokenID string, err error) refreshResponse {
+	switch {
+	case errors.Is(err, auth.ErrRefreshReused):
+		// Refuse to hand out the derived pair after a confirmed
+		// reuse — the validator has already revoked the row.
+		h.lifecycle.BearerRevoked(auth.BearerKindAPI, tokenID)
+		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "refresh reuse detected; token revoked")
+	case errors.Is(err, auth.ErrTokenRevoked), errors.Is(err, auth.ErrTokenExpired):
+		h.lifecycle.BearerRevoked(auth.BearerKindAPI, tokenID)
+		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "token revoked")
+	case errors.Is(err, auth.ErrInvalidToken):
+		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "")
+	default:
+		return refreshInternalError(err)
+	}
 }
 
 func (h *APIAuthHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
@@ -308,48 +470,71 @@ func (h *APIAuthHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	// a network blip doesn't need to handle 401.
 	kind, tokenID, err := h.validator.VerifyBearerSecret(r.Context(), bearer)
 	if err != nil {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
+		if errors.Is(err, auth.ErrInvalidToken) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+		} else {
+			writeInternalError(w, "token verification for revocation failed", err)
+		}
 		return
 	}
 	switch kind {
 	case auth.BearerKindAPI:
-		if _, err := h.store.APITokens().Revoke(r.Context(), tokenID); err == nil {
-			h.evictAPITokenArtifacts(tokenID)
+		if _, err := h.store.APITokens().Revoke(r.Context(), tokenID); err != nil {
+			writeInternalError(w, "API token revocation failed", err)
+			return
 		}
+		h.lifecycle.BearerRevoked(auth.BearerKindAPI, tokenID)
 	case auth.BearerKindDelegation:
-		if _, err := h.store.DelegationTokens().Revoke(r.Context(), tokenID); err == nil {
-			h.cache.EvictBearer(tokenID)
+		if _, err := h.store.DelegationTokens().Revoke(r.Context(), tokenID); err != nil {
+			writeInternalError(w, "delegation token revocation failed", err)
+			return
 		}
+		h.lifecycle.BearerRevoked(auth.BearerKindDelegation, tokenID)
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *APIAuthHandler) issueAPIToken(ctx context.Context, userID, clientType, clientName string) (map[string]any, error) {
+func (h *APIAuthHandler) issueAPIToken(
+	ctx context.Context,
+	userID, clientType, clientName string,
+	consumeGrant func(tx store.Store) error,
+) (*apiTokenResponse, error) {
 	tokenID := id.Generate()
 	pair := h.validator.MintBearerPair(auth.BearerKindAPI, tokenID, time.Now(), auth.AccessTokenTTL, auth.RefreshTokenTTL)
-	if err := h.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userID,
-		ClientType:       clientType,
-		ClientName:       clientName,
-		SecretHash:       pair.AccessHash,
-		RefreshHash:      pair.RefreshHash,
-		Scope:            "remote:*",
-		ExpiresAt:        &pair.AccessExpiresAt,
-		RefreshExpiresAt: &pair.RefreshExpiresAt,
-	}); err != nil {
-		return nil, fmt.Errorf("create api token: %w", err)
-	}
-	user, err := h.store.Users().GetByID(ctx, userID)
+	var user *store.User
+	err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		if err := consumeGrant(tx); err != nil {
+			return err
+		}
+		var err error
+		user, err = tx.Users().GetByID(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("query token user: %w", err)
+		}
+		if err := tx.APITokens().Create(ctx, store.CreateAPITokenParams{
+			ID:               tokenID,
+			UserID:           userID,
+			ClientType:       clientType,
+			ClientName:       clientName,
+			SecretHash:       pair.AccessHash,
+			RefreshHash:      pair.RefreshHash,
+			Scope:            "remote:*",
+			ExpiresAt:        &pair.AccessExpiresAt,
+			RefreshExpiresAt: &pair.RefreshExpiresAt,
+		}); err != nil {
+			return fmt.Errorf("create api token: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"access_token":  pair.AccessBearer,
-		"refresh_token": pair.RefreshBearer,
-		"expires_in":    int(auth.AccessTokenTTL / time.Second),
-		"token_id":      tokenID,
-		"user_id":       userID,
-		"username":      user.Username,
+	return &apiTokenResponse{
+		AccessToken:  pair.AccessBearer,
+		RefreshToken: pair.RefreshBearer,
+		ExpiresIn:    remainingExpiresIn(pair.AccessExpiresAt, time.Now()),
+		TokenID:      tokenID,
+		UserID:       userID,
+		Username:     user.Username,
 	}, nil
 }

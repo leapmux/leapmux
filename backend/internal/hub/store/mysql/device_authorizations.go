@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -81,8 +80,4 @@ func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode strin
 
 func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string) error {
 	return mapErr(s.conn.q.TouchDeviceAuthorizationPoll(ctx, deviceCode))
-}
-
-func (s *deviceAuthorizationStore) DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, cutoff.UTC()))
 }

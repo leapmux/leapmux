@@ -32,7 +32,7 @@ type bearerChannelEnv struct {
 	pending       *workermgr.PendingRequests
 	channelSvc    *service.ChannelService
 	validator     *auth.TokenValidator
-	cache         *auth.SessionCache
+	cache         *auth.AuthContextRegistry
 	server        *httptest.Server
 }
 
@@ -59,10 +59,10 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, testConfig(), nil, nil, mail.NewStubSender(), mail.Renderer{}), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{}), opts)
 	mux.Handle(authPath, authHandler)
 
-	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
+	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, allowAllAuthFreshness{})
 	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
 	mux.Handle(channelPath, channelHandler)
 
@@ -236,10 +236,103 @@ func TestOpenChannel_DelegationRejectsRevokedScope(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(openErr), "delegation pin to a workspace the user no longer accesses must be rejected")
 }
 
+func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
+	env := setupBearerChannelEnv(t)
+	userID, orgID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
+
+	cookieChannelID := id.Generate()
+	otherDelegationChannelID := id.Generate()
+	scopedChannelID := id.Generate()
+	env.channelMgr.RegisterWithAuthInfo(cookieChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
+	env.channelMgr.RegisterWithAuthInfo(otherDelegationChannelID, workerID, userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential("other-token", wsA),
+	}, nil)
+	env.channelMgr.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(tokenID, wsA),
+	}, nil)
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         userID,
+		OrgID:      orgID,
+		Credential: auth.DelegationCredential(tokenID, wsA),
+	})
+
+	_, err := env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: cookieChannelID}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.True(t, env.channelMgr.Exists(cookieChannelID), "delegation caller must not close unrestricted same-user channel")
+
+	_, err = env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: otherDelegationChannelID}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.True(t, env.channelMgr.Exists(otherDelegationChannelID), "delegation caller must not close another delegation token's channel")
+
+	_, err = env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: scopedChannelID}))
+	require.NoError(t, err)
+	assert.False(t, env.channelMgr.Exists(scopedChannelID), "matching delegation channel must close")
+}
+
+func TestPrepareWorkspaceAccess_DelegationUpdatesOnlyMatchingBearerChannel(t *testing.T) {
+	env := setupBearerChannelEnv(t)
+	userID, orgID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
+
+	cookieChannelID := id.Generate()
+	scopedChannelID := id.Generate()
+	env.channelMgr.RegisterWithAuthInfo(cookieChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
+	env.channelMgr.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
+		Credential: auth.DelegationCredential(tokenID, wsA),
+	}, nil)
+
+	sent := make(chan *leapmuxv1.ConnectResponse, 4)
+	env.workerMgr.Register(&workermgr.Conn{
+		WorkerID: workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sent <- msg
+			if msg.GetChannelAccessUpdate() != nil && msg.GetRequestId() != "" {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					RequestId: msg.GetRequestId(),
+					Payload: &leapmuxv1.ConnectRequest_ChannelAccessUpdateAck{
+						ChannelAccessUpdateAck: &leapmuxv1.ChannelAccessUpdateAck{},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         userID,
+		OrgID:      orgID,
+		Credential: auth.DelegationCredential(tokenID, wsA),
+	})
+	_, err := env.channelSvc.PrepareWorkspaceAccess(ctx, connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
+		WorkerId:    workerID,
+		WorkspaceId: wsA,
+	}))
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sent:
+		update := msg.GetChannelAccessUpdate()
+		require.NotNil(t, update)
+		assert.Equal(t, scopedChannelID, update.GetChannelId())
+		assert.Equal(t, wsA, update.GetWorkspaceId())
+	case <-time.After(time.Second):
+		require.Fail(t, "expected ChannelAccessUpdate for matching delegation channel")
+	}
+	select {
+	case msg := <-sent:
+		require.Failf(t, "delegation caller must not update unrestricted channel", "got %v; cookie channel %s", msg, cookieChannelID)
+	default:
+	}
+}
+
 // TestOpenChannel_SessionTokenStillSeesFullAccessibleSet preserves
 // the existing behaviour: cookie/session callers must keep getting
 // the user's full accessible-workspace list. The narrowing only
-// applies when DelegationWorkspaceID is set on the UserInfo.
+// applies when the UserInfo has a workspace-scoped delegation credential.
 func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
@@ -281,6 +374,70 @@ func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
 		require.NotNil(t, open)
 		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsA)
 		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsB, "session callers must continue to see all accessible workspaces")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected ChannelOpen to be sent to the worker")
+	}
+}
+
+// TestOpenChannel_SessionTokenSeesCrossOrgSharedWorkspace verifies the cross-org
+// read-ACL reaches the channel announce: a workspace owned by another user in a
+// DIFFERENT org, shared with the caller via a workspace_access grant, is
+// announced to the worker so the caller can operate on it. Against the prior
+// org-scoped announce (ListAccessible bound to the caller's home org) this
+// cross-org workspace was silently dropped from the set.
+func TestOpenChannel_SessionTokenSeesCrossOrgSharedWorkspace(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	// A workspace in the caller's own org (baseline).
+	wsHome := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: wsHome, OrgID: adminUser.OrgID, OwnerUserID: adminUser.ID, Title: "ws-home",
+	}))
+
+	// A workspace owned by a different user in a different org, shared with the
+	// caller via a grant -- readable, but outside the caller's home org.
+	orgB := id.Generate()
+	require.NoError(t, env.store.Orgs().Create(ctx, store.CreateOrgParams{ID: orgB, Name: "org-b"}))
+	ownerB := id.Generate()
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: ownerB, OrgID: orgB, Username: "owner-b", DisplayName: "Owner B",
+	}))
+	wsCross := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: wsCross, OrgID: orgB, OwnerUserID: ownerB, Title: "ws-cross",
+	}))
+	require.NoError(t, env.store.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
+		WorkspaceID: wsCross, UserID: adminUser.ID,
+	}))
+
+	workerID := env.createWorkerWithKey(t, token, []byte("k"))
+	sent := make(chan *leapmuxv1.ConnectResponse, 1)
+	env.workerMgr.Register(&workermgr.Conn{
+		WorkerID: workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sent <- msg
+			return nil
+		},
+	})
+
+	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	_, _ = env.channelClient.OpenChannel(shortCtx, authedReq(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         workerID,
+		HandshakePayload: []byte("hs"),
+	}, token))
+
+	select {
+	case msg := <-sent:
+		open := msg.GetChannelOpen()
+		require.NotNil(t, open)
+		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsHome, "the caller's own-org workspace must be announced")
+		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsCross, "a cross-org shared workspace must be announced over the channel")
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected ChannelOpen to be sent to the worker")
 	}

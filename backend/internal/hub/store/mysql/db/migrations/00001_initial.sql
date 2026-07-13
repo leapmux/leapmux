@@ -41,12 +41,15 @@ CREATE TABLE users (
     created_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     -- High-water mark bumped whenever this user's auth basis is
-    -- bulk-revoked. The hub's revocation watcher polls this column
-    -- to fire EvictByUserID + EvictBearersByUserID +
-    -- CloseChannelsByUser so cookie channels and bearer caches die
-    -- in lock-step with admin-CLI mutations that run in a separate
-    -- process from the hub.
+    -- bulk-revoked. Each bump also records a durable user-token
+    -- revocation event so cookie channels and bearer caches die in
+    -- lock-step with admin-CLI mutations that run in a separate process.
     tokens_revoked_at        DATETIME(3),
+    -- Monotonic credential epoch. Sessions and bearer rows copy this
+    -- value when issued; user-wide revocation increments it so stale
+    -- credentials fail without depending on timestamp precision or
+    -- cross-host clock agreement.
+    auth_generation          BIGINT NOT NULL DEFAULT 0,
     deleted_at     DATETIME(3),
     -- Generated columns for partial unique index emulation
     active_username VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN username ELSE NULL END) STORED,
@@ -85,6 +88,7 @@ CREATE TABLE user_sessions (
     expires_at      DATETIME(3) NOT NULL,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     last_active_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    auth_generation BIGINT NOT NULL DEFAULT 0,
     user_agent      TEXT NOT NULL,
     ip_address      VARCHAR(255) NOT NULL DEFAULT '',
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -106,7 +110,7 @@ CREATE TABLE workers (
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The deregister handler refuses these so the user can't
-    -- accidentally tear down the bundled desktop worker — it would just
+    -- accidentally tear down the bundled desktop worker -- it would just
     -- re-register on next launch and the running process would noisily
     -- exit with "invalid auth token" in between.
     auto_registered TINYINT(1) NOT NULL DEFAULT 0,
@@ -308,6 +312,34 @@ CREATE TABLE lifecycle_outbox (
 );
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id);
 
+CREATE TABLE revocation_events (
+    id         VARCHAR(255) PRIMARY KEY,
+    kind       VARCHAR(32) NOT NULL CHECK (kind IN ('session', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    subject_id VARCHAR(255) NOT NULL,
+    user_id    VARCHAR(255) NOT NULL,
+    revoked_at DATETIME(3) NOT NULL,
+    user_auth_generation BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    seq BIGINT UNIQUE CHECK (seq IS NULL OR seq > 0),
+    published_at DATETIME(6),
+    CHECK ((seq IS NULL AND published_at IS NULL) OR (seq IS NOT NULL AND published_at IS NOT NULL))
+);
+CREATE INDEX idx_revocation_events_pending ON revocation_events(seq, created_at, id);
+CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq);
+
+CREATE TABLE revocation_event_sequence (
+    id       INT PRIMARY KEY CHECK (id = 1),
+    last_seq BIGINT NOT NULL CHECK (last_seq >= 0)
+);
+INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0);
+
+CREATE TABLE hub_runtime_lease (
+    singleton_id     TINYINT PRIMARY KEY CHECK (singleton_id = 1),
+    holder_id        VARCHAR(64) NOT NULL CHECK (holder_id <> ''),
+    cursor_seq       BIGINT NOT NULL CHECK (cursor_seq >= 0),
+    lease_expires_at DATETIME(6) NOT NULL
+);
+
 -- See sqlite migration for full rationale on api_tokens.
 CREATE TABLE api_tokens (
     id                            VARCHAR(255) PRIMARY KEY,
@@ -320,6 +352,7 @@ CREATE TABLE api_tokens (
     previous_refresh_expires_at   DATETIME(3),
     scope                         VARCHAR(255) NOT NULL DEFAULT 'remote:*',
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME(3),
     last_rotated_at               DATETIME(3),
     expires_at                    DATETIME(3),
@@ -342,9 +375,8 @@ CREATE TABLE delegation_tokens (
     issued_for_tab_type           INT NOT NULL DEFAULT 0,
     secret_hash                   VARBINARY(64) NOT NULL,
     refresh_hash                  VARBINARY(64),
-    previous_refresh_hash         VARBINARY(64),
-    previous_refresh_expires_at   DATETIME(3),
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME(3),
     expires_at                    DATETIME(3) NOT NULL,
     refresh_expires_at            DATETIME(3),
@@ -463,6 +495,9 @@ DROP TABLE IF EXISTS cli_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS hub_runtime_lease;
+DROP TABLE IF EXISTS revocation_events;
+DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

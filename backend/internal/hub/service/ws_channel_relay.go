@@ -1,7 +1,7 @@
 package service
 
 import (
-	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -28,29 +28,47 @@ import (
 //
 // URL: /ws/channel
 type ChannelRelayHandler struct {
-	store          store.Store
-	workerMgr      *workermgr.Manager
-	channelMgr     *channelmgr.Manager
-	soloUser       *auth.UserInfo
-	secureCookie   bool
-	tokenValidator *auth.TokenValidator
+	wsAuthenticator
+	workerMgr       *workermgr.Manager
+	channelMgr      *channelmgr.Manager
+	closeDispatcher channelCloseEnqueuer
 }
+
+type channelCloseEnqueuer interface {
+	enqueueChannelCloses([]channelmgr.ClosedChannel)
+}
+
+var errTerminalChannelRelay = errors.New("channel relay cannot continue")
 
 // NewChannelRelayHandler creates a new WebSocket relay handler.
 func NewChannelRelayHandler(
 	st store.Store,
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
+	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie bool,
 ) *ChannelRelayHandler {
 	return &ChannelRelayHandler{
-		store:        st,
-		workerMgr:    wMgr,
-		channelMgr:   cMgr,
-		soloUser:     soloUser,
-		secureCookie: secureCookie,
+		wsAuthenticator: wsAuthenticator{
+			store:        st,
+			authLease:    newWebSocketAuthLease(authContexts),
+			soloUser:     soloUser,
+			secureCookie: secureCookie,
+		},
+		workerMgr:       wMgr,
+		channelMgr:      cMgr,
+		closeDispatcher: newWorkerCloseDispatcher(wMgr),
 	}
+}
+
+// WithChannelCloseEnqueuer shares the service's bounded worker notification
+// dispatcher with relay-disconnect teardown.
+func (h *ChannelRelayHandler) WithChannelCloseEnqueuer(enqueuer channelCloseEnqueuer) *ChannelRelayHandler {
+	if !isNilDependency(enqueuer) {
+		h.closeDispatcher = enqueuer
+	}
+	return h
 }
 
 // WithTokenValidator wires Bearer-auth support into the relay handler.
@@ -63,14 +81,9 @@ func (h *ChannelRelayHandler) WithTokenValidator(v *auth.TokenValidator) *Channe
 // ServeHTTP upgrades the connection to a multiplexed WebSocket and relays
 // channel messages for all channels belonging to the authenticated user.
 func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
-		Store:     h.store,
-		Validator: h.tokenValidator,
-		SoloUser:  h.soloUser,
-		Cookies:   []bool{h.secureCookie},
-	})
+	user, err := h.authenticate(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeHTTPAuthError(w, "channel relay", err)
 		return
 	}
 
@@ -85,8 +98,12 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	wsConn.SetReadLimit(channelwire.WSReadLimit)
 
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cleanupLease, current := h.authLease.bind(r.Context(), user, wsConn)
+	if !current {
+		return
+	}
+	defer cleanupLease()
+	cancel := cleanupLease
 
 	// Each multiplexed WS gets a unique connection ID so multiple connections
 	// for the same user (e.g. browser + test helper) can coexist.
@@ -112,10 +129,8 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				"worker_id", cc.WorkerID,
 				"user_id", user.ID,
 			)
-			if conn := h.workerMgr.Get(cc.WorkerID); conn != nil {
-				sendChannelClose(conn, cc.ChannelID)
-			}
 		}
+		h.closeDispatcher.enqueueChannelCloses(closed)
 
 		_ = wsConn.Close(websocket.StatusNormalClosure, "")
 	}()
@@ -137,80 +152,83 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 
-		// Verify the channel belongs to this user.
-		if ownerID := h.channelMgr.GetUserID(channelID); ownerID != user.ID {
-			slog.Debug("channel relay: channel not owned by user",
+		// Verify the channel belongs to this user and, for delegation
+		// bearers, was opened by the same scoped bearer. Otherwise a
+		// delegated relay connection could attach to an unrestricted
+		// same-user channel by guessing its id.
+		_, ok, relayErr := h.channelMgr.UseAuthorizedChannel(
+			channelID,
+			connID,
+			func(info channelmgr.ChannelInfo) bool {
+				return userCanUseChannel(user, info.AuthInfo, info.UserID)
+			},
+			func(info channelmgr.ChannelInfo) error {
+				return h.relayFrontendMessageToWorker(info, msg)
+			},
+		)
+		if !ok {
+			slog.Debug("channel relay: channel not authorized for user",
 				"channel_id", channelID, "user_id", user.ID)
 			continue
 		}
-
-		// Associate this channel with our connection so responses are routed
-		// back to this specific WebSocket (not broadcast to all connections).
-		h.channelMgr.SetChannelConn(channelID, connID)
-
-		workerID := h.channelMgr.GetWorkerID(channelID)
-		if workerID == "" {
-			slog.Debug("channel relay: channel not found", "channel_id", channelID)
-			continue
-		}
-
-		slog.Debug("relaying channel message from frontend",
-			"worker_id", workerID,
-			"channel_id", channelID,
-			"correlation_id", msg.GetCorrelationId(),
-			"ciphertext_len", len(msg.GetCiphertext()),
-		)
-
-		// Validate chunked message constraints before forwarding.
-		if err := h.channelMgr.ChunkTracker.Track(
-			channelID, "fe2w",
-			msg.GetCorrelationId(),
-			len(msg.GetCiphertext()),
-			msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-		); err != nil {
-			slog.Warn("channel relay: chunk validation failed",
-				"channel_id", channelID,
-				"correlation_id", msg.GetCorrelationId(),
-				"error", err,
-			)
-			continue
-		}
-
-		// Forward to worker via bidi stream.
-		conn := h.workerMgr.Get(workerID)
-		if conn == nil {
-			slog.Warn("channel relay: worker offline",
-				"channel_id", channelID, "worker_id", workerID)
-			continue
-		}
-
-		if err := conn.Send(&leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_ChannelMessage{
-				ChannelMessage: msg,
-			},
-		}); err != nil {
-			slog.Debug("channel relay: failed to relay to worker",
-				"channel_id", channelID, "error", err)
-			continue
+		if errors.Is(relayErr, errTerminalChannelRelay) {
+			closed := h.channelMgr.CloseByIDIf(channelID, func(info channelmgr.ChannelInfo) bool {
+				return userCanUseChannel(user, info.AuthInfo, info.UserID)
+			})
+			h.closeDispatcher.enqueueChannelCloses(closed)
 		}
 	}
 }
 
-// sendChannelClose notifies a worker that a channel has been closed.
-// It recovers from panics because the worker's bidi stream handler may
-// have already finished during hub shutdown, causing a panic in the
-// HTTP/2 response writer.
-func sendChannelClose(conn *workermgr.Conn, channelID string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Debug("recovered from panic sending channel close", "channel_id", channelID, "panic", r)
-		}
-	}()
-	_ = conn.Send(&leapmuxv1.ConnectResponse{
-		Payload: &leapmuxv1.ConnectResponse_ChannelClose{
-			ChannelClose: &leapmuxv1.ChannelCloseNotification{
-				ChannelId: channelID,
-			},
+// relayFrontendMessageToWorker forwards one authorized frontend ciphertext frame
+// to the channel's worker: it enforces chunk-reassembly limits, resolves the
+// worker connection, and sends. A chunk-protocol violation, an offline worker,
+// or a broken worker stream returns errTerminalChannelRelay so the read loop
+// tears the channel down; a channel with no worker (already gone) is a no-op.
+func (h *ChannelRelayHandler) relayFrontendMessageToWorker(info channelmgr.ChannelInfo, msg *leapmuxv1.ChannelMessage) error {
+	channelID := info.ChannelID
+	workerID := info.WorkerID
+	if workerID == "" {
+		slog.Debug("channel relay: channel not found", "channel_id", channelID)
+		return nil
+	}
+
+	slog.Debug("relaying channel message from frontend",
+		"worker_id", workerID,
+		"channel_id", channelID,
+		"correlation_id", msg.GetCorrelationId(),
+		"ciphertext_len", len(msg.GetCiphertext()),
+	)
+
+	if err := h.channelMgr.ChunkTracker.Track(
+		channelID, "fe2w",
+		msg.GetCorrelationId(),
+		len(msg.GetCiphertext()),
+		msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+	); err != nil {
+		slog.Warn("channel relay: chunk validation failed",
+			"channel_id", channelID,
+			"correlation_id", msg.GetCorrelationId(),
+			"error", err,
+		)
+		return errTerminalChannelRelay
+	}
+
+	conn := h.workerMgr.Get(workerID)
+	if conn == nil {
+		slog.Warn("channel relay: worker offline",
+			"channel_id", channelID, "worker_id", workerID)
+		return errTerminalChannelRelay
+	}
+
+	if err := conn.Send(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_ChannelMessage{
+			ChannelMessage: msg,
 		},
-	})
+	}); err != nil {
+		slog.Debug("channel relay: failed to relay to worker",
+			"channel_id", channelID, "error", err)
+		return errTerminalChannelRelay
+	}
+	return nil
 }

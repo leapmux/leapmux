@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -158,6 +159,9 @@ func (s *pgStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: 
 func (s *pgStore) DelegationTokens() store.DelegationTokenStore {
 	return &delegationTokenStore{conn: s.conn}
 }
+func (s *pgStore) RevocationEvents() store.RevocationEventStore {
+	return newRevocationEventStore(s.conn)
+}
 func (s *pgStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
@@ -168,20 +172,44 @@ func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.co
 func (s *pgStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	pgxTx, err := s.conn.shared.pool.Begin(ctx)
+	if s.conn.inTx() {
+		return fn(s)
+	}
+	return s.conn.withTransaction(ctx, func(conn *pgConn) error {
+		return fn(&pgStore{conn: conn})
+	})
+}
+
+func (s *pgStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+	return s.conn.withTransaction(ctx, func(conn *pgConn) error {
+		if _, err := conn.q.LockUserAuthState(ctx, userID); err != nil {
+			return mapErr(err)
+		}
+		return fn(&pgStore{conn: conn})
+	})
+}
+
+func (c *pgConn) inTx() bool {
+	_, ok := c.exec.(pgx.Tx)
+	return ok
+}
+
+func (c *pgConn) withTransaction(ctx context.Context, fn func(tx *pgConn) error) error {
+	if c.inTx() {
+		return fn(c)
+	}
+	pgxTx, err := c.shared.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	txStore := &pgStore{
-		conn: &pgConn{
-			shared: s.conn.shared,
-			exec:   pgxTx,
-			q:      s.conn.q.WithTx(pgxTx),
-		},
+	txConn := &pgConn{
+		shared: c.shared,
+		exec:   pgxTx,
+		q:      c.q.WithTx(pgxTx),
 	}
-	if err := fn(txStore); err != nil {
+	if err := fn(txConn); err != nil {
 		return err
 	}
 	return pgxTx.Commit(ctx)

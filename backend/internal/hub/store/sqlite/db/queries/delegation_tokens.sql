@@ -2,8 +2,22 @@
 INSERT INTO delegation_tokens (
     id, user_id, worker_id, workspace_id, agent_id, terminal_id,
     issued_for_tab_id, issued_for_tab_type, secret_hash, refresh_hash,
-    expires_at, refresh_expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    expires_at, refresh_expires_at, auth_generation
+) VALUES (
+    sqlc.arg(id),
+    sqlc.arg(user_id),
+    sqlc.arg(worker_id),
+    sqlc.arg(workspace_id),
+    sqlc.arg(agent_id),
+    sqlc.arg(terminal_id),
+    sqlc.arg(issued_for_tab_id),
+    sqlc.arg(issued_for_tab_type),
+    sqlc.arg(secret_hash),
+    sqlc.arg(refresh_hash),
+    sqlc.arg(expires_at),
+    sqlc.arg(refresh_expires_at),
+    (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
+);
 
 -- name: GetDelegationTokenByID :one
 SELECT * FROM delegation_tokens WHERE id = ?;
@@ -23,51 +37,21 @@ WHERE user_id = ?
   AND datetime(expires_at) > datetime('now')
 ORDER BY created_at DESC;
 
--- name: RevokeDelegationTokensByUser :execresult
--- Bulk-revokes every live delegation token for a user. Used when a
--- user's auth basis is invalidated (logout, password change, account
--- deactivation) so spawned-agent bearers tied to that user die at the
--- hub. Already-revoked rows are left untouched so revoked_at remains
--- the original revocation timestamp.
+-- name: RevokeDelegationTokensByUserFast :execresult
 UPDATE delegation_tokens
 SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE user_id = ? AND revoked_at IS NULL;
-
--- name: ListDelegationTokensRevokedSince :many
--- Returns delegation_tokens revoked after the watcher's high-water
--- mark. Comparison uses strftime so millisecond resolution is
--- preserved (see ListAPITokensRevokedSince for the rationale).
-SELECT id, user_id, revoked_at FROM delegation_tokens
-WHERE revoked_at IS NOT NULL
-  AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) > strftime('%Y-%m-%dT%H:%M:%fZ', ?)
-ORDER BY revoked_at ASC;
-
--- name: MaxDelegationTokenRevokedAt :one
--- Mirror of MaxAPITokenRevokedAt for the delegation_tokens table.
--- ORDER BY + LIMIT 1 reads a real column so sqlc can infer the
--- return type and the index seek stays O(log N).
-SELECT revoked_at FROM delegation_tokens
-WHERE revoked_at IS NOT NULL
-ORDER BY revoked_at DESC
-LIMIT 1;
 
 -- name: TouchDelegationToken :exec
 UPDATE delegation_tokens
 SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
--- name: RotateDelegationTokenRefresh :exec
-UPDATE delegation_tokens
-SET refresh_hash = sqlc.arg(new_refresh_hash),
-    refresh_expires_at = sqlc.arg(new_refresh_expires_at),
-    previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at)
-WHERE id = sqlc.arg(id);
-
--- name: RevokeDelegationToken :execresult
+-- name: RevokeDelegationToken :one
 UPDATE delegation_tokens
 SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ? AND revoked_at IS NULL;
+WHERE id = ? AND revoked_at IS NULL
+RETURNING id, user_id, revoked_at;
 
 -- name: DeleteRevokedDelegationTokensBefore :execresult
 -- Both revoked_at and the bound cutoff go through datetime() so the

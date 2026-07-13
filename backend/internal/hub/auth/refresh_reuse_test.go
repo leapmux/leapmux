@@ -31,9 +31,8 @@ import (
 //     bearer-shape attack where a stolen secret is paired with a
 //     guessed token id.
 //
-// `refresh_grace_cache_test.go` covers the AEAD cache primitive in
-// isolation; `api_token_test.go` covers the single-call validator
-// behavior. This file's tests pair the two layers + the row state.
+// `api_token_test.go` covers the single-call validator behavior. This
+// file exercises concurrent validation and the resulting row state.
 
 func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID string) (tokenID, currentSecret, refreshSecret string) {
 	t.Helper()
@@ -61,16 +60,17 @@ func TestRefreshReuse_CompromiseRevocationCascadesToAccessBearer(t *testing.T) {
 	// Rotate so prevSecret moves to previous_refresh_hash with an
 	// already-expired grace expiry. Reuse-after-grace must revoke.
 	expiredGrace := time.Now().Add(-time.Hour)
-	require.NoError(t, st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
+	_, err := st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
 		NewSecretHash:            v.HashSecret(auth.MintAccessSecret()),
 		NewRefreshHash:           v.HashSecret(auth.MintAccessSecret()),
 		PreviousRefreshHash:      v.HashSecret(prevSecret),
 		PreviousRefreshExpiresAt: &expiredGrace,
-	}))
+	})
+	require.NoError(t, err)
 
 	// Reuse outside grace → compromise → row revoked.
-	_, _, err := v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, prevSecret))
+	_, _, err = v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, prevSecret))
 	require.ErrorIs(t, err, auth.ErrRefreshReused)
 
 	// The compromise revocation must also kill the access-token
@@ -87,7 +87,7 @@ func TestRefreshReuse_RevokedRowRefreshFails(t *testing.T) {
 	userID := seedUser(t, st)
 	tokenID, _, refreshSecret := mintAPIToken(t, st, v, userID)
 
-	// Admin-driven revoke (the cleanup path the SessionCache.EvictBearer
+	// Admin-driven revoke (the cleanup path the AuthContextRegistry.EvictBearer
 	// test already covers for the unary call). Refresh must reject
 	// even though the secret matches the current refresh_hash.
 	_, err := st.APITokens().Revoke(context.Background(), tokenID)
@@ -159,36 +159,4 @@ func TestRefreshReuse_ConcurrentRefreshDoesNotTearRow(t *testing.T) {
 		"all racers must observe the current refresh as valid")
 	assert.Zero(t, retries.Load(),
 		"none of these should hit the previous-hash grace path")
-}
-
-func TestRefreshReuse_GraceCacheReturnsSameAccessPairOnRetry(t *testing.T) {
-	// Ties the in-memory grace cache primitive to the documented
-	// retry contract: a benign retry of the same refresh secret
-	// returns the IDENTICAL access bearer (so a client that lost
-	// its first response can recover without re-rotating).
-	cache, err := auth.NewRefreshGraceCache(auth.RefreshReuseGrace)
-	require.NoError(t, err)
-	require.NoError(t, cache.Put("tok-X", "lmx_tok-X_access", "lmx_tok-X_refresh"))
-
-	for i := 0; i < 3; i++ {
-		access, refresh, err := cache.Get("tok-X")
-		require.NoError(t, err)
-		assert.Equal(t, "lmx_tok-X_access", access,
-			"retry %d: cache must surface the same access bearer", i)
-		assert.Equal(t, "lmx_tok-X_refresh", refresh)
-	}
-}
-
-func TestRefreshReuse_GraceCacheEvictsOnRevoke(t *testing.T) {
-	// Mirrors the bearer-cache eviction-on-revoke contract for the
-	// grace cache itself: an admin "revoke now" must invalidate the
-	// cached pair, not leave it serving the now-revoked secret for
-	// up to RefreshReuseGrace.
-	cache, err := auth.NewRefreshGraceCache(auth.RefreshReuseGrace)
-	require.NoError(t, err)
-	require.NoError(t, cache.Put("tok-X", "a", "b"))
-
-	cache.Evict("tok-X")
-	_, _, err = cache.Get("tok-X")
-	require.ErrorIs(t, err, auth.ErrGraceCacheMiss)
 }

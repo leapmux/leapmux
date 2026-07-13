@@ -5,6 +5,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}');
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
+-- name: LockUserAuthState :one
+SELECT id FROM users WHERE id = ? AND deleted_at IS NULL
+FOR UPDATE;
+
+-- LockUserRow acquires the row lock on a user WITHOUT the deleted_at filter
+-- LockUserAuthState applies, so a user_info mutation can serialize its
+-- before/after cached-field projection against a concurrent mutation on the same
+-- user (including a soft-deleted one). A no-op self-assign: it touches no cached
+-- field and not updated_at, and a missing row is a tolerated no-op.
+-- name: LockUserRow :exec
+UPDATE users SET auth_generation = auth_generation WHERE id = ?;
+
 -- name: GetUserByIDIncludeDeleted :one
 SELECT * FROM users WHERE id = ?;
 
@@ -61,21 +73,38 @@ LIMIT ?;
 UPDATE users SET password_hash = ?, password_set = 1, updated_at = NOW(3)
 WHERE id = ?;
 
--- name: UpdateUserProfile :exec
-UPDATE users SET username = ?, display_name = ?, updated_at = NOW(3)
-WHERE id = ?;
+-- The profile/email/email_verified/admin updates take an explicit updated_at
+-- (read once via GetUserForUpdate below) so the store layer can atomically emit
+-- a user_info cache-invalidation event under the same clock reading: each mutates
+-- a field cached in UserInfo (username, email, email_verified -- an auth gate --
+-- and is_admin), so a stale cached UserInfo must be dropped cross-process the
+-- same way. No locked row -> no event.
 
--- name: UpdateUserEmail :exec
-UPDATE users SET email = ?, email_verified = ?, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = NOW(3)
-WHERE id = ?;
+-- name: UpdateUserProfile :execresult
+UPDATE users SET username = sqlc.arg(username), display_name = sqlc.arg(display_name), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
 
--- name: UpdateUserEmailVerified :exec
-UPDATE users SET email_verified = ?, updated_at = NOW(3)
-WHERE id = ?;
+-- name: UpdateUserEmail :execresult
+UPDATE users SET email = sqlc.arg(email), email_verified = sqlc.arg(email_verified), pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
 
--- name: UpdateUserAdmin :exec
-UPDATE users SET is_admin = ?, updated_at = NOW(3)
-WHERE id = ?;
+-- name: UpdateUserEmailVerified :execresult
+UPDATE users SET email_verified = sqlc.arg(email_verified), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
+
+-- name: GetUserForUpdate :one
+-- Locks the user row (matched by id only, like the RETURNING form used by
+-- SQLite/PostgreSQL) so the profile/email/email_verified/admin updates can
+-- atomically emit a user_info cache-invalidation event under the same clock
+-- reading. MySQL has no RETURNING, so the store layer follows this locked read
+-- with the UPDATE.
+SELECT id, NOW(3) AS now_at FROM users
+WHERE id = ?
+FOR UPDATE;
+
+-- name: UpdateUserAdmin :execresult
+UPDATE users SET is_admin = sqlc.arg(is_admin), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
 
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = NOW(3) WHERE id = ?;
@@ -104,13 +133,13 @@ WHERE id = ?;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = ?;
 
--- name: PromotePendingEmail :exec
-UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
-WHERE id = ? AND pending_email != '';
+-- name: PromotePendingEmail :execresult
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND pending_email != '';
 
 -- ConsumeVerificationAttempt atomically charges one attempt against
 -- the user's pending verification, force-expiring on the 6th try.
--- MySQL has no RETURNING — the Go store layer follows up with a
+-- MySQL has no RETURNING -- the Go store layer follows up with a
 -- GetUserByID under the row lock taken by this UPDATE.
 -- name: ConsumeVerificationAttempt :execresult
 UPDATE users
@@ -129,21 +158,21 @@ WHERE pending_email = ? AND id != ?;
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < ?;
 
--- name: BumpUserTokensRevokedAt :execresult
+-- The token-revocation lock/update pair has no deleted_at guard, so it
+-- would act on a soft-deleted row -- but the only caller
+-- (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
+-- LockUserAuthState filters deleted_at IS NULL, so revoking an
+-- already-soft-deleted user aborts before this lock runs. Every revoke
+-- path revokes before soft-deleting, so that ordering is not exercised
+-- today. Only a missing id is a no-op (ErrNoRows on the lock).
+-- name: GetUserTokensRevocationForUpdate :one
+SELECT id, tokens_revoked_at, auth_generation, NOW(3) AS now_at FROM users
+WHERE id = ?
+FOR UPDATE;
+
+-- name: SetUserTokensRevokedAt :execresult
 UPDATE users
-SET tokens_revoked_at = NOW(3), updated_at = NOW(3)
-WHERE id = ? AND deleted_at IS NULL;
-
--- name: ListUsersWithTokensRevokedSince :many
-SELECT id, tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL AND tokens_revoked_at > ?
-ORDER BY tokens_revoked_at ASC;
-
--- name: MaxUserTokensRevokedAt :one
--- Mirror of MaxAPITokenRevokedAt for users.tokens_revoked_at. Used
--- by the revocation watcher's bootstrap-time seed. ORDER BY + LIMIT 1
--- lets sqlc infer the return type from the underlying column.
-SELECT tokens_revoked_at FROM users
-WHERE tokens_revoked_at IS NOT NULL
-ORDER BY tokens_revoked_at DESC
-LIMIT 1;
+SET tokens_revoked_at = sqlc.arg(tokens_revoked_at),
+    auth_generation = sqlc.arg(auth_generation),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);

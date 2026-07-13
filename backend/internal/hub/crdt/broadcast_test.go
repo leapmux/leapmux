@@ -2,6 +2,7 @@ package crdt_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,35 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
+
+// pointerCaptureSubscriber records the *MarshaledEvent pointers it is sent, so a
+// test can assert that co-visible subscribers SHARE one marshaled batch event
+// (a single proto marshal) rather than each receiving a freshly built copy.
+type pointerCaptureSubscriber struct {
+	mu     sync.Mutex
+	events []*crdt.MarshaledEvent
+}
+
+func (c *pointerCaptureSubscriber) send(evt *crdt.MarshaledEvent) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, evt)
+	return nil
+}
+
+// batchEvents returns only the WatchOrgEvent_Batch events (dropping the initial
+// materialized snapshot Subscribe delivers).
+func (c *pointerCaptureSubscriber) batchEvents() []*crdt.MarshaledEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []*crdt.MarshaledEvent
+	for _, e := range c.events {
+		if e.Event.GetBatch() != nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // subscribeCapturing installs a subscriber on `mgr` whose Send appends
 // to a private events slice. Returns a snapshot accessor that copies
@@ -38,6 +68,69 @@ func countOpsInBatches(events []*leapmuxv1.WatchOrgEvent) int {
 		}
 	}
 	return n
+}
+
+// TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers pins the batch-event
+// marshal-dedup: two subscribers with the same visibility over a batch's
+// workspaces must receive the SAME *MarshaledEvent (so the proto is marshaled
+// once for both, not once per subscriber), while a subscriber that can't see the
+// batch's workspace receives no batch event at all.
+func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 180_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	seedRootInternal(t, mgr, "w2", "root2")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	// Seed a tab in w1 so a later position edit is a stable-visibility op for w1
+	// watchers (kept in the filtered batch, not redacted).
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+	})
+	require.NoError(t, err)
+
+	// Two subscribers that both see w1 (identical mask), one that sees only w2.
+	subA := &pointerCaptureSubscriber{}
+	subB := &pointerCaptureSubscriber{}
+	subC := &pointerCaptureSubscriber{}
+	_, ua := mgr.Subscribe(&crdt.Subscriber{Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}}, Send: subA.send})
+	defer ua()
+	_, ub := mgr.Subscribe(&crdt.Subscriber{Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}}, Send: subB.send})
+	defer ub()
+	_, uc := mgr.Subscribe(&crdt.Subscriber{Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w2": true}}, Send: subC.send})
+	defer uc()
+
+	// A stable-visibility edit on the w1 tab (a position write that keeps it in w1).
+	edit := &leapmuxv1.OpBatch{
+		BatchId: "edit",
+		Ops: []*leapmuxv1.OrgOp{{
+			OpId: "op-edit",
+			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
+			}},
+		}},
+	}
+	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{edit},
+	})
+	require.NoError(t, err)
+
+	aEvents := subA.batchEvents()
+	bEvents := subB.batchEvents()
+	require.Len(t, aEvents, 1, "w1 watcher A must receive the batch")
+	require.Len(t, bEvents, 1, "w1 watcher B must receive the batch")
+	// The optimization: co-visible subscribers share ONE MarshaledEvent pointer,
+	// so proto.Marshal runs once for both rather than once per subscriber.
+	assert.Same(t, aEvents[0], bEvents[0], "co-visible subscribers must share one MarshaledEvent (single marshal)")
+	// The shared event still carries the visible op.
+	assert.Equal(t, 1, countOpsInBatches([]*leapmuxv1.WatchOrgEvent{aEvents[0].Event}),
+		"the shared batch event must carry the w1 edit op")
+
+	// The w2-only watcher has a different mask (cannot see w1), so it gets no batch
+	// event -- confirming the shared event is keyed by visibility, not handed to all.
+	assert.Empty(t, subC.batchEvents(), "w2-only watcher must not receive the w1 edit batch")
 }
 
 // TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp
@@ -187,6 +280,63 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 	}
 	assert.Equal(t, 1, countOpsInBatches(events), "always-visible subscriber must receive the raw move op")
 	assert.Equal(t, 0, materializedOrRemoved, "always-visible subscriber must NOT receive a redacted event")
+}
+
+// TestBroadcast_NilFilter_SeesAllWorkspaces covers the all-workspaces
+// (nil filter) arm: a subscriber whose Filter.WorkspaceIDs is nil must
+// see raw ops across every workspace, exactly like an explicit
+// {w1, w2} filter. This pins the lazily-built shared `allVis` map —
+// broadcastBatch defers its construction to the first nil-filter
+// subscriber seen on a commit, so a regression there (leaving visMap
+// nil, or building the wrong entries) would silently drop
+// cross-workspace ops for every all-workspaces subscriber.
+func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 125_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	seedRootInternal(t, mgr, "w2", "root2")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+	})
+	require.NoError(t, err)
+
+	// nil filter == "all workspaces".
+	snapshot, unsub := subscribeCapturing(t, mgr, nil)
+	defer unsub()
+
+	// Move the tab from w1 to w2. A nil-filter subscriber sees both the
+	// source and destination workspace, so this is the always-visible
+	// arm: it must receive the raw move op, not a redacted
+	// EntityMaterialized/Removed.
+	mv := &leapmuxv1.OpBatch{
+		BatchId: "move",
+		Ops: []*leapmuxv1.OrgOp{{
+			OpId: "op-move",
+			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
+			}},
+		}},
+	}
+	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{mv},
+	})
+	require.NoError(t, err)
+
+	events := snapshot()
+	var materializedOrRemoved int
+	for _, evt := range events {
+		if evt.GetEntityMaterialized() != nil || evt.GetEntityRemoved() != nil {
+			materializedOrRemoved++
+		}
+	}
+	assert.Equal(t, 1, countOpsInBatches(events),
+		"nil-filter subscriber must receive the raw move op across workspaces via the shared allVis path")
+	assert.Equal(t, 0, materializedOrRemoved,
+		"nil-filter subscriber sees both workspaces, so no redacted event should be emitted")
 }
 
 // TestBroadcast_PerEntity_NoDuplicateMaterialized verifies that a

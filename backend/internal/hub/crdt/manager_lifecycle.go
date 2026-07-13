@@ -109,6 +109,13 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		}
 	})
 
+	rollback := func() {
+		m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, wsID) })
+		// Undo the optimistic filter expansion so a future
+		// CanReadWorkspace flip can't smuggle stale visibility through.
+		m.contractSubscribersForWorkspace(wsID)
+	}
+
 	// Expand each existing subscriber's Filter to include the new
 	// workspace BEFORE SubmitInternal broadcasts the seed batch.
 	// Otherwise the seed `SetNodeRegister` (root LEAF) and
@@ -116,18 +123,19 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// (subscribers don't yet have `wsID` in their allow-set), the
 	// frontend never learns the workspace's root_node_id, and the
 	// agent tab the user just opened never lands in the CRDT
-	// projection.
-	m.ExpandSubscribersForWorkspace(ctx, wsID)
+	// projection. A read-ACL LOOKUP failure here must not silently drop
+	// the seed: roll back the optimistic add and return WITHOUT consuming
+	// the outbox row so the create retries whenever the outbox is next drained
+	// -- the next lifecycle mutation in this org, not a periodic tick (the fixed
+	// BatchId + idempotent MutateInternal make retry safe).
+	if err := m.ExpandSubscribersForWorkspace(ctx, wsID); err != nil {
+		rollback()
+		return fmt.Errorf("expand subscribers for workspace %s: %w", wsID, err)
+	}
 
 	batch := &leapmuxv1.OpBatch{
 		BatchId: "lifecycle-create-" + wsID,
 		Ops:     ops,
-	}
-	rollback := func() {
-		m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, wsID) })
-		// Undo the optimistic filter expansion so a future
-		// CanReadWorkspace flip can't smuggle stale visibility through.
-		m.contractSubscribersForWorkspace(wsID)
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
 		OrgID:        m.orgID,
@@ -149,7 +157,11 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
 		return err
 	}
-	m.BroadcastWorkspaceCreated(ctx, wsID, p.Title, p.RootNodeID)
+	// The seed batch's expand at the top of this function already admitted the
+	// workspace into every existing subscriber's filter (and gated the seed on
+	// that ACL lookup), so broadcast the Created event directly instead of
+	// re-issuing the read-ACL lookup through BroadcastWorkspaceCreated.
+	m.broadcastWorkspaceCreatedEvent(wsID, p.Title, p.RootNodeID)
 	return nil
 }
 

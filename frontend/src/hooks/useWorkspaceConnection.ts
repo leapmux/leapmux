@@ -1306,6 +1306,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           terminals,
         })
 
+        // Teardown may have aborted while we awaited the async channel open. The
+        // handle is already live (its stream listener is registered on open), so
+        // close it before wiring callbacks -- otherwise a superseded or torn-down
+        // subscription keeps firing store mutations, and on unmount previousHandle
+        // was already nulled, so nothing else would ever close it. Mirrors the
+        // disposed-check workspacePrivateEvents runs after its own channel open.
+        if (signal.aborted) {
+          handle.close()
+          return
+        }
+
         // Reset catch-up phases only after the replacement stream exists. workerRpc
         // buffers events until onEvent is wired below, so a pre-CatchUpStart live frame
         // cannot sneak through without the guard; a failed open no longer leaves the
