@@ -586,8 +586,8 @@ func requireWorkerOwner(svc *Context, userID string, sender *channel.Sender) boo
 // and friends), because their workspace id is derived four different ways (request
 // field, loaded entity row, store lookup, dual source+dest) and no single
 // registrar-level extractor models all of them. Making that gate structural too
-// for the request-field subset is tracked in
-// https://github.com/leapmux/leapmux/issues/289.
+// (at minimum for the request-field subset) is tracked in
+// https://github.com/leapmux/leapmux/issues/284 (which absorbed issue 289).
 func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerPingHandler(d, svc)
 	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
