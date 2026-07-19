@@ -4,16 +4,49 @@ import type { HLCClock, PendingOpsManager } from '~/lib/crdt'
 import type { ActiveClientStore } from '~/lib/presence/activeClient'
 import { fromBinary } from '@bufbuild/protobuf'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
-import { isTauriApp, platformBridge } from '~/api/platformBridge'
+import { isTauriApp, parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
 import { WatchOrgEventSchema } from '~/generated/leapmux/v1/org_ops_pb'
 import { base64ToUint8Array } from '~/lib/base64'
+import { KEY_ORG_EVENTS_RELAY_SEQ } from '~/lib/browserStorage'
+import { createLogger } from '~/lib/logger'
+import { createPersistedSeq } from '~/lib/persistedSeq'
 import { createExponentialBackoff } from '~/lib/retry'
+
+const log = createLogger('useOrgEvents')
 
 const RECONNECT_BASE_DELAY_MS = 250
 const RECONNECT_MAX_DELAY_MS = 5_000
 // Single-key backoff: the hook drives one connection at a time, so one key is
 // enough to escalate the reconnect delay across attempts and reset it on success.
 const RECONNECT_KEY = 'orgevents'
+
+// Close codes on which auto-reconnect is futile: a genuine authorization or
+// protocol failure where retrying in a loop cannot succeed. Every OTHER close --
+// clean (1000/1001), transient (1012/1013), or an abnormal transport drop
+// (1006, no close frame) -- is a reconnect signal, so a network blip never
+// kills the subscription. This is intentionally broader than the backend's
+// channelwire.isRecoverableCloseCode (which drives the CLI's clean-exit, not a
+// long-lived subscription's reconnect): here only a hard terminal close stops
+// the retry loop and is surfaced to the caller.
+const TERMINAL_CLOSE_CODES = new Set<number>([
+  1002, // protocol error
+  1008, // policy violation -- the hub's /ws/orgevents "forbidden" / auth expiry
+])
+
+function isTerminalCloseCode(code: number): boolean {
+  return TERMINAL_CLOSE_CODES.has(code)
+}
+
+// Ids for the desktop sidecar's org-events relay, handed out in dispatch order: the
+// sidecar compares them to ignore a close whose relay a later open already replaced,
+// and to ignore an open a later one has superseded. A stale-looking open matters
+// here because the hub only sends OrgMaterialized at subscribe time -- a dropped
+// open means org events silently never bootstrap. The persisted clock-seeded
+// sequence (shared with the channel relay's claim ids -- see createPersistedSeq
+// for the reload/clock-regression rationale) keeps a fresh page's ids above
+// whatever the still-live sidecar already holds.
+/** Exported for tests; production code reaches it only through useOrgEvents. */
+export const nextOrgEventsRelayId = createPersistedSeq(KEY_ORG_EVENTS_RELAY_SEQ)
 
 /**
  * useOrgEvents opens a single per-org WebSocket connection at
@@ -50,11 +83,10 @@ export interface UseOrgEventsOpts {
   /** Called when an EntityRemoved drops a pending op (caller may toast). */
   onPendingDropped?: () => void
   /**
-   * Called when workspace lifecycle or visibility changes arrive. The
-   * callback typically re-fetches the org's workspace list so the sidebar
-   * reflects creates, renames, deletes, grants, and revocations. Routed
-   * through a single hook so the workspace store, section store, and registry
-   * each get their refresh in one place.
+   * Called when workspace lifecycle changes arrive. The callback typically
+   * re-fetches the org's workspace list so the sidebar reflects creates,
+   * renames, and deletes. Routed through a single hook so the workspace
+   * store, section store, and registry each get their refresh in one place.
    */
   onWorkspaceLifecycleChanged?: () => void
   /**
@@ -67,6 +99,15 @@ export interface UseOrgEventsOpts {
    * and the two would never otherwise match. Fired once per bootstrap.
    */
   onSubscriberClientId?: (clientId: string) => void
+  /**
+   * Called when the org-events stream closes with a terminal code (an
+   * authorization/protocol failure, e.g. auth expiry) where auto-reconnect is
+   * futile. The hook stops retrying and hands the caller the close code/reason
+   * so it can surface a toast/banner (e.g. prompt a reload or re-auth) instead
+   * of looping. Recoverable/transient closes reconnect silently and never fire
+   * this.
+   */
+  onFatalClose?: (info: { code: number, reason: string }) => void
 }
 
 export interface OrgEventsHook {
@@ -114,14 +155,21 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
     // Length-prefixed frame: 4-byte BE uint32 + payload bytes. The
     // hub never sends multi-frame packing on the same WS message,
     // so a single message carries exactly one event.
-    if (raw.length < 4)
+    if (raw.length < 4) {
+      log.warn('dropping org-events frame shorter than its length prefix', { length: raw.length })
       return null
+    }
     // `>>> 0` forces an unsigned 32-bit length: a high top byte (frame >= 2 GiB)
     // would otherwise sign-extend to a negative length that slips past the
     // bounds check below and yields a garbage subarray.
     const len = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0
-    if (4 + len > raw.length)
+    // Exact match, mirroring channel.ts's strict framing check: a frame with
+    // trailing bytes is a protocol violation, and quietly decoding its prefix
+    // would mask a hub<->frontend framing desync until it became undebuggable.
+    if (len !== raw.length - 4) {
+      log.warn('dropping org-events frame with a mismatched length prefix', { declared: len, actual: raw.length - 4 })
       return null
+    }
     try {
       return fromBinary(WatchOrgEventSchema, raw.subarray(4, 4 + len))
     }
@@ -132,7 +180,7 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
 
   const tearDown = () => {
     connectionGeneration++
-    // Cancel a still-pending reconnect (org switch, manual reconnect, dispose)
+    // Cancel a still-pending reconnect (orgId change, manual reconnect, dispose)
     // and drop its backoff streak. A retry that already fired cleared
     // reconnectPending before re-running this effect, so its grown delay is
     // preserved for the next attempt; only a genuinely pending (abandoned) timer
@@ -199,12 +247,24 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
     // supplied (tests intentionally drive a real WebSocket).
     if (isTauriApp() && !opts.buildWsUrl) {
       const workspaceIds = opts.allowedWorkspaceIds?.() ?? []
+      // One id per attempt, shared by this attempt's open and its close, so the
+      // sidecar can tell the two apart from a successor's.
+      const relayId = nextOrgEventsRelayId()
       let unsubMessage: (() => void) | undefined
       let unsubClose: (() => void) | undefined
       // Per-attempt cancellation flag for this async bridge setup, distinct
       // from the hook-level `disposed` above; named apart so an edit here
       // can't silently read the wrong scope's flag.
       let attemptDisposed = false
+      // The bridge handlers need the same stale-connection guard the native WS
+      // handlers carry (`socket !== ws || generation !== connectionGeneration`), and
+      // they cannot rely on being unsubscribed instead: unsubMessage/unsubClose are
+      // only assigned once the onEvent promises resolve, so between Rust registering
+      // a listener and that microtask, bridgeCleanup marks the attempt disposed but
+      // unsubscribes NOTHING. A close delivered in that window would otherwise reach
+      // this superseded attempt's handler and tear down the generation that replaced
+      // it -- firing AppShell's "Live updates disconnected" on a freshly-switched org.
+      const isStaleAttempt = () => attemptDisposed || generation !== connectionGeneration
       // Open the relay, then attach event listeners. Order matters
       // less than for native WS — the sidecar buffers a few frames
       // on its own pending channel — but listening before open is
@@ -212,12 +272,29 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
       // immediately after Subscribe.
       Promise.all([
         platformBridge.onEvent('orgevents:message', (b64) => {
+          if (isStaleAttempt())
+            return
           if (typeof b64 !== 'string')
             return
           handleFrame(base64ToUint8Array(b64))
         }),
-        platformBridge.onEvent('orgevents:close', () => {
+        platformBridge.onEvent('orgevents:close', (payload: unknown) => {
+          if (isStaleAttempt())
+            return
           setBootstrapped(false)
+          const close = parseRelayClosePayload(payload)
+          const code = close.code
+          if (isTerminalCloseCode(code)) {
+            // Terminal close: stop retrying AND release the bridge resources.
+            // Unlike the native WS path -- whose listeners are GC'd once the
+            // socket ref is dropped -- the platformBridge onEvent listeners and
+            // the Go-side relay persist until explicitly torn down, so without
+            // this a stale orgevents:message listener survives (and a later
+            // re-subscribe without a reload would double-dispatch frames).
+            tearDown()
+            opts.onFatalClose?.({ code, reason: close.reason })
+            return
+          }
           scheduleReconnect(orgId, generation)
         }),
       ])
@@ -229,7 +306,7 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
             unsubClose?.()
             return
           }
-          return platformBridge.openOrgEventsRelay(orgId, workspaceIds)
+          return platformBridge.openOrgEventsRelay(relayId, orgId, workspaceIds)
         })
         .catch(() => {
           scheduleReconnect(orgId, generation)
@@ -238,7 +315,10 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
         attemptDisposed = true
         unsubMessage?.()
         unsubClose?.()
-        platformBridge.closeOrgEventsRelay().catch(() => {})
+        // Names the relay THIS attempt opened: the close and the successor's open are
+        // separate RPCs the sidecar runs on unordered goroutines, so without the id a
+        // close that lost the race tears down the successor's relay instead.
+        platformBridge.closeOrgEventsRelay(relayId).catch(() => {})
       }
       return
     }
@@ -269,11 +349,23 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
         return
       handleFrame(new Uint8Array(ev.data))
     })
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (ev) => {
       if (socket !== ws || generation !== connectionGeneration)
         return
       socket = undefined
       setBootstrapped(false)
+      if (isTerminalCloseCode(ev.code)) {
+        // Terminal close: stop retrying, mirroring the bridge path's tearDown().
+        // A preceding `error` on this same socket already armed scheduleReconnect
+        // (it has no way to know a terminal-coded close is coming), so without
+        // bumping connectionGeneration and clearing reconnectPending here that
+        // timer fires ~one backoff later and resubscribes the very connection the
+        // fatal close was meant to stop -- reconnecting underneath AppShell's
+        // disconnect banner.
+        tearDown()
+        opts.onFatalClose?.({ code: ev.code, reason: ev.reason })
+        return
+      }
       scheduleReconnect(orgId, generation)
     })
     ws.addEventListener('error', () => {
@@ -307,6 +399,12 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
   return { bootstrapped, clock, reconnect }
 }
 
+// defaultBuildWsUrl mirrors the /ws/orgevents query-string shape that Go's
+// channelwire.OrgEventsURL (backend/channelwire/wire.go) is the source of truth
+// for: an `org_id` param plus a comma-joined `workspace_ids`. The browser cannot
+// import Go, so it keeps its own copy -- like channel.ts's channel framing -- and
+// the two must stay in lockstep: a rename of a query key on the Go side has no
+// compile-time or fixture check to catch a missed edit here.
 function defaultBuildWsUrl(orgId: string, workspaceIds: string[]): string {
   const base = window.location.origin.replace(/^http/, 'ws')
   const params = new URLSearchParams({ org_id: orgId })
@@ -346,16 +444,6 @@ function dispatchEvent(
         if (result.droppedPending)
           opts.onPendingDropped?.()
       }
-      break
-    }
-    case 'workspaceProjection': {
-      const pending = opts.pending()
-      if (pending) {
-        const result = pending.consumeWorkspaceProjection(e.value)
-        if (result.droppedPending)
-          opts.onPendingDropped?.()
-      }
-      opts.onWorkspaceLifecycleChanged?.()
       break
     }
     case 'presence':

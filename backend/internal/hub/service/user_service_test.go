@@ -458,6 +458,72 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 	assert.Equal(t, "preserved@example.com", user.Email)
 }
 
+// --- UpdateProfile: username rename renames the personal org ---
+
+// TestUpdateProfile_UsernameRenameRenamesPersonalOrg pins the personal-org
+// rename that rides on a username change: the org's name (== the URL slug)
+// must follow the new username. Regression guard for the silent no-op the
+// old `is_personal = 0` SQL guard caused -- the rename transaction called
+// Orgs().UpdateName on the personal org, and the guard filtered it out, so
+// the slug went stale after every username change.
+func TestUpdateProfile_UsernameRenameRenamesPersonalOrg(t *testing.T) {
+	env := setupUserTest(t)
+
+	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "renameduser",
+		DisplayName: "Renamed User",
+	}, env.token))
+	require.NoError(t, err)
+
+	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
+	require.NoError(t, err)
+	assert.Equal(t, "renameduser", org.Name, "the personal org must be renamed with the username")
+}
+
+// TestUpdateProfile_RenameToTakenUsernameLeavesUserAndOrgUntouched pins the
+// atomicity of the rename transaction: when the new username is already
+// taken, the whole rename fails as "already taken" and NEITHER the user row
+// NOR the personal-org row changes -- the org name can never drift from the
+// username via a half-applied rename.
+func TestUpdateProfile_RenameToTakenUsernameLeavesUserAndOrgUntouched(t *testing.T) {
+	env := setupUserTest(t)
+
+	// A second user whose username the test user will collide with.
+	hubtestutil.CreateTestUser(t, env.store, "takenname", "p")
+
+	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "takenname",
+		DisplayName: "Collider",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "already taken")
+
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Equal(t, "testuser", user.Username, "a failed rename must not change the username")
+
+	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
+	require.NoError(t, err)
+	assert.Equal(t, "testuser", org.Name, "a failed rename must not change the org name")
+}
+
+// TestUpdateProfile_DisplayNameOnlyKeepsOrgName is the complement: a
+// display-name-only edit (username unchanged) must not touch the org row.
+func TestUpdateProfile_DisplayNameOnlyKeepsOrgName(t *testing.T) {
+	env := setupUserTest(t)
+
+	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "testuser",
+		DisplayName: "Just A New Display Name",
+	}, env.token))
+	require.NoError(t, err)
+
+	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
+	require.NoError(t, err)
+	assert.Equal(t, "testuser", org.Name, "a display-name-only edit must not rename the org")
+}
+
 // --- RequestEmailChange: admin immediate change with email_verified ---
 
 func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
@@ -499,11 +565,6 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 		DisplayName:  "Plain User",
 		PasswordSet:  true,
 		IsAdmin:      false,
-	}))
-	require.NoError(t, st.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
-		OrgID:  adminUser.OrgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	}))
 	// Start from a verified address so the interceptor doesn't gate the call.
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
@@ -617,12 +678,6 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 		DisplayName:  "Verify User",
 		PasswordSet:  true,
 		IsAdmin:      false,
-	})
-	require.NoError(t, err)
-	err = st.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
-		OrgID:  adminUser.OrgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
 	require.NoError(t, err)
 

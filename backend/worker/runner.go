@@ -35,13 +35,17 @@ type RunConfig struct {
 	DBMaxConns           int                         // Maximum number of open database connections (0 = default)
 	DBCacheSize          int                         // SQLite page cache size (positive = pages, negative = KiB; 0 = default)
 	DBMmapSize           int                         // SQLite memory-mapped I/O size in bytes (0 = disabled)
-	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 5m default)
 	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
 	UseLoginShell        bool                        // Wrap claude invocation in user's login shell
-	RegisteredBy         string                      // User ID who registered this worker (for tunnel authorization)
+	// RegisteredBy seeds the worker's owner, which gates every machine-scoped RPC
+	// family (tunnels, file, git, sysinfo) -- see service.requireWorkerOwner. It is a
+	// DB-sourced seed for the in-process launchers (solo reads it from
+	// workers.registered_by); the Hub's connect-time WorkerIdentity overrides it, and
+	// is the authority. Leave it empty and the Hub still establishes it.
+	RegisteredBy string
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -89,12 +93,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 
 		channelMgr := channel.NewManager(
 			cfg.CompositeKey, cfg.EncryptionMode, client.Send,
-			cfg.MaxMessageSize, cfg.MaxIncompleteChunked,
+			cfg.MaxIncompleteChunked,
 			func(channelID string) { svcCtx.Watchers.UnwatchAll(channelID) },
 		)
 
 		svcCtx.WorkerID = cfg.WorkerID
-		svcCtx.RegisteredBy = cfg.RegisteredBy
+		svcCtx.SetRegisteredBy(cfg.RegisteredBy)
 		switch {
 		case cfg.Name != "":
 			svcCtx.Name = cfg.Name
@@ -149,7 +153,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			// The healthy lifecycle (Acquire → GetBearer → Release)
 			// already keeps the cache bounded; this catches orphans.
 			go delegation.RunJanitor(ctx, time.Hour)
-			cwClient = crossworker.New(cfg.HubURL, pins, delegation)
+			cwClient = crossworker.New(ctx, cfg.HubURL, pins, delegation)
 		}
 		var hubStreams remoteipc.HubStreamer
 		var hubBridge remoteipc.HubBridge
@@ -218,6 +222,16 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		client.OnTabSyncResponse = func(*leapmuxv1.WorkspaceTabsSyncResponse) {
 			reconciler.Trigger()
 		}
+
+		// The Hub owns workers.registered_by and re-delivers it on every connect. It
+		// overrides RunConfig.RegisteredBy, which is only a DB-sourced seed: the Hub's
+		// answer is the authority, and taking it on every connect means a worker whose
+		// seed was wrong or absent still converges rather than serving with no owner.
+		//
+		// The handler is service.Context's own method, not a closure around it, so the
+		// drift warning and the empty-owner refusal cannot diverge between this entry
+		// point and `leapmux worker`'s.
+		client.OnWorkerIdentity = svcCtx.UpdateRegisteredBy
 
 		// Periodically reclaim in-memory agent tracker state orphaned by a
 		// closed/deleted agent that never routed through a cleanup path (the

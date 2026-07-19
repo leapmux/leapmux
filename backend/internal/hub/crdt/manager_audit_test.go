@@ -37,10 +37,7 @@ func newIncrementingClock(start int64) func() time.Time {
 	}
 }
 
-func (orphanTabAuthChecker) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) {
-	return true, nil
-}
-func (orphanTabAuthChecker) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (orphanTabAuthChecker) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
 	return true, nil
 }
 func (a orphanTabAuthChecker) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
@@ -53,10 +50,7 @@ type errorWorkerAuthChecker struct {
 	failWorker string
 }
 
-func (errorWorkerAuthChecker) CanWriteWorkspace(_ context.Context, _, _, _ string) (bool, error) {
-	return true, nil
-}
-func (errorWorkerAuthChecker) CanReadWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (errorWorkerAuthChecker) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
 	return true, nil
 }
 func (a errorWorkerAuthChecker) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
@@ -300,4 +294,71 @@ func findLogRecord(t *testing.T, buf *bytes.Buffer, needle string) map[string]an
 		}
 	}
 	return nil
+}
+
+// The post-commit orphan-tab audit runs on a background goroutine that Stop()
+// drains via auditWG.Wait(). If its CanUseWorker lookup hangs (a locked workers
+// table, a dead pool connection) the goroutine never returns, so an unbounded
+// context.Background() would wedge Stop() and hang a hub Shutdown. The lookup is
+// bounded by crdt.OrphanAuditLookupTimeout; on expiry the audit takes its existing
+// inconclusive path. This test shortens that timeout and proves Stop() returns
+// even when the auth checker never answers.
+type hangingWorkerAuthChecker struct{}
+
+func (hangingWorkerAuthChecker) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+func (hangingWorkerAuthChecker) CanUseWorker(ctx context.Context, _, _, _ string) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
+	old := crdt.OrphanAuditLookupTimeout
+	crdt.OrphanAuditLookupTimeout = 50 * time.Millisecond
+	defer func() { crdt.OrphanAuditLookupTimeout = old }()
+
+	j := newFakeJournal()
+	now := newIncrementingClock(2_000)
+	mgr := crdt.NewManager("org", j, hangingWorkerAuthChecker{}, slog.Default(), now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+
+	seedRootInternal(t, mgr, "ws-h", "root-h")
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID:   "org",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-h", "tab-h", "root-h", "w-h", "p-h")},
+	})
+	require.NoError(t, err)
+
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	tombstoneBatch := &leapmuxv1.OpBatch{
+		BatchId: "ts-h",
+		Ops: []*leapmuxv1.OrgOp{
+			{OpId: "ts-h-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-h",
+			}}},
+		},
+	}
+	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, PrincipalID: "alice", OriginClient: "cli",
+		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
+	})
+	require.NoError(t, err, "the tombstone must commit and spawn the audit goroutine")
+
+	// Stop() drains auditWG.Wait(); with an unbounded lookup the hanging auth
+	// would block it forever. The timeout must let Stop() return promptly.
+	done := make(chan struct{})
+	go func() {
+		cancel()
+		mgr.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager.Stop() wedged: the audit goroutine's CanUseWorker lookup " +
+			"was not bounded, so a hanging auth checker hangs the hub Shutdown")
+	}
 }

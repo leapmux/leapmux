@@ -576,7 +576,7 @@ func newAgentMessagesTransport(ctx context.Context, c *remote.Client, workerID, 
 	if workerID == "" {
 		return nil, errors.New("worker_id required for hub-bound mode")
 	}
-	ch, err := c.OpenE2EEChannel(ctx, workerID)
+	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
 	if err != nil {
 		return nil, err
 	}

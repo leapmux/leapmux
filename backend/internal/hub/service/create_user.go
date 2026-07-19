@@ -9,7 +9,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -27,8 +26,8 @@ const pendingEmailExpiry = 30 * time.Minute
 // the success probability of a remote brute-force at 5/31^6 ≈ 5e-9.
 const maxVerificationAttempts = 5
 
-// CreateUserParams holds the parameters for creating a new user with a
-// personal org and org membership.
+// CreateUserParams holds the parameters for creating a new user together
+// with its personal org.
 type CreateUserParams struct {
 	Username      string
 	PasswordHash  string
@@ -39,17 +38,16 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
-// CreateUserWithOrg creates a personal org, a user, and an org membership
-// atomically within a transaction. It returns the created user row.
+// CreateUserWithOrg creates a personal org and its user atomically within a
+// transaction. It returns the created user row.
 func CreateUserWithOrg(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
 	orgID := id.Generate()
 	userID := id.Generate()
 
 	err := st.RunInTransaction(ctx, func(tx store.Store) error {
 		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:         orgID,
-			Name:       p.Username,
-			IsPersonal: true,
+			ID:   orgID,
+			Name: p.Username,
 		}); err != nil {
 			return fmt.Errorf("create org: %w", store.NewConflictError(err, store.ConflictEntityOrg))
 		}
@@ -66,14 +64,6 @@ func CreateUserWithOrg(ctx context.Context, st store.Store, p CreateUserParams) 
 			IsAdmin:       p.IsAdmin,
 		}); err != nil {
 			return fmt.Errorf("create user: %w", store.NewConflictError(err, store.ConflictEntityUser))
-		}
-
-		if err := tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
-			OrgID:  orgID,
-			UserID: userID,
-			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-		}); err != nil {
-			return fmt.Errorf("create org member: %w", err)
 		}
 
 		return nil

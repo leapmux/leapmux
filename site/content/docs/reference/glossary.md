@@ -11,7 +11,7 @@ Short definitions of the terms you will meet throughout the LeapMux manual. Each
 
 ### Active client (presence)
 
-The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-org events stream and is not the same thing as the layout sync. See [Collaboration & Presence](/docs/using/collaboration/).
+The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-org events stream and is not the same thing as the layout sync. See [Device Sync & Presence](/docs/using/collaboration/).
 
 ### Agent
 
@@ -63,12 +63,6 @@ The central service (`leapmux hub`) that authenticates users, stores accounts, o
 
 The string-based ordering scheme LeapMux uses to position tabs (and other ordered items) without renumbering everything when you reorder or insert. Each tab carries a LexoRank `position` string; a new tab gets a rank computed from its neighbours, so drag-to-reorder and "insert before/after" need only a single update. It is an implementation detail you rarely see directly. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
-## M
-
-### Member / Admin / Owner (roles)
-
-The three organization roles, in increasing privilege: Member < Admin < Owner; only Owners can delete the org, and the last Owner cannot be removed or demoted. These are distinct from the workspace owner (the workspace creator) and from the system-wide admin flag. See [Organizations & Members](/docs/using/organizations/) for the full per-role permission table.
-
 ## N
 
 ### Noise_NK
@@ -79,7 +73,7 @@ The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a k
 
 ### Organization
 
-A multi-tenant container ("org") that owns members and workspaces, identified by a globally-unique GitHub-style slug. Every user automatically gets a **personal** org named after their username; you can also create additional team orgs. The whole app lives under the URL prefix `/o/{orgSlug}`, and you switch orgs from the user menu. Org membership alone does not grant workspace access — that is shared separately per user. See [Organizations & Members](/docs/using/organizations/).
+The top-level container ("org") that owns a user's workspaces, identified by a globally-unique GitHub-style slug. Every account has exactly one: a **personal** org created automatically with the account, named after the username, and renamed with it. The whole app lives under the URL prefix `/o/{username}`. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## P
 
@@ -137,7 +131,7 @@ A long-running daemon (`leapmux worker`) that runs on a developer machine and ho
 
 ### Workspace
 
-A named container for one tiling layout of tabs, owned by its creator and belonging to an organization. Workspaces appear in the sidebar tree, persist their layout (CRDT-synced through the Hub), and can be shared with specific org members. Each workspace's tabs run agents and terminals on a Worker you pick. See [Workspaces](/docs/using/workspaces/).
+A named container for one tiling layout of tabs, owned by its creator and living in that user's personal organization. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own. Each workspace's tabs run agents and terminals on a Worker you pick. See [Workspaces](/docs/using/workspaces/).
 
 ### Worktree
 

@@ -142,7 +142,7 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 	t.Run("delete cascades to tokens and user links", func(t *testing.T) {
 		st := s.NewStore(t)
 		prov := SeedOAuthProvider(t, st, "cascade-prov")
-		orgID := SeedOrg(t, st, "cascade-org", true)
+		orgID := SeedOrg(t, st, "cascade-org")
 		user := SeedUser(t, st, orgID, "cascade-user")
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{

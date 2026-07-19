@@ -8,7 +8,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -273,45 +272,13 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	}, nil
 }
 
-// RequireOrgAdmin verifies that the user is a member of the organization with
-// owner or admin role. Returns a connect error on failure.
-func RequireOrgAdmin(ctx context.Context, st store.Store, orgID, userID string) error {
-	member, err := st.OrgMembers().GetByOrgAndUser(ctx, orgID, userID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("not a member of this organization"))
-		}
-		return connect.NewError(connect.CodeInternal, err)
-	}
-	if member.Role != leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER && member.Role != leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN {
-		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("insufficient permissions"))
-	}
-	return nil
-}
-
-// ResolveOrgID determines the effective org ID for a request.
-// If requestedOrgID is empty, returns the user's personal org.
-// Otherwise, verifies the user is a member of the requested org.
-func ResolveOrgID(ctx context.Context, st store.Store, user *UserInfo, requestedOrgID string) (string, error) {
-	if requestedOrgID == "" {
+// ResolveOrgID determines the effective org ID for a request. Every user
+// belongs to exactly one (personal) org, so an empty requestedOrgID
+// resolves to it and any other value must match it — anything else is
+// NotFound, mirroring how an unknown org id read.
+func ResolveOrgID(user *UserInfo, requestedOrgID string) (string, error) {
+	if requestedOrgID == "" || requestedOrgID == user.OrgID {
 		return user.OrgID, nil
 	}
-
-	isMember, err := st.OrgMembers().IsMember(ctx, store.IsOrgMemberParams{
-		OrgID:  requestedOrgID,
-		UserID: user.ID,
-	})
-	if err != nil {
-		// A transient store failure during the membership check must surface as
-		// a retryable Internal, not an uncoded error the caller relays as
-		// CodeUnknown -- keeping this consistent with the sibling read/mutation
-		// paths that map store errors to CodeInternal so clients retry rather
-		// than treat a DB blip as permanent.
-		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("check org membership: %w", err))
-	}
-	if !isMember {
-		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("not a member of this organization"))
-	}
-
-	return requestedOrgID, nil
+	return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("not a member of this organization"))
 }

@@ -17,7 +17,7 @@ func TestWorkerCloseDispatcher_DoesNotDropLargeBatch(t *testing.T) {
 	workerMgr := workermgr.New()
 	var mu sync.Mutex
 	received := make(map[string]struct{})
-	workerMgr.Register(&workermgr.Conn{
+	_, _ = workerMgr.Register(&workermgr.Conn{
 		WorkerID: "worker",
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			mu.Lock()

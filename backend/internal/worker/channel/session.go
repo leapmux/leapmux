@@ -19,13 +19,26 @@ import (
 // SendFunc sends a ConnectRequest (containing ChannelMessage) to the Hub.
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
+// errorSendQueueSize bounds a session's error-send queue. Sized for a burst of
+// protocol-violation responses; a peer that overflows it is already
+// misbehaving, and a dropped error response costs it nothing its own refusal
+// to drain was not already costing (see queueErrorSend).
+const errorSendQueueSize = 16
+
+// errorSend is one queued error response from the receive loop (see
+// channelSession.errorSends).
+type errorSend struct {
+	requestID uint64
+	code      int32
+	message   string
+}
+
 // channelSession tracks an active encrypted channel.
 type channelSession struct {
 	ChannelID string
 	UserID    string
 	Session   *noiseutil.Session
 	sender    *channelSender // shared sender for this channel (protects Encrypt+Send)
-	verified  bool           // true after a valid UserIdClaim has been received
 	// ctx is the session-scoped context handed to every inner-RPC
 	// handler dispatched on this channel. cancel fires on HandleClose
 	// (and CloseAll) so handlers that pass ctx to subprocesses /
@@ -33,7 +46,7 @@ type channelSession struct {
 	// channel goes away — no waiting for a 30s read timeout to bite.
 	ctx        context.Context
 	cancel     context.CancelFunc
-	reassembly map[uint32]*chunkBuffer // correlationID -> in-progress chunk reassembly
+	reassembly *reassembler // per-channel chunk-reassembly state machine (see chunker.go)
 	// accessibleWorkspaceIDs is mutated AFTER channel open (CreateWorkspace
 	// adds entries on demand) while WatchEvents and other handlers
 	// concurrently read the same set on every event broadcast. Guard the
@@ -41,6 +54,55 @@ type channelSession struct {
 	// not the inner per-session map.
 	awsMu                  sync.RWMutex
 	accessibleWorkspaceIDs map[string]bool // workspaces the user can access (set from ChannelOpenRequest)
+	// errorSends decouples the receive loop's error responses (reassembly cap,
+	// oversize, no dispatcher) from the shared send path. An inline send holds
+	// sender.mu across sendFn, which can block on the Connect stream's HTTP/2
+	// send window under Hub backpressure -- wedging the ONE receive goroutine
+	// that serves every channel on this worker. A goroutine per error frame is
+	// the opposite failure (a peer streaming violations pins one goroutine and
+	// one sender.mu waiter per frame), so a single drainer goroutine consumes
+	// this bounded queue instead: the receive loop never blocks, goroutines
+	// stay bounded at one per session, and nonce ordering is preserved because
+	// the drainer encrypts and sends under the same channelSender mutex as
+	// every other sender. Enqueue is non-blocking; overflow drops the response
+	// (see queueErrorSend). The decrypt-failure CLOSE stays INLINE in
+	// HandleMessage: it must reach the wire before HandleClose tears the
+	// session down, and a queued send would race that teardown. The
+	// unknown-method arm in DispatchAsync also still sends inline; unifying
+	// every receive-goroutine send behind one bounded writer is tracked in
+	// https://github.com/leapmux/leapmux/issues/293.
+	errorSends chan errorSend
+}
+
+// queueErrorSend hands an error response to the session's drainer without
+// blocking the receive loop. Drop-on-full is deliberate: the queue only
+// overflows when the send path is already backpressured or the peer is
+// streaming violations, and in both cases the error response is best-effort
+// -- the caller's own RPC timeout is the backstop, exactly as if the frame
+// had been lost in flight.
+func (s *channelSession) queueErrorSend(requestID uint64, code int32, message string) {
+	select {
+	case s.errorSends <- errorSend{requestID: requestID, code: code, message: message}:
+	default:
+		slog.Debug("dropping error response: error-send queue is full",
+			"channel_id", s.ChannelID,
+			"correlation_id", requestID,
+		)
+	}
+}
+
+// drainErrorSends is the session's sole consumer of errorSends. It exits when
+// the session context is cancelled (HandleClose / CloseAll); anything still
+// queued then is dropped with the session it belonged to.
+func (s *channelSession) drainErrorSends() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case es := <-s.errorSends:
+			_ = s.sender.sendError(es.requestID, es.code, es.message)
+		}
+	}
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -61,18 +123,21 @@ type Manager struct {
 }
 
 // NewManager creates a new channel Manager.
-// Pass 0 for maxMessageSize or maxIncompleteChunked to use defaults.
+// Pass 0 for maxIncompleteChunked to use the default.
 func NewManager(
 	compositeKey *noiseutil.CompositeKeypair,
 	encryptionMode leapmuxv1.EncryptionMode,
 	sendFn SendFunc,
-	maxMessageSize int,
 	maxIncompleteChunked int,
 	closeCallback CloseCallback,
 ) *Manager {
-	if maxMessageSize <= 0 {
-		maxMessageSize = channelwire.DefaultMaxMessageSize
-	}
+	// The reassembled-message ceiling is a fixed protocol constant shared with
+	// the tunnel client and the browser (channelwire.DefaultMaxMessageSize), not
+	// an operator knob: a worker configured with any other value would reject a
+	// message the other receivers accept, or accept one they reject. Only the
+	// in-flight-chunk cap remains tunable. Reintroducing the knob with
+	// end-to-end propagation is tracked in
+	// https://github.com/leapmux/leapmux/issues/291.
 	if maxIncompleteChunked <= 0 {
 		maxIncompleteChunked = channelwire.DefaultMaxIncompleteChunked
 	}
@@ -81,7 +146,7 @@ func NewManager(
 		compositeKey:         compositeKey,
 		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
-		maxMessageSize:       maxMessageSize,
+		maxMessageSize:       channelwire.DefaultMaxMessageSize,
 		maxIncompleteChunked: maxIncompleteChunked,
 		closeCallback:        closeCallback,
 	}
@@ -95,6 +160,21 @@ func (m *Manager) SetDispatcher(d *Dispatcher) {
 // Dispatcher returns the inner RPC dispatcher.
 func (m *Manager) Dispatcher() *Dispatcher {
 	return m.dispatcher
+}
+
+// rejectChannelReopen logs and builds the response for a channel id that is
+// already active. HandleOpen rejects a re-open twice -- once on the RLock fast
+// path and once under m.mu.Lock as the authority -- so centralizing the log
+// line and the error string here keeps the two rejections from drifting to
+// describe the same condition differently.
+func rejectChannelReopen(channelID string) *leapmuxv1.ChannelOpenResponse {
+	slog.Warn("rejecting channel re-open: channel id already active",
+		"channel_id", channelID,
+	)
+	return &leapmuxv1.ChannelOpenResponse{
+		ChannelId: channelID,
+		Error:     "channel id already active",
+	}
 }
 
 // HandleOpen processes a ChannelOpenRequest from the Hub.
@@ -113,12 +193,32 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	_, dup := m.sessions[req.GetChannelId()]
 	m.mu.RUnlock()
 	if dup {
-		slog.Warn("rejecting channel re-open: channel id already active",
+		return rejectChannelReopen(req.GetChannelId())
+	}
+
+	// The Hub establishes channel identity and names it here, so an empty user id is
+	// not an anonymous caller -- it is the Hub failing to say who this is, which it
+	// has no legitimate path to do. Refuse rather than install a session with one.
+	//
+	// A session's UserID is the only identity the workspace-scoped families (agent,
+	// terminal, tab moves, cleanup) ever see, and they gate on the Hub-supplied
+	// accessible-workspace set rather than on the id -- so an empty one is not
+	// self-limiting there the way it is for the machine-scoped families, which
+	// requireWorkerOwner separately fails closed on. It would simply run as nobody,
+	// and every audit line for the session would record nobody.
+	//
+	// This is the fourth boundary of this handshake, and the same rule the other
+	// three already apply: requireWorkerOwner refuses an empty identity on either
+	// side rather than matching two empty strings, verifyDelegationWorkerScope
+	// refuses an unrecorded minter, and both channel clients reject a Hub response
+	// that omits the identity. Fail closed here too.
+	if req.GetUserId() == "" {
+		slog.Warn("rejecting channel open: hub named no authenticated user",
 			"channel_id", req.GetChannelId(),
 		)
 		return &leapmuxv1.ChannelOpenResponse{
 			ChannelId: req.GetChannelId(),
-			Error:     "channel id already active",
+			Error:     "no authenticated user id",
 		}
 	}
 
@@ -182,15 +282,9 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	if _, exists := m.sessions[req.GetChannelId()]; exists {
 		m.mu.Unlock()
 		cancel()
-		slog.Warn("rejecting channel re-open: channel id already active",
-			"channel_id", req.GetChannelId(),
-		)
-		return &leapmuxv1.ChannelOpenResponse{
-			ChannelId: req.GetChannelId(),
-			Error:     "channel id already active",
-		}
+		return rejectChannelReopen(req.GetChannelId())
 	}
-	m.sessions[req.GetChannelId()] = &channelSession{
+	sess := &channelSession{
 		ChannelID: req.GetChannelId(),
 		UserID:    req.GetUserId(),
 		Session:   session,
@@ -202,10 +296,15 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		},
 		ctx:                    ctx,
 		cancel:                 cancel,
-		reassembly:             make(map[uint32]*chunkBuffer),
+		reassembly:             newReassembler(m.maxMessageSize, m.maxIncompleteChunked),
 		accessibleWorkspaceIDs: awsIDs,
+		errorSends:             make(chan errorSend, errorSendQueueSize),
 	}
+	m.sessions[req.GetChannelId()] = sess
 	m.mu.Unlock()
+	// One drainer per session; it exits when HandleClose/CloseAll cancel
+	// sess.ctx (see channelSession.errorSends).
+	go sess.drainErrorSends()
 
 	slog.Info("channel opened",
 		"channel_id", req.GetChannelId(),
@@ -219,6 +318,20 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	}
 }
 
+// getSession looks up a channel's session under the manager's read lock and
+// releases the lock before returning, so callers hold only the per-session
+// locks (awsMu, the reassembler's implicit single-goroutine access) while they
+// act on it. It is the one place the "RLock, look up m.sessions, RUnlock, bail
+// on miss" contract lives, so a new read-side Manager method cannot get the
+// locking subtly wrong. HandleClose is the deliberate exception: it takes the
+// write lock and deletes under it, so it does not route through here.
+func (m *Manager) getSession(channelID string) (*channelSession, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sess, ok := m.sessions[channelID]
+	return sess, ok
+}
+
 // AccessibleWorkspaceIDs returns the set of workspace IDs accessible to the
 // user on the given channel. Returns nil if the channel is not found.
 //
@@ -226,10 +339,12 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 // map and we can't hand a live map reference to callers under nothing but
 // an RLock — once they release it, a concurrent Add would race their next
 // iteration. Callers iterate the result without further synchronisation.
+//
+// Prefer IsWorkspaceAccessible for a single membership check: it does one map
+// lookup under the RLock with no copy, where this method allocates and copies
+// the whole set, which the per-RPC access gates used to do on every request.
 func (m *Manager) AccessibleWorkspaceIDs(channelID string) map[string]bool {
-	m.mu.RLock()
-	sess, ok := m.sessions[channelID]
-	m.mu.RUnlock()
+	sess, ok := m.getSession(channelID)
 	if !ok {
 		return nil
 	}
@@ -242,13 +357,25 @@ func (m *Manager) AccessibleWorkspaceIDs(channelID string) map[string]bool {
 	return out
 }
 
+// IsWorkspaceAccessible reports whether workspaceID is in the channel's
+// accessible set, with a single map lookup and no copy. It is the per-RPC
+// membership check the access gates (requireAccessibleWorkspace and friends)
+// call on virtually every workspace-scoped request, so it must stay O(1).
+func (m *Manager) IsWorkspaceAccessible(channelID, workspaceID string) bool {
+	sess, ok := m.getSession(channelID)
+	if !ok {
+		return false
+	}
+	sess.awsMu.RLock()
+	defer sess.awsMu.RUnlock()
+	return sess.accessibleWorkspaceIDs[workspaceID]
+}
+
 // AddAccessibleWorkspaceID adds a workspace ID to the channel's accessible
 // set. This is needed when a workspace is created after the channel was
 // opened, so that subsequent WatchEvents calls can see the new workspace.
 func (m *Manager) AddAccessibleWorkspaceID(channelID, workspaceID string) {
-	m.mu.RLock()
-	sess, ok := m.sessions[channelID]
-	m.mu.RUnlock()
+	sess, ok := m.getSession(channelID)
 	if !ok {
 		return
 	}
@@ -260,10 +387,7 @@ func (m *Manager) AddAccessibleWorkspaceID(channelID, workspaceID string) {
 // HandleMessage processes an encrypted ChannelMessage from the Hub.
 // It decrypts the message, dispatches the inner RPC, and sends encrypted responses.
 func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
-	m.mu.RLock()
-	sess, ok := m.sessions[msg.GetChannelId()]
-	m.mu.RUnlock()
-
+	sess, ok := m.getSession(msg.GetChannelId())
 	if !ok {
 		slog.Warn("received message for unknown channel", "channel_id", msg.GetChannelId())
 		return
@@ -294,82 +418,37 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	}
 
 	requestID := msg.GetCorrelationId()
-
-	// Handle chunked reassembly.
-	var plaintext []byte
-	if msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE {
-		// More chunks to come — buffer this one.
-		buf, exists := sess.reassembly[requestID]
-		if !exists {
-			// New chunked sequence — check max incomplete limit.
-			if len(sess.reassembly) >= m.maxIncompleteChunked {
-				slog.Warn("too many incomplete chunked messages",
-					"channel_id", msg.GetChannelId(),
-					"correlation_id", requestID,
-					"count", len(sess.reassembly),
-				)
-				go func() { _ = sess.sender.sendError(requestID, 8, "too many incomplete chunked messages") }() // RESOURCE_EXHAUSTED
-				return
-			}
-			buf = &chunkBuffer{}
-			sess.reassembly[requestID] = buf
-		}
-		buf.parts = append(buf.parts, decrypted)
-		buf.total += len(decrypted)
-		if buf.total > m.maxMessageSize {
-			slog.Warn("chunked message exceeds max size",
-				"channel_id", msg.GetChannelId(),
-				"correlation_id", requestID,
-				"size", buf.total,
-				"max", m.maxMessageSize,
-			)
-			delete(sess.reassembly, requestID)
-			go func(total, max int) {
-				_ = sess.sender.sendError(requestID, 8, // RESOURCE_EXHAUSTED
-					fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", total, max))
-			}(buf.total, m.maxMessageSize)
-			return
-		}
-		slog.Debug("buffered chunk",
+	// The flags read runs AFTER the decrypt so a dropped frame still advances
+	// the receive nonce; an out-of-spec value (e.g. MORE|CLOSE combined) is a
+	// protocol violation dropped here rather than misread as a chunk boundary
+	// (see channelwire.ChunkContinuation).
+	more, validFlags := channelwire.ChunkContinuation(msg.GetFlags())
+	if !validFlags {
+		slog.Debug("dropping channel message with out-of-spec flags",
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", requestID,
-			"chunk_size", len(decrypted),
-			"total", buf.total,
+			"flags", msg.GetFlags(),
 		)
 		return
 	}
 
-	// Final chunk (or single non-chunked message).
-	if buf, exists := sess.reassembly[requestID]; exists {
-		// Concatenate buffered parts + this final chunk.
-		buf.parts = append(buf.parts, decrypted)
-		buf.total += len(decrypted)
-		if buf.total > m.maxMessageSize {
-			slog.Warn("chunked message exceeds max size",
-				"channel_id", msg.GetChannelId(),
-				"correlation_id", requestID,
-				"size", buf.total,
-				"max", m.maxMessageSize,
-			)
-			delete(sess.reassembly, requestID)
-			go func(total, max int) {
-				_ = sess.sender.sendError(requestID, 8, // RESOURCE_EXHAUSTED
-					fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", total, max))
-			}(buf.total, m.maxMessageSize)
-			return
-		}
-		plaintext = make([]byte, 0, buf.total)
-		for _, part := range buf.parts {
-			plaintext = append(plaintext, part...)
-		}
-		delete(sess.reassembly, requestID)
+	// The reassembler owns the chunk state machine -- buffering, the in-flight
+	// cap, oversize poisoning, and tombstone reaping (see its doc in
+	// chunker.go). Acting on its decision -- logging with channel context and
+	// erroring the peer through the session's error-send queue -- lives in
+	// reactToReassembly, so HandleMessage reads as decrypt -> reassemble ->
+	// dispatch.
+	outcome := sess.reassembly.accept(requestID, decrypted, more)
+	plaintext, deliver := m.reactToReassembly(sess, msg.GetChannelId(), requestID, len(decrypted), outcome)
+	if !deliver {
+		return
+	}
+	if outcome.chunked {
 		slog.Debug("reassembled chunked message",
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", requestID,
 			"total_size", len(plaintext),
 		)
-	} else {
-		plaintext = decrypted
 	}
 
 	slog.Debug("received channel message",
@@ -393,31 +472,6 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	}
 
 	switch kind := envelope.GetKind().(type) {
-	case *leapmuxv1.InnerMessage_UserIdClaim:
-		slog.Debug("received user_id_claim",
-			"channel_id", msg.GetChannelId(),
-			"correlation_id", requestID,
-		)
-		// The verified flag must be set synchronously so that
-		// subsequent Requests on this channel see it immediately.
-		// However, the response send is dispatched in a goroutine
-		// to avoid blocking the receive loop on the send mutex,
-		// which can deadlock when handlers are concurrently sending
-		// responses on the same bidi stream.
-		if sess.verified {
-			go sess.sender.sendClaimResponse(requestID, false, "user ID already verified")
-			return
-		}
-		if kind.UserIdClaim.GetUserId() != sess.UserID {
-			go func() {
-				sess.sender.sendClaimResponse(requestID, false, "user ID mismatch")
-				m.HandleClose(msg.GetChannelId())
-			}()
-			return
-		}
-		sess.verified = true
-		go sess.sender.sendClaimResponse(requestID, true, "")
-
 	case *leapmuxv1.InnerMessage_Request:
 		bs.method = kind.Request.GetMethod()
 		slog.Debug("received inner RPC request",
@@ -425,10 +479,6 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			"correlation_id", requestID,
 			"method", bs.method,
 		)
-		if !sess.verified {
-			go func() { _ = bs.SendError(int32(codes.FailedPrecondition), "user ID not verified") }()
-			return
-		}
 		if m.dispatcher != nil {
 			// Dispatch on a fresh goroutine so the receive loop isn't
 			// blocked by slow handlers (e.g. WatchEvents with git ops).
@@ -442,7 +492,11 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			// methods.
 			m.dispatcher.DispatchAsync(sess.ctx, sess.UserID, kind.Request, bs)
 		} else {
-			go func() { _ = bs.SendError(int32(codes.Unimplemented), "no dispatcher configured") }()
+			// No dispatcher: route the error through the session's error-send
+			// queue so this receive-goroutine send can neither block the loop
+			// under backpressure nor spawn a goroutine per frame (see
+			// channelSession.errorSends).
+			sess.queueErrorSend(requestID, int32(codes.Unimplemented), "no dispatcher configured")
 		}
 
 	default:
@@ -453,6 +507,69 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	}
 }
 
+// reactToReassembly acts on one reassembly outcome: it logs each arm with
+// channel context, routes protocol-violation errors through the session's
+// error-send queue (never inline on the receive goroutine -- see
+// channelSession.errorSends), and reports whether the frame completed a
+// message to dispatch. chunkLen is the decrypted frame's size, logged on the
+// buffered arm. The DECISION (buffer / drop / poison / deliver) belongs to
+// reassembler.accept; only the reaction lives here.
+func (m *Manager) reactToReassembly(
+	sess *channelSession,
+	channelID string,
+	requestID uint64,
+	chunkLen int,
+	outcome reassemblyOutcome,
+) (plaintext []byte, deliver bool) {
+	switch outcome.action {
+	case reassemblyDropPoisoned:
+		slog.Debug("dropping chunk for a poisoned correlation id",
+			"channel_id", channelID,
+			"correlation_id", requestID,
+		)
+		return nil, false
+	case reassemblyDropCapped:
+		// Both the live and tombstone budgets are saturated, so the chunk was
+		// dropped without an error or a tombstone. Logging at Debug (not Warn)
+		// because a peer that has exhausted both budgets is misbehaving, and the
+		// cap is working as designed -- there is nothing for the caller to do.
+		slog.Debug("dropping chunk: reassembly budgets saturated",
+			"channel_id", channelID,
+			"correlation_id", requestID,
+		)
+		return nil, false
+	case reassemblyTooManyIncomplete:
+		slog.Warn("too many incomplete chunked messages",
+			"channel_id", channelID,
+			"correlation_id", requestID,
+			"count", outcome.incomplete,
+		)
+		sess.queueErrorSend(requestID, int32(codes.ResourceExhausted), "too many incomplete chunked messages")
+		return nil, false
+	case reassemblyTooLarge:
+		slog.Warn("chunked message exceeds max size",
+			"channel_id", channelID,
+			"correlation_id", requestID,
+			"size", outcome.size,
+			"max", m.maxMessageSize,
+		)
+		sess.queueErrorSend(requestID, int32(codes.ResourceExhausted),
+			fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, m.maxMessageSize))
+		return nil, false
+	case reassemblyBuffered:
+		slog.Debug("buffered chunk",
+			"channel_id", channelID,
+			"correlation_id", requestID,
+			"chunk_size", chunkLen,
+			"total", outcome.size,
+		)
+		return nil, false
+	case reassemblyDeliver:
+		return outcome.plaintext, true
+	}
+	return nil, false
+}
+
 // HandleClose removes a channel session and invokes the close callback.
 func (m *Manager) HandleClose(channelID string) {
 	m.mu.Lock()
@@ -460,14 +577,14 @@ func (m *Manager) HandleClose(channelID string) {
 	delete(m.sessions, channelID)
 	m.mu.Unlock()
 	// Do NOT nil sess.reassembly here: a concurrent receive-loop call
-	// to HandleMessage may have already snapshotted *sess (lines
-	// 241-243 take only an RLock for the lookup, then drop it) and is
-	// about to mutate sess.reassembly outside m.mu. Setting the map to
-	// nil from HandleClose under m.mu.Lock races that write and panics
-	// with `assignment to entry in nil map`. The map will be collected
-	// once the in-flight handler returns and sess is unreferenced; the
-	// delete above ensures no future receive iteration finds the
-	// session.
+	// to HandleMessage may have already snapshotted *sess (its lookup at
+	// the top takes only an RLock, then drops it) and is about to mutate
+	// the reassembler's buffers outside m.mu. Clearing it from
+	// HandleClose under m.mu.Lock races that write and panics with
+	// `assignment to entry in nil map`. The reassembler will be
+	// collected once the in-flight handler returns and sess is
+	// unreferenced; the delete above ensures no future receive iteration
+	// finds the session.
 
 	// Cancel the session ctx after dropping the lock so handlers
 	// blocked on subprocess wait can unwind without re-entering the
@@ -520,10 +637,15 @@ type channelSender struct {
 	maxMessageSize int
 }
 
-// sendEncrypted marshals an InnerMessage envelope, encrypts, and sends.
-// If the marshaled data exceeds channelwire.MaxPlaintextPerChunk, it is split into chunks,
-// each encrypted separately and sent with flags=MORE except the last.
-func (s *channelSender) sendEncrypted(requestID uint32, envelope *leapmuxv1.InnerMessage) error {
+// sendEncrypted marshals an InnerMessage envelope, encrypts it, and sends it as
+// one or more channel frames. The chunk-split / per-chunk-encrypt /
+// ChannelMessage-build sequence lives in channelwire.SendChannelFrames, shared
+// with the tunnel client's sendInnerContext, so this sender stays responsible
+// only for what is specific to the worker side: marshalling, the size cap, the
+// per-channel send mutex, and wrapping each frame in the ConnectRequest the Hub
+// relay expects (the tunnel writes raw ChannelMessages instead). send runs
+// under s.mu, which is held across the whole call.
+func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.InnerMessage) error {
 	data, err := proto.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("marshal inner message: %w", err)
@@ -536,105 +658,33 @@ func (s *channelSender) sendEncrypted(requestID uint32, envelope *leapmuxv1.Inne
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Fast path: single frame.
-	if len(data) <= channelwire.MaxPlaintextPerChunk {
-		ciphertext, encErr := s.session.Encrypt(data)
-		if encErr != nil {
-			return fmt.Errorf("encrypt inner message: %w", encErr)
-		}
-
+	return channelwire.SendChannelFrames(s.session.Encrypt, s.channelID, requestID, data, func(chMsg *leapmuxv1.ChannelMessage) error {
 		slog.Debug("sending channel message",
 			"channel_id", s.channelID,
 			"correlation_id", requestID,
-		)
-
-		return s.sendFn(&leapmuxv1.ConnectRequest{
+			"ciphertext_len", len(chMsg.GetCiphertext()),
+			"flags", chMsg.GetFlags())
+		if err := s.sendFn(&leapmuxv1.ConnectRequest{
 			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-				ChannelMessageResp: &leapmuxv1.ChannelMessage{
-					ProtocolVersion: 1,
-					ChannelId:       s.channelID,
-					Ciphertext:      ciphertext,
-					CorrelationId:   requestID,
-				},
+				ChannelMessageResp: chMsg,
 			},
-		})
-	}
-
-	// Chunked path: split data into channelwire.MaxPlaintextPerChunk-sized chunks.
-	for offset := 0; offset < len(data); {
-		end := offset + channelwire.MaxPlaintextPerChunk
-		if end > len(data) {
-			end = len(data)
+		}); err != nil {
+			return fmt.Errorf("send channel message: %w", err)
 		}
-		chunk := data[offset:end]
-		offset = end
-
-		ciphertext, encErr := s.session.Encrypt(chunk)
-		if encErr != nil {
-			return fmt.Errorf("encrypt chunk: %w", encErr)
-		}
-
-		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
-		if offset < len(data) {
-			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
-		}
-
-		slog.Debug("sending channel message chunk",
-			"channel_id", s.channelID,
-			"correlation_id", requestID,
-			"chunk_size", len(chunk),
-			"flags", flags,
-		)
-
-		if sendErr := s.sendFn(&leapmuxv1.ConnectRequest{
-			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-				ChannelMessageResp: &leapmuxv1.ChannelMessage{
-					ProtocolVersion: 1,
-					ChannelId:       s.channelID,
-					Ciphertext:      ciphertext,
-					CorrelationId:   requestID,
-					Flags:           flags,
-				},
-			},
-		}); sendErr != nil {
-			return fmt.Errorf("send chunk: %w", sendErr)
-		}
-	}
-
-	return nil
-}
-
-// sendClaimResponse sends a UserIdClaimResponse.
-func (s *channelSender) sendClaimResponse(requestID uint32, success bool, errorMessage string) {
-	slog.Debug("sending user_id_claim_response",
-		"channel_id", s.channelID,
-		"correlation_id", requestID,
-		"success", success,
-	)
-	_ = s.sendEncrypted(requestID, &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_UserIdClaimResponse{
-			UserIdClaimResponse: &leapmuxv1.UserIdClaimResponse{
-				Success:      success,
-				ErrorMessage: errorMessage,
-			},
-		},
+		return nil
 	})
 }
 
 // sendResponse sends an InnerRpcResponse (encrypted) back to the frontend.
-func (s *channelSender) sendResponse(requestID uint32, resp *leapmuxv1.InnerRpcResponse) error {
+func (s *channelSender) sendResponse(requestID uint64, resp *leapmuxv1.InnerRpcResponse) error {
 	return s.sendEncrypted(requestID, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Response{Response: resp},
 	})
 }
 
 // sendError sends an error InnerRpcResponse.
-func (s *channelSender) sendError(requestID uint32, code int32, message string) error {
-	return s.sendResponse(requestID, &leapmuxv1.InnerRpcResponse{
-		IsError:      true,
-		ErrorMessage: message,
-		ErrorCode:    code,
-	})
+func (s *channelSender) sendError(requestID uint64, code int32, message string) error {
+	return s.sendResponse(requestID, channelwire.NewErrorResponse(code, message))
 }
 
 // ChannelID returns the E2EE channel ID for this sender.
@@ -643,7 +693,7 @@ func (s *channelSender) ChannelID() string {
 }
 
 // sendStream sends an InnerStreamMessage (encrypted) back to the frontend.
-func (s *channelSender) sendStream(requestID uint32, msg *leapmuxv1.InnerStreamMessage) error {
+func (s *channelSender) sendStream(requestID uint64, msg *leapmuxv1.InnerStreamMessage) error {
 	return s.sendEncrypted(requestID, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Stream{Stream: msg},
 	})
@@ -654,8 +704,23 @@ func (s *channelSender) sendStream(requestID uint32, msg *leapmuxv1.InnerStreamM
 // incoming message has its own ID, and dispatch runs in goroutines concurrently.
 type boundSender struct {
 	sender    *channelSender
-	requestID uint32
+	requestID uint64
 	method    string
+}
+
+// logSendFailure logs a failed send with the channel/correlation/method
+// attributes every boundSender send shares, and returns err unchanged so each
+// method can `return b.logSendFailure(...)` on its error path. Named once here
+// rather than triplicated so the attribute set cannot drift between the three
+// send methods.
+func (b *boundSender) logSendFailure(what string, err error) error {
+	slog.Warn("failed to send "+what,
+		"channel_id", b.sender.channelID,
+		"correlation_id", b.requestID,
+		"method", b.method,
+		"error", err,
+	)
+	return err
 }
 
 func (b *boundSender) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
@@ -669,13 +734,7 @@ func (b *boundSender) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		"payload_len", len(resp.GetPayload()),
 	)
 	if err := b.sender.sendResponse(b.requestID, resp); err != nil {
-		slog.Warn("failed to send inner RPC response",
-			"channel_id", b.sender.channelID,
-			"correlation_id", b.requestID,
-			"method", b.method,
-			"error", err,
-		)
-		return err
+		return b.logSendFailure("inner RPC response", err)
 	}
 	return nil
 }
@@ -689,13 +748,7 @@ func (b *boundSender) SendError(code int32, message string) error {
 		"message", message,
 	)
 	if err := b.sender.sendError(b.requestID, code, message); err != nil {
-		slog.Warn("failed to send inner RPC error",
-			"channel_id", b.sender.channelID,
-			"correlation_id", b.requestID,
-			"method", b.method,
-			"error", err,
-		)
-		return err
+		return b.logSendFailure("inner RPC error", err)
 	}
 	return nil
 }
@@ -712,13 +765,7 @@ func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
 		"payload_len", len(msg.GetPayload()),
 	)
 	if err := b.sender.sendStream(b.requestID, msg); err != nil {
-		slog.Warn("failed to send inner stream message",
-			"channel_id", b.sender.channelID,
-			"correlation_id", b.requestID,
-			"method", b.method,
-			"error", err,
-		)
-		return err
+		return b.logSendFailure("inner stream message", err)
 	}
 	return nil
 }

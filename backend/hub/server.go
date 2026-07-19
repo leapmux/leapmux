@@ -4,6 +4,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -32,8 +33,13 @@ import (
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// crdtShutdownTimeout bounds the CRDT registry's drain, both on a construction
+// failure and on runtime shutdown -- one constant so the two paths cannot drift.
+const crdtShutdownTimeout = 10 * time.Second
 
 // ServerOption configures optional aspects of a Hub server.
 type ServerOption func(*serverOptions)
@@ -79,6 +85,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
+	// Records each resource as it is acquired, so every failure below closes
+	// exactly what is open without restating the subset (see acquiredResources).
+	var acquired acquiredResources
+
 	// Bind both listeners before any database work so that concurrent
 	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
 	// pipe name) fail fast on conflict without a TOCTOU window. Binding
@@ -94,46 +104,37 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			return nil, fmt.Errorf("listen tcp: %w", listenErr)
 		}
 	}
-
-	closeTCP := func() {
-		if tcpLn != nil {
-			_ = tcpLn.Close()
-		}
-	}
+	acquired.tcpLn = tcpLn
 
 	listenURL, err := cfg.LocalListenURL()
 	if err != nil {
-		closeTCP()
-		return nil, fmt.Errorf("resolve local-listen URL: %w", err)
+		return nil, acquired.close(
+			fmt.Errorf("resolve local-listen URL: %w", err))
 	}
 	localLn, err := locallisten.Listen(listenURL)
 	if err != nil {
-		closeTCP()
-		return nil, fmt.Errorf("listen local: %w", err)
+		return nil, acquired.close(
+			fmt.Errorf("listen local: %w", err))
 	}
-	closeListeners := func() {
-		_ = localLn.Close()
-		closeTCP()
-	}
+	acquired.localLn = localLn
 
 	st, err := storeopen.Open(context.Background(), cfg)
 	if err != nil {
-		closeListeners()
-		return nil, fmt.Errorf("open store: %w", err)
+		return nil, acquired.close(
+			fmt.Errorf("open store: %w", err))
 	}
+	acquired.store = st
 
 	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 	if err != nil {
-		_ = st.Close()
-		closeListeners()
-		return nil, fmt.Errorf("load encryption keystore: %w", err)
+		return nil, acquired.close(
+			fmt.Errorf("load encryption keystore: %w", err))
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
 	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode); err != nil {
-		_ = st.Close()
-		closeListeners()
-		return nil, fmt.Errorf("bootstrap: %w", err)
+		return nil, acquired.close(
+			fmt.Errorf("bootstrap: %w", err))
 	}
 
 	// In solo mode, bootstrap just created the solo user; load it once so
@@ -145,9 +146,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	if cfg.SoloMode {
 		u, loadErr := auth.LoadSoloUser(context.Background(), st)
 		if loadErr != nil {
-			_ = st.Close()
-			closeListeners()
-			return nil, fmt.Errorf("load solo user: %w", loadErr)
+			return nil, acquired.close(
+				fmt.Errorf("load solo user: %w", loadErr))
 		}
 		soloUser = u
 	}
@@ -155,24 +155,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	shutdownCh := make(chan struct{})
 
 	wMgr := workermgr.New()
-	var cMgrOpts []channelmgr.Option
-	if cfg.MaxMessageSize > 0 {
-		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxMessageSize(cfg.MaxMessageSize))
-	}
-	if cfg.MaxIncompleteChunked > 0 {
-		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxIncompleteChunked(cfg.MaxIncompleteChunked))
-	}
-	cMgr := channelmgr.New(cMgrOpts...)
+	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	apiTokenPepper := ks.Pepper()
 	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
 	if tvErr != nil {
-		_ = st.Close()
-		closeListeners()
-		return nil, fmt.Errorf("create token validator: %w", tvErr)
+		return nil, acquired.close(
+			fmt.Errorf("create token validator: %w", tvErr))
 	}
 	authInterceptor, authContexts := auth.NewInterceptorWithTokens(st, soloUser, tokenValidator, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	acquired.authContexts = authContexts
 	// Let a sliding cookie session (and a rotated bearer, via the credential
 	// lifecycle) extend its already-open channels' expiry, not just its leases
 	// (which the registry owns directly).
@@ -229,11 +222,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		}
 		return mgr, nil
 	}, slog.Default())
+	acquired.crdtRegistry = crdtRegistry
 
 	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg)
+	// One delegation-scope cache shared by SubmitOps (resolve) and worker
+	// deregistration (evict); see auth.DelegationScopeCache.
+	scopeCache := auth.NewDelegationScopeCache(st)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg, scopeCache)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -267,10 +264,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	delegationHandler := service.NewWorkerDelegationHandler(st, tokenValidator, lifecycle)
 	delegationHandler.RegisterRoutes(mux)
 
-	orgSvc := service.NewOrgService(st, cfg.SoloMode)
-	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
-	mux.Handle(orgPath, orgHandler)
-
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
@@ -282,11 +275,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode, crdtRegistry, channelSvc)
+	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry, channelSvc)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
-	crdtSvc := service.NewCRDTService(st, crdtRegistry, slog.Default())
+	crdtSvc := service.NewCRDTService(st, crdtRegistry, slog.Default(), scopeCache)
 	crdtPath, crdtHandler := leapmuxv1connect.NewOrgCRDTHandler(crdtSvc, connectOpts)
 	mux.Handle(crdtPath, crdtHandler)
 
@@ -320,11 +313,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	} else if cfg.DevFrontend != "" {
 		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
 		if proxyErr != nil {
-			authContexts.Stop()
-			crdtRegistry.Shutdown(10 * time.Second)
-			_ = st.Close()
-			closeListeners()
-			return nil, fmt.Errorf("create dev proxy: %w", proxyErr)
+			return nil, acquired.close(
+				fmt.Errorf("create dev proxy: %w", proxyErr))
 		}
 		mux.Handle("/", devProxy)
 		slog.Info("dev mode: proxying frontend", "target", cfg.DevFrontend)
@@ -418,10 +408,21 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	}, nil
 }
 
-// GetWorkerByID looks up a worker by ID. Returns an error if not found.
-func (s *Server) GetWorkerByID(ctx context.Context, workerID string) error {
-	_, err := s.store.Workers().GetByID(ctx, workerID)
-	return err
+// GetWorkerOwner returns the id of the user who registered workerID, erroring if
+// the worker is unknown (or soft-deleted, which GetByID filters).
+//
+// It returns the owner rather than just an existence check because workers.registered_by
+// is the AUTHORITY on who owns a worker -- it is NOT NULL, set at registration, and
+// the fact every machine-scoped gate (requireWorkerOwner) keys on. A caller that has
+// the worker's id therefore never needs to source the owner from anywhere else, and
+// must not: a local state file can lag or lose it, and "whoever the admin is now" is
+// a different question that happens to share an answer on a fresh single-user install.
+func (s *Server) GetWorkerOwner(ctx context.Context, workerID string) (string, error) {
+	w, err := s.store.Workers().GetByID(ctx, workerID)
+	if err != nil {
+		return "", err
+	}
+	return w.RegisteredBy, nil
 }
 
 // GetAdminUser returns the ID and org ID of the user to attribute
@@ -458,14 +459,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Without the singleton runtime lease, serving authenticated traffic would let
 	// cleanup compact revocations this process has not observed.
 	if err := s.revocationWatcher.SeedCursor(serveCtx); err != nil {
-		_ = localLn.Close()
-		if tcpLn != nil {
-			_ = tcpLn.Close()
-		}
 		s.authContexts.Stop()
-		s.crdtRegistry.Shutdown(10 * time.Second)
-		_ = s.store.Close()
-		return fmt.Errorf("seed revocation watcher: %w", err)
+		s.crdtRegistry.Shutdown(crdtShutdownTimeout)
+		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
+		watcherCloseErr := s.revocationWatcher.Close(watcherCloseCtx)
+		cancelWatcherClose()
+		return serverTeardownErrors{
+			primary:       fmt.Errorf("seed revocation watcher: %w", err),
+			tcpListener:   closeServerListener(tcpLn),
+			localListener: closeServerListener(localLn),
+			httpClose:     s.server.Close(),
+			watcherClose:  watcherCloseErr,
+			storeClose:    s.store.Close(),
+		}.finalize()
 	}
 
 	// Start background OAuth token refresh.
@@ -480,7 +486,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// predate this process so the first sweep only handles fresh work.
 	s.revocationWatcher.StartLoop(serveCtx)
 
-	shutdownDone := make(chan struct{})
+	shutdownDone := make(chan serverTeardownErrors, 1)
 	go func() {
 		<-serveCtx.Done()
 		slog.Info("hub shutting down...")
@@ -509,23 +515,30 @@ func (s *Server) Serve(ctx context.Context) error {
 		// which is the only level that sees every accepted conn.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = s.server.Shutdown(shutdownCtx)
-		_ = s.server.Close()
+		httpShutdownErr := s.server.Shutdown(shutdownCtx)
+		httpCloseErr := s.server.Close()
 		locallisten.CloseAccepted(s.localLn)
 
-		close(shutdownDone)
+		shutdownDone <- serverTeardownErrors{
+			httpShutdown: httpShutdownErr,
+			httpClose:    httpCloseErr,
+		}
 	}()
 
 	listenerCount := 1 // local listener always present
 	if tcpLn != nil {
 		listenerCount = 2
 	}
-	errCh := make(chan error, listenerCount)
+	type listenerResult struct {
+		isTCP bool
+		err   error
+	}
+	errCh := make(chan listenerResult, listenerCount)
 
 	if tcpLn != nil {
-		go func() { errCh <- s.server.Serve(tcpLn) }()
+		go func() { errCh <- listenerResult{isTCP: true, err: s.server.Serve(tcpLn)} }()
 	}
-	go func() { errCh <- s.server.Serve(localLn) }()
+	go func() { errCh <- listenerResult{err: s.server.Serve(localLn)} }()
 
 	if tcpLn != nil {
 		slog.Info("hub listening", "listen", s.cfg.Listen, "local", listenURL)
@@ -533,17 +546,26 @@ func (s *Server) Serve(ctx context.Context) error {
 		slog.Info("hub listening", "local", listenURL)
 	}
 
-	var serveErr error
+	var teardownErrs serverTeardownErrors
+	recordListenerResult := func(result listenerResult) {
+		if result.err == nil || errors.Is(result.err, http.ErrServerClosed) {
+			return
+		}
+		listenerErr := fmt.Errorf("serve: %w", result.err)
+		if result.isTCP {
+			teardownErrs.tcpListener = errors.Join(teardownErrs.tcpListener, listenerErr)
+		} else {
+			teardownErrs.localListener = errors.Join(teardownErrs.localListener, listenerErr)
+		}
+	}
 	remainingListeners := listenerCount
 	select {
-	case err := <-errCh:
+	case result := <-errCh:
 		remainingListeners--
-		if err != http.ErrServerClosed {
-			serveErr = fmt.Errorf("serve: %w", err)
-		}
-		cancelServe(err)
+		recordListenerResult(result)
+		cancelServe(result.err)
 	case err := <-s.revocationWatcher.Errors():
-		serveErr = fmt.Errorf("revocation watcher failed: %w", err)
+		teardownErrs.primary = fmt.Errorf("revocation watcher failed: %w", err)
 		cancelServe(err)
 	case <-serveCtx.Done():
 	}
@@ -551,22 +573,138 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Shutdown closes every listener. Drain their results before releasing
 	// the store so no handler can race a closed database.
 	for i := 0; i < remainingListeners; i++ {
-		<-errCh
+		recordListenerResult(<-errCh)
 	}
 
 	// 5. Wait for the shutdown goroutine to complete.
-	<-shutdownDone
+	shutdownErrs := <-shutdownDone
+	teardownErrs.httpShutdown = shutdownErrs.httpShutdown
+	teardownErrs.httpClose = shutdownErrs.httpClose
 
 	// 6. Stop CRDT managers while their journal store is still available.
-	s.crdtRegistry.Shutdown(10 * time.Second)
+	s.crdtRegistry.Shutdown(crdtShutdownTimeout)
 
 	// 7. Stop the watcher before removing its durable cursor, then close the
 	// store. A bounded context prevents a broken backend from hanging shutdown.
 	watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := s.revocationWatcher.Close(watcherCloseCtx); err != nil && serveErr == nil {
-		serveErr = fmt.Errorf("close revocation watcher: %w", err)
-	}
+	teardownErrs.watcherClose = s.revocationWatcher.Close(watcherCloseCtx)
 	cancelWatcherClose()
-	_ = s.store.Close()
-	return serveErr
+	// A watcher lease-loss can race a listener error into the select above; when
+	// the listener case wins, the fatal watcher cause is left buffered in Errors()
+	// and would otherwise be discarded, leaving the aggregate reporting only the
+	// listener error and the watcher's separate Close() error -- not the lease-loss
+	// that is the most process-fatal cause. Close has now drained the watcher's
+	// goroutines, so any pending fatal is available; fold it in.
+	teardownErrs.foldPendingWatcherError(s.revocationWatcher.Errors())
+	teardownErrs.storeClose = s.store.Close()
+	return teardownErrs.finalize()
+}
+
+// foldPendingWatcherError folds a still-buffered fatal watcher error into
+// primary. Serve's teardown select consumes exactly one of {listener error,
+// watcher error, ctx-done}; a watcher lease-loss racing a listener error is left
+// unread in the buffered Errors() channel, so the aggregate would otherwise drop
+// the most process-fatal cause. This is a non-blocking drain: it is a no-op when
+// the select already consumed the watcher error (primary set), when the store
+// construction/seed path set primary, or when no fatal occurred.
+func (e *serverTeardownErrors) foldPendingWatcherError(watcherErrors <-chan error) {
+	if e.primary != nil {
+		return
+	}
+	select {
+	case watcherErr := <-watcherErrors:
+		if watcherErr != nil {
+			e.primary = fmt.Errorf("revocation watcher failed: %w", watcherErr)
+		}
+	default:
+	}
+}
+
+// serverTeardownErrors is the single error boundary for acquired Hub
+// resources. Construction failures, watcher startup failures, and normal
+// runtime shutdown all populate the resources they owned so no cleanup error
+// is silently dropped.
+type serverTeardownErrors struct {
+	primary       error
+	tcpListener   error
+	localListener error
+	httpShutdown  error
+	httpClose     error
+	watcherClose  error
+	storeClose    error
+}
+
+func (e serverTeardownErrors) finalize() error {
+	return errors.Join(
+		e.primary,
+		errwrap.Wrap(e.tcpListener, "TCP listener"),
+		errwrap.Wrap(e.localListener, "local listener"),
+		errwrap.Wrap(e.httpShutdown, "shut down HTTP server"),
+		errwrap.Wrap(e.httpClose, "force-close HTTP server"),
+		errwrap.Wrap(e.watcherClose, "close revocation watcher"),
+		errwrap.Wrap(e.storeClose, "close store"),
+	)
+}
+
+// acquiredResources tracks the Hub resources NewServer has acquired so far, so
+// a construction failure closes exactly what was opened and aggregates every
+// cleanup error.
+//
+// NewServer keeps ONE of these and records each resource as it is obtained, so a
+// failure site says only "close whatever is open" (`acquired.close(err)`) rather
+// than restating the subset it believes is open. Re-listing the subset per site
+// made every new acquisition step -- or any reordering of the existing ones -- a
+// silent chance to leak a listener or a store handle by forgetting to extend the
+// sites below it; the accumulator can only ever describe what was actually
+// acquired. Nil fields are no-ops.
+//
+// It covers EVERY resource NewServer acquires, not just the cheap ones. The two
+// that hold goroutines -- the auth-context registry and the CRDT registry -- were
+// hand-closed at the one failure site that happened to sit below them, which is the
+// same "remember to extend the sites below" trap in miniature: a new acquired.close
+// site added after them would have leaked both.
+type acquiredResources struct {
+	tcpLn        net.Listener
+	localLn      net.Listener
+	store        store.Store
+	authContexts *auth.AuthContextRegistry
+	crdtRegistry *crdt.Registry
+}
+
+// close releases the acquired resources, joining the primary construction
+// error with every cleanup error.
+//
+// Order mirrors reverse acquisition: the two subsystems that hold goroutines and
+// live state come down before the store they read through, which comes down before
+// the listeners.
+func (r acquiredResources) close(primary error) error {
+	if r.crdtRegistry != nil {
+		r.crdtRegistry.Shutdown(crdtShutdownTimeout)
+	}
+	if r.authContexts != nil {
+		r.authContexts.Stop()
+	}
+	return serverTeardownErrors{
+		primary:       primary,
+		storeClose:    closeStore(r.store),
+		localListener: closeServerListener(r.localLn),
+		tcpListener:   closeServerListener(r.tcpLn),
+	}.finalize()
+}
+
+func closeStore(st store.Store) error {
+	if st == nil {
+		return nil
+	}
+	return st.Close()
+}
+
+func closeServerListener(listener net.Listener) error {
+	if listener == nil {
+		return nil
+	}
+	// Return the raw error; finalize() adds the "TCP listener" / "local
+	// listener" prefix, mirroring closeStore so every teardown error reads at
+	// a single depth instead of nesting ("TCP listener: close: <err>").
+	return listener.Close()
 }

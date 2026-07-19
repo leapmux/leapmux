@@ -6,7 +6,6 @@ import FolderTree from 'lucide-solid/icons/folder-tree'
 import Layers from 'lucide-solid/icons/layers'
 import ListChecks from 'lucide-solid/icons/list-checks'
 import Monitor from 'lucide-solid/icons/monitor'
-import Users from 'lucide-solid/icons/users'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 
 /** Whether the section type is a workspace section (can contain workspaces). */
@@ -14,7 +13,6 @@ export function isWorkspaceSection(sectionType: SectionType): boolean {
   return sectionType === SectionType.WORKSPACES_IN_PROGRESS
     || sectionType === SectionType.WORKSPACES_CUSTOM
     || sectionType === SectionType.WORKSPACES_ARCHIVED
-    || sectionType === SectionType.WORKSPACES_SHARED
 }
 
 /** Map section type to a test ID slug. */
@@ -23,7 +21,6 @@ export function sectionTypeTestId(sectionType: SectionType): string {
     case SectionType.WORKSPACES_IN_PROGRESS: return 'workspaces_in_progress'
     case SectionType.WORKSPACES_CUSTOM: return 'workspaces_custom'
     case SectionType.WORKSPACES_ARCHIVED: return 'workspaces_archived'
-    case SectionType.WORKSPACES_SHARED: return 'workspaces_shared'
     case SectionType.FILES: return 'files'
     case SectionType.TODOS: return 'todos'
     case SectionType.WORKERS: return 'workers'
@@ -35,18 +32,18 @@ export function sectionTypeTestId(sectionType: SectionType): string {
 export function isMoveTargetSection(sectionType: SectionType): boolean {
   return isWorkspaceSection(sectionType)
     && sectionType !== SectionType.WORKSPACES_ARCHIVED
-    && sectionType !== SectionType.WORKSPACES_SHARED
 }
 
-/** Whether a workspace can be mutated (create agents/terminals, rename, etc.). */
+/**
+ * Whether a workspace can be mutated (create agents/terminals, rename, etc.).
+ * Ownership is not a parameter: access is owner-only, so every workspace the
+ * client can see is the current user's own — only archival gates mutation.
+ */
 export function isWorkspaceMutatable(
   workspace: { createdBy: string } | undefined,
-  currentUserId: string,
   isArchived: boolean,
 ): boolean {
   if (!workspace)
-    return false
-  if (workspace.createdBy !== currentUserId)
     return false
   return !isArchived
 }
@@ -58,8 +55,6 @@ export function getSectionIcon(section: Section): LucideIcon {
       return Layers
     case SectionType.WORKSPACES_ARCHIVED:
       return Archive
-    case SectionType.WORKSPACES_SHARED:
-      return Users
     case SectionType.FILES:
       return FolderTree
     case SectionType.TODOS:

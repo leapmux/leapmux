@@ -73,17 +73,6 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
 }
 
-func (s *workspaceStore) ListAllAccessible(ctx context.Context, userID string) ([]store.Workspace, error) {
-	// The query references user_id twice (owner check + grant join); MySQL's
-	// positional placeholders make sqlc emit a params struct here, unlike the
-	// single-arg sqlite/postgres signatures.
-	rows, err := s.conn.q.ListAllAccessibleWorkspaces(ctx, gendb.ListAllAccessibleWorkspacesParams{UserID: userID})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
-}
-
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
 	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
 		Title:       p.Title,

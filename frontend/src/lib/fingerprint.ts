@@ -1,7 +1,8 @@
 /**
  * Human-friendly key fingerprints using word-based encoding.
  *
- * Produces 4-word slugs like "brave-salmon-quiet-forest" from public keys.
+ * Produces 4-word slugs like "deep-idea-obey-tack" from public keys. Every
+ * wordlist entry is exactly 4 letters, so a slug is always 19 characters.
  * The wordlist and algorithm are identical in Go (internal/noise/fingerprint.go)
  * so both sides produce the same fingerprint for the same key.
  */

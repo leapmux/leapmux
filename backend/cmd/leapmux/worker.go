@@ -97,7 +97,6 @@ func runWorker(args []string) error {
 
 		state.WorkerID = result.WorkerID
 		state.AuthToken = result.AuthToken
-		state.RegisteredBy = result.RegisteredBy
 
 		if err := cfg.SaveState(state); err != nil {
 			return fmt.Errorf("save state: %w", err)
@@ -161,12 +160,13 @@ func runWorker(args []string) error {
 
 	channelMgr := channel.NewManager(
 		compositeKey, encMode, client.Send,
-		cfg.MaxMessageSize, cfg.MaxIncompleteChunked,
+		cfg.MaxIncompleteChunked,
 		func(channelID string) { svcCtx.Watchers.UnwatchAll(channelID) },
 	)
 
 	svcCtx.WorkerID = state.WorkerID
-	svcCtx.RegisteredBy = state.RegisteredBy
+	// The owner is NOT seeded from state: the Hub delivers it on connect (see
+	// client.OnWorkerIdentity below), which is the only authority for it.
 	svcCtx.Name = cfg.Name
 	svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout()
 	svcCtx.APITimeout = cfg.APITimeout()
@@ -226,6 +226,15 @@ func runWorker(args []string) error {
 		runShutdown()
 		cancel()
 	}
+
+	// The Hub owns workers.registered_by and re-delivers it on every connect, so the
+	// worker never caches it. It arrives before any ChannelOpen on the same stream,
+	// hence before any handler the owner gates can run.
+	//
+	// UpdateRegisteredBy (not a closure over SetRegisteredBy) so the drift warning and
+	// the empty-owner refusal are shared with worker.Run's connect loop rather than
+	// copy-pasted here.
+	client.OnWorkerIdentity = svcCtx.UpdateRegisteredBy
 
 	client.ConnectWithReconnect(ctx, state.AuthToken)
 

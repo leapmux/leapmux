@@ -7,15 +7,32 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-// WorkspaceCanRead reports whether userID is permitted to read
-// workspaceID. The owner short-circuits true; anyone else needs an
-// explicit workspace_access row. Missing workspaces fail closed.
+// IsOwner reports whether userID owns ws -- the single owner-only rule every
+// workspace access check gates on, written once so the four predicates in this
+// file AND the service package's workspace read/write loaders (which live in a
+// package that cannot name an unexported helper) cannot drift. An empty userID
+// never matches: a workspace's OwnerUserID is always a real user id, so this also
+// fail-closes the batch path, where an empty id can appear in the caller's input
+// list. A nil ws is likewise a deny, not a panic -- this predicate is advertised
+// as the one every caller routes through, so a store path that returns
+// (nil, nil) or a batch entry that failed to load must fail closed here rather
+// than crash the request goroutine on the OwnerUserID deref. Exported so
+// service.loadOwnedWorkspaceOr403 routes through it rather than re-inlining
+// ws.OwnerUserID == userID -- which would drop these fail-closes and give a
+// future access-rule change a second site to silently miss.
 //
-// This is the canonical implementation of the "owner OR explicit
-// grant" pattern that was previously duplicated across channel_service
-// (twice), workspace_service.loadWorkspaceForRead, the worker
-// delegation handler, and crdtAuthChecker. Centralising it both
-// keeps the policy consistent and surfaces ACL changes in one place.
+// The empty-userID fail-close is still a per-predicate guard here and at ~8 other
+// identity-consuming sites across the Hub and Worker; consolidating them behind a
+// non-empty UserID value type is tracked in
+// https://github.com/leapmux/leapmux/issues/288.
+func IsOwner(ws *store.Workspace, userID string) bool {
+	return ws != nil && userID != "" && ws.OwnerUserID == userID
+}
+
+// WorkspaceCanRead reports whether userID is permitted to access
+// workspaceID. Workspace access is owner-only: read and write collapse
+// to the same "is the workspace's owner" rule. Missing workspaces fail
+// closed.
 //
 // Errors from store calls propagate (caller decides whether to map
 // to internal-error / 5xx); the bool is meaningless when err != nil.
@@ -23,52 +40,24 @@ import (
 // pattern-match store.ErrNotFound — read access to a missing
 // workspace is "no" without an explanation.
 func WorkspaceCanRead(ctx context.Context, st store.Store, workspaceID, userID string) (bool, error) {
-	if workspaceID == "" || userID == "" {
+	if userID == "" || workspaceID == "" {
 		return false, nil
 	}
-	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
+	ws, ok, err := loadWorkspace(ctx, st, workspaceID)
+	if err != nil || !ok {
 		return false, err
 	}
-	return LoadedWorkspaceCanRead(ctx, st, ws, userID)
+	return IsOwner(ws, userID), nil
 }
 
-// LoadedWorkspaceCanRead applies the canonical owner-or-grant policy to an
-// already-loaded workspace. Callers that need the row for existence checks or
-// response data can avoid a second primary-key lookup without duplicating the
-// authorization rule.
-//
-// Read access is owner OR explicit workspace_access grant; org membership is
-// deliberately NOT required, so a workspace can be shared with a user who is
-// not a member of the owning organization (cross-org collaboration).
-func LoadedWorkspaceCanRead(ctx context.Context, st store.Store, ws *store.Workspace, userID string) (bool, error) {
-	if ws == nil || ws.ID == "" || userID == "" {
-		return false, nil
-	}
-	if ws.OwnerUserID == userID {
-		return true, nil
-	}
-	return st.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
-		WorkspaceID: ws.ID,
-		UserID:      userID,
-	})
-}
-
-// loadWorkspaceInOrg loads the (non-deleted) workspace and enforces the org
-// binding shared by the CRDT read and write auth checks. The bool is true only
-// when the workspace exists AND belongs to orgID; a missing or out-of-org
-// workspace is (nil, false, nil) -- a genuine deny, not an explanation -- while a
+// loadWorkspace loads a workspace by id, mapping the not-found-vs-fault
+// distinction every workspace access check in this file needs: a missing
+// workspace (or an empty id) is a plain deny -- (nil, false, nil) -- while a
 // transient store failure is surfaced as (nil, false, err) so the caller can
-// retry rather than permanently deny. Empty orgID/workspaceID fails closed.
-//
-// Centralizing this deny-vs-retry prologue keeps the missing/out-of-org policy
-// (and its security-relevant "transient error is retryable, not a permanent
-// FORBIDDEN" contract) from being maintained in two places.
-func loadWorkspaceInOrg(ctx context.Context, st store.Store, orgID, workspaceID string) (*store.Workspace, bool, error) {
-	if orgID == "" || workspaceID == "" {
+// retry rather than permanently deny. It applies no access or org policy; the
+// caller layers that on the returned record.
+func loadWorkspace(ctx context.Context, st store.Store, workspaceID string) (*store.Workspace, bool, error) {
+	if workspaceID == "" {
 		return nil, false, nil
 	}
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
@@ -78,25 +67,41 @@ func loadWorkspaceInOrg(ctx context.Context, st store.Store, orgID, workspaceID 
 		}
 		return nil, false, err
 	}
+	return ws, true, nil
+}
+
+// loadWorkspaceInOrg loads the (non-deleted) workspace and enforces the org
+// binding shared by the CRDT auth checks. The bool is true only when the
+// workspace exists AND belongs to orgID; a missing or out-of-org workspace is
+// (nil, false, nil) -- a genuine deny, not an explanation -- while a
+// transient store failure is surfaced as (nil, false, err) so the caller can
+// retry rather than permanently deny. Empty orgID/workspaceID fails closed.
+func loadWorkspaceInOrg(ctx context.Context, st store.Store, orgID, workspaceID string) (*store.Workspace, bool, error) {
+	if orgID == "" {
+		return nil, false, nil
+	}
+	ws, ok, err := loadWorkspace(ctx, st, workspaceID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
 	if ws.OrgID != orgID {
 		return nil, false, nil
 	}
 	return ws, true, nil
 }
 
-// WorkspaceCanReadInOrg is WorkspaceCanRead with an additional org cross-check:
-// the workspace's org must match orgID. Used by the CRDT auth path where a stale
-// subscriber on org A must never see a workspace that's been re-homed to org B.
-// Empty orgID fails closed: CRDT callers must always bind authorization to the
-// manager's concrete organization.
+// WorkspaceCanAccessInOrg reports whether userID may read or write
+// workspaceID within orgID — access is owner-only, so the read and write
+// rules are one predicate. The org cross-check exists for the CRDT auth
+// path, where a stale subscriber on org A must never see a workspace
+// that's been re-homed to org B. Empty orgID fails closed: CRDT callers
+// must always bind authorization to the manager's concrete organization.
 //
-// It loads the (non-deleted) workspace, enforces the org binding, then defers to
-// LoadedWorkspaceCanRead so the "owner OR explicit grant" read rule has a single
-// source of truth shared with the RPC read paths, rather than a second copy in
-// SQL. This adds a primary-key lookup versus a single combined query, but the
-// CRDT read path (subscribe / workspace-create expansion, memoized per batch) is
-// not per-op hot, so consistency wins over the saved round-trip.
-func WorkspaceCanReadInOrg(ctx context.Context, st store.Store, orgID, workspaceID, userID string) (bool, error) {
+// The missing/out-of-org deny-vs-transient-retry prologue lives in
+// loadWorkspaceInOrg: a missing or out-of-org workspace is a plain deny,
+// while a transient store failure is surfaced so the caller can retry
+// rather than permanently deny.
+func WorkspaceCanAccessInOrg(ctx context.Context, st store.Store, orgID, workspaceID, userID string) (bool, error) {
 	if userID == "" {
 		return false, nil
 	}
@@ -104,46 +109,25 @@ func WorkspaceCanReadInOrg(ctx context.Context, st store.Store, orgID, workspace
 	if err != nil || !ok {
 		return false, err
 	}
-	return LoadedWorkspaceCanRead(ctx, st, ws, userID)
+	return IsOwner(ws, userID), nil
 }
 
-// WorkspaceCanWriteInOrg reports whether userID may WRITE workspaceID within
-// orgID. Write access is owner-only (shared-write is not yet implemented), so
-// the rule collapses to "is the workspace's owner". It reuses loadWorkspaceInOrg
-// so the missing/out-of-org deny-vs-transient-retry prologue is shared with
-// WorkspaceCanReadInOrg rather than re-implemented in the CRDT service layer --
-// the same delegation the read path already uses.
-func WorkspaceCanWriteInOrg(ctx context.Context, st store.Store, orgID, workspaceID, userID string) (bool, error) {
-	if userID == "" {
-		return false, nil
-	}
-	ws, ok, err := loadWorkspaceInOrg(ctx, st, orgID, workspaceID)
-	if err != nil || !ok {
-		return false, err
-	}
-	return ws.OwnerUserID == userID, nil
-}
-
-// WorkspaceReadableByUsersInOrg batches WorkspaceCanReadInOrg across many users:
-// it loads the workspace once, enforces the org binding, then resolves owner OR
-// explicit grant for every userID with a single grant lookup. Returns the map of
-// userID -> readable (absent means not readable). A missing or out-of-org
-// workspace yields the empty set (deny all); a store error is surfaced (the map
-// is nil and meaningless when err != nil) so the caller can distinguish "nobody
-// may read" from "lookup failed".
+// WorkspaceReadableByUsersInOrg batches WorkspaceCanAccessInOrg across many
+// users: it loads the workspace once, enforces the org binding, then marks
+// the owner. Returns the map of userID -> readable (absent means not
+// readable). A missing or out-of-org workspace yields the empty set (deny
+// all); a store error is surfaced (the map is nil and meaningless when
+// err != nil) so the caller can distinguish "nobody may read" from
+// "lookup failed".
 //
-// It is the batch counterpart of WorkspaceCanReadInOrg for the CRDT
+// It is the batch counterpart of WorkspaceCanAccessInOrg for the CRDT
 // subscriber-expansion path, which re-checks the SAME workspace for many
-// subscribers at once. Sharing the "owner OR explicit grant" rule (and the org
-// cross-check) keeps it from drifting from the per-user WorkspaceCanReadInOrg.
+// subscribers at once.
 func WorkspaceReadableByUsersInOrg(ctx context.Context, st store.Store, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(userIDs))
 	if len(userIDs) == 0 {
 		return out, nil
 	}
-	// Share the missing/out-of-org deny-vs-transient-retry prologue with the CRDT
-	// read/write checks: a missing or out-of-org workspace is the empty set (deny
-	// all), while a transient store error surfaces so the caller can retry.
 	ws, ok, err := loadWorkspaceInOrg(ctx, st, orgID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -151,54 +135,41 @@ func WorkspaceReadableByUsersInOrg(ctx context.Context, st store.Store, orgID, w
 	if !ok {
 		return out, nil
 	}
-	entries, err := st.WorkspaceAccess().ListByWorkspaceID(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	granted := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		granted[entry.UserID] = struct{}{}
-	}
 	for _, userID := range userIDs {
-		if userID == "" || out[userID] {
-			continue
-		}
-		if userID == ws.OwnerUserID {
-			out[userID] = true
-			continue
-		}
-		if _, ok := granted[userID]; ok {
+		if IsOwner(ws, userID) {
 			out[userID] = true
 		}
 	}
 	return out, nil
 }
 
-// WorkspacesReadableByUser filters workspaceIDs down to those userID may read,
-// applying the canonical "owner OR explicit grant" rule for MANY workspaces
-// against ONE user in at most two store round-trips: one ListByIDs, then a single
-// batched grant lookup for the non-owned remainder (skipped entirely when the
-// user owns every requested workspace). It is the many-workspaces/single-user
-// counterpart of LoadedWorkspaceCanRead (1x1) and WorkspaceReadableByUsersInOrg
-// (1-workspace x N-users); sharing the read policy keeps the three from drifting.
+// WorkspacesReadableByUser filters workspaceIDs down to those userID may
+// read — i.e. owns — for MANY workspaces against ONE user in a single
+// ListByIDs round-trip. It is the many-workspaces/single-user counterpart
+// of WorkspaceCanRead (1x1) and WorkspaceReadableByUsersInOrg
+// (1-workspace x N-users).
 //
-// orgID binds the workspace's organization: a workspace whose OrgID != orgID is
-// excluded. An EMPTY orgID deliberately SKIPS that binding -- delegation callers
-// legitimately pass no org because their pinned workspace may live outside the
-// user's home org, and access is still gated by the owner-or-grant check. (This
-// differs from the CRDT-path WorkspaceCanReadInOrg, which fails closed on an empty
-// orgID because that path must always bind a concrete org; the contracts differ by
-// caller, not by accident.)
+// orgID binds the workspace's organization: a workspace whose OrgID != orgID
+// is excluded. An EMPTY orgID deliberately SKIPS that binding -- delegation
+// callers legitimately pass no org because their pinned workspace may live
+// outside the user's home org, and access is still gated by the owner check.
+// (This differs from the CRDT-path WorkspaceCanAccessInOrg, which fails
+// closed on an empty orgID because that path must always bind a concrete
+// org; the contracts differ by caller, not by accident.)
 //
-// The readable subset is returned in the input order; empty and duplicate IDs and
-// workspaces missing from the store are dropped. A store error is surfaced (the
-// slice is meaningless when err != nil).
+// The empty-orgID contract riding on a bare "" sentinel is a latent hazard: a
+// future bulk-path caller passing "" would silently skip the org binding. Making
+// the fail-closed-vs-skip choice an explicit, greppable policy is tracked in
+// https://github.com/leapmux/leapmux/issues/286.
+//
+// The readable subset is returned in the input order; empty and duplicate
+// IDs and workspaces missing from the store are dropped. A store error is
+// surfaced (the slice is meaningless when err != nil).
 func WorkspacesReadableByUser(ctx context.Context, st store.Store, orgID, userID string, workspaceIDs []string) ([]string, error) {
 	if userID == "" || len(workspaceIDs) == 0 {
 		return nil, nil
 	}
-	// Dedup + drop empties so the bulk lookups stay tight and the access query
-	// doesn't ask the store about repeats.
+	// Dedup + drop empties so the bulk lookup stays tight.
 	dedup := make([]string, 0, len(workspaceIDs))
 	seen := make(map[string]struct{}, len(workspaceIDs))
 	for _, wsID := range workspaceIDs {
@@ -222,55 +193,15 @@ func WorkspacesReadableByUser(ctx context.Context, st store.Store, orgID, userID
 	for i := range rows {
 		wsByID[rows[i].ID] = &rows[i]
 	}
-	// resolveInOrg returns the loaded workspace for wsID, applying the org
-	// binding: with a non-empty orgID a workspace in a different org is skipped,
-	// while an empty orgID deliberately skips that binding (the cross-org read
-	// contract documented on this function). Single-siting the check keeps that
-	// subtle empty-orgID rule from drifting between the two passes below.
-	resolveInOrg := func(wsID string) (*store.Workspace, bool) {
-		ws, ok := wsByID[wsID]
-		if !ok || (orgID != "" && ws.OrgID != orgID) {
-			return nil, false
-		}
-		return ws, true
-	}
-	// First pass over dedup: collect the non-owned, in-org workspaces that need a
-	// grant lookup. Ownership alone settles the rest.
-	var needCheck []string
-	for _, wsID := range dedup {
-		ws, ok := resolveInOrg(wsID)
-		if !ok {
-			continue
-		}
-		if ws.OwnerUserID != userID {
-			needCheck = append(needCheck, wsID)
-		}
-	}
-	grantedSet := make(map[string]struct{}, len(needCheck))
-	if len(needCheck) > 0 {
-		granted, err := st.WorkspaceAccess().ListForUserIn(ctx, userID, needCheck)
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range granted {
-			grantedSet[id] = struct{}{}
-		}
-	}
-	// Second pass over dedup (input order): keep a workspace when the user owns
-	// it or holds a grant. Iterating dedup rather than emitting owners-first keeps
-	// the readable subset in the documented input order even for a mix of owned
-	// and granted IDs.
+	// Keep a workspace when the user owns it (respecting the org binding
+	// above). Iterating dedup keeps the readable subset in input order.
 	out := make([]string, 0, len(dedup))
 	for _, wsID := range dedup {
-		ws, ok := resolveInOrg(wsID)
-		if !ok {
+		ws, ok := wsByID[wsID]
+		if !ok || (orgID != "" && ws.OrgID != orgID) {
 			continue
 		}
-		if ws.OwnerUserID == userID {
-			out = append(out, wsID)
-			continue
-		}
-		if _, ok := grantedSet[wsID]; ok {
+		if IsOwner(ws, userID) {
 			out = append(out, wsID)
 		}
 	}
@@ -283,41 +214,4 @@ func WorkspacesReadableByUser(ctx context.Context, st store.Store, orgID, userID
 // the helpers above so a small wrapper keeps the call sites tidy.
 func isNotFound(err error) bool {
 	return errors.Is(err, store.ErrNotFound)
-}
-
-// WorkerCanUse reports whether userID is the registrant of workerID
-// or has an explicit worker_access_grants row. Returns the worker
-// record so callers can apply additional filters (Status check for
-// the channel-service path, DeletedAt for the CRDT auth path)
-// without a re-fetch.
-//
-// Result triples:
-//   - (worker, true, nil)  — access granted; caller may still reject
-//     based on the worker's status/deletion state.
-//   - (worker, false, nil) — worker exists but caller has no grant.
-//   - (nil,    false, nil) — worker missing or one of workerID/userID
-//     was empty.
-//   - (nil,    false, err) — store error; treat as deny.
-func WorkerCanUse(ctx context.Context, st store.Store, workerID, userID string) (*store.Worker, bool, error) {
-	if workerID == "" || userID == "" {
-		return nil, false, nil
-	}
-	w, err := st.Workers().GetByID(ctx, workerID)
-	if err != nil {
-		if isNotFound(err) {
-			return nil, false, nil
-		}
-		return nil, false, err
-	}
-	if w.RegisteredBy == userID {
-		return w, true, nil
-	}
-	ok, err := st.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{
-		WorkerID: workerID,
-		UserID:   userID,
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return w, ok, nil
 }

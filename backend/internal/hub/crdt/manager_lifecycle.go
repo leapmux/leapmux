@@ -68,25 +68,134 @@ func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.OrgOp, 
 
 // SubmitLifecycle drains the lifecycle_outbox for this manager's org
 // and applies each row inside its own transaction.
+//
+// lifecycleMu makes the drain single-consumer by construction. Each
+// lifecycle RPC calls this post-commit on its own request goroutine, so
+// two mutations in the same org would otherwise drain concurrently: the
+// second drain's ListPending could return a still-pending create row
+// beside its own delete row, and re-applying that create against the
+// first drain's in-flight processing can re-add the workspace to
+// m.state after the delete removed it, re-expand subscriber filters
+// after the delete's contraction (a phantom workspace in live
+// subscriptions until reconnect), and broadcast a Created event for a
+// workspace that no longer exists. Serializing the whole
+// list-process-consume pass turns the "rows are drained sequentially"
+// assumption the row-apply logic rests on into a property of this
+// method rather than a convention each caller must uphold.
+//
+// A row that fails to apply is skipped WITHOUT being consumed, so it retries on
+// the next drain -- rather than aborting the whole batch. Aborting let a
+// persistently-failing head-of-line row (e.g. a create whose read-ACL LOOKUP
+// keeps faulting) strand every INDEPENDENT workspace's rows behind it
+// indefinitely, since the only drain trigger is the next lifecycle RPC (no
+// periodic re-drain). But per-workspace ORDER must still hold: applying a delete
+// X after its create X failed would re-introduce the "phantom / no-prior-create"
+// hazard above, so once a workspace's row fails this pass, every LATER row for the
+// same workspace is deferred with it (blocked). The first error is returned so the
+// caller logs the fault; a transient fault clears on the next drain and the
+// deferred rows apply then, in order.
 func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxReader) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	rows, err := reader.ListPendingLifecycleOutbox(ctx, m.orgID)
 	if err != nil {
 		return fmt.Errorf("list outbox: %w", err)
 	}
+	blocked := map[string]bool{}
+	var firstErr error
 	for _, row := range rows {
-		if err := m.processLifecycleRow(ctx, row, reader); err != nil {
-			m.logger.Error("process lifecycle row", "id", row.ID, "err", err)
-			return err
+		payload, ops, err := DecodeLifecyclePayload(row.Payload)
+		if err != nil {
+			// Decode is a pure function of row.Payload, so this failure is
+			// permanent: retrying it can never succeed, and leaving the row
+			// pending would re-fault and re-log on EVERY future drain for the
+			// org's lifetime while occupying a ListPendingLifecycleOutbox slot
+			// (enough corrupt rows would clog the page and starve healthy rows
+			// behind it). Consume it after one Error log instead. The row cannot
+			// be scoped to a workspace either way, so consuming changes nothing
+			// about per-workspace ordering -- a later valid row for the corrupt
+			// row's (unknowable) workspace was never going to be deferred behind
+			// it.
+			//
+			// The Error log is deduped by row ID: if the consume itself fails
+			// (a transient DB write fault), the row stays pending and the next
+			// drain re-decodes it. Re-logging the SAME corrupt row at Error on
+			// every drain would amplify one bad row into permanent log noise for
+			// the org's life, so log Error only the first time and Warn on the
+			// repeats the caller can do nothing about. Entries are cleared once
+			// the row is successfully consumed, so the set stays bounded by the
+			// number of currently-stuck corrupt rows.
+			m.logRowFaultOnce(&m.undecodableLogged, row.ID,
+				"discarding undecodable lifecycle row",
+				"undecodable lifecycle row still pending after a failed consume", err)
+			if cerr := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); cerr != nil {
+				// Consumption failing is a transient store fault: leave the row
+				// for the next drain to discard.
+				m.logger.Error("consume undecodable lifecycle row", "id", row.ID, "err", cerr)
+			} else {
+				delete(m.undecodableLogged, row.ID)
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		if blocked[payload.WorkspaceID] {
+			// An earlier row for this workspace failed this pass; defer this one to
+			// a later drain so per-workspace order is preserved.
+			continue
+		}
+		if err := m.applyLifecycleRow(ctx, row, payload, ops, reader); err != nil {
+			// An apply failure is most often transient (a create whose read-ACL
+			// lookup faulted), so the row is NOT consumed -- it retries on the next
+			// drain. But re-logging the SAME failing row at Error on every drain
+			// would amplify one stuck row into permanent log noise for the org's
+			// life (the only drain trigger is the next lifecycle RPC), exactly the
+			// amplification the decode-failure path's undecodableLogged exists to
+			// prevent. Dedupe the same way: Error on the first sighting, Warn on
+			// the repeats the operator can do nothing about until the fault clears.
+			// The set is cleared on success, so it stays bounded by the number of
+			// currently-stuck rows.
+			m.logRowFaultOnce(&m.applyFailedLogged, row.ID,
+				"process lifecycle row",
+				"lifecycle row still failing after a prior error", err)
+			blocked[payload.WorkspaceID] = true
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		// A successful apply clears any prior failure record so a row that
+		// transiently faulted (and was deduped above) does not keep the entry
+		// pinned once the fault clears.
+		delete(m.applyFailedLogged, row.ID)
 	}
-	return nil
+	return firstErr
 }
 
-func (m *Manager) processLifecycleRow(ctx context.Context, row LifecycleOutboxRow, reader LifecycleOutboxReader) error {
-	payload, ops, err := DecodeLifecyclePayload(row.Payload)
-	if err != nil {
-		return err
+// logRowFaultOnce logs a lifecycle-outbox row fault at Error on the FIRST sighting
+// of id and at Warn on every repeat, recording id in *seen so a fault that
+// persists across drains (the only drain trigger is the next lifecycle RPC) is not
+// re-logged at Error every time -- amplifying one stuck row into permanent log
+// noise for the org's life. seen is lazily allocated (nil until the first fault);
+// each caller clears the entry once its row stops faulting, so the set stays
+// bounded by the rows currently stuck. Shared by the undecodable-row and
+// apply-failure paths, whose surrounding consume-vs-retry logic differs but whose
+// once-then-warn dedup policy is identical -- so the policy lives here once rather
+// than in two hand-synced copies.
+func (m *Manager) logRowFaultOnce(seen *map[int64]bool, id int64, errMsg, warnMsg string, err error) {
+	if *seen == nil {
+		*seen = make(map[int64]bool)
 	}
+	if !(*seen)[id] {
+		(*seen)[id] = true
+		m.logger.Error(errMsg, "id", id, "err", err)
+	} else {
+		m.logger.Warn(warnMsg, "id", id, "err", err)
+	}
+}
+
+func (m *Manager) applyLifecycleRow(ctx context.Context, row LifecycleOutboxRow, payload LifecyclePayload, ops []*leapmuxv1.OrgOp, reader LifecycleOutboxReader) error {
 	switch payload.OpType {
 	case LifecycleOpCreate:
 		return m.applyLifecycleCreate(ctx, row, payload, ops, reader)
@@ -112,7 +221,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	rollback := func() {
 		m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, wsID) })
 		// Undo the optimistic filter expansion so a future
-		// CanReadWorkspace flip can't smuggle stale visibility through.
+		// CanAccessWorkspace flip can't smuggle stale visibility through.
 		m.contractSubscribersForWorkspace(wsID)
 	}
 
@@ -148,28 +257,56 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		rollback()
 		return err
 	}
+	// A ROOT_IMMUTABLE rejection on re-drain means the seed already landed on a
+	// prior drain whose MarkLifecycleOutboxConsumed then failed (a transient DB
+	// write fault) and whose dedup row has since expired past DedupTTL. The
+	// workspace exists, the root is set, the filter expansion already happened,
+	// and the user may have added tabs in the meantime -- so rolling back would
+	// corrupt CRDT state (delete(state.Workspaces, wsID) while the DB row, root
+	// node, and tabs stay behind) and strand the row in a permanent rejection
+	// loop. Treat ROOT_IMMUTABLE as the idempotent-success signal it is: the
+	// create already happened, so do NOT roll back, consume the row, and
+	// re-broadcast (subscribers either see it as new or dedupe via state).
 	for _, r := range results {
 		if rj := r.GetRejected(); rj != nil {
+			if rj.GetReason() == leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE {
+				m.logger.Warn("lifecycle create re-drained after a prior apply; treating as idempotent",
+					"workspace_id", wsID, "row_id", row.ID)
+				continue
+			}
 			rollback()
 			return fmt.Errorf("seed batch rejected: %v", rj.GetReason())
 		}
 	}
+	// Broadcast the Created event BEFORE consuming the outbox row, mirroring
+	// applyLifecycleDelete's order: a consume-then-broadcast window that a
+	// process crash lands in would leave the row consumed -- so no later drain
+	// retries it -- while no subscriber ever saw the Created event, and the
+	// workspace would be invisible in live subscriptions until a reconnect. The
+	// retry the order exists to make reachable is now SAFE because the
+	// ROOT_IMMUTABLE arm above treats a re-seed as idempotent success rather than
+	// the rollback that would corrupt state.
+	m.broadcastWorkspaceCreatedEvent(wsID, p.Title, p.RootNodeID)
 	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
 		return err
 	}
-	// The seed batch's expand at the top of this function already admitted the
-	// workspace into every existing subscriber's filter (and gated the seed on
-	// that ACL lookup), so broadcast the Created event directly instead of
-	// re-issuing the read-ACL lookup through BroadcastWorkspaceCreated.
-	m.broadcastWorkspaceCreatedEvent(wsID, p.Title, p.RootNodeID)
 	return nil
 }
 
 func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, reader LifecycleOutboxReader) error {
+	// Broadcast BEFORE consuming the outbox row, mirroring applyLifecycleDelete's
+	// order (and its rationale): a consume-then-broadcast window that a process
+	// crash or a hard cancel lands in would leave the row consumed -- so no later
+	// drain retries it -- while no subscriber ever saw the Rename event. The DB
+	// title is already updated, but every live subscriber keeps the stale title
+	// until a reconnect whose OrgMaterialized carries no title. Rename is
+	// idempotent on retry (re-broadcasting the same title is a no-op for
+	// subscribers, and no seed batch re-validates), so broadcasting first costs
+	// nothing on the retry path the order exists to make reachable.
+	m.BroadcastWorkspaceRenamed(p.WorkspaceID, p.NewTitle)
 	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
 		return err
 	}
-	m.BroadcastWorkspaceRenamed(p.WorkspaceID, p.NewTitle)
 	return nil
 }
 
@@ -214,15 +351,28 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 		}
 	}
 	m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, p.WorkspaceID) })
-	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
-		return err
-	}
+	// Broadcast the deletion and contract subscriber filters BEFORE marking the
+	// outbox row consumed. The in-memory state already reflects the delete (the
+	// tombstone batch above ran and the Workspaces map entry is gone), so the
+	// broadcast describes committed state either way -- but ordering it before
+	// the consume closes a window the old order left open: if MarkLifecycleOutboxConsumed
+	// fails (a transient DB write fault) the row stays pending and the only re-drain
+	// trigger is the next lifecycle RPC in this org, which for a delete that removed
+	// the org's last workspace may not come for a long time. Subscribers would keep
+	// the dead workspace in their Filter and keep routing tabs to it until reconnect.
+	// Broadcasting first means a consume failure delays only the outbox bookkeeping,
+	// not the subscriber-visible event. A successful re-drain re-broadcasts, which
+	// is idempotent on the subscriber side (deleting an already-absent workspace and
+	// re-running the lifecycle-changed refresh).
 	m.BroadcastWorkspaceDeleted(p.WorkspaceID, p.WorkerIDs)
 	// Drop the deleted workspace from every subscriber's Filter so a
 	// long-lived subscription doesn't accumulate dead workspace_ids
 	// across the manager's lifetime. Mirrors the rollback path's
 	// contraction in applyLifecycleCreate.
 	m.contractSubscribersForWorkspace(p.WorkspaceID)
+	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
+		return err
+	}
 	return nil
 }
 

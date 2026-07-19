@@ -304,27 +304,46 @@ func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
 
-func TestWorkerDelegation_Mint_AllowsSharedWorkspaceAccess(t *testing.T) {
+// The token authenticates as req.UserID, so the mint requires that user to be
+// exactly the calling worker's own registrant -- a local check rather than a
+// transitive consequence of owner-only tab placement. Owner-only access makes a
+// worker hosting a tab in another user's workspace unreachable through the
+// normal CRDT path, so this inserts the tab row directly to stand in for any
+// future path that lets that state arise. The tab-ownership and workspace-access
+// checks both pass (the worker hosts the tab; the foreign user owns the
+// workspace), so only the explicit registrant guard catches it.
+func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testing.T) {
 	env := setupDelegation(t)
+	ctx := context.Background()
 
-	// Share env.workspaceID with another user who can therefore have
-	// delegation tokens minted for them.
-	otherUserID := hubtestutil.CreateTestUser(t, env.store, "shared-user", "p")
-	require.NoError(t, env.store.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
-		OrgID: env.orgID, UserID: otherUserID, Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	otherUserID := hubtestutil.CreateTestUser(t, env.store, "foreign-owner", "p")
+	other, err := env.store.Users().GetByID(ctx, otherUserID)
+	require.NoError(t, err)
+
+	otherWS := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: otherWS, OrgID: other.OrgID, OwnerUserID: other.ID, Title: "foreign-ws",
 	}))
-	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
-		WorkspaceID: env.workspaceID,
-		UserID:      otherUserID,
+	otherTab := id.Generate()
+	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		OrgID:       other.OrgID,
+		WorkspaceID: otherWS,
+		WorkerID:    env.workerID, // registered by admin, not by `other`
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       otherTab,
+		Position:    "a",
+		TileID:      "tile-foreign",
 	}))
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":           otherUserID,
-		"workspace_id":      env.workspaceID,
-		"issued_for_tab_id": env.tabID,
+		"user_id":           other.ID,
+		"workspace_id":      otherWS, // owned by `other`, who is NOT the worker's registrant
+		"issued_for_tab_id": otherTab,
 	})
 	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "registrant")
 }
 
 // failWorkspaceGetStore forces Workspaces().GetByID to return a

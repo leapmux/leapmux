@@ -43,8 +43,6 @@ function renderDialog(overrides?: { store?: Partial<TunnelStore>, onClose?: () =
     <TunnelProvider store={store}>
       <AddTunnelDialog
         workerId="w1"
-        hubURL="http://localhost:4327"
-        userId="u1"
         onClose={onClose}
         onCreated={onCreated}
       />
@@ -116,6 +114,46 @@ describe('addTunnelDialog', () => {
     }
   })
 
+  // Both port fields are free text: `inputMode="numeric"` is a keyboard hint, not
+  // validation. Number() converts every one of these to an in-range port, so accepting
+  // them would silently create a tunnel on a port the user never typed -- and the
+  // sidecar's range check cannot catch it, because the substituted port is in range.
+  const nonDecimalPorts = [
+    ['0x50', 'hex literal Number() reads as 80'],
+    ['0b101', 'binary literal Number() reads as 5'],
+    ['0o17', 'octal literal Number() reads as 15'],
+    ['1e3', 'exponent form Number() reads as 1000'],
+    ['80.0', 'float spelling Number() reads as 80'],
+    ['+80', 'signed form Number() reads as 80'],
+    ['0xFFFF', 'hex literal Number() reads as 65535'],
+  ] as const
+  for (const [value, why] of nonDecimalPorts) {
+    it(`port validation rejects ${JSON.stringify(value)} (${why})`, () => {
+      renderDialog()
+      fireEvent.input(screen.getByTestId('target-port'), { target: { value } })
+      expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
+    })
+  }
+
+  it('port validation accepts a decimal port padded with spaces', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('target-port'), { target: { value: ' 80 ' } })
+    expect(screen.queryByText('Must be 1-65535')).not.toBeInTheDocument()
+  })
+
+  it('bind port validation rejects a hex literal too', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('bind-port'), { target: { value: '0x50' } })
+    expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
+  })
+
+  it('does not submit a port the user did not type', () => {
+    const { store } = renderDialog()
+    fireEvent.input(screen.getByTestId('target-port'), { target: { value: '0x50' } })
+    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
+    expect(store.add).not.toHaveBeenCalled()
+  })
+
   it('address validation accepts hostname', () => {
     renderDialog()
     const targetAddr = screen.getByTestId('target-addr')
@@ -166,8 +204,6 @@ describe('addTunnelDialog', () => {
         targetAddr: '127.0.0.1',
         targetPort: 3000,
         bindAddr: '127.0.0.1',
-        hubURL: 'http://localhost:4327',
-        userId: 'u1',
       }))
     })
   })
@@ -182,8 +218,6 @@ describe('addTunnelDialog', () => {
       <TunnelProvider store={store}>
         <AddTunnelDialog
           workerId="w1"
-          hubURL="http://localhost:4327"
-          userId="u1"
           onClose={() => {}}
           onCreated={onCreated}
         />
@@ -251,5 +285,53 @@ describe('addTunnelDialog', () => {
     const cancelBtn = screen.getByTestId('tunnel-cancel')
     fireEvent.click(cancelBtn)
     expect(onClose).toHaveBeenCalled()
+  })
+})
+
+describe('addTunnelDialog bind address validation', () => {
+  // The parser itself (Go-compatible net.ParseIP mirroring, `::` compression,
+  // IPv4-mapped loopback) is tested at its own level in ~/lib/ipAddress.test.ts. What
+  // the dialog owns is wiring it to the field and surfacing the message.
+  //
+  // Neither tunnel listener authenticates, so a non-loopback bind address would
+  // expose an open gateway into the worker's network to the whole LAN. The sidecar
+  // refuses it; the dialog must say so up front rather than let the create fail.
+  it('rejects a bind address that is not loopback', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '0.0.0.0' } })
+    expect(screen.getByText(/loopback/i)).toBeInTheDocument()
+  })
+
+  it('rejects a bind address that is not an IP address at all', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: 'localhost' } })
+    expect(screen.getByText(/loopback/i)).toBeInTheDocument()
+  })
+
+  it('accepts a loopback bind address', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '127.0.0.1' } })
+    expect(screen.queryByText(/loopback/i)).not.toBeInTheDocument()
+  })
+
+  it('requires a bind address', () => {
+    renderDialog()
+    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '' } })
+    expect(screen.getByText('Required')).toBeInTheDocument()
+  })
+
+  // The bracket pair is stripped for validation, so it must be stripped from the
+  // SUBMITTED value too: the sidecar's net.ParseIP("[::1]") returns nil.
+  it('accepts a bracketed IPv6 loopback and submits it unbracketed', async () => {
+    const { store } = renderDialog()
+    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '[::1]' } })
+    expect(screen.queryByText(/loopback/i)).not.toBeInTheDocument()
+
+    fireEvent.input(screen.getByTestId('target-port'), { target: { value: '3000' } })
+    fireEvent.submit(screen.getByTestId('tunnel-create').closest('form')!)
+
+    await vi.waitFor(() => {
+      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({ bindAddr: '::1' }))
+    })
   })
 })

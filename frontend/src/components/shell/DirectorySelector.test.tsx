@@ -7,8 +7,11 @@ vi.mock('~/components/tree/DirectoryTree', () => ({
   DirectoryTree: () => <div data-testid="directory-tree" />,
 }))
 
-vi.mock('~/lib/browserStorage', () => ({
-  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN: 'directory-selector-show-hidden',
+// Partial mock: keep the real key constants (modules in this import graph --
+// e.g. relayClaim's persisted sequence -- reference them at module scope), and
+// stub only the storage accessors this test drives.
+vi.mock('~/lib/browserStorage', async importOriginal => ({
+  ...(await importOriginal<typeof import('~/lib/browserStorage')>()),
   localStorageGet: vi.fn(() => true),
   localStorageSet: vi.fn(),
 }))

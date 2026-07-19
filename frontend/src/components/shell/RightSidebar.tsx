@@ -10,24 +10,19 @@ type RightSidebarProps = SidebarCommonProps
 export const RightSidebar: Component<RightSidebarProps> = (props) => {
   const {
     buildSectionDefs,
-    renderSharingDialog,
     expandSectionRef,
   } = useSidebarCore(props, Sidebar.RIGHT)
 
   return (
-    <>
-      <CollapsibleSidebar
-        sections={buildSectionDefs()}
-        side="right"
-        isCollapsed={props.isCollapsed}
-        onExpand={props.onExpand}
-        initialOpenSections={props.initialOpenSections}
-        initialSectionSizes={props.initialSectionSizes}
-        onStateChange={props.onSectionStateChange}
-        expandSectionRef={expandSectionRef}
-      />
-
-      {renderSharingDialog()}
-    </>
+    <CollapsibleSidebar
+      sections={buildSectionDefs()}
+      side="right"
+      isCollapsed={props.isCollapsed}
+      onExpand={props.onExpand}
+      initialOpenSections={props.initialOpenSections}
+      initialSectionSizes={props.initialSectionSizes}
+      onStateChange={props.onSectionStateChange}
+      expandSectionRef={expandSectionRef}
+    />
   )
 }

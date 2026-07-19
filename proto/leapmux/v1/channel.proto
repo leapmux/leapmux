@@ -50,6 +50,7 @@ message OpenChannelRequest {
 message OpenChannelResponse {
   string channel_id = 1;
   bytes handshake_payload = 2; // Noise_NK handshake message 2
+  string user_id = 3; // Authenticated identity the Worker received from the Hub
 }
 
 message CloseChannelRequest {
@@ -99,7 +100,15 @@ enum ChannelMessageFlags {
 message ChannelMessage {
   uint32 protocol_version = 1;
   string channel_id = 2;
-  uint32 correlation_id = 3;        // Request-response correlation ID
+  // 64-bit so the id space cannot wrap. A correct client never reuses a live id,
+  // but a 32-bit counter WOULD eventually wrap onto one: a tunnel burns an id per
+  // 32 KiB write and per credit grant, and a desktop channel (whose cookie session
+  // slides, unlike the 1h bearer-scoped ones) is long-lived and multiplexes every
+  // tunnel to a worker. On wrap, a late response for a RETIRED id -- one whose
+  // caller timed out and unregistered -- is delivered to whatever request now holds
+  // that id, misrouted in a way the duplicate-response guard cannot detect. At 2^64
+  // the wrap is unreachable rather than merely improbable.
+  uint64 correlation_id = 3;
   ChannelMessageFlags flags = 4;
   bytes ciphertext = 5;
 }
@@ -123,31 +132,24 @@ enum HubControlEvent {
   HUB_CONTROL_EVENT_WORKERS_CHANGED = 1;
 }
 
-// --- User ID claim (post-handshake verification) ---
-
-// Sent by Frontend as the first encrypted InnerMessage after handshake.
-// Worker verifies this matches the Hub-provided user_id.
-message UserIdClaim {
-  string user_id = 1;
-  int64 timestamp_ms = 2;
-}
-
-// Sent by Worker in response to UserIdClaim.
-message UserIdClaimResponse {
-  bool success = 1;
-  string error_message = 2;
-}
-
 // --- Inner RPC protocol (serialized inside encrypted channel) ---
 
 // InnerMessage wraps all post-handshake encrypted payloads with type-safe routing.
+//
+// There is deliberately no client identity claim here. The client's identity is
+// established by the Hub, which authenticates the OpenChannel caller and tells
+// both sides: the client learns it from OpenChannelResponse.user_id and the
+// Worker from ChannelOpenRequest.user_id. A claim carried inside the channel could
+// only ever restate what the Hub already said -- Noise_NK leaves the initiator
+// unauthenticated, so the claim was an unsigned string any peer could send, and
+// the Worker verified it by comparing it against the Hub's own value. Removing it
+// deletes a reserved correlation id, a bespoke claim timeout, and a per-session
+// verified state machine that together protected nothing.
 message InnerMessage {
   oneof kind {
-    UserIdClaim user_id_claim = 1;
-    UserIdClaimResponse user_id_claim_response = 2;
-    InnerRpcRequest request = 3;
-    InnerRpcResponse response = 4;
-    InnerStreamMessage stream = 5;
+    InnerRpcRequest request = 1;
+    InnerRpcResponse response = 2;
+    InnerStreamMessage stream = 3;
   }
 }
 

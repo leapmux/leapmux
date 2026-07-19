@@ -111,7 +111,7 @@ Plays a notification sound when a coding agent finishes a turn.
 
 The built-in default is **Ding Dong**.
 
-The sound is intentionally restrained. The chime is active-client gated — only the focused client plays it, so it does not double across tabs or devices — and it is also skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Collaboration & Presence](/docs/using/collaboration/) for why and how that gating works.
+The sound is intentionally restrained. The chime is active-client gated — only the focused client plays it, so it does not double across tabs or devices — and it is also skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync & Presence](/docs/using/collaboration/) for why and how that gating works.
 
 #### Volume
 

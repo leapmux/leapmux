@@ -81,13 +81,9 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	if _, err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
+	conn, err := s.requireOnlineWorker(ctx, user, workerID)
+	if err != nil {
 		return nil, err
-	}
-
-	conn := s.workerMgr.Get(workerID)
-	if conn == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
 	}
 
 	keys, err := s.store.Workers().GetPublicKey(ctx, workerID)
@@ -117,14 +113,12 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 
 // accessibleWorkspaceIDs resolves the workspace-id set announced to the target
 // worker on channel open. Sessions and API tokens get every workspace the user
-// can read across all orgs -- owner-or-grant, not org-scoped -- so a workspace
-// shared with the user from another org is operable over their worker channel,
-// matching this commit's cross-org read-ACL. A delegation bearer is re-verified
-// against current grants and pinned to its single mint-scope workspace so a
-// stolen token cannot pivot the channel beyond that scope.
+// owns in their (personal) org. A delegation bearer is re-verified against
+// current ownership and pinned to its single mint-scope workspace so a stolen
+// token cannot pivot the channel beyond that scope.
 func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.UserInfo) ([]string, error) {
 	if user.Credential.IsDelegation() {
-		// Re-verify the pin against current grants so revoked / transferred
+		// Re-verify the pin against current ownership so deleted / transferred
 		// workspaces are caught at channel open time.
 		hasAccess, err := auth.WorkspaceCanRead(ctx, s.store, user.Credential.WorkspaceScopeID(), user.ID)
 		if err != nil {
@@ -135,7 +129,10 @@ func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.
 		}
 		return []string{user.Credential.WorkspaceScopeID()}, nil
 	}
-	workspaces, err := s.store.Workspaces().ListAllAccessible(ctx, user.ID)
+	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+		UserID: user.ID,
+		OrgID:  user.OrgID,
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accessible workspaces: %w", err))
 	}
@@ -160,16 +157,11 @@ func (s *ChannelService) OpenChannel(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	// Verify user has access to this worker.
-	_, err = s.verifyWorkerAccess(ctx, user, workerID)
+	// Verify access (and delegation scope) and fetch the live connection in one
+	// step, so the online check can never run ahead of the access check.
+	conn, err := s.requireOnlineWorker(ctx, user, workerID)
 	if err != nil {
 		return nil, err
-	}
-
-	// Check worker is online.
-	conn := s.workerMgr.Get(workerID)
-	if conn == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
 	}
 
 	channelID := id.Generate()
@@ -261,6 +253,17 @@ func (s *ChannelService) OpenChannel(
 	if !s.channelMgr.ScheduleExpiry(channelID, expiresAt, func(closed channelmgr.ClosedChannel) {
 		s.notifyWorkersClosed([]channelmgr.ClosedChannel{closed})
 	}) {
+		// The channel closed between handshake success and expiry scheduling --
+		// most likely a concurrent bearer/user revocation sweep that found the
+		// channel in the reverse index after RegisterWithAuthInfo published it and
+		// tore it down. Re-validate auth so a revoked credential earns
+		// CodeUnauthenticated (the error it just earned) instead of a generic
+		// CodeUnavailable that reads as a transient server fault a client would
+		// retry. Mirrors the same re-check the !channelLive branch above does for
+		// the pre-handshake close.
+		if currentErr := s.validateCurrentAuth(user); currentErr != nil {
+			return nil, currentErr
+		}
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("channel closed before expiry scheduling completed"))
 	}
 	registrationCommitted = true
@@ -268,6 +271,7 @@ func (s *ChannelService) OpenChannel(
 	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
 		ChannelId:        channelID,
 		HandshakePayload: openResp.GetHandshakePayload(),
+		UserId:           user.ID,
 	}), nil
 }
 
@@ -366,20 +370,25 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot prepare access to a different workspace"))
 	}
 
-	// Workspace must exist AND the user must be owner-or-granted. Shares the
-	// read handlers' load-and-authorize core (owner-or-grant, NotFound for a
-	// missing id vs PermissionDenied for no access) so the two paths cannot
-	// drift on what a non-owner without a grant sees. The delegation-scope guard
-	// above is kept separate because prepare-access deliberately answers a
-	// scoped-bearer mismatch with PermissionDenied, not the read loader's
-	// NotFound.
-	if _, err := loadReadableWorkspace(ctx, s.store, workspaceID, user); err != nil {
+	// Workspace must exist AND the user must be its owner. Shares the read
+	// handlers' load-and-authorize core (owner-only, NotFound for a missing id
+	// vs PermissionDenied for no access) so the two paths cannot drift on what
+	// a non-owner sees. The delegation-scope guard above is kept separate
+	// because prepare-access deliberately answers a scoped-bearer mismatch
+	// with PermissionDenied, not the read loader's NotFound.
+	if _, err := loadOwnedWorkspaceOr403(ctx, s.store, workspaceID, user.ID, "no access to workspace"); err != nil {
 		return nil, err
 	}
 
-	conn := s.workerMgr.Get(workerID)
-	if conn == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+	// The workspace guards above bound WHICH workspace this call may name; they say
+	// nothing about WHICH worker. requireOnlineWorker asks the one question this
+	// package has for that -- the same one OpenChannel and GetWorkerHandshakeParams
+	// ask -- and only reaches the worker registry once it holds: prepare-access only
+	// ever updates the caller's OWN channels on that worker, which it could not have
+	// opened without passing the identical check.
+	conn, err := s.requireOnlineWorker(ctx, user, workerID)
+	if err != nil {
+		return nil, err
 	}
 	channelIDs := s.channelMgr.AuthorizedChannelIDsForUserWorker(user.ID, workerID, channelWorkspaceUpdateAuthorized(user.Credential, workspaceID))
 
@@ -475,16 +484,78 @@ func (s *ChannelService) notifyWorkersClosed(closed []channelmgr.ClosedChannel) 
 	s.closeDispatcher.enqueueChannelCloses(closed)
 }
 
-// verifyWorkerAccess checks that the user owns the worker or has been granted access.
-// Returns the worker record for downstream use (e.g. querying accessible workspaces).
-func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) (*store.Worker, error) {
+// verifyDelegationWorkerScope bounds WHICH workers a delegation bearer may reach.
+// The rule itself -- and the reasoning behind it -- lives in
+// auth.DelegationWorkerScope, because the CRDT validator needs the identical bound
+// on the worker ids a SetTabRegisterOp names and cannot reach into this package for
+// it. See that type's doc for why the bound exists.
+//
+// It is called from verifyWorkerAccess rather than from each entrypoint: that is the
+// one function THIS package has that answers "may this principal reach this worker",
+// so folding the bound into it scopes every worker-directed call here -- OpenChannel,
+// GetWorkerHandshakeParams, and PrepareWorkspaceAccess, which are its only callers --
+// and any future one, provided it keeps routing through verifyWorkerAccess rather than
+// reading workerMgr directly. Bolted onto OpenChannel alone it left
+// GetWorkerHandshakeParams -- which asks the identical question one line apart --
+// still willing to hand a cross-tenant bearer the victim worker's key bundle, live
+// encryption mode, and online status.
+func (s *ChannelService) verifyDelegationWorkerScope(ctx context.Context, user *auth.UserInfo, targetWorkerID string) error {
+	err := auth.CheckDelegationWorkerScope(ctx, s.store, user, targetWorkerID)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, auth.ErrDelegationMinterUnknown),
+		errors.Is(err, auth.ErrDelegationWorkerOutOfScope):
+		// Permanent: the token either cannot be scoped or is out of scope. Both are
+		// definitive answers, not faults -- a retryable code would invite a client to
+		// hammer a decision that will never change.
+		return connect.NewError(connect.CodePermissionDenied, err)
+	default:
+		// A store fault must not become a permanent deny-or-allow: surface it as
+		// retryable, matching verifyWorkerAccess.
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
+
+// verifyWorkerAccess checks that the user owns the worker (a worker serves only
+// its registrant -- see auth.WorkerCanUse), AND -- for a delegation bearer --
+// that this worker is one the token's minter is entitled to reach (see
+// verifyDelegationWorkerScope).
+//
+// WorkerCanUse alone is not enough: it answers "may this USER use this worker", and a
+// delegation token can carry a user the minting worker does not own. Both checks live
+// here so no caller can take one without the other.
+func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) error {
 	worker, ok, err := auth.WorkerCanUse(ctx, s.store, workerID, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err)
 	}
-	if worker == nil || !ok || worker.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+	if worker == nil || !ok || !auth.WorkerUsableNow(worker) {
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
+	return s.verifyDelegationWorkerScope(ctx, user, workerID)
+}
 
-	return worker, nil
+// requireOnlineWorker verifies the caller may reach workerID -- ownership plus, for
+// a delegation bearer, that the token's minter is entitled to reach it (via
+// verifyWorkerAccess) -- and returns its live connection. Bundling the scope check
+// with the registry read is what keeps a worker-directed entrypoint from reaching
+// workerMgr.Get without first clearing verifyWorkerAccess: workerMgr.Get is an
+// unfiltered map read, so reaching it with an arbitrary worker id would turn the
+// offline/online split into a cross-tenant liveness oracle for any caller holding
+// one readable workspace. Every legitimate caller already satisfies the check, so
+// the gate is a property of this one primitive rather than a line each entrypoint
+// must remember. It remains a CONVENTION, though: workerMgr.Get is still exported
+// and ungated, so a future worker-directed entrypoint could read it directly and
+// be born unscoped. Making that structural (a capability token minted only by
+// verifyWorkerAccess) is tracked in https://github.com/leapmux/leapmux/issues/290.
+func (s *ChannelService) requireOnlineWorker(ctx context.Context, user *auth.UserInfo, workerID string) (*workermgr.Conn, error) {
+	if err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
+		return nil, err
+	}
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+	}
+	return conn, nil
 }

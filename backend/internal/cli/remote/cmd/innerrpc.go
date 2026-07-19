@@ -59,7 +59,7 @@ func callInnerRPCBest(ctx context.Context, c *remote.Client, workerID, method st
 	if workerID == "" {
 		return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
 	}
-	ch, err := c.OpenE2EEChannel(ctx, workerID)
+	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
 	if err != nil {
 		return &codedRPCError{Code: "channel_open_failed", Cause: err}
 	}
@@ -84,7 +84,7 @@ func callInnerRPCOnChannel(ctx context.Context, ch *tunnel.Channel, c *remote.Cl
 	if ch == nil {
 		return localIPCCallInnerBest(ctx, c, workerID, "", method, payload, out)
 	}
-	resp, err := ch.CallRPC(method, payload)
+	resp, err := ch.CallRPC(ctx, method, payload)
 	if err != nil {
 		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
@@ -108,7 +108,7 @@ func withWorkerChannel(ctx context.Context, c *remote.Client, workerID string, b
 	if workerID == "" {
 		return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
 	}
-	ch, err := c.OpenE2EEChannel(ctx, workerID)
+	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
 	if err != nil {
 		return &codedRPCError{Code: "channel_open_failed", Cause: err}
 	}

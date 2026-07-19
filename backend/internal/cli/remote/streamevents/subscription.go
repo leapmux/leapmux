@@ -12,7 +12,7 @@ import (
 // some backend." Two production wirings exist:
 //
 //   - hub-bound: open an E2EE channel via `*remote.Client.OpenE2EEChannel`,
-//     then `SendRPCNoWait("WatchEvents", payload)` + `RegisterStream`.
+//     then `SendRPCNoWait` with atomically registered response and stream handlers.
 //   - local-IPC: call `RemoteIPCService.StreamInner` with method
 //     `worker.WatchEvents` over the per-agent socket.
 //

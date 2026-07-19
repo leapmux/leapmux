@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -22,16 +23,25 @@ type CRDTService struct {
 	store    store.Store
 	registry *crdt.Registry
 	logger   *slog.Logger
+	// scopeCache memoizes the per-minter delegation worker scope SubmitOps
+	// resolves on every call (see auth.DelegationScopeCache). Shared with the
+	// worker-deregistration path, which evicts synchronously.
+	scopeCache *auth.DelegationScopeCache
 }
 
 // NewCRDTService returns a service handler bound to the supplied
 // registry. The registry is responsible for the per-org Manager
-// goroutines.
-func NewCRDTService(st store.Store, registry *crdt.Registry, logger *slog.Logger) *CRDTService {
+// goroutines. scopeCache may be nil (tests); a private cache over st is
+// constructed then, so the field is never nil -- production passes the
+// instance shared with WorkerManagementService so deregistration evicts it.
+func NewCRDTService(st store.Store, registry *crdt.Registry, logger *slog.Logger, scopeCache *auth.DelegationScopeCache) *CRDTService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &CRDTService{store: st, registry: registry, logger: logger}
+	if scopeCache == nil {
+		scopeCache = auth.NewDelegationScopeCache(st)
+	}
+	return &CRDTService{store: st, registry: registry, logger: logger, scopeCache: scopeCache}
 }
 
 // SubmitOps validates the caller and forwards to the org manager.
@@ -43,17 +53,42 @@ func (s *CRDTService) SubmitOps(
 	if err != nil {
 		return nil, err
 	}
-	mgr, err := s.registry.Get(ctx, req.Msg.GetOrgId())
+	// Home the request in the caller's own org before touching the registry.
+	// registry.Get performs no authorization, so a caller-supplied foreign
+	// org_id would otherwise materialize an arbitrary tenant's CRDT Manager
+	// ahead of the per-op ACL that rejects the batches. ResolveOrgID fails
+	// closed with NotFound for any foreign org and falls back to the personal
+	// org when org_id is empty; the resolved value is what the manager sees.
+	orgID, err := auth.ResolveOrgID(user, req.Msg.GetOrgId())
+	if err != nil {
+		return nil, err
+	}
+	// Resolve the delegation worker bound BEFORE reaching the manager: a bearer
+	// whose minter cannot be established must not submit ops at all, and a
+	// SetTabRegisterOp naming another user's worker is the same cross-tenant reach
+	// ChannelService refuses -- SubmitOps is a delegation-allowed procedure, so it
+	// is a worker-directed entrypoint whether or not it looks like one. Resolved
+	// through the per-minter cache: this is the hottest delegation-bearer RPC,
+	// and an uncached resolve paid one Workers().GetByID per submitted batch.
+	workerScope, err := s.scopeCache.Resolve(ctx, user)
+	if err != nil {
+		if errors.Is(err, auth.ErrDelegationMinterUnknown) {
+			return nil, connect.NewError(connect.CodePermissionDenied, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	mgr, err := s.registry.Get(ctx, orgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	results, err := mgr.Submit(ctx, crdt.SubmitInput{
-		OrgID:            req.Msg.GetOrgId(),
+		OrgID:            orgID,
 		Epoch:            req.Msg.GetEpoch(),
 		Batches:          req.Msg.GetBatches(),
 		PrincipalID:      user.ID,
 		OriginClient:     user.ID,
 		WorkspaceScopeID: user.Credential.WorkspaceScopeID(),
+		WorkerScope:      workerScopePredicate(workerScope),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -77,7 +112,15 @@ func (s *CRDTService) GetMaterialized(
 	if err != nil {
 		return nil, err
 	}
-	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceIds(), user)
+	// Refuse a foreign org id before materializing its manager (registry.Get
+	// authorizes nothing). Mirrors SubmitOps and the workspace path: fail
+	// closed with NotFound rather than returning an empty snapshot for a
+	// tenant the caller has no part in.
+	orgID, err := auth.ResolveOrgID(user, req.Msg.GetOrgId())
+	if err != nil {
+		return nil, err
+	}
+	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, orgID, req.Msg.GetWorkspaceIds(), user)
 	if err != nil {
 		// Only a delegation-scope PermissionDenied is a genuine authorization
 		// failure; everything else -- an uncoded transient store failure, or a
@@ -92,7 +135,7 @@ func (s *CRDTService) GetMaterialized(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	mgr, err := s.registry.Get(ctx, req.Msg.GetOrgId())
+	mgr, err := s.registry.Get(ctx, orgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
@@ -120,7 +163,7 @@ func (s *CRDTService) UpdatePresence(
 	if err := requireDelegationWorkspace(user, req.Msg.GetWorkspaceId()); err != nil {
 		return nil, err
 	}
-	allowed, err := auth.WorkspaceCanReadInOrg(
+	allowed, err := auth.WorkspaceCanAccessInOrg(
 		ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId(), user.ID,
 	)
 	if err != nil {
@@ -190,14 +233,14 @@ func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, orgID 
 	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
-	requested, emptyResult, err := delegationScopedWorkspaceRequest(user, requested)
+	scoped, err := delegationScopedWorkspaceRequest(user, requested)
 	if err != nil {
 		return nil, err
 	}
-	if emptyResult {
+	if scoped.Deny {
 		return nil, nil
 	}
-	return resolveAllowedWorkspaces(ctx, st, orgID, requested, user.ID)
+	return resolveAllowedWorkspaces(ctx, st, orgID, scoped.Workspaces, user.ID)
 }
 
 // resolveAllowedWorkspaces is the per-user workspace filter used by
@@ -220,7 +263,7 @@ func resolveAllowedWorkspaces(ctx context.Context, st store.Store, orgID string,
 		}
 		return out, nil
 	}
-	// A specific set was requested: resolve the canonical owner-or-grant read
+	// A specific set was requested: resolve the canonical owner-only read
 	// rule for these workspaces against this user. Centralized in auth so the
 	// per-op / batch-by-users / batch-by-workspaces read paths cannot drift; the
 	// delegation empty-orgID contract (skip the org binding) lives there too.

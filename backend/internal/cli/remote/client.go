@@ -261,18 +261,31 @@ func (c *Client) OpenOrgEvents(ctx context.Context, orgID string, workspaceIDs [
 // OpenE2EEChannel opens a Noise_NK E2EE channel to the named worker
 // via the hub relay. Uses the credential's bearer token and the
 // per-hub TOFU pin store.
-func (c *Client) OpenE2EEChannel(ctx context.Context, workerID string) (*tunnel.Channel, error) {
+func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, workerID string) (*tunnel.Channel, error) {
 	if c.IsLocal() {
 		return nil, errors.New("OpenE2EEChannel is only valid for hub-bound clients")
 	}
-	if c.UserID == "" {
-		return nil, errors.New("client has no resolved user_id (re-login)")
+	// A nil *PinStore would still satisfy tunnel.KeyPinStore as a typed-nil
+	// interface, so tunnel.OpenChannel's `pinStore != nil` guard would call
+	// straight into a nil receiver. Refuse loudly instead: NewClient always
+	// builds a pin store, and a hub-bound open that skipped TOFU verification
+	// silently is a downgrade, not a fallback.
+	if c.Pins == nil {
+		return nil, errors.New("OpenE2EEChannel: client has no TOFU pin store")
 	}
-	return tunnel.OpenChannel(ctx, c.HubURL, c.UserID, workerID, &tunnel.OpenChannelOptions{
+	return tunnel.OpenChannel(operationCtx, c.HubURL, workerID, &tunnel.OpenChannelOptions{
 		HTTPClient:          c.HTTPClient,
 		WebSocketHTTPClient: c.WSClient,
+		LifetimeContext:     lifetimeCtx,
 		BearerToken:         c.Bearer,
-		KeyPin:              c.Pins,
+		// The CLI resolves workspaces/workers under c.UserID (see resolve.Resolver
+		// and cmd/workspace.go), so it DOES have an expectation: creds whose bearer
+		// and user_id have decoupled -- a rotated or reassigned token -- would have
+		// it resolving as X while running channel RPCs as Y. Empty c.UserID (creds
+		// predating user_id resolution) leaves the cross-check disabled, which is
+		// exactly the no-expectation case OpenChannel skips.
+		ExpectedUserID: c.UserID,
+		KeyPin:         c.Pins,
 	})
 }
 

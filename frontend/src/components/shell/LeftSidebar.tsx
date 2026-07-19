@@ -16,7 +16,6 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   const {
     wsOps,
     buildSectionDefs,
-    renderSharingDialog,
     expandSectionRef,
   } = useSidebarCore(props, Sidebar.LEFT)
 
@@ -47,19 +46,15 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   })
 
   return (
-    <>
-      <CollapsibleSidebar
-        sections={buildSectionDefs()}
-        side="left"
-        isCollapsed={props.isCollapsed}
-        onExpand={props.onExpand}
-        initialOpenSections={props.initialOpenSections}
-        initialSectionSizes={props.initialSectionSizes}
-        onStateChange={props.onSectionStateChange}
-        expandSectionRef={expandSectionRef}
-      />
-
-      {renderSharingDialog()}
-    </>
+    <CollapsibleSidebar
+      sections={buildSectionDefs()}
+      side="left"
+      isCollapsed={props.isCollapsed}
+      onExpand={props.onExpand}
+      initialOpenSections={props.initialOpenSections}
+      initialSectionSizes={props.initialSectionSizes}
+      onStateChange={props.onSectionStateChange}
+      expandSectionRef={expandSectionRef}
+    />
   )
 }

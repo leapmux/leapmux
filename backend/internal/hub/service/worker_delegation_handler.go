@@ -121,10 +121,10 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// Verify user has access to the workspace via the canonical
-	// owner-or-grant predicate. A missing workspace also returns
-	// false here (auth.WorkspaceCanRead maps NotFound to false); we
-	// flatten both "no such workspace" and "no grant" into a 403 so
-	// the worker doesn't get a probing oracle for workspace IDs.
+	// owner-only predicate. A missing workspace also returns false
+	// here (auth.WorkspaceCanRead maps NotFound to false); we
+	// flatten both "no such workspace" and "not the owner" into a 403
+	// so the worker doesn't get a probing oracle for workspace IDs.
 	// A non-nil err is a real store failure (SQLITE_BUSY, network
 	// blip) -- surface it as a retryable 500, not a permanent 403,
 	// so a brief DB hiccup doesn't fail a legitimate lazy mint (the
@@ -136,6 +136,17 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	}
 	if !hasAccess {
 		http.Error(w, "user lacks workspace access", http.StatusForbidden)
+		return
+	}
+	// The token authenticates as req.UserID, so require it to be exactly the
+	// calling worker's own registrant. Owner-only access plus tab-placement
+	// gating make that equality hold today, but stating it here keeps the
+	// mint's safety a local check rather than a transitive consequence of a
+	// predicate in another package -- so a future path that ever lets a worker
+	// host a tab in a workspace it does not own cannot mint a bearer
+	// impersonating that workspace's owner.
+	if worker.RegisteredBy != req.UserID {
+		http.Error(w, "user is not the worker's registrant", http.StatusForbidden)
 		return
 	}
 

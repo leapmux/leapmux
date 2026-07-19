@@ -42,7 +42,7 @@ func TestRenewLeaseIfStaleSkipsFreshLease(t *testing.T) {
 		leaseDuration: time.Hour,
 		holderID:      "holder",
 	}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 	defer w.lease.mu.Unlock()
 
 	// Fresh lease (well over half its duration remaining): renewal is skipped.
@@ -118,7 +118,7 @@ func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		w.lease.mu.Lock()
+		_ = w.lease.mu.Lock(context.Background())
 		_, _, err := w.consumePageLocked(context.Background(), 10)
 		w.lease.mu.Unlock()
 		done <- err
@@ -129,7 +129,7 @@ func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 	// With w.lease.mu released during the read, a heartbeat goroutine can acquire it.
 	acquired := make(chan struct{})
 	go func() {
-		w.lease.mu.Lock()
+		_ = w.lease.mu.Lock(context.Background())
 		// Touch the mu-guarded lease state, exactly as renewalLoop does when it
 		// renews -- a non-empty critical section that would block if the sweep
 		// held w.lease.mu across the store read.
@@ -204,7 +204,7 @@ func TestRenewTransientErrorIsNotFatal(t *testing.T) {
 		holderID:      "holder",
 		errors:        make(chan error, 1),
 	}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 	// Stale lease (past half-life) with real budget left, so renewLocked calls
 	// the store rather than short-circuiting on a locally-expired lease.
 	w.lease.leaseExpiresAt = time.Now().Add(20 * time.Minute)
@@ -248,7 +248,7 @@ func TestPublishRenewsLeaseBetweenPages(t *testing.T) {
 		holderID:      "holder",
 		errors:        make(chan error, 1),
 	}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 	// Stale lease so the between-pages renewLeaseIfStaleLocked actually renews.
 	w.lease.leaseExpiresAt = time.Now().Add(20 * time.Minute)
 	err := w.publishPendingLocked(context.Background(), 100, 1000)
@@ -279,7 +279,7 @@ func TestPublishErrorOnExpiredLeaseIsFatalAndSignaled(t *testing.T) {
 		holderID:      "holder",
 		errors:        make(chan error, 1),
 	}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already expired
 	err := w.publishPendingLocked(context.Background(), 100, 1000)
 	w.lease.mu.Unlock()
@@ -333,6 +333,97 @@ func (panickingCloser) CloseChannelsByBearer(auth.BearerRef) int        { return
 func (panickingCloser) CloseChannelsByUserRevocation(string, int64) int { return 0 }
 func (panickingCloser) RestampSessionGeneration(string, int64)          {}
 
+type blockingCloser struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingCloser) CloseChannelsBySession(string) int {
+	close(c.started)
+	<-c.release
+	return 1
+}
+
+func (*blockingCloser) CloseChannelsByBearer(auth.BearerRef) int        { return 0 }
+func (*blockingCloser) CloseChannelsByUserRevocation(string, int64) int { return 0 }
+func (*blockingCloser) RestampSessionGeneration(string, int64)          {}
+
+type singleSessionEventStore struct {
+	store.RevocationEventStore
+	listed bool
+}
+
+func (*singleSessionEventStore) PublishPending(context.Context, int32) (int64, error) {
+	return 0, nil
+}
+
+func (s *singleSessionEventStore) ListPublishedAfter(context.Context, int64, int32) ([]store.PublishedRevocationEvent, error) {
+	if s.listed {
+		return nil, nil
+	}
+	s.listed = true
+	return []store.PublishedRevocationEvent{{
+		Seq: 1,
+		Event: store.RevocationEvent{
+			ID: "event", Kind: store.RevocationEventKindSession, SubjectID: "session",
+		},
+	}}, nil
+}
+
+func (*singleSessionEventStore) RenewHubRuntimeLease(context.Context, store.RenewHubRuntimeLeaseParams) (bool, error) {
+	return true, nil
+}
+
+func (*singleSessionEventStore) ReleaseHubRuntimeLease(context.Context, string) (int64, error) {
+	return 1, nil
+}
+
+// Close releases the runtime lease WITHOUT waiting for an in-flight RunOnce
+// event effect to finish. applyEvent runs in a lock-free window
+// (applyEventUnlocked releases lease.mu) and can block for seconds on a
+// back-pressured frontend; the lease release acquires only lease.mu (which that
+// window frees), so Close can return while the effect is still running. This is
+// safe because the effect is in-process and idempotent -- it mutates only the
+// closing Hub's own auth/channel state, never the durable lease row or the
+// shared DB, so it cannot corrupt a Hub that has since acquired the released
+// lease. In production the owned loop is still drained via stopLoop before the
+// store closes; only a directly-invoked RunOnce (no production caller) is left
+// to unwind on its own. renewLocked is gated on `closed`, so the unwind cannot
+// re-acquire the lease; it observes `closed`/`!seeded` and returns ErrClosed.
+func TestCloseReleasesLeaseWithoutWaitingForInFlightApply(t *testing.T) {
+	closer := &blockingCloser{started: make(chan struct{}), release: make(chan struct{})}
+	w := &Watcher{
+		store:           fakeRevStore{rev: &singleSessionEventStore{}},
+		lifecycle:       auth.NewCredentialLifecycleEffects(nil, closer, nil),
+		leaseDuration:   time.Hour,
+		pageSize:        10,
+		maxEventsPerRun: 10,
+		holderID:        "holder",
+	}
+	w.lease.seeded = true
+	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- w.RunOnce(context.Background()) }()
+	<-closer.started
+
+	// Close returns promptly: it does not block on the in-flight, uncancellable
+	// applyEvent (which holds only runMu, not lease.mu).
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- w.Close(context.Background()) }()
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Close waited for the in-flight applyEvent instead of releasing the lease")
+	}
+
+	// Let the in-flight effect finish; RunOnce then observes `closed`/`!seeded`
+	// and unwinds without re-acquiring the lease.
+	close(closer.release)
+	require.ErrorIs(t, <-runDone, ErrClosed)
+}
+
 // applyEventUnlocked releases w.lease.mu across the (slow, panic-prone) teardown
 // and MUST re-lock on the way out even when applyEvent panics. runOnce holds
 // w.lease.mu under a defer Unlock, so a panic that returned with the lock
@@ -343,7 +434,7 @@ func TestApplyEventUnlockedReLocksAfterPanic(t *testing.T) {
 	w := &Watcher{
 		lifecycle: auth.NewCredentialLifecycleEffects(nil, panickingCloser{}, nil),
 	}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 
 	func() {
 		defer func() {
@@ -370,7 +461,7 @@ func TestApplyEventUnlockedReLocksAfterPanic(t *testing.T) {
 // applyEventUnlocked (runOnce's defer Unlock would otherwise double-panic).
 func TestRunStoreUnlockedReLocksAfterPanic(t *testing.T) {
 	w := &Watcher{}
-	w.lease.mu.Lock()
+	_ = w.lease.mu.Lock(context.Background())
 
 	func() {
 		defer func() {
@@ -397,7 +488,7 @@ func TestCloseCancelsLoopBeforeAcquiringMu(t *testing.T) {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	w.loopCancel.Store(&cancel)
 
-	w.lease.mu.Lock() // simulate runOnce holding the lock across a store call
+	_ = w.lease.mu.Lock(context.Background()) // simulate runOnce holding the lock across a store call
 	closeReturned := make(chan error, 1)
 	go func() { closeReturned <- w.Close(context.Background()) }()
 
@@ -410,4 +501,26 @@ func TestCloseCancelsLoopBeforeAcquiringMu(t *testing.T) {
 
 	w.lease.mu.Unlock() // let Close finish (unseeded -> returns nil)
 	require.NoError(t, <-closeReturned)
+}
+
+// elapsedDeadlineCtx models the race window leaseReleaseContext must survive:
+// a context whose Deadline() has already passed on the wall clock while Err()
+// still reads nil (the deadline elapsing between the two reads). Feeding the
+// negative remainder into the timeout min would hand back an already-expired
+// context -- the stillborn release the function's doc promises cannot happen.
+type elapsedDeadlineCtx struct{ context.Context }
+
+func (elapsedDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
+func (elapsedDeadlineCtx) Err() error                  { return nil }
+
+func TestLeaseReleaseContextSurvivesDeadlineElapsingMidCheck(t *testing.T) {
+	ctx, cancel := leaseReleaseContext(elapsedDeadlineCtx{context.Background()})
+	defer cancel()
+
+	require.NoError(t, ctx.Err(), "the release context must not be born expired")
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	remaining := time.Until(deadline)
+	assert.Greater(t, remaining, leaseReleaseTimeout/2,
+		"an elapsed caller deadline is excluded from the cap; the release gets the full budget")
 }

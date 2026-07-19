@@ -58,7 +58,7 @@ export interface DesktopRuntimeState {
 
 export interface ProxyHttpResponse {
   status: number
-  headers: Record<string, string>
+  headers: Record<string, string[]>
   body: string
 }
 
@@ -69,8 +69,6 @@ export interface TunnelConfig {
   targetPort: number
   bindAddr: string
   bindPort: number
-  hubURL: string
-  userId: string
 }
 
 export interface TunnelInfo {
@@ -724,25 +722,35 @@ export const platformBridge = {
     const payload = await tauriInvoke<CliInstallSymlinkPayload>('cli_install_symlink', { force })
     return decodeCliInstallResult(payload)
   },
-  async openChannelRelay(): Promise<void> {
-    await tauriInvoke('open_channel_relay')
+  // relayId names which relay wrapper is asking. It travels to the sidecar so a
+  // close can be ignored once a later open has superseded it — the two are separate
+  // requests and the sidecar runs each on its own goroutine with no ordering, so
+  // wire order is not execution order.
+  async openChannelRelay(relayId: number): Promise<void> {
+    await tauriInvoke('open_channel_relay', { relayId })
   },
   async sendChannelMessage(b64Data: string): Promise<void> {
     await tauriInvoke('send_channel_message', { b64Data })
   },
-  async closeChannelRelay(): Promise<void> {
-    await tauriInvoke('close_channel_relay')
+  async closeChannelRelay(relayId: number): Promise<void> {
+    await tauriInvoke('close_channel_relay', { relayId })
   },
   // OrgEvents relay (`/ws/orgevents`). The webview can't dial the
   // unix-socket hub natively in desktop solo mode, so the Go sidecar
   // opens the WebSocket on our behalf and forwards each binary
   // frame as a Tauri `orgevents:message` event (base64-encoded
   // length-prefixed WatchOrgEvent bytes).
-  async openOrgEventsRelay(orgId: string, workspaceIds: string[] = []): Promise<void> {
-    await tauriInvoke('open_orgevents_relay', { orgId, workspaceIds })
+  //
+  // relayId names the attempt, exactly like the channel relay above. It carries more
+  // weight here: this open force-restarts the relay (the hub sends OrgMaterialized
+  // only at subscribe time, so reusing a live relay would leave a fresh page without
+  // its bootstrap), so the sidecar also uses the id to ignore an OPEN that a newer
+  // one has already superseded.
+  async openOrgEventsRelay(relayId: number, orgId: string, workspaceIds: string[] = []): Promise<void> {
+    await tauriInvoke('open_orgevents_relay', { relayId, orgId, workspaceIds })
   },
-  async closeOrgEventsRelay(): Promise<void> {
-    await tauriInvoke('close_orgevents_relay')
+  async closeOrgEventsRelay(relayId: number): Promise<void> {
+    await tauriInvoke('close_orgevents_relay', { relayId })
   },
   async getStartupInfo(): Promise<StartupInfo> {
     const wire = await tauriInvoke<StartupInfoWire>('get_startup_info')
@@ -776,6 +784,14 @@ export const platformBridge = {
   async deleteTunnel(tunnelId: string): Promise<void> {
     await tauriInvoke('delete_tunnel', { tunnelId })
   },
+  async resetTunnels(): Promise<void> {
+    // No-op off the desktop: tunnels only exist in the two desktop modes, so
+    // there is no sidecar to reset in the browser. Guarding here keeps callers
+    // (AuthContext logout / auth-error) mode-agnostic.
+    if (!isTauriApp())
+      return
+    await tauriInvoke('reset_tunnels')
+  },
   async listTunnels(): Promise<TunnelInfo[]> {
     return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
   },
@@ -795,6 +811,29 @@ export const platformBridge = {
   },
 }
 
+/** A sidecar `*:close` relay event payload, after defensive parsing. */
+export interface RelayClosePayload {
+  code: number
+  reason: string
+  wasClean: boolean
+}
+
+/**
+ * Defensively parse a sidecar `channel:close` / `orgevents:close` event
+ * payload. The sidecar emits a well-formed object, but the payload crosses the
+ * untyped Tauri event boundary, so each field is guarded and the shared 1006
+ * (abnormal-closure) default lives here -- one home for the wire default both
+ * relay-close paths must agree on, rather than duplicated at each listener.
+ */
+export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
+  const close = payload as Partial<RelayClosePayload> | null
+  return {
+    code: typeof close?.code === 'number' ? close.code : 1006,
+    reason: typeof close?.reason === 'string' ? close.reason : '',
+    wasClean: close?.wasClean === true,
+  }
+}
+
 /**
  * desktopFetch is the unary-only ConnectRPC transport for the desktop
  * sidecar. The org-event subscription is not an RPC — it lives on the
@@ -812,8 +851,11 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
   const resp = await platformBridge.proxyHttp(method, path, headers, body)
+  const responseHeaders = Object.entries(resp.headers).flatMap(([name, values]) =>
+    values.map(value => [name, value] as [string, string]),
+  )
   return new Response(base64ToArrayBuffer(resp.body), {
     status: resp.status,
-    headers: resp.headers,
+    headers: responseHeaders,
   })
 }

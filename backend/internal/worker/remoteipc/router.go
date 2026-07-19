@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
 // LocalDispatcher is the subset of channel.Dispatcher the router needs.
@@ -108,11 +109,6 @@ func (r *Router) now() time.Time {
 	}
 	return time.Now()
 }
-
-// localStreamIDPrefix mirrors service.LocalIPCStreamPrefix without the
-// service-package import (avoids router→service coupling in the hot
-// path). Keep these in sync.
-const localStreamIDPrefix = "localipc:"
 
 // CallInner executes a unary inner-RPC. workspaceID, when non-empty,
 // is checked against the bearer's scope.
@@ -480,7 +476,7 @@ func stripNamespace(method string) string {
 // bearer" while the per-request suffix keeps every WatchEvents
 // registration distinct.
 func newLocalStreamID(info TokenInfo) string {
-	return localStreamIDPrefix + tokenIdentitySegment(info) + ":" + id.Generate()
+	return service.LocalIPCStreamPrefix + tokenIdentitySegment(info) + ":" + id.Generate()
 }
 
 // tokenIdentitySegment derives a stable, non-empty identifier from a

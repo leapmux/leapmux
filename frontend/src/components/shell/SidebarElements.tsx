@@ -52,7 +52,6 @@ export interface SidebarElementsOpts {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
-  currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
   onRegisterWorker: () => void
@@ -125,7 +124,6 @@ function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDis
     workers: opts.workers,
     workerInfoFn: opts.workerInfoFn,
     channelStatusFn: opts.channelStatusFn,
-    currentUserId: opts.currentUserId,
     onAddTunnel: opts.onAddTunnel,
     onDeregisterWorker: opts.onDeregisterWorker,
     onRegisterWorker: opts.onRegisterWorker,

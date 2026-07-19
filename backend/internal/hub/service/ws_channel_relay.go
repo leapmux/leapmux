@@ -200,11 +200,23 @@ func (h *ChannelRelayHandler) relayFrontendMessageToWorker(info channelmgr.Chann
 		"ciphertext_len", len(msg.GetCiphertext()),
 	)
 
+	// An out-of-spec flags value is a protocol violation treated like any
+	// other chunk-tracking failure, not misread as a final chunk (see
+	// channelwire.ChunkContinuation).
+	more, validFlags := channelwire.ChunkContinuation(msg.GetFlags())
+	if !validFlags {
+		slog.Warn("channel relay: out-of-spec channel message flags",
+			"channel_id", channelID,
+			"correlation_id", msg.GetCorrelationId(),
+			"flags", msg.GetFlags(),
+		)
+		return errTerminalChannelRelay
+	}
 	if err := h.channelMgr.ChunkTracker.Track(
 		channelID, "fe2w",
 		msg.GetCorrelationId(),
 		len(msg.GetCiphertext()),
-		msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		more,
 	); err != nil {
 		slog.Warn("channel relay: chunk validation failed",
 			"channel_id", channelID,

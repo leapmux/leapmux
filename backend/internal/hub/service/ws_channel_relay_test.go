@@ -399,7 +399,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 
 	orgID := id.Generate()
 	require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
-		ID: orgID, Name: "relay-delegation-org", IsPersonal: true,
+		ID: orgID, Name: "relay-delegation-org",
 	}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
@@ -439,11 +439,11 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	scopedChannelID := id.Generate()
 	cm.RegisterWithAuthInfo(unscopedChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
 	cm.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, workspaceID),
+		Credential: auth.DelegationCredential(tokenID, workspaceID, workerID),
 	}, nil)
 
 	workerMsgs := make(chan *leapmuxv1.ConnectResponse, 4)
-	wm.Register(&workermgr.Conn{
+	_, _ = wm.Register(&workermgr.Conn{
 		WorkerID: workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			workerMsgs <- msg
@@ -484,7 +484,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 		got := msg.GetChannelMessage()
 		require.NotNil(t, got)
 		assert.Equal(t, scopedChannelID, got.GetChannelId())
-		assert.Equal(t, uint32(2), got.GetCorrelationId())
+		assert.Equal(t, uint64(2), got.GetCorrelationId())
 	case <-time.After(time.Second):
 		require.Fail(t, "expected scoped delegation channel message to reach worker")
 	}
@@ -515,7 +515,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 	t.Run("live worker receives the wrapped ciphertext", func(t *testing.T) {
 		wm := workermgr.New()
 		var got []*leapmuxv1.ConnectResponse
-		wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(m *leapmuxv1.ConnectResponse) error {
+		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(m *leapmuxv1.ConnectResponse) error {
 			got = append(got, m)
 			return nil
 		}})
@@ -530,7 +530,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 
 	t.Run("broken worker stream is terminal", func(t *testing.T) {
 		wm := workermgr.New()
-		wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
+		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
 			return errors.New("stream closed")
 		}})
 		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New()}

@@ -33,11 +33,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "Sidebar"
-          # Org member enum
-          - column: "org_members.role"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "OrgMemberRole"
           # Workspace tab enum
           - column: "workspace_tabs.tab_type"
             go_type:

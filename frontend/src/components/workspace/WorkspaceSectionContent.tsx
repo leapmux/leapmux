@@ -12,7 +12,6 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { activeTabKey as buildActiveTabStorageKey } from '~/components/shell/tabPersistenceKeys'
-import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -31,13 +30,10 @@ export interface WorkspaceSectionContentProps {
   workspaces: Workspace[]
   sectionId: string
   activeWorkspaceId: string | null
-  currentUserId: string
-  isVirtual?: boolean
   sections: Section[]
   onSelect: (id: string) => void
   onRename: (workspace: Workspace) => void
   onMoveTo: (workspaceId: string, targetSectionId: string) => void
-  onShare: (workspaceId: string) => void
   onArchive: (workspaceId: string) => void
   onUnarchive: (workspaceId: string) => void
   onDelete: (workspaceId: string) => void
@@ -175,16 +171,12 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
         ref={droppable}
         class={styles.sectionItems}
         classList={{
-          [styles.sectionHeaderDropTarget]: droppable.isActiveDroppable && props.sectionId !== '__shared__',
+          [styles.sectionHeaderDropTarget]: droppable.isActiveDroppable,
         }}
       >
         <Show
           when={props.workspaces.length > 0}
-          fallback={(
-            <Show when={!props.isVirtual}>
-              <div class={styles.emptySection}>No workspaces</div>
-            </Show>
-          )}
+          fallback={<div class={styles.emptySection}>No workspaces</div>}
         >
           <For each={workspaceIds()}>
             {(id) => {
@@ -195,7 +187,6 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               })
               const wsDroppable = createDroppable(`${WORKSPACE_DROP_PREFIX}${id}`)
               const isActive = () => id === props.activeWorkspaceId
-              const isOwner = () => workspace().createdBy === props.currentUserId
               const isRenaming = () => props.renamingWorkspaceId === id
               const isLoading = () => props.isWorkspaceLoading(id)
               const title = () => workspace().title || 'Untitled'
@@ -233,10 +224,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       }
                       props.onSelect(id)
                     }}
-                    onDblClick={() => {
-                      if (isOwner())
-                        props.onRename(workspace())
-                    }}
+                    onDblClick={() => props.onRename(workspace())}
                     data-testid={`workspace-item-${id}`}
                   >
                     <ChevronRight
@@ -278,9 +266,6 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       <Tooltip content={<LabelWithDiffStats label={title()} stats={stats()} />} showWhen="clipped">
                         <span class={styles.itemLabel}>
                           <span class={styles.itemTitle}>{title()}</span>
-                          <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
-                            <span class={styles.sharedBadge}>shared</span>
-                          </Show>
                           <DiffStatsBadge stats={stats()} />
                         </span>
                       </Tooltip>
@@ -291,15 +276,13 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         when={!isLoading()}
                         fallback={<Spinner size="xs" />}
                       >
-                        <Show when={!isRenaming() && !props.isVirtual}>
+                        <Show when={!isRenaming()}>
                           <WorkspaceContextMenu
-                            isOwner={isOwner()}
                             isArchived={props.isArchived(id)}
                             sections={props.sections}
                             currentSectionId={props.sectionId}
                             onRename={() => props.onRename(workspace())}
                             onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
-                            onShare={() => props.onShare(id)}
                             onArchive={() => props.onArchive(id)}
                             onUnarchive={() => props.onUnarchive(id)}
                             onDelete={() => props.onDelete(id)}

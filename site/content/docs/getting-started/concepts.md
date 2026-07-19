@@ -82,7 +82,7 @@ There is also `leapmux dev` — the same Hub+Worker-in-one-process runner as sol
 | Default listen | `127.0.0.1:4327` (loopback) | Hub `:4327` (all interfaces); Workers dial out |
 | Login | None — auto-admin | Real auth (password, OAuth, sessions) |
 | Workers | One local, in-process | One-or-more, local or remote, NAT-friendly |
-| Multi-user / sharing | No | Yes |
+| Multiple user accounts | No | Yes |
 | Trust model | Local-host trust | Hub is an authenticated relay |
 
 The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
@@ -104,17 +104,11 @@ Each tab is hosted on a Worker, optionally bound to a worktree/branch.
 
 ### Organization
 
-An **organization** (org) is the top-level tenant. Every user belongs to one or more orgs, each identified by a globally unique, GitHub-style slug. When you create an account you automatically get a **personal** org named after your username; you can also create additional team orgs. Org membership carries one of three roles — **Member**, **Admin**, or **Owner** — that gate org-management actions. The whole app lives under the URL prefix `/o/{orgSlug}`, and you switch orgs from the user menu's "Switch Organization" list.
-
-Org membership and workspace access are *separate* layers: being in an org does not by itself grant you access to any workspace in it. See [Organizations & Members](/docs/using/organizations/).
-
-> **Note:** Most org-management actions (create org, invite/remove members, change roles, delete org) are unavailable in solo mode, where there is a single built-in admin.
+An **organization** (org) is the top-level tenant. Every account has exactly **one**: a personal org created automatically with the account and deleted with it, whose slug is your username. It scopes the URLs — the whole app lives under the prefix `/o/{username}` — and the event stream your workspaces sync over. An org is not a team: it has no members or roles beyond you, and there is nothing to create, join, or switch between. Renaming your username renames the org (and the URL prefix) with it. See [Accounts & Authentication](/docs/using/accounts/).
 
 ### Workspace
 
-A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs and lives at `/o/{orgSlug}/workspace/{id}`. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, "Shared", and "Archived". Each workspace has a single **owner** (its creator), who can rename, archive, move, delete, and share it.
-
-**Sharing** (distributed mode only — never solo) grants other org members read access. Crucially, a share only authorizes the Hub to *route* that user's traffic to the workspace's Workers; to actually read agent or terminal content, the recipient must open their own encrypted channel to each Worker. See [Workspaces](/docs/using/workspaces/) and [Collaboration & Presence](/docs/using/collaboration/).
+A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs and lives at `/o/{username}/workspace/{id}`. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator), and workspace access is strictly owner-only: you see exactly the workspaces you own. See [Workspaces](/docs/using/workspaces/).
 
 ### Layout, tiles, and floating windows
 
@@ -179,25 +173,25 @@ LeapMux is built to survive restarts:
 
 You don't have to re-launch agents with `--resume` or rebuild your tiling by hand after a crash; LeapMux reattaches and redraws.
 
-## Presence and collaboration
+## Presence and device sync
 
-A workspace's **layout** — the tiling tree, tabs, splits, grids, floating windows, and lifecycle (created / renamed / deleted) — stays synchronized across every client that has it open: your own browser tabs, windows, and devices, plus anyone you have shared it with. Changes appear within roughly a frame to a network round-trip, with no setup or "start collaborating" step.
+A workspace's **layout** — the tiling tree, tabs, splits, grids, floating windows, and lifecycle (created / renamed / deleted) — stays synchronized across every client that has it open: your own browser tabs, windows, and devices. Changes appear within roughly a frame to a network round-trip, with no setup step.
 
-Editing the layout is the **owner's** job: only the owner's own clients can open, move, rename, or close things. A share is **read-only** — the people you share with watch the layout update live and open each tab's content over their own encrypted channel, but cannot change the layout. You only ever see workspaces you have read access to.
+All of those clients are yours, and any of them can edit the layout — open, move, rename, or close things — with the rest following along live. You only ever see the workspaces you own.
 
-The one presence signal LeapMux exposes is a per-workspace "active client", used solely so that only the client you are actually looking at plays the agent turn-end notification sound. There are **no avatars, "who is viewing" badges, remote cursors, or shared text cursors.**
+The one presence signal LeapMux exposes is a per-workspace "active client", used solely so that only the client you are actually looking at plays the agent turn-end notification sound. There are **no avatars, "who is viewing" badges, remote cursors, or typing indicators.**
 
-See [Collaboration & Presence](/docs/using/collaboration/) for exactly what does and doesn't sync, and [Settings & Preferences](/docs/using/settings/) for the turn-end sound preference.
+See [Device Sync & Presence](/docs/using/collaboration/) for exactly what does and doesn't sync, and [Settings & Preferences](/docs/using/settings/) for the turn-end sound preference.
 
 ## Putting it together
 
 A typical mental walkthrough:
 
-1. You sign in to a **Hub** (or just launch **solo** and skip login). You're in an **organization**.
+1. You sign in to a **Hub** (or just launch **solo** and skip login). You land in your **personal organization**.
 2. You open or create a **workspace**.
 3. Inside it you arrange a **layout** of **tiles** — splits, grids, maybe a **floating window**.
 4. In each tile you open **tabs**: an agent here, a terminal there, a file viewer alongside. Each tab is hosted on a **Worker** you choose, and an agent or terminal tab can be bound to a git **worktree/branch**.
 5. The Frontend talks to each Worker over an **end-to-end encrypted channel** relayed by the Hub — which routes the bytes but can't read them.
-6. Everything keeps running on the Workers when you close the tab or reload the page, and your layout follows you across devices and collaborators.
+6. Everything keeps running on the Workers when you close the tab or reload the page, and your layout follows you across your devices.
 
 From here, jump to whichever piece you need: get LeapMux running in [Installation](/docs/getting-started/installation/) and [Quick Start](/docs/getting-started/quick-start/), or dig into any concept via its dedicated chapter linked above. New terms are collected in the [Glossary](/docs/reference/glossary/).

@@ -2,6 +2,7 @@ package crdt_test
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -1132,4 +1133,37 @@ func TestRendered_HasWorkerID_ListTabsCanRouteWithoutOwnedJoin(t *testing.T) {
 		"rendered row must carry worker_id so ListTabs can route without joining _owned")
 	assert.Equal(t, "w1", rendered["tA"].WorkspaceID)
 	assert.Equal(t, "root1", rendered["tA"].TileID)
+}
+
+// Stop must be safe to call concurrently: two callers (the registry's Shutdown
+// racing a test cleanup, or SweepIdle racing a manual Stop) used to both pass
+// the select-default-then-close arm and both close(m.stop), the second one
+// panicking with 'close of closed channel'. stopOnce makes the close land
+// exactly once; both callers still wait for the goroutine to exit.
+func TestManager_StopConcurrentDoesNotPanic(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 900_000)
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errs := make(chan error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			defer func() {
+				if r := recover(); r != nil {
+					errs <- fmt.Errorf("Stop panicked: %v", r)
+				}
+			}()
+			mgr.Stop()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err, "concurrent Stop must not panic")
+	}
 }

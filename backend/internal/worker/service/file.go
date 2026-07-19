@@ -28,7 +28,7 @@ const maxDirEntries = 256
 const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
-func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
+func registerFileHandlers(d ownerOnlyRegistrar, svc *Context) {
 	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {

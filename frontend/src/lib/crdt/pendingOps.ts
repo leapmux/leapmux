@@ -8,7 +8,6 @@ import type {
   EntityRemoved,
   OpBatch,
   OrgOp,
-  WorkspaceProjectionChanged,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { clone, create } from '@bufbuild/protobuf'
 import {
@@ -20,7 +19,7 @@ import {
 } from '~/generated/leapmux/v1/org_crdt_pb'
 import { BatchRejectionReason } from '~/generated/leapmux/v1/org_ops_pb'
 import { applyOp, newState } from './apply'
-import { hlcClone, hlcCmp } from './hlc'
+import { hlcClone } from './hlc'
 
 /**
  * PendingOpsState captures the local layered view: confirmed (from
@@ -300,57 +299,6 @@ export class PendingOpsManager {
     return { droppedPending }
   }
 
-  /** Atomically replace or remove one workspace's delivered projection. */
-  consumeWorkspaceProjection(evt: WorkspaceProjectionChanged): { droppedPending: boolean } {
-    const workspaceId = evt.workspaceId
-    if (!workspaceId)
-      return { droppedPending: false }
-    if (evt.change.case !== 'granted' && evt.change.case !== 'revoked')
-      return { droppedPending: false }
-    if (evt.change.case === 'granted' && !evt.change.value.workspaces[workspaceId])
-      return { droppedPending: false }
-
-    const confirmedEntities = workspaceEntityIDs(this.state.confirmedState, workspaceId)
-    const speculativeEntities = this.state.speculativeState === this.state.confirmedState
-      ? confirmedEntities
-      : workspaceEntityIDs(this.state.speculativeState, workspaceId)
-    const affected = mergeWorkspaceEntityIDs(confirmedEntities, speculativeEntities)
-    const projection = evt.change.case === 'granted' ? evt.change.value : undefined
-    replaceWorkspaceProjection(this.state.confirmedState, workspaceId, confirmedEntities, projection)
-
-    if (projection) {
-      if (projection.maxHlc && hlcCmp(projection.maxHlc, this.state.confirmedState.maxHlc) > 0)
-        this.state.confirmedState.maxHlc = hlcClone(projection.maxHlc)
-      if (projection.currentEpoch > this.state.currentEpoch) {
-        this.state.currentEpoch = projection.currentEpoch
-        this.state.confirmedState.currentEpoch = projection.currentEpoch
-      }
-      this.clock.observe(projection.maxHlc)
-    }
-
-    const droppedPending = this.dropPendingByPredicate((op) => {
-      const body = op.body
-      switch (body.case) {
-        case 'setNodeRegister':
-        case 'tombstoneNode':
-          return affected.nodes.has(body.value.nodeId)
-        case 'setTabRegister':
-        case 'tombstoneTab':
-          return affected.tabs.has(body.value.tabId)
-        case 'setFloatingWindowRegister':
-        case 'tombstoneFloatingWindow':
-          return affected.floatingWindows.has(body.value.windowId)
-        case 'setWorkspaceRootNode':
-          return body.value.workspaceId === workspaceId
-        default:
-          return false
-      }
-    })
-    this.recomputeSpeculative()
-    this.notify?.()
-    return { droppedPending }
-  }
-
   /** dropPendingByPredicate removes every op for which `pred` returns true and returns whether any ops were dropped. */
   private dropPendingByPredicate(pred: (op: OrgOp) => boolean): boolean {
     let dropped = false
@@ -386,120 +334,6 @@ export class PendingOpsManager {
         applySpeculative(cloned, op)
     }
     this.state.speculativeState = cloned
-  }
-}
-
-interface WorkspaceStateProjection {
-  nodes: Record<string, NodeRecord>
-  tabs: Record<string, TabRecord>
-  floatingWindows: Record<string, FloatingWindowRecord>
-  workspaces: Record<string, WorkspaceContentsRecord>
-}
-
-interface WorkspaceEntityIDs {
-  nodes: Set<string>
-  tabs: Set<string>
-  floatingWindows: Set<string>
-}
-
-function workspaceEntityIDs(state: WorkspaceStateProjection, workspaceId: string): WorkspaceEntityIDs {
-  const roots = new Set<string>()
-  const workspaceRoot = state.workspaces[workspaceId]?.rootNodeId
-  if (workspaceRoot)
-    roots.add(workspaceRoot)
-
-  const floatingWindows = new Set<string>()
-  for (const [id, floatingWindow] of Object.entries(state.floatingWindows)) {
-    if (floatingWindow.workspaceId?.value !== workspaceId)
-      continue
-    floatingWindows.add(id)
-    const rootNodeId = floatingWindow.rootNodeId
-    if (rootNodeId)
-      roots.add(rootNodeId)
-  }
-
-  const children = new Map<string, string[]>()
-  for (const [id, node] of Object.entries(state.nodes)) {
-    const parentId = node.parentId
-    if (!parentId)
-      continue
-    const siblings = children.get(parentId)
-    if (siblings)
-      siblings.push(id)
-    else
-      children.set(parentId, [id])
-  }
-  const nodes = new Set<string>()
-  const queue = [...roots]
-  for (let cursor = 0; cursor < queue.length; cursor++) {
-    const id = queue[cursor]!
-    if (nodes.has(id) || !state.nodes[id])
-      continue
-    nodes.add(id)
-    // Enqueue children one at a time rather than `queue.push(...children)`: a
-    // spread of a very large child list would exceed the engine's max argument
-    // count and throw, and this is allocation-free besides.
-    for (const child of children.get(id) ?? [])
-      queue.push(child)
-  }
-  const tabs = new Set<string>()
-  for (const [id, tab] of Object.entries(state.tabs)) {
-    const tileId = tab.tileId?.value
-    if (tileId && nodes.has(tileId))
-      tabs.add(id)
-  }
-  return { nodes, tabs, floatingWindows }
-}
-
-function mergeWorkspaceEntityIDs(a: WorkspaceEntityIDs, b: WorkspaceEntityIDs): WorkspaceEntityIDs {
-  return {
-    nodes: new Set([...a.nodes, ...b.nodes]),
-    tabs: new Set([...a.tabs, ...b.tabs]),
-    floatingWindows: new Set([...a.floatingWindows, ...b.floatingWindows]),
-  }
-}
-
-function replaceWorkspaceProjection(
-  state: OrgCrdtState,
-  workspaceId: string,
-  previous: WorkspaceEntityIDs,
-  projection?: WorkspaceStateProjection,
-): void {
-  delete state.workspaces[workspaceId]
-  for (const id of previous.nodes)
-    delete state.nodes[id]
-  for (const id of previous.tabs)
-    delete state.tabs[id]
-  for (const id of previous.floatingWindows)
-    delete state.floatingWindows[id]
-  if (!projection)
-    return
-
-  const workspace = projection.workspaces[workspaceId]
-  if (!workspace)
-    return
-  state.workspaces[workspaceId] = clone(WorkspaceContentsRecordSchema, workspace)
-  const entities = workspaceEntityIDs(projection, workspaceId)
-  copySelectedRecords(state.nodes, projection.nodes, entities.nodes, record => clone(NodeRecordSchema, record))
-  copySelectedRecords(state.tabs, projection.tabs, entities.tabs, record => clone(TabRecordSchema, record))
-  copySelectedRecords(
-    state.floatingWindows,
-    projection.floatingWindows,
-    entities.floatingWindows,
-    record => clone(FloatingWindowRecordSchema, record),
-  )
-}
-
-function copySelectedRecords<T>(
-  target: Record<string, T>,
-  source: Record<string, T>,
-  ids: ReadonlySet<string>,
-  copy: (record: T) => T,
-): void {
-  for (const id of ids) {
-    const record = source[id]
-    if (record)
-      target[id] = copy(record)
   }
 }
 

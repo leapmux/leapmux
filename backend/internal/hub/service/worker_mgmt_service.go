@@ -41,6 +41,10 @@ type WorkerManagementService struct {
 	mail        mail.Sender
 	renderer    mail.Renderer
 	cfg         *config.Config
+	// scopeCache is the delegation-scope memo SubmitOps resolves through;
+	// DeregisterWorker evicts the deregistered worker synchronously so the
+	// containment action is immediate rather than lagged by the cache TTL.
+	scopeCache *auth.DelegationScopeCache
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
@@ -48,9 +52,15 @@ type WorkerManagementService struct {
 // cfg is required so the service can reject EmailRegistrationInstructions
 // when SMTP isn't configured (defense-in-depth — the frontend already
 // hides the button). renderer carries the hub URL used in the
-// registration email's footer.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config) *WorkerManagementService {
-	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg}
+// registration email's footer. scopeCache may be nil (tests); a private
+// cache is constructed then, so the field is never nil -- production passes
+// the instance shared with CRDTService so the eviction reaches the cache
+// SubmitOps resolves through.
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+	if scopeCache == nil {
+		scopeCache = auth.NewDelegationScopeCache(st)
+	}
+	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg, scopeCache: scopeCache}
 }
 
 func (s *WorkerManagementService) CreateRegistrationKey(
@@ -272,6 +282,10 @@ func (s *WorkerManagementService) ListWorkers(
 	hasMore := int64(len(workers)) == limit
 	var nextCursor string
 	if hasMore {
+		// This single-column created_at cursor can skip rows sharing the last
+		// page's millisecond (the worker list queries lack a unique tiebreaker); a
+		// composite (created_at, id) cursor across the keyset-paginated queries is
+		// tracked in https://github.com/leapmux/leapmux/issues/287.
 		nextCursor = workers[len(workers)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
 
@@ -347,6 +361,12 @@ func (s *WorkerManagementService) DeregisterWorker(
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
+
+	// Deregistration is the operator's containment action against a compromised
+	// worker: evict its memoized delegation scope so outstanding tokens minted on
+	// it lose their cross-worker reach on the next SubmitOps, not a cache TTL
+	// later.
+	s.scopeCache.EvictWorker(req.Msg.GetWorkerId())
 
 	if err := s.notifier.SendDeregister(ctx, req.Msg.GetWorkerId()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send deregister: %w", err))

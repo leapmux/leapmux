@@ -833,7 +833,7 @@ func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
 		Credential: auth.APICredential("same-id"),
 	}, func() { apiCancelled = true })
 	m.RegisterWithAuthInfo("ch-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("same-id", "ws-1"),
+		Credential: auth.DelegationCredential("same-id", "ws-1", "worker-mint"),
 	}, func() { delegationCancelled = true })
 
 	closed := m.CloseByBearer(auth.NewBearerRef(auth.BearerKindDelegation, "same-id"))
@@ -856,10 +856,10 @@ func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
 func TestAuthorizedChannelIDsForUserWorker_FiltersByRoutingAndPredicate(t *testing.T) {
 	m := New()
 	m.RegisterWithAuthInfo("keep", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "ws-1"),
+		Credential: auth.DelegationCredential("delegation-1", "ws-1", "worker-mint"),
 	}, nil)
 	m.RegisterWithAuthInfo("rejected-by-predicate", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "ws-2"),
+		Credential: auth.DelegationCredential("delegation-1", "ws-2", "worker-mint"),
 	}, nil)
 	m.RegisterWithAuthInfo("wrong-worker", "w2", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("wrong-user", "w1", "u2", AuthInfo{}, nil)
@@ -1293,10 +1293,10 @@ func TestCloseByUsers_DropsOnlySelectedUsersPassingPredicate(t *testing.T) {
 	m.RegisterWithAuthInfo("u1-first", "w1", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("u1-second", "w2", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("u1-matching-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "revoked-workspace"),
+		Credential: auth.DelegationCredential("delegation-1", "revoked-workspace", "worker-mint"),
 	}, nil)
 	m.RegisterWithAuthInfo("u1-unrelated-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-2", "other-workspace"),
+		Credential: auth.DelegationCredential("delegation-2", "other-workspace", "worker-mint"),
 	}, nil)
 	m.RegisterWithAuthInfo("u2-retained", "w1", "u2", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("empty-user-retained", "w1", "", AuthInfo{}, nil)

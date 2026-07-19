@@ -187,13 +187,6 @@ globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions} ${menuTrigger}`,
   opacity: 0,
 })
 
-export const sharedBadge = style({
-  fontSize: 'var(--text-8)',
-  color: 'var(--primary)',
-  fontWeight: 'var(--font-normal)',
-  flexShrink: 0,
-})
-
 export const emptySection = style({
   padding: 'var(--space-2) var(--space-4)',
   paddingLeft: 'var(--space-4)',

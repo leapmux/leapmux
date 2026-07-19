@@ -44,7 +44,7 @@ func startForTest(t *testing.T, localListen string, extraCfg solo.Config) *solo.
 
 	inst, err := solo.Start(ctx, cfg)
 	require.NoError(t, err, "solo.Start")
-	t.Cleanup(inst.Stop)
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 	return inst
 }
 
@@ -91,7 +91,7 @@ func TestSoloStart_DefaultLocalListen(t *testing.T) {
 		t.Skipf("default local listener already in use (likely another Solo instance on this user): %v", err)
 	}
 	require.NoError(t, err, "solo.Start with default local-listen")
-	t.Cleanup(inst.Stop)
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 
 	url := inst.LocalListenURL()
 	require.NotEmpty(t, url, "LocalListenURL must resolve to a non-empty default")
@@ -182,7 +182,7 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 				SkipBanner: true,
 			})
 			if startErr == nil {
-				t.Cleanup(inst.Stop)
+				t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 			}
 
 			// Restore stderr before reading drained so any subsequent

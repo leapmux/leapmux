@@ -1,0 +1,7 @@
+{
+  "_readme": "Cross-language channel-wire protocol limits. The Go implementation (backend/channelwire/wire.go) and the TypeScript browser client (frontend/src/lib/channel.ts) frame, chunk, and reassemble the SAME encrypted channel messages, so a receiver that disagrees with the sender on any of these silently rejects or mis-splits a legitimate message rather than failing cleanly. This fixture is the single source both sides assert their constants against: a retune on one side that is not mirrored on the other reddens CI here (backend/channelwire/wire_test.go and frontend/src/lib/channel.test.ts) instead of drifting into a runtime interop bug. maxPlaintextPerChunk = max plaintext bytes per Noise transport message (65535 max ciphertext - 16 byte AEAD auth tag). maxMessageSize = max reassembled message size across all chunks. maxIncompleteChunked = max concurrent in-flight chunked sequences per channel before new ones are rejected. pingMethod = the no-op inner RPC name both ends use for the open-time round trip that proves the E2EE session decrypts in both directions.",
+  "maxPlaintextPerChunk": 65519,
+  "maxMessageSize": 16777216,
+  "maxIncompleteChunked": 4,
+  "pingMethod": "Ping"
+}

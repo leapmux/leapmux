@@ -19,7 +19,7 @@ beforeAll(() => {
   HTMLElement.prototype.togglePopover = vi.fn()
 })
 
-function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean, autoRegistered?: boolean }) {
+function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
   const onAddTunnel = vi.fn()
   const onDeleteAllTunnels = vi.fn()
   const onDeregister = vi.fn()
@@ -27,7 +27,6 @@ function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean, autoRegist
   render(() => (
     <WorkerContextMenu
       workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', commitHash: '', buildTime: '', updatedAt: Date.now() }}
-      isOwner={opts?.isOwner ?? true}
       autoRegistered={opts?.autoRegistered ?? false}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}
@@ -56,19 +55,11 @@ describe('workerContextMenu', () => {
     expect(screen.queryByText('Add tunnel...')).not.toBeInTheDocument()
   })
 
-  it('"add tunnel..." hidden when not owner', async () => {
+  it('"add tunnel..." visible when tunnels are available', async () => {
     const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
-    renderMenu({ isOwner: false })
-    expect(screen.queryByText('Add tunnel...')).not.toBeInTheDocument()
-  })
-
-  it('"add tunnel..." visible when available + owner', async () => {
-    const { isTunnelAvailable } = await import('~/api/platformBridge')
-    vi.mocked(isTunnelAvailable).mockReturnValue(true)
-
-    renderMenu({ isOwner: true })
+    renderMenu()
     expect(screen.getByText('Add tunnel...')).toBeInTheDocument()
   })
 
@@ -76,7 +67,7 @@ describe('workerContextMenu', () => {
     const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
-    const { onAddTunnel } = renderMenu({ isOwner: true })
+    const { onAddTunnel } = renderMenu()
     screen.getByText('Add tunnel...').click()
     expect(onAddTunnel).toHaveBeenCalled()
   })

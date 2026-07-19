@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/tunnel"
 )
 
 // transportLogger returns logger, or slog.Default() when nil, so a transport never
@@ -38,16 +39,36 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 	return &resp, true
 }
 
+// logTerminalStreamError reports the error envelope that ended a WatchEvents
+// subscription.
+//
+// A subscription can die on a server-side rejection ("only the worker owner...",
+// a permission denial, an oversize/cap violation) rather than on a clean end. The
+// envelope carrying that reason used to be received and discarded, so a
+// `--follow` consumer just went quiet -- or resubscribed into the same rejection
+// forever -- with nothing to diagnose from. The Transport contract signals
+// termination through a reason-less `done` channel, so the reason cannot be
+// returned to the caller without reshaping that interface; logging it is what
+// keeps it recoverable today, and mirrors both the malformed-frame log above and
+// crossworker.Client.StreamInner, which surfaces the identical envelope.
+func logTerminalStreamError(logger *slog.Logger, transportName string, code int32, message string) {
+	logger.Error("streamevents: subscription ended with a server error",
+		"transport", transportName, "code", code, "error", message)
+}
+
 // channelLike is the subset of `*tunnel.Channel` Transport needs.
 // Pulled into an interface so tests don't need a real Noise_NK
 // responder; production wires it to *tunnel.Channel directly.
+//
+// Close() is deliberately absent: the transport does NOT own the channel's
+// lifecycle (see ChannelTransport's doc), so exposing Close here would invite a
+// future teardown edit to close a channel a caller still expects to reuse. The
+// interface is exactly the subset the transport calls, no more.
 type channelLike interface {
-	SendRPCNoWait(method string, payload []byte, pendingCh ...chan *leapmuxv1.InnerRpcResponse) (uint32, error)
-	RegisterStream(reqID uint32, cb func(*leapmuxv1.InnerStreamMessage))
-	UnregisterStream(reqID uint32)
-	UnregisterPending(reqID uint32)
+	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
+	UnregisterStream(reqID uint64)
+	UnregisterPending(reqID uint64)
 	Context() context.Context
-	Close()
 }
 
 // ChannelTransport runs a WatchEvents subscription over an existing
@@ -82,43 +103,45 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 		return nil, nil, err
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
-	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := t.channel.SendRPCNoWait("WatchEvents", payload, respCh)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
 	// `closed` lets a frame already in flight when teardown runs observe that the
 	// subscription has ended and drop itself: the channel demux invokes this cb from
 	// its OWN goroutine and releases the channel lock before calling it, so a frame
 	// can race teardown.
 	//
-	// The mutex is held ONLY across the `closed` check, NOT across `onFrame`. An
-	// earlier version held it across onFrame to guarantee no frame is delivered after
-	// Done() closes, but that deadlocks: onFrame chains into the consumer's synchronous
-	// stdout encode, and if stdout back-pressures (a paused `--follow` reader) the cb
-	// blocks holding the mutex, so the teardown goroutine below can never acquire it to
-	// set `closed`/`cancel()` -- Done() never closes and Cancel()/Update() hang forever.
-	// Releasing before onFrame lets teardown close `done` promptly while a blocked frame
-	// drains on its own. The cost is a narrow window where a late frame's onFrame runs
-	// just after Done() closes; consumers already tolerate this (the `agent messages
-	// --follow` loop treats a late `delivered` flip as a harmless backoff reset), and it
+	// The flag is checked ONLY before `onFrame`, and is deliberately NOT
+	// synchronized with it. An earlier version held a mutex across onFrame to
+	// guarantee no frame is delivered after Done() closes, but that deadlocks:
+	// onFrame chains into the consumer's synchronous stdout encode, and if stdout
+	// back-pressures (a paused `--follow` reader) the cb blocks holding the mutex,
+	// so the teardown goroutine below can never acquire it to set
+	// `closed`/`cancel()` -- Done() never closes and Cancel()/Update() hang forever.
+	// Not holding it across onFrame lets teardown close `done` promptly while a
+	// blocked frame drains on its own. Guarding a lone bool with no compound
+	// invariant is exactly an atomic.Bool, so it is one -- the mutex it replaces
+	// only made the no-compound-invariant property harder to see. The cost is a
+	// narrow window where a late frame's onFrame runs just after Done() closes;
+	// consumers already tolerate this (the `agent messages --follow` loop treats a
+	// late `delivered` flip as a harmless backoff reset), and it
 	// matches the LocalIPCTransport, which delivers with no such guard at all.
-	var mu sync.Mutex
-	closed := false
-	t.channel.RegisterStream(reqID, func(msg *leapmuxv1.InnerStreamMessage) {
-		mu.Lock()
-		isClosed := closed
-		mu.Unlock()
-		if isClosed {
-			return
-		}
-		resp, ok := decodeWatchFrame(t.logger, "channel", msg.GetPayload())
-		if !ok {
-			return
-		}
-		onFrame(resp)
+	var closed atomic.Bool
+	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	reqID, err := t.channel.SendRPCNoWait(ctx, "WatchEvents", payload, tunnel.RPCHandlers{
+		Response: respCh,
+		Stream: func(msg *leapmuxv1.InnerStreamMessage) {
+			if closed.Load() {
+				return
+			}
+			resp, ok := decodeWatchFrame(t.logger, "channel", msg.GetPayload())
+			if !ok {
+				return
+			}
+			onFrame(resp)
+		},
 	})
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -127,18 +150,20 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 			// Clean shutdown: caller invoked cancel.
 		case <-t.channel.Context().Done():
 			// Channel disconnected. Caller observes via Done().
-		case <-respCh:
+		case resp := <-respCh:
 			// Server returned a non-stream response (typically an
 			// error envelope). Treat as terminal — the consumer
-			// observes via Done() and may resubscribe.
+			// observes via Done() and may resubscribe — but surface
+			// WHY, or the subscription dies with no diagnostic.
+			if resp.GetIsError() {
+				logTerminalStreamError(transportLogger(t.logger), "channel", resp.GetErrorCode(), resp.GetErrorMessage())
+			}
 		}
 		// Flip `closed` BEFORE unregistering/closing so any frame the demux delivers
 		// from here on drops itself (see the cb guard above). A frame already inside
 		// onFrame is NOT waited for -- that is what keeps teardown from deadlocking
 		// behind a back-pressured stdout encode.
-		mu.Lock()
-		closed = true
-		mu.Unlock()
+		closed.Store(true)
 		t.channel.UnregisterStream(reqID)
 		t.channel.UnregisterPending(reqID)
 		cancel()
@@ -196,6 +221,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		for stream.Receive() {
 			env := stream.Msg()
 			if env.GetIsError() {
+				logTerminalStreamError(transportLogger(t.logger), "local-ipc", env.GetErrorCode(), env.GetErrorMessage())
 				return
 			}
 			if len(env.GetPayload()) == 0 {
@@ -215,6 +241,16 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		}
 		// Receive returned false; stream ended (or errored).
 		// The caller's Done() observer notices and can decide to retry.
+	}()
+	// Release the ctx child on every exit path, exactly as the ChannelTransport
+	// sibling does. The caller's cancel is the ONLY other release, and a consumer
+	// that observes Done() and stops -- rather than resubscribing -- never calls it,
+	// leaving this child attached to a long-lived parent for the process lifetime.
+	// Cancelling a stream that has already ended is a no-op, so this is safe to run
+	// ahead of (or instead of) the caller's cancel.
+	go func() {
+		<-done
+		cancel()
 	}()
 	return cancel, done, nil
 }

@@ -33,16 +33,15 @@ ORDER BY workspace_id, position;
 SELECT * FROM workspace_tab_rendered WHERE workspace_id = ? AND tab_type = ? AND tab_id = ?;
 
 -- LocateAccessibleRenderedTab finds a rendered tab by tab_id and
--- (optionally) tab_type across every workspace the user can access.
+-- (optionally) tab_type across every workspace the user owns.
 -- tab_type = 0 (TAB_TYPE_UNSPECIFIED) means "match any type";
 -- tab ids are unique across types so the match is unambiguous.
 -- Used by WorkspaceService.LocateTab.
 -- name: LocateAccessibleRenderedTab :one
 SELECT r.* FROM workspace_tab_rendered r
 JOIN workspaces w ON w.id = r.workspace_id
-LEFT JOIN workspace_access wa ON wa.workspace_id = r.workspace_id AND wa.user_id = sqlc.arg(user_id)
 WHERE r.tab_id = sqlc.arg(tab_id)
   AND (sqlc.arg(tab_type) = 0 OR r.tab_type = sqlc.arg(tab_type))
   AND w.is_deleted = 0
-  AND (w.owner_user_id = sqlc.arg(user_id) OR wa.user_id IS NOT NULL)
+  AND w.owner_user_id = sqlc.arg(user_id)
 LIMIT 1;

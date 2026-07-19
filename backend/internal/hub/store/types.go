@@ -5,6 +5,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // NormalizeUsername returns a lowercased username for case-insensitive storage.
@@ -13,15 +14,37 @@ func NormalizeUsername(s string) string { return strings.ToLower(s) }
 // NormalizeEmail returns a lowercased email for case-insensitive storage.
 func NormalizeEmail(s string) string { return strings.ToLower(s) }
 
+// FoldSearchText returns the case-folded form of a searchable field used for the
+// admin user search. Folding in Go (Unicode-aware strings.ToLower) and querying a
+// pre-folded stored column with a plain LIKE makes the search match case-
+// insensitively -- including for non-ASCII display names -- IDENTICALLY across
+// SQLite, Postgres, and MySQL. Doing it in SQL instead would diverge: SQLite's
+// built-in LOWER/LIKE/COLLATE NOCASE fold only ASCII, while Postgres ILIKE and
+// MySQL LOWER fold by locale/collation. The write path stores FoldSearchText of the
+// display name in display_name_folded, and the query folds the search term the same
+// way, so both sides share this one rule and cannot drift.
+func FoldSearchText(s string) string { return strings.ToLower(s) }
+
+// FoldSearchQuery returns a folded copy of an optional admin-search term, preserving
+// nil (which SearchUsers reads as "no filter -> return all rows"). Folding via
+// FoldSearchText so the term matches the pre-folded display_name_folded column and
+// the lowercased username/email columns consistently across every dialect.
+func FoldSearchQuery(query *string) *string {
+	if query == nil {
+		return nil
+	}
+	folded := FoldSearchText(*query)
+	return &folded
+}
+
 // --- Domain model types (backend-agnostic) ---
 
-// Org represents an organization (tenant).
+// Org represents a user's personal organization.
 type Org struct {
-	ID         string
-	Name       string
-	IsPersonal bool
-	CreatedAt  time.Time
-	DeletedAt  *time.Time
+	ID        string
+	Name      string
+	CreatedAt time.Time
+	DeletedAt *time.Time
 }
 
 // User represents a user account.
@@ -84,22 +107,6 @@ type ActiveSession struct {
 	UserAgent    string
 }
 
-// OrgMember represents an org membership.
-type OrgMember struct {
-	OrgID    string
-	UserID   string
-	Role     leapmuxv1.OrgMemberRole
-	JoinedAt time.Time
-}
-
-// OrgMemberWithUser is the result of listing org members (JOIN with users).
-type OrgMemberWithUser struct {
-	OrgMember
-	Username    string
-	DisplayName string
-	Email       string
-}
-
 // Worker represents a registered worker node.
 type Worker struct {
 	ID              string
@@ -130,14 +137,6 @@ type WorkerPublicKeys struct {
 type WorkerWithOwner struct {
 	Worker
 	OwnerUsername string
-}
-
-// WorkerAccessGrant represents cross-user worker access.
-type WorkerAccessGrant struct {
-	WorkerID  string
-	UserID    string
-	GrantedBy string
-	CreatedAt time.Time
 }
 
 // WorkerNotification represents a queued notification for a worker.
@@ -185,13 +184,6 @@ type Workspace struct {
 	IsDeleted   bool
 	CreatedAt   time.Time
 	DeletedAt   *time.Time
-}
-
-// WorkspaceAccess represents a read-only sharing ACL entry.
-type WorkspaceAccess struct {
-	WorkspaceID string
-	UserID      string
-	CreatedAt   time.Time
 }
 
 // WorkspaceTabRow is a row from workspace_tab_owned or
@@ -345,25 +337,8 @@ type PendingOAuthSignup struct {
 // --- Parameter types for create/update operations ---
 
 type CreateOrgParams struct {
-	ID         string
-	Name       string
-	IsPersonal bool
-}
-
-type UpdateOrgNameParams struct {
 	ID   string
 	Name string
-}
-
-type ListAllOrgsParams struct {
-	Cursor string // RFC3339Nano of created_at; empty = first page
-	Limit  int64
-}
-
-type SearchOrgsParams struct {
-	Query  *string // prefix match on org name
-	Cursor string  // RFC3339Nano of created_at; empty = first page
-	Limit  int64
 }
 
 type CreateUserParams struct {
@@ -378,10 +353,52 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
+// Validate enforces the same "username is always a routable slug" store-level
+// invariant on the CREATE path that UpdateUserProfileParams.Validate enforces on
+// rename. A user's username is created in the same transaction as its personal
+// org and mirrored into orgs.name (CreateUserWithOrg / bootstrap), and it lands
+// in the /o/{slug} URL space -- so a store-level caller that never routes through
+// the service's SanitizeSlug (an admin seed, a sync tool, a test) must not be able
+// to blank or corrupt the user row and its mirrored slug together. Validates the
+// EXACT value the store persists -- NormalizeUsername(p.Username), which lowercases
+// but does not trim -- against SanitizeSlug, so mixed case is accepted (the store
+// lowercases it) while whitespace-only, "a b", or "Bad Name!" is refused before any
+// query runs. Mirrors UpdateUserProfileParams.Validate; the service create paths
+// already SanitizeSlug upstream, so this is a no-op for legitimate input.
+func (p CreateUserParams) Validate() error {
+	stored := NormalizeUsername(p.Username)
+	if cleaned, err := validate.SanitizeSlug("username", stored); err != nil || cleaned != stored {
+		return ErrInvalidArgument
+	}
+	return nil
+}
+
 type UpdateUserProfileParams struct {
 	ID          string
 	Username    string
 	DisplayName string
+}
+
+// Validate enforces the store-level invariants on a profile update. The username
+// mirrors the personal-org name under a partial unique index (RenameUserPersonalOrg
+// runs in the same transaction), and it lands in the /o/{slug} URL space -- so the
+// store refuses anything the service layer (validate.SanitizeSlug) would, making
+// "username is always a routable slug" a property of the store rather than a step
+// each caller must repeat. It validates the EXACT value the store persists --
+// NormalizeUsername(p.Username), which lowercases but does not trim -- against
+// SanitizeSlug: a whitespace-only or non-slug username ("  ", "Bad Name!", "a b")
+// passes a bare non-empty check yet corrupts both users.username and the mirrored
+// orgs.name. Mixed case is accepted (the store lowercases it, as its
+// NormalizeUsername contract promises); surrounding whitespace is not, since the
+// stored value keeps it and SanitizeSlug's trimmed output would then disagree with
+// what is written. The guard runs before any query so a bad input cannot partially
+// apply (the user row updated, the org not).
+func (p UpdateUserProfileParams) Validate() error {
+	stored := NormalizeUsername(p.Username)
+	if cleaned, err := validate.SanitizeSlug("username", stored); err != nil || cleaned != stored {
+		return ErrInvalidArgument
+	}
+	return nil
 }
 
 type UpdateUserPasswordParams struct {
@@ -462,33 +479,6 @@ type ListAllActiveSessionsParams struct {
 	Limit  int64
 }
 
-type CreateOrgMemberParams struct {
-	OrgID  string
-	UserID string
-	Role   leapmuxv1.OrgMemberRole
-}
-
-type UpdateOrgMemberRoleParams struct {
-	OrgID  string
-	UserID string
-	Role   leapmuxv1.OrgMemberRole
-}
-
-type DeleteOrgMemberParams struct {
-	OrgID  string
-	UserID string
-}
-
-type CountOrgMembersByRoleParams struct {
-	OrgID string
-	Role  leapmuxv1.OrgMemberRole
-}
-
-type IsOrgMemberParams struct {
-	OrgID  string
-	UserID string
-}
-
 type CreateWorkerParams struct {
 	ID              string
 	AuthToken       string
@@ -525,12 +515,6 @@ type ListWorkersByUserIDParams struct {
 	Limit        int64
 }
 
-type ListOwnedWorkersParams struct {
-	UserID string
-	Cursor string // RFC3339Nano of created_at; empty = first page
-	Limit  int64
-}
-
 type GetOwnedWorkerParams struct {
 	WorkerID string
 	UserID   string
@@ -548,27 +532,6 @@ type CreateWorkerNotificationParams struct {
 	WorkerID string
 	Type     leapmuxv1.NotificationType
 	Payload  string
-}
-
-type GrantWorkerAccessParams struct {
-	WorkerID  string
-	UserID    string
-	GrantedBy string
-}
-
-type RevokeWorkerAccessParams struct {
-	WorkerID string
-	UserID   string
-}
-
-type HasWorkerAccessParams struct {
-	WorkerID string
-	UserID   string
-}
-
-type DeleteWorkerAccessGrantsByUserInOrgParams struct {
-	UserID string
-	OrgID  string
 }
 
 type CreateRegistrationKeyParams struct {
@@ -615,21 +578,6 @@ type RenameWorkspaceParams struct {
 type SoftDeleteWorkspaceParams struct {
 	ID          string
 	OwnerUserID string
-}
-
-type GrantWorkspaceAccessParams struct {
-	WorkspaceID string
-	UserID      string
-}
-
-type RevokeWorkspaceAccessParams struct {
-	WorkspaceID string
-	UserID      string
-}
-
-type HasWorkspaceAccessParams struct {
-	WorkspaceID string
-	UserID      string
 }
 
 // UpsertOwnedTabParams / UpsertRenderedTabParams target the two

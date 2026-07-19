@@ -67,14 +67,10 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 	}, nil
 }
 
-func (s *sqliteStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
-func (s *sqliteStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
-func (s *sqliteStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
-func (s *sqliteStore) OrgMembers() store.OrgMemberStore { return &orgMemberStore{conn: s.conn} }
-func (s *sqliteStore) Workers() store.WorkerStore       { return &workerStore{conn: s.conn} }
-func (s *sqliteStore) WorkerAccessGrants() store.WorkerAccessGrantStore {
-	return &workerAccessGrantStore{conn: s.conn}
-}
+func (s *sqliteStore) Orgs() store.OrgStore         { return &orgStore{conn: s.conn} }
+func (s *sqliteStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
+func (s *sqliteStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
+func (s *sqliteStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
 func (s *sqliteStore) WorkerNotifications() store.WorkerNotificationStore {
 	return &workerNotificationStore{conn: s.conn}
 }
@@ -82,9 +78,6 @@ func (s *sqliteStore) RegistrationKeys() store.RegistrationKeyStore {
 	return &registrationKeyStore{conn: s.conn}
 }
 func (s *sqliteStore) Workspaces() store.WorkspaceStore { return &workspaceStore{conn: s.conn} }
-func (s *sqliteStore) WorkspaceAccess() store.WorkspaceAccessStore {
-	return &workspaceAccessStore{conn: s.conn}
-}
 func (s *sqliteStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 	return &workspaceTabIndexStore{conn: s.conn}
 }

@@ -240,7 +240,7 @@ leapmux remote version --hub https://leapmux.example.com
 
 | Command | Key flags | Output |
 | --- | --- | --- |
-| `workspace list` | `--org-id` (or any entity flag); or `--all-orgs` | That org's workspaces, or — with `--all-orgs` — every workspace you can access across all orgs |
+| `workspace list` | `--org-id` (or any entity flag) | That org's workspaces |
 | `workspace get` | `--workspace-id` (or `--tab-id`/`--tile-id`) | One workspace |
 | `workspace create` | `--org-id`, `--title` (required) | `{workspace_id}` |
 | `workspace rename` | `--workspace-id`, `--title` (required) | `{workspace_id}` |
@@ -250,11 +250,7 @@ leapmux remote version --hub https://leapmux.example.com
 leapmux remote workspace create --org-id "$ORG" --title "Release 2.0"
 ```
 
-By default `workspace list` returns a single org's workspaces — the one you name with `--org-id`, or the org the resolver derives from any other entity flag. Pass `--all-orgs` to instead list **every workspace you can read across all orgs**: those you own plus those explicitly shared with you, including workspaces owned by an org you are not a member of (cross-org collaboration). This listing is not org-scoped, so it takes no `--org-id` and needs no resolver input; each row carries its own `org_id` and `created_by`, so a script can filter to just shares (`created_by` other than your own user id) or group the results by org itself.
-
-```bash
-leapmux remote workspace list --all-orgs | jq '.data[] | {id, org_id, title, created_by}'
-```
+`workspace list` returns a single org's workspaces — the one you name with `--org-id`, or the org the resolver derives from any other entity flag. The listing covers exactly the workspaces you own; workspace access is owner-only.
 
 `workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`. If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force` ("delete even if the calling tab lives in the target workspace (would kill the caller's own PTY)").
 

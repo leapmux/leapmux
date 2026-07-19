@@ -138,21 +138,16 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		}
 	}
 
-	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
-			Username:    newUsername,
-			DisplayName: displayName,
-			ID:          user.ID,
-		}); err != nil {
-			return err
-		}
-		if !usernameChanged {
-			return nil
-		}
-		return tx.Orgs().UpdateName(ctx, store.UpdateOrgNameParams{
-			Name: newUsername,
-			ID:   user.OrgID,
-		})
+	// Users().UpdateProfile is self-transactional: it pairs UpdateUserProfile
+	// with RenameUserPersonalOrg in one store transaction, so a username change
+	// can never leave the /o/ slug stale -- and a future store-level caller
+	// that changes the username cannot reintroduce the bug by skipping this
+	// service method. No outer transaction is needed here; it would wrap a
+	// single already-atomic statement.
+	if err := s.store.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+		Username:    newUsername,
+		DisplayName: displayName,
+		ID:          user.ID,
 	}); err != nil {
 		// The pre-check above is only a fast path: two profile updates racing for
 		// the same free slug both pass it, then one loses at the unique index
@@ -161,6 +156,13 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		// leaking an opaque 500.
 		if errors.Is(err, store.ErrConflict) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username %q is already taken", newUsername))
+		}
+		// The store re-validates the slug it will actually persist
+		// (UpdateUserProfileParams.Validate); the sanitize above makes that
+		// unreachable from this handler, but a validation the store adds later
+		// must surface as bad input, not an opaque 500.
+		if errors.Is(err, store.ErrInvalidArgument) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

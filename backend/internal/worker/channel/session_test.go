@@ -62,7 +62,14 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxMessageSize, maxIncompleteChunked, nil)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxIncompleteChunked, nil)
+	// The message-size ceiling is no longer a NewManager parameter -- it is a fixed
+	// protocol constant in production (channelwire.DefaultMaxMessageSize). Tests that
+	// exercise the size cap override the field directly, before any session is
+	// created, so both the sender and the reassembler pick it up.
+	if maxMessageSize > 0 {
+		mgr.maxMessageSize = maxMessageSize
+	}
 	return mgr, ck, sender
 }
 
@@ -92,30 +99,6 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 	require.NoError(t, err)
 
 	return initiatorSession
-}
-
-// sendUserIdClaim sends a UserIdClaim wrapped in InnerMessage via the encrypted channel.
-func sendUserIdClaim(t *testing.T, mgr *Manager, initiatorSession *noiseutil.Session, channelID, userID string) {
-	t.Helper()
-
-	claim := &leapmuxv1.UserIdClaim{
-		UserId:      userID,
-		TimestampMs: 1000,
-	}
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_UserIdClaim{UserIdClaim: claim},
-	}
-	plaintext, err := proto.Marshal(envelope)
-	require.NoError(t, err)
-
-	ciphertext, err := initiatorSession.Encrypt(plaintext)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       channelID,
-		Ciphertext:      ciphertext,
-	})
 }
 
 // sendRequest sends an InnerRpcRequest wrapped in InnerMessage via the encrypted channel.
@@ -154,43 +137,6 @@ func decryptInnerResponse(t *testing.T, initiatorSession *noiseutil.Session, msg
 	return resp.Response
 }
 
-// decryptClaimResponse decrypts and unwraps a UserIdClaimResponse from the sender.
-func decryptClaimResponse(t *testing.T, initiatorSession *noiseutil.Session, msg *leapmuxv1.ConnectRequest) *leapmuxv1.UserIdClaimResponse {
-	t.Helper()
-
-	chMsg := msg.GetChannelMessageResp()
-	require.NotNil(t, chMsg)
-
-	respPlaintext, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
-	require.NoError(t, err)
-
-	var envelope leapmuxv1.InnerMessage
-	require.NoError(t, proto.Unmarshal(respPlaintext, &envelope))
-
-	resp, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_UserIdClaimResponse)
-	require.True(t, ok, "expected InnerMessage_UserIdClaimResponse, got %T", envelope.GetKind())
-
-	return resp.UserIdClaimResponse
-}
-
-// performHandshakeAndVerify performs handshake + UserIdClaim in one step.
-func performHandshakeAndVerify(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, sender *collectSender, channelID, userID string) *noiseutil.Session {
-	t.Helper()
-
-	msgsBefore := len(sender.messages())
-	session := performHandshake(t, mgr, ck, channelID, userID)
-
-	// Send UserIdClaim.
-	sendUserIdClaim(t, mgr, session, channelID, userID)
-
-	// Wait for the async claim response.
-	msgs := sender.waitForMessages(msgsBefore + 1)
-	claimResp := decryptClaimResponse(t, session, msgs[len(msgs)-1])
-	require.True(t, claimResp.GetSuccess())
-
-	return session
-}
-
 func TestHandleOpen_Success(t *testing.T) {
 	mgr, kp, _ := setupTestManager(t)
 
@@ -224,6 +170,26 @@ func TestAddAccessibleWorkspaceID(t *testing.T) {
 
 	// Adding to an unknown channel is a no-op (no panic).
 	mgr.AddAccessibleWorkspaceID("ch-unknown", "ws-2")
+}
+
+// TestIsWorkspaceAccessible pins the per-RPC membership check the access gates
+// call on every workspace-scoped request: it must answer from the channel's
+// accessible set with a single lookup (no whole-set copy) and fail closed for
+// an unknown channel.
+func TestIsWorkspaceAccessible(t *testing.T) {
+	mgr, kp, _ := setupTestManager(t)
+	_ = performHandshake(t, mgr, kp, "ch-aws", "user-1")
+
+	mgr.AddAccessibleWorkspaceID("ch-aws", "ws-1")
+
+	assert.True(t, mgr.IsWorkspaceAccessible("ch-aws", "ws-1"),
+		"an accessible workspace must be reported accessible")
+	assert.False(t, mgr.IsWorkspaceAccessible("ch-aws", "ws-other"),
+		"a workspace not in the set must be reported inaccessible")
+	assert.False(t, mgr.IsWorkspaceAccessible("ch-aws", ""),
+		"an empty workspace id must not match an empty key")
+	assert.False(t, mgr.IsWorkspaceAccessible("ch-unknown", "ws-1"),
+		"an unknown channel must fail closed")
 }
 
 // TestAccessibleWorkspaceIDs_ConcurrentAddAndRead pins the locking
@@ -280,7 +246,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	require.NoError(t, err)
 	sender := newCollectSender()
 	var closeCallbackCount int
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, 0, func(id string) {
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, func(id string) {
 		_ = id
 		closeCallbackCount++
 	})
@@ -318,6 +284,36 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	assert.Same(t, first, current, "the original session must still be the one registered for ch-reuse")
 }
 
+// The Hub establishes channel identity and names it in the open request, so an
+// empty user id means the Hub failed to say who the caller is -- not that the
+// caller is anonymous. Installing the session anyway would run every
+// workspace-scoped family (agent, terminal, tab moves, cleanup) as nobody: those
+// gate on the Hub-supplied accessible-workspace set and never look at the user id,
+// so unlike the machine-scoped families -- which requireWorkerOwner fails closed on
+// for exactly this input -- an empty id is not self-limiting there.
+func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
+	mgr, ck, _ := setupTestManager(t)
+
+	// A VALID handshake payload, so the rejection is provably the identity check
+	// and not the handshake layer short-circuiting earlier.
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-anon",
+		UserId:           "",
+		HandshakePayload: msg1,
+	})
+	assert.NotEmpty(t, resp.GetError(), "an open naming no user must be refused")
+	assert.Contains(t, resp.GetError(), "no authenticated user id")
+	assert.Equal(t, "ch-anon", resp.GetChannelId())
+
+	mgr.mu.RLock()
+	_, exists := mgr.sessions["ch-anon"]
+	mgr.mu.RUnlock()
+	assert.False(t, exists, "a refused open must not install a session")
+}
+
 func TestHandleOpen_BadHandshake(t *testing.T) {
 	mgr, _, _ := setupTestManager(t)
 
@@ -336,88 +332,6 @@ func TestHandleOpen_BadHandshake(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestUserIdClaim_Success(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetDispatcher(NewDispatcher())
-
-	session := performHandshake(t, mgr, kp, "ch-claim", "user-1")
-	sendUserIdClaim(t, mgr, session, "ch-claim", "user-1")
-
-	// Wait for async claim response.
-	msgs := sender.waitForMessages(1)
-	require.Len(t, msgs, 1)
-
-	claimResp := decryptClaimResponse(t, session, msgs[0])
-	assert.True(t, claimResp.GetSuccess())
-}
-
-func TestUserIdClaim_Mismatch(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetDispatcher(NewDispatcher())
-
-	session := performHandshake(t, mgr, kp, "ch-mismatch", "user-1")
-	// Send a claim with the wrong user ID.
-	sendUserIdClaim(t, mgr, session, "ch-mismatch", "wrong-user")
-
-	// Wait for async claim response.
-	msgs := sender.waitForMessages(1)
-	require.Len(t, msgs, 1)
-
-	claimResp := decryptClaimResponse(t, session, msgs[0])
-	assert.False(t, claimResp.GetSuccess())
-	assert.Contains(t, claimResp.GetErrorMessage(), "mismatch")
-
-	// Channel should have been closed (async, may need brief wait).
-	require.Eventually(t, func() bool {
-		mgr.mu.RLock()
-		defer mgr.mu.RUnlock()
-		_, exists := mgr.sessions["ch-mismatch"]
-		return !exists
-	}, time.Second, 10*time.Millisecond)
-}
-
-func TestUserIdClaim_DuplicateRejected(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetDispatcher(NewDispatcher())
-
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-dup", "user-1")
-
-	// Send a second UserIdClaim — should be rejected.
-	sendUserIdClaim(t, mgr, session, "ch-dup", "user-1")
-
-	// Wait for the async rejection response.
-	msgs := sender.waitForMessages(2) // first claim response + second rejection
-	claimResp := decryptClaimResponse(t, session, msgs[1])
-	assert.False(t, claimResp.GetSuccess())
-	assert.Contains(t, claimResp.GetErrorMessage(), "already verified")
-}
-
-func TestRequest_BeforeClaim_Rejected(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetDispatcher(NewDispatcher())
-
-	session := performHandshake(t, mgr, kp, "ch-unclaimed", "user-1")
-
-	// Send a request without first sending UserIdClaim.
-	ct := sendRequest(t, session, "ch-unclaimed", &leapmuxv1.InnerRpcRequest{
-		Method: "anything",
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-unclaimed",
-		Ciphertext:      ct,
-		CorrelationId:   1,
-	})
-
-	// Wait for async error response.
-	msgs := sender.waitForMessages(1)
-	require.Len(t, msgs, 1)
-
-	resp := decryptInnerResponse(t, session, msgs[0])
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(9), resp.GetErrorCode()) // FAILED_PRECONDITION
-}
-
 func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
@@ -430,8 +344,8 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	// Open channel and verify claim.
-	initiatorSession := performHandshakeAndVerify(t, mgr, kp, sender, "ch-echo", "user-echo")
+	// Open a channel and run the Noise handshake.
+	initiatorSession := performHandshake(t, mgr, kp, "ch-echo", "user-echo")
 
 	// Create an inner RPC request wrapped in InnerMessage.
 	ct := sendRequest(t, initiatorSession, "ch-echo", &leapmuxv1.InnerRpcRequest{
@@ -453,9 +367,59 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	require.Greater(t, len(msgs), msgsBefore)
 
 	innerResp := decryptInnerResponse(t, initiatorSession, msgs[len(msgs)-1])
-	assert.Equal(t, uint32(42), msgs[len(msgs)-1].GetChannelMessageResp().GetCorrelationId())
+	assert.Equal(t, uint64(42), msgs[len(msgs)-1].GetChannelMessageResp().GetCorrelationId())
 	assert.Equal(t, []byte("hello"), innerResp.GetPayload())
 	assert.False(t, innerResp.GetIsError())
+}
+
+// A frame whose flags value is one no conformant sender emits (e.g. MORE|CLOSE
+// combined) is a protocol violation: it must be dropped -- NOT read as a final
+// chunk and delivered truncated -- and the drop must happen after the decrypt,
+// so the receive nonce stays in step with the peer and the session survives.
+func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-flags", "user-flags")
+
+	// Frame 1: a well-formed request under an out-of-spec flags value. It must
+	// be dropped without any response.
+	ct1 := sendRequest(t, initiatorSession, "ch-flags", &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("dropped"),
+	})
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-flags",
+		Ciphertext:      ct1,
+		CorrelationId:   41,
+		Flags:           leapmuxv1.ChannelMessageFlags(3), // MORE|CLOSE combined
+	})
+	assert.Len(t, sender.messages(), msgsBefore, "an out-of-spec frame must produce no response")
+
+	// Frame 2: the NEXT ciphertext from the same initiator session still
+	// decrypts and dispatches -- proving the dropped frame advanced the
+	// receive nonce (a drop before the decrypt would desync every later frame).
+	ct2 := sendRequest(t, initiatorSession, "ch-flags", &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("delivered"),
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-flags",
+		Ciphertext:      ct2,
+		CorrelationId:   42,
+	})
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	require.Greater(t, len(msgs), msgsBefore)
+	innerResp := decryptInnerResponse(t, initiatorSession, msgs[len(msgs)-1])
+	assert.Equal(t, []byte("delivered"), innerResp.GetPayload())
 }
 
 func TestHandleMessage_UnknownChannel(t *testing.T) {
@@ -476,14 +440,6 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 
 	initiatorSession := performHandshake(t, mgr, kp, "ch-no-disp", "user-1")
 
-	// Send UserIdClaim first.
-	sendUserIdClaim(t, mgr, initiatorSession, "ch-no-disp", "user-1")
-	// Wait for async claim response.
-	msgs := sender.waitForMessages(1)
-	require.Len(t, msgs, 1)
-	claimResp := decryptClaimResponse(t, initiatorSession, msgs[0])
-	require.True(t, claimResp.GetSuccess())
-
 	ct := sendRequest(t, initiatorSession, "ch-no-disp", &leapmuxv1.InnerRpcRequest{
 		Method: "anything",
 	})
@@ -495,13 +451,96 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 		CorrelationId:   1,
 	})
 
-	// Wait for async UNIMPLEMENTED error response.
-	msgs = sender.waitForMessages(2) // claim response + error response
-	require.Len(t, msgs, 2)
+	// Wait for async UNIMPLEMENTED error response. It is the session's FIRST
+	// message: with the identity claim gone, a request needs no preceding exchange.
+	msgs := sender.waitForMessages(1)
+	require.Len(t, msgs, 1)
 
-	innerResp := decryptInnerResponse(t, initiatorSession, msgs[1])
+	innerResp := decryptInnerResponse(t, initiatorSession, msgs[0])
 	assert.True(t, innerResp.GetIsError())
 	assert.Equal(t, int32(12), innerResp.GetErrorCode()) // UNIMPLEMENTED
+}
+
+// A request must be served immediately after the handshake, with no in-channel
+// identity claim, and must carry the identity the HUB supplied at open.
+//
+// The claim exchange this replaces could only restate what the Hub already told
+// both ends (the Worker reads it from ChannelOpenRequest.user_id), and Noise_NK leaves
+// the initiator unauthenticated, so the claim was an unsigned string the Worker
+// "verified" against the Hub's own value. Deleting it must not weaken the
+// identity the dispatcher sees, nor gate the first request behind a round trip.
+func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+
+	gotUserID := make(chan string, 1)
+	dispatcher := NewDispatcher()
+	dispatcher.Register("whoami", func(_ context.Context, userID string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+		gotUserID <- userID
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	// No claim: the very first encrypted message is a request.
+	session := performHandshake(t, mgr, kp, "ch-noclaim", "hub-user")
+	ct := sendRequest(t, session, "ch-noclaim", &leapmuxv1.InnerRpcRequest{Method: "whoami"})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-noclaim",
+		Ciphertext:      ct,
+		CorrelationId:   1,
+	})
+
+	select {
+	case userID := <-gotUserID:
+		assert.Equal(t, "hub-user", userID, "the dispatcher sees the Hub-supplied identity")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first request after the handshake was not dispatched")
+	}
+
+	msgs := sender.waitForMessages(1)
+	require.Len(t, msgs, 1, "the request is answered, not gated behind a claim")
+	assert.False(t, decryptInnerResponse(t, session, msgs[0]).GetIsError())
+}
+
+// A correlation id ABOVE 2^32 must survive the round trip intact.
+//
+// This is the whole point of correlation_id being uint64 (see channel.proto): the id
+// space cannot wrap, so a live registration can never be collided onto by a counter
+// coming around again. Everything else about the change is invisible in-memory -- a
+// uint32 wire field would still let the allocator hand out big ids and still let the
+// maps key on them; the truncation would happen silently at marshal, and the response
+// would come back correlated to the WRONG request. So pin the wire, not the map.
+func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	session := performHandshake(t, mgr, kp, "ch-wide", "user-1")
+	ct := sendRequest(t, session, "ch-wide", &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("hello"),
+	})
+
+	// Past uint32: a 32-bit field would truncate this to 7 and correlate the reply to
+	// whatever request holds id 7.
+	const wideID uint64 = 1<<40 | 7
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-wide",
+		Ciphertext:      ct,
+		CorrelationId:   wideID,
+	})
+
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	require.Greater(t, len(msgs), msgsBefore)
+	assert.Equal(t, wideID, msgs[len(msgs)-1].GetChannelMessageResp().GetCorrelationId(),
+		"the reply must carry the id it was sent with, not a truncated one")
+	assert.Equal(t, []byte("hello"), decryptInnerResponse(t, session, msgs[len(msgs)-1]).GetPayload())
 }
 
 func TestHandleClose(t *testing.T) {
@@ -605,7 +644,7 @@ func TestCloseAll_CancelsEverySessionCtx(t *testing.T) {
 // covers the session bookkeeping; this one verifies the handler-visible
 // ctx is the same ctx that gets cancelled.
 func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
+	mgr, kp, _ := setupTestManager(t)
 
 	gotCtxC := make(chan context.Context, 1)
 	dispatcher := NewDispatcher()
@@ -615,7 +654,7 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	initiatorSession := performHandshakeAndVerify(t, mgr, kp, sender, "ch-inspect", "user-1")
+	initiatorSession := performHandshake(t, mgr, kp, "ch-inspect", "user-1")
 
 	ct := sendRequest(t, initiatorSession, "ch-inspect", &leapmuxv1.InnerRpcRequest{Method: "inspect"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
@@ -663,7 +702,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0, 0, nil)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0, nil)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -674,19 +713,26 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	// Open channel and verify claim.
 	session := performHandshake(t, mgr, ck, "ch-block", "user-1")
 
-	// Send the UserIdClaim. Since sends are now async, HandleMessage returns
-	// immediately and the claim response send happens in a goroutine.
-	sendUserIdClaim(t, mgr, session, "ch-block", "user-1")
+	// Occupy the sender: dispatch a first request whose handler's response send
+	// blocks in blockingSend. Sends are async, so HandleMessage returns and the
+	// response send stays parked in its own goroutine.
+	occupy := sendRequest(t, session, "ch-block", &leapmuxv1.InnerRpcRequest{
+		Method: "slow",
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-block",
+		Ciphertext:      occupy,
+		CorrelationId:   1,
+	})
 
-	// The claim response goroutine is now blocked in blockingSend.
-	// Wait for it to enter the blocked state.
+	// Wait for that send to enter the blocked state.
 	<-blockCh
 
-	// Now send a request. The critical test: HandleMessage must return
-	// promptly even though sendFn is currently blocked by the claim response.
+	// Now send a second request. The critical test: HandleMessage must return
+	// promptly even though sendFn is currently blocked by the first response.
 	ct := sendRequest(t, session, "ch-block", &leapmuxv1.InnerRpcRequest{
 		Method: "slow",
 	})
@@ -725,8 +771,8 @@ func TestMultipleChannels(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	session1 := performHandshakeAndVerify(t, mgr, kp, sender, "ch-a", "alice")
-	session2 := performHandshakeAndVerify(t, mgr, kp, sender, "ch-b", "bob")
+	session1 := performHandshake(t, mgr, kp, "ch-a", "alice")
+	session2 := performHandshake(t, mgr, kp, "ch-b", "bob")
 
 	// Send on ch-a.
 	ct1 := sendRequest(t, session1, "ch-a", &leapmuxv1.InnerRpcRequest{Method: "ping"})
@@ -779,7 +825,7 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-single", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-single", "user-1")
 
 	// Send a small request.
 	ct := sendRequest(t, session, "ch-single", &leapmuxv1.InnerRpcRequest{
@@ -817,7 +863,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-multi", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-multi", "user-1")
 
 	ct := sendRequest(t, session, "ch-multi", &leapmuxv1.InnerRpcRequest{Method: "big"})
 	msgsBefore := len(sender.messages())
@@ -843,7 +889,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 			assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags(),
 				"last chunk: expected UNSPECIFIED flag")
 		}
-		assert.Equal(t, uint32(1), chMsg.GetCorrelationId())
+		assert.Equal(t, uint64(1), chMsg.GetCorrelationId())
 	}
 
 	// Decrypt and concatenate all chunks.
@@ -866,7 +912,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-exact", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-exact", "user-1")
 
 	// Find the exact payload size that makes the marshaled InnerMessage fit
 	// in exactly one chunk, by trial: marshal a response with a given payload
@@ -942,7 +988,7 @@ func TestReassembly_E2E(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-reasm", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-reasm", "user-1")
 
 	// Build a large InnerMessage, then chunk it manually on the initiator side.
 	largePayload := make([]byte, channelwire.MaxPlaintextPerChunk*2+100)
@@ -1004,7 +1050,7 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-maxsize", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-maxsize", "user-1")
 
 	// Send chunks that exceed max size.
 	chunk1 := make([]byte, 60)
@@ -1032,24 +1078,32 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
-	// Subsequent messages on other correlation IDs should still work.
-	sendUserIdClaim(t, mgr, session, "ch-maxsize", "user-1")
+	// Subsequent messages on other correlation IDs should still work: the oversize
+	// drop errors only its own request, never the shared channel.
+	before := len(sender.messages())
+	ct3 := sendRequest(t, session, "ch-maxsize", &leapmuxv1.InnerRpcRequest{Method: "anything"})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-maxsize",
+		Ciphertext:      ct3,
+		CorrelationId:   2,
+	})
 
-	// The duplicate claim will get a rejection but proves the channel is still functional.
-	msgs := sender.waitForMessages(len(sender.messages()) + 1)
+	// An UNIMPLEMENTED error comes back, proving the channel is still functional.
+	msgs := sender.waitForMessages(before + 1)
 	require.NotEmpty(t, msgs)
 }
 
 func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
-	mgr, kp, sender := setupTestManagerWith(t, 0, 2)
+	mgr, kp, _ := setupTestManagerWith(t, 0, 2)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-maxinc", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-maxinc", "user-1")
 
 	// Start 2 chunked sequences.
-	for i := uint32(1); i <= 2; i++ {
+	for i := uint64(1); i <= 2; i++ {
 		chunk := make([]byte, 10)
 		ct, err := session.Encrypt(chunk)
 		require.NoError(t, err)
@@ -1093,7 +1147,7 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 }
 
 func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
-	mgr, kp, sender := setupTestManagerWith(t, 100, 0) // Very small limit.
+	mgr, kp, _ := setupTestManagerWith(t, 100, 0) // Very small limit.
 
 	// Register a handler that tries to send a response larger than the limit.
 	dispatcher := NewDispatcher()
@@ -1105,7 +1159,7 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 	})
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-sendmax", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-sendmax", "user-1")
 
 	ct := sendRequest(t, session, "ch-sendmax", &leapmuxv1.InnerRpcRequest{Method: "big"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
@@ -1129,7 +1183,7 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-finalover", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-finalover", "user-1")
 
 	// Send a first chunk within limits (60 bytes).
 	chunk1 := make([]byte, 60)
@@ -1175,7 +1229,7 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-errcontent", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-errcontent", "user-1")
 
 	// Send two MORE chunks that exceed the limit.
 	chunk1 := make([]byte, 60)
@@ -1209,7 +1263,7 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 
 	chMsg := lastMsg.GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	assert.Equal(t, uint32(42), chMsg.GetCorrelationId())
+	assert.Equal(t, uint64(42), chMsg.GetCorrelationId())
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	resp := decryptInnerResponse(t, session, lastMsg)
@@ -1224,10 +1278,10 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-maxincerr", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-maxincerr", "user-1")
 
 	// Start 2 chunked sequences.
-	for i := uint32(1); i <= 2; i++ {
+	for i := uint64(1); i <= 2; i++ {
 		chunk := make([]byte, 10)
 		ct, err := session.Encrypt(chunk)
 		require.NoError(t, err)
@@ -1266,10 +1320,10 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 }
 
 func TestHandleClose_MidChunk(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
+	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
-	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-midclose", "user-1")
+	session := performHandshake(t, mgr, kp, "ch-midclose", "user-1")
 
 	// Start a chunked sequence.
 	chunk := make([]byte, 10)
@@ -1304,7 +1358,7 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	var closedMu sync.Mutex
 	var closedChannels []string
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, 0,
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0,
 		func(channelID string) {
 			closedMu.Lock()
 			closedChannels = append(closedChannels, channelID)
@@ -1313,10 +1367,6 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 	)
 
 	session := performHandshake(t, mgr, ck, "ch-decrypt-fail", "user-1")
-	sendUserIdClaim(t, mgr, session, "ch-decrypt-fail", "user-1")
-
-	// Drain the claim response so it doesn't interfere with our assertions.
-	sender.waitForMessages(1)
 
 	countBefore := len(sender.messages())
 
@@ -1359,4 +1409,124 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	// No additional messages should have been sent.
 	assert.Len(t, sender.messages(), countBefore+1)
+}
+
+// An oversize chunked message must be errored ONCE and its id poisoned, not
+// re-buffered.
+//
+// Deleting the buffer on breach (as this once did) let the very next MORE chunk find
+// no entry, pass the max-incomplete check against the map the delete had just shrunk,
+// allocate a fresh buffer and re-accumulate to the ceiling -- erroring, deleting and
+// repeating for as long as the peer kept sending, burning the full budget plus an
+// error goroutine per cycle on the worker's sole receive goroutine. This receiver's
+// requests are peer-initiated, so nothing else bounds it.
+//
+// Against the old code the second breach fires another RESOURCE_EXHAUSTED and the
+// assert.Never below fails. It mirrors the client-side test this defect's fix already
+// has in tunnel/channel_test.go.
+func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
+	const channelID = "ch-poison"
+	const correlationID = uint64(7)
+	mgr, kp, sender := setupTestManagerWith(t, 100, 4)
+	mgr.SetDispatcher(NewDispatcher())
+
+	session := performHandshake(t, mgr, kp, channelID, "user-1")
+
+	sendChunk := func(size int, more bool) {
+		t.Helper()
+		ct, err := session.Encrypt(make([]byte, size))
+		require.NoError(t, err)
+		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
+		if more {
+			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
+		}
+		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+			ProtocolVersion: 1,
+			ChannelId:       channelID,
+			Ciphertext:      ct,
+			CorrelationId:   correlationID,
+			Flags:           flags,
+		})
+	}
+
+	buffer := func() *channelwire.ChunkBuffer {
+		t.Helper()
+		mgr.mu.RLock()
+		defer mgr.mu.RUnlock()
+		return mgr.sessions[channelID].reassembly.buffers[correlationID]
+	}
+
+	msgsBefore := len(sender.messages())
+	sendChunk(60, true) // buffered: 60 <= 100
+	sendChunk(60, true) // breach: 120 > 100
+
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	resp := decryptInnerResponse(t, session, msgs[len(msgs)-1])
+	require.True(t, resp.GetIsError())
+	require.Equal(t, int32(8), resp.GetErrorCode()) // RESOURCE_EXHAUSTED
+	require.Contains(t, resp.GetErrorMessage(), "120 bytes exceeds 100 byte limit")
+
+	poisoned := buffer()
+	require.NotNil(t, poisoned, "the breached id must leave a tombstone, not be deleted")
+	assert.True(t, poisoned.Poisoned)
+	assert.Zero(t, poisoned.Total, "poisoning must release the accumulated parts")
+	assert.Empty(t, poisoned.Parts)
+
+	// Keep pushing MORE chunks under the poisoned id: each must be dropped without
+	// re-buffering a byte and without emitting a second error.
+	for i := 0; i < 5; i++ {
+		sendChunk(60, true)
+	}
+	assert.Never(t, func() bool { return len(sender.messages()) > msgsBefore+1 },
+		300*time.Millisecond, 20*time.Millisecond,
+		"a poisoned id must be errored exactly once, not once per re-accumulation")
+	still := buffer()
+	require.NotNil(t, still)
+	assert.True(t, still.Poisoned)
+	assert.Zero(t, still.Total, "dropped chunks must not re-accumulate")
+
+	// The terminal (non-MORE) chunk reaps the tombstone: it is the worker's only
+	// reaper, so without it a poisoned id would hold a slot until HandleClose.
+	sendChunk(60, false)
+	assert.Nil(t, buffer(), "the terminal chunk must reap the tombstone")
+	assert.Never(t, func() bool { return len(sender.messages()) > msgsBefore+1 },
+		200*time.Millisecond, 20*time.Millisecond,
+		"reaping a poisoned id must not error again either")
+
+	// The slot is free again: a fresh sequence under the same id is bounded afresh.
+	sendChunk(60, true)
+	fresh := buffer()
+	require.NotNil(t, fresh)
+	assert.False(t, fresh.Poisoned)
+	assert.Equal(t, 60, fresh.Total)
+}
+
+// The error-send queue exists so the receive goroutine NEVER blocks on an
+// error response: enqueue must return immediately even when the drainer is
+// wedged and the queue is full (the overflow is dropped, per queueErrorSend's
+// contract). A blocking enqueue would reintroduce the receive-loop wedge the
+// queue replaced the inline sends to prevent.
+func TestQueueErrorSendDoesNotBlockWhenFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// No drainer is started: the queue can only fill.
+	sess := &channelSession{
+		ChannelID:  "ch-full",
+		ctx:        ctx,
+		errorSends: make(chan errorSend, errorSendQueueSize),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range errorSendQueueSize + 8 {
+			sess.queueErrorSend(uint64(i), 1, "overflow")
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queueErrorSend blocked on a full queue")
+	}
+	assert.Len(t, sess.errorSends, errorSendQueueSize, "the queue holds exactly its cap; overflow is dropped")
 }

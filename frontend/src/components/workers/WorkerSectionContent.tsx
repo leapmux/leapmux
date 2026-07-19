@@ -21,7 +21,6 @@ export interface WorkerSectionContentProps {
   workers: Worker[]
   workerInfo: (id: string) => WorkerInfo | null
   channelStatus: (id: string) => ChannelStatus
-  currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregister: (worker: Worker) => void
 }
@@ -92,7 +91,6 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   <div class={sidebarActions}>
                     <WorkerContextMenu
                       workerInfo={props.workerInfo(worker.id)}
-                      isOwner={worker.registeredBy === props.currentUserId}
                       autoRegistered={worker.autoRegistered}
                       hasTunnels={workerTunnels().length > 0}
                       onAddTunnel={() => props.onAddTunnel(worker)}

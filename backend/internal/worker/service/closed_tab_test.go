@@ -131,7 +131,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dis
 	// AccessibleWorkspaceIDs returns the desired workspaces.
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(*leapmuxv1.ConnectRequest) error { return nil }, 0, 0, nil)
+	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(*leapmuxv1.ConnectRequest) error { return nil }, 0, nil)
 
 	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
@@ -155,6 +155,11 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dis
 		TerminalStartup: newTerminalStartupRegistry(),
 		RemoteIPC:       cfg.remoteIPC,
 	}
+	// The test channel above is opened as "user-1", so make that the worker's owner:
+	// the owner is the ordinary caller in production, and the machine-scoped families
+	// (file/git/sysinfo/tunnel) admit only them. In production this arrives from the
+	// Hub's connect-time WorkerIdentity rather than being set at construction.
+	svc.SetRegisteredBy("user-1")
 	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.Output.DataDir = svc.DataDir
 

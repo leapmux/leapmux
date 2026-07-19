@@ -6,11 +6,43 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protodelim"
 )
+
+// A full-size org-events OrgMaterialized bootstrap (up to OrgEventsReadLimit)
+// wrapped in its Frame/Event envelope must fit the frame budget, so
+// validateFrameSize forwards it instead of silently dropping it.
+func TestFrame_MaxOrgEventsMessageFitsBudget(t *testing.T) {
+	frame := &desktoppb.Frame{
+		Message: &desktoppb.Frame_Event{Event: &desktoppb.Event{
+			Payload: &desktoppb.Event_OrgEventsMessage{
+				OrgEventsMessage: &desktoppb.OrgEventsMessageEvent{
+					Data: make([]byte, channelwire.OrgEventsReadLimit),
+				},
+			},
+		}},
+	}
+	require.NoError(t, validateFrameSize(frame),
+		"a full-size org-events bootstrap must fit within the frame budget")
+}
+
+// maxFrameSize is DERIVED on the Go side (OrgEventsReadLimit + margin) but
+// HARDCODED as MAX_FRAME_SIZE in desktop/rust/src/main.rs. The frame.go comment
+// says the two "must stay in sync"; this guard makes that mechanical for the
+// likely drift direction. If a future OrgEventsReadLimit bump changes the Go
+// ceiling, this fails and forces updating the Rust constant too -- otherwise the
+// Go sidecar would emit frames the Rust proxy layer silently rejects, truncating
+// a full-size bootstrap at the Rust hop.
+func TestFrame_maxFrameSizeMatchesRustConstant(t *testing.T) {
+	// Mirror of MAX_FRAME_SIZE in desktop/rust/src/main.rs.
+	const rustMaxFrameSize = 20 * 1024 * 1024
+	assert.Equal(t, rustMaxFrameSize, maxFrameSize,
+		"maxFrameSize (Go, frame.go) and MAX_FRAME_SIZE (Rust, main.rs) must stay in sync")
+}
 
 func TestFrame_roundTrip_request(t *testing.T) {
 	frame := &desktoppb.Frame{
@@ -53,9 +85,11 @@ func TestFrame_roundTrip_response(t *testing.T) {
 				Id: 7,
 				Result: &desktoppb.Response_ProxyHttp{
 					ProxyHttp: &desktoppb.ProxyHttpResponse{
-						Status:  200,
-						Headers: map[string]string{"Content-Type": "text/plain"},
-						Body:    []byte("hello world"),
+						Status: 200,
+						Headers: map[string]*desktoppb.HeaderValues{
+							"Content-Type": {Values: []string{"text/plain"}},
+						},
+						Body: []byte("hello world"),
 					},
 				},
 			},
@@ -194,6 +228,20 @@ func TestFrame_oversizedFrame(t *testing.T) {
 	require.Error(t, err)
 	var sizeErr *protodelim.SizeTooLargeError
 	assert.ErrorAs(t, err, &sizeErr)
+}
+
+func TestFrame_WriteRejectsOversizedFrame(t *testing.T) {
+	frame := &desktoppb.Frame{
+		Message: &desktoppb.Frame_Response{Response: &desktoppb.Response{
+			Id: 1,
+			Result: &desktoppb.Response_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpResponse{
+				Body: make([]byte, maxFrameSize),
+			}},
+		}},
+	}
+
+	err := WriteFrame(io.Discard, frame)
+	require.ErrorContains(t, err, "frame budget")
 }
 
 func TestFrame_truncatedInput(t *testing.T) {

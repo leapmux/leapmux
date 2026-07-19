@@ -16,7 +16,7 @@ import (
 func (s *Suite) testUsers(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		userID := id.Generate()
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
@@ -50,7 +50,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get by username", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "bob")
 
 		found, err := st.Users().GetByUsername(ctx, "bob")
@@ -60,7 +60,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get by email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "carol")
 
 		found, err := st.Users().GetByEmail(ctx, "carol@example.com")
@@ -76,7 +76,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get first admin", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "admin-org", true)
+		orgID := SeedOrg(t, st, "admin-org")
 
 		// No users: ErrNotFound.
 		_, err := st.Users().GetFirstAdmin(ctx)
@@ -125,7 +125,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, has)
 
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "first")
 
 		has, err = st.Users().HasAny(ctx)
@@ -135,7 +135,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("count", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		count, err := st.Users().Count(ctx)
 		require.NoError(t, err)
@@ -151,7 +151,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("count excludes soft-deleted users", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "count-del-user")
 		SeedUser(t, st, orgID, "count-alive-user")
 
@@ -167,49 +167,9 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, int64(1), count)
 	})
 
-	t.Run("list by org id", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgA := SeedOrg(t, st, "org-a", false)
-		orgB := SeedOrg(t, st, "org-b", false)
-
-		SeedUser(t, st, orgA, "in-a")
-		SeedUser(t, st, orgB, "in-b")
-
-		users, err := st.Users().ListByOrgID(ctx, orgA)
-		require.NoError(t, err)
-		require.Len(t, users, 1)
-		assert.Equal(t, "in-a", users[0].Username)
-	})
-
-	t.Run("list by ids", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
-		u1 := SeedUser(t, st, orgID, "byid-1")
-		u2 := SeedUser(t, st, orgID, "byid-2")
-		deleted := SeedUser(t, st, orgID, "byid-deleted")
-		require.NoError(t, st.Users().Delete(ctx, deleted.ID))
-
-		// Empty input: nil result without a DB call.
-		got, err := st.Users().ListByIDs(ctx, nil)
-		require.NoError(t, err)
-		assert.Empty(t, got)
-
-		// Mixed input: live ids return, deleted + missing drop silently.
-		got, err = st.Users().ListByIDs(ctx, []string{u1.ID, u2.ID, deleted.ID, "missing-id"})
-		require.NoError(t, err)
-		ids := make(map[string]struct{}, len(got))
-		for _, u := range got {
-			ids[u.ID] = struct{}{}
-		}
-		assert.Contains(t, ids, u1.ID)
-		assert.Contains(t, ids, u2.ID)
-		assert.NotContains(t, ids, deleted.ID, "deleted users should be excluded")
-		assert.NotContains(t, ids, "missing-id")
-	})
-
 	t.Run("list all", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		// Sleep between creates to ensure distinct created_at timestamps
 		// (some backends only have millisecond precision).
@@ -233,7 +193,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		SeedUser(t, st, orgID, "searchable-alice")
 		SeedUser(t, st, orgID, "searchable-bob")
@@ -248,9 +208,42 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Len(t, users, 2)
 	})
 
+	t.Run("search folds non-ASCII display names case-insensitively", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "fold-org")
+
+		// A non-ASCII, mixed-case display name. The username is a slug (ASCII), so
+		// display_name is the field that exercises the folded column.
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID:          id.Generate(),
+			OrgID:       orgID,
+			Username:    "olaf-user",
+			DisplayName: "Ölaf Müller",
+			Email:       "olaf@example.com",
+			PasswordSet: true,
+		}))
+
+		// A prefix query in any casing must match: this is the divergence the folded
+		// column closes -- SQLite's bare LIKE would fold only ASCII and miss "Ö"<->"ö",
+		// while the pre-folded column + Go-folded query match identically on every backend.
+		for _, query := range []string{"öl", "ÖL", "Öl", "ölaf", "ÖLAF"} {
+			q := query
+			users, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &q, Limit: 10})
+			require.NoError(t, err, "query %q", query)
+			require.Len(t, users, 1, "query %q must match the non-ASCII display name case-insensitively", query)
+			assert.Equal(t, "Ölaf Müller", users[0].DisplayName, "the ORIGINAL (unfolded) display name is returned")
+		}
+
+		// A non-matching prefix still misses.
+		miss := "xyz"
+		users, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &miss, Limit: 10})
+		require.NoError(t, err)
+		assert.Empty(t, users)
+	})
+
 	t.Run("update profile", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "profile-user")
 
 		err := st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
@@ -266,9 +259,81 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, "New Display", updated.DisplayName)
 	})
 
+	t.Run("update profile renames the personal org", func(t *testing.T) {
+		// The username change is paired with a personal-org rename inside
+		// Users().UpdateProfile, so the org name (and /o/ slug) can never go stale.
+		// The pairing is a property of the store -- mirroring the Delete +
+		// SoftDeleteUserPersonalOrg pairing -- so a future store-level caller that
+		// changes a username cannot reintroduce the stale-slug bug by skipping the
+		// service method.
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "profile-user")
+		user := SeedUser(t, st, orgID, "profile-user")
+
+		err := st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			ID:          user.ID,
+			Username:    "renamed-user",
+			DisplayName: user.DisplayName,
+		})
+		require.NoError(t, err)
+
+		org, err := st.Orgs().GetByID(ctx, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, "renamed-user", org.Name,
+			"the personal org must be renamed to mirror the new username")
+	})
+
+	t.Run("update profile display-name-only leaves the org name unchanged", func(t *testing.T) {
+		// A display-name-only edit (username unchanged) renames the org to the
+		// same value it already has -- idempotent, no error, no spurious conflict.
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "same-user")
+		user := SeedUser(t, st, orgID, "same-user")
+
+		err := st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			ID:          user.ID,
+			Username:    "same-user",
+			DisplayName: "A New Display",
+		})
+		require.NoError(t, err)
+
+		org, err := st.Orgs().GetByID(ctx, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, "same-user", org.Name,
+			"an unchanged username must leave the org name unchanged")
+	})
+
+	t.Run("update profile rejects an empty username", func(t *testing.T) {
+		// The store pairs the username with a personal-org rename, so an empty
+		// username would blank both users.username and orgs.name -- corrupting
+		// the login, the /o/ slug, and the idx_orgs_name partial unique index.
+		// The service layer validates upstream (validate.SanitizeSlug); the store
+		// re-checks so a store-level caller that bypasses the service cannot land
+		// it, and so the guard runs before any query (no partial apply).
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "real-user")
+		user := SeedUser(t, st, orgID, "real-user")
+
+		err := st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+			ID:          user.ID,
+			Username:    "", // empty must be refused
+			DisplayName: "Whatever",
+		})
+		assert.ErrorIs(t, err, store.ErrInvalidArgument,
+			"an empty username must be refused before any row is touched")
+
+		// Neither the user nor the org was modified.
+		reloaded, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "real-user", reloaded.Username, "the user row must be untouched")
+		org, err := st.Orgs().GetByID(ctx, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, "real-user", org.Name, "the org name must be untouched")
+	})
+
 	t.Run("update password", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "pw-user")
 
 		err := st.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
@@ -284,7 +349,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "email-user")
 
 		err := st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
@@ -302,7 +367,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update email verified", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		userID := id.Generate()
 		err := st.Users().Create(ctx, store.CreateUserParams{
@@ -331,7 +396,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update admin", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "admin-user")
 
 		err := st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
@@ -347,7 +412,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update prefs", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "prefs-user")
 
 		err := st.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
@@ -363,7 +428,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("pending email lifecycle", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "pending-email-user")
 
 		token := verifycode.Generate()
@@ -396,7 +461,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("concurrent verification attempts return their own atomic increments", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "concurrent-verification-attempts")
 		expires := time.Now().Add(time.Hour)
 		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
@@ -442,7 +507,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("clear pending email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "clear-pending-user")
 
 		token := verifycode.Generate()
@@ -466,7 +531,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("clear competing pending emails", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user1 := SeedUser(t, st, orgID, "compete1")
 		user2 := SeedUser(t, st, orgID, "compete2")
 
@@ -500,7 +565,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("delete (soft)", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "deleteme")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -518,7 +583,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("duplicate username returns conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "unique-name")
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
@@ -547,7 +612,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get prefs default", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "default-prefs-user")
 
 		prefs, err := st.Users().GetPrefs(ctx, user.ID)
@@ -557,7 +622,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("deleted user excluded from get by username", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "del-username-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -569,7 +634,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("deleted user excluded from get by email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "del-email-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -579,24 +644,9 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("deleted user excluded from list by org", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
-		alive := SeedUser(t, st, orgID, "alive-org-user")
-		dead := SeedUser(t, st, orgID, "dead-org-user")
-
-		err := st.Users().Delete(ctx, dead.ID)
-		require.NoError(t, err)
-
-		users, err := st.Users().ListByOrgID(ctx, orgID)
-		require.NoError(t, err)
-		require.Len(t, users, 1)
-		assert.Equal(t, alive.ID, users[0].ID)
-	})
-
 	t.Run("deleted user excluded from list all", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "alive-all-user")
 		dead := SeedUser(t, st, orgID, "dead-all-user")
 
@@ -611,7 +661,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("deleted user excluded from search", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "searchdel-alive")
 		dead := SeedUser(t, st, orgID, "searchdel-dead")
 
@@ -630,7 +680,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("duplicate email returns conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "email-orig")
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
@@ -647,7 +697,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search empty string query returns all", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "sqall-a")
 		SeedUser(t, st, orgID, "sqall-b")
 
@@ -662,7 +712,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("list all pagination", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		for i := 0; i < 5; i++ {
 			if i > 0 {
 				time.Sleep(5 * time.Millisecond)
@@ -684,7 +734,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("list all cursor beyond total", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "beyond-user")
 
 		// Use a cursor far in the past to get no results.
@@ -697,7 +747,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("has any after delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "hasany-del-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -711,7 +761,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update profile username conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "conflict-alice")
 		SeedUser(t, st, orgID, "conflict-bob")
 
@@ -723,7 +773,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update email conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "email-conflict-alice")
 		bob := SeedUser(t, st, orgID, "email-conflict-bob")
 
@@ -735,7 +785,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("reuse username after soft delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "reuse-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -750,9 +800,30 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("delete frees the personal org name for reuse", func(t *testing.T) {
+		st := s.NewStore(t)
+		// A personal org's name mirrors its owner's username, so re-signing up the
+		// same username must be able to re-create an org under that name. Delete
+		// soft-deletes the user's personal org in the same call, so the name cannot
+		// stay occupying the partial unique index idx_orgs_name and block the
+		// re-signup. Org name == username here to model the personal-org invariant.
+		orgID := SeedOrg(t, st, "reuse-name")
+		user := SeedUser(t, st, orgID, "reuse-name")
+
+		require.NoError(t, st.Users().Delete(ctx, user.ID))
+
+		// The personal org is soft-deleted along with the user.
+		_, err := st.Orgs().GetByID(ctx, orgID)
+		RequireNotFound(t, err)
+
+		// And its name is free for a fresh personal org (the re-signup's new org).
+		err = st.Orgs().Create(ctx, store.CreateOrgParams{ID: id.Generate(), Name: "reuse-name"})
+		require.NoError(t, err)
+	})
+
 	t.Run("reuse email after soft delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "reuse-email-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -769,7 +840,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("promote pending email conflicting with existing email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "promote-conflict-alice")
 		bob := SeedUser(t, st, orgID, "promote-conflict-bob")
 
@@ -790,7 +861,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search finds user by exact username", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "searchable-user")
 
 		q := "searchable-user"
@@ -803,7 +874,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("delete already deleted user is no-op", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "double-del-user")
 
 		err := st.Users().Delete(ctx, user.ID)
@@ -816,7 +887,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search with nil query returns all", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "nilq-user1")
 		SeedUser(t, st, orgID, "nilq-user2")
 
@@ -829,7 +900,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update profile preserves email", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "preserve-email-user")
 
 		err := st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
@@ -845,7 +916,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update email preserves username", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "preserve-uname-user")
 
 		err := st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
@@ -861,7 +932,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search with cursor and limit", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		for i := 0; i < 5; i++ {
 			if i > 0 {
 				time.Sleep(5 * time.Millisecond)
@@ -888,7 +959,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search is case insensitive", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "MixedCaseSearchUser")
 
 		q := "mixedcasesearchuser"
@@ -901,7 +972,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search is prefix not substring", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "alice")
 		SeedUser(t, st, orgID, "superalice")
 
@@ -917,7 +988,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("username and email are case-normalized on create", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		userID := id.Generate()
 		err := st.Users().Create(ctx, store.CreateUserParams{
@@ -936,7 +1007,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get by username is case-insensitive", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "lookupuser")
 
 		// Lookup with different case should find the user.
@@ -947,7 +1018,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("get by email is case-insensitive", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "emaillookup")
 
 		// Lookup with different case should find the user.
@@ -958,7 +1029,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("mixed-case username conflicts with lowercase", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		SeedUser(t, st, orgID, "conflictcase")
 
 		// Creating with different case should conflict.
@@ -972,7 +1043,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("search excludes deleted users without panic", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 
 		// Create and immediately soft-delete users so the bucket table has
 		// entries but the hydrated result set is empty.
@@ -992,7 +1063,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update profile conflict preserves original fields", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "rollback-profile-alice")
 		SeedUser(t, st, orgID, "rollback-profile-bob")
 
@@ -1016,7 +1087,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update email conflict preserves original fields", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "rollback-email-alice")
 		bob := SeedUser(t, st, orgID, "rollback-email-bob")
 
@@ -1038,7 +1109,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("promote pending email conflict preserves original fields", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "user-org", true)
+		orgID := SeedOrg(t, st, "user-org")
 		alice := SeedUser(t, st, orgID, "rollback-promote-alice")
 		bob := SeedUser(t, st, orgID, "rollback-promote-bob")
 

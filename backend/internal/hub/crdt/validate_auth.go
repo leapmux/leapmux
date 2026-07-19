@@ -7,7 +7,7 @@ import (
 )
 
 // AuthChecker is the per-workspace permission predicate the validator
-// consults for each op. Returns true if `principalID` may write to
+// consults for each op. Returns true if `principalID` may access
 // `workspaceID` in `orgID`. An empty workspaceID is DENIED by every
 // implementation (the crdt checker's loadWorkspaceInOrg fails closed and the
 // workspace-scoped checker rejects a non-matching id); it is never a bypass.
@@ -15,17 +15,18 @@ import (
 // (validate.go gates it behind `if !internal`), not by passing an empty
 // workspaceID.
 //
-// `CanReadWorkspace` mirrors `CanWriteWorkspace` for the broadcast
-// path — when a new workspace appears (CreateWorkspace lifecycle), the
-// manager has to decide which of the already-subscribed users should
-// learn about it. Returning true expands that subscriber's filter to
-// include the workspace.
+// `CanAccessWorkspace` backs both the op-write gate (authCheck's
+// requireWrite) and the broadcast-expansion read gate
+// (ExpandSubscribersForWorkspace) -- workspace access is owner-only, so read
+// and write are the same predicate. For the broadcast path, when a new
+// workspace appears (CreateWorkspace lifecycle), the manager has to decide
+// which of the already-subscribed users should learn about it; returning
+// true expands that subscriber's filter to include the workspace.
 //
 // `CanUseWorker` gates SetTabRegisterOp.worker_id writes: the
-// principal must have access to the referenced worker (either it's
-// their own, or they hold a worker_access_grant). Empty workerID
-// returns true so callers can clear the field without a permission
-// check.
+// referenced worker must be registered to the principal. Empty
+// workerID returns true so callers can clear the field without a
+// permission check.
 //
 // Each predicate returns (allowed, error): a nil error with allowed=false is a
 // genuine DENY, while a non-nil error is a LOOKUP FAILURE (a transient store
@@ -34,66 +35,118 @@ import (
 // edit. Implementations must map a legitimately-missing workspace/worker to
 // (false, nil) and reserve the error for transient failures.
 type AuthChecker interface {
-	CanWriteWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error)
-	CanReadWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error)
+	CanAccessWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error)
 	CanUseWorker(ctx context.Context, orgID, workerID, principalID string) (bool, error)
 }
 
-// workspaceReaderBatch is an OPTIONAL AuthChecker capability: resolve read access
-// for many users against ONE workspace in a single pass (one workspace load + one
-// grant lookup) instead of a CanReadWorkspace round-trip per user. The production
+// workspaceReaderBatch is an OPTIONAL AuthChecker capability: resolve access
+// for many users against ONE workspace in a single pass (one workspace load)
+// instead of a CanAccessWorkspace round-trip per user. The production
 // checker implements it; ExpandSubscribersForWorkspace uses it when present and
-// falls back to per-user CanReadWorkspace otherwise, so test fakes need not
-// implement it. The returned map holds userID -> readable (absent means denied).
+// falls back to per-user CanAccessWorkspace otherwise, so test fakes need not
+// implement it. The returned map holds userID -> accessible (absent means denied).
 //
-// Unlike the per-op CanReadWorkspace (which folds a store error into "deny"), the
+// Unlike the per-op CanAccessWorkspace (which folds a store error into "deny"), the
 // batch form surfaces the error: its sole caller, workspace-create subscriber
 // expansion, must distinguish "denied" from "lookup failed" so a transient DB
 // blip retries the create instead of silently dropping the new workspace's seed.
 type workspaceReaderBatch interface {
-	CanReadWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error)
+	CanAccessWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error)
 }
 
+// workspaceScopedAuthChecker narrows an AuthChecker to the scopes a delegation
+// bearer's credential carries: one workspace it may write to, and the set of
+// workers its minting worker is entitled to reach. Both are upper bounds applied
+// BEFORE the inner checker, so a scope can only ever subtract access, never add it.
 type workspaceScopedAuthChecker struct {
 	inner       AuthChecker
 	workspaceID string
+	// workerScope, when non-nil, bounds which worker ids the ops may reference.
+	// See SubmitInput.WorkerScope for why this is a predicate and not an id.
+	workerScope func(workerID string) bool
 }
 
-func scopedAuthChecker(inner AuthChecker, workspaceID string) AuthChecker {
-	if workspaceID == "" {
+// scopedAuthChecker wraps inner with whichever of the two scopes are present,
+// returning inner untouched when neither is -- the session/API-credential case.
+func scopedAuthChecker(inner AuthChecker, workspaceID string, workerScope func(string) bool) AuthChecker {
+	if workspaceID == "" && workerScope == nil {
 		return inner
 	}
-	return workspaceScopedAuthChecker{inner: inner, workspaceID: workspaceID}
+	return workspaceScopedAuthChecker{inner: inner, workspaceID: workspaceID, workerScope: workerScope}
 }
 
-func (a workspaceScopedAuthChecker) CanWriteWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
-	if workspaceID != a.workspaceID {
+// outOfWorkspaceScope reports whether workspaceID falls outside the credential's
+// workspace bound. A checker carrying no workspace bound (worker-scoped only)
+// constrains nothing here -- guarding on the bound's presence rather than comparing
+// against it keeps an empty a.workspaceID from denying every workspace.
+func (a workspaceScopedAuthChecker) outOfWorkspaceScope(workspaceID string) bool {
+	return a.workspaceID != "" && workspaceID != a.workspaceID
+}
+
+func (a workspaceScopedAuthChecker) CanAccessWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
+	if a.outOfWorkspaceScope(workspaceID) {
 		return false, nil
 	}
-	return a.inner.CanWriteWorkspace(ctx, orgID, workspaceID, principalID)
+	return a.inner.CanAccessWorkspace(ctx, orgID, workspaceID, principalID)
 }
 
-func (a workspaceScopedAuthChecker) CanReadWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
-	if workspaceID != a.workspaceID {
-		return false, nil
-	}
-	return a.inner.CanReadWorkspace(ctx, orgID, workspaceID, principalID)
-}
-
+// CanUseWorker applies the credential's worker bound before the inner "may this
+// USER use this worker" check. Both must pass: the inner one answers whether the
+// principal has any claim to the worker at all, and the scope answers whether THIS
+// bearer -- which may be carrying an identity its minting worker was merely lent --
+// is entitled to reach it.
 func (a workspaceScopedAuthChecker) CanUseWorker(ctx context.Context, orgID, workerID, principalID string) (bool, error) {
+	if a.workerScope != nil && !a.workerScope(workerID) {
+		return false, nil
+	}
 	return a.inner.CanUseWorker(ctx, orgID, workerID, principalID)
+}
+
+// CanAccessWorkspaceForUsers forwards the OPTIONAL workspaceReaderBatch
+// capability with the credential's workspace bound applied, so wrapping a
+// batch-capable checker can never silently drop a caller off the batched
+// fast path onto N per-user loads. An out-of-scope workspace denies every
+// user (an empty map), exactly as the per-op CanAccessWorkspace denies each
+// individually.
+func (a workspaceScopedAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
+	if a.outOfWorkspaceScope(workspaceID) {
+		return map[string]bool{}, nil
+	}
+	return accessWorkspaceForUsers(ctx, a.inner, orgID, workspaceID, userIDs)
+}
+
+// accessWorkspaceForUsers resolves the batch capability against inner: the
+// genuinely batched load when inner provides it, else one CanAccessWorkspace
+// per user -- the same fallback ExpandSubscribersForWorkspace runs for a
+// checker without the capability. A per-user lookup error is PROPAGATED (not
+// folded to deny), matching the batch contract: the caller must distinguish
+// "denied" from "lookup failed".
+func accessWorkspaceForUsers(ctx context.Context, inner AuthChecker, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
+	if batch, ok := inner.(workspaceReaderBatch); ok {
+		return batch.CanAccessWorkspaceForUsers(ctx, orgID, workspaceID, userIDs)
+	}
+	result := make(map[string]bool, len(userIDs))
+	for _, id := range userIDs {
+		allowed, err := inner.CanAccessWorkspace(ctx, orgID, workspaceID, id)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			result[id] = true
+		}
+	}
+	return result, nil
 }
 
 // memoAuthChecker caches the (orgID, targetID, principalID) → bool
 // lookups for the lifetime of one ValidateBatch call. Backing
-// implementations hit the workspace / worker_access_grant tables; a
-// batch that touches the same workspace or worker N times then collapses
-// to a single fetch.
+// implementations hit the workspace / worker tables; a batch that
+// touches the same workspace or worker N times then collapses to a
+// single fetch.
 type memoAuthChecker struct {
-	inner   AuthChecker
-	writeWS map[[3]string]bool
-	readWS  map[[3]string]bool
-	useW    map[[3]string]bool
+	inner    AuthChecker
+	accessWS map[[3]string]bool
+	useW     map[[3]string]bool
 }
 
 // memoize returns the cached result for key, or runs fetch and caches it. A
@@ -115,15 +168,9 @@ func memoize(cache *map[[3]string]bool, key [3]string, fetch func() (bool, error
 	return v, nil
 }
 
-func (m *memoAuthChecker) CanWriteWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
-	return memoize(&m.writeWS, [3]string{orgID, workspaceID, principalID}, func() (bool, error) {
-		return m.inner.CanWriteWorkspace(ctx, orgID, workspaceID, principalID)
-	})
-}
-
-func (m *memoAuthChecker) CanReadWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
-	return memoize(&m.readWS, [3]string{orgID, workspaceID, principalID}, func() (bool, error) {
-		return m.inner.CanReadWorkspace(ctx, orgID, workspaceID, principalID)
+func (m *memoAuthChecker) CanAccessWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
+	return memoize(&m.accessWS, [3]string{orgID, workspaceID, principalID}, func() (bool, error) {
+		return m.inner.CanAccessWorkspace(ctx, orgID, workspaceID, principalID)
 	})
 }
 
@@ -131,6 +178,16 @@ func (m *memoAuthChecker) CanUseWorker(ctx context.Context, orgID, workerID, pri
 	return memoize(&m.useW, [3]string{orgID, workerID, principalID}, func() (bool, error) {
 		return m.inner.CanUseWorker(ctx, orgID, workerID, principalID)
 	})
+}
+
+// CanAccessWorkspaceForUsers forwards the OPTIONAL workspaceReaderBatch
+// capability so memo-wrapping a batch-capable checker can never silently drop
+// a caller off the batched fast path. Batch results are deliberately not
+// folded into the per-op memo: the batch form's error contract differs
+// (propagate, never fold to deny), and its caller runs outside the
+// single-ValidateBatch lifetime this memo exists for.
+func (m *memoAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
+	return accessWorkspaceForUsers(ctx, m.inner, orgID, workspaceID, userIDs)
 }
 
 // authCheck applies the per-op auth rule with create/delete/move exceptions.
@@ -148,7 +205,7 @@ func authCheck(ctx context.Context, op *leapmuxv1.OrgOp, preWS, postWS, principa
 	// (FORBIDDEN) from a transient lookup failure (propagated error). granted
 	// reports whether ws was writable so the move case can require both sides.
 	requireWrite := func(ws string) (granted bool, reason leapmuxv1.BatchRejectionReason, opID string, err error) {
-		allowed, lookupErr := auth.CanWriteWorkspace(ctx, orgID, ws, principalID)
+		allowed, lookupErr := auth.CanAccessWorkspace(ctx, orgID, ws, principalID)
 		if lookupErr != nil {
 			return false, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, "", lookupErr
 		}

@@ -42,13 +42,11 @@ function makeSection(
 function noop() {}
 
 const defaultProps = {
-  isOwner: true,
   isArchived: false,
   sections: [] as ReturnType<typeof makeSection>[],
   currentSectionId: 'sec-ip',
   onRename: noop,
   onMoveTo: noop as (sectionId: string) => void,
-  onShare: noop,
   onArchive: noop,
   onUnarchive: noop,
   onDelete: noop,
@@ -129,16 +127,6 @@ describe('workspaceContextMenu', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument()
   })
 
-  it('shows "Share..." label', () => {
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
-      />
-    ))
-    expect(screen.getByText('Share...')).toBeInTheDocument()
-  })
-
   it('shows Archive for non-archived workspaces', () => {
     render(() => (
       <WorkspaceContextMenu
@@ -164,18 +152,15 @@ describe('workspaceContextMenu', () => {
     expect(screen.queryByText('Archive')).not.toBeInTheDocument()
   })
 
-  it('hides owner-only items when not owner', () => {
+  it('always offers rename and delete (owner-only access: every visible workspace is our own)', () => {
     render(() => (
       <WorkspaceContextMenu
         {...defaultProps}
-        isOwner={false}
         sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
       />
     ))
-    expect(screen.queryByText('Rename')).not.toBeInTheDocument()
-    expect(screen.queryByText('Share...')).not.toBeInTheDocument()
-    expect(screen.queryByText('Delete')).not.toBeInTheDocument()
-    // Archive should still be visible (not owner-only)
+    expect(screen.getByText('Rename')).toBeInTheDocument()
+    expect(screen.getByText('Delete')).toBeInTheDocument()
     expect(screen.getByText('Archive')).toBeInTheDocument()
   })
 })

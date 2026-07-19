@@ -3,6 +3,7 @@ package store
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -30,6 +31,26 @@ func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
 		out[i] = fn(v)
 	}
 	return out
+}
+
+// ClampListLimit normalizes a caller-supplied page limit into the range every
+// dialect can carry. The Postgres and MySQL LIMIT columns are int32, so an
+// unclamped int64 (an admin passing --limit 3000000000 or 4294967297) would
+// truncate on the int32 cast -- wrapping to a negative LIMIT (a DB error) or a
+// tiny positive one (4294967297 -> 1 silent under-fetch) -- while SQLite's int64
+// LIMIT would return a wildly different set for the same flag. Clamping to
+// [0, math.MaxInt32] here makes the int32 conversion always safe and the three
+// dialects agree: a value past int32 caps at the max, a negative floors at 0.
+// A limit of 0 is preserved (the paginated queries treat it as "no rows"); this
+// only rewrites values a page limit could never legitimately hold.
+func ClampListLimit(limit int64) int64 {
+	if limit < 0 {
+		return 0
+	}
+	if limit > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return limit
 }
 
 // ParseCursorTime parses an RFC3339Nano cursor string into a time.Time.

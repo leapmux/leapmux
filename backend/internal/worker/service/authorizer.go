@@ -56,13 +56,17 @@ type channelAuthorizer struct {
 
 type channelManagerLike interface {
 	AccessibleWorkspaceIDs(channelID string) map[string]bool
+	// IsWorkspaceAccessible is the per-RPC membership check; prefer it over
+	// AccessibleWorkspaceIDs for a single-key test so the access gates do not
+	// allocate and copy the whole set on every request.
+	IsWorkspaceAccessible(channelID, workspaceID string) bool
 }
 
 func (c *channelAuthorizer) IsAccessible(workspaceID string) bool {
 	if c.channelID == "" {
 		return false
 	}
-	return c.mgr.AccessibleWorkspaceIDs(c.channelID)[workspaceID]
+	return c.mgr.IsWorkspaceAccessible(c.channelID, workspaceID)
 }
 
 func (c *channelAuthorizer) AccessibleSet() map[string]bool {

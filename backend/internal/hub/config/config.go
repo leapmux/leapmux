@@ -39,8 +39,6 @@ type Config struct {
 	PublicURL                    string        `koanf:"public_url"`
 	DataDir                      string        `koanf:"data_dir"`
 	DevFrontend                  string        `koanf:"dev_frontend"`
-	MaxMessageSize               int           `koanf:"max_message_size"`
-	MaxIncompleteChunked         int           `koanf:"max_incomplete_chunked"`
 	LogLevel                     string        `koanf:"log_level"`
 	SignupEnabled                bool          `koanf:"signup_enabled"`
 	EmailVerificationRequired    bool          `koanf:"email_verification_required"`
@@ -171,6 +169,10 @@ type ExtraFlagDef struct {
 	KoanfKey   string
 	Usage      string
 	StrDefault string // used when the flag is a string
+	// Category groups the flag in the help output; it must be one of
+	// hubFlagCategoryOrder. Empty defaults to "Server options", which is where
+	// the solo/dev launcher's own extras belong.
+	Category string
 }
 
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
@@ -271,8 +273,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"public-url", "public_url", "Server options", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ptrconv.Ptr(""), nil, nil},
 		{"data-dir", "data_dir", "Server options", "data directory", ptrconv.Ptr("."), nil, nil},
 		{"dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ptrconv.Ptr(""), nil, nil},
-		{"max-message-size", "max_message_size", "Timeout and limit options", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
-		{"max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "maximum in-flight chunked sequences per channel (default 4)", nil, ptrconv.Ptr(0), nil},
 		{"log-level", "log_level", "Server options", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
 		{"signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
 		{"email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
@@ -347,7 +347,11 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	for _, ef := range opts.ExtraFlags {
 		fieldMap[ef.Name] = ef.KoanfKey
 		defaults[ef.KoanfKey] = ef.StrDefault
-		usageCategories[ef.Name] = "Server options"
+		category := ef.Category
+		if category == "" {
+			category = "Server options"
+		}
+		usageCategories[ef.Name] = category
 		fs.String(ef.Name, ef.StrDefault, ef.Usage)
 	}
 

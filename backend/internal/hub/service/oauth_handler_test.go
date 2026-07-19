@@ -717,7 +717,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 
 	// Create a user with a verified email.
 	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "alice-org", IsPersonal: true})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "alice-org"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
@@ -816,7 +816,7 @@ func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
 
 	// Create a user with an unverified email.
 	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "bob-org", IsPersonal: true})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "bob-org"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)

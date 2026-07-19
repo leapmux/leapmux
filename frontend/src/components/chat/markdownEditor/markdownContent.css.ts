@@ -1,4 +1,9 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import {
+  BLOCKED_IMAGE_CHIP_CLASS,
+  BLOCKED_IMAGE_CLASS,
+  BLOCKED_IMAGE_LABEL_CLASS,
+} from '~/lib/rehypeBlockRemoteImages'
 import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
 import { shikiDualThemeColors } from '../shikiTokenColors.css'
@@ -71,4 +76,43 @@ globalStyle(`.${codeCopyHostClass}:hover .copy-code-button`, {
 globalStyle(`.${codeCopyHostClass} .copy-code-button:hover`, {
   backgroundColor: 'var(--card)',
   color: 'var(--foreground)',
+})
+
+// Placeholder for an image the markdown pipeline refused to fetch (see
+// rehypeBlockRemoteImages: only `data:`/`blob:` images render, because a remote image URL
+// exfiltrates conversation content and the user's IP with no click).
+//
+// Keyed to the marker classes the rehype plugin emits -- NOT scoped under
+// `.markdownContent` -- for the same reason `code-copy-host` is: the rendered HTML is
+// injected in several contexts and the placeholder must look intentional in all of them.
+// The class names live in the plugin module rather than here because that module is
+// bundled into the markdown Worker, which must not import a `.css.ts`.
+globalStyle(`.${BLOCKED_IMAGE_CLASS}`, {
+  display: 'inline-flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-2)',
+  maxWidth: '100%',
+  padding: 'var(--space-1) var(--space-2)',
+  borderRadius: 'var(--radius-small)',
+  border: '1px dashed var(--border)',
+  backgroundColor: 'var(--card)',
+  verticalAlign: 'baseline',
+})
+
+globalStyle(`.${BLOCKED_IMAGE_CHIP_CLASS}`, {
+  flexShrink: 0,
+  fontSize: 'var(--text-8)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+  color: 'var(--muted-foreground)',
+  whiteSpace: 'nowrap',
+})
+
+// The author's alt text (or the URL when there is no alt). Clickable only when the
+// sibling link-hardening pass kept it an <a> (http(s) srcs); otherwise it is plain text.
+globalStyle(`.${BLOCKED_IMAGE_LABEL_CLASS}`, {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  color: 'var(--muted-foreground)',
 })

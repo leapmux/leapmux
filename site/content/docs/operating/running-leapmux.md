@@ -47,7 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite, message-size, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-message-size`, `-max-incomplete-chunked`, `-api-timeout-seconds`, `-agent-startup-timeout-seconds`, `-worktree-create-timeout-seconds`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
+Solo also accepts the SQLite, chunked-reassembly, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`, `-api-timeout-seconds`, `-agent-startup-timeout-seconds`, `-worktree-create-timeout-seconds`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
 
 > **Note:** `--public-url` is **not** available in solo mode. If you set `public_url` by any means, solo mode rejects it with `public_url is not supported in solo mode`. Reverse-proxy fronting is a job for `hub` or `dev`.
 

@@ -49,6 +49,16 @@ type Client struct {
 	// waiting for the periodic interval.
 	OnTabSyncResponse func(*leapmuxv1.WorkspaceTabsSyncResponse)
 
+	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
+	// message on every Connect stream, before it publishes the connection -- so it
+	// fires before any ChannelOpen on the same stream can create a session, and
+	// therefore before any handler requireWorkerOwner gates can be dispatched.
+	//
+	// The Hub is the only authority: it owns workers.registered_by. The worker keeps
+	// no copy, so a reconnect re-establishes the owner rather than trusting a cache
+	// that could have gone missing.
+	OnWorkerIdentity func(registeredBy string)
+
 	// PublicKey is the Worker's X25519 public key for E2EE channels.
 	// Sent to the Hub with the initial heartbeat.
 	PublicKey []byte
@@ -68,6 +78,12 @@ type Client struct {
 	connCancel   context.CancelFunc // cancel function for current connection context
 	lastSendTime time.Time          // last time a message was sent (for idle heartbeat)
 	stopOnce     sync.Once
+	// identityReceived is set when the Hub delivers WorkerIdentity on the
+	// current connection. A watchdog (see watchForIdentity) force-closes the
+	// stream if it never arrives, so a proxy that strips the oneof, a partial
+	// upgrade, or a Hub bug cannot wedge requireWorkerOwner for the
+	// connection's life with no recovery short of a reconnect.
+	identityReceived atomic.Bool
 
 	// hubRetryDelay stores the retry delay (in seconds) requested by the Hub
 	// when it sends a HubShuttingDownNotification. Consumed once by
@@ -243,6 +259,13 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	slog.Info("connected to hub", "url", c.hubURL)
 
+	// Reset identity tracking for this connection and arm the watchdog that
+	// force-closes the stream if the Hub never delivers WorkerIdentity. The
+	// Hub sends it before publishing the connection (worker_connector_service.go),
+	// so its absence within the budget signals a stripped/dropped greeting.
+	c.identityReceived.Store(false)
+	go c.watchForIdentity(connCtx)
+
 	// Send workspace tab sync if a provider is configured.
 	if c.TabSyncProvider != nil {
 		if tabSync := c.TabSyncProvider(); tabSync != nil {
@@ -298,6 +321,12 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 			c.OnTabSyncResponse(payload.WorkspaceTabsSyncResp)
 		}
 
+	case *leapmuxv1.ConnectResponse_WorkerIdentity:
+		c.identityReceived.Store(true)
+		if c.OnWorkerIdentity != nil {
+			c.OnWorkerIdentity(payload.WorkerIdentity.GetRegisteredBy())
+		}
+
 	default:
 		slog.Warn("unhandled hub message", "request_id", msg.GetRequestId(), "payload_type", fmt.Sprintf("%T", msg.GetPayload()))
 	}
@@ -345,6 +374,46 @@ func resolveWorkingDir(path string) (string, error) {
 }
 
 const heartbeatIdleTimeout = 5 * time.Second
+
+// workerIdentityTimeout bounds how long the worker waits for the Hub's
+// connect-time WorkerIdentity greeting before force-closing the stream. The
+// Hub sends it before publishing the connection, so its absence within this
+// budget signals a stripped/dropped greeting -- which would otherwise leave
+// requireWorkerOwner denying every machine-scoped RPC (file, git, sysinfo,
+// tunnel) for the connection's life, indistinguishable from a genuine
+// cross-tenant refusal. Force-closing triggers ConnectWithReconnect's
+// backoff, which re-runs the greeting on a fresh stream. A var so tests can
+// shorten it.
+var workerIdentityTimeout = 10 * time.Second
+
+// watchForIdentity force-closes the connection if the Hub does not deliver
+// WorkerIdentity within workerIdentityTimeout. See Client.identityReceived.
+func (c *Client) watchForIdentity(ctx context.Context) {
+	timer := time.NewTimer(workerIdentityTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+		if c.identityReceived.Load() {
+			return
+		}
+		slog.Warn("hub did not deliver worker identity within timeout; forcing reconnect",
+			"timeout", workerIdentityTimeout)
+		c.cancelConn()
+	}
+}
+
+// cancelConn cancels the current connection's context if one is active. Safe
+// to call from any goroutine; a no-op when no connection is active.
+func (c *Client) cancelConn() {
+	c.mu.Lock()
+	cancel := c.connCancel
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
 
 func (c *Client) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)

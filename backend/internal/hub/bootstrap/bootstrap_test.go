@@ -26,10 +26,6 @@ func TestRun_SkipsNonSolo(t *testing.T) {
 	err := bootstrap.Run(ctx, st, false)
 	require.NoError(t, err)
 
-	hasOrgs, err := st.Orgs().HasAny(ctx)
-	require.NoError(t, err)
-	assert.False(t, hasOrgs)
-
 	hasUsers, err := st.Users().HasAny(ctx)
 	require.NoError(t, err)
 	assert.False(t, hasUsers)
@@ -42,16 +38,17 @@ func TestRun_SoloMode(t *testing.T) {
 	err := bootstrap.Run(ctx, st, true)
 	require.NoError(t, err)
 
-	org, err := st.Orgs().GetByName(ctx, usernames.Solo)
-	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, org.Name)
-
 	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
 	require.NoError(t, err)
 	assert.Equal(t, usernames.Solo, user.Username)
-	assert.Equal(t, org.ID, user.OrgID)
 	assert.True(t, user.IsAdmin)
 	assert.Empty(t, user.PasswordHash)
+
+	// The personal org is created alongside the user and carries the
+	// username as its name.
+	org, err := st.Orgs().GetByID(ctx, user.OrgID)
+	require.NoError(t, err)
+	assert.Equal(t, usernames.Solo, org.Name)
 }
 
 func TestRun_Idempotent(t *testing.T) {
@@ -64,7 +61,7 @@ func TestRun_Idempotent(t *testing.T) {
 	err = bootstrap.Run(ctx, st, true)
 	require.NoError(t, err)
 
-	orgs, err := st.Orgs().ListAll(ctx, store.ListAllOrgsParams{Limit: 100})
+	users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 100})
 	require.NoError(t, err)
-	assert.Len(t, orgs, 1)
+	assert.Len(t, users, 1)
 }

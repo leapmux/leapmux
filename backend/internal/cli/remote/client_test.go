@@ -2,6 +2,10 @@ package remote_test
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 )
@@ -150,4 +155,106 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 		assert.NotEqual(t, connect.CodeUnauthenticated, connect.CodeOf(streamErr),
 			"streaming RPC must not be rejected by the IPC server's auth middleware")
 	}
+}
+
+// fakeChannelHub is a minimal ChannelService that answers the two calls an
+// OpenChannel makes before the identity cross-check: the handshake params
+// (a real X25519 static key, CLASSIC mode, so the initiator's message 1
+// builds) and the open itself, which reports whatever identity the test
+// wants the hub to have authenticated. Everything past the cross-check is
+// deliberately left to fail -- the handshake payload is junk -- so the test
+// can tell "rejected on identity" apart from "got past identity".
+type fakeChannelHub struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+	staticPub  []byte
+	openUserID string
+}
+
+func (f *fakeChannelHub) GetWorkerHandshakeParams(
+	context.Context,
+	*connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
+) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
+	return connect.NewResponse(&leapmuxv1.GetWorkerHandshakeParamsResponse{
+		PublicKey:      f.staticPub,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}), nil
+}
+
+func (f *fakeChannelHub) OpenChannel(
+	context.Context,
+	*connect.Request[leapmuxv1.OpenChannelRequest],
+) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
+	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
+		ChannelId:        "ch-1",
+		UserId:           f.openUserID,
+		HandshakePayload: []byte("not-a-real-message2"),
+	}), nil
+}
+
+func (f *fakeChannelHub) CloseChannel(
+	context.Context,
+	*connect.Request[leapmuxv1.CloseChannelRequest],
+) (*connect.Response[leapmuxv1.CloseChannelResponse], error) {
+	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
+}
+
+// startFakeChannelHub serves fakeChannelHub over httptest and returns a
+// hub-bound Client pointed at it with the given resolved user id.
+func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *remote.Client {
+	t.Helper()
+
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	path, handler := leapmuxv1connect.NewChannelServiceHandler(&fakeChannelHub{
+		staticPub:  priv.PublicKey().Bytes(),
+		openUserID: hubUserID,
+	})
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	return &remote.Client{
+		HubURL:     srv.URL,
+		Bearer:     "lmx_test_secret",
+		HTTPClient: srv.Client(),
+		WSClient:   srv.Client(),
+		Pins:       newPinsForTest(t),
+		UserID:     cliUserID,
+	}
+}
+
+// TestOpenE2EEChannel_RejectsIdentityMismatch pins the ExpectedUserID
+// pass-through: the CLI resolves workspaces and workers under its creds'
+// user_id, so a hub that authenticates the channel as somebody else must
+// abort the open rather than hand back a channel that silently runs every
+// later RPC as the wrong user. Without ExpectedUserID wired into
+// OpenChannelOptions the open sails past this and fails later (or not at
+// all), which is exactly what this asserts against.
+func TestOpenE2EEChannel_RejectsIdentityMismatch(t *testing.T) {
+	c := startFakeChannelHub(t, "cli-user-1", "someone-else-2")
+
+	ctx := context.Background()
+	_, err := c.OpenE2EEChannel(ctx, ctx, "worker-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hub authenticated this channel as",
+		"the CLI must cross-check the hub's authenticated identity against its creds")
+	assert.Contains(t, err.Error(), "someone-else-2")
+	assert.Contains(t, err.Error(), "cli-user-1")
+}
+
+// TestOpenE2EEChannel_AcceptsMatchingIdentity is the sibling guard: an
+// agreeing hub must NOT be rejected. The open still fails -- the fake hub's
+// handshake payload is junk -- but it must fail in the handshake, past the
+// identity check.
+func TestOpenE2EEChannel_AcceptsMatchingIdentity(t *testing.T) {
+	c := startFakeChannelHub(t, "cli-user-1", "cli-user-1")
+
+	ctx := context.Background()
+	_, err := c.OpenE2EEChannel(ctx, ctx, "worker-1")
+	require.Error(t, err, "the fake hub's junk handshake payload cannot complete")
+	assert.NotContains(t, err.Error(), "hub authenticated this channel as",
+		"a hub that agrees with the CLI's creds must pass the cross-check")
+	assert.Contains(t, err.Error(), "handshake2")
 }

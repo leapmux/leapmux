@@ -61,15 +61,7 @@ func (s *workerStore) GetPublicKey(ctx context.Context, id string) (*store.Worke
 }
 
 func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams) (*store.Worker, error) {
-	return store.GetOwnedWorker(ctx, p, s.GetByID, s.hasAccess)
-}
-
-func (s *workerStore) hasAccess(ctx context.Context, workerID, userID string) (bool, error) {
-	ok, err := s.conn.q.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{
-		WorkerID: workerID,
-		UserID:   userID,
-	})
-	return ok, mapErr(err)
+	return store.GetOwnedWorker(ctx, p, s.GetByID)
 }
 
 func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) ([]store.Worker, error) {
@@ -78,18 +70,6 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		return nil, err
 	}
 	rows, err := s.conn.q.ListWorkersByUserID(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBWorkers(rows), nil
-}
-
-func (s *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersParams) ([]store.Worker, error) {
-	params, err := listOwnedWorkersParams(p.UserID, p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListOwnedWorkers(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}

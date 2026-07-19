@@ -78,9 +78,6 @@ message RegisterRequest {
 message RegisterResponse {
   string worker_id = 1;
   string auth_token = 2;
-  // User ID of the registration key's creator. The worker persists this
-  // alongside auth_token; downstream tunnel authorization needs it.
-  string registered_by = 3;
 }
 
 // WorkerStatus tracks the lifecycle state of a worker.
@@ -186,15 +183,15 @@ message ConnectRequest {
   string request_id = 1;
   oneof payload {
     // Lifecycle
-    DeregisterAck deregister_ack = 2;
-    WorkspaceTabsSync workspace_tabs_sync = 3;
+    DeregisterAck deregister_ack = 10;
+    WorkspaceTabsSync workspace_tabs_sync = 11;
     // E2EE channels
-    ChannelOpenResponse channel_open_resp = 4;
-    ChannelMessage channel_message_resp = 5;
+    ChannelOpenResponse channel_open_resp = 12;
+    ChannelMessage channel_message_resp = 13;
     // Health
-    Heartbeat heartbeat = 6;
+    Heartbeat heartbeat = 14;
     // Access control
-    ChannelAccessUpdateAck channel_access_update_ack = 7;
+    ChannelAccessUpdateAck channel_access_update_ack = 15;
   }
 }
 
@@ -232,21 +229,44 @@ message TabReassignment {
 message ConnectResponse {
   string request_id = 1;
   oneof payload {
+    // Identity. Always the FIRST message on the stream (see WorkerIdentity).
+    WorkerIdentity worker_identity = 10;
     // Lifecycle
-    DeregisterNotification deregister = 2;
-    HubShuttingDownNotification hub_shutting_down = 3;
+    DeregisterNotification deregister = 11;
+    HubShuttingDownNotification hub_shutting_down = 12;
     // E2EE channels
-    ChannelOpenRequest channel_open = 4;
-    ChannelMessage channel_message = 5;
-    ChannelCloseNotification channel_close = 6;
+    ChannelOpenRequest channel_open = 13;
+    ChannelMessage channel_message = 14;
+    ChannelCloseNotification channel_close = 15;
     // Health
-    Heartbeat heartbeat = 7;
+    Heartbeat heartbeat = 16;
     // Access control
-    ChannelAccessUpdate channel_access_update = 8;
+    ChannelAccessUpdate channel_access_update = 17;
     // Workspace-tabs sync result (carried in the same request_id as the
     // worker's WorkspaceTabsSync ConnectRequest payload).
-    WorkspaceTabsSyncResponse workspace_tabs_sync_resp = 9;
+    WorkspaceTabsSyncResponse workspace_tabs_sync_resp = 18;
   }
+}
+
+// WorkerIdentity tells a worker who owns it. The Hub sends it as the FIRST message
+// on every Connect stream, before the connection is registered with the worker
+// manager -- so nothing, in particular no ChannelOpen, can precede it.
+//
+// The Hub is the only authority: registered_by is sourced from
+// workers.registered_by, which is NOT NULL and set at registration. The worker keeps
+// no copy of its own, because a second source of truth is what let this value go
+// missing: it used to be handed over once in RegisterResponse and cached in a local
+// state file, so a file that predated the field, or was hand-edited or truncated,
+// left the worker running with no owner -- and requireWorkerOwner gates every
+// machine-scoped family (file, git, sysinfo, tunnel) on it, permanently denying the
+// worker's own legitimate owner in a way that reads exactly like a genuine
+// cross-tenant refusal.
+//
+// Re-delivered on every connect rather than once at registration, so a reconnect
+// re-establishes it and the worker never has to persist it.
+message WorkerIdentity {
+  // User ID that registered this worker. Never empty.
+  string registered_by = 1;
 }
 
 // ChannelAccessUpdate is sent by the Hub to a Worker when a new workspace

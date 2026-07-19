@@ -75,7 +75,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	ctx := context.Background()
 	orgID := id.Generate()
 	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{
-		ID: orgID, Name: "td-org", IsPersonal: true,
+		ID: orgID, Name: "td-org",
 	}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
@@ -148,7 +148,7 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 // notification fires after a delegation revoke.
 func (e *teardownEnv) captureWorker() chan *leapmuxv1.ConnectResponse {
 	ch := make(chan *leapmuxv1.ConnectResponse, 16)
-	e.workerMgr.Register(&workermgr.Conn{
+	_, _ = e.workerMgr.Register(&workermgr.Conn{
 		WorkerID: e.workerID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			ch <- msg
@@ -174,7 +174,7 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 	// a registered bearer-keyed channel is dropped on revoke.
 	channelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(channelID, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, "test-workspace"),
+		Credential: auth.DelegationCredential(tokenID, "test-workspace", "worker-mint"),
 	}, nil)
 	require.True(t, env.channelMgr.Exists(channelID))
 
@@ -219,10 +219,10 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 	cookieCh := id.Generate()
 
 	env.channelMgr.RegisterWithAuthInfo(revokedCh, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(revokedToken, "test-workspace"),
+		Credential: auth.DelegationCredential(revokedToken, "test-workspace", "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(otherBearerCh, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(otherToken, "test-workspace"),
+		Credential: auth.DelegationCredential(otherToken, "test-workspace", "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(cookieCh, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)
 
@@ -265,14 +265,14 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	}))
 
 	env.channelMgr.RegisterWithAuthInfo(chA, workerA, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, "test-workspace"),
+		Credential: auth.DelegationCredential(tokenID, "test-workspace", "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(chB, workerB, env.userID, channelmgr.AuthInfo{}, nil)
 	env.channelMgr.RegisterWithAuthInfo(chOther, workerA, otherUserID, channelmgr.AuthInfo{}, nil)
 
 	closesA := make(chan *leapmuxv1.ConnectResponse, 4)
 	closesB := make(chan *leapmuxv1.ConnectResponse, 4)
-	env.workerMgr.Register(&workermgr.Conn{
+	_, _ = env.workerMgr.Register(&workermgr.Conn{
 		WorkerID: workerA,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			if msg.GetChannelClose() != nil {
@@ -281,7 +281,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 			return nil
 		},
 	})
-	env.workerMgr.Register(&workermgr.Conn{
+	_, _ = env.workerMgr.Register(&workermgr.Conn{
 		WorkerID: workerB,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			if msg.GetChannelClose() != nil {

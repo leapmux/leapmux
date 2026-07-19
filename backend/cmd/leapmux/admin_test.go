@@ -391,7 +391,7 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	// Seed an OAuth token encrypted under key version 1.
 	st, err := storeopen.Open(ctx, adminConfig(dir))
 	require.NoError(t, err)
-	orgID := storetest.SeedOrg(t, st, "org", true)
+	orgID := storetest.SeedOrg(t, st, "org")
 	user := storetest.SeedUser(t, st, orgID, "tokuser")
 	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
 	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{

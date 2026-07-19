@@ -18,6 +18,8 @@ const httpSchemeRegex = /^https?:\/\//i
  * SolidJS SPA when running in desktop mode and not yet connected.
  */
 export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
+  const launchURL = new URL(window.location.href)
+  const cleanupWarning = launchURL.searchParams.get('cleanup_error') ?? ''
   const [mode, setMode] = createSignal<'solo' | 'distributed'>('solo')
   const [hubUrl, setHubUrl] = createSignal('')
   const [loading, setLoading] = createSignal(false)
@@ -168,6 +170,15 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       // Config load failed — show launcher anyway.
       log.error('failed to initialize launcher:', err)
       setVisible(true)
+    }
+    if (cleanupWarning) {
+      setError(cleanupWarning)
+      // Scrub the one-shot warning from the URL so a manual reload does not
+      // re-surface it. Done here in onMount rather than the component body so
+      // the global history mutation is a lifecycle side effect, not a
+      // render-time one.
+      launchURL.searchParams.delete('cleanup_error')
+      window.history.replaceState(window.history.state, '', launchURL)
     }
   })
 

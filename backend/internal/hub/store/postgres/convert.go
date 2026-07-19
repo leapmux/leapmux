@@ -64,29 +64,6 @@ func parseCursorToTs(cursor string) (pgtype.Timestamptz, error) {
 	return pgtype.Timestamptz{Time: t, Valid: true}, nil
 }
 
-func listAllOrgsParams(cursor string, limit int64) (gendb.ListAllOrgsParams, error) {
-	parsedCursor, err := parseCursorToTs(cursor)
-	if err != nil {
-		return gendb.ListAllOrgsParams{}, err
-	}
-	return gendb.ListAllOrgsParams{
-		Cursor: parsedCursor,
-		Limit:  int32(limit),
-	}, nil
-}
-
-func searchOrgsParams(query *string, cursor string, limit int64) (gendb.SearchOrgsParams, error) {
-	parsedCursor, err := parseCursorToTs(cursor)
-	if err != nil {
-		return gendb.SearchOrgsParams{}, err
-	}
-	return gendb.SearchOrgsParams{
-		Query:  ptrToText(query),
-		Cursor: parsedCursor,
-		Limit:  int32(limit),
-	}, nil
-}
-
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
 	parsedCursor, err := parseCursorToTs(cursor)
 	if err != nil {
@@ -94,7 +71,7 @@ func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, e
 	}
 	return gendb.ListAllUsersParams{
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -104,9 +81,12 @@ func searchUsersParams(query *string, cursor string, limit int64) (gendb.SearchU
 		return gendb.SearchUsersParams{}, err
 	}
 	return gendb.SearchUsersParams{
-		Query:  ptrToText(query),
+		// Fold the search term the same way the write path folds display_name_folded,
+		// so the plain-LIKE match is case-insensitive (and cross-dialect consistent) for
+		// non-ASCII names. A nil query stays nil (SearchUsers reads it as "no filter").
+		Query:  ptrToText(store.FoldSearchQuery(query)),
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -118,19 +98,7 @@ func listWorkersByUserIDParams(registeredBy, cursor string, limit int64) (gendb.
 	return gendb.ListWorkersByUserIDParams{
 		RegisteredBy: registeredBy,
 		Cursor:       parsedCursor,
-		Limit:        int32(limit),
-	}, nil
-}
-
-func listOwnedWorkersParams(userID, cursor string, limit int64) (gendb.ListOwnedWorkersParams, error) {
-	parsedCursor, err := parseCursorToTs(cursor)
-	if err != nil {
-		return gendb.ListOwnedWorkersParams{}, err
-	}
-	return gendb.ListOwnedWorkersParams{
-		UserID: userID,
-		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:        int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -141,7 +109,7 @@ func listWorkersAdminAllParams(cursor string, limit int64) (gendb.ListWorkersAdm
 	}
 	return gendb.ListWorkersAdminAllParams{
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -153,7 +121,7 @@ func listWorkersAdminByStatusParams(status leapmuxv1.WorkerStatus, cursor string
 	return gendb.ListWorkersAdminByStatusParams{
 		Status: status,
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -165,7 +133,7 @@ func listWorkersAdminByUserParams(userID, cursor string, limit int64) (gendb.Lis
 	return gendb.ListWorkersAdminByUserParams{
 		UserID: userID,
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -178,7 +146,7 @@ func listWorkersAdminByUserAndStatusParams(userID string, status leapmuxv1.Worke
 		UserID: userID,
 		Status: status,
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 
@@ -189,7 +157,7 @@ func listAllActiveSessionsParams(cursor string, limit int64) (gendb.ListAllActiv
 	}
 	return gendb.ListAllActiveSessionsParams{
 		Cursor: parsedCursor,
-		Limit:  int32(limit),
+		Limit:  int32(store.ClampListLimit(limit)),
 	}, nil
 }
 

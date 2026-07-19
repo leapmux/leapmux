@@ -276,9 +276,6 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			if err := tx.Workers().MarkAllDeletedByUser(ctx, user.ID); err != nil {
 				return fmt.Errorf("mark workers deleted: %w", err)
 			}
-			if err := tx.WorkerAccessGrants().DeleteByUser(ctx, user.ID); err != nil {
-				return fmt.Errorf("delete worker access grants: %w", err)
-			}
 			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, user.ID); err != nil {
 				return fmt.Errorf("soft-delete workspaces: %w", err)
 			}
@@ -295,17 +292,10 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
 				return err
 			}
-			if err := tx.OrgMembers().Delete(ctx, store.DeleteOrgMemberParams{
-				OrgID:  user.OrgID,
-				UserID: user.ID,
-			}); err != nil {
-				return fmt.Errorf("delete org member: %w", err)
-			}
+			// Users().Delete soft-deletes the personal org too, so the org name is
+			// freed for a future re-signup without a separate, easy-to-forget call.
 			if err := tx.Users().Delete(ctx, user.ID); err != nil {
 				return fmt.Errorf("delete user: %w", err)
-			}
-			if err := tx.Orgs().SoftDelete(ctx, user.OrgID); err != nil {
-				return fmt.Errorf("delete personal org: %w", err)
 			}
 			return nil
 		})

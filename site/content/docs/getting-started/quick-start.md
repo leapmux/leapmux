@@ -65,7 +65,7 @@ Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this
 The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
 
 - **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in…"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
-- **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, **Shared**, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
+- **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
 - **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/using/tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
 - **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/using/file-browser/)).
 
@@ -98,7 +98,7 @@ A **workspace** is the top-level container that holds your tiling layout. To cre
 - **Resume an existing session** *(optional)* — a prior session ID to resume.
 - **Git options** — appears once a Worker is chosen (see step 5).
 
-Click **"Create"**. LeapMux creates the workspace, spawns its first agent, and navigates to it. To work in an existing workspace instead, click its row in the sidebar. Full workspace management — rename, move, archive, delete, share — is covered in [Workspaces](/docs/using/workspaces/).
+Click **"Create"**. LeapMux creates the workspace, spawns its first agent, and navigates to it. To work in an existing workspace instead, click its row in the sidebar. Full workspace management — rename, move, archive, delete — is covered in [Workspaces](/docs/using/workspaces/).
 
 ### 3. Open a New Agent
 
@@ -161,7 +161,7 @@ You can split the tile so the agent and terminal sit side by side, or float the 
 You now have a working agent and a terminal. From here:
 
 - [Concepts & Architecture](/docs/getting-started/concepts/) — how the Hub, Worker, and Frontend fit together, and what solo vs. distributed means.
-- [Workspaces](/docs/using/workspaces/) — create, rename, move, archive, delete, and share workspaces.
+- [Workspaces](/docs/using/workspaces/) — create, rename, move, archive, and delete workspaces.
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, splits, grids, floating windows, and drag-and-drop.
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, tool rendering, and resuming sessions.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — branch and worktree workflows in depth.

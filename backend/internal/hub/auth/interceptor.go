@@ -31,7 +31,6 @@ var publicProcedures = map[string]bool{
 	leapmuxv1connect.AuthServiceLoginProcedure:                 true,
 	leapmuxv1connect.AuthServiceSignUpProcedure:                true,
 	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:         true,
-	leapmuxv1connect.OrgServiceCheckOrgExistsProcedure:         true,
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:   true,
 	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:    true,
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:     true,

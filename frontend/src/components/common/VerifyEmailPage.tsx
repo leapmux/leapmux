@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
+import { orgHomePath } from '~/lib/orgRoutes'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -60,7 +61,7 @@ export const VerifyEmailPage: Component = () => {
       if (resp.user)
         auth.setAuth(resp.user)
       const slug = resp.user?.username ?? auth.user()?.username
-      navigate(slug ? `/o/${slug}` : '/', { replace: true })
+      navigate(slug ? orgHomePath(slug) : '/', { replace: true })
     }
     catch (e) {
       setError(`${e}`)

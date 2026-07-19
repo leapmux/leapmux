@@ -16,7 +16,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	// itself queries — and every query is keyed by id. Subtests that
 	// must observe another user's row create that second user inline.
 	st := s.NewStore(t)
-	orgID := SeedOrg(t, st, "regkey-org", true)
+	orgID := SeedOrg(t, st, "regkey-org")
 	user := SeedUser(t, st, orgID, "regkey-user")
 
 	t.Run("create and get by id", func(t *testing.T) {
@@ -168,7 +168,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	t.Run("list admin hides expired by default", func(t *testing.T) {
 		// Fresh owner per list subtest so the assertions can ignore keys
 		// other subtests left behind on the shared store.
-		listOrgID := SeedOrg(t, st, "regkey-list-org-default", true)
+		listOrgID := SeedOrg(t, st, "regkey-list-org-default")
 		owner := SeedUser(t, st, listOrgID, "regkey-list-default")
 
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
@@ -184,7 +184,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("list admin include expired surfaces revoked rows", func(t *testing.T) {
-		listOrgID := SeedOrg(t, st, "regkey-list-org-incl", true)
+		listOrgID := SeedOrg(t, st, "regkey-list-org-incl")
 		owner := SeedUser(t, st, listOrgID, "regkey-list-incl")
 
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
@@ -205,7 +205,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("list admin paginates by created_at cursor", func(t *testing.T) {
-		listOrgID := SeedOrg(t, st, "regkey-list-org-page", true)
+		listOrgID := SeedOrg(t, st, "regkey-list-org-page")
 		owner := SeedUser(t, st, listOrgID, "regkey-list-page")
 
 		// created_at is set by the SQL DEFAULT (strftime ms on SQLite,

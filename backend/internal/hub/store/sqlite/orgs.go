@@ -16,23 +16,24 @@ var _ store.OrgStore = (*orgStore)(nil)
 
 func fromDBOrg(o gendb.Org) store.Org {
 	return store.Org{
-		ID:         o.ID,
-		Name:       o.Name,
-		IsPersonal: ptrconv.Int64ToBool(o.IsPersonal),
-		CreatedAt:  o.CreatedAt,
-		DeletedAt:  ptrconv.NullTimeToPtr(o.DeletedAt),
+		ID:        o.ID,
+		Name:      o.Name,
+		CreatedAt: o.CreatedAt,
+		DeletedAt: ptrconv.NullTimeToPtr(o.DeletedAt),
 	}
-}
-
-func fromDBOrgs(rows []gendb.Org) []store.Org {
-	return store.MapSlice(rows, fromDBOrg)
 }
 
 func (s *orgStore) Create(ctx context.Context, p store.CreateOrgParams) error {
 	return mapErr(s.conn.q.CreateOrg(ctx, gendb.CreateOrgParams{
-		ID:         p.ID,
-		Name:       p.Name,
-		IsPersonal: ptrconv.BoolToInt64(p.IsPersonal),
+		ID: p.ID,
+		// An org name mirrors its owner's username, so it shares the username's
+		// normalization -- exactly as userStore.Create normalizes the username.
+		// Normalizing here (rather than trusting each caller) keeps the mirror an
+		// invariant of the store: a caller passing a non-normalized username
+		// cannot leave orgs.name and users.username disagreeing in case, which
+		// would break RenameUserPersonalOrg's idempotency and, under a
+		// case-sensitive collation, the /o/ slug.
+		Name: store.NormalizeUsername(p.Name),
 	}))
 }
 
@@ -54,58 +55,6 @@ func (s *orgStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store
 	return &out, nil
 }
 
-func (s *orgStore) GetByName(ctx context.Context, name string) (*store.Org, error) {
-	o, err := s.conn.q.GetOrgByName(ctx, name)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := fromDBOrg(o)
-	return &out, nil
-}
-
-func (s *orgStore) HasAny(ctx context.Context) (bool, error) {
-	n, err := s.conn.q.HasAnyOrg(ctx)
-	if err != nil {
-		return false, mapErr(err)
-	}
-	return n, nil
-}
-
-func (s *orgStore) ListAll(ctx context.Context, p store.ListAllOrgsParams) ([]store.Org, error) {
-	params, err := listAllOrgsParams(p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListAllOrgs(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBOrgs(rows), nil
-}
-
-func (s *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]store.Org, error) {
-	params, err := searchOrgsParams(p.Query, p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.SearchOrgs(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBOrgs(rows), nil
-}
-
-func (s *orgStore) UpdateName(ctx context.Context, p store.UpdateOrgNameParams) error {
-	return mapErr(s.conn.q.UpdateOrgName(ctx, gendb.UpdateOrgNameParams{
-		Name: p.Name,
-		ID:   p.ID,
-	}))
-}
-
 func (s *orgStore) SoftDelete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.SoftDeleteOrg(ctx, id))
-}
-
-func (s *orgStore) SoftDeleteNonPersonal(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.SoftDeleteNonPersonalOrg(ctx, id))
 }

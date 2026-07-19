@@ -3,21 +3,37 @@ package leapmux.v1;
 
 // --- Tunnel inner RPC messages (E2EE channel, Desktop ↔ Worker) ---
 
-// Request to open a tunnel connection to a target.
-// Worker generates the conn_id to avoid client-side duplication.
+// Request to open a tunnel connection to a target. The client chooses conn_id
+// before sending so cancellation can close an open that completes after the
+// local deadline.
 message OpenTunnelConnRequest {
-  string target_addr = 1; // Hostname or IP (DNS resolved at Worker)
-  uint32 target_port = 2; // Target port (1-65535)
+  string conn_id = 1;
+  string target_addr = 2; // Hostname or IP (DNS resolved at Worker)
+  uint32 target_port = 3; // Target port (1-65535)
 }
 
 message OpenTunnelConnResponse {
-  string conn_id = 1; // Worker-generated unique connection ID
+  string conn_id = 1;
 }
 
-// Send data from local client to remote target.
+// Send data from local client to remote target. close_write half-closes the
+// target's write side (client -> target direction) AFTER this frame's data,
+// so a request/response protocol that signals end-of-request with a TCP FIN
+// (HTTP/1.0, SSH, `nc -N`, line protocols) delivers that read-EOF to the
+// target. It rides the same SendTunnelData/writeData path as data (serialized
+// per conn under the target write lock) so it observes the same ordering as
+// the byte stream it terminates.
 message SendTunnelDataRequest {
   string conn_id = 1;
   bytes data = 2;
+  bool close_write = 3;
+  // seq is a per-conn, client-assigned monotonic write sequence (0-based). The
+  // Worker dispatches each inner RPC on its own goroutine, so a conn's data +
+  // close_write frames would otherwise be applied to the target in a
+  // scheduler-determined order and corrupt the byte stream. The Worker applies
+  // a conn's writes strictly in seq order, restoring the send order the client
+  // guarantees (writes are serialized under the conn's write lock).
+  uint64 seq = 4;
 }
 
 message SendTunnelDataResponse {}
@@ -25,9 +41,29 @@ message SendTunnelDataResponse {}
 // Close a tunnel connection.
 message CloseTunnelConnRequest {
   string conn_id = 1;
+  // seq orders a graceful close after the conn's writes (same per-conn write
+  // sequence as SendTunnelDataRequest): the Worker flushes every lower-seq
+  // data/close_write frame before tearing the connection down, so a client
+  // that writes then closes does not lose the tail.
+  uint64 seq = 2;
 }
 
 message CloseTunnelConnResponse {}
+
+// GrantTunnelReadCredit replenishes the Worker's per-conn read-send credit as
+// the client consumes buffered inbound frames -- the read half of the tunnel's
+// flow control. The Worker only sends a TunnelConnEvent data frame while it
+// holds credit, so it never buffers more inbound frames than the client can
+// hold; a client that stops reading stops granting, the Worker stops reading
+// its target, and one stalled tunnel consumer can no longer starve the shared
+// E2EE channel's receive loop. The Worker self-seeds the initial window at open
+// and the client tops it up in batches as it drains its read buffer.
+message GrantTunnelReadCreditRequest {
+  string conn_id = 1;
+  uint64 credit = 2; // Additional inbound frames the client can now accept
+}
+
+message GrantTunnelReadCreditResponse {}
 
 // Streamed Worker → Desktop: data from remote target.
 message TunnelConnEvent {

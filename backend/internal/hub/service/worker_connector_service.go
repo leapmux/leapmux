@@ -132,10 +132,14 @@ func (s *WorkerConnectorService) Register(
 	)
 	s.broadcaster.NotifyWorkersChanged(registeredBy)
 
+	// registered_by is deliberately NOT returned here. The worker learns its owner
+	// from WorkerIdentity on every Connect instead: handing it over once at
+	// registration made the worker's local copy a second source of truth, and a state
+	// file that predated the field, or was hand-edited or truncated, left the worker
+	// running with no owner and every machine-scoped family dead for its own user.
 	return connect.NewResponse(&leapmuxv1.RegisterResponse{
-		WorkerId:     workerID,
-		AuthToken:    authToken,
-		RegisteredBy: registeredBy,
+		WorkerId:  workerID,
+		AuthToken: authToken,
 	}), nil
 }
 
@@ -165,8 +169,25 @@ func (s *WorkerConnectorService) Connect(
 		WorkerID: worker.ID,
 		Stream:   stream,
 		Cancel:   cancelConn,
+		// Greet the worker with its own identity. Register sends this before it
+		// publishes the conn, so it lands before any ChannelOpen this connection could
+		// carry -- which the worker needs, because requireWorkerOwner gates every
+		// machine-scoped family on the owner and a session can exist the moment the
+		// conn is reachable. Handing it to Register rather than sending it here is what
+		// makes that ordering impossible to get wrong.
+		//
+		// worker.RegisteredBy is already in hand from the GetByAuthToken above, so this
+		// costs no query.
+		Greeting: &leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: worker.RegisteredBy},
+			},
+		},
 	}
-	replaced := s.workerMgr.Register(conn)
+	replaced, err := s.workerMgr.Register(conn)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
+	}
 	if replaced {
 		// A new worker process replaced an older connection. The old
 		// connection's Unregister will return false (it's no longer the

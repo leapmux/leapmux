@@ -401,8 +401,7 @@ func (s *SectionService) MoveWorkspace(
 func (s *SectionService) initDefaultSections(ctx context.Context, userID string) error {
 	// Left sidebar sections
 	inProgressPos := lexorank.First()
-	sharedPos := lexorank.After(inProgressPos)
-	archivedPos := lexorank.After(sharedPos)
+	archivedPos := lexorank.After(inProgressPos)
 
 	workersPos := lexorank.After(archivedPos)
 
@@ -416,17 +415,6 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		Name:        "In progress",
 		Position:    inProgressPos,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-	}); err != nil {
-		return err
-	}
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "Shared",
-		Position:    sharedPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_SHARED,
 		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
 	}); err != nil {
 		return err

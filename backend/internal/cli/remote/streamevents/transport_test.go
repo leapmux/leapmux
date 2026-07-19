@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/tunnel"
 )
 
 // capturingHandler is a slog.Handler that records emitted records so a test can
@@ -33,18 +35,41 @@ func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
 // test can invoke it deterministically (standing in for the channel demux
 // goroutine), and exposes a cancellable Context().
 type fakeChannel struct {
-	cb  func(*leapmuxv1.InnerStreamMessage)
-	ctx context.Context
+	cb           func(*leapmuxv1.InnerStreamMessage)
+	streamOnSend *leapmuxv1.InnerStreamMessage
+	// respCh receives the response handler, so a test can deliver the terminal
+	// error envelope a server sends instead of a stream frame.
+	respCh chan<- *leapmuxv1.InnerRpcResponse
+	ctx    context.Context
 }
 
-func (f *fakeChannel) SendRPCNoWait(_ string, _ []byte, _ ...chan *leapmuxv1.InnerRpcResponse) (uint32, error) {
+func (f *fakeChannel) SendRPCNoWait(_ context.Context, _ string, _ []byte, handlers tunnel.RPCHandlers) (uint64, error) {
+	f.cb = handlers.Stream
+	f.respCh = handlers.Response
+	if f.streamOnSend != nil {
+		f.cb(f.streamOnSend)
+	}
 	return 1, nil
 }
-func (f *fakeChannel) RegisterStream(_ uint32, cb func(*leapmuxv1.InnerStreamMessage)) { f.cb = cb }
-func (f *fakeChannel) UnregisterStream(_ uint32)                                       {}
-func (f *fakeChannel) UnregisterPending(_ uint32)                                      {}
-func (f *fakeChannel) Context() context.Context                                        { return f.ctx }
-func (f *fakeChannel) Close()                                                          {}
+func (f *fakeChannel) UnregisterStream(_ uint64)  {}
+func (f *fakeChannel) UnregisterPending(_ uint64) {}
+func (f *fakeChannel) Context() context.Context   { return f.ctx }
+
+func TestChannelTransportRegistersStreamBeforeSendingRequest(t *testing.T) {
+	fc := &fakeChannel{
+		ctx:          context.Background(),
+		streamOnSend: &leapmuxv1.InnerStreamMessage{},
+	}
+	transport := NewChannelTransport(fc, nil)
+	frames := 0
+	cancel, done, err := transport.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+		frames++
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, frames, "a stream frame sent with the request response must not race callback registration")
+	cancel()
+	<-done
+}
 
 // TestChannelTransport_DropsFramesAfterTeardown asserts the cb guard: a frame the
 // channel demux delivers AFTER teardown (Done() closed) must not reach onFrame,
@@ -115,6 +140,59 @@ func TestChannelTransport_TeardownNotBlockedByInFlightFrame(t *testing.T) {
 // a WatchEventsResponse is surfaced at warn (not dropped silently) AND that the
 // stream stays alive -- a single corrupt frame must not reach onFrame nor end the
 // subscription, so a later valid frame still delivers.
+// A subscription that the server terminates with an error envelope must report
+// WHY. The envelope was received and discarded, so a `--follow` consumer went
+// quiet -- or resubscribed into the same rejection forever -- with nothing to
+// diagnose from. The sibling path (crossworker.Client.StreamInner) surfaces the
+// identical envelope.
+func TestChannelTransport_LogsTerminalErrorEnvelope(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	h := &capturingHandler{}
+	tr := NewChannelTransport(fc, slog.New(h))
+
+	_, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+	require.NotNil(t, fc.respCh)
+
+	// The worker rejects the subscription instead of streaming.
+	fc.respCh <- &leapmuxv1.InnerRpcResponse{
+		IsError:      true,
+		ErrorCode:    7,
+		ErrorMessage: "only the worker owner can watch events",
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a terminal error envelope must end the subscription")
+	}
+
+	require.Len(t, h.records, 1, "the terminal error must be logged, not discarded")
+	require.Equal(t, slog.LevelError, h.records[0].Level)
+	require.Contains(t, h.records[0].Message, "server error")
+}
+
+// A subscription the server ends CLEANLY (a non-error response) must not be
+// reported as a failure.
+func TestChannelTransport_CleanTerminalResponseIsNotLoggedAsError(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	h := &capturingHandler{}
+	tr := NewChannelTransport(fc, slog.New(h))
+
+	_, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+	require.NotNil(t, fc.respCh)
+
+	fc.respCh <- &leapmuxv1.InnerRpcResponse{}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a terminal response must end the subscription")
+	}
+	require.Empty(t, h.records, "a clean termination is not an error")
+}
+
 func TestChannelTransport_LogsMalformedFrame(t *testing.T) {
 	fc := &fakeChannel{ctx: context.Background()}
 	h := &capturingHandler{}

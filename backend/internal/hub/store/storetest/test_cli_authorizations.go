@@ -14,7 +14,7 @@ import (
 func (s *Suite) testCLIAuthorizations(t *testing.T) {
 	t.Run("subsecond-live device grant can be approved", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "device-auth-subsecond-org", true)
+		orgID := SeedOrg(t, st, "device-auth-subsecond-org")
 		user := SeedUser(t, st, orgID, "device-auth-subsecond-user")
 		deviceCode := id.Generate()
 		expiresAt := time.Now().UTC().Truncate(time.Second).Add(950 * time.Millisecond)
@@ -32,7 +32,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 
 	t.Run("expired approved device grant cannot be consumed", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "device-auth-org", true)
+		orgID := SeedOrg(t, st, "device-auth-org")
 		user := SeedUser(t, st, orgID, "device-auth-user")
 		deviceCode := id.Generate()
 		expiresAt := time.Now().Add(1500 * time.Millisecond)

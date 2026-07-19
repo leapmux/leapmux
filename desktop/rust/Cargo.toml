@@ -21,6 +21,12 @@ tauri-plugin-single-instance = "2"
 dirs = "6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net"] }
 
+[target.'cfg(unix)'.dependencies]
+# For getuid(2): the dev-sidecar connect compares the socket peer's kernel-reported
+# uid against our own before adopting it (see require_same_user_peer). Already in the
+# tree transitively via Tauri; named explicitly because we call it directly.
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Tauri 2 already pulls these in transitively (it returns
 # `gtk::ApplicationWindow` from `WebviewWindow::gtk_window()`).
@@ -30,9 +36,10 @@ gtk = "0.18"
 gdk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
-# Only the SID-lookup and force-kill paths still need raw Win32; the
-# named-pipe transport is delegated to tokio's overlapped-I/O client (see
-# desktop/rust/src/main.rs).
+# Only the SID lookup that ACLs the named pipe, and the pipe's own error codes,
+# still need raw Win32 -- the force-kill path that used OpenProcess/TerminateProcess
+# is gone. The named-pipe transport itself is delegated to tokio's overlapped-I/O
+# client (see desktop/rust/src/main.rs).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

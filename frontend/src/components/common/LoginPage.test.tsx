@@ -24,7 +24,7 @@ vi.mock('~/lib/systemInfo', () => ({
 }))
 
 const mockLogin = vi.fn()
-const mockUser = vi.fn<() => { username: string } | null>(() => null)
+const mockUser = vi.fn<() => { username: string, orgName: string } | null>(() => null)
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
@@ -159,7 +159,7 @@ describe('loginPage', () => {
 
   it('keeps button disabled after successful login', async () => {
     mockLogin.mockImplementation(() => {
-      mockUser.mockReturnValue({ username: 'alice' })
+      mockUser.mockReturnValue({ username: 'alice', orgName: 'alice' })
       return Promise.resolve()
     })
 

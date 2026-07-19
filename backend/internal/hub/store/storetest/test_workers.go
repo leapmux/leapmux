@@ -15,7 +15,7 @@ import (
 func (s *Suite) testWorkers(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "worker-owner")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -30,7 +30,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get by auth token", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "token-owner")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -47,7 +47,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get owned", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "owned-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -61,7 +61,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get owned wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "owned-user2")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -72,71 +72,58 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("get owned via access grant", func(t *testing.T) {
+	t.Run("get owned rejects non-owner in same org", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		owner := SeedUser(t, st, orgID, "grant-owner")
-		grantee := SeedUser(t, st, orgID, "grant-grantee")
+		orgID := SeedOrg(t, st, "worker-org")
+		owner := SeedUser(t, st, orgID, "getowned-owner")
+		other := SeedUser(t, st, orgID, "getowned-other")
 		worker := SeedWorker(t, st, owner.ID)
 
-		// Without a grant, grantee cannot access.
+		// A worker serves only the user it is registered to. Sharing an org --
+		// or a workspace -- conveys no access to another user's worker.
 		_, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   grantee.ID,
+			UserID:   other.ID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
-		// Grant access.
-		err = st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID:  worker.ID,
-			UserID:    grantee.ID,
-			GrantedBy: owner.ID,
-		})
-		require.NoError(t, err)
-
-		// Now grantee can access via GetOwned.
+		// The registering owner still gets it.
 		found, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   grantee.ID,
+			UserID:   owner.ID,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
 	})
 
-	t.Run("list owned includes access-granted workers", func(t *testing.T) {
+	t.Run("list by user id excludes other users workers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		owner := SeedUser(t, st, orgID, "listowned-owner")
-		grantee := SeedUser(t, st, orgID, "listowned-grantee")
-		ownedWorker := SeedWorker(t, st, grantee.ID)
-		grantedWorker := SeedWorker(t, st, owner.ID)
+		other := SeedUser(t, st, orgID, "listowned-other")
+		ownWorker := SeedWorker(t, st, other.ID)
+		foreignWorker := SeedWorker(t, st, owner.ID)
 
-		// Grant access to grantee for owner's worker.
-		err := st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID:  grantedWorker.ID,
-			UserID:    grantee.ID,
-			GrantedBy: owner.ID,
+		// ListByUserID is scoped strictly to registered_by: a user sees their own
+		// workers and nothing else, even for co-members of the same org.
+		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: other.ID,
+			Limit:        10,
 		})
 		require.NoError(t, err)
-
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID,
-			Limit:  10,
-		})
-		require.NoError(t, err)
-		assert.Len(t, workers, 2, "should include both owned and access-granted workers")
+		require.Len(t, workers, 1)
+		assert.Equal(t, ownWorker.ID, workers[0].ID)
 
 		ids := map[string]bool{}
 		for _, w := range workers {
 			ids[w.ID] = true
 		}
-		assert.True(t, ids[ownedWorker.ID], "should include directly owned worker")
-		assert.True(t, ids[grantedWorker.ID], "should include access-granted worker")
+		assert.False(t, ids[foreignWorker.ID], "must not include another user's worker")
 	})
 
 	t.Run("list admin excludes deleted workers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "admin-del-user")
 		alive := SeedWorker(t, st, user.ID)
 		dead := SeedWorker(t, st, user.ID)
@@ -154,7 +141,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("list admin filter by user id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user1 := SeedUser(t, st, orgID, "admin-u1")
 		user2 := SeedUser(t, st, orgID, "admin-u2")
 		w1 := SeedWorker(t, st, user1.ID)
@@ -171,7 +158,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get by auth token excluded after mark deleted", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "token-del-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -184,7 +171,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("list by user id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "list-user")
 		SeedWorker(t, st, user.ID)
 		SeedWorker(t, st, user.ID)
@@ -197,23 +184,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Len(t, workers, 2)
 	})
 
-	t.Run("list owned", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		user := SeedUser(t, st, orgID, "listowned-user")
-		SeedWorker(t, st, user.ID)
-
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: user.ID,
-			Limit:  10,
-		})
-		require.NoError(t, err)
-		assert.Len(t, workers, 1)
-	})
-
 	t.Run("list admin", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "admin-list-user")
 		SeedWorker(t, st, user.ID)
 
@@ -227,7 +200,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("list admin filter by status", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "status-filter-user")
 		w := SeedWorker(t, st, user.ID)
 
@@ -255,7 +228,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("set status", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "status-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -272,7 +245,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("update last seen", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "lastseen-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -286,7 +259,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("update public key", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "pubkey-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -307,7 +280,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("deregister", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "dereg-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -321,7 +294,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("deregister wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "dereg-wrong-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -335,7 +308,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("force deregister", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "force-dereg-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -346,7 +319,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("mark deleted", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "markdel-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -364,7 +337,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("mark all deleted by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "markall-user")
 		SeedWorker(t, st, user.ID)
 		SeedWorker(t, st, user.ID)
@@ -384,7 +357,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("create with public keys", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "pk-worker-user")
 
 		workerID := id.Generate()
@@ -413,7 +386,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get public key of deleted worker returns not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "pubkey-del-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -432,26 +405,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("list by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "no-workers-user")
 
 		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: user.ID,
 			Limit:        10,
-		})
-		require.NoError(t, err)
-		require.NotNil(t, workers)
-		assert.Empty(t, workers)
-	})
-
-	t.Run("list owned empty", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		user := SeedUser(t, st, orgID, "no-owned-user")
-
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: user.ID,
-			Limit:  10,
 		})
 		require.NoError(t, err)
 		require.NotNil(t, workers)
@@ -471,7 +430,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("mark deleted excludes from list by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "markdel-list-user")
 		alive := SeedWorker(t, st, user.ID)
 		dead := SeedWorker(t, st, user.ID)
@@ -490,7 +449,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("mark all deleted by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "markall-empty-user")
 
 		// Should be a no-op when user has no workers.
@@ -500,7 +459,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("deregister changes status but worker still fetchable", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "dereg-fetch-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -520,7 +479,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("newly created worker has correct initial status", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "init-status-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -530,7 +489,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("deregister already deleted", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "dereg-deleted-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -551,59 +510,25 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Equal(t, int64(0), n)
 	})
 
-	t.Run("get owned via access grant for deleted worker", func(t *testing.T) {
+	t.Run("get owned excludes deleted worker", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		owner := SeedUser(t, st, orgID, "grant-del-owner")
-		grantee := SeedUser(t, st, orgID, "grant-del-grantee")
+		orgID := SeedOrg(t, st, "worker-org")
+		owner := SeedUser(t, st, orgID, "getowned-del-owner")
 		worker := SeedWorker(t, st, owner.ID)
 
-		// Grant access then delete the worker.
-		err := st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID: worker.ID, UserID: grantee.ID, GrantedBy: owner.ID,
-		})
+		err := st.Workers().MarkDeleted(ctx, worker.ID)
 		require.NoError(t, err)
 
-		err = st.Workers().MarkDeleted(ctx, worker.ID)
-		require.NoError(t, err)
-
-		// GetOwned should return ErrNotFound for deleted worker even with grant.
+		// GetOwned returns ErrNotFound for a deleted worker, even for its owner.
 		_, err = st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
-			WorkerID: worker.ID, UserID: grantee.ID,
+			WorkerID: worker.ID, UserID: owner.ID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("list owned excludes deleted access-granted workers", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		owner := SeedUser(t, st, orgID, "lodel-owner")
-		grantee := SeedUser(t, st, orgID, "lodel-grantee")
-		alive := SeedWorker(t, st, owner.ID)
-		dead := SeedWorker(t, st, owner.ID)
-
-		// Grant access to both workers.
-		for _, w := range []*store.Worker{alive, dead} {
-			err := st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-				WorkerID: w.ID, UserID: grantee.ID, GrantedBy: owner.ID,
-			})
-			require.NoError(t, err)
-		}
-
-		err := st.Workers().MarkDeleted(ctx, dead.ID)
-		require.NoError(t, err)
-
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID, Limit: 10,
-		})
-		require.NoError(t, err)
-		assert.Len(t, workers, 1)
-		assert.Equal(t, alive.ID, workers[0].ID)
-	})
-
 	t.Run("list admin returns deregistering workers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "admin-dereg-user")
 		w := SeedWorker(t, st, user.ID)
 
@@ -638,9 +563,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.True(t, found, "deregistering worker should appear in unfiltered admin list")
 	})
 
-	t.Run("list owned excludes deregistering workers", func(t *testing.T) {
+	t.Run("list by user id excludes deregistering workers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "owned-dereg-user")
 		active := SeedWorker(t, st, user.ID)
 		dereg := SeedWorker(t, st, user.ID)
@@ -652,9 +577,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// ListOwned should only return the active worker.
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: user.ID, Limit: 10,
+		// ListByUserID filters on status = 1, so only the active worker comes back.
+		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID, Limit: 10,
 		})
 		require.NoError(t, err)
 		assert.Len(t, workers, 1)
@@ -663,7 +588,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("list admin filter by user and status", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "admin-combo-user")
 		w1 := SeedWorker(t, st, user.ID)
 		w2 := SeedWorker(t, st, user.ID)
@@ -690,7 +615,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("set status on deleted worker is no-op", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "setstatus-del-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -706,7 +631,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("force deregister deleted worker returns zero", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "forcedereg-del-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -720,7 +645,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("duplicate worker id returns conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "dup-worker-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -731,9 +656,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
 
-	t.Run("list owned with cursor and limit", func(t *testing.T) {
+	t.Run("list by user id with cursor and limit", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "page-owned-user")
 		for i := 0; i < 5; i++ {
 			if i > 0 {
@@ -742,60 +667,41 @@ func (s *Suite) testWorkers(t *testing.T) {
 			SeedWorker(t, st, user.ID)
 		}
 
-		// First page.
-		page1, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: user.ID, Limit: 2,
+		// First page: newest first (ORDER BY created_at DESC).
+		page1, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID, Limit: 3,
 		})
 		require.NoError(t, err)
-		assert.Len(t, page1, 2)
+		require.Len(t, page1, 3)
+		for i := 1; i < len(page1); i++ {
+			assert.False(t, page1[i].CreatedAt.After(page1[i-1].CreatedAt),
+				"page 1 must be ordered newest first")
+		}
 
-		// Second page using cursor.
+		// Second page using the cursor from the last item of page 1. The cursor
+		// is exclusive (created_at < cursor), so the remaining 2 come back.
 		cursor := page1[len(page1)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
-		page2, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: user.ID, Cursor: cursor, Limit: 2,
+		page2, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID, Cursor: cursor, Limit: 3,
 		})
 		require.NoError(t, err)
-		assert.Len(t, page2, 2)
-	})
+		assert.Len(t, page2, 2, "remaining 2 workers should be on page 2")
 
-	t.Run("list owned excludes workers after grant revoked", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		owner := SeedUser(t, st, orgID, "revoke-lo-owner")
-		grantee := SeedUser(t, st, orgID, "revoke-lo-grantee")
-		w1 := SeedWorker(t, st, grantee.ID) // grantee's own worker
-		w2 := SeedWorker(t, st, owner.ID)   // owner's worker, to be granted then revoked
-
-		err := st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-			WorkerID: w2.ID, UserID: grantee.ID, GrantedBy: owner.ID,
-		})
-		require.NoError(t, err)
-
-		// Grantee should see 2 workers.
-		workers, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID, Limit: 10,
-		})
-		require.NoError(t, err)
-		assert.Len(t, workers, 2)
-
-		// Revoke the grant.
-		err = st.WorkerAccessGrants().Revoke(ctx, store.RevokeWorkerAccessParams{
-			WorkerID: w2.ID, UserID: grantee.ID,
-		})
-		require.NoError(t, err)
-
-		// Grantee should now see only 1 worker.
-		workers, err = st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID, Limit: 10,
-		})
-		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, w1.ID, workers[0].ID)
+		// No overlap between pages, and page 2 is strictly older than the cursor.
+		seen := map[string]bool{}
+		for _, w := range page1 {
+			seen[w.ID] = true
+		}
+		for _, w := range page2 {
+			assert.False(t, seen[w.ID], "page 2 should not contain workers from page 1")
+			assert.True(t, w.CreatedAt.Before(page1[len(page1)-1].CreatedAt),
+				"page 2 rows must be strictly older than the cursor")
+		}
 	})
 
 	t.Run("update public key reflected in get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "pk-getbyid-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -816,7 +722,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("mark deleted is idempotent", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "markdel-idem-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -830,7 +736,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("force deregister already deregistering returns zero", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "forcedereg-dereg-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -849,7 +755,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("set status idempotent", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "setstatus-idem-user")
 		worker := SeedWorker(t, st, user.ID)
 
@@ -870,72 +776,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, found.Status)
 	})
 
-	t.Run("list owned with grants and cursor", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
-		owner := SeedUser(t, st, orgID, "grant-cursor-owner")
-		grantee := SeedUser(t, st, orgID, "grant-cursor-grantee")
-
-		// Create 3 workers owned by grantee + 2 granted from owner.
-		for i := 0; i < 3; i++ {
-			if i > 0 {
-				time.Sleep(5 * time.Millisecond)
-			}
-			SeedWorker(t, st, grantee.ID)
-		}
-		for i := 0; i < 2; i++ {
-			time.Sleep(5 * time.Millisecond)
-			w := SeedWorker(t, st, owner.ID)
-			err := st.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
-				WorkerID: w.ID, UserID: grantee.ID, GrantedBy: owner.ID,
-			})
-			require.NoError(t, err)
-			// Make granted workers ACTIVE so they appear in ListOwned.
-			err = st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{
-				ID: w.ID, Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
-			})
-			require.NoError(t, err)
-		}
-		// Also set grantee's own workers to ACTIVE.
-		ownedAll, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: grantee.ID, Limit: 10,
-		})
-		require.NoError(t, err)
-		for _, w := range ownedAll {
-			err = st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{
-				ID: w.ID, Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
-			})
-			require.NoError(t, err)
-		}
-
-		// First page: 3 workers (newest first).
-		page1, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID, Limit: 3,
-		})
-		require.NoError(t, err)
-		assert.Len(t, page1, 3)
-
-		// Second page using cursor from last item of page 1.
-		cursor := page1[len(page1)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
-		page2, err := st.Workers().ListOwned(ctx, store.ListOwnedWorkersParams{
-			UserID: grantee.ID, Cursor: cursor, Limit: 3,
-		})
-		require.NoError(t, err)
-		assert.Len(t, page2, 2, "remaining 2 workers should be on page 2")
-
-		// No overlap between pages.
-		seen := map[string]bool{}
-		for _, w := range page1 {
-			seen[w.ID] = true
-		}
-		for _, w := range page2 {
-			assert.False(t, seen[w.ID], "page 2 should not contain workers from page 1")
-		}
-	})
-
 	t.Run("list admin with cursor and limit", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "worker-org", true)
+		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "page-admin-user")
 		for i := 0; i < 5; i++ {
 			if i > 0 {

@@ -6,7 +6,7 @@
  * Authentication uses session cookies (Cookie header) instead of Bearer tokens.
  */
 
-import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '../../../src/lib/channel'
+import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
 import { EncryptionMode } from '../../../src/generated/leapmux/v1/channel_pb'
 import { ChannelManager } from '../../../src/lib/channel'
@@ -27,11 +27,7 @@ function base64ToBytes(b64: string): Uint8Array {
 const HTTP_TO_WS_RE = /^http/
 
 class FetchChannelTransport implements ChannelTransport {
-  private userId: string
-
-  constructor(private hubUrl: string, private cookie: string, userId: string) {
-    this.userId = userId
-  }
+  constructor(private hubUrl: string, private cookie: string) {}
 
   async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
     const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerHandshakeParams`, {
@@ -63,7 +59,7 @@ class FetchChannelTransport implements ChannelTransport {
     }
   }
 
-  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {
+  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }> {
     const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/OpenChannel`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
@@ -76,8 +72,8 @@ class FetchChannelTransport implements ChannelTransport {
       const body = await resp.text().catch(() => '')
       throw new Error(`OpenChannel failed: ${resp.status} ${body}`)
     }
-    const data = await resp.json() as { channelId: string, handshakePayload: string }
-    return { channelId: data.channelId, handshakePayload: base64ToBytes(data.handshakePayload) }
+    const data = await resp.json() as { channelId: string, handshakePayload: string, userId?: string }
+    return { channelId: data.channelId, handshakePayload: base64ToBytes(data.handshakePayload), userId: data.userId ?? '' }
   }
 
   async closeChannel(channelId: string): Promise<void> {
@@ -88,7 +84,7 @@ class FetchChannelTransport implements ChannelTransport {
     })
   }
 
-  createWebSocket(): WebSocket {
+  createWebSocket(): ChannelSocket {
     const wsUrl = `${this.hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/channel`
     // Bun/Node.js WebSocket doesn't send cookies automatically like browsers do.
     // Pass the session cookie via the headers option so the server can authenticate.
@@ -103,10 +99,6 @@ class FetchChannelTransport implements ChannelTransport {
     // Auto-accept key changes in e2e tests (fresh server instances each time).
     return 'accept'
   }
-
-  getUserId(): string {
-    return this.userId
-  }
 }
 
 /** Create a ChannelManager with a fetch-based transport for e2e tests. */
@@ -114,5 +106,13 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   const userId = await getUserId(hubUrl, cookie)
   // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
   // that can take up to 30s to start, and the E2EE round-trip adds overhead.
-  return new ChannelManager(new FetchChannelTransport(hubUrl, cookie, userId), { rpcTimeoutFn: () => 60_000 })
+  //
+  // expectedUserId mirrors what the app wires from its auth context: without it
+  // the manager's identity cross-check (open-time reject + pooled identity-drift
+  // eviction) short-circuits to "no expectation" and the whole feature runs
+  // unexercised in e2e.
+  return new ChannelManager(new FetchChannelTransport(hubUrl, cookie), {
+    rpcTimeoutFn: () => 60_000,
+    expectedUserId: () => userId,
+  })
 }

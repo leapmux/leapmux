@@ -87,7 +87,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 	respKind, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_Response)
 	require.True(t, ok, "expected InnerMessage_Response, got %T", envelope.GetKind())
 	resp := respKind.Response
-	assert.Equal(t, uint32(7), chMsg.GetCorrelationId())
+	assert.Equal(t, uint64(7), chMsg.GetCorrelationId())
 	assert.Equal(t, []byte("ok"), resp.GetPayload())
 }
 

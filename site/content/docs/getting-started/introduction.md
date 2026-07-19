@@ -26,7 +26,7 @@ Whichever way you run it, your work — agent transcripts, terminal output, and 
 LeapMux is built for two overlapping audiences:
 
 - **Developers** who run multiple coding agents and want each on its own branch and worktree, with sessions that survive crashes and reboots, in a single tiled or floating layout — on their own machine or against a beefier remote box.
-- **Operators** who want to host LeapMux for a team: a central server with real authentication, role-based organizations, pluggable database storage, and agents that run on separate machines needing no inbound ports open.
+- **Operators** who want to host LeapMux for a team: a central server with real authentication, pluggable database storage, and agents that run on separate machines needing no inbound ports open.
 
 ## Supported coding agents
 
@@ -56,19 +56,18 @@ Beyond running many agents at once, LeapMux gives you:
 - **Git-aware file browser** — A file tree with near-real-time git status, staged / unstaged / change filters, and inline diffs, even on a remote machine. See [File Browser](/docs/using/file-browser/).
 - **Integrated terminals** — Full PTY shell sessions living alongside your agents in the same tiling or floating layout, and persistent across reconnects. See [Terminals](/docs/using/terminals/).
 - **NAT-friendly remote machines** — The machines that run your agents always dial out to connect, so they can run behind firewalls and NATs with no inbound ports open. See [Managing Workers](/docs/operating/managing-workers/).
-- **Multi-org with RBAC** — Organizations with Owner / Admin / Member roles; workspaces shared per user or per org member. See [Organizations & Members](/docs/using/organizations/).
 - **Pluggable storage** — Back the central service with SQLite (the default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB. See [Configuration](/docs/operating/configuration/).
 - **End-to-end encryption** — Traffic between your browser and your agents is encrypted with a hybrid post-quantum handshake, and the machine you connect to is pinned on first connection (trust on first use). See [Security & Threat Model](/docs/operating/security/) and [Encryption & Data](/docs/operating/encryption-and-data/).
 - **Persistent sessions** — Agent sessions resume across restarts and reconnects — no manual `--resume` juggling. Terminals keep their live shell across reconnects and browser refreshes; restarting the machine they run on ends the shell, so the terminal returns showing its last screen and restarts on demand.
 - **Browser and desktop** — Use LeapMux in any modern browser, or install the native desktop app for macOS, Linux, or Windows. See [Installation](/docs/getting-started/installation/).
-- **Live layout sync** — Your tabs and tiling geometry stay in sync in near real time across your own devices, and update live for anyone you've shared a workspace with (read-only). See [Collaboration & Presence](/docs/using/collaboration/).
+- **Live layout sync** — Your tabs and tiling geometry stay in sync in near real time across your own devices. See [Device Sync & Presence](/docs/using/collaboration/).
 
 ## How this manual is organized
 
 The manual is grouped into a few broad parts. Start at the top if you are new; jump straight to a part if you already know what you need.
 
 - **Getting started** — [Introduction](/docs/getting-started/introduction/) (this page), [Concepts & Architecture](/docs/getting-started/concepts/), which explains how LeapMux is built and the org / workspace / tile / tab vocabulary the rest of the manual uses, then [Installation](/docs/getting-started/installation/) and [Quick Start](/docs/getting-started/quick-start/), which get LeapMux running and walk you through your first agent session.
-- **Using LeapMux** — [Accounts & Authentication](/docs/using/accounts/), [Organizations & Members](/docs/using/organizations/), [Workspaces](/docs/using/workspaces/), [Tabs & Layout](/docs/using/tabs-and-layout/), [Coding Agents](/docs/using/coding-agents/), [Worktrees & Branches](/docs/using/worktrees-and-branches/), [Terminals](/docs/using/terminals/), [File Browser](/docs/using/file-browser/), [Collaboration & Presence](/docs/using/collaboration/), [Settings & Preferences](/docs/using/settings/), and [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/).
+- **Using LeapMux** — [Accounts & Authentication](/docs/using/accounts/), [Workspaces](/docs/using/workspaces/), [Tabs & Layout](/docs/using/tabs-and-layout/), [Coding Agents](/docs/using/coding-agents/), [Worktrees & Branches](/docs/using/worktrees-and-branches/), [Terminals](/docs/using/terminals/), [File Browser](/docs/using/file-browser/), [Device Sync & Presence](/docs/using/collaboration/), [Settings & Preferences](/docs/using/settings/), and [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/).
 - **Running & operating** — [Running LeapMux](/docs/operating/running-leapmux/), [Configuration](/docs/operating/configuration/), [Managing Workers](/docs/operating/managing-workers/), [Admin CLI](/docs/operating/admin-cli/), [Authentication Providers](/docs/operating/authentication-providers/), [Encryption & Data](/docs/operating/encryption-and-data/), [Security & Threat Model](/docs/operating/security/), and [Remote Control CLI](/docs/operating/remote-control-cli/), which covers driving a running instance (or scripting an agent) with `leapmux remote`.
 - **Reference** — [CLI Reference](/docs/reference/cli-reference/), [Troubleshooting](/docs/reference/troubleshooting/), [FAQ](/docs/reference/faq/), [Glossary](/docs/reference/glossary/), and [Legal](/docs/reference/legal/).
 

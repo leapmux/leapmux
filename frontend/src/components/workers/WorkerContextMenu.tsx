@@ -12,7 +12,6 @@ import * as styles from './workerContextMenu.css'
 
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
-  isOwner: boolean
   // True for the in-process worker the solo launcher auto-registers.
   // The deregister handler refuses these (it would just re-register on
   // next start), so the menu item would be a dead-end click.
@@ -98,7 +97,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           </button>
         )}
       </Show>
-      <Show when={isTunnelAvailable() && props.isOwner}>
+      <Show when={isTunnelAvailable()}>
         <button role="menuitem" onClick={() => props.onAddTunnel()}>
           Add tunnel...
         </button>

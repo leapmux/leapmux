@@ -2,7 +2,6 @@ package storetest
 
 import (
 	"testing"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
@@ -12,7 +11,7 @@ import (
 func (s *Suite) testWorkspaces(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "My Workspace")
 
@@ -35,7 +34,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list by ids", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-byid-org", false)
+		orgID := SeedOrg(t, st, "ws-byid-org")
 		user := SeedUser(t, st, orgID, "ws-byid-user")
 		wsA := SeedWorkspace(t, st, orgID, user.ID, "A")
 		wsB := SeedWorkspace(t, st, orgID, user.ID, "B")
@@ -64,7 +63,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list accessible", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-list-user")
 		SeedWorkspace(t, st, orgID, user.ID, "WS 1")
 		SeedWorkspace(t, st, orgID, user.ID, "WS 2")
@@ -81,13 +80,12 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 	// a deterministic order across refreshes. ListAccessible orders by
 	// (created_at DESC, id DESC) — created_at is only millisecond-
 	// precision and rapid-fire seeding (or batch ops) easily ties two
-	// rows in the same ms. Without the `id` tiebreaker the planner picked
-	// its own order via the SELECT DISTINCT over the LEFT JOIN to
-	// workspace_access, so the sidebar shuffled workspaces on every
-	// page refresh.
+	// rows in the same ms. Without the `id` tiebreaker the planner picks
+	// its own order, so the sidebar shuffled workspaces on every page
+	// refresh.
 	t.Run("list accessible stable order on created_at ties", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-order-org", false)
+		orgID := SeedOrg(t, st, "ws-order-org")
 		user := SeedUser(t, st, orgID, "ws-order-user")
 		// Seed in a tight loop so at least some pairs share a millisecond.
 		// We don't rely on hitting the tie path on every iteration —
@@ -147,7 +145,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("rename", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-rename-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Old Title")
 
@@ -166,7 +164,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("rename wrong owner", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-rename-wrong")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Title")
 
@@ -181,7 +179,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-del-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Delete Me")
 
@@ -205,7 +203,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-delall-user")
 		ws1 := SeedWorkspace(t, st, orgID, user.ID, "WS A")
 		ws2 := SeedWorkspace(t, st, orgID, user.ID, "WS B")
@@ -220,31 +218,25 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		}
 	})
 
-	t.Run("shared workspace appears in accessible list", func(t *testing.T) {
+	t.Run("non-owner sees nothing in accessible list", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
-		owner := SeedUser(t, st, orgID, "ws-share-owner")
-		viewer := SeedUser(t, st, orgID, "ws-share-viewer")
-		wsID := SeedWorkspace(t, st, orgID, owner.ID, "Shared WS")
+		orgID := SeedOrg(t, st, "ws-org")
+		owner := SeedUser(t, st, orgID, "ws-own-owner")
+		other := SeedUser(t, st, orgID, "ws-own-other")
+		wsID := SeedWorkspace(t, st, orgID, owner.ID, "Owner Only WS")
 
-		// Viewer cannot see it yet.
+		// Workspace access is owner-only: another user in the same org
+		// never sees someone else's workspace.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: viewer.ID,
+			UserID: other.ID,
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		assert.Empty(t, workspaces)
 
-		// Grant access.
-		err = st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: wsID,
-			UserID:      viewer.ID,
-		})
-		require.NoError(t, err)
-
-		// Now viewer can see the shared workspace.
+		// The owner does.
 		workspaces, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: viewer.ID,
+			UserID: owner.ID,
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -252,46 +244,9 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		assert.Equal(t, wsID, workspaces[0].ID)
 	})
 
-	t.Run("soft-deleted shared workspace excluded from accessible list", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
-		owner := SeedUser(t, st, orgID, "ws-sddel-owner")
-		viewer := SeedUser(t, st, orgID, "ws-sddel-viewer")
-		wsID := SeedWorkspace(t, st, orgID, owner.ID, "To Be Deleted")
-
-		// Grant access and verify visible.
-		err := st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: wsID,
-			UserID:      viewer.ID,
-		})
-		require.NoError(t, err)
-
-		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: viewer.ID,
-			OrgID:  orgID,
-		})
-		require.NoError(t, err)
-		require.Len(t, workspaces, 1)
-
-		// Soft-delete the workspace.
-		_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
-			ID:          wsID,
-			OwnerUserID: owner.ID,
-		})
-		require.NoError(t, err)
-
-		// Viewer should no longer see it.
-		workspaces, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: viewer.ID,
-			OrgID:  orgID,
-		})
-		require.NoError(t, err)
-		assert.Empty(t, workspaces)
-	})
-
 	t.Run("soft deleted not in accessible list", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-acclist-user")
 		SeedWorkspace(t, st, orgID, user.ID, "Alive")
 		delID := SeedWorkspace(t, st, orgID, user.ID, "Dead")
@@ -313,7 +268,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list accessible empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-empty-user")
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
@@ -339,7 +294,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete already deleted", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-deldel-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Double Delete")
 
@@ -350,12 +305,18 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
-		// Second soft-delete is idempotent (may return 0 or 1 depending on backend).
-		_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+		// The is_deleted = 0 guard makes the second soft-delete match zero rows on
+		// EVERY dialect (MySQL is configured with ClientFoundRows=true, so it too
+		// reports matched -- not changed -- rows). A concurrent delete that lost
+		// the race therefore sees rows-affected == 0, which the service maps to
+		// NotFound instead of reporting success for a workspace the winner
+		// already deleted.
+		n, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
 			OwnerUserID: user.ID,
 		})
 		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "second soft-delete must match zero rows on every dialect")
 
 		// The workspace should still be soft-deleted.
 		_, err = st.Workspaces().GetByID(ctx, wsID)
@@ -364,7 +325,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-delall-empty-user")
 
 		// Should be a no-op when user has no workspaces.
@@ -374,7 +335,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("get by id include deleted returns non-deleted workspace", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		user := SeedUser(t, st, orgID, "ws-incl-nondel-user")
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "Live WS")
 
@@ -387,7 +348,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user does not affect other users", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org", false)
+		orgID := SeedOrg(t, st, "ws-org")
 		userA := SeedUser(t, st, orgID, "ws-sdabu-userA")
 		userB := SeedUser(t, st, orgID, "ws-sdabu-userB")
 		SeedWorkspace(t, st, orgID, userA.ID, "A's WS")
@@ -404,134 +365,20 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list accessible isolates by org", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgA := SeedOrg(t, st, "iso-orgA", false)
-		orgB := SeedOrg(t, st, "iso-orgB", false)
+		orgA := SeedOrg(t, st, "iso-orgA")
+		orgB := SeedOrg(t, st, "iso-orgB")
 		owner := SeedUser(t, st, orgA, "iso-owner")
-		viewer := SeedUser(t, st, orgA, "iso-viewer")
 		wsA := SeedWorkspace(t, st, orgA, owner.ID, "WS in A")
-		wsB := SeedWorkspace(t, st, orgB, owner.ID, "WS in B")
+		SeedWorkspace(t, st, orgB, owner.ID, "WS in B")
 
-		// Grant viewer access to both workspaces.
-		for _, wsID := range []string{wsA, wsB} {
-			err := st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-				WorkspaceID: wsID, UserID: viewer.ID,
-			})
-			require.NoError(t, err)
-		}
-
-		// ListAccessible for orgA should only return wsA.
+		// ListAccessible for orgA should only return wsA even though the
+		// owner also has a workspace homed in orgB.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: viewer.ID, OrgID: orgA,
+			UserID: owner.ID, OrgID: orgA,
 		})
 		require.NoError(t, err)
 		require.Len(t, workspaces, 1)
 		assert.Equal(t, wsA, workspaces[0].ID)
 	})
 
-	t.Run("list all accessible spans orgs and includes owned", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgA := SeedOrg(t, st, "aa-orgA", false)
-		orgB := SeedOrg(t, st, "aa-orgB", false)
-		viewer := SeedUser(t, st, orgA, "aa-viewer") // member of orgA only
-		ownerA := SeedUser(t, st, orgA, "aa-ownerA") // shares a same-org workspace
-		ownerB := SeedUser(t, st, orgB, "aa-ownerB") // shares a cross-org workspace
-		ownedByViewer := SeedWorkspace(t, st, orgA, viewer.ID, "viewer own")
-		sameOrgShared := SeedWorkspace(t, st, orgA, ownerA.ID, "same-org shared")
-		crossOrgShared := SeedWorkspace(t, st, orgB, ownerB.ID, "cross-org shared")
-		deletedShared := SeedWorkspace(t, st, orgB, ownerB.ID, "deleted shared")
-		unrelated := SeedWorkspace(t, st, orgB, ownerB.ID, "unrelated, not shared")
-
-		for _, wsID := range []string{sameOrgShared, crossOrgShared, deletedShared} {
-			require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-				WorkspaceID: wsID, UserID: viewer.ID,
-			}))
-		}
-		// A soft-deleted grant must not surface.
-		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
-			ID: deletedShared, OwnerUserID: ownerB.ID,
-		})
-		require.NoError(t, err)
-
-		accessible, err := st.Workspaces().ListAllAccessible(ctx, viewer.ID)
-		require.NoError(t, err)
-		ids := make([]string, len(accessible))
-		for i, w := range accessible {
-			ids[i] = w.ID
-		}
-		// Owned (any org) + same-org grant + cross-org grant all surface, with no
-		// org filter; the soft-deleted grant and a workspace never shared do not.
-		assert.ElementsMatch(t, []string{ownedByViewer, sameOrgShared, crossOrgShared}, ids)
-		assert.NotContains(t, ids, deletedShared, "soft-deleted workspace must be excluded")
-		assert.NotContains(t, ids, unrelated, "a workspace not owned and not granted must be excluded")
-
-		// Each returned workspace carries its true owning org so the caller can
-		// route follow-up reads; the cross-org one is in orgB.
-		for _, w := range accessible {
-			if w.ID == crossOrgShared {
-				assert.Equal(t, orgB, w.OrgID)
-			}
-		}
-
-		// The owner sees their OWN workspaces (owner-or-grant), across orgs, minus
-		// the soft-deleted one -- and not another user's owned/shared rows.
-		ownerAccessible, err := st.Workspaces().ListAllAccessible(ctx, ownerB.ID)
-		require.NoError(t, err)
-		ownerIDs := make([]string, len(ownerAccessible))
-		for i, w := range ownerAccessible {
-			ownerIDs[i] = w.ID
-		}
-		assert.ElementsMatch(t, []string{crossOrgShared, unrelated}, ownerIDs)
-	})
-
-	t.Run("list all accessible dedups owned-and-granted and orders newest-first", func(t *testing.T) {
-		// Exercises the two boundaries the UNION-of-indexed-seeks form must
-		// preserve: a workspace the user both OWNS and was explicitly GRANTED
-		// collapses to one row (UNION, not UNION ALL), and the trailing ORDER BY
-		// over the union result ranks every branch newest-first across orgs.
-		st := s.NewStore(t)
-		orgA := SeedOrg(t, st, "dedup-orgA", false)
-		orgB := SeedOrg(t, st, "dedup-orgB", false)
-		viewer := SeedUser(t, st, orgA, "dedup-viewer") // member of orgA only
-		granter := SeedUser(t, st, orgB, "dedup-granter")
-
-		// Sleep between creates so created_at ordering is deterministic (some
-		// backends only have millisecond precision, and ids are random nanoids
-		// that carry no creation order).
-		ownedA := SeedWorkspace(t, st, orgA, viewer.ID, "owned in A") // oldest
-		time.Sleep(5 * time.Millisecond)
-		ownedB := SeedWorkspace(t, st, orgB, viewer.ID, "owned in B") // owned in a second org
-		time.Sleep(5 * time.Millisecond)
-		// Owned AND granted to the same viewer: UNION must dedup it to one row.
-		ownedAndGranted := SeedWorkspace(t, st, orgA, viewer.ID, "owned and granted")
-		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: ownedAndGranted, UserID: viewer.ID,
-		}))
-		time.Sleep(5 * time.Millisecond)
-		// Granted-only in an org the viewer neither owns nor belongs to.
-		grantedOnly := SeedWorkspace(t, st, orgB, granter.ID, "granted only") // newest
-		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
-			WorkspaceID: grantedOnly, UserID: viewer.ID,
-		}))
-
-		accessible, err := st.Workspaces().ListAllAccessible(ctx, viewer.ID)
-		require.NoError(t, err)
-		ids := make([]string, len(accessible))
-		for i, w := range accessible {
-			ids[i] = w.ID
-		}
-
-		// Owned-across-orgs + owned-and-granted (once) + granted-only, newest-first.
-		assert.Equal(t, []string{grantedOnly, ownedAndGranted, ownedB, ownedA}, ids,
-			"results must be deduped and ordered by created_at DESC (newest first)")
-
-		// Explicit dedup guard: the owned-and-granted workspace appears exactly
-		// once. UNION ALL (or a regressed DISTINCT) would surface it twice.
-		count := 0
-		for _, wid := range ids {
-			if wid == ownedAndGranted {
-				count++
-			}
-		}
-		assert.Equal(t, 1, count, "a workspace both owned and granted must appear exactly once")
-	})
 }

@@ -74,9 +74,26 @@ func NewRegistry(factory ManagerFactory, logger *slog.Logger, opts ...RegistryOp
 // Get returns the manager for an org, lazy-creating it on first
 // reference. Cancels are propagated; partial bootstrap leaves no
 // manager in the map.
+//
+// Get performs NO authorization on orgID -- it is a lazy cache keyed by a
+// string, not an access checkpoint. A manager it returns can read and write the
+// org's whole CRDT, so every caller MUST gate org/workspace access at the op or
+// workspace layer downstream (Submit's per-op authCheck, the per-user
+// ListAccessible/Materialized filter). Do not add a caller that reads or mutates
+// manager state from an unvalidated orgID.
 func (r *Registry) Get(ctx context.Context, orgID string) (*Manager, error) {
 	r.mu.Lock()
 	if m, ok := r.managers[orgID]; ok {
+		// Stamp activity WHILE holding r.mu, before handing the manager out. A
+		// Get is genuine activity (the caller is about to read or submit against
+		// it), and stamping here serializes against SweepIdle, which decides and
+		// deletes under the same r.mu: either this stamp lands first and the next
+		// sweep sees the manager as fresh, or the sweep evicts first and this
+		// lookup misses and lazy-creates a live one. Without the stamp, a Get that
+		// returned a manager an instant before an idle sweep evicted and Stop()ed
+		// it would hand the caller a stopped manager whose Submit blocks until the
+		// caller's ctx cancels (a spurious DeadlineExceeded).
+		m.touchActivity()
 		r.mu.Unlock()
 		return m, nil
 	}
@@ -163,14 +180,13 @@ func (r *Registry) runJanitor() {
 // janitor calls this on a timer, but admin tooling and tests may
 // invoke it directly to evict idle managers on demand.
 //
-// Race window: a Get() that returned manager M just before SweepIdle
-// removes M from the map will hand the caller a reference to a manager
-// that's about to be stopped. The caller's subsequent Submit() will
-// either succeed (if the manager goroutine hasn't yet drained
-// m.submitCh) or block until the caller's context cancels — never
-// hang indefinitely. The window is narrow because idleSince's
-// hasLiveAttachments check rejects managers with subscribers, and
-// Submit always touches activity before the channel send.
+// The Get()-then-evict race is closed by construction: Get stamps activity
+// on the manager it returns WHILE holding r.mu, and SweepIdle reads that
+// activity (via idleSince) and deletes under the same r.mu. So the two
+// serialize -- either Get stamps first and this pass sees the manager as
+// fresh (skipped), or this pass evicts first and Get's lookup misses and
+// lazy-creates a live manager. A caller can therefore never be handed a
+// manager this pass is about to Stop().
 func (r *Registry) SweepIdle() {
 	now := time.Now()
 	r.mu.Lock()

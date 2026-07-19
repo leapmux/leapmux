@@ -28,7 +28,9 @@ func uniqueTestPipePath(t *testing.T) string {
 // TestRunSocketServerErrorsOnInvalidPipePath ensures an invalid pipe path
 // returns a wrapped error instead of panicking.
 func TestRunSocketServerErrorsOnInvalidPipePath(t *testing.T) {
-	err := RunSocketServer("", "test-hash")
+	app := NewApp("test-hash")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	err := RunSocketServer("", app)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listen ")
 }
@@ -38,9 +40,11 @@ func TestRunSocketServerErrorsOnInvalidPipePath(t *testing.T) {
 // for the listener to be ready by polling DialPipe.
 func runServerInBackground(t *testing.T, pipePath, binaryHash string) <-chan error {
 	t.Helper()
+	app := NewApp(binaryHash)
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	done := make(chan error, 1)
 	go func() {
-		done <- RunSocketServer(pipePath, binaryHash)
+		done <- RunSocketServer(pipePath, app)
 	}()
 
 	// Wait for the pipe to appear. The listener is up after the first

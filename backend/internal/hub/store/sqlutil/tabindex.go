@@ -72,47 +72,6 @@ func BulkUpsertTabs(ctx context.Context, exec DBExec, table string, rows []store
 	return nil
 }
 
-// BulkGrantWorkspaceAccessConfig holds the dialect-specific knobs for
-// BulkGrantWorkspaceAccess. ConflictSuffix is the ` ON CONFLICT ... DO
-// NOTHING` clause (sqlite/postgres) or ` ON DUPLICATE KEY UPDATE
-// user_id = user_id` clause (mysql) appended after the VALUES list.
-type BulkGrantWorkspaceAccessConfig struct {
-	ConflictSuffix string
-	ChunkRows      int
-}
-
-// BulkGrantWorkspaceAccess runs a single `INSERT INTO workspace_access
-// (workspace_id, user_id) VALUES (...) <ConflictSuffix>` against
-// `exec` per chunk. Two placeholders per row.
-func BulkGrantWorkspaceAccess(ctx context.Context, exec DBExec, params []store.GrantWorkspaceAccessParams, cfg BulkGrantWorkspaceAccessConfig, mapErr func(error) error) error {
-	if len(params) == 0 {
-		return nil
-	}
-	for start := 0; start < len(params); start += cfg.ChunkRows {
-		end := start + cfg.ChunkRows
-		if end > len(params) {
-			end = len(params)
-		}
-		chunk := params[start:end]
-		var sb strings.Builder
-		sb.Grow(80 + len(chunk)*8)
-		sb.WriteString("INSERT INTO workspace_access (workspace_id, user_id) VALUES ")
-		args := make([]any, 0, len(chunk)*2)
-		for i, p := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(?, ?)")
-			args = append(args, p.WorkspaceID, p.UserID)
-		}
-		sb.WriteString(cfg.ConflictSuffix)
-		if _, err := exec.ExecContext(ctx, sb.String(), args...); err != nil {
-			return mapErr(err)
-		}
-	}
-	return nil
-}
-
 // BulkDeleteTabs runs `DELETE FROM <table> WHERE (org_id, tab_id) IN
 // (...)` against `exec`, chunking the keys to stay under the dialect's
 // bound-parameter limit. Both sqlite and mysql support the row-value

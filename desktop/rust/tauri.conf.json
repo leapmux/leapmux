@@ -26,7 +26,11 @@
         "hiddenTitle": true,
         "dragDropEnabled": false
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:4328; style-src 'self' 'unsafe-inline' http://localhost:4328; img-src 'self' data: blob: http://localhost:4328; font-src 'self' data: http://localhost:4328; connect-src 'self' ipc: http://ipc.localhost http://localhost:4328 ws://localhost:4328; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
   },
   "bundle": {
     "active": true,

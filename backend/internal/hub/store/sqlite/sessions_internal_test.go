@@ -40,7 +40,7 @@ func waitForSQLiteFraction(t *testing.T, db *sql.DB, match func(float64) bool) {
 
 func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (string, string) {
 	t.Helper()
-	orgID := storetest.SeedOrg(t, st, "fractional-session-org", true)
+	orgID := storetest.SeedOrg(t, st, "fractional-session-org")
 	user := storetest.SeedUser(t, st, orgID, "fractional-session-user")
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{

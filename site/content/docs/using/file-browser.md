@@ -147,7 +147,7 @@ The initial view depends on the filter you opened from:
 | **Changed** or **Unstaged** | Inline diff of `HEAD` vs the working copy. |
 | **All** (or an unfiltered tree) | The plain working-copy content. |
 
-File tabs participate in the workspace's tiling and layout system like any other tab, so you can split, float, and rearrange them. See [Tabs & Layout](/docs/using/tabs-and-layout/). The file's path is registered with the Worker over the encrypted channel so that collaborators in the same workspace can resolve the same file — see [Collaboration & Presence](/docs/using/collaboration/).
+File tabs participate in the workspace's tiling and layout system like any other tab, so you can split, float, and rearrange them. See [Tabs & Layout](/docs/using/tabs-and-layout/). The file's path is registered with the Worker over the encrypted channel so that your other clients viewing the workspace can resolve the same file — see [Device Sync & Presence](/docs/using/collaboration/).
 
 ## Viewing files
 
