@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 
-	"time"
-
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -17,31 +15,32 @@ func runSessionList(cmd adminCmdCtx, args []string) error {
 	var limit *int64
 	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
-		limit = fs.Int64("limit", 50, "maximum number of results")
-		cursor = fs.String("cursor", "", "pagination cursor (last_active_at from previous page)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Cursor: *cursor,
-			Limit:  *limit,
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
 		})
 		if err != nil {
-			return fmt.Errorf("list sessions: %w", err)
+			return classifyListError("list sessions", err)
 		}
 
-		if len(sessions) == 0 {
+		if len(page.Rows) == 0 {
 			fmt.Println("No active sessions.")
 			return nil
 		}
 
 		fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n", "ID", "USER_ID", "USERNAME", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
-		for _, s := range sessions {
+		for _, s := range page.Rows {
 			fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n",
-				s.ID, s.UserID, s.Username,
+				s.ID, s.UserID, ownerLabel(s.Username, s.UserDeleted),
 				timefmt.Format(s.LastActiveAt), timefmt.Format(s.ExpiresAt),
 				s.IPAddress, truncate(s.UserAgent, 60))
 		}
 
-		maybePrintNextCursor(sessions, *limit, func(s store.ActiveSession) time.Time { return s.LastActiveAt })
+		maybePrintNextCursor(page)
 		return nil
 	})
 }

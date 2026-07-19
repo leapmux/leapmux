@@ -58,6 +58,10 @@ func (h *pgTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity
 	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleDollar, entity, id, createdAt)
 }
 
+func (h *pgTestHelper) SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error {
+	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleDollar, id, lastActiveAt)
+}
+
 func (h *pgTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
 	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
 }

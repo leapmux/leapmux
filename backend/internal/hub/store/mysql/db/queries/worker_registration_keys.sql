@@ -50,17 +50,20 @@ DELETE FROM worker_registration_keys WHERE id IN (
     ) inner_q
 );
 
--- The first placeholder in each `(? IS NULL OR ...)` pair lets callers opt
--- out of the active-only / cursor filter (mirrors ListWorkersAdmin*; sqlc's
--- MySQL engine rejects narg, hence the doubled positional placeholders).
+-- Both opt-in filters (active-only via `now`, cursor via cursor_time/cursor_id)
+-- use sqlc.narg so a NULL bind selects the "no filter" branch. A repeated narg
+-- reference still compiles to one `?` per occurrence, but sqlc collapses them
+-- onto a single typed Go param field (bound once per placeholder by the
+-- generated code) -- unlike the old hand-doubled `?` pairs, which surfaced as
+-- opaque ColumnN fields the caller had to fill twice.
 -- name: ListRegistrationKeysAdmin :many
 SELECT k.id, k.created_by, k.created_at, k.expires_at,
-       COALESCE(u.username, '(deleted)') AS creator_username
+       COALESCE(u.username, '') AS creator_username, (u.id IS NULL) AS creator_deleted
 FROM worker_registration_keys k
 LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
-WHERE (? IS NULL OR k.expires_at > ?)
-  AND (? IS NULL OR k.created_at < ?)
-ORDER BY k.created_at DESC
+WHERE (sqlc.narg(now) IS NULL OR k.expires_at > sqlc.narg(now))
+  AND (sqlc.narg(cursor_time) IS NULL OR k.created_at < sqlc.narg(cursor_time) OR (k.created_at = sqlc.narg(cursor_time) AND k.id < sqlc.narg(cursor_id)))
+ORDER BY k.created_at DESC, k.id DESC
 LIMIT ?;
 
 -- name: AdminSoftDeleteRegistrationKey :execresult

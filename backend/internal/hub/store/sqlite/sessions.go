@@ -28,8 +28,18 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 	}
 }
 
-func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
-	return store.MapSlice(rows, fromDBSession)
+func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSession {
+	return store.ActiveSession{
+		ID:           r.ID,
+		UserID:       r.UserID,
+		Username:     r.Username,
+		UserDeleted:  r.UserDeleted,
+		CreatedAt:    r.CreatedAt,
+		LastActiveAt: r.LastActiveAt,
+		ExpiresAt:    r.ExpiresAt,
+		IPAddress:    r.IpAddress,
+		UserAgent:    r.UserAgent,
+	}
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
@@ -55,16 +65,20 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	// sqlite Touch is an inline query rather than a generated one (unlike
-	// postgres/mysql): the WHERE compares the bound timestamp against the stored
-	// last_active_at as strings, so LastActiveAt is formatted in the same ISO 8601
-	// layout as strftime('%Y-%m-%dT%H:%M:%fZ', 'now') to keep the string
-	// comparison correct. A generated query would bind modernc's default time
-	// layout, which does not match.
+	// postgres/mysql). Both timestamp columns it writes MUST land in the canonical
+	// strftime layout because the read-side liveness/cursor filters in
+	// user_sessions.sql compare them as raw strings; see the ListAllActiveSessions
+	// comment there for the full storage invariant and the modernc driver-layout
+	// hazard that makes binding a raw time.Time unsafe. The SET clause wraps both
+	// values in strftime; the WHERE clause compares against a formatSQLiteTime-
+	// pre-formatted string -- byte-exact, because the on-disk strftime values
+	// carry fixed 3-digit fractional seconds exactly like sqliteTimeFormat (see
+	// its doc in convert.go, including the Go-string-scan caution).
 	lastActiveStr := p.LastActiveAt.UTC().Format(sqliteTimeFormat)
 	res, err := s.conn.exec.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-		     expires_at = ?
+		     expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
 		 WHERE id = ? AND last_active_at < ?`,
 		p.ExpiresAt.UTC(), p.ID, lastActiveStr,
 	)
@@ -106,37 +120,20 @@ func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.Refres
 	}))
 }
 
-func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
-	rows, err := s.conn.q.ListUserSessionsByUserID(ctx, userID)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBSessions(rows), nil
+func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams) (store.Page[store.UserSession], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListUserSessionsByUserIDParams, error) {
+			return listUserSessionsParams(p.UserID, p.Cursor, p.Limit)
+		},
+		s.conn.q.ListUserSessionsByUserID, fromDBSession)
 }
 
-func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) ([]store.ActiveSession, error) {
-	params, err := listAllActiveSessionsParams(p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListAllActiveSessions(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := make([]store.ActiveSession, len(rows))
-	for i, r := range rows {
-		out[i] = store.ActiveSession{
-			ID:           r.ID,
-			UserID:       r.UserID,
-			Username:     r.Username,
-			CreatedAt:    r.CreatedAt,
-			LastActiveAt: r.LastActiveAt,
-			ExpiresAt:    r.ExpiresAt,
-			IPAddress:    r.IpAddress,
-			UserAgent:    r.UserAgent,
-		}
-	}
-	return out, nil
+func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) (store.Page[store.ActiveSession], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListAllActiveSessionsParams, error) {
+			return listAllActiveSessionsParams(p.Cursor, p.Limit)
+		},
+		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {

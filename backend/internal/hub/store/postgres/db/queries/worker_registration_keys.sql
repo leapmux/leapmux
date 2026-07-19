@@ -48,12 +48,14 @@ DELETE FROM worker_registration_keys WHERE id IN (SELECT id FROM to_delete);
 -- pass NULL to surface expired rows for forensics.
 -- name: ListRegistrationKeysAdmin :many
 SELECT k.id, k.created_by, k.created_at, k.expires_at,
-       COALESCE(u.username, '(deleted)') AS creator_username
+       COALESCE(u.username, '') AS creator_username, (u.id IS NULL)::boolean AS creator_deleted
 FROM worker_registration_keys k
 LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
 WHERE (sqlc.narg(now)::timestamptz IS NULL OR k.expires_at > sqlc.narg(now))
-  AND (sqlc.narg(cursor)::timestamptz IS NULL OR k.created_at < sqlc.narg(cursor))
-ORDER BY k.created_at DESC
+  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+       OR k.created_at < sqlc.narg(cursor_time)::timestamptz
+       OR (k.created_at = sqlc.narg(cursor_time)::timestamptz AND k.id < sqlc.narg(cursor_id)))
+ORDER BY k.created_at DESC, k.id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: AdminSoftDeleteRegistrationKey :execresult

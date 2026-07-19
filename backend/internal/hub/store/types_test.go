@@ -71,22 +71,30 @@ func TestCreateUserParams_Validate(t *testing.T) {
 	}
 }
 
-// TestFoldSearchQuery pins the case-fold helper that keeps the admin user search
-// consistent across dialects: it Unicode-lowercases a term so it matches the
-// pre-folded display_name_folded column, and preserves nil (which SearchUsers reads
-// as "no filter -> all rows") so an absent query is never turned into an empty match.
-func TestFoldSearchQuery(t *testing.T) {
-	assert.Nil(t, FoldSearchQuery(nil), "a nil query stays nil (no filter), not an empty-string match")
+// TestSearchLikePattern pins the one site that builds the admin-search LIKE
+// pattern: it Unicode-lowercases a term so it matches the pre-folded
+// display_name_folded column, backslash-escapes the LIKE metacharacters so an
+// operator's literal '%'/'_' cannot act as a wildcard (paired with the queries'
+// ESCAPE '\'), appends the prefix-match '%', and preserves nil (which
+// SearchUsers reads as "no filter -> all rows").
+func TestSearchLikePattern(t *testing.T) {
+	assert.Nil(t, SearchLikePattern(nil), "a nil query stays nil (no filter), not an empty-string match")
 
-	empty := ""
-	require.NotNil(t, FoldSearchQuery(&empty))
-	assert.Equal(t, "", *FoldSearchQuery(&empty), "an empty query folds to empty, not nil")
-
-	mixed := "ÖLaf"
-	require.NotNil(t, FoldSearchQuery(&mixed))
-	assert.Equal(t, "ölaf", *FoldSearchQuery(&mixed), "a non-ASCII mixed-case term folds to lowercase")
+	pattern := func(s string) string {
+		p := SearchLikePattern(&s)
+		require.NotNil(t, p)
+		return *p
+	}
+	assert.Equal(t, "%", pattern(""), "an empty query becomes the match-all prefix pattern")
+	assert.Equal(t, "ölaf%", pattern("ÖLaf"), "a non-ASCII mixed-case term folds to lowercase")
 	// The direct folder agrees, so the write path and the query fold identically.
 	assert.Equal(t, "ölaf", FoldSearchText("ÖLaf"))
+
+	// LIKE metacharacters in the operator's term are escaped, so they match
+	// literally instead of widening the search.
+	assert.Equal(t, `\%%`, pattern("%"), "a literal %-search cannot dump every user")
+	assert.Equal(t, `a\_b%`, pattern("a_b"), "a literal _ (legal in email local parts) is not a one-char wildcard")
+	assert.Equal(t, `a\\b%`, pattern(`a\b`), "a backslash is escaped before the metachars it could mask")
 }
 
 // TestGetOwnedWorker_EmptyUserIDDenied pins the empty-identity fail-close on the
@@ -121,13 +129,16 @@ func TestClampListLimit(t *testing.T) {
 	assert.Equal(t, int64(50), ClampListLimit(50), "an ordinary limit passes through")
 	assert.Equal(t, int64(0), ClampListLimit(0), "zero is preserved (paginated queries treat it as no rows)")
 	assert.Equal(t, int64(0), ClampListLimit(-1), "a negative limit floors at 0 rather than wrapping negative")
-	assert.Equal(t, int64(math.MaxInt32), ClampListLimit(math.MaxInt32), "the int32 max passes through unchanged")
-	assert.Equal(t, int64(math.MaxInt32), ClampListLimit(math.MaxInt32+1), "a value past int32 caps at the max, not wraps")
+	// The ceiling is MaxInt32-1, not MaxInt32: FetchLimit adds a probe row, and
+	// the +1 must still fit the dialects' int32 LIMIT casts -- so HasMore stays
+	// exact even at the largest permitted limit instead of silently degrading.
+	assert.Equal(t, int64(math.MaxInt32-1), ClampListLimit(math.MaxInt32), "the int32 max caps at the probe-safe ceiling")
+	assert.Equal(t, int64(math.MaxInt32-1), ClampListLimit(math.MaxInt32+1), "a value past int32 caps at the ceiling, not wraps")
 	// The two concrete wrap cases the fix targets: 4294967297 would truncate to 1
 	// (a silent under-fetch) and 3000000000 to a negative int32 (a DB error).
-	assert.Equal(t, int64(math.MaxInt32), ClampListLimit(4294967297), "2^32+1 caps instead of truncating to 1")
-	assert.Equal(t, int64(math.MaxInt32), ClampListLimit(3000000000), "3e9 caps instead of wrapping negative on int32")
-	// The clamped value is always a safe int32 conversion.
-	assert.LessOrEqual(t, ClampListLimit(math.MaxInt64), int64(math.MaxInt32))
+	assert.Equal(t, int64(math.MaxInt32-1), ClampListLimit(4294967297), "2^32+1 caps instead of truncating to 1")
+	assert.Equal(t, int64(math.MaxInt32-1), ClampListLimit(3000000000), "3e9 caps instead of wrapping negative on int32")
+	// The clamped value +1 (the probe row) is always a safe int32 conversion.
+	assert.LessOrEqual(t, ClampListLimit(math.MaxInt64)+1, int64(math.MaxInt32))
 	assert.GreaterOrEqual(t, ClampListLimit(math.MinInt64), int64(0))
 }

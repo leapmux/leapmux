@@ -28,8 +28,18 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 	}
 }
 
-func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
-	return store.MapSlice(rows, fromDBSession)
+func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSession {
+	return store.ActiveSession{
+		ID:           r.ID,
+		UserID:       r.UserID,
+		Username:     r.Username,
+		UserDeleted:  r.UserDeleted,
+		CreatedAt:    r.CreatedAt,
+		LastActiveAt: r.LastActiveAt,
+		ExpiresAt:    r.ExpiresAt,
+		IPAddress:    r.IpAddress,
+		UserAgent:    r.UserAgent,
+	}
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
@@ -108,37 +118,20 @@ func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.Refres
 	}))
 }
 
-func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
-	rows, err := s.conn.q.ListUserSessionsByUserID(ctx, userID)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBSessions(rows), nil
+func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams) (store.Page[store.UserSession], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListUserSessionsByUserIDParams, error) {
+			return listUserSessionsParams(p.UserID, p.Cursor, p.Limit)
+		},
+		s.conn.q.ListUserSessionsByUserID, fromDBSession)
 }
 
-func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) ([]store.ActiveSession, error) {
-	params, err := listAllActiveSessionsParams(p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListAllActiveSessions(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := make([]store.ActiveSession, len(rows))
-	for i, r := range rows {
-		out[i] = store.ActiveSession{
-			ID:           r.ID,
-			UserID:       r.UserID,
-			Username:     r.Username,
-			CreatedAt:    r.CreatedAt,
-			LastActiveAt: r.LastActiveAt,
-			ExpiresAt:    r.ExpiresAt,
-			IPAddress:    r.IpAddress,
-			UserAgent:    r.UserAgent,
-		}
-	}
-	return out, nil
+func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) (store.Page[store.ActiveSession], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListAllActiveSessionsParams, error) {
+			return listAllActiveSessionsParams(p.Cursor, p.Limit)
+		},
+		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {

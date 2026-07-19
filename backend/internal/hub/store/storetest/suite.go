@@ -41,6 +41,7 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("transactions", s.testTransactions)
 	t.Run("cleanup", s.testCleanup)
 	t.Run("token_revocation", s.testTokenRevocation)
+	t.Run("token_listing", s.testTokenListing)
 	// `migrator` runs last because its `migrate to zero` subtest leaves
 	// the schema partially dropped, and the suite's per-test re-migrate
 	// trampoline can't always recover the dropped state cleanly. Any

@@ -265,35 +265,31 @@ func (s *WorkerManagementService) ListWorkers(
 		}
 	}
 
-	workers, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		Cursor:       cursor,
-		Limit:        limit,
+		PageParams:   store.PageParams{Cursor: cursor, Limit: limit},
 	})
 	if err != nil {
+		// A malformed or stale opaque cursor is bad client input, not a server
+		// fault: the store's cursor decode wraps store.ErrInvalidCursor before
+		// any query runs, and it must surface as 400 InvalidArgument rather
+		// than the 500 Internal that genuine store failures map to.
+		if errors.Is(err, store.ErrInvalidCursor) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	protoWorkers := make([]*leapmuxv1.Worker, len(workers))
-	for i := range workers {
-		protoWorkers[i] = s.workerToProto(&workers[i], user.OrgID)
-	}
-
-	hasMore := int64(len(workers)) == limit
-	var nextCursor string
-	if hasMore {
-		// This single-column created_at cursor can skip rows sharing the last
-		// page's millisecond (the worker list queries lack a unique tiebreaker); a
-		// composite (created_at, id) cursor across the keyset-paginated queries is
-		// tracked in https://github.com/leapmux/leapmux/issues/287.
-		nextCursor = workers[len(workers)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
+	for i := range page.Rows {
+		protoWorkers[i] = s.workerToProto(&page.Rows[i], user.OrgID)
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListWorkersResponse{
 		Workers: protoWorkers,
 		Page: &leapmuxv1.PageResponse{
-			NextCursor: nextCursor,
-			HasMore:    hasMore,
+			NextCursor: page.NextCursor,
+			HasMore:    page.HasMore(),
 		},
 	}), nil
 }

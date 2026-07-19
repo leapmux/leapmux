@@ -4,16 +4,17 @@ INSERT INTO user_sessions (
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
-    sqlc.arg(expires_at),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)),
     sqlc.arg(user_agent),
     sqlc.arg(ip_address),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 
 -- name: GetUserSessionByID :one
--- julianday() normalizes modernc's bound time format and SQLite's strftime
--- format without discarding the fractional second at the expiry boundary.
-SELECT * FROM user_sessions WHERE id = ? AND julianday(expires_at) > julianday('now');
+-- expires_at is stored in the canonical strftime('%Y-%m-%dT%H:%M:%fZ') layout
+-- (CreateUserSession wraps the bound instant), so the liveness filter compares
+-- it raw against the same layout -- millisecond-exact at the expiry boundary.
+SELECT * FROM user_sessions WHERE id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteUserSession :one
 DELETE FROM user_sessions WHERE id = ? RETURNING id, user_id;
@@ -23,7 +24,7 @@ SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified, u.email, s.crea
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = ?
-  AND julianday(s.expires_at) > julianday('now')
+  AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   AND u.deleted_at IS NULL
   AND s.auth_generation >= u.auth_generation;
 
@@ -41,7 +42,12 @@ WHERE user_sessions.id = sqlc.arg(session_id)
   );
 
 -- name: DeleteExpiredUserSessions :execresult
-DELETE FROM user_sessions WHERE julianday(expires_at) < julianday('now');
+-- expires_at is stored canonical (CreateUserSession + Touch both wrap the bound
+-- instant in strftime), so comparing it raw against the same canonical RHS is
+-- sargable for idx_user_sessions_expires_at_last_active (SEARCH expires_at<?,
+-- not a SCAN-with-residual under julianday()) -- the index was orphaned under
+-- the julianday wrap. RHS is strftime('now'), evaluated once, no binding.
+DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteUserSessionsByUser :exec
 DELETE FROM user_sessions WHERE user_id = ?;
@@ -51,15 +57,33 @@ DELETE FROM user_sessions WHERE user_id = ? AND id != ?;
 
 -- name: ListUserSessionsByUserID :many
 SELECT * FROM user_sessions
-WHERE user_id = ? AND julianday(expires_at) > julianday('now')
-ORDER BY last_active_at DESC
-LIMIT 1000;
+WHERE user_id = sqlc.arg(user_id) AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR last_active_at < sqlc.narg(cursor_time)
+       OR (last_active_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY last_active_at DESC, id DESC
+LIMIT sqlc.arg(limit);
 
 -- name: ListAllActiveSessions :many
-SELECT s.id, s.user_id, u.username, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
+-- Both timestamp filters compare the raw canonical strftime('%Y-%m-%dT%H:%M:%fZ')
+-- column against the same layout. expires_at is stored canonical because BOTH
+-- write paths canonicalize it: CreateUserSession wraps the bound instant in
+-- strftime, and Touch (the inline UPDATE in sqlite/sessions.go) binds a
+-- formatSQLiteTime-pre-formatted string. last_active_at is written SQL-side by
+-- the column DEFAULT and Touch. A future session write path MUST keep this
+-- invariant -- binding a raw time.Time stores modernc's driver layout
+-- ("... ...+00:00", space at byte 10) and silently breaks every raw-string
+-- liveness filter below; see TestTouchStoresExpiresAtCanonical.
+-- last_active_at also carries the keyset cursor (decodeCursorParams formats it
+-- identically), so the predicate is a byte-exact raw-string compare -- exact
+-- equality for the id tiebreak, consistent with the raw-column ORDER BY, and
+-- sargable for the index.
+SELECT s.id, s.user_id, COALESCE(u.username, '') AS username, CAST(u.id IS NULL AS BOOLEAN) AS user_deleted, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
 FROM user_sessions s
-JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
-WHERE julianday(s.expires_at) > julianday('now')
-  AND (sqlc.narg(cursor) IS NULL OR julianday(s.last_active_at) < julianday(sqlc.narg(cursor)))
-ORDER BY s.last_active_at DESC
+LEFT JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
+WHERE s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR s.last_active_at < sqlc.narg(cursor_time)
+       OR (s.last_active_at = sqlc.narg(cursor_time) AND s.id < sqlc.narg(cursor_id)))
+ORDER BY s.last_active_at DESC, s.id DESC
 LIMIT sqlc.arg(limit);

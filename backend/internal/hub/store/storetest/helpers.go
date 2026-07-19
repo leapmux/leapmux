@@ -24,6 +24,58 @@ func RequireConflict(t *testing.T, err error) {
 
 var ctx = context.Background()
 
+// ListAllSessions returns every live session for userID via the paginated
+// ListByUserID, using one oversized page: for tests that assert on the full
+// membership rather than paging behavior.
+func ListAllSessions(t *testing.T, st store.Store, userID string) []store.UserSession {
+	t.Helper()
+	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userID, PageParams: store.PageParams{Limit: 1000}})
+	require.NoError(t, err)
+	return page.Rows
+}
+
+// pageThroughByOne pages through a keyset-paginated listing one row at a
+// time using the store-produced next cursor, and returns the row ids in
+// visit order. Used by the same-millisecond tie tests: paging with limit=1
+// forces every row onto a page boundary, so a broken tiebreaker shows up as
+// a skipped or duplicated id. The loop follows HasMore, which the store
+// derives from a limit+1 probe row -- so it also asserts the final page
+// reports HasMore=false instead of handing out a dead extra cursor.
+//
+// The cap is a safety net for a paging bug that re-returns rows forever, NOT
+// the expected termination path: a correct keyset walk ends via the empty-page
+// or !HasMore break. It sits well above any real test's row count (currently
+// <=3), and the loop fails loudly if it ever reaches the cap -- otherwise a
+// runaway pager would exit silently and only the caller's ElementsMatch (which
+// a future author could weaken or omit) would catch the missing rows.
+func pageThroughByOne[T store.PageCursorer](t *testing.T, fetch func(cursor string) (store.Page[T], error)) []string {
+	t.Helper()
+	var seen []string
+	cursor := ""
+	const safetyCap = 100
+	for i := 0; i < safetyCap; i++ {
+		page, err := fetch(cursor)
+		require.NoError(t, err)
+		if len(page.Rows) == 0 {
+			require.False(t, page.HasMore(), "empty page must not report more rows")
+			break
+		}
+		require.Len(t, page.Rows, 1)
+		_, id := page.Rows[0].PageCursor()
+		seen = append(seen, id)
+		if !page.HasMore() {
+			require.Empty(t, page.NextCursor, "terminal page must not carry a cursor")
+			break
+		}
+		require.NotEmpty(t, page.NextCursor)
+		cursor = page.NextCursor
+		if i == safetyCap-1 {
+			require.Failf(t, "paging did not terminate", "walked %d pages without reaching a terminal page (cursor re-returning rows forever?)", safetyCap)
+		}
+	}
+	return seen
+}
+
 // SeedOrg creates an org and returns its ID.
 func SeedOrg(t *testing.T, st store.Store, name string) string {
 	t.Helper()

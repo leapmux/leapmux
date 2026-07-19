@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -337,8 +338,7 @@ func TestLogin_RejectsOldPasswordRotatedAtTransactionBoundary(t *testing.T) {
 	_, _, _, err = auth.Login(ctx, hooked, "testuser", "password123")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	sessions, listErr := st.Sessions().ListByUserID(ctx, userID)
-	require.NoError(t, listErr)
+	sessions := storetest.ListAllSessions(t, st, userID)
 	assert.Empty(t, sessions)
 }
 
@@ -369,8 +369,7 @@ func TestLogin_AcceptsNewPasswordRotatedAtTransactionBoundary(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 	assert.Equal(t, userID, user.ID)
-	sessions, listErr := st.Sessions().ListByUserID(ctx, userID)
-	require.NoError(t, listErr)
+	sessions := storetest.ListAllSessions(t, st, userID)
 	require.Len(t, sessions, 1)
 }
 

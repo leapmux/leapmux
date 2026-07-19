@@ -114,8 +114,8 @@ type UserStore interface {
 	GetPrefs(ctx context.Context, id string) (string, error)
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
-	ListAll(ctx context.Context, p ListAllUsersParams) ([]User, error)
-	Search(ctx context.Context, p SearchUsersParams) ([]User, error)
+	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)
+	Search(ctx context.Context, p SearchUsersParams) (Page[User], error)
 	UpdateProfile(ctx context.Context, p UpdateUserProfileParams) error
 	UpdatePassword(ctx context.Context, p UpdateUserPasswordParams) error
 	UpdateEmail(ctx context.Context, p UpdateUserEmailParams) error
@@ -166,8 +166,8 @@ type SessionStore interface {
 	// user's latest auth_generation after a password change. Other
 	// sessions remain deleted or stale.
 	RefreshAuthGeneration(ctx context.Context, p RefreshSessionAuthGenerationParams) (int64, error)
-	ListByUserID(ctx context.Context, userID string) ([]UserSession, error)
-	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams) ([]ActiveSession, error)
+	ListByUserID(ctx context.Context, p ListUserSessionsParams) (Page[UserSession], error)
+	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams) (Page[ActiveSession], error)
 	ValidateWithUser(ctx context.Context, id string) (*SessionWithUser, error)
 }
 
@@ -181,8 +181,8 @@ type WorkerStore interface {
 	GetByAuthToken(ctx context.Context, token string) (*Worker, error)
 	GetPublicKey(ctx context.Context, id string) (*WorkerPublicKeys, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
-	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) ([]Worker, error)
-	ListAdmin(ctx context.Context, p ListWorkersAdminParams) ([]WorkerWithOwner, error)
+	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
+	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
 	SetStatus(ctx context.Context, p SetWorkerStatusParams) error
 	UpdateLastSeen(ctx context.Context, id string) error
 	UpdatePublicKey(ctx context.Context, p UpdateWorkerPublicKeyParams) error
@@ -241,7 +241,7 @@ type RegistrationKeyStore interface {
 	// IncludeExpired=false is the default and hides revoked/expired rows;
 	// IncludeExpired=true surfaces the full table for forensics within the
 	// cleanup retention window.
-	ListAdmin(ctx context.Context, p ListRegistrationKeysAdminParams) ([]WorkerRegistrationKeyWithCreator, error)
+	ListAdmin(ctx context.Context, p ListRegistrationKeysAdminParams) (Page[WorkerRegistrationKeyWithCreator], error)
 }
 
 type WorkspaceStore interface {
@@ -368,6 +368,10 @@ type APITokenStore interface {
 	Create(ctx context.Context, p CreateAPITokenParams) error
 	GetByID(ctx context.Context, id string) (*APIToken, error)
 	ListByUser(ctx context.Context, p ListAPITokensByUserParams) ([]APIToken, error)
+	// ListAll pages every live api_token across users with the owner username
+	// (LEFT JOIN users), replacing the admin CLI's per-user fanout. Keyset on
+	// created_at.
+	ListAll(ctx context.Context, p ListAllAPITokensParams) (Page[APITokenWithOwner], error)
 	Touch(ctx context.Context, id string) error
 	// RotateRefresh atomically replaces the access/refresh secrets and emits a
 	// cache-only rotation event when its compare-and-swap succeeds.
@@ -387,7 +391,10 @@ type APITokenStore interface {
 type DelegationTokenStore interface {
 	Create(ctx context.Context, p CreateDelegationTokenParams) error
 	GetByID(ctx context.Context, id string) (*DelegationToken, error)
-	ListByUser(ctx context.Context, userID string) ([]DelegationToken, error)
+	// ListAll pages every delegation token across users with the owner username
+	// (LEFT JOIN users), replacing the admin CLI's per-user fanout. Keyset on
+	// created_at.
+	ListAll(ctx context.Context, p ListAllDelegationTokensParams) (Page[DelegationTokenWithOwner], error)
 	ListActiveByUser(ctx context.Context, userID string) ([]DelegationToken, error)
 	Touch(ctx context.Context, id string) error
 	Revoke(ctx context.Context, id string) (int64, error)
@@ -594,6 +601,8 @@ const (
 	EntityWorkers                TestEntity = "workers"
 	EntityWorkerRegistrationKeys TestEntity = "worker_registration_keys"
 	EntityWorkspaces             TestEntity = "workspaces"
+	EntityAPITokens              TestEntity = "api_tokens"
+	EntityDelegationTokens       TestEntity = "delegation_tokens"
 )
 
 // validEntities is the set of known TestEntity values, used by
@@ -605,6 +614,8 @@ var validEntities = map[TestEntity]bool{
 	EntityWorkers:                true,
 	EntityWorkerRegistrationKeys: true,
 	EntityWorkspaces:             true,
+	EntityAPITokens:              true,
+	EntityDelegationTokens:       true,
 }
 
 // ValidateEntity returns an error if entity is not a known TestEntity value.
@@ -624,6 +635,12 @@ type TestHelper interface {
 
 	// SetCreatedAt backdates the created_at timestamp for a record.
 	SetCreatedAt(ctx context.Context, entity TestEntity, id string, createdAt time.Time) error
+
+	// SetLastActiveAt writes an exact last_active_at timestamp for a session
+	// row. Only the user_sessions table carries this column, so the table is
+	// pinned in the implementations rather than caller-supplied -- a
+	// wrong-entity call is inexpressible.
+	SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error
 
 	// SetRevocationEventRevokedAt writes an exact revocation_events.revoked_at timestamp.
 	SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error

@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"strings"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -23,22 +22,15 @@ func runWorkerList(cmd adminCmdCtx, args []string) error {
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "filter by user ID")
 		username = fs.String("username", "", "filter by username")
-		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
-		limit = fs.Int64("limit", 50, "maximum number of results")
-		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
+		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all); \"all\" lists non-deleted workers of any status (pass --status deleted to surface soft-deleted workers)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		var resolvedUserID *string
-		if *userID != "" {
-			resolvedUserID = userID
-		} else if *username != "" {
-			user, err := st.Users().GetByUsername(ctx, *username)
-			if err != nil {
-				if errors.Is(err, store.ErrNotFound) {
-					return fmt.Errorf("user not found: %s", *username)
-				}
-				return fmt.Errorf("get user: %w", err)
-			}
-			resolvedUserID = &user.ID
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		resolvedUserID, err := resolveUserFilter(ctx, st, *userID, *username)
+		if err != nil {
+			return err
 		}
 
 		allStatuses := *status == "all"
@@ -51,32 +43,31 @@ func runWorkerList(cmd adminCmdCtx, args []string) error {
 			statusVal = &s
 		}
 
-		rows, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			UserID: resolvedUserID,
-			Status: statusVal,
-			Cursor: *cursor,
-			Limit:  *limit,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			UserID:     resolvedUserID,
+			Status:     statusVal,
+			PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
 		})
 		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+			return classifyListError("list workers", err)
 		}
 
-		if len(rows) == 0 {
+		if len(page.Rows) == 0 {
 			fmt.Println("No workers found.")
 			return nil
 		}
 
 		fmt.Printf("%-48s %-20s %-16s %-6s %-24s %-24s\n", "ID", "OWNER", "STATUS", "AUTO", "CREATED", "LAST_SEEN")
-		for _, w := range rows {
+		for _, w := range page.Rows {
 			lastSeen := "-"
 			if w.LastSeenAt != nil {
 				lastSeen = timefmt.Format(*w.LastSeenAt)
 			}
 			fmt.Printf("%-48s %-20s %-16s %-6s %-24s %-24s\n",
-				w.ID, w.OwnerUsername, workerStatusString(w.Status), yesNo(w.AutoRegistered), timefmt.Format(w.CreatedAt), lastSeen)
+				w.ID, ownerLabel(w.OwnerUsername, w.OwnerDeleted), workerStatusString(w.Status), yesNo(w.AutoRegistered), timefmt.Format(w.CreatedAt), lastSeen)
 		}
 
-		maybePrintNextCursor(rows, *limit, func(w store.WorkerWithOwner) time.Time { return w.CreatedAt })
+		maybePrintNextCursor(page)
 		return nil
 	})
 }

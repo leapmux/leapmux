@@ -61,12 +61,61 @@ func (s *delegationTokenStore) GetByID(ctx context.Context, id string) (*store.D
 	return &out, nil
 }
 
-func (s *delegationTokenStore) ListByUser(ctx context.Context, userID string) ([]store.DelegationToken, error) {
-	rows, err := s.conn.q.ListDelegationTokensByUser(ctx, userID)
-	if err != nil {
-		return nil, mapErr(err)
+// delegationTokenWithOwner assembles the JOINed listing row shared by the
+// ListAll and ListAllByUser query twins (mirroring workerWithOwner), so a
+// field addition to DelegationTokenWithOwner edits one site instead of one
+// closure per query.
+func delegationTokenWithOwner(t gendb.DelegationToken, ownerUsername string, ownerDeleted bool) store.DelegationTokenWithOwner {
+	return store.DelegationTokenWithOwner{DelegationToken: fromDBDelegationToken(t), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
+}
+
+func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDelegationTokensParams) (store.Page[store.DelegationTokenWithOwner], error) {
+	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
+	// (include_revoked false/true), dispatched to four generated queries
+	// (mirroring workers.go ListAdmin). The revoked dimension is split rather
+	// than an `(narg IS NULL OR revoked_at IS NULL)` probe because the live
+	// listings' partial keyset indexes are only planner-eligible when the query
+	// textually filters `revoked_at IS NULL`; the probe would deoptimize the
+	// COMMON live path. The IncludingRevoked forensics variants intentionally
+	// have no matching index -- see delegation_tokens.sql.
+	switch {
+	case p.UserID != nil && p.IncludeRevoked:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensByUserIncludingRevokedParams, error) {
+				return listAllDelegationTokensByUserIncludingRevokedParams(*p.UserID, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllDelegationTokensByUserIncludingRevoked,
+			func(r gendb.ListAllDelegationTokensByUserIncludingRevokedRow) store.DelegationTokenWithOwner {
+				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	case p.UserID != nil:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensByUserParams, error) {
+				return listAllDelegationTokensByUserParams(*p.UserID, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllDelegationTokensByUser,
+			func(r gendb.ListAllDelegationTokensByUserRow) store.DelegationTokenWithOwner {
+				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	case p.IncludeRevoked:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensIncludingRevokedParams, error) {
+				return listAllDelegationTokensIncludingRevokedParams(p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllDelegationTokensIncludingRevoked,
+			func(r gendb.ListAllDelegationTokensIncludingRevokedRow) store.DelegationTokenWithOwner {
+				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	default:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensParams, error) {
+				return listAllDelegationTokensParams(p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllDelegationTokens,
+			func(r gendb.ListAllDelegationTokensRow) store.DelegationTokenWithOwner {
+				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			})
 	}
-	return store.MapSlice(rows, fromDBDelegationToken), nil
 }
 
 func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID string) ([]store.DelegationToken, error) {

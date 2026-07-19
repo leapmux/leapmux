@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -23,40 +22,40 @@ func runUserList(cmd adminCmdCtx, args []string) error {
 	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		query = fs.String("query", "", "search query (matches username, display name, email)")
-		limit = fs.Int64("limit", 50, "maximum number of results")
-		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		var users []store.User
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		var page store.Page[store.User]
 		var err error
 
 		if *query != "" {
-			users, err = st.Users().Search(ctx, store.SearchUsersParams{
-				Query:  query,
-				Limit:  *limit,
-				Cursor: *cursor,
+			page, err = st.Users().Search(ctx, store.SearchUsersParams{
+				Query:      query,
+				PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
 			})
 		} else {
-			users, err = st.Users().ListAll(ctx, store.ListAllUsersParams{
-				Limit:  *limit,
-				Cursor: *cursor,
+			page, err = st.Users().ListAll(ctx, store.ListAllUsersParams{
+				PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
 			})
 		}
 		if err != nil {
-			return fmt.Errorf("list users: %w", err)
+			return classifyListError("list users", err)
 		}
 
-		if len(users) == 0 {
+		if len(page.Rows) == 0 {
 			fmt.Println("No users found.")
 			return nil
 		}
 
 		fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n", "ID", "USERNAME", "DISPLAY_NAME", "EMAIL", "ADMIN", "CREATED")
-		for _, u := range users {
+		for _, u := range page.Rows {
 			fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n",
 				u.ID, u.Username, u.DisplayName, u.Email, yesNo(u.IsAdmin), timefmt.Format(u.CreatedAt))
 		}
 
-		maybePrintNextCursor(users, *limit, func(u store.User) time.Time { return u.CreatedAt })
+		maybePrintNextCursor(page)
 		return nil
 	})
 }
@@ -409,31 +408,42 @@ func runUserSetAdmin(cmd adminCmdCtx, args []string, admin bool) error {
 func runUserListSessions(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
+	var limit *int64
+	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
 		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
+		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
+			UserID:     user.ID,
+			PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
+		})
 		if err != nil {
-			return fmt.Errorf("list sessions: %w", err)
+			return classifyListError("list sessions", err)
 		}
 
-		if len(sessions) == 0 {
+		if len(page.Rows) == 0 {
 			fmt.Printf("No active sessions for user %q.\n", user.Username)
 			return nil
 		}
 
 		fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n", "ID", "CREATED", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
-		for _, s := range sessions {
+		for _, s := range page.Rows {
 			fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n",
 				s.ID, timefmt.Format(s.CreatedAt), timefmt.Format(s.LastActiveAt),
 				timefmt.Format(s.ExpiresAt), s.IPAddress, truncate(s.UserAgent, 60))
 		}
+
+		maybePrintNextCursor(page)
 		return nil
 	})
 }

@@ -24,7 +24,7 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
 		TokenExpiresAt:  tsToTime(p.TokenExpiresAt),
-		KeyVersion:      int64(p.KeyVersion),
+		KeyVersion:      p.KeyVersion,
 		RedirectURI:     p.RedirectUri,
 		ExpiresAt:       tsToTime(p.ExpiresAt),
 		CreatedAt:       tsToTime(p.CreatedAt),
@@ -42,7 +42,7 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
 		TokenExpiresAt:  timeToTs(p.TokenExpiresAt),
-		KeyVersion:      int32(p.KeyVersion),
+		KeyVersion:      p.KeyVersion,
 		RedirectUri:     p.RedirectURI,
 		ExpiresAt:       timeToTs(p.ExpiresAt),
 	}))

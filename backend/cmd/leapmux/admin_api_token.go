@@ -16,42 +16,68 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
-// runAPITokenList prints all api_tokens for a user (or all users when
-// --user is empty).
+// runAPITokenList prints api_tokens through the single keyset-paginated
+// store-level ListAll (a JOINed query carrying each row's owner username).
+// --user-id/--username narrows it to one user via the ByUser query twin, with
+// identical --limit/--cursor behavior on both paths.
 func runAPITokenList(cmd adminCmdCtx, args []string) error {
-	var userID string
+	var userID, username string
 	var clientType string
+	var includeRevoked bool
+	var limit *int64
+	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
-		fs.StringVar(&userID, "user", "", "user id (empty = all users)")
+		fs.StringVar(&userID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
+		fs.StringVar(&username, "username", "", "filter by username")
 		fs.StringVar(&clientType, "client-type", "", "filter by client type (empty = all)")
+		fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		rows, err := collectAcrossUsers(ctx, st, userID, func(uid string) ([]store.APIToken, error) {
-			return st.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
-				UserID:     uid,
-				ClientType: clientType,
-			})
-		})
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		userFilter, err := resolveUserFilter(ctx, st, userID, username)
 		if err != nil {
 			return err
 		}
-
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		_, _ = fmt.Fprintln(w, "ID\tUSER\tTYPE\tNAME\tCREATED\tLAST USED\tEXPIRES")
-		for _, r := range rows {
-			lastUsed := "-"
-			if r.LastUsedAt != nil {
-				lastUsed = timefmt.Format(*r.LastUsedAt)
-			}
-			expires := "-"
-			if r.ExpiresAt != nil {
-				expires = timefmt.Format(*r.ExpiresAt)
-			}
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.ID, r.UserID, r.ClientType, r.ClientName,
-				timefmt.Format(r.CreatedAt), lastUsed, expires)
+		page, err := st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
+			UserID:         userFilter,
+			ClientType:     clientType,
+			PageParams:     store.PageParams{Cursor: *cursor, Limit: *limit},
+			IncludeRevoked: includeRevoked,
+		})
+		if err != nil {
+			return classifyListError("list api tokens", err)
 		}
-		return w.Flush()
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w, "ID\tUSER\tTYPE\tNAME\tCREATED\tLAST USED\tEXPIRES\tREVOKED")
+		for _, t := range page.Rows {
+			writeAPITokenRow(w, t.APIToken, ownerLabel(t.OwnerUsername, t.OwnerDeleted))
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		maybePrintNextCursor(page)
+		return nil
 	})
+}
+
+func writeAPITokenRow(w *tabwriter.Writer, t store.APIToken, userLabel string) {
+	lastUsed := "-"
+	if t.LastUsedAt != nil {
+		lastUsed = timefmt.Format(*t.LastUsedAt)
+	}
+	expires := "-"
+	if t.ExpiresAt != nil {
+		expires = timefmt.Format(*t.ExpiresAt)
+	}
+	revoked := "-"
+	if t.RevokedAt != nil {
+		revoked = timefmt.Format(*t.RevokedAt)
+	}
+	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		t.ID, userLabel, t.ClientType, t.ClientName,
+		timefmt.Format(t.CreatedAt), lastUsed, expires, revoked)
 }
 
 // runAPITokenIssue mints a new token for the named user. This is the

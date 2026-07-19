@@ -14,8 +14,8 @@ SELECT * FROM workers WHERE auth_token = ? AND status != 3;
 -- name: ListWorkersByUserID :many
 SELECT * FROM workers
 WHERE registered_by = sqlc.arg(registered_by) AND status = 1
-  AND (? IS NULL OR created_at < ?)
-ORDER BY created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL OR created_at < sqlc.narg(cursor_time) OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC
 LIMIT ?;
 
 -- name: GetOwnedWorker :one
@@ -48,40 +48,69 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ? AND deleted_at IS NULL;
 
--- name: ListWorkersAdminAll :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+-- The admin worker listing is a 2x2 matrix over (status nil/set) x (user_id
+-- nil/set), implemented as FOUR separate queries. The user_id dimension cannot
+-- be an opt-in `(? IS NULL OR registered_by = ?)` probe: the doubled
+-- placeholders produced opaque ColumnN param names and required binding the
+-- user_id twice. Splitting user_id into its own REQUIRED-equality query
+-- (sqlc.arg) yields a single typed param per query. The status dimension stays
+-- split: status=nil keeps `deleted_at IS NULL`; status=set drops it so status=3
+-- can surface soft-deleted rows. MySQL has no partial indexes, so deleted_at IS
+-- NULL is a residual either way, but the split lets each half ride its
+-- leading-column index (created_at vs status). sqlc's MySQL engine supports
+-- sqlc.narg: a repeated narg reference still compiles to one `?` per
+-- occurrence, but all of them are fed from a single typed Go param field by
+-- the generated code, so the cursor predicate uses narg rather than the old
+-- hand-doubled `?` pairs with their opaque ColumnN fields.
+
+-- ListWorkersAdmin: status=nil, user_id=nil.
+-- name: ListWorkersAdmin :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.deleted_at IS NULL
-  AND (? IS NULL OR w.created_at < ?)
-ORDER BY w.created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT ?;
 
+-- ListWorkersAdminByUser: status=nil, user_id=set.
+-- name: ListWorkersAdminByUser :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.deleted_at IS NULL
+  AND w.registered_by = sqlc.arg(user_id)
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
+LIMIT ?;
+
+-- ListWorkersAdminByStatus: status=set, user_id=nil.
 -- name: ListWorkersAdminByStatus :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.status = sqlc.arg(status)
-  AND (? IS NULL OR w.created_at < ?)
-ORDER BY w.created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT ?;
 
--- name: ListWorkersAdminByUser :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
-FROM workers w
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.registered_by = sqlc.arg(user_id) AND w.deleted_at IS NULL
-  AND (? IS NULL OR w.created_at < ?)
-ORDER BY w.created_at DESC
-LIMIT ?;
-
+-- ListWorkersAdminByUserAndStatus: status=set, user_id=set.
 -- name: ListWorkersAdminByUserAndStatus :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.registered_by = sqlc.arg(user_id) AND w.status = sqlc.arg(status)
-  AND (? IS NULL OR w.created_at < ?)
-ORDER BY w.created_at DESC
+WHERE w.status = sqlc.arg(status)
+  AND w.registered_by = sqlc.arg(user_id)
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT ?;
 
 -- name: HardDeleteWorkersBefore :execresult

@@ -55,10 +55,10 @@ func (s *Suite) testTransactions(t *testing.T) {
 		require.NoError(t, err)
 
 		// Both org and user should be visible.
-		users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 10})
+		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 10}})
 		require.NoError(t, err)
-		assert.Len(t, users, 1)
-		assert.Equal(t, "tx-multi-user", users[0].Username)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, "tx-multi-user", page.Rows[0].Username)
 	})
 
 	t.Run("nested reads within transaction", func(t *testing.T) {

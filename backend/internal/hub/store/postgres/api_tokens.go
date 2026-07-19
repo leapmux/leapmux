@@ -70,6 +70,62 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 	return store.MapSlice(rows, fromDBAPIToken), nil
 }
 
+// apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
+// ListAllByUser query twins (mirroring workerWithOwner), so a field addition
+// to APITokenWithOwner edits one site instead of one closure per query.
+func apiTokenWithOwner(t gendb.ApiToken, ownerUsername string, ownerDeleted bool) store.APITokenWithOwner {
+	return store.APITokenWithOwner{APIToken: fromDBAPIToken(t), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
+}
+
+func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensParams) (store.Page[store.APITokenWithOwner], error) {
+	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
+	// (include_revoked false/true), dispatched to four generated queries
+	// (mirroring workers.go ListAdmin). The revoked dimension is split rather
+	// than an `(narg IS NULL OR revoked_at IS NULL)` probe because the live
+	// listings' partial keyset indexes are only planner-eligible when the query
+	// textually filters `revoked_at IS NULL`; the probe would deoptimize the
+	// COMMON live path. The IncludingRevoked forensics variants intentionally
+	// have no matching index -- see api_tokens.sql.
+	switch {
+	case p.UserID != nil && p.IncludeRevoked:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
+				return listAllAPITokensByUserIncludingRevokedParams(*p.UserID, p.ClientType, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllAPITokensByUserIncludingRevoked,
+			func(r gendb.ListAllAPITokensByUserIncludingRevokedRow) store.APITokenWithOwner {
+				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	case p.UserID != nil:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensByUserParams, error) {
+				return listAllAPITokensByUserParams(*p.UserID, p.ClientType, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllAPITokensByUser,
+			func(r gendb.ListAllAPITokensByUserRow) store.APITokenWithOwner {
+				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	case p.IncludeRevoked:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensIncludingRevokedParams, error) {
+				return listAllAPITokensIncludingRevokedParams(p.ClientType, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllAPITokensIncludingRevoked,
+			func(r gendb.ListAllAPITokensIncludingRevokedRow) store.APITokenWithOwner {
+				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	default:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensParams, error) {
+				return listAllAPITokensParams(p.ClientType, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAllAPITokens,
+			func(r gendb.ListAllAPITokensRow) store.APITokenWithOwner {
+				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	}
+}
+
 func (s *apiTokenStore) Touch(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.TouchAPIToken(ctx, id))
 }

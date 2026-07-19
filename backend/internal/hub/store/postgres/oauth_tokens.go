@@ -21,7 +21,7 @@ func fromDBOAuthToken(t gendb.OauthToken) store.OAuthToken {
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
 		ExpiresAt:    tsToTime(t.ExpiresAt),
-		KeyVersion:   int64(t.KeyVersion),
+		KeyVersion:   t.KeyVersion,
 		UpdatedAt:    tsToTime(t.UpdatedAt),
 	}
 }
@@ -38,7 +38,7 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 		RefreshToken: p.RefreshToken,
 		TokenType:    p.TokenType,
 		ExpiresAt:    timeToTs(p.ExpiresAt.UTC()),
-		KeyVersion:   int32(p.KeyVersion),
+		KeyVersion:   p.KeyVersion,
 	}))
 }
 
@@ -63,7 +63,7 @@ func (s *oauthTokenStore) ListExpiring(ctx context.Context) ([]store.OAuthToken,
 }
 
 func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64) ([]store.OAuthToken, error) {
-	rows, err := s.conn.q.ListOAuthTokensByKeyVersion(ctx, int32(keyVersion))
+	rows, err := s.conn.q.ListOAuthTokensByKeyVersion(ctx, keyVersion)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -71,7 +71,7 @@ func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64
 }
 
 func (s *oauthTokenStore) CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error) {
-	count, err := s.conn.q.CountOAuthTokensByKeyVersion(ctx, int32(keyVersion))
+	count, err := s.conn.q.CountOAuthTokensByKeyVersion(ctx, keyVersion)
 	if err != nil {
 		return 0, mapErr(err)
 	}
