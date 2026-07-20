@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -572,14 +573,18 @@ func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
 // ...and the owner keeps unrestricted reach, including outside the home directory.
 // This is deliberate: the worker and its agents already have it.
 func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
-	_, d, w := setupTestService(t)
+	svc, d, w := setupTestService(t)
 
 	dispatch(d, "GetWorkerSystemInfo", &leapmuxv1.GetWorkerSystemInfoRequest{}, w)
 	require.Empty(t, w.errors, "the owner must not be refused")
 	require.Len(t, w.responses, 1)
 
-	// An absolute path outside HomeDir still resolves for the owner.
+	// An absolute path outside HomeDir still resolves for the owner. Use the
+	// parent of HomeDir rather than a hard-coded path like /etc: it is always
+	// absolute, always exists, and is outside the home on every GOOS, so the
+	// test does not regress on Windows where /etc fails SanitizePath.
+	outsideHome := filepath.Dir(svc.HomeDir)
 	w2 := newTestWriter()
-	dispatch(d, "StatFile", &leapmuxv1.StatFileRequest{Path: "/etc"}, w2)
+	dispatch(d, "StatFile", &leapmuxv1.StatFileRequest{Path: outsideHome}, w2)
 	require.Empty(t, w2.errors, "the owner may stat outside their home directory")
 }
