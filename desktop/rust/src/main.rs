@@ -883,9 +883,8 @@ fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
 
 /// The kernel-verified pid holding `endpoint`, for diagnostics only (see
 /// socket_peer_pid). On unix it opens a throwaway connection and reads the
-/// peer pid; on Windows it is not yet available (GetNamedPipeServerProcessId,
-/// tracked in https://github.com/leapmux/leapmux/issues/273), so the diagnostic
-/// falls back to naming no pid there.
+/// peer pid; on Windows it does the same through `GetNamedPipeServerProcessId`
+/// on a freshly opened client handle.
 #[cfg(unix)]
 fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
     let stream = UnixStream::connect(endpoint).ok()?;
@@ -893,8 +892,23 @@ fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn endpoint_holder_pid(_endpoint: &str) -> Option<u32> {
-    None
+fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+
+    let client = pipe_runtime().block_on(open_named_pipe_client(endpoint)).ok()?;
+    let client = match client {
+        PipeConnect::Connected(client) => client,
+        // No listener (or every instance busy, which we cannot query) means
+        // no pid to report -- the diagnostic falls back to naming no holder.
+        _ => return None,
+    };
+    let mut pid: u32 = 0;
+    let rc = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut pid) };
+    if rc == 0 || pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
 }
 
 // The sidecar-IPC layer exists as per-platform twins (unix socket vs Windows
@@ -1095,10 +1109,12 @@ use windows_sys::Win32::{
         ERROR_PIPE_BUSY, HANDLE, HLOCAL,
     },
     Security::{
-        Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
-        TOKEN_USER,
+        Authorization::ConvertSidToStringSidW, EqualSid, GetLengthSid, GetTokenInformation,
+        TokenUser, PSID, TOKEN_QUERY, TOKEN_USER,
     },
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
+    System::{Pipes::GetNamedPipeServerProcessId, Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    }},
 };
 
 #[cfg(windows)]
@@ -1199,17 +1215,12 @@ fn is_sidecar_gone(pipe_name: &str) -> bool {
     })
 }
 
-// NOTE: this has no peer-identity check, unlike the unix path's
-// require_same_user_peer -- see https://github.com/leapmux/leapmux/issues/273.
-//
-// The same weakness applies: the dev pipe name is predictable, and adoption is gated
-// only on the peer's self-reported protocol version and binary hash, which a squatter
-// can echo (the same reasoning that retired force_kill_sidecar's peer-reported PID).
-// Closing it here needs GetNamedPipeServerProcessId plus a token comparison against
-// our own user, rather than the one getsockopt/getpeereid call the unix side needs.
-// Until that lands, a Windows dev box is exposed to a local squatter on this
-// endpoint; the bootstrap at least routes around a pipe it cannot use (see
-// private_dev_sidecar_endpoint) instead of adopting blindly on a connect error.
+/// Refuses a dev sidecar named pipe answered by anyone but this user, the
+/// Windows counterpart of the unix `connect_sidecar_endpoint`'s
+/// `require_same_user_peer`. See `require_same_user_pipe_peer` for the
+/// mechanism and the bind-side pair (`userOnlySDDL` in
+/// `backend/locallisten/locallisten_windows.go`) that hardens the *listener*
+/// the same way Unix's `requirePrivateDir` does.
 #[cfg(windows)]
 fn connect_sidecar_endpoint(
     pipe_name: &str,
@@ -1225,6 +1236,7 @@ fn connect_sidecar_endpoint(
             return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
         }
     };
+    require_same_user_pipe_peer(&client, pipe_name)?;
     let (r, w) = tokio::io::split(client);
     Ok(Some((
         SyncPipeReader { inner: r },
@@ -1289,59 +1301,168 @@ fn sidecar_identity() -> Result<String, String> {
     use std::sync::OnceLock;
     static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
     CACHED
-        .get_or_init(|| current_user_sid().map(|raw| sanitize_sid_for_pipe(&raw)))
+        .get_or_init(|| {
+            current_user_sid()
+                .and_then(|bytes| sid_to_string(&bytes))
+                .map(|raw| sanitize_sid_for_pipe(&raw))
+        })
         .clone()
 }
 
+/// The current process's user SID, copied into an owned buffer so callers can
+/// hold it past the token handle. Used both to name the per-user dev pipe
+/// (via `sidecar_identity`) and as the comparison point for the connect-side
+/// identity check (`require_same_user_pipe_peer`) -- the two callers that need
+/// to agree on what "us" means go through one place to find out.
 #[cfg(windows)]
-fn current_user_sid() -> Result<String, String> {
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(format!("open process token: error {}", GetLastError()));
+fn current_user_sid() -> Result<Vec<u8>, String> {
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!("open process token: error {}", unsafe { GetLastError() }));
+    }
+    let sid = token_user_sid(token);
+    unsafe { CloseHandle(token) };
+    sid
+}
+
+/// Renders a SID (as raw bytes) into the `S-1-5-...` string form. Wraps the
+/// `ConvertSidToStringSidW` + `LocalFree` pair so neither caller has to.
+#[cfg(windows)]
+fn sid_to_string(sid: &[u8]) -> Result<String, String> {
+    let mut sid_string_ptr: *mut u16 = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid.as_ptr() as PSID, &mut sid_string_ptr) } == 0 {
+        return Err(format!("convert sid to string: error {}", unsafe { GetLastError() }));
+    }
+    let mut len = 0;
+    while unsafe { *sid_string_ptr.add(len) } != 0 {
+        len += 1;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(sid_string_ptr, len) };
+    let sid = String::from_utf16_lossy(slice);
+    unsafe { LocalFree(sid_string_ptr as HLOCAL) };
+    Ok(sid)
+}
+
+/// Queries `TokenUser` out of a token handle and returns the SID it points to,
+/// copied into an owned buffer.
+///
+/// `GetTokenInformation` writes a `TOKEN_USER` whose `User.Sid` points *into*
+/// the same buffer, so the SID borrows from it; copying into a fresh `Vec<u8>`
+/// hands the caller a SID whose lifetime is independent of the token query.
+/// `GetLengthSid` reports the kernel's byte count for a valid SID, so the copy
+/// is exactly sized.
+///
+/// The size-probe call is EXPECTED to fail with ERROR_INSUFFICIENT_BUFFER (that
+/// is how it reports the required size in `needed`). Checking its return
+/// distinguishes that expected failure from a real one: without the check, any
+/// other failure leaves `needed` at 0, the second call runs against an empty
+/// buffer, and the error reported below is the SECOND call's -- masking the
+/// true cause (a bad token handle, a denied query).
+#[cfg(windows)]
+fn token_user_sid(token: HANDLE) -> Result<Vec<u8>, String> {
+    let mut needed: u32 = 0;
+    if unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) } == 0 {
+        let probe_err = unsafe { GetLastError() };
+        if probe_err != ERROR_INSUFFICIENT_BUFFER {
+            return Err(format!("probe token user info size: error {probe_err}"));
         }
-        let mut needed: u32 = 0;
-        // The size-probe call is EXPECTED to fail with ERROR_INSUFFICIENT_BUFFER
-        // (that is how it reports the required size in `needed`). Checking its
-        // return distinguishes that expected failure from a real one: without
-        // the check, any other failure leaves `needed` at 0, the second call
-        // runs against an empty buffer, and the error reported below is the
-        // SECOND call's -- masking the true cause (a bad token handle, a denied
-        // query) that feeds sidecar_identity's pipe naming.
-        if GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) == 0 {
-            let probe_err = GetLastError();
-            if probe_err != ERROR_INSUFFICIENT_BUFFER {
-                CloseHandle(token);
-                return Err(format!("probe token user info size: error {probe_err}"));
-            }
-        }
-        let mut buffer = vec![0u8; needed as usize];
-        let ok = GetTokenInformation(
+    }
+    let mut buffer = vec![0u8; needed as usize];
+    let ok = unsafe {
+        GetTokenInformation(
             token,
             TokenUser,
             buffer.as_mut_ptr() as *mut _,
             needed,
             &mut needed,
-        );
-        let token_err = if ok == 0 { GetLastError() } else { 0 };
-        CloseHandle(token);
-        if ok == 0 {
-            return Err(format!("get token user info: error {token_err}"));
-        }
-        let user_info = &*(buffer.as_ptr() as *const TOKEN_USER);
-        let mut sid_string_ptr: *mut u16 = std::ptr::null_mut();
-        if ConvertSidToStringSidW(user_info.User.Sid, &mut sid_string_ptr) == 0 {
-            return Err(format!("convert sid to string: error {}", GetLastError()));
-        }
-        let mut len = 0;
-        while *sid_string_ptr.add(len) != 0 {
-            len += 1;
-        }
-        let slice = std::slice::from_raw_parts(sid_string_ptr, len);
-        let sid = String::from_utf16_lossy(slice);
-        LocalFree(sid_string_ptr as HLOCAL);
-        Ok(sid)
+        )
+    };
+    let token_err = if ok == 0 { unsafe { GetLastError() } } else { 0 };
+    if ok == 0 {
+        return Err(format!("get token user info: error {token_err}"));
     }
+    let user_info = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+    let sid_ptr = user_info.User.Sid;
+    let len = unsafe { GetLengthSid(sid_ptr) } as usize;
+    if len == 0 {
+        return Err("token user sid: GetLengthSid returned 0".to_string());
+    }
+    let mut sid = vec![0u8; len];
+    unsafe { std::ptr::copy_nonoverlapping(sid_ptr as *const u8, sid.as_mut_ptr(), len) };
+    Ok(sid)
+}
+
+/// Reads the server process's user SID from a connected named-pipe client
+/// handle. The PID is the kernel's report about which process bound this pipe
+/// instance (not a value the peer asserts over the wire), and the SID is read
+/// from that PID's primary token -- so the same chain of trust as Unix's
+/// `SO_PEERCRED` / `getpeereid`: a fact the peer cannot forge.
+///
+/// `PROCESS_QUERY_LIMITED_INFORMATION` is the least-privilege access right
+/// that lets us read another process's token's user; same-user processes hold
+/// it by default, and any failure here fails closed in the caller.
+#[cfg(windows)]
+fn pipe_peer_sid(client: &NamedPipeClient) -> Result<Vec<u8>, String> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut server_pid: u32 = 0;
+    if unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut server_pid) }
+        == 0
+    {
+        return Err(format!(
+            "query named pipe server pid: error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, server_pid) };
+    if process.is_null() {
+        return Err(format!(
+            "open server process {server_pid}: error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    let mut token: HANDLE = std::ptr::null_mut();
+    let token_rc = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
+    unsafe { CloseHandle(process) };
+    if token_rc == 0 {
+        return Err(format!(
+            "open server process token: error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    let sid = token_user_sid(token);
+    unsafe { CloseHandle(token) };
+    sid
+}
+
+/// The refusal decision itself, split from the pipe so it can be tested
+/// against a foreign SID -- binding a pipe as another user needs admin, so the
+/// branch that actually matters here is otherwise reachable only in production.
+/// Mirrors `require_peer_uid` on Unix.
+#[cfg(windows)]
+fn require_peer_sid(peer: &[u8], ours: &[u8], pipe_name: &str) -> Result<(), String> {
+    // EqualSid is the canonical Win32 SID comparison; it returns FALSE for
+    // unequal SIDs (different lengths or different bytes), so a peer whose SID
+    // differs in any way is a clean refusal rather than a panic.
+    let equal = unsafe { EqualSid(peer.as_ptr() as PSID, ours.as_ptr() as PSID) } != 0;
+    if !equal {
+        return Err(format!(
+            "refusing sidecar at {pipe_name}: it is answered by a different user; \
+             something else is holding this endpoint"
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a dev sidecar named pipe answered by anyone but this user. Windows
+/// counterpart of Unix's `require_same_user_peer`; see that function for why
+/// the connect side must check this even though the Go side already restricts
+/// the bind to our SID (via `userOnlySDDL` in locallisten_windows.go).
+#[cfg(windows)]
+fn require_same_user_pipe_peer(client: &NamedPipeClient, pipe_name: &str) -> Result<(), String> {
+    let peer_sid = pipe_peer_sid(client)?;
+    let our_sid = current_user_sid()?;
+    require_peer_sid(&peer_sid, &our_sid, pipe_name)
 }
 
 impl DesktopShell {
@@ -3695,6 +3816,78 @@ mod tests {
         let pipe_name = unique_test_pipe_name();
         let _server = start_test_pipe_server(&pipe_name);
         assert!(!is_sidecar_gone(&pipe_name));
+    }
+
+    // ---- Windows peer-identity check (the connect-side half of the boundary
+    // requirePrivateDir / userOnlySDDL defend on the bind side). Mirrors
+    // require_peer_uid_refuses_a_foreign_owner on Unix. ----
+
+    // Two minimal valid SIDs that differ only in their last sub-authority byte.
+    // S-1-5-32 (BUILTIN) and S-1-5-42 -- both 12 bytes, both well-formed, so
+    // EqualSid's behaviour is defined and FALSE rather than undefined.
+    #[cfg(windows)]
+    const FOREIGN_SID_A: [u8; 12] = [
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x20, 0x00, 0x00, 0x00,
+    ];
+    #[cfg(windows)]
+    const FOREIGN_SID_B: [u8; 12] = [
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x2a, 0x00, 0x00, 0x00,
+    ];
+
+    #[cfg(windows)]
+    #[test]
+    fn require_peer_sid_accepts_same_sid() {
+        require_peer_sid(&FOREIGN_SID_A, &FOREIGN_SID_A, "\\\\?\\pipe\\test")
+            .expect("same SID is accepted");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn require_peer_sid_refuses_a_foreign_sid() {
+        let err = require_peer_sid(&FOREIGN_SID_A, &FOREIGN_SID_B, "\\\\?\\pipe\\test")
+            .expect_err("a pipe answered by another SID must be refused");
+        assert!(err.contains("refusing sidecar"), "{err}");
+        assert!(
+            err.contains("\\\\?\\pipe\\test"),
+            "names the endpoint: {err}"
+        );
+    }
+
+    // The pipe server is in this process, so the peer is us. Same shape as
+    // require_same_user_peer_accepts_our_own_socket on Unix.
+    #[cfg(windows)]
+    #[test]
+    fn require_same_user_pipe_peer_accepts_our_own_pipe() {
+        let pipe_name = unique_test_pipe_name();
+        let _server = start_test_pipe_server(&pipe_name);
+        let client = pipe_runtime().block_on(async {
+            ClientOptions::new()
+                .open(&pipe_name)
+                .expect("open named pipe client")
+        });
+        require_same_user_pipe_peer(&client, &pipe_name)
+            .expect("our own pipe is accepted");
+    }
+
+    // endpoint_holder_pid now reports the kernel-recorded server pid on Windows
+    // (GetNamedPipeServerProcessId), retiring the previous unconditional None.
+    #[cfg(windows)]
+    #[test]
+    fn endpoint_holder_pid_reports_the_kernel_recorded_holder() {
+        let pipe_name = unique_test_pipe_name();
+        let _server = start_test_pipe_server(&pipe_name);
+        assert_eq!(
+            endpoint_holder_pid(&pipe_name),
+            Some(std::process::id()),
+            "the holder of our own pipe is this process",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn endpoint_holder_pid_is_none_for_an_absent_endpoint() {
+        let pipe_name = unique_test_pipe_name();
+        assert_eq!(endpoint_holder_pid(&pipe_name), None);
     }
 
     #[cfg(any(windows, test))]
