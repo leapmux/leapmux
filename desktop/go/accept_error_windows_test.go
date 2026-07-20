@@ -40,3 +40,10 @@ func TestIsTemporaryAcceptError_Windows(t *testing.T) {
 			"%v is not transient; the tunnel must fail rather than spin", err)
 	}
 }
+
+// transientAcceptErr returns the platform's canonical transient accept error
+// (fd exhaustion) for tests that script-inject one. Winsock surfaces this as
+// WSAEMFILE (10024), never the POSIX EMFILE (24) -- the predicate above
+// explicitly does not match syscall.EMFILE, so a test that injects the POSIX
+// constant would be classified non-transient and fail to exercise the retry.
+func transientAcceptErr() error { return windows.WSAEMFILE }

@@ -10,7 +10,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -206,7 +205,7 @@ func TestTunnelManager_AcceptRetriesTransientError(t *testing.T) {
 	m := NewTunnelManager()
 	t.Cleanup(m.CloseAll)
 
-	ln := newScriptedListener(syscall.EMFILE, syscall.EMFILE)
+	ln := newScriptedListener(transientAcceptErr(), transientAcceptErr())
 	tn, ctx := installTestTunnel(t, m, "t-transient", ln)
 
 	done := make(chan struct{})
@@ -242,8 +241,8 @@ func TestTunnelListenerAcceptRetriesTransientError(t *testing.T) {
 
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close() })
-	// Two transient failures, then a real connection: Serve must never see the EMFILEs.
-	ln := newScriptedListener(syscall.EMFILE, syscall.EMFILE)
+	// Two transient failures, then a real connection: Serve must never see them.
+	ln := newScriptedListener(transientAcceptErr(), transientAcceptErr())
 	ln.conns = []net.Conn{server}
 	tn, ctx := installTestTunnel(t, m, "t-socks-transient", ln)
 

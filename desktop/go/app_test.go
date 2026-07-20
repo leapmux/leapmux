@@ -174,7 +174,13 @@ func TestShutdownBoundsWaitForStuckTransition(t *testing.T) {
 func makeConfigUnwritable(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
+	// os.UserHomeDir reads $HOME on Unix and %USERPROFILE% on Windows; set
+	// both so the redirect takes on either GOOS. Without USERPROFILE on
+	// Windows the temp dir is ignored, SaveConfig writes to the real profile
+	// (where nothing blocks .config), and the save-failure tests pass
+	// spuriously.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".config"), []byte("not a directory"), 0o600))
 }
 

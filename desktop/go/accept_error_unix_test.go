@@ -41,3 +41,10 @@ func TestIsTemporaryAcceptError_Unix(t *testing.T) {
 			"%v is not transient; the tunnel must fail rather than spin", err)
 	}
 }
+
+// transientAcceptErr returns the platform's canonical transient accept error
+// (fd exhaustion) for tests that script-inject one. The POSIX spelling is
+// EMFILE; the Windows half of this pair returns WSAEMFILE -- so a test that
+// hard-codes syscall.EMFILE passes on Unix but is permanently non-transient
+// on Windows, defeating the retry policy it is meant to exercise.
+func transientAcceptErr() error { return syscall.EMFILE }

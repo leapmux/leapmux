@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -180,7 +179,7 @@ func TestRunSocketServerRetriesTransientAcceptError(t *testing.T) {
 
 	// Two transient failures; the exhausted script then parks Accept until
 	// Close, standing in for a recovered listener with no client yet.
-	ln := newScriptedListener(syscall.EMFILE, syscall.EMFILE)
+	ln := newScriptedListener(transientAcceptErr(), transientAcceptErr())
 	app := NewApp("test-hash")
 	done := make(chan error, 1)
 	go func() { done <- runSocketServer(ln, app, nil, nil) }()
@@ -204,8 +203,10 @@ func TestRunSocketServerRetriesTransientAcceptError(t *testing.T) {
 	}
 }
 
-// emfileListener fails every Accept with EMFILE until closed, then returns
-// net.ErrClosed -- a retry storm that ends only when the listener dies.
+// emfileListener fails every Accept with a transient fd-exhaustion error
+// (EMFILE on Unix, WSAEMFILE on Windows -- see transientAcceptErr) until
+// closed, then returns net.ErrClosed -- a retry storm that ends only when
+// the listener dies.
 type emfileListener struct {
 	mu     sync.Mutex
 	calls  int
@@ -220,7 +221,7 @@ func (l *emfileListener) Accept() (net.Conn, error) {
 	case <-l.closed:
 		return nil, net.ErrClosed
 	default:
-		return nil, syscall.EMFILE
+		return nil, transientAcceptErr()
 	}
 }
 
