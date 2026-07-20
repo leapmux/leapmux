@@ -591,8 +591,11 @@ async fn windows_handshake_async(
     pipe_name: &str,
 ) -> Result<Option<(NamedPipeClient, proto::SidecarInfo)>, String> {
     let mut client = match open_named_pipe_client(pipe_name).await? {
-        Some(c) => c,
-        None => return Ok(None),
+        PipeConnect::Connected(c) => c,
+        PipeConnect::NotFound => return Ok(None),
+        PipeConnect::Busy => {
+            return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
+        }
     };
     let request = proto::Frame {
         message: Some(proto::frame::Message::Request(proto::Request {
