@@ -20,7 +20,7 @@ import (
 // owns the flag rather than reading ctx.Err().
 type operationGate struct {
 	mu     sync.Mutex
-	wg     sync.WaitGroup
+	wc     waitCounter
 	closed bool
 }
 
@@ -30,7 +30,7 @@ type operationGate struct {
 // The returned func is safe to call any number of times: it routes through a
 // per-admission sync.Once so a caller that defers done() AND calls it on a
 // manual cleanup path (or any other double-invocation) cannot drive the
-// WaitGroup negative and panic the sidecar. sync.Once also makes the
+// waitCounter negative and panic the sidecar. sync.Once also makes the
 // "exactly-once" contract mechanical rather than a caller-discipline rule,
 // matching the loudness sync.Mutex already chooses for unlock-of-unlocked.
 func (g *operationGate) begin() (func(), bool) {
@@ -39,9 +39,9 @@ func (g *operationGate) begin() (func(), bool) {
 	if g.closed {
 		return nil, false
 	}
-	g.wg.Add(1)
+	g.wc.add()
 	var once sync.Once
-	done := func() { once.Do(g.wg.Done) }
+	done := func() { once.Do(g.wc.done) }
 	return done, true
 }
 
@@ -61,6 +61,11 @@ func (g *operationGate) close(cancel func()) {
 // side effects complete before shared state is torn down. A straggler that
 // ignores cancellation -- a non-cancellable editor launch or filesystem scan --
 // is abandoned after the timeout and reclaimed at process exit.
+//
+// waitCounter's no-add-after-sample contract holds here by ordering: the one
+// production caller (App.Shutdown) runs close() before drain, and close flips
+// closed under the same lock begin checks, so once wait samples the counter no
+// operation can be admitted.
 func (g *operationGate) drain(timeout time.Duration, warnMsg string) {
-	waitBounded(waitGroupDone(&g.wg), timeout, warnMsg)
+	g.wc.wait(timeout, warnMsg)
 }

@@ -36,7 +36,7 @@ type frameReadResult struct {
 // every request is accepted and dispatched to its own handler goroutine, so a
 // burst of concurrent calls (or one large proxy upload) never drops an
 // in-flight response or forces a reconnect. Teardown stays bounded: handlers
-// are tracked by a WaitGroup and drained (interruptably) in Run's defer. Do not
+// are tracked by a waitCounter and drained (interruptably) in Run's defer. Do not
 // reintroduce an admission/budget gate without reconsidering that contract.
 
 // handlerDrainTimeout is the hard cap on waiting for in-flight handlers, both
@@ -56,7 +56,7 @@ var handlerDrainTimeout time.Duration = 5 * time.Second
 // It has to be its own budget, because reaching that phase on the clean path
 // means the shared budget is already spent by construction: waitBounded only
 // returns false once its timer has fired. Without a floor the post-interrupt wait
-// would be a single non-blocking look at `done`, which a handler that the
+// would be a single non-blocking look at the counter, which a handler that the
 // interrupt just unblocked cannot win in the microseconds it needs to unwind --
 // so every clean drain past the flush window would warn and abandon handlers that
 // were about to finish. A small fixed grace is the right shape here: interrupting
@@ -82,7 +82,7 @@ func (s *RPCSession) Run() error {
 	sessionCtx, cancelSession := context.WithCancelCause(s.app.ctx)
 	readResults := make(chan frameReadResult, 1)
 	go s.readFrames(readResults, cancelSession)
-	var handlers sync.WaitGroup
+	var handlers waitCounter
 	defer func() {
 		cancelSession(nil)
 		s.app.SetEventSink(nil)
@@ -106,9 +106,9 @@ func (s *RPCSession) Run() error {
 			if req == nil {
 				continue
 			}
-			handlers.Add(1)
+			handlers.add()
 			go func(req *desktoppb.Request) {
-				defer handlers.Done()
+				defer handlers.done()
 				s.dispatch(sessionCtx, req)
 			}(req)
 		}
@@ -136,8 +136,7 @@ func (s *RPCSession) dispatch(sessionCtx context.Context, req *desktoppb.Request
 	s.handleRequest(sessionCtx, req)
 }
 
-func (s *RPCSession) drainHandlers(handlers *sync.WaitGroup, cause error) {
-	done := waitGroupDone(handlers)
+func (s *RPCSession) drainHandlers(handlers *waitCounter, cause error) {
 	// On a clean shutdown (no cause, or a plain Canceled) let handlers flush their
 	// final responses BEFORE the writer is interrupted; on an error teardown the
 	// peer is already gone, so there is nothing to flush and we interrupt at once.
@@ -171,12 +170,17 @@ func (s *RPCSession) drainHandlers(handlers *sync.WaitGroup, cause error) {
 	// the stopSolo teardown that follows runs unbounded; main.go also calls
 	// App.Shutdown (through the same shutdownOnce) on its way out. So this budget
 	// makes the drain give up promptly; it does not promise the process is gone.
+	//
+	// waitCounter's no-add-after-sample contract holds here by ordering: only
+	// Run's loop calls handlers.add(), and that loop has exited before this
+	// deferred drain runs, so the counter only decreases from here on and each
+	// phase's wait may safely re-sample it.
 	deadline := time.Now().Add(handlerDrainTimeout)
 	if cause == nil || errors.Is(cause, context.Canceled) {
 		// No warning on this phase: exceeding the flush window is not itself a
 		// failure, it just means the writer is interrupted and the wait below
 		// reports any straggler.
-		if waitBounded(done, time.Until(deadline), "") {
+		if handlers.wait(time.Until(deadline), "") {
 			return
 		}
 	}
@@ -184,7 +188,7 @@ func (s *RPCSession) drainHandlers(handlers *sync.WaitGroup, cause error) {
 	// Whatever is left of the shared budget, but never less than interruptGrace: the
 	// clean path only gets here once the budget is spent, so without the floor this
 	// phase would never actually wait on the interrupt it just issued.
-	waitBounded(done, max(time.Until(deadline), interruptGrace),
+	handlers.wait(max(time.Until(deadline), interruptGrace),
 		"rpc session: handler drain timed out; abandoning in-flight handlers")
 }
 
