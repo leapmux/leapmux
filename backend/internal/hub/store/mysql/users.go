@@ -9,7 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type userStore struct {
@@ -29,16 +29,16 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         u.EmailVerified,
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: ptrconv.NullTimeToPtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqlutil.NullTimePtr(u.PendingEmailExpiresAt),
 		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
 		CreatedAt:             u.CreatedAt,
 		UpdatedAt:             u.UpdatedAt,
-		TokensRevokedAt:       ptrconv.NullTimeToPtr(u.TokensRevokedAt),
+		TokensRevokedAt:       sqlutil.NullTimePtr(u.TokensRevokedAt),
 		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             ptrconv.NullTimeToPtr(u.DeletedAt),
+		DeletedAt:             sqlutil.NullTimePtr(u.DeletedAt),
 	}
 }
 
@@ -353,7 +353,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: ptrconv.PtrToNullTime(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqlutil.BindNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }

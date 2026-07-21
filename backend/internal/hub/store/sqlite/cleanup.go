@@ -50,11 +50,11 @@ func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (in
 }
 
 func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, cutoff.UTC()))
+	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, cutoff.UTC()))
+	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
@@ -66,7 +66,7 @@ func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, 
 }
 
 func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, cutoff.UTC()))
+	return rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) CompactPublishedRevocationEvents(

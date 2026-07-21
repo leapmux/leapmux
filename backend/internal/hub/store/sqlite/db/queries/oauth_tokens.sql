@@ -20,7 +20,7 @@ ON CONFLICT (user_id, provider_id) DO UPDATE SET
     token_type = excluded.token_type,
     expires_at = excluded.expires_at,
     key_version = excluded.key_version,
-    updated_at = datetime('now');
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: GetOAuthTokens :one
 SELECT * FROM oauth_tokens

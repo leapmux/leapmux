@@ -33,8 +33,10 @@ func TestCreateRegistrationKeyStoresExpiresAtCanonical(t *testing.T) {
 		ExpiresAt: expiresAt,
 	}))
 
+	// CAST strips the DATETIME decltype so modernc returns the stored bytes
+	// verbatim instead of trimming trailing fractional zeros on scan.
 	var stored string
-	require.NoError(t, db.QueryRow(`SELECT expires_at FROM worker_registration_keys WHERE id = ?`, keyID).Scan(&stored))
+	require.NoError(t, db.QueryRow(`SELECT CAST(expires_at AS TEXT) FROM worker_registration_keys WHERE id = ?`, keyID).Scan(&stored))
 	assert.Equal(t, formatSQLiteTime(expiresAt), stored,
 		"expires_at must be stored in the canonical strftime layout the raw-string filters assume; got %q", stored)
 }

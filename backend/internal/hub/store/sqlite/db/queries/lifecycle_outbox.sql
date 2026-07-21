@@ -12,7 +12,13 @@ ORDER BY id
 LIMIT ?;
 
 -- name: MarkLifecycleOutboxConsumed :exec
-UPDATE lifecycle_outbox SET consumed_at = ? WHERE id = ?;
+UPDATE lifecycle_outbox
+SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(consumed_at))
+WHERE id = sqlc.arg(id);
 
 -- name: DeleteConsumedLifecycleOutboxBefore :execresult
-DELETE FROM lifecycle_outbox WHERE consumed_at IS NOT NULL AND consumed_at < ?;
+-- Raw compare: consumed_at is stored canonical (MarkLifecycleOutboxConsumed
+-- wraps the bound instant in strftime), and the Go side binds a
+-- formatSQLiteTime-formatted cutoff (CAST AS TEXT -> string param), so the
+-- lexicographic < is byte-exact.
+DELETE FROM lifecycle_outbox WHERE consumed_at IS NOT NULL AND consumed_at < CAST(sqlc.arg(before) AS TEXT);

@@ -154,9 +154,14 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 		ExpiresAt: expiresAt,
 	}))
 
+	// CAST strips the DATETIME decltype so modernc returns expires_at's stored
+	// bytes verbatim for the exact-equality pin below (a bare scan trims
+	// trailing fractional zeros). created_at/last_active_at stay bare on
+	// purpose: their shape-only assertions tolerate the trim, and the comment
+	// below documents the scanned-digit variability they must absorb.
 	var expiresAtStored, createdAtStored, lastActiveAtStored string
 	require.NoError(t, db.QueryRow(
-		`SELECT expires_at, created_at, last_active_at FROM user_sessions WHERE id = ?`,
+		`SELECT CAST(expires_at AS TEXT), created_at, last_active_at FROM user_sessions WHERE id = ?`,
 		sessionID,
 	).Scan(&expiresAtStored, &createdAtStored, &lastActiveAtStored))
 	// expires_at is the caller-supplied instant, wrapped canonical by CreateUserSession.
@@ -243,8 +248,11 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	// on-disk value must equal formatSQLiteTime(newExpiry) exactly. A future
 	// Touch refactor that binds expires_at raw would store modernc's driver
 	// layout here and this assertion fails before the liveness filter regresses.
+	// CAST strips the column's DATETIME decltype so modernc returns the stored
+	// bytes verbatim -- a bare scan trims trailing fractional zeros (".720Z"
+	// arrives as ".72Z") and fails this pin on every ms-ends-in-zero instant.
 	var expiresAtStored string
-	require.NoError(t, db.QueryRow(`SELECT expires_at FROM user_sessions WHERE id = ?`, sessionID).Scan(&expiresAtStored))
+	require.NoError(t, db.QueryRow(`SELECT CAST(expires_at AS TEXT) FROM user_sessions WHERE id = ?`, sessionID).Scan(&expiresAtStored))
 	assert.Equal(t, formatSQLiteTime(newExpiry), expiresAtStored,
 		"Touch must store expires_at in the canonical strftime layout; got %q", expiresAtStored)
 

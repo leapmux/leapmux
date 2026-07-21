@@ -1,7 +1,13 @@
 -- name: CreateDeviceAuthorization :exec
 INSERT INTO device_authorizations (
     device_code, user_code, device_name, interval_seconds, expires_at
-) VALUES (?, ?, ?, ?, ?);
+) VALUES (
+    sqlc.arg(device_code),
+    sqlc.arg(user_code),
+    sqlc.arg(device_name),
+    sqlc.arg(interval_seconds),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+);
 
 -- name: GetDeviceAuthorization :one
 SELECT * FROM device_authorizations WHERE device_code = ?;
@@ -10,16 +16,17 @@ SELECT * FROM device_authorizations WHERE device_code = ?;
 SELECT * FROM device_authorizations WHERE user_code = ?;
 
 -- name: ApproveDeviceAuthorization :execresult
--- julianday() normalizes timezone representations while preserving
--- fractional seconds at the expiry boundary.
+-- Raw compare: expires_at is stored canonical (CreateDeviceAuthorization
+-- wraps the bound instant in strftime), so the liveness guard is
+-- millisecond-exact against the same canonical RHS layout.
 UPDATE device_authorizations
 SET approved = 1, user_id = ?
-WHERE device_code = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday('now');
+WHERE device_code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: ApproveDeviceAuthorizationByUserCode :execresult
 UPDATE device_authorizations
 SET approved = 1, user_id = ?
-WHERE user_code = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday('now');
+WHERE user_code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DenyDeviceAuthorization :execresult
 UPDATE device_authorizations
@@ -28,15 +35,17 @@ WHERE device_code = ? AND consumed_at IS NULL;
 
 -- name: ConsumeDeviceAuthorization :execresult
 UPDATE device_authorizations
-SET consumed_at = datetime('now')
+SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ? AND approved = 1 AND consumed_at IS NULL
-  AND julianday(expires_at) > julianday('now');
+  AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: TouchDeviceAuthorizationPoll :exec
 UPDATE device_authorizations
-SET last_polled_at = datetime('now')
+SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ?;
 
 -- name: DeleteExpiredDeviceAuthorizations :execresult
+-- Raw compare against a formatSQLiteTime-formatted cutoff (CAST AS TEXT ->
+-- string param); see DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM device_authorizations
-WHERE expires_at < ?;
+WHERE expires_at < CAST(sqlc.arg(cutoff) AS TEXT);

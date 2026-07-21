@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type orgStore struct {
@@ -19,7 +19,7 @@ func fromDBOrg(o gendb.Org) store.Org {
 		ID:        o.ID,
 		Name:      o.Name,
 		CreatedAt: o.CreatedAt,
-		DeletedAt: ptrconv.NullTimeToPtr(o.DeletedAt),
+		DeletedAt: sqlutil.NullTimePtr(o.DeletedAt),
 	}
 }
 

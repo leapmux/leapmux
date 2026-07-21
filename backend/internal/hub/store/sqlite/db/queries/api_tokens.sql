@@ -10,8 +10,8 @@ INSERT INTO api_tokens (
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
     sqlc.arg(scope),
-    sqlc.arg(expires_at),
-    sqlc.arg(refresh_expires_at),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(refresh_expires_at)),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 
@@ -99,11 +99,11 @@ WHERE id = ?;
 -- and deterministically derive the same replacement pair.
 UPDATE api_tokens
 SET secret_hash = sqlc.arg(new_secret_hash),
-    expires_at = sqlc.arg(new_expires_at),
+    expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(new_expires_at)),
     refresh_hash = sqlc.arg(new_refresh_hash),
-    refresh_expires_at = sqlc.arg(new_refresh_expires_at),
+    refresh_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(new_refresh_expires_at)),
     previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at),
+    previous_refresh_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(prev_refresh_expires_at)),
     last_rotated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id)
   AND revoked_at IS NULL

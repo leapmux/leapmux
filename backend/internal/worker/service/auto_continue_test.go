@@ -131,6 +131,50 @@ func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
 	assert.Equal(t, autoContinueStateCancelled, apiRow.State)
 }
 
+// TestAutoContinueSchedule_ArmedDueAtSurvivesDBRoundtrip pins the contract
+// between the schedule builders and fireAutoContinue's DueAt.Equal guard: the
+// dueAt a builder hands back for arming the in-memory timer must equal the DB
+// roundtrip of the record it built. due_at is stored at millisecond precision
+// (the upsert's strftime wrap), so the builders truncate to the millisecond
+// before binding; without that, every live-armed dueAt carries sub-millisecond
+// residue the storage floors away, the Equal guard rejects every firing, and
+// auto-continue silently never fires on the live path. The restore-path tests
+// above can't catch this: they arm from a DB readback, which is already on the
+// millisecond grid.
+func TestAutoContinueSchedule_ArmedDueAtSurvivesDBRoundtrip(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
+	h := NewOutputHandler(nil, queries, nil, nil, nil)
+
+	// Sub-millisecond residue plus a non-UTC zone: the shape every live
+	// scheduling call has (time.Now() carries nanosecond resolution).
+	zone := time.FixedZone("UTC+9", 9*60*60)
+	now := time.Now().In(zone).Truncate(time.Millisecond).Add(123_456 * time.Nanosecond)
+
+	for _, reason := range []agent.AutoContinueReason{
+		agent.AutoContinueReasonAPIError,
+		agent.AutoContinueReasonRateLimit,
+	} {
+		record, dueAt, err := h.buildAutoContinueRecord("agent-1", agent.AutoContinueSchedule{
+			Reason: reason,
+			DueAt:  now.Add(time.Hour),
+		}, now)
+		require.NoError(t, err, reason)
+		assert.True(t, dueAt.Equal(dueAt.Truncate(time.Millisecond)),
+			"%s: armed dueAt %s carries sub-millisecond residue the storage would floor away", reason, dueAt)
+
+		require.NoError(t, queries.UpsertAutoContinueSchedule(bgCtx(), record))
+		row, err := queries.GetAutoContinueSchedule(bgCtx(), db.GetAutoContinueScheduleParams{
+			AgentID: "agent-1",
+			Reason:  string(reason),
+		})
+		require.NoError(t, err)
+		assert.True(t, row.DueAt.Equal(dueAt),
+			"%s: stored due_at %s != armed dueAt %s -- fireAutoContinue's DueAt.Equal guard would reject the firing",
+			reason, row.DueAt, dueAt)
+	}
+}
+
 func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T) {
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")

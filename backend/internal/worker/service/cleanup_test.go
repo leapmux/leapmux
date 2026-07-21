@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -77,10 +78,7 @@ func TestCleanup_HardDeleteWorktreesBefore(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete worktrees older than 7 days.
-	cutoff := sql.NullTime{
-		Time:  time.Now().UTC().Add(-7 * 24 * time.Hour),
-		Valid: true,
-	}
+	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -110,10 +108,7 @@ func TestCleanup_HardDeleteWorktreesBefore_RetainsRecent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete worktrees older than 7 days. The recent one should survive.
-	cutoff := sql.NullTime{
-		Time:  time.Now().UTC().Add(-7 * 24 * time.Hour),
-		Valid: true,
-	}
+	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -163,10 +158,7 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete.
-	cutoff := sql.NullTime{
-		Time:  time.Now().UTC().Add(-7 * 24 * time.Hour),
-		Valid: true,
-	}
+	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -183,4 +175,75 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 	err = sqlDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM worktree_tabs WHERE worktree_id = ?", "wt-cascade").Scan(&tabCount)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), tabCount, "expected tab references to be cascade-deleted")
+}
+
+// TestCleanup_SweepsSameInstantBoundaries pins the millisecond-exact boundary
+// behavior of the three retention sweeps: stored timestamps and cutoffs are
+// both canonical (strftime wrap on write, timefmt.Format on the bound cutoff),
+// so `col < cutoff` must delete strictly-older rows and keep the exact-cutoff
+// and newer rows even when everything shares the same second. The existing
+// retention tests use multi-day gaps, which is exactly how the prior
+// driver-layout cutoff bind (which missed every same-day row) shipped green.
+func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
+	sqlDB, queries := setupTestDB(t)
+	ctx := context.Background()
+	cutoffTime := time.Now().UTC().Truncate(time.Millisecond)
+	cutoff := timefmt.Format(cutoffTime)
+
+	seedAgent := func(id string, closedAt time.Time) {
+		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+			ID: id, WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/home", Title: id, Options: "{}",
+		}))
+		_, err := sqlDB.ExecContext(ctx, "UPDATE agents SET closed_at = ? WHERE id = ?", timefmt.Format(closedAt), id)
+		require.NoError(t, err)
+	}
+	seedAgent("agent-expired", cutoffTime.Add(-time.Millisecond))
+	seedAgent("agent-at-cutoff", cutoffTime)
+	seedAgent("agent-live", cutoffTime.Add(time.Millisecond))
+
+	res, err := queries.DeleteClosedAgentsBefore(ctx, cutoff)
+	require.NoError(t, err)
+	n, err := res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "agents sweep must delete exactly the strictly-older same-second row")
+	_, err = queries.GetAgentByID(ctx, "agent-expired")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+	for _, keep := range []string{"agent-at-cutoff", "agent-live"} {
+		_, err := queries.GetAgentByID(ctx, keep)
+		assert.NoError(t, err)
+	}
+
+	seedTerminal := func(id string, closedAt time.Time) {
+		require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
+			ID: id, WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/home", Shell: "/bin/zsh",
+			Title: id, Cols: 80, Rows: 24, Screen: []byte{},
+			ClosedAt: sql.NullTime{Time: closedAt, Valid: true},
+		}))
+	}
+	seedTerminal("term-expired", cutoffTime.Add(-time.Millisecond))
+	seedTerminal("term-at-cutoff", cutoffTime)
+	seedTerminal("term-live", cutoffTime.Add(time.Millisecond))
+
+	res, err = queries.DeleteClosedTerminalsBefore(ctx, cutoff)
+	require.NoError(t, err)
+	n, err = res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "terminals sweep must delete exactly the strictly-older same-second row")
+
+	seedWorktree := func(id string, deletedAt time.Time) {
+		require.NoError(t, queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+			ID: id, WorktreePath: "/tmp/" + id, RepoRoot: "/repo", BranchName: id,
+		}))
+		_, err := sqlDB.ExecContext(ctx, "UPDATE worktrees SET deleted_at = ? WHERE id = ?", timefmt.Format(deletedAt), id)
+		require.NoError(t, err)
+	}
+	seedWorktree("wt-expired", cutoffTime.Add(-time.Millisecond))
+	seedWorktree("wt-at-cutoff", cutoffTime)
+	seedWorktree("wt-live", cutoffTime.Add(time.Millisecond))
+
+	res, err = queries.HardDeleteWorktreesBefore(ctx, cutoff)
+	require.NoError(t, err)
+	n, err = res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "worktrees sweep must delete exactly the strictly-older same-second row")
 }

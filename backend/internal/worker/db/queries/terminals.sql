@@ -5,7 +5,24 @@
 -- exit/restart upserts pass whatever value (commonly empty) and the
 -- existing column survives unchanged.
 INSERT INTO terminals (id, workspace_id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, closed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (
+  sqlc.arg(id),
+  sqlc.arg(workspace_id),
+  sqlc.arg(working_dir),
+  sqlc.arg(home_dir),
+  sqlc.arg(shell_start_dir),
+  sqlc.arg(shell),
+  sqlc.arg(title),
+  sqlc.arg(cols),
+  sqlc.arg(rows),
+  sqlc.arg(screen),
+  sqlc.arg(exit_code),
+  -- The title-update path re-binds a DB-roundtripped closed_at; without this
+  -- wrap that rewrite stores the driver's own layout and splits the column
+  -- into two layouts under the raw-string cleanup sweep. The DO UPDATE below
+  -- reuses the transformed excluded value.
+  strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(closed_at))
+)
 ON CONFLICT (id) DO UPDATE SET
   workspace_id    = excluded.workspace_id,
   working_dir     = excluded.working_dir,
@@ -60,7 +77,13 @@ SELECT * FROM terminals WHERE workspace_id = ? AND closed_at IS NULL;
 SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedTerminalsBefore :execresult
-DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.closed_at < ? LIMIT 1000);
+-- Raw compare: closed_at is stored canonical on every write path
+-- (CloseTerminal/CloseOpenTerminalsByWorkspace SET strftime, UpsertTerminal
+-- wraps its bound value), and the Go side binds a timefmt.Format cutoff
+-- (CAST AS TEXT -> string param), so the lexicographic < is byte-exact. A raw
+-- time.Time bind here would compare in the driver's own layout and skip every
+-- same-day row until the date rolled over.
+DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.closed_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);
 
 -- name: GetTerminalWorkspaceID :one
 SELECT workspace_id FROM terminals WHERE id = ?;

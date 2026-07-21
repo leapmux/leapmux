@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type oauthStateStore struct {
@@ -30,7 +31,7 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
 		RedirectUri:  p.RedirectURI,
-		ExpiresAt:    p.ExpiresAt.UTC(),
+		ExpiresAt:    sqlutil.BindTime(p.ExpiresAt),
 	}))
 }
 

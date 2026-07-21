@@ -57,7 +57,7 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          revokedAt.UTC(),
+		RevokedAt:          sqlutil.BindTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }

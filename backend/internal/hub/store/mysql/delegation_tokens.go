@@ -49,8 +49,8 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			IssuedForTabType: p.IssuedForTabType,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
-			ExpiresAt:        p.ExpiresAt.UTC(),
-			RefreshExpiresAt: sqlutil.ToNullTime(p.RefreshExpiresAt),
+			ExpiresAt:        sqlutil.BindTime(p.ExpiresAt),
+			RefreshExpiresAt: sqlutil.BindNullTime(p.RefreshExpiresAt),
 		}))
 	})
 }

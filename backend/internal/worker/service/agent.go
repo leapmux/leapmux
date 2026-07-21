@@ -10,7 +10,6 @@ import (
 	"maps"
 	"os"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -317,7 +316,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		messageID := id.Generate()
-		now := time.Now().UTC()
+		now := nowMillis()
 
 		// Store user content as a plain JSON object with a "content" field,
 		// which the frontend classifies as user_content and renders as markdown.
@@ -2963,7 +2962,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string, markType l
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
 	messageID := id.Generate()
-	now := time.Now().UTC()
+	now := nowMillis()
 	innerJSON, err := json.Marshal(map[string]string{"content": content})
 	if err != nil {
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)

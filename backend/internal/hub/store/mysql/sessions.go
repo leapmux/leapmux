@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type sessionStore struct{ conn *mysqlConn }
@@ -47,7 +48,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 		return mapErr(tx.(*mysqlStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID,
-			ExpiresAt: p.ExpiresAt,
+			ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
 		}))
@@ -65,9 +66,9 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
-		ExpiresAt:    p.ExpiresAt,
+		ExpiresAt:    sqlutil.BindTime(p.ExpiresAt),
 		ID:           p.ID,
-		LastActiveAt: p.LastActiveAt,
+		LastActiveAt: sqlutil.BindTime(p.LastActiveAt),
 	})
 	return n, mapErr(err)
 }

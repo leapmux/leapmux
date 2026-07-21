@@ -34,7 +34,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
 		IntervalSeconds: p.IntervalSeconds,
-		ExpiresAt:       p.ExpiresAt.UTC(),
+		ExpiresAt:       sqlutil.BindTime(p.ExpiresAt),
 	}))
 }
 

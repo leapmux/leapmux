@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type registrationKeyStore struct {
@@ -29,7 +30,7 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: p.ExpiresAt.UTC(),
+		ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
 	}))
 }
 
@@ -56,8 +57,8 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
 		CreatedBy:    p.CreatedBy,
-		NewExpiresAt: p.ExpiresAt.UTC(),
-		Now:          time.Now().UTC(),
+		NewExpiresAt: sqlutil.BindTime(p.ExpiresAt),
+		Now:          sqlutil.BindTime(time.Now()),
 	}))
 }
 
@@ -65,7 +66,7 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset),
+		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
@@ -75,7 +76,7 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
 	var consumed *store.WorkerRegistrationKey
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
-		now := time.Now().UTC()
+		now := sqlutil.BindTime(time.Now())
 		r, err := conn.q.GetActiveRegistrationKeyForUpdate(ctx, gendb.GetActiveRegistrationKeyForUpdateParams{
 			ID:        id,
 			ExpiresAt: now,
@@ -104,7 +105,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
 	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
-		ExpiresAt: time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset),
+		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
@@ -115,7 +116,7 @@ func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegist
 	// so the IS NULL branch surfaces every row.
 	var now sql.NullTime
 	if !p.IncludeExpired {
-		now = sql.NullTime{Time: time.Now().UTC(), Valid: true}
+		now = sqlutil.BindTimeValid(time.Now())
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListRegistrationKeysAdminParams, error) {

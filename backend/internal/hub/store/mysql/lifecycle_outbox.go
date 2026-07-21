@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -49,10 +48,10 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 func (s *lifecycleOutboxStore) MarkConsumed(ctx context.Context, p store.MarkLifecycleOutboxConsumedParams) error {
 	return mapErr(s.conn.q.MarkLifecycleOutboxConsumed(ctx, gendb.MarkLifecycleOutboxConsumedParams{
 		ID:         p.ID,
-		ConsumedAt: sql.NullTime{Time: p.ConsumedAt, Valid: true},
+		ConsumedAt: sqlutil.BindTimeValid(p.ConsumedAt),
 	}))
 }
 
 func (s *lifecycleOutboxStore) DeleteConsumedBefore(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, sql.NullTime{Time: before, Valid: true}))
+	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, sqlutil.BindTimeValid(before)))
 }
