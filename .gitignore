@@ -19,6 +19,9 @@
 
 # Generated code
 generated/
+# Ephemeral sqlc staging dirs (see Taskfile generate-sqlc-*); normally removed
+# by a trap, but a hard kill mid-generate could leave one behind.
+backend/.gen-stage.*
 
 # Go
 vendor/
