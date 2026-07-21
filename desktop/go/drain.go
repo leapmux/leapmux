@@ -12,9 +12,9 @@ import (
 // Every bounded drain in the sidecar routes through here -- the operation drain
 // (App.drainOperations), the RPC handler drains before and after the writer is
 // interrupted (RPCSession.drainHandlers), and the relay read-loop drain
-// (drainRelay, after wsRelay.detach). Each had hand-rolled the same spawn-waiter/stoppable-timer/
-// select/warn dance, and their comments already cross-referenced one another as
-// mirrors; one helper means the contract they share -- a promptly-finished waiter
+// (drainRelay, after wsRelay.detach). Each had hand-rolled the same
+// stoppable-timer/select/warn dance, and their comments already cross-referenced
+// one another as mirrors; one helper means the contract they share -- a promptly-finished waiter
 // never leaves a live timer on the runtime heap, and a straggler is abandoned
 // rather than allowed to wedge teardown -- cannot drift between them.
 //
@@ -43,21 +43,68 @@ func waitBounded(done <-chan struct{}, timeout time.Duration, warnMsg string) bo
 	}
 }
 
-// waitGroupDone returns a channel that closes once wg's counter reaches zero, so
-// a WaitGroup can be handed to waitBounded.
-//
-// The spawned waiter parks on wg.Wait() until the counter hits zero. If a
-// handler/operation never returns (a non-cancellable exec or filesystem scan),
-// that waiter leaks -- but only doubling an already-unavoidable leak, since Go
-// cannot kill the stuck goroutine and wg.Wait() cannot be select'd on, and the
-// waiter exits cleanly the moment the straggler ever returns. Replacing the
-// WaitGroups with a cancellable counter to remove it is tracked (with the
-// recommendation to leave it) in https://github.com/leapmux/leapmux/issues/297.
-func waitGroupDone(wg *sync.WaitGroup) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	return done
+// waitCounter counts in-flight work like a sync.WaitGroup, but exposes
+// completion as a channel so a drain can wait with a deadline. sync.WaitGroup
+// was unusable here: Wait() cannot be select'ed on, so handing it to
+// waitBounded required a spawned waiter goroutine that leaked (parked forever
+// on Wait) whenever a permanently-stuck straggler was abandoned -- issue #297.
+type waitCounter struct {
+	mu   sync.Mutex
+	n    int
+	zero chan struct{} // created lazily by doneChan while n > 0; closed and nil'd when n reaches 0
+}
+
+func (c *waitCounter) add() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+}
+
+func (c *waitCounter) done() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		// Panic BEFORE mutating (unlike sync.WaitGroup, which decrements first):
+		// if a future recover-middleware swallows this panic, the counter is still
+		// consistent. Decrement-then-panic would leave n at -1, where the next
+		// add() lands on 0 and a concurrent drain's doneChan would report an idle
+		// counter while that operation is live.
+		panic("waitCounter: negative counter")
+	}
+	c.n--
+	if c.n == 0 && c.zero != nil {
+		close(c.zero)
+		c.zero = nil
+	}
+}
+
+// doneChan reports the counter's next zero-crossing as of the call. Adds after
+// that crossing do not reopen the returned channel -- a new cycle needs a fresh
+// doneChan call -- so a caller must not let an add() slip in between sampling
+// and the wait the sample is meant to cover. (sync.WaitGroup's best-effort
+// misuse check would usually have panicked on "Add called concurrently with
+// Wait" -- it fires only when Add catches a parked waiter at that instant;
+// waitCounter silently legalizes the race outright, so each drain call site
+// documents why its ordering upholds the contract.)
+func (c *waitCounter) doneChan() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	if c.zero == nil {
+		c.zero = make(chan struct{})
+	}
+	return c.zero
+}
+
+// wait blocks, bounded by timeout, for the zero-crossing current as of this
+// call -- it samples doneChan itself, so the caller never holds the raw
+// channel -- and reports whether the counter hit zero in time. On timeout it
+// logs warnMsg (omitted when empty) and gives up; the straggling work is the
+// caller's to abandon.
+func (c *waitCounter) wait(timeout time.Duration, warnMsg string) bool {
+	return waitBounded(c.doneChan(), timeout, warnMsg)
 }

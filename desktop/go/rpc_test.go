@@ -389,12 +389,12 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 
 	// A handler that ignores sessionCtx entirely: it outlives any budget, so the
 	// drain must be bounded by the budget rather than by the handler.
-	var handlers sync.WaitGroup
-	handlers.Add(1)
+	var handlers waitCounter
+	handlers.add()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	go func() {
-		defer handlers.Done()
+		defer handlers.done()
 		<-release
 	}()
 
@@ -406,6 +406,57 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 		"both phases must come out of one budget, not one each")
 	assert.GreaterOrEqual(t, elapsed, handlerDrainTimeout,
 		"the drain must still spend its budget waiting for the straggler")
+}
+
+// TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler is the drainHandlers
+// side of the #297 reproducer -- the path the leak was actually reported on
+// (one timed-out handler drain per webview reconnect in dev-socket mode).
+// drain_test.go's TestDrainDoesNotLeakWaiterOnAbandonedStraggler covers the
+// operationGate side; both drains share waitCounter today, but only a per-path
+// test catches a future divergence that reintroduces a spawn-waiter on one
+// side alone.
+func TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
+	original := handlerDrainTimeout
+	handlerDrainTimeout = time.Millisecond
+	t.Cleanup(func() { handlerDrainTimeout = original })
+	originalGrace := interruptGrace
+	interruptGrace = time.Millisecond
+	t.Cleanup(func() { interruptGrace = originalGrace })
+
+	app := NewApp("")
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+
+	// A handler that never returns until Cleanup: every drain against it times
+	// out and abandons it, exactly the straggler that leaked one parked waiter
+	// per drain pre-fix.
+	var handlers waitCounter
+	handlers.add()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	go func() {
+		defer handlers.done()
+		<-release
+	}()
+
+	const drains = 8
+	for range drains {
+		session.drainHandlers(&handlers, nil)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		dump := allGoroutineStacks()
+		leaked := countDrainWaiterFrames(dump)
+		if leaked == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected no drain waiter goroutines after %d abandoned handler drains; found %d\n%s",
+				drains, leaked, dump)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // An event frame that cannot be delivered must tear down its RELAY and tell the
@@ -983,11 +1034,11 @@ func TestDrainHandlersJoinsHandlerReleasedByTheInterrupt(t *testing.T) {
 	writer := newBlockingWriteCloser()
 	session := NewRPCSession(app, bytes.NewReader(nil), writer, nil)
 
-	var handlers sync.WaitGroup
-	handlers.Add(1)
+	var handlers waitCounter
+	handlers.add()
 	var finished atomic.Bool
 	go func() {
-		defer handlers.Done()
+		defer handlers.done()
 		// Blocked writing its response to a peer that stopped reading: exactly the
 		// handler interruptWriter exists to release.
 		session.writeOK(1)
