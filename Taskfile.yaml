@@ -66,15 +66,15 @@ tasks:
       - frontend/src/generated/**/*
     cmds:
       # Regenerate into a throwaway staging dir, then publish with
-      # scripts/sync-generated.sh so byte-identical files keep their mtime and a
+      # scripts/sync-generated.mjs so byte-identical files keep their mtime and a
       # running Vite dev server (which watches frontend/src/**) does not
       # hard-refresh. buf's -o prepends the staging path to each plugin `out:`
-      # dir (see buf.gen.yaml), so both output trees are mirrored under $STAGING.
+      # dir (see buf.gen.yaml), so both output trees are mirrored under {STAGING}.
       - >-
-        scripts/sync-generated.sh
+        bun scripts/sync-generated.mjs
         --out backend/generated/proto backend/generated/proto
         --out frontend/src/generated frontend/src/generated
-        -- 'buf generate -o "$STAGING"'
+        -- buf generate -o {STAGING}
 
   generate-sqlc:
     desc: Generate all type-safe SQL code
@@ -93,19 +93,19 @@ tasks:
       - backend/internal/hub/store/*/generated/db/**/*
     cmds:
       # Regenerate into a staging dir under backend/, then publish via
-      # scripts/sync-generated.sh so unchanged files keep their mtime and
+      # scripts/sync-generated.mjs so unchanged files keep their mtime and
       # orphaned files (from a deleted query .sql) are still pruned. sqlc must
       # run inside the Go module for `go tool` to resolve it and has no
-      # output-dir override, so staging lives under backend/ (--base) and we
-      # copy the config + db inputs in so its relative `out: generated/db`
+      # output-dir override, so staging lives under backend/ (--base, --cwd-staging)
+      # and we copy the config + db inputs in so its relative `out: generated/db`
       # lands there.
       - for: { var: BACKENDS }
         cmd: >-
-          scripts/sync-generated.sh --base backend
+          bun scripts/sync-generated.mjs --base backend --cwd-staging
+          --copy backend/internal/hub/store/{{.ITEM}}/sqlc.yaml sqlc.yaml
+          --copy backend/internal/hub/store/{{.ITEM}}/db db
           --out generated/db backend/internal/hub/store/{{.ITEM}}/generated/db
-          -- 'cp "backend/internal/hub/store/{{.ITEM}}/sqlc.yaml" "$STAGING/";
-          cp -R "backend/internal/hub/store/{{.ITEM}}/db" "$STAGING/db";
-          cd "$STAGING" && go tool sqlc generate'
+          -- go tool sqlc generate
 
   generate-sqlc-worker:
     desc: Generate type-safe SQL code for Worker
@@ -119,11 +119,11 @@ tasks:
     cmds:
       # See generate-sqlc-hub for the staging rationale.
       - >-
-        scripts/sync-generated.sh --base backend
+        bun scripts/sync-generated.mjs --base backend --cwd-staging
+        --copy backend/internal/worker/sqlc.yaml sqlc.yaml
+        --copy backend/internal/worker/db db
         --out generated/db backend/internal/worker/generated/db
-        -- 'cp "backend/internal/worker/sqlc.yaml" "$STAGING/";
-        cp -R "backend/internal/worker/db" "$STAGING/db";
-        cd "$STAGING" && go tool sqlc generate'
+        -- go tool sqlc generate
 
   generate-spinners:
     desc: Download spinner verb JSON files from awesome-claude-spinners
@@ -139,14 +139,16 @@ tasks:
         if [ ! -d "{{.CACHE_DIR}}" ]; then
           git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.CACHE_DIR}}"
         fi
-      # Publish via scripts/sync-generated.sh so unchanged spinner files keep
+      # Publish via scripts/sync-generated.mjs so unchanged spinner files keep
       # their mtime (no dev-server reload) and removed spinners are pruned,
-      # instead of deleting and re-copying the whole tree every run.
+      # instead of deleting and re-copying the whole tree every run. There is no
+      # generator here: --copy stages the cached spinners and --out publishes them.
+      # CACHE_DIR is an absolute Windows path (backslashes from $HOME); quote it
+      # so Task's POSIX shell does not strip the backslashes as escape chars.
       - >-
-        scripts/sync-generated.sh
+        bun scripts/sync-generated.mjs
+        --copy "{{.CACHE_DIR}}/spinners" spinners
         --out spinners frontend/src/spinners
-        -- 'mkdir -p "$STAGING/spinners";
-        cp -R "{{.CACHE_DIR}}/spinners/." "$STAGING/spinners/"'
 
   # --- Preparation ---
 
