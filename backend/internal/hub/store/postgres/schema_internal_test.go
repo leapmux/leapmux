@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -27,26 +26,32 @@ import (
 // override, a timezone-naive column silently reinterprets instants across
 // session timezones.
 //
-// This is a static check of the migration source, so it runs without Docker.
+// This is a static check of every embedded migration file (migrate.go's
+// //go:embed db/migrations/*.sql), so it runs without Docker: a future
+// migration with a wrong decltype fails the default suite as long as its column
+// is declared in the conventional one-per-line form the text scan recognizes.
 // Its live twin, TestPostgresTimestamptzColumnsLive (postgres_test.go, -tags
 // integration), asserts the same invariant against information_schema of the
-// actual migrated database and is immune to the text parse's line-shape
-// assumptions (see storetest.WalkCreateTableColumns).
+// actual migrated database and is the authoritative guarantee for the
+// line-shape parse blind spots the source scan cannot see (see
+// storetest.WalkCreateTableColumns).
 func TestEveryTimestampColumnDeclaresTimestamptz(t *testing.T) {
-	sqlBytes, err := os.ReadFile("db/migrations/00001_initial.sql")
+	files, err := storetest.MigrationFiles(migrations)
 	require.NoError(t, err)
 
 	atColumns := 0
-	storetest.WalkCreateTableColumns(string(sqlBytes), func(name, typeTok string) {
-		if strings.HasSuffix(name, "_at") {
-			atColumns++
-			assert.Equal(t, "TIMESTAMPTZ", typeTok,
-				"column %s is declared %s; `_at` columns must be exactly TIMESTAMPTZ (default microsecond precision) so the sqlc db_type override retypes them to the flooring valuer and no lower precision can round past the floor", name, typeTok)
-		} else {
-			assert.False(t, strings.HasPrefix(typeTok, "TIMESTAMP"),
-				"column %s is declared %s; time columns must be named *_at (and timezone-naive TIMESTAMP is banned outright)", name, typeTok)
-		}
-	})
+	for _, f := range files {
+		storetest.WalkCreateTableColumns(f.SQL, func(name, typeTok string) {
+			if strings.HasSuffix(name, "_at") {
+				atColumns++
+				assert.Equal(t, "TIMESTAMPTZ", typeTok,
+					"%s: column %s is declared %s; `_at` columns must be exactly TIMESTAMPTZ (default microsecond precision) so the sqlc db_type override retypes them to the flooring valuer and no lower precision can round past the floor", f.Name, name, typeTok)
+			} else {
+				assert.False(t, strings.HasPrefix(typeTok, "TIMESTAMP"),
+					"%s: column %s is declared %s; time columns must be named *_at (and timezone-naive TIMESTAMP is banned outright)", f.Name, name, typeTok)
+			}
+		})
+	}
 	// Sanity: the scan actually saw the schema's many timestamp columns.
-	assert.Greater(t, atColumns, 20, "expected many _at columns; got %d (is the migration readable?)", atColumns)
+	assert.Greater(t, atColumns, 20, "expected many _at columns; got %d (are the migrations readable?)", atColumns)
 }

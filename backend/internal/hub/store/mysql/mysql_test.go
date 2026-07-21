@@ -92,10 +92,10 @@ func TestMySQLStore(t *testing.T) {
 // collation so id/FK columns collate byte-wise (case-sensitive) and the
 // composite cursor's `id < ?` tiebreak stays deterministic for mixed-case ids.
 // This is the live twin of the static source scan in schema_internal_test.go
-// (TestEveryCreateTableDeclaresBinaryCollation): the static scan runs without
-// Docker but reads only 00001_initial.sql, while this one is
-// migration-count-agnostic and also catches a column-level collation override
-// the source scan cannot see.
+// (TestEveryCreateTableDeclaresBinaryCollation): the static scan covers every
+// embedded migration file without Docker, while this one asserts against the
+// server's resolved schema and catches column-level collation overrides the
+// source scan cannot see.
 func TestMySQLBinaryCollationLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -144,12 +144,11 @@ func TestMySQLBinaryCollationLive(t *testing.T) {
 // TIMESTAMP without being `_at`-named (TIMESTAMP is banned outright for its
 // session-timezone semantics). This is the live twin of the static source scan
 // in schema_internal_test.go (TestEveryTimestampColumnDeclaresDatetime): the
-// static scan runs without Docker but reads only 00001_initial.sql with a
-// line-shape-sensitive text parse, while this one is migration-count-agnostic
-// and reads the server's resolved column types. Precision below 3 matters
-// because MySQL ROUNDS a fractional second exceeding the column precision, so
-// a DATETIME(0..2) column could store an instant after the ms-floored bound
-// the sqltime valuers guarantee.
+// static scan covers every embedded migration file without Docker (with a
+// line-shape-sensitive text parse), while this one reads the server's resolved
+// column types. Precision below 3 matters because MySQL ROUNDS a fractional
+// second exceeding the column precision, so a DATETIME(0..2) column could
+// store an instant after the ms-floored bound the sqltime valuers guarantee.
 func TestMySQLDatetimeColumnsLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
