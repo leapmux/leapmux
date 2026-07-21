@@ -170,14 +170,13 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 // any name resolves to a timezone-naive timestamp (banned outright: it
 // silently reinterprets instants across session timezones). This is the live
 // twin of the static source scan in schema_internal_test.go
-// (TestEveryTimestampColumnDeclaresTimestamptz): the static scan runs without
-// Docker but reads only 00001_initial.sql with a line-shape-sensitive text
-// parse, while this one is migration-count-agnostic and reads the server's
-// resolved column types. Precision below 6 matters because Postgres ROUNDS a
-// fractional second exceeding the column precision, so a TIMESTAMPTZ(p<6)
-// column could store an instant after the microsecond-floored bound the
-// pgtime valuers guarantee. YugabyteDB inherits this pin via the shared
-// migration.
+// (TestEveryTimestampColumnDeclaresTimestamptz): the static scan covers every
+// embedded migration file without Docker (with a line-shape-sensitive text
+// parse), while this one reads the server's resolved column types. Precision
+// below 6 matters because Postgres ROUNDS a fractional second exceeding the
+// column precision, so a TIMESTAMPTZ(p<6) column could store an instant after
+// the microsecond-floored bound the pgtime valuers guarantee. YugabyteDB
+// inherits this pin via the shared migration.
 func TestPostgresTimestamptzColumnsLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

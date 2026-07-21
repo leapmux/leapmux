@@ -7,9 +7,10 @@
 -- Every CREATE TABLE here and in future migrations MUST carry
 -- COLLATE=utf8mb4_bin: a table without it silently inherits the server or
 -- database default (typically case-INsensitive), breaking the byte-wise id
--- tiebreak ordering and FK collation consistency. This convention is
--- enforced only by this comment today; a schema test that fails any
--- CREATE TABLE lacking the suffix is tracked in
+-- tiebreak ordering and FK collation consistency. Enforced by
+-- TestEveryCreateTableDeclaresBinaryCollation (schema_internal_test.go), which
+-- scans every migration file in this directory, and by its live twin
+-- TestMySQLBinaryCollationLive (-tags integration). See
 -- https://github.com/leapmux/leapmux/issues/300. The database-level default
 -- is intentionally left to the operator (the app connects to a pre-created
 -- database and owns only its tables).
