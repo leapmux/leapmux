@@ -18,7 +18,7 @@ func fromDBOAuthUserLink(l gendb.OauthUserLink) store.OAuthUserLink {
 		UserID:          l.UserID,
 		ProviderID:      l.ProviderID,
 		ProviderSubject: l.ProviderSubject,
-		CreatedAt:       l.CreatedAt,
+		CreatedAt:       l.CreatedAt.Time,
 	}
 }
 

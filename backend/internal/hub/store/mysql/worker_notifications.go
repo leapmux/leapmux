@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 // workerNotificationStore implements store.WorkerNotificationStore backed by MySQL.
@@ -51,7 +50,7 @@ func fromDBWorkerNotification(n gendb.WorkerNotification) store.WorkerNotificati
 		Status:      n.Status,
 		Attempts:    int64(n.Attempts),
 		MaxAttempts: int64(n.MaxAttempts),
-		CreatedAt:   n.CreatedAt,
-		DeliveredAt: sqlutil.NullTimePtr(n.DeliveredAt),
+		CreatedAt:   n.CreatedAt.Time,
+		DeliveredAt: n.DeliveredAt.Ptr(),
 	}
 }

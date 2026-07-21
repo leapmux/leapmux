@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type cliAuthorizationCodeStore struct{ conn *pgConn }
@@ -17,9 +18,9 @@ func fromDBCLIAuthorizationCode(c gendb.CliAuthorizationCode) store.CLIAuthoriza
 		UserID:        c.UserID,
 		CodeChallenge: c.CodeChallenge,
 		DeviceName:    c.DeviceName,
-		CreatedAt:     tsToTime(c.CreatedAt),
-		ExpiresAt:     tsToTime(c.ExpiresAt),
-		ConsumedAt:    tsToTimePtr(c.ConsumedAt),
+		CreatedAt:     c.CreatedAt.Time,
+		ExpiresAt:     c.ExpiresAt.Time,
+		ConsumedAt:    c.ConsumedAt.Ptr(),
 	}
 }
 
@@ -29,7 +30,7 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 		UserID:        p.UserID,
 		CodeChallenge: p.CodeChallenge,
 		DeviceName:    p.DeviceName,
-		ExpiresAt:     timeToTs(p.ExpiresAt),
+		ExpiresAt:     pgtime.New(p.ExpiresAt),
 	}))
 }
 

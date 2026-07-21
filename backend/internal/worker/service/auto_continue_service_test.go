@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -25,7 +26,7 @@ func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
 		AgentID:       "agent-1",
 		Reason:        string(agent.AutoContinueReasonRateLimit),
 		Content:       autoContinueContent,
-		DueAt:         time.Now().UTC().Add(time.Hour),
+		DueAt:         sqltime.NewSQLiteTime(time.Now().UTC().Add(time.Hour)),
 		JitterMs:      0,
 		NextBackoffMs: 0,
 		SourcePayload: []byte{},
@@ -55,7 +56,7 @@ func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
 		AgentID:       "agent-1",
 		Reason:        string(agent.AutoContinueReasonAPIError),
 		Content:       autoContinueContent,
-		DueAt:         time.Now().UTC().Add(time.Hour),
+		DueAt:         sqltime.NewSQLiteTime(time.Now().UTC().Add(time.Hour)),
 		JitterMs:      0,
 		NextBackoffMs: 20000,
 		SourcePayload: []byte{},

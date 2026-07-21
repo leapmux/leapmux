@@ -11,6 +11,32 @@ sql:
         emit_empty_slices: true
         sql_package: "pgx/v5"
         overrides:
+          # Microsecond-floored timestamptz types (#303). Type-keyed: retypes
+          # every timestamptz param and result column. Both spellings are listed
+          # because sqlc may resolve the type as either the pg_catalog-qualified
+          # or bare name depending on context; a spelling that never matches is
+          # harmless. Column-keyed overrides below take precedence.
+          # sqlc silently ignores an override that matches nothing, so the
+          # decltype spelling these keys rely on is pinned statically by
+          # TestEveryTimestampColumnDeclaresTimestamptz (schema_internal_test.go).
+          - db_type: "pg_catalog.timestamptz"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+              type: "Time"
+          - db_type: "pg_catalog.timestamptz"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+              type: "NullTime"
+          - db_type: "timestamptz"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+              type: "NullTime"
           # Worker enums
           - column: "workers.status"
             go_type:

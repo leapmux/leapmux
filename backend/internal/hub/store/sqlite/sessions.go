@@ -8,8 +8,8 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type sessionStore struct{ conn *sqliteConn }
@@ -20,9 +20,9 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
 		ID:             s.ID,
 		UserID:         s.UserID,
-		ExpiresAt:      s.ExpiresAt,
-		CreatedAt:      s.CreatedAt,
-		LastActiveAt:   s.LastActiveAt,
+		ExpiresAt:      s.ExpiresAt.Time,
+		CreatedAt:      s.CreatedAt.Time,
+		LastActiveAt:   s.LastActiveAt.Time,
 		AuthGeneration: s.AuthGeneration,
 		UserAgent:      s.UserAgent,
 		IPAddress:      s.IpAddress,
@@ -35,9 +35,9 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 		UserID:       r.UserID,
 		Username:     r.Username,
 		UserDeleted:  r.UserDeleted,
-		CreatedAt:    r.CreatedAt,
-		LastActiveAt: r.LastActiveAt,
-		ExpiresAt:    r.ExpiresAt,
+		CreatedAt:    r.CreatedAt.Time,
+		LastActiveAt: r.LastActiveAt.Time,
+		ExpiresAt:    r.ExpiresAt.Time,
 		IPAddress:    r.IpAddress,
 		UserAgent:    r.UserAgent,
 	}
@@ -48,7 +48,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 		return mapErr(tx.(*sqliteStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID,
-			ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
+			ExpiresAt: sqltime.NewSQLiteTime(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
 		}))
@@ -66,22 +66,20 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	// sqlite Touch is an inline query rather than a generated one (unlike
-	// postgres/mysql). Both timestamp columns it writes MUST land in the canonical
-	// strftime layout because the read-side liveness/cursor filters in
-	// user_sessions.sql compare them as raw strings; see the ListAllActiveSessions
-	// comment there for the full storage invariant and the modernc driver-layout
-	// hazard that makes binding a raw time.Time unsafe. The SET clause wraps both
-	// values in strftime; the WHERE clause compares against a formatSQLiteTime-
-	// pre-formatted string -- byte-exact, because the on-disk strftime values
-	// carry fixed 3-digit fractional seconds exactly like sqliteTimeFormat (see
-	// its doc in convert.go, including the Go-string-scan caution).
-	lastActiveStr := formatSQLiteTime(p.LastActiveAt)
+	// postgres/mysql). last_active_at is written SQL-side by strftime('now'); the
+	// expires_at write and the last_active_at WHERE comparand are bound as
+	// SQLiteTime values, whose Value() emits the same canonical strftime layout
+	// the read-side liveness/cursor filters in user_sessions.sql compare as raw
+	// strings. See the ListAllActiveSessions comment there for the full storage
+	// invariant and the modernc driver-layout hazard that makes binding a raw
+	// time.Time unsafe -- the SQLiteTime type mechanizes the canonical layout so
+	// a raw bind is a compile error.
 	res, err := s.conn.exec.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-		     expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
+		     expires_at = ?
 		 WHERE id = ? AND last_active_at < ?`,
-		sqlutil.BindTime(p.ExpiresAt), p.ID, lastActiveStr,
+		sqltime.NewSQLiteTime(p.ExpiresAt), p.ID, sqltime.NewSQLiteTime(p.LastActiveAt),
 	)
 	if err != nil {
 		return 0, mapErr(err)

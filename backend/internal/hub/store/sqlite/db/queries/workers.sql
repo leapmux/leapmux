@@ -119,9 +119,8 @@ ORDER BY w.created_at DESC, w.id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: HardDeleteWorkersBefore :execresult
--- Raw compare: deleted_at (strftime-written) against the canonical cutoff string
--- (CAST AS TEXT so sqlc emits a string param the Go layer fills with
--- formatSQLiteTime(cutoff), not a time.Time the driver would serialize in its
--- own layout). Sargable for idx_workers_deleted_at (SEARCH deleted_at<?, not a
--- SCAN-with-residual under datetime()).
-DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);
+-- Raw compare: deleted_at (canonical on every write) against the SQLiteTime
+-- cutoff, which binds the same canonical layout instead of the driver layout a
+-- raw time.Time would serialize. Sargable for idx_workers_deleted_at (SEARCH
+-- deleted_at<?, not a SCAN-with-residual under datetime()).
+DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);

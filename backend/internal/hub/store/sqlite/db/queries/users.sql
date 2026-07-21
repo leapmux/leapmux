@@ -150,9 +150,9 @@ WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = sqlc.arg(user_i
 -- NOT EXISTS an indexed point probe.
 DELETE FROM users WHERE rowid IN (
     SELECT u.rowid FROM users u
-    -- Raw compare: deleted_at (strftime-written) against the canonical cutoff
-    -- string (CAST AS TEXT -> string param; see HardDeleteWorkersBefore).
-    WHERE u.deleted_at IS NOT NULL AND u.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT)
+    -- Raw compare: deleted_at (canonical on every write) against the SQLiteTime
+    -- cutoff (same canonical layout; see HardDeleteWorkersBefore).
+    WHERE u.deleted_at IS NOT NULL AND u.deleted_at < sqlc.arg(cutoff)
       AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_user_id = u.id)
       AND NOT EXISTS (SELECT 1 FROM workers wk WHERE wk.registered_by = u.id)
     LIMIT 1000
@@ -173,13 +173,13 @@ SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
 -- name: SetPendingEmail :exec
 -- pending_email_expires_at MUST land in the canonical strftime layout, so the
--- bound instant is wrapped rather than stored in the modernc driver layout a
--- raw time.Time bind would produce: ConsumeVerificationAttempt's lockout branch
+-- bound instant is a SQLiteNullTime rather than the modernc driver layout a raw
+-- time.Time bind would produce: ConsumeVerificationAttempt's lockout branch
 -- writes the same column via strftime('now'), and ClearStalePendingEmails
 -- compares it raw against a canonical cutoff -- mixing layouts breaks that
--- lexicographic compare at the ' ' vs 'T' separator byte (byte 10). strftime
--- passes a NULL bind through as NULL.
-UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(pending_email_expires_at)), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+-- lexicographic compare at the ' ' vs 'T' separator byte (byte 10). An invalid
+-- SQLiteNullTime binds NULL.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id);
 
 -- name: ClearPendingEmail :exec
@@ -207,11 +207,11 @@ WHERE pending_email = ? AND id != ?;
 
 -- name: ClearStalePendingEmails :execresult
 -- Raw compare: pending_email_expires_at is stored canonical on every write path
--- (SetPendingEmail wraps the bound instant in strftime; ConsumeVerificationAttempt's
--- lockout branch writes strftime('now')), so comparing it raw against the canonical
--- cutoff string (CAST AS TEXT -> string param) is byte-exact; see HardDeleteUsersBefore.
+-- (SetPendingEmail binds a SQLiteNullTime; ConsumeVerificationAttempt's lockout
+-- branch writes strftime('now')), so comparing it raw against the SQLiteTime
+-- cutoff (same canonical layout) is byte-exact; see HardDeleteUsersBefore.
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < CAST(sqlc.arg(cutoff) AS TEXT);
+WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff);
 
 -- name: BumpUserTokensRevokedAt :one
 -- Bumps the user-wide revocation timestamp and credential epoch, then

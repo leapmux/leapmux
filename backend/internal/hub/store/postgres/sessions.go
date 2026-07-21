@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type sessionStore struct{ conn *pgConn }
@@ -17,9 +18,9 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
 		ID:             s.ID,
 		UserID:         s.UserID,
-		ExpiresAt:      tsToTime(s.ExpiresAt),
-		CreatedAt:      tsToTime(s.CreatedAt),
-		LastActiveAt:   tsToTime(s.LastActiveAt),
+		ExpiresAt:      s.ExpiresAt.Time,
+		CreatedAt:      s.CreatedAt.Time,
+		LastActiveAt:   s.LastActiveAt.Time,
 		AuthGeneration: s.AuthGeneration,
 		UserAgent:      s.UserAgent,
 		IPAddress:      s.IpAddress,
@@ -32,9 +33,9 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 		UserID:       r.UserID,
 		Username:     r.Username,
 		UserDeleted:  r.UserDeleted,
-		CreatedAt:    tsToTime(r.CreatedAt),
-		LastActiveAt: tsToTime(r.LastActiveAt),
-		ExpiresAt:    tsToTime(r.ExpiresAt),
+		CreatedAt:    r.CreatedAt.Time,
+		LastActiveAt: r.LastActiveAt.Time,
+		ExpiresAt:    r.ExpiresAt.Time,
 		IPAddress:    r.IpAddress,
 		UserAgent:    r.UserAgent,
 	}
@@ -45,7 +46,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID,
-			ExpiresAt: timeToTs(p.ExpiresAt),
+			ExpiresAt: pgtime.New(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
 		}))
@@ -63,9 +64,9 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
-		ExpiresAt:    timeToTs(p.ExpiresAt),
+		ExpiresAt:    pgtime.New(p.ExpiresAt),
 		ID:           p.ID,
-		LastActiveAt: timeToTs(p.LastActiveAt),
+		LastActiveAt: pgtime.New(p.LastActiveAt),
 	})
 	return n, mapErr(err)
 }
@@ -134,8 +135,8 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 		IsAdmin:        row.IsAdmin,
 		EmailVerified:  row.EmailVerified,
 		Email:          row.Email,
-		CreatedAt:      row.CreatedAt.Time.UTC(),
-		ExpiresAt:      row.ExpiresAt.Time.UTC(),
+		CreatedAt:      row.CreatedAt.UTC(),
+		ExpiresAt:      row.ExpiresAt.UTC(),
 		AuthGeneration: row.AuthGeneration,
 	}, nil
 }

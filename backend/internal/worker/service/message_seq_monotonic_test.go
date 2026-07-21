@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -30,7 +31,7 @@ func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		return seq
@@ -74,7 +75,7 @@ func TestMessageSeq_ReseqUsesHighWater(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
 			Content:       []byte("{}"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		return seq

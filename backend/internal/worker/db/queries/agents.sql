@@ -145,9 +145,9 @@ UPDATE agents SET workspace_id = ? WHERE id = ?;
 SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedAgentsBefore :execresult
--- Raw compare against a timefmt.Format cutoff (CAST AS TEXT -> string param);
+-- Raw compare against a SQLiteNullTime cutoff (same canonical layout);
 -- see DeleteClosedTerminalsBefore for the rationale.
-DELETE FROM agents WHERE rowid IN (SELECT a.rowid FROM agents a WHERE a.closed_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);
+DELETE FROM agents WHERE rowid IN (SELECT a.rowid FROM agents a WHERE a.closed_at < sqlc.arg(cutoff) LIMIT 1000);
 
 -- ListAgentIDsWithPlanInDir returns the IDs of agents whose plan_file_path
 -- begins with the provided literal byte sequence. Used by the plan-archive

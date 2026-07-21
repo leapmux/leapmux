@@ -10,6 +10,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 // revocationEventStore embeds the shared RevocationCore, which promotes
@@ -55,7 +56,7 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          timeToTs(revokedAt.UTC()),
+		RevokedAt:          pgtime.New(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -75,7 +76,7 @@ func emitCredentialEvent(ctx context.Context, conn *pgConn, event store.Credenti
 // are otherwise identical.
 func revokedCredentialEvent(
 	subjectID, userID string,
-	revokedAt pgtype.Timestamptz,
+	revokedAt pgtime.NullTime,
 	kind string,
 	err error,
 ) (*store.CredentialEvent, error) {
@@ -117,7 +118,7 @@ func newRevocationEventStore(conn *pgConn) *revocationEventStore {
 				return mapErr(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *pgConn, cutoff time.Time) (int64, error) {
-				deleted, err := conn.q.DeleteCompactablePublishedRevocationEvents(ctx, timeToTs(cutoff))
+				deleted, err := conn.q.DeleteCompactablePublishedRevocationEvents(ctx, pgtime.NullOf(cutoff))
 				return deleted, mapErr(err)
 			},
 			InsertLease: func(ctx context.Context, conn *pgConn, lease store.RevocationLease) error {
@@ -160,14 +161,8 @@ func (s *revocationEventStore) ListPublishedAfter(
 		if err != nil {
 			return nil, err
 		}
-		revokedAt, err := sqlutil.RequireTime(row.RevokedAt.Time, row.RevokedAt.Valid, "revoked_at")
-		if err != nil {
-			return nil, err
-		}
-		createdAt, err := sqlutil.RequireTime(row.CreatedAt.Time, row.CreatedAt.Valid, "created_at")
-		if err != nil {
-			return nil, err
-		}
+		revokedAt := row.RevokedAt.Time
+		createdAt := row.CreatedAt.Time
 		publishedAt, err := sqlutil.RequireTime(row.PublishedAt.Time, row.PublishedAt.Valid, "published_at")
 		if err != nil {
 			return nil, err

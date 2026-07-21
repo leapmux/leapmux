@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -23,6 +23,12 @@ import (
 // store modernc's driver layout with the zone's offset (space at byte 11,
 // '+09:00' suffix), splitting a column into two layouts whose raw-string
 // compares (the closed_at/deleted_at cleanup sweeps) silently diverge.
+//
+// The test also asserts non-vacuity: every discovered DATETIME column --
+// NOT NULL and nullable alike -- must hold at least one non-null value by the
+// end of the fixtures, so no column's layout contract passes merely because
+// nothing was ever stored in it. A new DATETIME column therefore fails this
+// test until a fixture write for it is added here.
 func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
@@ -52,7 +58,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SpanLines:          "[]",
 		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:          now,
+		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	require.NoError(t, err)
 
@@ -71,7 +77,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Cols:        80,
 		Rows:        24,
 		Screen:      []byte{},
-		ClosedAt:    sql.NullTime{Time: now, Valid: true},
+		ClosedAt:    sqltime.SQLiteNullTimeOf(now),
 	}))
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
 		ID:          "term-2",
@@ -100,7 +106,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		AgentID:       "agent-1",
 		Reason:        "rate_limit",
 		Content:       "continue",
-		DueAt:         now.Add(time.Hour),
+		DueAt:         sqltime.NewSQLiteTime(now.Add(time.Hour)),
 		SourcePayload: []byte("{}"),
 	}))
 
@@ -114,10 +120,32 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Status:  "pending",
 	}))
 
-	offenders, walked, err := sqlitedb.FindNonCanonicalDatetimes(ctx, sqlDB, "goose_db_version")
+	// control_requests.created_at via the column DEFAULT on CreateControlRequest.
+	require.NoError(t, queries.CreateControlRequest(ctx, gendb.CreateControlRequestParams{
+		AgentID:    "agent-1",
+		RequestID:  "req-1",
+		Payload:    []byte("{}"),
+		ClaimToken: "claim-1",
+	}))
+
+	// worker_file_tabs.created_at via the column DEFAULT on UpsertWorkerFileTab.
+	require.NoError(t, queries.UpsertWorkerFileTab(ctx, gendb.UpsertWorkerFileTabParams{
+		OrgID:       "org-1",
+		TabID:       "tab-1",
+		WorkspaceID: "ws-1",
+		FilePath:    "/tmp/file.txt",
+	}))
+
+	offenders, columns, err := sqlitedb.FindNonCanonicalDatetimes(ctx, sqlDB, "goose_db_version")
 	require.NoError(t, err)
-	require.Positive(t, walked, "walk discovered no DATETIME columns; the discovery query is broken")
+	require.NotEmpty(t, columns, "walk discovered no DATETIME columns; the discovery query is broken")
 	assert.Empty(t, offenders,
 		"non-canonical timestamp value(s) on disk -- a write path is missing its strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', ...) wrap:\n  %s",
 		strings.Join(offenders, "\n  "))
+	// Non-vacuity: a column with zero non-null rows passes the layout probe
+	// without ever being exercised, so a raw time.Time bind on that write path
+	// would ship unnoticed. Every discovered column must hold at least one
+	// value by the end of the fixture writes above.
+	assert.Empty(t, sqlitedb.UncoveredColumns(columns),
+		"DATETIME column(s) with zero non-null rows -- their canonical-layout check passed vacuously; add a fixture write for each so the contract is actually exercised")
 }

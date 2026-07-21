@@ -52,10 +52,10 @@ func assertStoredInstant(t *testing.T, label string, bound, stored time.Time) {
 // testTimeFloor pins that every dialect FLOORS Go-bound instants to its
 // column precision instead of rounding: reading a just-written deadline back
 // must never yield a later instant than the one the caller minted. SQLite
-// enforces this Go-side (sqlutil.BindTime/BindNullTime, because strftime
-// '%f' rounds), MySQL/TiDB likewise Go-side (the server rounds DATETIME(3)
-// inserts half-up), and Postgres-family dialects natively (pgx floors
-// nanoseconds to timestamptz microseconds). Each subtest drives a
+// enforces this Go-side (sqltime.SQLiteTime/SQLiteNullTime.Value floor, because
+// strftime '%f' rounds), MySQL/TiDB likewise Go-side (sqltime.MySQLTime, because
+// the server rounds DATETIME(3) inserts half-up), and Postgres-family dialects
+// via pgtime.Time (pgx floors nanoseconds to timestamptz microseconds). Each subtest drives a
 // deadline-bearing write path through the store API with sub-millisecond
 // probes and pins the readback.
 func (s *Suite) testTimeFloor(t *testing.T) {

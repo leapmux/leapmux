@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type userStore struct {
@@ -27,16 +28,16 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         u.EmailVerified,
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: tsToTimePtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: u.PendingEmailExpiresAt.Ptr(),
 		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
-		CreatedAt:             tsToTime(u.CreatedAt),
-		UpdatedAt:             tsToTime(u.UpdatedAt),
-		TokensRevokedAt:       tsToTimePtr(u.TokensRevokedAt),
+		CreatedAt:             u.CreatedAt.Time,
+		UpdatedAt:             u.UpdatedAt.Time,
+		TokensRevokedAt:       u.TokensRevokedAt.Ptr(),
 		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             tsToTimePtr(u.DeletedAt),
+		DeletedAt:             u.DeletedAt.Ptr(),
 	}
 }
 
@@ -210,7 +211,7 @@ func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate f
 // with changed=true. Shared by every cached-field Update* mutate closure so the
 // not-found / RETURNING-time handling lives in one place instead of five
 // identical tails.
-func updatedUserResult(id string, updatedAt time.Time, valid bool, err error) (string, time.Time, bool, error) {
+func updatedUserResult(id string, updatedAt time.Time, err error) (string, time.Time, bool, error) {
 	if err != nil {
 		mapped := mapErr(err)
 		if errors.Is(mapped, store.ErrNotFound) {
@@ -218,11 +219,7 @@ func updatedUserResult(id string, updatedAt time.Time, valid bool, err error) (s
 		}
 		return "", time.Time{}, false, mapped
 	}
-	at, err := sqlutil.RequireTime(updatedAt, valid, "updated_at")
-	if err != nil {
-		return "", time.Time{}, false, err
-	}
-	return id, at, true, nil
+	return id, updatedAt, true, nil
 }
 
 // UpdateProfile changes the username/display name; RunUserInfoMutation emits a
@@ -241,7 +238,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 			ID:                p.ID,
 		})
 		if err != nil {
-			return updatedUserResult("", time.Time{}, false, err)
+			return updatedUserResult("", time.Time{}, err)
 		}
 		// Pair the username with a personal-org rename in the same transaction so
 		// the org name (and /o/ slug) can never go stale -- mirroring the DeleteUser
@@ -254,7 +251,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 		})); err != nil {
 			return "", time.Time{}, false, err
 		}
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, nil)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, nil)
 	})
 }
 
@@ -275,7 +272,7 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 			EmailVerified: p.EmailVerified,
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -289,7 +286,7 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 			EmailVerified: p.EmailVerified,
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -302,7 +299,7 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 			IsAdmin: p.IsAdmin,
 			ID:      p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -317,7 +314,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: timePtrToTs(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: pgtime.NewNull(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }
@@ -330,7 +327,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *pgConn) (string, time.Time, bool, error) {
 		row, err := conn.q.PromotePendingEmail(ctx, id)
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, row.UpdatedAt.Valid, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 

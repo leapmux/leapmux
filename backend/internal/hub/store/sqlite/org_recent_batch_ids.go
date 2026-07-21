@@ -8,7 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type orgRecentBatchIDStore struct {
@@ -35,7 +35,7 @@ func (s *orgRecentBatchIDStore) Get(ctx context.Context, orgID, batchID string) 
 		CanonicalClient:     row.CanonicalClient,
 		OpCount:             row.OpCount,
 		Epoch:               row.Epoch,
-		ExpiresAt:           row.ExpiresAt,
+		ExpiresAt:           row.ExpiresAt.Time,
 	}, nil
 }
 
@@ -50,10 +50,10 @@ func (s *orgRecentBatchIDStore) Insert(ctx context.Context, p store.InsertOrgRec
 		CanonicalClient:     p.CanonicalClient,
 		OpCount:             p.OpCount,
 		Epoch:               p.Epoch,
-		ExpiresAt:           sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt:           sqltime.NewSQLiteTime(p.ExpiresAt),
 	}))
 }
 
 func (s *orgRecentBatchIDStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, formatSQLiteTime(before)))
+	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, sqltime.NewSQLiteTime(before)))
 }

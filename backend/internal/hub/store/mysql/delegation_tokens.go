@@ -8,7 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type delegationTokenStore struct{ conn *mysqlConn }
@@ -27,12 +27,12 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 		IssuedForTabType: t.IssuedForTabType,
 		SecretHash:       t.SecretHash,
 		RefreshHash:      t.RefreshHash,
-		CreatedAt:        t.CreatedAt,
+		CreatedAt:        t.CreatedAt.Time,
 		AuthGeneration:   t.AuthGeneration,
-		LastUsedAt:       sqlutil.NullTimePtr(t.LastUsedAt),
-		ExpiresAt:        t.ExpiresAt,
-		RefreshExpiresAt: sqlutil.NullTimePtr(t.RefreshExpiresAt),
-		RevokedAt:        sqlutil.NullTimePtr(t.RevokedAt),
+		LastUsedAt:       t.LastUsedAt.Ptr(),
+		ExpiresAt:        t.ExpiresAt.Time,
+		RefreshExpiresAt: t.RefreshExpiresAt.Ptr(),
+		RevokedAt:        t.RevokedAt.Ptr(),
 	}
 }
 
@@ -49,8 +49,8 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			IssuedForTabType: p.IssuedForTabType,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
-			ExpiresAt:        sqlutil.BindTime(p.ExpiresAt),
-			RefreshExpiresAt: sqlutil.BindNullTime(p.RefreshExpiresAt),
+			ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
+			RefreshExpiresAt: sqltime.NewMySQLNullTime(p.RefreshExpiresAt),
 		}))
 	})
 }
@@ -148,7 +148,7 @@ func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, er
 		}
 		n, err := rowsAffected(conn.q.RevokeDelegationTokenAt(ctx, gendb.RevokeDelegationTokenAtParams{
 			ID:        row.ID,
-			RevokedAt: sql.NullTime{Time: revokedAt, Valid: true},
+			RevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
 		}))
 		if err != nil {
 			return nil, err

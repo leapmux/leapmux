@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -243,7 +243,7 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: "t1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
-		ClosedAt: sql.NullTime{Time: time.Now(), Valid: true},
+		ClosedAt: sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{

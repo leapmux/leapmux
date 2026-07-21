@@ -10,8 +10,8 @@ INSERT INTO api_tokens (
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
     sqlc.arg(scope),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(refresh_expires_at)),
+    sqlc.narg(expires_at),
+    sqlc.narg(refresh_expires_at),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 
@@ -99,11 +99,11 @@ WHERE id = ?;
 -- and deterministically derive the same replacement pair.
 UPDATE api_tokens
 SET secret_hash = sqlc.arg(new_secret_hash),
-    expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(new_expires_at)),
+    expires_at = sqlc.narg(new_expires_at),
     refresh_hash = sqlc.arg(new_refresh_hash),
-    refresh_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(new_refresh_expires_at)),
+    refresh_expires_at = sqlc.narg(new_refresh_expires_at),
     previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(prev_refresh_expires_at)),
+    previous_refresh_expires_at = sqlc.narg(prev_refresh_expires_at),
     last_rotated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id)
   AND revoked_at IS NULL
@@ -122,7 +122,8 @@ WHERE user_id = ? AND revoked_at IS NULL;
 
 -- name: DeleteRevokedAPITokensBefore :execresult
 -- See the matching delegation_tokens query for the rationale: revoked_at is
--- written canonical on every path, so the raw compare against the canonical
--- CAST AS TEXT cutoff is byte-exact and sargable for idx_api_tokens_revoked_at.
+-- written canonical on every path, so the raw compare against the SQLiteTime
+-- cutoff (which binds the same canonical layout) is byte-exact and sargable
+-- for idx_api_tokens_revoked_at.
 DELETE FROM api_tokens
-WHERE revoked_at IS NOT NULL AND revoked_at < CAST(sqlc.arg(cutoff) AS TEXT);
+WHERE revoked_at IS NOT NULL AND revoked_at < sqlc.arg(cutoff);

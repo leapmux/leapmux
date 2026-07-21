@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type lifecycleOutboxStore struct {
@@ -37,8 +38,8 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 			OrgID:      r.OrgID,
 			OpType:     r.OpType,
 			Payload:    r.Payload,
-			EnqueuedAt: tsToTime(r.EnqueuedAt),
-			ConsumedAt: tsToTimePtr(r.ConsumedAt),
+			EnqueuedAt: r.EnqueuedAt.Time,
+			ConsumedAt: r.ConsumedAt.Ptr(),
 		}
 	}
 	return out, nil
@@ -47,10 +48,10 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 func (s *lifecycleOutboxStore) MarkConsumed(ctx context.Context, p store.MarkLifecycleOutboxConsumedParams) error {
 	return mapErr(s.conn.q.MarkLifecycleOutboxConsumed(ctx, gendb.MarkLifecycleOutboxConsumedParams{
 		ID:         p.ID,
-		ConsumedAt: timeToTs(p.ConsumedAt),
+		ConsumedAt: pgtime.NullOf(p.ConsumedAt),
 	}))
 }
 
 func (s *lifecycleOutboxStore) DeleteConsumedBefore(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, timeToTs(before)))
+	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, pgtime.NullOf(before)))
 }

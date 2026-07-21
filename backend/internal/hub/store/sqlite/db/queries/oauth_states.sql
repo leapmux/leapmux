@@ -5,7 +5,7 @@ VALUES (
     sqlc.arg(provider_id),
     sqlc.arg(pkce_verifier),
     sqlc.arg(redirect_uri),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+    sqlc.arg(expires_at)
 );
 
 -- name: GetOAuthState :one
@@ -15,7 +15,7 @@ SELECT * FROM oauth_states WHERE state = ?;
 DELETE FROM oauth_states WHERE state = ?;
 
 -- name: DeleteExpiredOAuthStates :execresult
--- Raw compare: expires_at is stored canonical (CreateOAuthState wraps the
--- bound instant in strftime), so the sweep is millisecond-exact against the
--- same canonical RHS layout.
+-- Raw compare: expires_at is stored canonical (CreateOAuthState binds a
+-- SQLiteTime), so the sweep is millisecond-exact against the same canonical RHS
+-- layout.
 DELETE FROM oauth_states WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');

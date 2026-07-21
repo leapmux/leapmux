@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -30,7 +31,7 @@ func TestAutoContinueSchedule_SurvivesRestart(t *testing.T) {
 		AgentID:       "agent-1",
 		Reason:        string(agent.AutoContinueReasonRateLimit),
 		Content:       autoContinueContent,
-		DueAt:         time.Now().UTC().Add(100 * time.Millisecond),
+		DueAt:         sqltime.NewSQLiteTime(time.Now().UTC().Add(100 * time.Millisecond)),
 		JitterMs:      0,
 		NextBackoffMs: 0,
 		SourcePayload: []byte{},
@@ -135,7 +136,7 @@ func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
 // between the schedule builders and fireAutoContinue's DueAt.Equal guard: the
 // dueAt a builder hands back for arming the in-memory timer must equal the DB
 // roundtrip of the record it built. due_at is stored at millisecond precision
-// (the upsert's strftime wrap), so the builders truncate to the millisecond
+// (SQLiteTime floors due_at on bind), so the builders truncate to the millisecond
 // before binding; without that, every live-armed dueAt carries sub-millisecond
 // residue the storage floors away, the Equal guard rejects every firing, and
 // auto-continue silently never fires on the live path. The restore-path tests
@@ -183,7 +184,7 @@ func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T
 		AgentID:       "agent-1",
 		Reason:        string(agent.AutoContinueReasonRateLimit),
 		Content:       autoContinueContent,
-		DueAt:         time.Now().UTC().Add(100 * time.Millisecond),
+		DueAt:         sqltime.NewSQLiteTime(time.Now().UTC().Add(100 * time.Millisecond)),
 		JitterMs:      0,
 		NextBackoffMs: 0,
 		SourcePayload: []byte{},

@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type delegationTokenStore struct{ conn *pgConn }
@@ -23,12 +24,12 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 		IssuedForTabType: t.IssuedForTabType,
 		SecretHash:       t.SecretHash,
 		RefreshHash:      t.RefreshHash,
-		CreatedAt:        tsToTime(t.CreatedAt),
+		CreatedAt:        t.CreatedAt.Time,
 		AuthGeneration:   t.AuthGeneration,
-		LastUsedAt:       tsToTimePtr(t.LastUsedAt),
-		ExpiresAt:        tsToTime(t.ExpiresAt),
-		RefreshExpiresAt: tsToTimePtr(t.RefreshExpiresAt),
-		RevokedAt:        tsToTimePtr(t.RevokedAt),
+		LastUsedAt:       t.LastUsedAt.Ptr(),
+		ExpiresAt:        t.ExpiresAt.Time,
+		RefreshExpiresAt: t.RefreshExpiresAt.Ptr(),
+		RevokedAt:        t.RevokedAt.Ptr(),
 	}
 }
 
@@ -45,8 +46,8 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			IssuedForTabType: p.IssuedForTabType,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
-			ExpiresAt:        timeToTs(p.ExpiresAt),
-			RefreshExpiresAt: timePtrToTs(p.RefreshExpiresAt),
+			ExpiresAt:        pgtime.New(p.ExpiresAt),
+			RefreshExpiresAt: pgtime.NewNull(p.RefreshExpiresAt),
 		}))
 	})
 }

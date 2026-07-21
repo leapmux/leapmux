@@ -1,6 +1,6 @@
 -- name: CreateRegistrationKey :exec
 INSERT INTO worker_registration_keys (id, created_by, expires_at)
-VALUES (sqlc.arg(id), sqlc.arg(created_by), strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)));
+VALUES (sqlc.arg(id), sqlc.arg(created_by), sqlc.arg(expires_at));
 
 -- name: GetRegistrationKeyByID :one
 SELECT * FROM worker_registration_keys WHERE id = ?;
@@ -15,10 +15,10 @@ SELECT * FROM worker_registration_keys WHERE id = ? AND created_by = ?;
 -- not revive the dead row.
 -- name: ExtendRegistrationKey :execresult
 UPDATE worker_registration_keys
-SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(new_expires_at))
+SET expires_at = sqlc.arg(new_expires_at)
 WHERE id = sqlc.arg(id)
   AND created_by = sqlc.arg(created_by)
-  AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(now));
+  AND expires_at > sqlc.arg(now);
 
 -- SoftDeleteRegistrationKey is the user-initiated path; ownership lives
 -- in the WHERE clause so a single roundtrip both authorizes and acts.
@@ -26,7 +26,7 @@ WHERE id = sqlc.arg(id)
 -- matches by id+owner only); the service layer maps 0 rows to NotFound.
 -- name: SoftDeleteRegistrationKey :execresult
 UPDATE worker_registration_keys
-SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+SET expires_at = sqlc.arg(expires_at)
 WHERE id = sqlc.arg(id) AND created_by = sqlc.arg(created_by);
 
 -- ConsumeRegistrationKey atomically marks a live key as consumed and
@@ -34,18 +34,18 @@ WHERE id = sqlc.arg(id) AND created_by = sqlc.arg(created_by);
 -- (March 2021) and is used by all of our prod targets.
 -- name: ConsumeRegistrationKey :one
 UPDATE worker_registration_keys
-SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(soft_deleted_at))
-WHERE id = sqlc.arg(id) AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(now))
+SET expires_at = sqlc.arg(soft_deleted_at)
+WHERE id = sqlc.arg(id) AND expires_at > sqlc.arg(now)
 RETURNING *;
 
 -- name: HardDeleteExpiredRegistrationKeysBefore :execresult
--- Raw compare: expires_at (strftime-written) against the canonical cutoff string
--- (CAST AS TEXT -> string param). Sargable for idx_worker_registration_keys_expires_at.
+-- Raw compare: expires_at (canonical on every write) against the SQLiteTime
+-- cutoff (same canonical layout). Sargable for idx_worker_registration_keys_expires_at.
 DELETE FROM worker_registration_keys
 WHERE rowid IN (
     SELECT k.rowid
     FROM worker_registration_keys k
-    WHERE k.expires_at < CAST(sqlc.arg(cutoff) AS TEXT)
+    WHERE k.expires_at < sqlc.arg(cutoff)
     LIMIT 1000
 );
 
@@ -56,7 +56,7 @@ SELECT k.id, k.created_by, k.created_at, k.expires_at,
        COALESCE(u.username, '') AS creator_username, CAST(u.id IS NULL AS BOOLEAN) AS creator_deleted
 FROM worker_registration_keys k
 LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
-WHERE (sqlc.narg(now) IS NULL OR k.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.narg(now)))
+WHERE (sqlc.narg(now) IS NULL OR k.expires_at > sqlc.narg(now))
   AND (sqlc.narg(cursor_time) IS NULL
        OR k.created_at < sqlc.narg(cursor_time)
        OR (k.created_at = sqlc.narg(cursor_time) AND k.id < sqlc.narg(cursor_id)))
@@ -65,5 +65,5 @@ LIMIT sqlc.arg(limit);
 
 -- name: AdminSoftDeleteRegistrationKey :execresult
 UPDATE worker_registration_keys
-SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+SET expires_at = sqlc.arg(expires_at)
 WHERE id = sqlc.arg(id);

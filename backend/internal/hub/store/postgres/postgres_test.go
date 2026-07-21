@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -161,4 +162,66 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 	// means the name heuristic (or the schema) broke, not that fewer pins are
 	// needed.
 	assert.Greater(t, checked, 40, "expected many id/FK TEXT columns; the name heuristic may have broken (got %d)", checked)
+}
+
+// TestPostgresTimestamptzColumnsLive asserts, against information_schema of
+// the actual migrated database, that every `_at` column resolves to
+// timestamptz at the default microsecond precision (6) and that no column of
+// any name resolves to a timezone-naive timestamp (banned outright: it
+// silently reinterprets instants across session timezones). This is the live
+// twin of the static source scan in schema_internal_test.go
+// (TestEveryTimestampColumnDeclaresTimestamptz): the static scan runs without
+// Docker but reads only 00001_initial.sql with a line-shape-sensitive text
+// parse, while this one is migration-count-agnostic and reads the server's
+// resolved column types. Precision below 6 matters because Postgres ROUNDS a
+// fractional second exceeding the column precision, so a TIMESTAMPTZ(p<6)
+// column could store an instant after the microsecond-floored bound the
+// pgtime valuers guarantee. YugabyteDB inherits this pin via the shared
+// migration.
+func TestPostgresTimestamptzColumnsLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	connStr := startPostgresContainer(t)
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	st, err := postgres.NewTestableFromPool(pool, sqlDB)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(ctx))
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_name, column_name, data_type, COALESCE(datetime_precision, 0)
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name <> 'goose_db_version'
+		  AND (column_name LIKE '%\_at'
+		       OR data_type IN ('timestamp with time zone', 'timestamp without time zone'))
+		ORDER BY table_name, ordinal_position`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	atColumns := 0
+	for rows.Next() {
+		var table, column, dataType string
+		var precision int
+		require.NoError(t, rows.Scan(&table, &column, &dataType, &precision))
+		if strings.HasSuffix(column, "_at") {
+			atColumns++
+			assert.Equalf(t, "timestamp with time zone", dataType,
+				"%s.%s resolved to %s; `_at` columns must be timestamptz so the sqlc db_type override retypes them to the flooring valuer", table, column, dataType)
+			assert.Equalf(t, 6, precision,
+				"%s.%s resolved to timestamptz(%d); precision must be the default 6 so the column can hold the microsecond-floored instant (below 6, Postgres ROUNDS past the floor)", table, column, precision)
+		} else {
+			assert.Failf(t, "misnamed time column",
+				"%s.%s resolved to %s; time columns must be named *_at (and timezone-naive timestamp is banned outright)", table, column, dataType)
+		}
+	}
+	require.NoError(t, rows.Err())
+	assert.Greater(t, atColumns, 20, "expected many _at columns in the migrated schema; got %d", atColumns)
 }

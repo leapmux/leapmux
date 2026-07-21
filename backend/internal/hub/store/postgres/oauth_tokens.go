@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type oauthTokenStore struct {
@@ -20,9 +21,9 @@ func fromDBOAuthToken(t gendb.OauthToken) store.OAuthToken {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
-		ExpiresAt:    tsToTime(t.ExpiresAt),
+		ExpiresAt:    t.ExpiresAt.Time,
 		KeyVersion:   t.KeyVersion,
-		UpdatedAt:    tsToTime(t.UpdatedAt),
+		UpdatedAt:    t.UpdatedAt.Time,
 	}
 }
 
@@ -37,7 +38,7 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 		AccessToken:  p.AccessToken,
 		RefreshToken: p.RefreshToken,
 		TokenType:    p.TokenType,
-		ExpiresAt:    timeToTs(p.ExpiresAt.UTC()),
+		ExpiresAt:    pgtime.New(p.ExpiresAt),
 		KeyVersion:   p.KeyVersion,
 	}))
 }

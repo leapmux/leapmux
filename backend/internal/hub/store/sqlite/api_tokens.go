@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type apiTokenStore struct{ conn *sqliteConn }
@@ -22,15 +23,15 @@ func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
 		SecretHash:               t.SecretHash,
 		RefreshHash:              t.RefreshHash,
 		PreviousRefreshHash:      t.PreviousRefreshHash,
-		PreviousRefreshExpiresAt: sqlutil.NullTimePtr(t.PreviousRefreshExpiresAt),
+		PreviousRefreshExpiresAt: t.PreviousRefreshExpiresAt.Ptr(),
 		Scope:                    t.Scope,
-		CreatedAt:                t.CreatedAt,
+		CreatedAt:                t.CreatedAt.Time,
 		AuthGeneration:           t.AuthGeneration,
-		LastUsedAt:               sqlutil.NullTimePtr(t.LastUsedAt),
-		LastRotatedAt:            sqlutil.NullTimePtr(t.LastRotatedAt),
-		ExpiresAt:                sqlutil.NullTimePtr(t.ExpiresAt),
-		RefreshExpiresAt:         sqlutil.NullTimePtr(t.RefreshExpiresAt),
-		RevokedAt:                sqlutil.NullTimePtr(t.RevokedAt),
+		LastUsedAt:               t.LastUsedAt.Ptr(),
+		LastRotatedAt:            t.LastRotatedAt.Ptr(),
+		ExpiresAt:                t.ExpiresAt.Ptr(),
+		RefreshExpiresAt:         t.RefreshExpiresAt.Ptr(),
+		RevokedAt:                t.RevokedAt.Ptr(),
 	}
 }
 
@@ -44,8 +45,8 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			Scope:            p.Scope,
-			ExpiresAt:        sqlutil.BindNullTime(p.ExpiresAt),
-			RefreshExpiresAt: sqlutil.BindNullTime(p.RefreshExpiresAt),
+			ExpiresAt:        sqltime.NewSQLiteNullTime(p.ExpiresAt),
+			RefreshExpiresAt: sqltime.NewSQLiteNullTime(p.RefreshExpiresAt),
 		}))
 	})
 }
@@ -135,11 +136,11 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		n, err := rowsAffected(conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
 			ID:                   p.ID,
 			NewSecretHash:        p.NewSecretHash,
-			NewExpiresAt:         sqlutil.BindNullTime(p.NewExpiresAt),
+			NewExpiresAt:         sqltime.NewSQLiteNullTime(p.NewExpiresAt),
 			NewRefreshHash:       p.NewRefreshHash,
-			NewRefreshExpiresAt:  sqlutil.BindNullTime(p.NewRefreshExpiresAt),
+			NewRefreshExpiresAt:  sqltime.NewSQLiteNullTime(p.NewRefreshExpiresAt),
 			PrevRefreshHash:      p.PreviousRefreshHash,
-			PrevRefreshExpiresAt: sqlutil.BindNullTime(p.PreviousRefreshExpiresAt),
+			PrevRefreshExpiresAt: sqltime.NewSQLiteNullTime(p.PreviousRefreshExpiresAt),
 		}))
 		if err != nil || n == 0 {
 			return nil, err

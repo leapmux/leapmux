@@ -6,7 +6,7 @@ INSERT INTO revocation_events (
     sqlc.arg(kind),
     sqlc.arg(subject_id),
     sqlc.arg(user_id),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(revoked_at)),
+    sqlc.arg(revoked_at),
     sqlc.arg(user_auth_generation)
 );
 
@@ -71,8 +71,8 @@ DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND lease_expires_at <= str
 -- name: DeleteCompactablePublishedRevocationEvents :execresult
 -- Raw compare: published_at is written canonical on its only write path (the
 -- publish UPDATE sets strftime('%Y-%m-%dT%H:%M:%fZ','now')), and the Go side
--- binds a formatSQLiteTime-formatted cutoff (CAST AS TEXT -> string param),
--- so the lexicographic < is byte-exact at full millisecond precision --
+-- binds a SQLiteTime cutoff (same canonical layout), so the lexicographic < is
+-- byte-exact at full millisecond precision --
 -- matching what postgres/mysql compact, with no strftime re-normalization per
 -- row. Unlike a function wrap on the column, this is sargable: the partial
 -- idx_revocation_events_published(published_at, seq) serves an upper-bounded
@@ -82,7 +82,7 @@ DELETE FROM revocation_events
 WHERE id IN (
     SELECT ev.id
     FROM revocation_events AS ev
-    WHERE ev.published_at < CAST(sqlc.arg(cutoff) AS TEXT)
+    WHERE ev.published_at < sqlc.arg(cutoff)
       AND ev.seq <= COALESCE(
           (SELECT cursor_seq FROM hub_runtime_lease WHERE singleton_id = 1),
           (SELECT last_seq FROM revocation_event_sequence WHERE id = 1)

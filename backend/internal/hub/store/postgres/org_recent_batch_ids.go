@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type orgRecentBatchIDStore struct {
@@ -34,7 +35,7 @@ func (s *orgRecentBatchIDStore) Get(ctx context.Context, orgID, batchID string) 
 		CanonicalClient:     row.CanonicalClient,
 		OpCount:             int64(row.OpCount),
 		Epoch:               row.Epoch,
-		ExpiresAt:           tsToTime(row.ExpiresAt),
+		ExpiresAt:           row.ExpiresAt.Time,
 	}, nil
 }
 
@@ -49,10 +50,10 @@ func (s *orgRecentBatchIDStore) Insert(ctx context.Context, p store.InsertOrgRec
 		CanonicalClient:     p.CanonicalClient,
 		OpCount:             int32(p.OpCount),
 		Epoch:               p.Epoch,
-		ExpiresAt:           timeToTs(p.ExpiresAt),
+		ExpiresAt:           pgtime.New(p.ExpiresAt),
 	}))
 }
 
 func (s *orgRecentBatchIDStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, timeToTs(before)))
+	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, pgtime.New(before)))
 }

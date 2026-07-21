@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -37,7 +38,7 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -158,7 +159,7 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte("hi"),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
@@ -237,7 +238,7 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -315,7 +316,7 @@ func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -389,7 +390,7 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 			ID: fmt.Sprintf("msg-%d", i+1), AgentID: "agent-1",
 			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("hi"),
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: time.Now(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -451,7 +452,7 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 			ID: fmt.Sprintf("msg-%d", i+1), AgentID: "agent-1",
 			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("hi"),
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: time.Now(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		tail = seq
@@ -507,7 +508,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -565,7 +566,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)
@@ -623,7 +624,7 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		seqs = append(seqs, seq)

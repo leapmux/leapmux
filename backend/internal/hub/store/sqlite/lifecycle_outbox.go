@@ -6,7 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type lifecycleOutboxStore struct {
@@ -38,8 +38,8 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 			OrgID:      r.OrgID,
 			OpType:     r.OpType,
 			Payload:    r.Payload,
-			EnqueuedAt: r.EnqueuedAt,
-			ConsumedAt: sqlutil.NullTimePtr(r.ConsumedAt),
+			EnqueuedAt: r.EnqueuedAt.Time,
+			ConsumedAt: r.ConsumedAt.Ptr(),
 		}
 	}
 	return out, nil
@@ -48,10 +48,10 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 func (s *lifecycleOutboxStore) MarkConsumed(ctx context.Context, p store.MarkLifecycleOutboxConsumedParams) error {
 	return mapErr(s.conn.q.MarkLifecycleOutboxConsumed(ctx, gendb.MarkLifecycleOutboxConsumedParams{
 		ID:         p.ID,
-		ConsumedAt: sqlutil.BindTime(p.ConsumedAt),
+		ConsumedAt: sqltime.SQLiteNullTimeOf(p.ConsumedAt),
 	}))
 }
 
 func (s *lifecycleOutboxStore) DeleteConsumedBefore(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, formatSQLiteTime(before)))
+	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, sqltime.SQLiteNullTimeOf(before)))
 }

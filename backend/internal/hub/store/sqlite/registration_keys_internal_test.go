@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +38,6 @@ func TestCreateRegistrationKeyStoresExpiresAtCanonical(t *testing.T) {
 	// verbatim instead of trimming trailing fractional zeros on scan.
 	var stored string
 	require.NoError(t, db.QueryRow(`SELECT CAST(expires_at AS TEXT) FROM worker_registration_keys WHERE id = ?`, keyID).Scan(&stored))
-	assert.Equal(t, formatSQLiteTime(expiresAt), stored,
+	assert.Equal(t, timefmt.Format(expiresAt), stored,
 		"expires_at must be stored in the canonical strftime layout the raw-string filters assume; got %q", stored)
 }

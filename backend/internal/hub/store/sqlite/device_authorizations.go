@@ -6,7 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type deviceAuthorizationStore struct{ conn *sqliteConn }
@@ -20,11 +20,11 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		DeviceName:      d.DeviceName,
 		UserID:          d.UserID.String,
 		Approved:        d.Approved,
-		LastPolledAt:    sqlutil.NullTimePtr(d.LastPolledAt),
+		LastPolledAt:    d.LastPolledAt.Ptr(),
 		IntervalSeconds: d.IntervalSeconds,
-		CreatedAt:       d.CreatedAt,
-		ExpiresAt:       d.ExpiresAt,
-		ConsumedAt:      sqlutil.NullTimePtr(d.ConsumedAt),
+		CreatedAt:       d.CreatedAt.Time,
+		ExpiresAt:       d.ExpiresAt.Time,
+		ConsumedAt:      d.ConsumedAt.Ptr(),
 	}
 }
 
@@ -34,7 +34,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
 		IntervalSeconds: p.IntervalSeconds,
-		ExpiresAt:       sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt:       sqltime.NewSQLiteTime(p.ExpiresAt),
 	}))
 }
 

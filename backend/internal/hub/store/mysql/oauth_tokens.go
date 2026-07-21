@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type oauthTokenStore struct {
@@ -21,9 +21,9 @@ func fromDBOAuthToken(t gendb.OauthToken) store.OAuthToken {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
-		ExpiresAt:    t.ExpiresAt,
+		ExpiresAt:    t.ExpiresAt.Time,
 		KeyVersion:   t.KeyVersion,
-		UpdatedAt:    t.UpdatedAt,
+		UpdatedAt:    t.UpdatedAt.Time,
 	}
 }
 
@@ -38,7 +38,7 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 		AccessToken:  p.AccessToken,
 		RefreshToken: p.RefreshToken,
 		TokenType:    p.TokenType,
-		ExpiresAt:    sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt:    sqltime.NewMySQLTime(p.ExpiresAt),
 		KeyVersion:   p.KeyVersion,
 	}))
 }

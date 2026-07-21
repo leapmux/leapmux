@@ -24,9 +24,9 @@ UPDATE orgs SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 -- idx_users_org_id makes the NOT EXISTS lookup an indexed point probe.
 DELETE FROM orgs WHERE rowid IN (
     SELECT o.rowid FROM orgs o
-    -- Raw compare: deleted_at (strftime-written) against the canonical cutoff
-    -- string (CAST AS TEXT -> string param; see HardDeleteWorkersBefore).
-    WHERE o.deleted_at IS NOT NULL AND o.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT)
+    -- Raw compare: deleted_at (canonical on every write) against the SQLiteTime
+    -- cutoff (same canonical layout; see HardDeleteWorkersBefore).
+    WHERE o.deleted_at IS NOT NULL AND o.deleted_at < sqlc.arg(cutoff)
       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.org_id = o.id)
     LIMIT 1000
 );

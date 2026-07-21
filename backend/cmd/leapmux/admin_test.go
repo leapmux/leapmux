@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 // testAdminCtx is the dummy adminCmdCtx tests pass to leaf functions. The Path
@@ -93,7 +94,7 @@ func createTestSession(t *testing.T, q *gendb.Queries, userID string, expiresAt 
 	err := q.CreateUserSession(context.Background(), gendb.CreateUserSessionParams{
 		ID:        sessionID,
 		UserID:    userID,
-		ExpiresAt: expiresAt.Truncate(time.Millisecond),
+		ExpiresAt: sqltime.NewSQLiteTime(expiresAt),
 		UserAgent: "test",
 		IpAddress: "127.0.0.1",
 	})
@@ -1518,7 +1519,7 @@ func createTestRegKey(t *testing.T, q *gendb.Queries, createdBy string, expiresA
 	err := q.CreateRegistrationKey(context.Background(), gendb.CreateRegistrationKeyParams{
 		ID:        regID,
 		CreatedBy: createdBy,
-		ExpiresAt: expiresAt.UTC().Truncate(time.Millisecond),
+		ExpiresAt: sqltime.NewSQLiteTime(expiresAt),
 	})
 	require.NoError(t, err)
 	return regID
@@ -1544,7 +1545,7 @@ func TestCLI_WorkerRegKeyList_HidesExpiredByDefault(t *testing.T) {
 
 	_, q = openTestDB(t, dir)
 	got, err := q.ListRegistrationKeysAdmin(context.Background(), gendb.ListRegistrationKeysAdminParams{
-		Now:   time.Now().UTC(),
+		Now:   sqltime.NewSQLiteTime(time.Now().UTC()),
 		Limit: 50,
 	})
 	require.NoError(t, err)
@@ -1638,7 +1639,7 @@ func TestCLI_UserUpdate_ClearPendingEmail(t *testing.T) {
 		ID:                    user.ID,
 		PendingEmail:          "alice-new@example.com",
 		PendingEmailToken:     "ABC123",
-		PendingEmailExpiresAt: sql.NullTime{Time: expires, Valid: true},
+		PendingEmailExpiresAt: sqltime.SQLiteNullTimeOf(expires),
 	}))
 
 	// PendingEmail and PendingEmailToken are plain strings in the

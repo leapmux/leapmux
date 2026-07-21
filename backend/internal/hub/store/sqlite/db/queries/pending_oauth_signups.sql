@@ -9,10 +9,10 @@ VALUES (
     sqlc.arg(access_token),
     sqlc.arg(refresh_token),
     sqlc.arg(token_type),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(token_expires_at)),
+    sqlc.arg(token_expires_at),
     sqlc.arg(key_version),
     sqlc.arg(redirect_uri),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+    sqlc.arg(expires_at)
 );
 
 -- name: GetPendingOAuthSignup :one
@@ -22,7 +22,7 @@ SELECT * FROM pending_oauth_signups WHERE token = ?;
 DELETE FROM pending_oauth_signups WHERE token = ?;
 
 -- name: DeleteExpiredPendingOAuthSignups :execresult
--- Raw compare: expires_at is stored canonical (CreatePendingOAuthSignup wraps
--- the bound instant in strftime), so the sweep is millisecond-exact against
--- the same canonical RHS layout.
+-- Raw compare: expires_at is stored canonical (CreatePendingOAuthSignup binds
+-- a SQLiteTime), so the sweep is millisecond-exact against the same canonical
+-- RHS layout.
 DELETE FROM pending_oauth_signups WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');

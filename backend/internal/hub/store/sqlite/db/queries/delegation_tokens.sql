@@ -14,8 +14,8 @@ INSERT INTO delegation_tokens (
     sqlc.arg(issued_for_tab_type),
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(refresh_expires_at)),
+    sqlc.arg(expires_at),
+    sqlc.narg(refresh_expires_at),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 
@@ -81,9 +81,9 @@ LIMIT sqlc.arg(limit);
 -- Returns rows that are still usable: not revoked AND not yet expired.
 -- Used by lifecycle hooks (logout, password change, account deactivation)
 -- that want to enumerate live tokens before bulk-revoking them.
--- Raw compare: expires_at is stored canonical (CreateDelegationToken wraps the
--- bound instant in strftime), so the liveness filter is millisecond-exact
--- against the same canonical RHS layout.
+-- Raw compare: expires_at is stored canonical (CreateDelegationToken binds a
+-- SQLiteTime, which serializes the canonical strftime layout), so the liveness
+-- filter is millisecond-exact against the same canonical RHS layout.
 SELECT * FROM delegation_tokens
 WHERE user_id = ?
   AND revoked_at IS NULL
@@ -109,20 +109,19 @@ RETURNING id, user_id, revoked_at;
 -- name: DeleteRevokedDelegationTokensBefore :execresult
 -- Raw compare: every revoked_at write path stores the canonical strftime
 -- layout (RevokeDelegationToken and RevokeDelegationTokensByUserFast both SET
--- strftime('%Y-%m-%dT%H:%M:%fZ','now')), and the Go side binds a
--- formatSQLiteTime-formatted cutoff (CAST AS TEXT -> string param), so the
--- lexicographic < is byte-exact. Unlike the previous datetime() wrap on the
--- column, this is sargable: the partial idx_delegation_tokens_revoked_at
--- serves an upper-bounded SEARCH of just the cutoff-eligible rows instead of
--- reading every revoked row on each hourly sweep of this high-churn table.
+-- strftime('%Y-%m-%dT%H:%M:%fZ','now')), and the Go side binds a SQLiteTime
+-- cutoff (same canonical layout), so the lexicographic < is byte-exact. This is
+-- sargable: the partial idx_delegation_tokens_revoked_at serves an
+-- upper-bounded SEARCH of just the cutoff-eligible rows instead of reading
+-- every revoked row on each hourly sweep of this high-churn table.
 DELETE FROM delegation_tokens
-WHERE revoked_at IS NOT NULL AND revoked_at < CAST(sqlc.arg(cutoff) AS TEXT);
+WHERE revoked_at IS NOT NULL AND revoked_at < sqlc.arg(cutoff);
 
 -- name: DeleteExpiredDelegationTokensBefore :execresult
--- Raw compare: expires_at is stored canonical (CreateDelegationToken wraps the
--- bound instant in strftime), and the Go side binds a formatSQLiteTime-
--- formatted cutoff (CAST AS TEXT -> string param), so the lexicographic < is
--- byte-exact and sargable for the partial idx_delegation_tokens_expires_at --
--- the hourly sweep of this high-churn table seeks just the expired live rows.
+-- Raw compare: expires_at is stored canonical (CreateDelegationToken binds a
+-- SQLiteTime), and the Go side binds a SQLiteTime cutoff (same canonical
+-- layout), so the lexicographic < is byte-exact and sargable for the partial
+-- idx_delegation_tokens_expires_at -- the hourly sweep of this high-churn table
+-- seeks just the expired live rows.
 DELETE FROM delegation_tokens
-WHERE expires_at < CAST(sqlc.arg(cutoff) AS TEXT) AND revoked_at IS NULL;
+WHERE expires_at < sqlc.arg(cutoff) AND revoked_at IS NULL;

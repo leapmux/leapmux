@@ -17,11 +17,11 @@ VALUES (
   sqlc.arg(rows),
   sqlc.arg(screen),
   sqlc.arg(exit_code),
-  -- The title-update path re-binds a DB-roundtripped closed_at; without this
-  -- wrap that rewrite stores the driver's own layout and splits the column
+  -- The title-update path re-binds a DB-roundtripped closed_at; binding a
+  -- SQLiteNullTime re-canonicalizes it so the rewrite cannot split the column
   -- into two layouts under the raw-string cleanup sweep. The DO UPDATE below
-  -- reuses the transformed excluded value.
-  strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(closed_at))
+  -- reuses the excluded value.
+  sqlc.narg(closed_at)
 )
 ON CONFLICT (id) DO UPDATE SET
   workspace_id    = excluded.workspace_id,
@@ -79,11 +79,11 @@ SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 -- name: DeleteClosedTerminalsBefore :execresult
 -- Raw compare: closed_at is stored canonical on every write path
 -- (CloseTerminal/CloseOpenTerminalsByWorkspace SET strftime, UpsertTerminal
--- wraps its bound value), and the Go side binds a timefmt.Format cutoff
--- (CAST AS TEXT -> string param), so the lexicographic < is byte-exact. A raw
--- time.Time bind here would compare in the driver's own layout and skip every
--- same-day row until the date rolled over.
-DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.closed_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);
+-- binds a SQLiteNullTime), and the Go side binds a SQLiteNullTime cutoff (same
+-- canonical layout), so the lexicographic < is byte-exact. A raw time.Time bind
+-- here would compare in the driver's own layout and skip every same-day row
+-- until the date rolled over.
+DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.closed_at < sqlc.arg(cutoff) LIMIT 1000);
 
 -- name: GetTerminalWorkspaceID :one
 SELECT workspace_id FROM terminals WHERE id = ?;

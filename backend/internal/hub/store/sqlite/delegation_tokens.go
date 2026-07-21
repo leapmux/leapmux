@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type delegationTokenStore struct{ conn *sqliteConn }
@@ -24,12 +24,12 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 		IssuedForTabType: int32(t.IssuedForTabType),
 		SecretHash:       t.SecretHash,
 		RefreshHash:      t.RefreshHash,
-		CreatedAt:        t.CreatedAt,
+		CreatedAt:        t.CreatedAt.Time,
 		AuthGeneration:   t.AuthGeneration,
-		LastUsedAt:       sqlutil.NullTimePtr(t.LastUsedAt),
-		ExpiresAt:        t.ExpiresAt,
-		RefreshExpiresAt: sqlutil.NullTimePtr(t.RefreshExpiresAt),
-		RevokedAt:        sqlutil.NullTimePtr(t.RevokedAt),
+		LastUsedAt:       t.LastUsedAt.Ptr(),
+		ExpiresAt:        t.ExpiresAt.Time,
+		RefreshExpiresAt: t.RefreshExpiresAt.Ptr(),
+		RevokedAt:        t.RevokedAt.Ptr(),
 	}
 }
 
@@ -46,8 +46,8 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			IssuedForTabType: int64(p.IssuedForTabType),
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
-			ExpiresAt:        sqlutil.BindTime(p.ExpiresAt),
-			RefreshExpiresAt: sqlutil.BindNullTime(p.RefreshExpiresAt),
+			ExpiresAt:        sqltime.NewSQLiteTime(p.ExpiresAt),
+			RefreshExpiresAt: sqltime.NewSQLiteNullTime(p.RefreshExpiresAt),
 		}))
 	})
 }

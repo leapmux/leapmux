@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type oauthStateStore struct {
@@ -19,8 +20,8 @@ func fromDBOAuthState(s gendb.OauthState) *store.OAuthState {
 		ProviderID:   s.ProviderID,
 		PkceVerifier: s.PkceVerifier,
 		RedirectURI:  s.RedirectUri,
-		ExpiresAt:    tsToTime(s.ExpiresAt),
-		CreatedAt:    tsToTime(s.CreatedAt),
+		ExpiresAt:    s.ExpiresAt.Time,
+		CreatedAt:    s.CreatedAt.Time,
 	}
 }
 
@@ -30,7 +31,7 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
 		RedirectUri:  p.RedirectURI,
-		ExpiresAt:    timeToTs(p.ExpiresAt),
+		ExpiresAt:    pgtime.New(p.ExpiresAt),
 	}))
 }
 

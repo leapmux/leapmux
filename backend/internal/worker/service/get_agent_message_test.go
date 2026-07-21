@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -44,14 +45,14 @@ func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
 		Content:       []byte(`{"content":"hello world"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		MarkType:      leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	// A second row at a different seq to prove the handler selects by seq, not "first".
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID: "m2", AgentID: "agent-1", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		Content: []byte(`{"content":"other"}`), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt: time.Now(),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
