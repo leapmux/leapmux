@@ -9,13 +9,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // canonicalStrftimePattern is the ONE strftime layout every SQL-side timestamp
 // write and compare in this dialect must use. It is the strftime spelling of
-// the Go-side sqliteTimeFormat (timefmt.ISO8601, "2006-01-02T15:04:05.000Z"):
-// %Y-%m-%d = 2006-01-02, T literal, %H:%M = 15:04, %f = seconds with fixed
-// 3-digit millis (05.000), Z literal.
+// the Go-side canonical layout (timefmt.ISO8601, "2006-01-02T15:04:05.000Z")
+// that sqltime.SQLiteTime.Value emits: %Y-%m-%d = 2006-01-02, T literal,
+// %H:%M = 15:04, %f = seconds with fixed 3-digit millis (05.000), Z literal.
 const canonicalStrftimePattern = `'%Y-%m-%dT%H:%M:%fZ'`
 
 // TestStrftimeLiteralsAreCanonical is the Docker-less static source scan (twin
@@ -26,14 +28,14 @@ const canonicalStrftimePattern = `'%Y-%m-%dT%H:%M:%fZ'`
 // opportunity for a one-character drift (a missing T, %f -> %S, a stray
 // space) that silently breaks the raw-string keyset/liveness compares while
 // every result-level test stays green -- the "cannot drift" claim in
-// sqliteTimeFormat's doc comment held only for the single Go constant until
+// sqltime.SQLiteTime's doc comment held only for the single Go constant until
 // this scan made it true SQL-side too.
 func TestStrftimeLiteralsAreCanonical(t *testing.T) {
 	// Sanity-pin the Go side of the pairing first, so a change to
 	// timefmt.ISO8601 cannot silently diverge from the SQL pattern this test
 	// enforces.
-	require.Equal(t, "2006-01-02T15:04:05.000Z", sqliteTimeFormat,
-		"sqliteTimeFormat changed: update canonicalStrftimePattern (and every SQL literal) in lockstep")
+	require.Equal(t, "2006-01-02T15:04:05.000Z", timefmt.ISO8601,
+		"timefmt.ISO8601 changed: update canonicalStrftimePattern (and every SQL literal) in lockstep")
 
 	var files []string
 	for _, glob := range []string{"db/migrations/*.sql", "db/queries/*.sql"} {

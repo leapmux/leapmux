@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type pendingOAuthSignupStore struct {
@@ -24,11 +24,11 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 		AccessToken:     p.AccessToken,
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
-		TokenExpiresAt:  p.TokenExpiresAt,
+		TokenExpiresAt:  p.TokenExpiresAt.Time,
 		KeyVersion:      p.KeyVersion,
 		RedirectURI:     p.RedirectUri,
-		ExpiresAt:       p.ExpiresAt,
-		CreatedAt:       p.CreatedAt,
+		ExpiresAt:       p.ExpiresAt.Time,
+		CreatedAt:       p.CreatedAt.Time,
 	}
 }
 
@@ -42,10 +42,10 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 		AccessToken:     p.AccessToken,
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
-		TokenExpiresAt:  sqlutil.BindTime(p.TokenExpiresAt),
+		TokenExpiresAt:  sqltime.NewMySQLTime(p.TokenExpiresAt),
 		KeyVersion:      p.KeyVersion,
 		RedirectUri:     p.RedirectURI,
-		ExpiresAt:       sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt:       sqltime.NewMySQLTime(p.ExpiresAt),
 	}))
 }
 

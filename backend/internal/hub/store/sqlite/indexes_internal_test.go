@@ -339,14 +339,15 @@ func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 }
 
 // TestRevokedTokenSweepsAreSargable pins the query PLAN of the two hourly
-// revoked-token retention sweeps: the raw-string `revoked_at < CAST(? AS
-// TEXT)` compare must seek idx_*_revoked_at with an UPPER bound, touching only
-// the cutoff-eligible rows. The prior `datetime(revoked_at) < datetime(?)`
-// shape wrapped the indexed column in a function, so the planner emitted a
-// lower-bound-only SEARCH (`revoked_at>?` -- the partial index's IS NOT NULL
-// floor) and evaluated datetime() per revoked row on every sweep; the
-// regression is plan-level only (deleted rows stay identical), so it needs an
-// EXPLAIN assertion.
+// revoked-token retention sweeps: the raw-string `revoked_at < ?` compare
+// (bound a canonical-layout SQLiteNullTime cutoff) must seek
+// idx_*_revoked_at with an UPPER bound, touching only the cutoff-eligible
+// rows. The prior `datetime(revoked_at) < datetime(?)` shape wrapped the
+// indexed column in a function, so the planner emitted a lower-bound-only
+// SEARCH (`revoked_at>?` -- the partial index's IS NOT NULL floor) and
+// evaluated datetime() per revoked row on every sweep; the regression is
+// plan-level only (deleted rows stay identical), so it needs an EXPLAIN
+// assertion.
 func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 	_, db := newSessionTestStore(t)
 	for _, tc := range []struct{ table, index string }{
@@ -354,7 +355,7 @@ func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 		{"delegation_tokens", "idx_delegation_tokens_revoked_at"},
 	} {
 		rows, err := db.QueryContext(context.Background(),
-			`EXPLAIN QUERY PLAN DELETE FROM `+tc.table+` WHERE revoked_at IS NOT NULL AND revoked_at < CAST(? AS TEXT)`,
+			`EXPLAIN QUERY PLAN DELETE FROM `+tc.table+` WHERE revoked_at IS NOT NULL AND revoked_at < ?`,
 			"2026-01-01T00:00:00.000Z")
 		require.NoError(t, err)
 		var details []string

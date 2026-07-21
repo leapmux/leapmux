@@ -10,6 +10,22 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         overrides:
+          # Millisecond-floored DATETIME types (#303). Type-keyed: retypes every
+          # DATETIME param and result column. mysql strips the precision suffix,
+          # so "datetime" covers both DATETIME(3) and DATETIME(6) columns. The
+          # column-keyed overrides below take precedence where they apply.
+          # sqlc silently ignores an override that matches nothing, so the
+          # decltype spelling this key relies on is pinned statically by
+          # TestEveryTimestampColumnDeclaresDatetime (schema_internal_test.go).
+          - db_type: "datetime"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "MySQLTime"
+          - db_type: "datetime"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "MySQLNullTime"
           # Worker enums
           - column: "workers.status"
             go_type:

@@ -10,6 +10,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type userStore struct {
@@ -29,16 +30,16 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         ptrconv.Int64ToBool(u.EmailVerified),
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.NullTimePtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: u.PendingEmailExpiresAt.Ptr(),
 		PendingEmailAttempts:  u.PendingEmailAttempts,
 		PasswordSet:           ptrconv.Int64ToBool(u.PasswordSet),
 		IsAdmin:               ptrconv.Int64ToBool(u.IsAdmin),
 		Prefs:                 u.Prefs,
-		CreatedAt:             u.CreatedAt,
-		UpdatedAt:             u.UpdatedAt,
-		TokensRevokedAt:       sqlutil.NullTimePtr(u.TokensRevokedAt),
+		CreatedAt:             u.CreatedAt.Time,
+		UpdatedAt:             u.UpdatedAt.Time,
+		TokensRevokedAt:       u.TokensRevokedAt.Ptr(),
 		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             sqlutil.NullTimePtr(u.DeletedAt),
+		DeletedAt:             u.DeletedAt.Ptr(),
 	}
 }
 
@@ -249,7 +250,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 		})); err != nil {
 			return "", time.Time{}, false, err
 		}
-		return updatedUserResult(row.ID, row.UpdatedAt, nil)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, nil)
 	})
 }
 
@@ -270,7 +271,7 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -284,7 +285,7 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -297,7 +298,7 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 			IsAdmin: ptrconv.BoolToInt64(p.IsAdmin),
 			ID:      p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 
@@ -312,7 +313,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.BindNullTime(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqltime.NewSQLiteNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }
@@ -325,7 +326,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
 		row, err := conn.q.PromotePendingEmail(ctx, id)
-		return updatedUserResult(row.ID, row.UpdatedAt, err)
+		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
 	})
 }
 

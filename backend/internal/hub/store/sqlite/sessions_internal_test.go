@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,7 +119,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 		tieBelowID:  cursorTime,
 		tieCursorID: cursorTime,
 	} {
-		_, err := db.Exec(`UPDATE user_sessions SET last_active_at = ? WHERE id = ?`, formatSQLiteTime(lastActive), sessID)
+		_, err := db.Exec(`UPDATE user_sessions SET last_active_at = ? WHERE id = ?`, timefmt.Format(lastActive), sessID)
 		require.NoError(t, err)
 	}
 
@@ -165,7 +166,7 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 		sessionID,
 	).Scan(&expiresAtStored, &createdAtStored, &lastActiveAtStored))
 	// expires_at is the caller-supplied instant, wrapped canonical by CreateUserSession.
-	assert.Equal(t, formatSQLiteTime(expiresAt), expiresAtStored,
+	assert.Equal(t, timefmt.Format(expiresAt), expiresAtStored,
 		"expires_at must be stored in the canonical strftime layout the raw-string filters assume; got %q", expiresAtStored)
 	// created_at + last_active_at are written by the column DEFAULT
 	// (strftime('%Y-%m-%dT%H:%M:%fZ','now')), NOT by an explicit Go-bound wrap,
@@ -216,7 +217,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	// Pin last_active_at to a known-old canonical instant so Touch's
 	// `last_active_at < ?` guard provably matches and the UPDATE fires.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := db.Exec(`UPDATE user_sessions SET last_active_at = ? WHERE id = ?`, formatSQLiteTime(old), sessionID)
+	_, err := db.Exec(`UPDATE user_sessions SET last_active_at = ? WHERE id = ?`, timefmt.Format(old), sessionID)
 	require.NoError(t, err)
 
 	// Same UTC day as "now", with sub-millisecond precision -- the exact shape
@@ -244,16 +245,17 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 		"touched session's expires_at must compare live under the raw-string "+
 			"strftime filter (the path that returned false pre-fix and logged users out)")
 
-	// Direct layout pin: Touch's SET wraps expires_at in strftime, so the
-	// on-disk value must equal formatSQLiteTime(newExpiry) exactly. A future
-	// Touch refactor that binds expires_at raw would store modernc's driver
-	// layout here and this assertion fails before the liveness filter regresses.
+	// Direct layout pin: Touch binds expires_at as a sqltime.SQLiteTime, so the
+	// on-disk value must equal timefmt.Format(newExpiry) exactly. A future
+	// Touch refactor that binds expires_at as a raw time.Time would store
+	// modernc's driver layout here and this assertion fails before the liveness
+	// filter regresses.
 	// CAST strips the column's DATETIME decltype so modernc returns the stored
 	// bytes verbatim -- a bare scan trims trailing fractional zeros (".720Z"
 	// arrives as ".72Z") and fails this pin on every ms-ends-in-zero instant.
 	var expiresAtStored string
 	require.NoError(t, db.QueryRow(`SELECT CAST(expires_at AS TEXT) FROM user_sessions WHERE id = ?`, sessionID).Scan(&expiresAtStored))
-	assert.Equal(t, formatSQLiteTime(newExpiry), expiresAtStored,
+	assert.Equal(t, timefmt.Format(newExpiry), expiresAtStored,
 		"Touch must store expires_at in the canonical strftime layout; got %q", expiresAtStored)
 
 	// The user-visible consequence: GetByID uses that same raw-string filter,
@@ -265,7 +267,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 
 // TestKeysetCursorTrailingZeroMillisecondTie pins that the SQL-side strftime
 // write paths store canonical fixed 3-digit fractional seconds ON DISK, so the
-// keyset predicate's "=" tiebreak branch byte-matches a formatSQLiteTime-decoded
+// keyset predicate's "=" tiebreak branch byte-matches a timefmt.Format-decoded
 // cursor even when the boundary millisecond ends in a trailing zero. (modernc
 // trims trailing zeros only when a DATETIME column is scanned into a Go string
 // -- a driver presentation artifact; production reads scan time.Time and the
@@ -295,7 +297,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 	tieInstant := time.Date(2026, 1, 2, 3, 4, 5, 130_000_000, time.UTC)
 	set := func(sessionID string, at time.Time) {
 		_, err := db.Exec(`UPDATE user_sessions SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?) WHERE id = ?`,
-			formatSQLiteTime(at), sessionID)
+			timefmt.Format(at), sessionID)
 		require.NoError(t, err)
 	}
 	set(below, tieInstant.Add(-time.Millisecond))

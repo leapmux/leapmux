@@ -2,15 +2,15 @@
 SELECT * FROM org_state WHERE org_id = ?;
 
 -- name: UpsertOrgState :exec
--- The DO UPDATE reuses the strftime-transformed excluded values, so both the
--- insert and update paths store the canonical layout.
+-- The DO UPDATE reuses the excluded values (SQLiteTime binds the canonical
+-- layout), so both the insert and update paths store the canonical layout.
 INSERT INTO org_state (org_id, state_payload, current_epoch, epoch_started_at, updated_at)
 VALUES (
     sqlc.arg(org_id),
     sqlc.arg(state_payload),
     sqlc.arg(current_epoch),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(epoch_started_at)),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(updated_at))
+    sqlc.arg(epoch_started_at),
+    sqlc.arg(updated_at)
 )
 ON CONFLICT (org_id) DO UPDATE SET
     state_payload    = excluded.state_payload,
@@ -27,6 +27,6 @@ ON CONFLICT (org_id) DO UPDATE SET
 -- as index 5 -- every call failed with "missing argument with index 5".
 UPDATE org_state
 SET current_epoch    = sqlc.arg(epoch),
-    epoch_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(epoch_started_at)),
-    updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(updated_at))
+    epoch_started_at = sqlc.arg(epoch_started_at),
+    updated_at       = sqlc.arg(updated_at)
 WHERE org_id = sqlc.arg(org_id);

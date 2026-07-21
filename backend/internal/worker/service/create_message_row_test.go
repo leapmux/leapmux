@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -37,7 +38,7 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 			Content:       []byte(`{"type":"result"}`),
 			AgentProvider: provider,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		}
 	}
 
@@ -81,7 +82,7 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 		Content:       []byte(`{"type":"result"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		MarkType:      leapmuxv1.MarkType(999),
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mark_type")

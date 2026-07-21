@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // TestSetPendingEmailStoresCanonicalFormat pins the storage contract of the
@@ -30,8 +31,8 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 
 	// Millisecond-aligned, same UTC day as "now" (matching the session
 	// canonical-layout pins): strftime ROUNDS sub-millisecond digits while
-	// formatSQLiteTime truncates, so a ms-aligned instant isolates the layout
-	// assertion from that sub-ms rounding difference.
+	// sqltime.SQLiteTime/timefmt.Format truncate, so a ms-aligned instant
+	// isolates the layout assertion from that sub-ms rounding difference.
 	expiry := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Millisecond)
 	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,
@@ -40,13 +41,13 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 		PendingEmailExpiresAt: &expiry,
 	}))
 
-	// Direct layout pin: the on-disk value must equal formatSQLiteTime(expiry)
+	// Direct layout pin: the on-disk value must equal timefmt.Format(expiry)
 	// byte-for-byte. Comparing SQL-side (raw = CAST) avoids modernc's
 	// scan-time reformatting, which would hide a non-canonical layout.
 	var canonical bool
 	require.NoError(t, db.QueryRow(
 		`SELECT pending_email_expires_at = CAST(? AS TEXT) FROM users WHERE id = ?`,
-		formatSQLiteTime(expiry), user.ID,
+		timefmt.Format(expiry), user.ID,
 	).Scan(&canonical))
 	assert.True(t, canonical,
 		"SetPendingEmail must store the canonical strftime layout, not the raw driver layout")
@@ -59,8 +60,9 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 // code bound the cutoff raw (driver layout, ' ' at byte 10): on any run where
 // the stored value and the cutoff shared a UTC calendar day, ' ' < 'T' made
 // `stored < cutoff` false and the sweep silently skipped the row until the
-// dates diverged. The fixed code binds formatSQLiteTime(cutoff), so a cutoff
-// one minute in the future must clear the just-locked-out row.
+// dates diverged. The fixed code binds the cutoff as a sqltime.SQLiteNullTime
+// (canonical layout), so a cutoff one minute in the future must clear the
+// just-locked-out row.
 func TestClearStalePendingEmailsSweepsLockoutRowSameDay(t *testing.T) {
 	st, _ := newSessionTestStore(t)
 	ctx := context.Background()

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -78,7 +79,7 @@ func TestCleanup_HardDeleteWorktreesBefore(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete worktrees older than 7 days.
-	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -108,7 +109,7 @@ func TestCleanup_HardDeleteWorktreesBefore_RetainsRecent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete worktrees older than 7 days. The recent one should survive.
-	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -158,7 +159,7 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Hard-delete.
-	cutoff := timefmt.Format(time.Now().Add(-7 * 24 * time.Hour))
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-7 * 24 * time.Hour))
 	result, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
 	require.NoError(t, err)
 
@@ -179,7 +180,8 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 
 // TestCleanup_SweepsSameInstantBoundaries pins the millisecond-exact boundary
 // behavior of the three retention sweeps: stored timestamps and cutoffs are
-// both canonical (strftime wrap on write, timefmt.Format on the bound cutoff),
+// both canonical (SQLiteTime/SQLiteNullTime binds floor to the millisecond and
+// serialize the canonical layout for both the stored rows and the cutoff),
 // so `col < cutoff` must delete strictly-older rows and keep the exact-cutoff
 // and newer rows even when everything shares the same second. The existing
 // retention tests use multi-day gaps, which is exactly how the prior
@@ -188,7 +190,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 	cutoffTime := time.Now().UTC().Truncate(time.Millisecond)
-	cutoff := timefmt.Format(cutoffTime)
+	cutoff := sqltime.SQLiteNullTimeOf(cutoffTime)
 
 	seedAgent := func(id string, closedAt time.Time) {
 		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
@@ -217,7 +219,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 		require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
 			ID: id, WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/home", Shell: "/bin/zsh",
 			Title: id, Cols: 80, Rows: 24, Screen: []byte{},
-			ClosedAt: sql.NullTime{Time: closedAt, Valid: true},
+			ClosedAt: sqltime.SQLiteNullTimeOf(closedAt),
 		}))
 	}
 	seedTerminal("term-expired", cutoffTime.Add(-time.Millisecond))

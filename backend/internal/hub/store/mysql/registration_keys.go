@@ -8,7 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type registrationKeyStore struct {
@@ -21,8 +21,8 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 	return &store.WorkerRegistrationKey{
 		ID:        r.ID,
 		CreatedBy: r.CreatedBy,
-		CreatedAt: r.CreatedAt,
-		ExpiresAt: r.ExpiresAt,
+		CreatedAt: r.CreatedAt.Time,
+		ExpiresAt: r.ExpiresAt.Time,
 	}
 }
 
@@ -30,7 +30,7 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 	}))
 }
 
@@ -57,8 +57,8 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
 		CreatedBy:    p.CreatedBy,
-		NewExpiresAt: sqlutil.BindTime(p.ExpiresAt),
-		Now:          sqlutil.BindTime(time.Now()),
+		NewExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
+		Now:          sqltime.NewMySQLTime(time.Now()),
 	}))
 }
 
@@ -66,7 +66,7 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewMySQLTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
@@ -76,7 +76,7 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
 	var consumed *store.WorkerRegistrationKey
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
-		now := sqlutil.BindTime(time.Now())
+		now := sqltime.NewMySQLTime(time.Now())
 		r, err := conn.q.GetActiveRegistrationKeyForUpdate(ctx, gendb.GetActiveRegistrationKeyForUpdateParams{
 			ID:        id,
 			ExpiresAt: now,
@@ -92,7 +92,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 		// user-facing SoftDelete query carries.
 		if err := conn.q.ConsumeSoftDeleteRegistrationKey(ctx, gendb.ConsumeSoftDeleteRegistrationKeyParams{
 			ID:        id,
-			ExpiresAt: now.Add(store.RegistrationKeySoftDeleteOffset),
+			ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
 		}); err != nil {
 			return mapErr(err)
 		}
@@ -105,7 +105,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
 	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
-		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewMySQLTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
@@ -114,9 +114,9 @@ func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegist
 	// so the `(narg(now) IS NULL OR expires_at > narg(now))` predicate's second
 	// branch filters live rows; a zero (invalid) NullTime when IncludeExpired=true
 	// so the IS NULL branch surfaces every row.
-	var now sql.NullTime
+	var now sqltime.MySQLNullTime
 	if !p.IncludeExpired {
-		now = sqlutil.BindTimeValid(time.Now())
+		now = sqltime.MySQLNullTimeOf(time.Now())
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListRegistrationKeysAdminParams, error) {
@@ -131,8 +131,8 @@ func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) st
 		WorkerRegistrationKey: store.WorkerRegistrationKey{
 			ID:        r.ID,
 			CreatedBy: r.CreatedBy,
-			CreatedAt: r.CreatedAt,
-			ExpiresAt: r.ExpiresAt,
+			CreatedAt: r.CreatedAt.Time,
+			ExpiresAt: r.ExpiresAt.Time,
 		},
 		CreatorUsername: r.CreatorUsername,
 		CreatorDeleted:  r.CreatorDeleted,

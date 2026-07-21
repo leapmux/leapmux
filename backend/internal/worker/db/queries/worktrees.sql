@@ -14,9 +14,9 @@ UPDATE worktrees SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id
 UPDATE worktrees SET branch_name = ? WHERE id = ?;
 
 -- name: HardDeleteWorktreesBefore :execresult
--- Raw compare against a timefmt.Format cutoff (CAST AS TEXT -> string param);
+-- Raw compare against a SQLiteNullTime cutoff (same canonical layout);
 -- see DeleteClosedTerminalsBefore for the rationale.
-DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);
+DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);
 
 -- name: AddWorktreeTab :exec
 -- org_id is set only for FILE links (it scopes the worktree_tab_liveness join

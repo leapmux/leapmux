@@ -21,7 +21,7 @@ func fromDBWorkspaceSection(s gendb.WorkspaceSection) *store.WorkspaceSection {
 		Position:    s.Position,
 		SectionType: s.SectionType,
 		Sidebar:     s.Sidebar,
-		CreatedAt:   tsToTime(s.CreatedAt),
+		CreatedAt:   s.CreatedAt.Time,
 	}
 }
 

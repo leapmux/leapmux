@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type registrationKeyStore struct {
@@ -19,8 +19,8 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 	return &store.WorkerRegistrationKey{
 		ID:        r.ID,
 		CreatedBy: r.CreatedBy,
-		CreatedAt: tsToTime(r.CreatedAt),
-		ExpiresAt: tsToTime(r.ExpiresAt),
+		CreatedAt: r.CreatedAt.Time,
+		ExpiresAt: r.ExpiresAt.Time,
 	}
 }
 
@@ -28,7 +28,7 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: timeToTs(p.ExpiresAt),
+		ExpiresAt: pgtime.New(p.ExpiresAt),
 	}))
 }
 
@@ -55,8 +55,8 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
 		CreatedBy:    p.CreatedBy,
-		NewExpiresAt: timeToTs(p.ExpiresAt),
-		Now:          timeToTs(time.Now().UTC()),
+		NewExpiresAt: pgtime.New(p.ExpiresAt),
+		Now:          pgtime.New(time.Now()),
 	}))
 }
 
@@ -64,16 +64,16 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: timeToTs(time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: pgtime.New(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
-	now := time.Now().UTC()
+	now := time.Now()
 	r, err := s.conn.q.ConsumeRegistrationKey(ctx, gendb.ConsumeRegistrationKeyParams{
 		ID:            id,
-		Now:           timeToTs(now),
-		SoftDeletedAt: timeToTs(now.Add(store.RegistrationKeySoftDeleteOffset)),
+		Now:           pgtime.New(now),
+		SoftDeletedAt: pgtime.New(now.Add(store.RegistrationKeySoftDeleteOffset)),
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -84,17 +84,17 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
 	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
-		ExpiresAt: timeToTs(time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: pgtime.New(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
 func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
-	// Leave Valid=false on the pgtype.Timestamptz values so the
+	// Leave Valid=false on the pgtime.NullTime value so the
 	// `($N::timestamptz IS NULL OR …)` short-circuits keep every row /
 	// start from the head.
-	var nowTs pgtype.Timestamptz
+	var nowTs pgtime.NullTime
 	if !p.IncludeExpired {
-		nowTs = timeToTs(time.Now().UTC())
+		nowTs = pgtime.NullOf(time.Now())
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListRegistrationKeysAdminParams, error) {
@@ -109,8 +109,8 @@ func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) st
 		WorkerRegistrationKey: store.WorkerRegistrationKey{
 			ID:        r.ID,
 			CreatedBy: r.CreatedBy,
-			CreatedAt: tsToTime(r.CreatedAt),
-			ExpiresAt: tsToTime(r.ExpiresAt),
+			CreatedAt: r.CreatedAt.Time,
+			ExpiresAt: r.ExpiresAt.Time,
 		},
 		CreatorUsername: r.CreatorUsername,
 		CreatorDeleted:  r.CreatorDeleted,

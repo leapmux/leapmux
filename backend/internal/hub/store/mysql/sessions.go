@@ -9,7 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type sessionStore struct{ conn *mysqlConn }
@@ -20,9 +20,9 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
 		ID:             s.ID,
 		UserID:         s.UserID,
-		ExpiresAt:      s.ExpiresAt,
-		CreatedAt:      s.CreatedAt,
-		LastActiveAt:   s.LastActiveAt,
+		ExpiresAt:      s.ExpiresAt.Time,
+		CreatedAt:      s.CreatedAt.Time,
+		LastActiveAt:   s.LastActiveAt.Time,
 		AuthGeneration: s.AuthGeneration,
 		UserAgent:      s.UserAgent,
 		IPAddress:      s.IpAddress,
@@ -35,9 +35,9 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 		UserID:       r.UserID,
 		Username:     r.Username,
 		UserDeleted:  r.UserDeleted,
-		CreatedAt:    r.CreatedAt,
-		LastActiveAt: r.LastActiveAt,
-		ExpiresAt:    r.ExpiresAt,
+		CreatedAt:    r.CreatedAt.Time,
+		LastActiveAt: r.LastActiveAt.Time,
+		ExpiresAt:    r.ExpiresAt.Time,
 		IPAddress:    r.IpAddress,
 		UserAgent:    r.UserAgent,
 	}
@@ -48,7 +48,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 		return mapErr(tx.(*mysqlStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID,
-			ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
+			ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
 		}))
@@ -66,9 +66,9 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
-		ExpiresAt:    sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt:    sqltime.NewMySQLTime(p.ExpiresAt),
 		ID:           p.ID,
-		LastActiveAt: sqlutil.BindTime(p.LastActiveAt),
+		LastActiveAt: sqltime.NewMySQLTime(p.LastActiveAt),
 	})
 	return n, mapErr(err)
 }

@@ -11,8 +11,9 @@ import (
 )
 
 // boundaryZone keeps every bound instant in this group deliberately non-UTC:
-// each dialect must normalize the offset itself (SQLite via its strftime
-// wraps, Postgres/MySQL via the driver's typed conversion), so a write path
+// each dialect must normalize the offset itself (SQLite via SQLiteTime's
+// canonical UTC serialization, Postgres/MySQL via their valuers' UTC
+// normalization), so a write path
 // that started storing local wall time would shift every boundary by the
 // offset and fail these pins loudly.
 var boundaryZone = time.FixedZone("UTC+9", 9*60*60)

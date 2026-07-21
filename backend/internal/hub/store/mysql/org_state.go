@@ -7,7 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type orgStateStore struct {
@@ -28,8 +28,8 @@ func (s *orgStateStore) Get(ctx context.Context, orgID string) (*store.OrgStateR
 		OrgID:          row.OrgID,
 		StatePayload:   row.StatePayload,
 		CurrentEpoch:   row.CurrentEpoch,
-		EpochStartedAt: row.EpochStartedAt,
-		UpdatedAt:      row.UpdatedAt,
+		EpochStartedAt: row.EpochStartedAt.Time,
+		UpdatedAt:      row.UpdatedAt.Time,
 	}, nil
 }
 
@@ -38,8 +38,8 @@ func (s *orgStateStore) Upsert(ctx context.Context, p store.UpsertOrgStateParams
 		OrgID:          p.OrgID,
 		StatePayload:   p.StatePayload,
 		CurrentEpoch:   p.CurrentEpoch,
-		EpochStartedAt: sqlutil.BindTime(p.EpochStartedAt),
-		UpdatedAt:      sqlutil.BindTime(p.UpdatedAt),
+		EpochStartedAt: sqltime.NewMySQLTime(p.EpochStartedAt),
+		UpdatedAt:      sqltime.NewMySQLTime(p.UpdatedAt),
 	}))
 }
 
@@ -47,7 +47,7 @@ func (s *orgStateStore) AdvanceEpoch(ctx context.Context, p store.AdvanceOrgEpoc
 	return mapErr(s.conn.q.AdvanceOrgEpoch(ctx, gendb.AdvanceOrgEpochParams{
 		OrgID:          p.OrgID,
 		Epoch:          p.Epoch,
-		EpochStartedAt: sqlutil.BindTime(p.EpochStartedAt),
-		UpdatedAt:      sqlutil.BindTime(p.UpdatedAt),
+		EpochStartedAt: sqltime.NewMySQLTime(p.EpochStartedAt),
+		UpdatedAt:      sqltime.NewMySQLTime(p.UpdatedAt),
 	}))
 }

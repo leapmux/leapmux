@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -127,7 +128,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"content":"hello"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -160,7 +161,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"content":"world"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -204,7 +205,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"content":"hello"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 

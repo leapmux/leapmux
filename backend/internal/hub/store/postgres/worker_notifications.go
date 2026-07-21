@@ -50,7 +50,7 @@ func fromDBWorkerNotification(n gendb.WorkerNotification) store.WorkerNotificati
 		Status:      n.Status,
 		Attempts:    int64(n.Attempts),
 		MaxAttempts: int64(n.MaxAttempts),
-		CreatedAt:   tsToTime(n.CreatedAt),
-		DeliveredAt: tsToTimePtr(n.DeliveredAt),
+		CreatedAt:   n.CreatedAt.Time,
+		DeliveredAt: n.DeliveredAt.Ptr(),
 	}
 }

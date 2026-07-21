@@ -10,6 +10,18 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         overrides:
+          # Millisecond-floored, canonical-layout DATETIME types (#303). Type-
+          # keyed: retypes every DATETIME param and result column. Column-keyed
+          # enum overrides below take precedence where they apply.
+          - db_type: "DATETIME"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "SQLiteTime"
+          - db_type: "DATETIME"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "SQLiteNullTime"
           - column: "messages.source"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

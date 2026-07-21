@@ -159,13 +159,13 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		AuthToken:       w.AuthToken,
 		RegisteredBy:    w.RegisteredBy,
 		Status:          w.Status,
-		CreatedAt:       tsToTime(w.CreatedAt),
-		LastSeenAt:      tsToTimePtr(w.LastSeenAt),
+		CreatedAt:       w.CreatedAt.Time,
+		LastSeenAt:      w.LastSeenAt.Ptr(),
 		PublicKey:       w.PublicKey,
 		MlkemPublicKey:  w.MlkemPublicKey,
 		SlhdsaPublicKey: w.SlhdsaPublicKey,
 		AutoRegistered:  w.AutoRegistered,
-		DeletedAt:       tsToTimePtr(w.DeletedAt),
+		DeletedAt:       w.DeletedAt.Ptr(),
 	}
 }
 

@@ -20,8 +20,8 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 		OwnerUserID: w.OwnerUserID,
 		Title:       w.Title,
 		IsDeleted:   w.IsDeleted,
-		CreatedAt:   tsToTime(w.CreatedAt),
-		DeletedAt:   tsToTimePtr(w.DeletedAt),
+		CreatedAt:   w.CreatedAt.Time,
+		DeletedAt:   w.DeletedAt.Ptr(),
 	}
 }
 

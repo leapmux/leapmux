@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type deviceAuthorizationStore struct{ conn *pgConn }
@@ -23,11 +24,11 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		DeviceName:      d.DeviceName,
 		UserID:          uid,
 		Approved:        int64(d.Approved),
-		LastPolledAt:    tsToTimePtr(d.LastPolledAt),
+		LastPolledAt:    d.LastPolledAt.Ptr(),
 		IntervalSeconds: int64(d.IntervalSeconds),
-		CreatedAt:       tsToTime(d.CreatedAt),
-		ExpiresAt:       tsToTime(d.ExpiresAt),
-		ConsumedAt:      tsToTimePtr(d.ConsumedAt),
+		CreatedAt:       d.CreatedAt.Time,
+		ExpiresAt:       d.ExpiresAt.Time,
+		ConsumedAt:      d.ConsumedAt.Ptr(),
 	}
 }
 
@@ -44,7 +45,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
 		IntervalSeconds: int32(p.IntervalSeconds),
-		ExpiresAt:       timeToTs(p.ExpiresAt),
+		ExpiresAt:       pgtime.New(p.ExpiresAt),
 	}))
 }
 

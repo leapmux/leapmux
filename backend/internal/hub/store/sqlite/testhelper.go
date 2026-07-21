@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 var _ store.TestHelper = (*sqliteTestHelper)(nil)
@@ -56,30 +57,30 @@ func (h *sqliteTestHelper) SetLastActiveAt(ctx context.Context, id string, lastA
 	return h.setEntityTime(ctx, store.EntitySessions, "last_active_at", id, lastActiveAt)
 }
 
-// setEntityTime formats t in the canonical fixed-".000" layout and writes it
-// to a fixed column on a validated entity table. This matches every production
-// write path byte-for-byte: Go-bound writes use the same formatSQLiteTime, and
+// setEntityTime binds t as a SQLiteTime and writes it to a fixed column on a
+// validated entity table. This matches every production write path
+// byte-for-byte: Go-bound writes route through the same SQLiteTime.Value(), and
 // the SQL-side strftime writes (column DEFAULTs, SoftDelete's strftime('now'))
-// also store fixed 3-digit fractional seconds on disk -- see sqliteTimeFormat's
-// doc in convert.go, including the caution that modernc trims zeros only when a
-// DATETIME column is scanned into a Go string.
+// also store fixed 3-digit fractional seconds on disk -- see the SQLiteTime doc
+// in the sqltime package, including the caution that modernc trims zeros only
+// when a DATETIME column is scanned into a Go string.
 func (h *sqliteTestHelper) setEntityTime(ctx context.Context, entity store.TestEntity, column, id string, t time.Time) error {
-	return h.setEntityColumn(ctx, entity, column, id, formatSQLiteTime(t))
+	return h.setEntityColumn(ctx, entity, column, id, sqltime.NewSQLiteTime(t))
 }
 
-// setEntityColumn writes a pre-formatted timestamp string to a fixed column on
-// a validated entity table. SQLite stores timestamps as TEXT via strftime
-// ('%Y-%m-%dT%H:%M:%fZ'), so the value is formatted with formatSQLiteTime to
-// match production rows exactly -- a bound time.Time would serialize in the
-// driver's own layout and break byte-sensitive comparisons (the created_at =
-// cursor tiebreaker, the raw-string deleted_at cleanup cutoffs).
-// The column is a hardcoded literal, never caller input.
-func (h *sqliteTestHelper) setEntityColumn(ctx context.Context, entity store.TestEntity, column, id, value string) error {
+// setEntityColumn writes a timestamp value to a fixed column on a validated
+// entity table. The value is a SQLiteTime Valuer so the driver serializes the
+// canonical strftime('%Y-%m-%dT%H:%M:%fZ') layout, matching production rows
+// exactly -- a bound raw time.Time would serialize in the driver's own layout
+// and break byte-sensitive comparisons (the created_at = cursor tiebreaker, the
+// raw-string deleted_at cleanup cutoffs). The column is a hardcoded literal,
+// never caller input.
+func (h *sqliteTestHelper) setEntityColumn(ctx context.Context, entity store.TestEntity, column, id string, value any) error {
 	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, column, id, value)
 }
 
 func (h *sqliteTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
-	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, formatSQLiteTime(revokedAt))
+	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, sqltime.NewSQLiteTime(revokedAt))
 }
 
 func (h *sqliteTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
@@ -90,9 +91,9 @@ func (h *sqliteTestHelper) setTimestamp(ctx context.Context, column sqlutil.Time
 // currently holds only canonical 24-char 'T'-separated values on disk
 // (see sqlitedb.FindNonCanonicalDatetimes for the discovery and probe
 // mechanics). Intended to run as a test cleanup after store writes; it walks
-// after each storetest subtest, so a NEW write path that forgets the strftime
-// wrap fails the suite instead of shipping a #287-shaped silent-row-drop. All
-// offending columns are reported at once.
+// after each storetest subtest, so a NEW write path that binds a raw time.Time
+// instead of a SQLiteTime fails the suite instead of shipping a #287-shaped
+// silent-row-drop. All offending columns are reported at once.
 func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error {
 	ts, ok := st.(*testableSQLiteStore)
 	if !ok {
@@ -101,11 +102,16 @@ func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error
 	db := ts.conn.shared.db
 	// goose_db_version is goose's own bookkeeping table (TIMESTAMP via
 	// datetime('now')), not part of the store's canonical-layout contract.
-	offenders, walked, err := sqlitedb.FindNonCanonicalDatetimes(ctx, db, "goose_db_version")
+	// Per-column coverage is deliberately NOT asserted here: no single
+	// storetest subtest writes every table, so a non-vacuity check would fail
+	// spuriously. That assertion lives in the dedicated
+	// TestAllDatetimeColumnsStoreCanonicalLayout tests, whose fixtures do
+	// populate every column.
+	offenders, columns, err := sqlitedb.FindNonCanonicalDatetimes(ctx, db, "goose_db_version")
 	if err != nil {
 		return err
 	}
-	if walked == 0 {
+	if len(columns) == 0 {
 		// A migrator test may have rolled the schema back to zero; with no
 		// application tables there is legitimately nothing to walk. With
 		// tables present, zero DATETIME columns means the discovery query
@@ -123,7 +129,7 @@ func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error
 	}
 	if len(offenders) > 0 {
 		return fmt.Errorf(
-			"non-canonical timestamp value(s) on disk -- a write path is missing its strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', ...) wrap, which silently corrupts raw-string compares:\n  %s",
+			"non-canonical timestamp value(s) on disk -- a write path bound a raw time.Time instead of a SQLiteTime, which silently corrupts raw-string compares:\n  %s",
 			strings.Join(offenders, "\n  "))
 	}
 	return nil

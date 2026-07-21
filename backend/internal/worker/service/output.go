@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -1725,7 +1726,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
 		MarkType:           span.MarkType,
-		CreatedAt:          now,
+		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
 		return err
@@ -2292,7 +2293,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		ContentCompression: mergedCompType,
 		Seq:                newSeq,
 		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
+		CreatedAt:          timefmt.Format(parentRow.CreatedAt.Time),
 		Depth:              0,
 		SpanLines:          spanLines,
 		// Carry the row's scroll-rail mark so this MOVE broadcast matches what a
@@ -2335,7 +2336,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		SpanLines:          spanLines,
 		SpanColor:          0,
 		AgentProvider:      agentProvider,
-		CreatedAt:          now,
+		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
 		return false, err

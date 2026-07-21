@@ -62,11 +62,18 @@ func TestFindNonCanonicalDatetimes_CleanSchema(t *testing.T) {
 		canonicalValue, canonicalValue, driverLayoutValue)
 	require.NoError(t, err)
 
-	offenders, walked, err := FindNonCanonicalDatetimes(context.Background(), db)
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db)
 	require.NoError(t, err)
 	assert.Empty(t, offenders, "canonical values, NULLs, and non-DATETIME columns must not be reported")
-	assert.Equal(t, 3, walked,
-		"must walk exactly the DATETIME columns (alpha.created_at, bravo.expires_at, bravo.updated_at), regardless of decltype case")
+	// alpha.created_at holds one canonical row and one NULL row: the NULL must
+	// not count toward NonNullRows, or a NULL-only column would look covered.
+	assert.Equal(t, []ColumnCoverage{
+		{Table: "alpha", Column: "created_at", NonNullRows: 1},
+		{Table: "bravo", Column: "expires_at", NonNullRows: 1},
+		{Table: "bravo", Column: "updated_at", NonNullRows: 1},
+	}, columns,
+		"must walk exactly the DATETIME columns (alpha.created_at, bravo.expires_at, bravo.updated_at), regardless of decltype case, counting only non-null rows")
+	assert.Empty(t, UncoveredColumns(columns))
 }
 
 func TestFindNonCanonicalDatetimes_ReportsEveryOffendingColumn(t *testing.T) {
@@ -82,9 +89,15 @@ func TestFindNonCanonicalDatetimes_ReportsEveryOffendingColumn(t *testing.T) {
 		canonicalValue, driverLayoutValue)
 	require.NoError(t, err)
 
-	offenders, walked, err := FindNonCanonicalDatetimes(context.Background(), db)
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db)
 	require.NoError(t, err)
-	assert.Equal(t, 3, walked)
+	// NonNullRows counts every non-null row, offending or clean: 3 for
+	// alpha.created_at even though only 2 of them are reported below.
+	assert.Equal(t, []ColumnCoverage{
+		{Table: "alpha", Column: "created_at", NonNullRows: 3},
+		{Table: "bravo", Column: "expires_at", NonNullRows: 1},
+		{Table: "bravo", Column: "updated_at", NonNullRows: 1},
+	}, columns)
 	assert.Equal(t, []string{
 		`alpha.created_at: 2 value(s), e.g. "` + driverLayoutValue + `"`,
 		`bravo.updated_at: 1 value(s), e.g. "` + driverLayoutValue + `"`,
@@ -100,13 +113,18 @@ func TestFindNonCanonicalDatetimes_ReportsTimestampNamedColumnWithWrongDecltype(
 	_, err := db.Exec(`CREATE TABLE charlie (id INTEGER PRIMARY KEY, seen_at TEXT, logged_at TIMESTAMP)`)
 	require.NoError(t, err)
 
-	offenders, walked, err := FindNonCanonicalDatetimes(context.Background(), db)
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db)
 	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"charlie.seen_at: declared TEXT, want DATETIME (timestamp-named column outside the canonical walk)",
 		"charlie.logged_at: declared TIMESTAMP, want DATETIME (timestamp-named column outside the canonical walk)",
 	}, offenders)
-	assert.Equal(t, 3, walked, "the guard must not add non-DATETIME columns to the value walk")
+	// No rows were inserted, so every walked column reports zero coverage.
+	assert.Equal(t, []ColumnCoverage{
+		{Table: "alpha", Column: "created_at", NonNullRows: 0},
+		{Table: "bravo", Column: "expires_at", NonNullRows: 0},
+		{Table: "bravo", Column: "updated_at", NonNullRows: 0},
+	}, columns, "the guard must not add non-DATETIME columns to the value walk")
 
 	// Excluding the table silences the decltype guard along with the walk.
 	offenders, _, err = FindNonCanonicalDatetimes(context.Background(), db, "charlie")
@@ -120,10 +138,41 @@ func TestFindNonCanonicalDatetimes_ExcludeSkipsTable(t *testing.T) {
 	_, err := db.Exec(`INSERT INTO bravo (expires_at) VALUES (?)`, driverLayoutValue)
 	require.NoError(t, err)
 
-	offenders, walked, err := FindNonCanonicalDatetimes(context.Background(), db, "bravo")
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db, "bravo")
 	require.NoError(t, err)
 	assert.Empty(t, offenders, "an excluded table's values must not be probed")
-	assert.Equal(t, 1, walked, "excluded tables must not count toward the walked total")
+	// alpha holds no rows: the surviving column is walked but uncovered, which
+	// UncoveredColumns must surface as the vacuous pass it is.
+	assert.Equal(t, []ColumnCoverage{
+		{Table: "alpha", Column: "created_at", NonNullRows: 0},
+	}, columns, "excluded tables must not count toward the walked columns")
+	assert.Equal(t, []string{"alpha.created_at"}, UncoveredColumns(columns))
+}
+
+// TestFindNonCanonicalDatetimes_ReportsPerColumnCoverage pins the vacuity
+// report itself: a NULL-only column and an untouched column must both surface
+// through UncoveredColumns even though neither produces an offender -- the
+// exact blind spot the dedicated canonical-storage tests close by asserting
+// the uncovered list is empty.
+func TestFindNonCanonicalDatetimes_ReportsPerColumnCoverage(t *testing.T) {
+	db := openCanonicalTestDB(t)
+
+	// alpha.created_at: a row exists but the value is NULL. bravo.expires_at:
+	// one real value. bravo.updated_at: never written at all.
+	_, err := db.Exec(`INSERT INTO alpha (created_at) VALUES (NULL)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO bravo (expires_at) VALUES (?)`, canonicalValue)
+	require.NoError(t, err)
+
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db)
+	require.NoError(t, err)
+	assert.Empty(t, offenders, "NULLs and canonical values are not offenders")
+	assert.Equal(t, []ColumnCoverage{
+		{Table: "alpha", Column: "created_at", NonNullRows: 0},
+		{Table: "bravo", Column: "expires_at", NonNullRows: 1},
+		{Table: "bravo", Column: "updated_at", NonNullRows: 0},
+	}, columns)
+	assert.Equal(t, []string{"alpha.created_at", "bravo.updated_at"}, UncoveredColumns(columns))
 }
 
 func TestFindNonCanonicalDatetimes_EmptySchemaWalksNothing(t *testing.T) {
@@ -131,8 +180,9 @@ func TestFindNonCanonicalDatetimes_EmptySchemaWalksNothing(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	offenders, walked, err := FindNonCanonicalDatetimes(context.Background(), db)
+	offenders, columns, err := FindNonCanonicalDatetimes(context.Background(), db)
 	require.NoError(t, err)
 	assert.Empty(t, offenders)
-	assert.Zero(t, walked, "an empty schema must report walked == 0 so callers can judge vacuity")
+	assert.Empty(t, columns, "an empty schema must report zero walked columns so callers can judge vacuity")
+	assert.Empty(t, UncoveredColumns(nil), "no columns means nothing to report as uncovered")
 }

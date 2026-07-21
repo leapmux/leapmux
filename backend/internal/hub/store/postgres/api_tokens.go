@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type apiTokenStore struct{ conn *pgConn }
@@ -22,15 +23,15 @@ func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
 		SecretHash:               t.SecretHash,
 		RefreshHash:              t.RefreshHash,
 		PreviousRefreshHash:      t.PreviousRefreshHash,
-		PreviousRefreshExpiresAt: tsToTimePtr(t.PreviousRefreshExpiresAt),
+		PreviousRefreshExpiresAt: t.PreviousRefreshExpiresAt.Ptr(),
 		Scope:                    t.Scope,
-		CreatedAt:                tsToTime(t.CreatedAt),
+		CreatedAt:                t.CreatedAt.Time,
 		AuthGeneration:           t.AuthGeneration,
-		LastUsedAt:               tsToTimePtr(t.LastUsedAt),
-		LastRotatedAt:            tsToTimePtr(t.LastRotatedAt),
-		ExpiresAt:                tsToTimePtr(t.ExpiresAt),
-		RefreshExpiresAt:         tsToTimePtr(t.RefreshExpiresAt),
-		RevokedAt:                tsToTimePtr(t.RevokedAt),
+		LastUsedAt:               t.LastUsedAt.Ptr(),
+		LastRotatedAt:            t.LastRotatedAt.Ptr(),
+		ExpiresAt:                t.ExpiresAt.Ptr(),
+		RefreshExpiresAt:         t.RefreshExpiresAt.Ptr(),
+		RevokedAt:                t.RevokedAt.Ptr(),
 	}
 }
 
@@ -44,8 +45,8 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			Scope:            p.Scope,
-			ExpiresAt:        timePtrToTs(p.ExpiresAt),
-			RefreshExpiresAt: timePtrToTs(p.RefreshExpiresAt),
+			ExpiresAt:        pgtime.NewNull(p.ExpiresAt),
+			RefreshExpiresAt: pgtime.NewNull(p.RefreshExpiresAt),
 		}))
 	})
 }
@@ -135,11 +136,11 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		n, err := conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
 			ID:                   p.ID,
 			NewSecretHash:        p.NewSecretHash,
-			NewExpiresAt:         timePtrToTs(p.NewExpiresAt),
+			NewExpiresAt:         pgtime.NewNull(p.NewExpiresAt),
 			NewRefreshHash:       p.NewRefreshHash,
-			NewRefreshExpiresAt:  timePtrToTs(p.NewRefreshExpiresAt),
+			NewRefreshExpiresAt:  pgtime.NewNull(p.NewRefreshExpiresAt),
 			PrevRefreshHash:      p.PreviousRefreshHash,
-			PrevRefreshExpiresAt: timePtrToTs(p.PreviousRefreshExpiresAt),
+			PrevRefreshExpiresAt: pgtime.NewNull(p.PreviousRefreshExpiresAt),
 		})
 		if err != nil || n == 0 {
 			return nil, mapErr(err)

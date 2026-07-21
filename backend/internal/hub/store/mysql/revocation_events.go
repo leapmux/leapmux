@@ -9,6 +9,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 // revocationEventStore embeds the shared RevocationCore, which promotes
@@ -52,7 +53,7 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          sqlutil.BindTime(revokedAt),
+		RevokedAt:          sqltime.NewMySQLTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -88,7 +89,7 @@ func newRevocationEventStore(conn *mysqlConn) *revocationEventStore {
 				return mapErr(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *mysqlConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqlutil.BindTimeValid(cutoff)))
+				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *mysqlConn, lease store.RevocationLease) error {
 				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
@@ -155,10 +156,10 @@ func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, erro
 }
 
 // mysqlRevocationNow reads the transaction's clock via SELECT NOW(3). The
-// result is already on the millisecond grid, so revoke paths that bind it
-// back into DATETIME(3) columns (revoked_at, tokens_revoked_at, updated_at)
-// round-trip exactly and deliberately skip the sqlutil.BindTime floor that
-// Go-minted instants require.
+// result is already on the millisecond grid, so binding it back into
+// DATETIME(3) columns (revoked_at, tokens_revoked_at, updated_at) through the
+// sqltime.MySQLTime/MySQLNullTime valuers round-trips exactly: their
+// unconditional millisecond floor is a no-op on an already-floored NOW(3).
 func mysqlRevocationNow(ctx context.Context, conn *mysqlConn) (time.Time, error) {
 	now, err := conn.q.RevocationNow(ctx)
 	if err != nil {

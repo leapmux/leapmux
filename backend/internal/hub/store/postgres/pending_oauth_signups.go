@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
 type pendingOAuthSignupStore struct {
@@ -23,11 +24,11 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 		AccessToken:     p.AccessToken,
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
-		TokenExpiresAt:  tsToTime(p.TokenExpiresAt),
+		TokenExpiresAt:  p.TokenExpiresAt.Time,
 		KeyVersion:      p.KeyVersion,
 		RedirectURI:     p.RedirectUri,
-		ExpiresAt:       tsToTime(p.ExpiresAt),
-		CreatedAt:       tsToTime(p.CreatedAt),
+		ExpiresAt:       p.ExpiresAt.Time,
+		CreatedAt:       p.CreatedAt.Time,
 	}
 }
 
@@ -41,10 +42,10 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 		AccessToken:     p.AccessToken,
 		RefreshToken:    p.RefreshToken,
 		TokenType:       p.TokenType,
-		TokenExpiresAt:  timeToTs(p.TokenExpiresAt),
+		TokenExpiresAt:  pgtime.New(p.TokenExpiresAt),
 		KeyVersion:      p.KeyVersion,
 		RedirectUri:     p.RedirectURI,
-		ExpiresAt:       timeToTs(p.ExpiresAt),
+		ExpiresAt:       pgtime.New(p.ExpiresAt),
 	}))
 }
 

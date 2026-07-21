@@ -10,6 +10,20 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         overrides:
+          # Millisecond-floored, canonical-layout DATETIME types (#303). These
+          # type-keyed entries retype every DATETIME param and result column;
+          # the column-keyed enum overrides below take precedence where they
+          # apply. The db_type matches the raw schema decltype text verbatim,
+          # so the spelling is the uppercase "DATETIME" used in the migrations.
+          - db_type: "DATETIME"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "SQLiteTime"
+          - db_type: "DATETIME"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/util/sqltime"
+              type: "SQLiteNullTime"
           # Worker enums
           - column: "workers.status"
             go_type:

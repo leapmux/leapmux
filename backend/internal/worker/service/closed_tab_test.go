@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -311,7 +311,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte("hello"),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -392,7 +392,7 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 		Cols:        80,
 		Rows:        24,
 		Screen:      []byte("closed screen"),
-		ClosedAt:    sql.NullTime{Time: time.Now(), Valid: true},
+		ClosedAt:    sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
@@ -423,7 +423,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte("hello"),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-closed"))
@@ -459,7 +459,7 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 		Cols:        80,
 		Rows:        24,
 		Screen:      []byte("some screen"),
-		ClosedAt:    sql.NullTime{Time: time.Now(), Valid: true},
+		ClosedAt:    sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{

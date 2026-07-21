@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -367,7 +368,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			SpanColor:          0,
 			AgentProvider:      dbAgent.AgentProvider,
 			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-			CreatedAt:          now,
+			CreatedAt:          sqltime.NewSQLiteTime(now),
 		})
 		if err != nil {
 			slog.Error("failed to persist message", "agent_id", agentID, "error", err)
@@ -1648,7 +1649,7 @@ func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.Agen
 		AgentSessionId: a.AgentSessionID,
 		HomeDir:        a.HomeDir,
 		WorkerId:       svc.WorkerID,
-		CreatedAt:      timefmt.Format(a.CreatedAt),
+		CreatedAt:      timefmt.Format(a.CreatedAt.Time),
 		GitStatus:      gs,
 		AgentProvider:  a.AgentProvider,
 		OptionGroups:   svc.optionGroupsForAgent(a),
@@ -2990,7 +2991,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string, markType l
 		SpanColor:          0,
 		AgentProvider:      dbAgent.AgentProvider,
 		MarkType:           markType,
-		CreatedAt:          now,
+		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
@@ -3363,7 +3364,7 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		DeliveryError:      m.DeliveryError,
 		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
 		AgentProvider:      m.AgentProvider,
-		CreatedAt:          timefmt.Format(m.CreatedAt),
+		CreatedAt:          timefmt.Format(m.CreatedAt.Time),
 		Depth:              int32(m.Depth),
 		SpanId:             m.SpanID,
 		ParentSpanId:       m.ParentSpanID,

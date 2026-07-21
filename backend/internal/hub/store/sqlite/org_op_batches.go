@@ -60,7 +60,7 @@ func toOrgOpBatchRow(r gendb.OrgOpBatch) store.OrgOpBatchRow {
 		BatchPayload: r.BatchPayload,
 		OpCount:      r.OpCount,
 		Epoch:        r.Epoch,
-		CommittedAt:  r.CommittedAt,
+		CommittedAt:  r.CommittedAt.Time,
 	}
 }
 

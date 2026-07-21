@@ -10,6 +10,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 // revocationEventStore embeds the shared RevocationCore, which promotes
@@ -57,7 +58,7 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          sqlutil.BindTime(revokedAt),
+		RevokedAt:          sqltime.NewSQLiteTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -76,7 +77,7 @@ func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.Cred
 // delegation_tokens, whose Revoke bodies are otherwise identical.
 func revokedCredentialEvent(
 	subjectID, userID string,
-	revokedAt sql.NullTime,
+	revokedAt sqltime.SQLiteNullTime,
 	kind string,
 	err error,
 ) (*store.CredentialEvent, error) {
@@ -117,7 +118,7 @@ func newRevocationEventStore(conn *sqliteConn) *revocationEventStore {
 				return mapErr(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *sqliteConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, formatSQLiteTime(cutoff)))
+				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *sqliteConn, lease store.RevocationLease) error {
 				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{

@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceStore struct {
@@ -21,8 +20,8 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 		OwnerUserID: w.OwnerUserID,
 		Title:       w.Title,
 		IsDeleted:   w.IsDeleted,
-		CreatedAt:   w.CreatedAt,
-		DeletedAt:   sqlutil.NullTimePtr(w.DeletedAt),
+		CreatedAt:   w.CreatedAt.Time,
+		DeletedAt:   w.DeletedAt.Ptr(),
 	}
 }
 

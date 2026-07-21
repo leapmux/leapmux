@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -34,7 +35,7 @@ func TestDeleteAgentMessage_BroadcastsDeletedSeq(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"type":"text","text":"hi"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	require.Positive(t, seq)
@@ -101,7 +102,7 @@ func TestDeleteAgentMessage_ReportsNewLatestSeq(t *testing.T) {
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:       []byte(`{"type":"text","text":"hi"}`),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     time.Now(),
+			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		require.NoError(t, svc.Queries.SetMessageDeliveryError(ctx, db.SetMessageDeliveryErrorParams{
@@ -161,7 +162,7 @@ func TestDeleteAgentMessage_RejectsNonFailedUserMessage(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"type":"text","text":"hi"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
@@ -170,7 +171,7 @@ func TestDeleteAgentMessage_RejectsNonFailedUserMessage(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		Content:       []byte(`{"type":"result"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     time.Now(),
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 

@@ -6,7 +6,7 @@ INSERT INTO device_authorizations (
     sqlc.arg(user_code),
     sqlc.arg(device_name),
     sqlc.arg(interval_seconds),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+    sqlc.arg(expires_at)
 );
 
 -- name: GetDeviceAuthorization :one
@@ -17,8 +17,8 @@ SELECT * FROM device_authorizations WHERE user_code = ?;
 
 -- name: ApproveDeviceAuthorization :execresult
 -- Raw compare: expires_at is stored canonical (CreateDeviceAuthorization
--- wraps the bound instant in strftime), so the liveness guard is
--- millisecond-exact against the same canonical RHS layout.
+-- binds a SQLiteTime), so the liveness guard is millisecond-exact against the
+-- same canonical RHS layout.
 UPDATE device_authorizations
 SET approved = 1, user_id = ?
 WHERE device_code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
@@ -45,7 +45,7 @@ SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ?;
 
 -- name: DeleteExpiredDeviceAuthorizations :execresult
--- Raw compare against a formatSQLiteTime-formatted cutoff (CAST AS TEXT ->
--- string param); see DeleteExpiredDelegationTokensBefore for the pattern.
+-- Raw compare against a SQLiteTime cutoff (same canonical layout); see
+-- DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM device_authorizations
-WHERE expires_at < CAST(sqlc.arg(cutoff) AS TEXT);
+WHERE expires_at < sqlc.arg(cutoff);

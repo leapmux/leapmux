@@ -17,8 +17,8 @@ func fromDBOrg(o gendb.Org) store.Org {
 	return store.Org{
 		ID:        o.ID,
 		Name:      o.Name,
-		CreatedAt: tsToTime(o.CreatedAt),
-		DeletedAt: tsToTimePtr(o.DeletedAt),
+		CreatedAt: o.CreatedAt.Time,
+		DeletedAt: o.DeletedAt.Ptr(),
 	}
 }
 

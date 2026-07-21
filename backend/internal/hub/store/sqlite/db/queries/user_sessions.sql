@@ -4,7 +4,7 @@ INSERT INTO user_sessions (
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
-    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at)),
+    sqlc.arg(expires_at),
     sqlc.arg(user_agent),
     sqlc.arg(ip_address),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
@@ -12,8 +12,8 @@ INSERT INTO user_sessions (
 
 -- name: GetUserSessionByID :one
 -- expires_at is stored in the canonical strftime('%Y-%m-%dT%H:%M:%fZ') layout
--- (CreateUserSession wraps the bound instant), so the liveness filter compares
--- it raw against the same layout -- millisecond-exact at the expiry boundary.
+-- (CreateUserSession binds a SQLiteTime), so the liveness filter compares it raw
+-- against the same layout -- millisecond-exact at the expiry boundary.
 SELECT * FROM user_sessions WHERE id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteUserSession :one
@@ -42,8 +42,8 @@ WHERE user_sessions.id = sqlc.arg(session_id)
   );
 
 -- name: DeleteExpiredUserSessions :execresult
--- expires_at is stored canonical (CreateUserSession + Touch both wrap the bound
--- instant in strftime), so comparing it raw against the same canonical RHS is
+-- expires_at is stored canonical (CreateUserSession + Touch both bind a
+-- SQLiteTime), so comparing it raw against the same canonical RHS is
 -- sargable for idx_user_sessions_expires_at_last_active (SEARCH expires_at<?,
 -- not a SCAN-with-residual under julianday()) -- the index was orphaned under
 -- the julianday wrap. RHS is strftime('now'), evaluated once, no binding.
@@ -67,11 +67,11 @@ LIMIT sqlc.arg(limit);
 -- name: ListAllActiveSessions :many
 -- Both timestamp filters compare the raw canonical strftime('%Y-%m-%dT%H:%M:%fZ')
 -- column against the same layout. expires_at is stored canonical because BOTH
--- write paths canonicalize it: CreateUserSession wraps the bound instant in
--- strftime, and Touch (the inline UPDATE in sqlite/sessions.go) binds a
--- formatSQLiteTime-pre-formatted string. last_active_at is written SQL-side by
--- the column DEFAULT and Touch. A future session write path MUST keep this
--- invariant -- binding a raw time.Time stores modernc's driver layout
+-- write paths canonicalize it: CreateUserSession binds a SQLiteTime, and Touch
+-- (the inline UPDATE in sqlite/sessions.go) also binds a SQLiteTime.
+-- last_active_at is written SQL-side by the column DEFAULT and Touch. A future
+-- session write path MUST keep this invariant -- binding a raw time.Time stores
+-- modernc's driver layout
 -- ("... ...+00:00", space at byte 10) and silently breaks every raw-string
 -- liveness filter below; see TestTouchStoresExpiresAtCanonical.
 -- last_active_at also carries the keyset cursor (decodeCursorParams formats it

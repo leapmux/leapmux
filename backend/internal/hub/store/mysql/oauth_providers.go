@@ -24,7 +24,7 @@ func fromDBOAuthProvider(p gendb.OauthProvider) *store.OAuthProvider {
 			Scopes:       p.Scopes,
 			TrustEmail:   p.TrustEmail,
 			Enabled:      p.Enabled,
-			CreatedAt:    p.CreatedAt,
+			CreatedAt:    p.CreatedAt.Time,
 		},
 		ClientSecret: p.ClientSecret,
 	}
@@ -44,7 +44,7 @@ func fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) st
 		Scopes:       r.Scopes,
 		TrustEmail:   r.TrustEmail,
 		Enabled:      r.Enabled,
-		CreatedAt:    r.CreatedAt,
+		CreatedAt:    r.CreatedAt.Time,
 	}
 }
 
@@ -58,7 +58,7 @@ func fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) store.OAut
 		Scopes:       r.Scopes,
 		TrustEmail:   r.TrustEmail,
 		Enabled:      r.Enabled,
-		CreatedAt:    r.CreatedAt,
+		CreatedAt:    r.CreatedAt.Time,
 	}
 }
 

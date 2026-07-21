@@ -9,7 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type userStore struct {
@@ -29,16 +29,16 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         u.EmailVerified,
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.NullTimePtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: u.PendingEmailExpiresAt.Ptr(),
 		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
-		CreatedAt:             u.CreatedAt,
-		UpdatedAt:             u.UpdatedAt,
-		TokensRevokedAt:       sqlutil.NullTimePtr(u.TokensRevokedAt),
+		CreatedAt:             u.CreatedAt.Time,
+		UpdatedAt:             u.UpdatedAt.Time,
+		TokensRevokedAt:       u.TokensRevokedAt.Ptr(),
 		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             sqlutil.NullTimePtr(u.DeletedAt),
+		DeletedAt:             u.DeletedAt.Ptr(),
 	}
 }
 
@@ -270,7 +270,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 			Username:          store.NormalizeUsername(p.Username),
 			DisplayName:       p.DisplayName,
 			DisplayNameFolded: store.FoldSearchText(p.DisplayName),
-			UpdatedAt:         updatedAt,
+			UpdatedAt:         sqltime.NewMySQLTime(updatedAt),
 			ID:                p.ID,
 		}))
 		if ok, err := requireSingleRowUpdate(n, err, "update user profile", p.ID); !ok || err != nil {
@@ -306,7 +306,7 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 		n, err := rowsAffected(conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
 			Email:         store.NormalizeEmail(p.Email),
 			EmailVerified: p.EmailVerified,
-			UpdatedAt:     updatedAt,
+			UpdatedAt:     sqltime.NewMySQLTime(updatedAt),
 			ID:            p.ID,
 		}))
 		return requireSingleRowUpdate(n, err, "update user email", p.ID)
@@ -321,7 +321,7 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 			EmailVerified: p.EmailVerified,
-			UpdatedAt:     updatedAt,
+			UpdatedAt:     sqltime.NewMySQLTime(updatedAt),
 			ID:            p.ID,
 		}))
 		return requireSingleRowUpdate(n, err, "update user email verified", p.ID)
@@ -335,7 +335,7 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 			IsAdmin:   p.IsAdmin,
-			UpdatedAt: updatedAt,
+			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
 			ID:        p.ID,
 		}))
 		return requireSingleRowUpdate(n, err, "update user admin", p.ID)
@@ -353,7 +353,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.BindNullTime(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqltime.NewMySQLNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }
@@ -366,7 +366,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.PromotePendingEmail(ctx, gendb.PromotePendingEmailParams{
-			UpdatedAt: updatedAt,
+			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
 			ID:        id,
 		}))
 		if err != nil {
@@ -419,9 +419,9 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID string) (int64,
 		nextGeneration := row.AuthGeneration + 1
 		n, err := rowsAffected(conn.q.SetUserTokensRevokedAt(ctx, gendb.SetUserTokensRevokedAtParams{
 			ID:              row.ID,
-			TokensRevokedAt: sql.NullTime{Time: revokedAt, Valid: true},
+			TokensRevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
 			AuthGeneration:  nextGeneration,
-			UpdatedAt:       updatedAt,
+			UpdatedAt:       sqltime.NewMySQLTime(updatedAt),
 		}))
 		if err != nil {
 			return nil, err

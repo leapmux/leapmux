@@ -6,7 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 type registrationKeyStore struct {
@@ -19,8 +19,8 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 	return &store.WorkerRegistrationKey{
 		ID:        r.ID,
 		CreatedBy: r.CreatedBy,
-		CreatedAt: r.CreatedAt,
-		ExpiresAt: r.ExpiresAt,
+		CreatedAt: r.CreatedAt.Time,
+		ExpiresAt: r.ExpiresAt.Time,
 	}
 }
 
@@ -28,7 +28,7 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
+		ExpiresAt: sqltime.NewSQLiteTime(p.ExpiresAt),
 	}))
 }
 
@@ -55,8 +55,8 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
 		CreatedBy:    p.CreatedBy,
-		NewExpiresAt: sqlutil.BindTime(p.ExpiresAt),
-		Now:          sqlutil.BindTime(time.Now()),
+		NewExpiresAt: sqltime.NewSQLiteTime(p.ExpiresAt),
+		Now:          sqltime.NewSQLiteTime(time.Now()),
 	}))
 }
 
@@ -64,16 +64,16 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy,
-		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewSQLiteTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
-	now := sqlutil.BindTime(time.Now())
+	now := time.Now()
 	r, err := s.conn.q.ConsumeRegistrationKey(ctx, gendb.ConsumeRegistrationKeyParams{
 		ID:            id,
-		Now:           now,
-		SoftDeletedAt: now.Add(store.RegistrationKeySoftDeleteOffset),
+		Now:           sqltime.NewSQLiteTime(now),
+		SoftDeletedAt: sqltime.NewSQLiteTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -84,27 +84,32 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
 	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
-		ExpiresAt: sqlutil.BindTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewSQLiteTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }
 
 func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
-	// `now` is bound as a time.Time and compared against expires_at through a
-	// strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.narg(now)) wrap in the SQL itself (see
-	// worker_registration_keys.sql ListRegistrationKeysAdmin), so the comparison
-	// is canonical-layout against canonical-layout -- expires_at is written
-	// canonical by every Create/Extend/SoftDelete/Consume/AdminSoftDelete path.
-	// The cursor timestamp is compared against created_at (set via SQL DEFAULT
-	// strftime to ms precision), so the cursor must be formatted via decodeCursorParams
-	// to match that format. The id half of the composite cursor is the
-	// deterministic tiebreaker for rows sharing a millisecond.
-	var nowArg any
+	// `now` is compared against expires_at through sqlc.narg(now) in the SQL (see
+	// worker_registration_keys.sql ListRegistrationKeysAdmin). The GENERATED Now
+	// field stays interface{} because the sqlite engine does not resolve the
+	// `narg IS NULL OR col > narg` OR-chain to a column type, but the builder
+	// takes a typed SQLiteNullTime (matching the mysql/postgres siblings) so a
+	// raw time.Time cannot reach the bind; Value() emits the canonical layout,
+	// so the comparison is canonical-layout against canonical-layout --
+	// expires_at is written canonical by every Create/Extend/SoftDelete/Consume/
+	// AdminSoftDelete path. An invalid (zero-value) SQLiteNullTime binds NULL,
+	// selecting expired rows too. The cursor timestamp is
+	// compared against created_at (set via SQL DEFAULT strftime to ms precision),
+	// so the cursor is formatted via decodeCursorParams to match that format. The
+	// id half of the composite cursor is the deterministic tiebreaker for rows
+	// sharing a millisecond.
+	var now sqltime.SQLiteNullTime
 	if !p.IncludeExpired {
-		nowArg = sqlutil.BindTime(time.Now())
+		now = sqltime.SQLiteNullTimeOf(time.Now())
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListRegistrationKeysAdminParams, error) {
-			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, nowArg)
+			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, now)
 		},
 		s.conn.q.ListRegistrationKeysAdmin,
 		fromDBListRegistrationKeysAdminRow)
@@ -115,8 +120,8 @@ func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) st
 		WorkerRegistrationKey: store.WorkerRegistrationKey{
 			ID:        r.ID,
 			CreatedBy: r.CreatedBy,
-			CreatedAt: r.CreatedAt,
-			ExpiresAt: r.ExpiresAt,
+			CreatedAt: r.CreatedAt.Time,
+			ExpiresAt: r.ExpiresAt.Time,
 		},
 		CreatorUsername: r.CreatorUsername,
 		CreatorDeleted:  r.CreatorDeleted,
