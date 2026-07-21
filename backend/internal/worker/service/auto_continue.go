@@ -56,7 +56,7 @@ func (h *OutputHandler) restoreAutoContinueSchedules() {
 func (h *OutputHandler) scheduleAutoContinue(agentID string, schedule agent.AutoContinueSchedule) {
 	now := time.Now().UTC()
 
-	record, err := h.buildAutoContinueRecord(agentID, schedule, now)
+	record, dueAt, err := h.buildAutoContinueRecord(agentID, schedule, now)
 	if err != nil {
 		slog.Error("auto-continue schedule build failed", "agent_id", agentID, "reason", schedule.Reason, "error", err)
 		return
@@ -68,7 +68,7 @@ func (h *OutputHandler) scheduleAutoContinue(agentID string, schedule agent.Auto
 	}
 
 	key := autoContinueKey{AgentID: agentID, Reason: schedule.Reason}
-	h.armAutoContinueTimer(key, record.DueAt)
+	h.armAutoContinueTimer(key, dueAt)
 }
 
 func (h *OutputHandler) cancelAutoContinue(agentID string, reason agent.AutoContinueReason) {
@@ -93,18 +93,27 @@ func (h *OutputHandler) cleanupAutoContinue(agentID string) {
 	}
 }
 
-func (h *OutputHandler) buildAutoContinueRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) (db.UpsertAutoContinueScheduleParams, error) {
+// buildAutoContinueRecord returns the upsert params plus the typed due
+// instant the caller arms its timer with. The params' DueAt field is an
+// interface{} (its bind is strftime-wrapped SQL-side), so the builders hand
+// back the time.Time separately instead of making callers type-assert it out.
+// Converging this and the other strftime-wrapped worker write binds
+// (messages.created_at, terminals.closed_at) on typed CAST(... AS TEXT)
+// string params is tracked in
+// https://github.com/leapmux/leapmux/issues/303.
+func (h *OutputHandler) buildAutoContinueRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) (db.UpsertAutoContinueScheduleParams, time.Time, error) {
 	switch schedule.Reason {
 	case agent.AutoContinueReasonAPIError:
 		return h.buildAPIErrorScheduleRecord(agentID, schedule, now)
 	case agent.AutoContinueReasonRateLimit:
-		return h.buildRateLimitScheduleRecord(agentID, schedule, now), nil
+		record, dueAt := h.buildRateLimitScheduleRecord(agentID, schedule, now)
+		return record, dueAt, nil
 	default:
-		return db.UpsertAutoContinueScheduleParams{}, errors.New("unknown auto-continue reason")
+		return db.UpsertAutoContinueScheduleParams{}, time.Time{}, errors.New("unknown auto-continue reason")
 	}
 }
 
-func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) (db.UpsertAutoContinueScheduleParams, error) {
+func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) (db.UpsertAutoContinueScheduleParams, time.Time, error) {
 	delay := autoContinueInitialDelay
 	nextBackoff := time.Duration(float64(autoContinueInitialDelay) * autoContinueMultiplier)
 
@@ -113,7 +122,7 @@ func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule age
 		Reason:  string(schedule.Reason),
 	})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return db.UpsertAutoContinueScheduleParams{}, err
+		return db.UpsertAutoContinueScheduleParams{}, time.Time{}, err
 	}
 	if err == nil && existing.State == autoContinueStateActive && existing.NextBackoffMs > 0 {
 		delay = time.Duration(existing.NextBackoffMs) * time.Millisecond
@@ -128,7 +137,11 @@ func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule age
 	}
 
 	jitter := symmetricJitter(delay, autoContinueJitterFrac)
-	dueAt := now.Add(delay + jitter)
+	// Millisecond-truncated because the upsert stores due_at in the
+	// millisecond-precision canonical strftime layout: the armed in-memory
+	// instant must survive the DB roundtrip byte-exactly, or
+	// fireAutoContinue's DueAt.Equal guard would reject every firing.
+	dueAt := now.Add(delay + jitter).Truncate(time.Millisecond)
 	return db.UpsertAutoContinueScheduleParams{
 		AgentID:       agentID,
 		Reason:        string(schedule.Reason),
@@ -137,12 +150,14 @@ func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule age
 		JitterMs:      jitter.Milliseconds(),
 		NextBackoffMs: nextBackoff.Milliseconds(),
 		SourcePayload: cloneOrEmpty(schedule.SourcePayload),
-	}, nil
+	}, dueAt, nil
 }
 
-func (h *OutputHandler) buildRateLimitScheduleRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) db.UpsertAutoContinueScheduleParams {
+func (h *OutputHandler) buildRateLimitScheduleRecord(agentID string, schedule agent.AutoContinueSchedule, now time.Time) (db.UpsertAutoContinueScheduleParams, time.Time) {
 	jitter := positiveRateLimitJitter(schedule.DueAt.Sub(now))
-	dueAt := schedule.DueAt.UTC().Add(jitter)
+	// Millisecond-truncated for the same DueAt.Equal roundtrip reason as
+	// buildAPIErrorScheduleRecord above.
+	dueAt := schedule.DueAt.UTC().Add(jitter).Truncate(time.Millisecond)
 	return db.UpsertAutoContinueScheduleParams{
 		AgentID:       agentID,
 		Reason:        string(schedule.Reason),
@@ -151,7 +166,7 @@ func (h *OutputHandler) buildRateLimitScheduleRecord(agentID string, schedule ag
 		JitterMs:      jitter.Milliseconds(),
 		NextBackoffMs: 0,
 		SourcePayload: cloneOrEmpty(schedule.SourcePayload),
-	}
+	}, dueAt
 }
 
 func (h *OutputHandler) armAutoContinueTimer(key autoContinueKey, dueAt time.Time) {

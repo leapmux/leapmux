@@ -1,6 +1,19 @@
 -- name: CreatePendingOAuthSignup :exec
 INSERT INTO pending_oauth_signups (token, provider_id, provider_subject, email, display_name, access_token, refresh_token, token_type, token_expires_at, key_version, redirect_uri, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (
+    sqlc.arg(token),
+    sqlc.arg(provider_id),
+    sqlc.arg(provider_subject),
+    sqlc.arg(email),
+    sqlc.arg(display_name),
+    sqlc.arg(access_token),
+    sqlc.arg(refresh_token),
+    sqlc.arg(token_type),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(token_expires_at)),
+    sqlc.arg(key_version),
+    sqlc.arg(redirect_uri),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(expires_at))
+);
 
 -- name: GetPendingOAuthSignup :one
 SELECT * FROM pending_oauth_signups WHERE token = ?;
@@ -9,4 +22,7 @@ SELECT * FROM pending_oauth_signups WHERE token = ?;
 DELETE FROM pending_oauth_signups WHERE token = ?;
 
 -- name: DeleteExpiredPendingOAuthSignups :execresult
-DELETE FROM pending_oauth_signups WHERE datetime(expires_at) < datetime('now');
+-- Raw compare: expires_at is stored canonical (CreatePendingOAuthSignup wraps
+-- the bound instant in strftime), so the sweep is millisecond-exact against
+-- the same canonical RHS layout.
+DELETE FROM pending_oauth_signups WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');

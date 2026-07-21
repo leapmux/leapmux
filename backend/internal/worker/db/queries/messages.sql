@@ -19,7 +19,7 @@ VALUES (
   sqlc.arg(span_color),
   sqlc.arg(agent_provider),
   sqlc.arg(mark_type),
-  sqlc.arg(created_at)
+  strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(created_at))
 )
 RETURNING seq;
 

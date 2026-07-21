@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -47,7 +48,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 		return mapErr(tx.(*sqliteStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID,
-			ExpiresAt: p.ExpiresAt.UTC(),
+			ExpiresAt: sqlutil.BindTime(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
 		}))
@@ -74,13 +75,13 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (i
 	// pre-formatted string -- byte-exact, because the on-disk strftime values
 	// carry fixed 3-digit fractional seconds exactly like sqliteTimeFormat (see
 	// its doc in convert.go, including the Go-string-scan caution).
-	lastActiveStr := p.LastActiveAt.UTC().Format(sqliteTimeFormat)
+	lastActiveStr := formatSQLiteTime(p.LastActiveAt)
 	res, err := s.conn.exec.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 		     expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
 		 WHERE id = ? AND last_active_at < ?`,
-		p.ExpiresAt.UTC(), p.ID, lastActiveStr,
+		sqlutil.BindTime(p.ExpiresAt), p.ID, lastActiveStr,
 	)
 	if err != nil {
 		return 0, mapErr(err)

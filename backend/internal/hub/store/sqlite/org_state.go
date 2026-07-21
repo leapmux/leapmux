@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type orgStateStore struct {
@@ -37,8 +38,8 @@ func (s *orgStateStore) Upsert(ctx context.Context, p store.UpsertOrgStateParams
 		OrgID:          p.OrgID,
 		StatePayload:   p.StatePayload,
 		CurrentEpoch:   p.CurrentEpoch,
-		EpochStartedAt: p.EpochStartedAt,
-		UpdatedAt:      p.UpdatedAt,
+		EpochStartedAt: sqlutil.BindTime(p.EpochStartedAt),
+		UpdatedAt:      sqlutil.BindTime(p.UpdatedAt),
 	}))
 }
 
@@ -46,7 +47,7 @@ func (s *orgStateStore) AdvanceEpoch(ctx context.Context, p store.AdvanceOrgEpoc
 	return mapErr(s.conn.q.AdvanceOrgEpoch(ctx, gendb.AdvanceOrgEpochParams{
 		OrgID:          p.OrgID,
 		Epoch:          p.Epoch,
-		EpochStartedAt: p.EpochStartedAt,
-		UpdatedAt:      p.UpdatedAt,
+		EpochStartedAt: sqlutil.BindTime(p.EpochStartedAt),
+		UpdatedAt:      sqlutil.BindTime(p.UpdatedAt),
 	}))
 }

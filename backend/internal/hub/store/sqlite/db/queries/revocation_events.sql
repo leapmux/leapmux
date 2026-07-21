@@ -1,7 +1,14 @@
 -- name: InsertRevocationEvent :exec
 INSERT INTO revocation_events (
     id, kind, subject_id, user_id, revoked_at, user_auth_generation
-) VALUES (?, ?, ?, ?, ?, ?);
+) VALUES (
+    sqlc.arg(id),
+    sqlc.arg(kind),
+    sqlc.arg(subject_id),
+    sqlc.arg(user_id),
+    strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(revoked_at)),
+    sqlc.arg(user_auth_generation)
+);
 
 -- name: LockRevocationEventSequence :one
 UPDATE revocation_event_sequence
@@ -47,7 +54,10 @@ SET cursor_seq = sqlc.arg(cursor_seq),
     lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', printf('+%f seconds', CAST(sqlc.arg(lease_millis) AS REAL) / 1000.0))
 WHERE singleton_id = 1
   AND holder_id = sqlc.arg(holder_id)
-  AND julianday(lease_expires_at) > julianday('now')
+  -- Raw compare: lease_expires_at is written canonical on both write paths
+  -- (Insert/Renew both SET strftime('%Y-%m-%dT%H:%M:%fZ', ...)), so the
+  -- liveness guard is millisecond-exact against the same canonical layout.
+  AND lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   AND cursor_seq <= sqlc.arg(cursor_seq)
   AND sqlc.arg(cursor_seq) <= (SELECT last_seq FROM revocation_event_sequence WHERE id = 1)
   AND CAST(sqlc.arg(lease_millis) AS INTEGER) > 0;
@@ -56,7 +66,7 @@ WHERE singleton_id = 1
 DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND holder_id = sqlc.arg(holder_id);
 
 -- name: DeleteExpiredHubRuntimeLease :execresult
-DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND julianday(lease_expires_at) <= julianday('now');
+DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteCompactablePublishedRevocationEvents :execresult
 -- Raw compare: published_at is written canonical on its only write path (the

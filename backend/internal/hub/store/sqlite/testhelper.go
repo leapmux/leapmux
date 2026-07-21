@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -71,7 +72,7 @@ func (h *sqliteTestHelper) setEntityTime(ctx context.Context, entity store.TestE
 // ('%Y-%m-%dT%H:%M:%fZ'), so the value is formatted with formatSQLiteTime to
 // match production rows exactly -- a bound time.Time would serialize in the
 // driver's own layout and break byte-sensitive comparisons (the created_at =
-// cursor tiebreaker, the datetime()-normalized deleted_at cleanup cutoffs).
+// cursor tiebreaker, the raw-string deleted_at cleanup cutoffs).
 // The column is a hardcoded literal, never caller input.
 func (h *sqliteTestHelper) setEntityColumn(ctx context.Context, entity store.TestEntity, column, id, value string) error {
 	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, column, id, value)
@@ -85,71 +86,45 @@ func (h *sqliteTestHelper) setTimestamp(ctx context.Context, column sqlutil.Time
 	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, column, id, at)
 }
 
-// canonicalTimestampColumns lists every column the SQLite dialect compares as
-// a RAW string (keyset ORDER BY columns, liveness filters, cleanup cutoffs).
-// Each one's every write path MUST store the canonical
-// strftime('%Y-%m-%dT%H:%M:%fZ') layout: a single raw time.Time bind stores
-// modernc's driver layout (space at byte 10) and silently corrupts the
-// raw-string compares. CheckCanonicalTimestamps walks this list after each
-// storetest subtest, so a NEW write path that forgets the strftime wrap (or a
-// new raw-compared column added here) fails the suite instead of shipping a
-// #287-shaped silent-row-drop. Columns compared only under datetime() wraps
-// (e.g. delegation_tokens.expires_at) are deliberately absent: their binds are
-// driver-layout by design.
-var canonicalTimestampColumns = map[string][]string{
-	"users":                    {"created_at", "deleted_at", "pending_email_expires_at"},
-	"user_sessions":            {"last_active_at", "expires_at"},
-	"workers":                  {"created_at", "deleted_at"},
-	"workspaces":               {"deleted_at"},
-	"orgs":                     {"deleted_at"},
-	"worker_registration_keys": {"created_at", "expires_at"},
-	"api_tokens":               {"created_at", "revoked_at"},
-	"delegation_tokens":        {"created_at", "revoked_at"},
-	"oauth_tokens":             {"expires_at"},
-	"revocation_events":        {"published_at"},
-}
-
-// CheckCanonicalTimestamps asserts every raw-string-compared timestamp column
-// currently holds only canonical 24-char 'T'-separated values on disk. The
-// probe runs SQL-side (length/substr over the stored TEXT) because modernc
-// reformats DATETIME values on scan, which would hide a non-canonical layout.
-// Intended to run as a test cleanup after store writes; see
-// canonicalTimestampColumns for the invariant.
+// CheckCanonicalTimestamps asserts every DATETIME column of every table
+// currently holds only canonical 24-char 'T'-separated values on disk
+// (see sqlitedb.FindNonCanonicalDatetimes for the discovery and probe
+// mechanics). Intended to run as a test cleanup after store writes; it walks
+// after each storetest subtest, so a NEW write path that forgets the strftime
+// wrap fails the suite instead of shipping a #287-shaped silent-row-drop. All
+// offending columns are reported at once.
 func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error {
 	ts, ok := st.(*testableSQLiteStore)
 	if !ok {
 		return fmt.Errorf("CheckCanonicalTimestamps: not a sqlite testable store: %T", st)
 	}
 	db := ts.conn.shared.db
-	for table, columns := range canonicalTimestampColumns {
-		// A migrator test may have rolled the schema back below this table;
-		// nothing to check then.
-		var exists bool
+	// goose_db_version is goose's own bookkeeping table (TIMESTAMP via
+	// datetime('now')), not part of the store's canonical-layout contract.
+	offenders, walked, err := sqlitedb.FindNonCanonicalDatetimes(ctx, db, "goose_db_version")
+	if err != nil {
+		return err
+	}
+	if walked == 0 {
+		// A migrator test may have rolled the schema back to zero; with no
+		// application tables there is legitimately nothing to walk. With
+		// tables present, zero DATETIME columns means the discovery query
+		// broke and the walk would pass vacuously.
+		var tables int
 		if err := db.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, table,
-		).Scan(&exists); err != nil {
-			return fmt.Errorf("canonical-timestamp walk %s: %w", table, err)
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'goose_db_version'`,
+		).Scan(&tables); err != nil {
+			return fmt.Errorf("canonical-timestamp table count: %w", err)
 		}
-		if !exists {
-			continue
+		if tables == 0 {
+			return nil
 		}
-		for _, col := range columns {
-			var count int
-			var sample sql.NullString
-			// The column is a hardcoded literal from the map above, never caller input.
-			err := db.QueryRowContext(ctx,
-				`SELECT COUNT(*), MIN(CAST(`+col+` AS TEXT)) FROM `+table+
-					` WHERE `+col+` IS NOT NULL AND (length(CAST(`+col+` AS TEXT)) != 24 OR substr(CAST(`+col+` AS TEXT), 11, 1) != 'T')`,
-			).Scan(&count, &sample)
-			if err != nil {
-				return fmt.Errorf("canonical-timestamp walk %s.%s: %w", table, col, err)
-			}
-			if count > 0 {
-				return fmt.Errorf(
-					"%s.%s holds %d non-canonical timestamp value(s) on disk (e.g. %q): a write path is missing its strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', ...) wrap, which silently corrupts this column's raw-string compares",
-					table, col, count, sample.String)
-			}
-		}
+		return fmt.Errorf("canonical-timestamp walk found no DATETIME columns across %d table(s); the discovery query is broken", tables)
+	}
+	if len(offenders) > 0 {
+		return fmt.Errorf(
+			"non-canonical timestamp value(s) on disk -- a write path is missing its strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', ...) wrap, which silently corrupts raw-string compares:\n  %s",
+			strings.Join(offenders, "\n  "))
 	}
 	return nil
 }

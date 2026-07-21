@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type orgRecentBatchIDStore struct {
@@ -49,10 +50,10 @@ func (s *orgRecentBatchIDStore) Insert(ctx context.Context, p store.InsertOrgRec
 		CanonicalClient:     p.CanonicalClient,
 		OpCount:             int32(p.OpCount),
 		Epoch:               p.Epoch,
-		ExpiresAt:           p.ExpiresAt,
+		ExpiresAt:           sqlutil.BindTime(p.ExpiresAt),
 	}))
 }
 
 func (s *orgRecentBatchIDStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, before))
+	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, sqlutil.BindTime(before)))
 }

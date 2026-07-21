@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -22,7 +23,7 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 		Title:       w.Title,
 		IsDeleted:   ptrconv.Int64ToBool(w.IsDeleted),
 		CreatedAt:   w.CreatedAt,
-		DeletedAt:   ptrconv.NullTimeToPtr(w.DeletedAt),
+		DeletedAt:   sqlutil.NullTimePtr(w.DeletedAt),
 	}
 }
 

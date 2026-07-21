@@ -46,8 +46,8 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			Scope:            p.Scope,
-			ExpiresAt:        sqlutil.ToNullTime(p.ExpiresAt),
-			RefreshExpiresAt: sqlutil.ToNullTime(p.RefreshExpiresAt),
+			ExpiresAt:        sqlutil.BindNullTime(p.ExpiresAt),
+			RefreshExpiresAt: sqlutil.BindNullTime(p.RefreshExpiresAt),
 		}))
 	})
 }
@@ -137,11 +137,11 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		n, err := rowsAffected(conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
 			ID:                   p.ID,
 			NewSecretHash:        p.NewSecretHash,
-			NewExpiresAt:         sqlutil.ToNullTime(p.NewExpiresAt),
+			NewExpiresAt:         sqlutil.BindNullTime(p.NewExpiresAt),
 			NewRefreshHash:       p.NewRefreshHash,
-			NewRefreshExpiresAt:  sqlutil.ToNullTime(p.NewRefreshExpiresAt),
+			NewRefreshExpiresAt:  sqlutil.BindNullTime(p.NewRefreshExpiresAt),
 			PrevRefreshHash:      p.PreviousRefreshHash,
-			PrevRefreshExpiresAt: sqlutil.ToNullTime(p.PreviousRefreshExpiresAt),
+			PrevRefreshExpiresAt: sqlutil.BindNullTime(p.PreviousRefreshExpiresAt),
 		}))
 		if err != nil || n == 0 {
 			return nil, err

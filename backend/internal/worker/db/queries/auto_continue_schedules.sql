@@ -12,7 +12,11 @@ INSERT INTO auto_continue_schedules (
   sqlc.arg(agent_id),
   sqlc.arg(reason),
   sqlc.arg(content),
-  sqlc.arg(due_at),
+  -- Canonical layout, millisecond precision. The Go builders truncate due_at
+  -- to the millisecond BEFORE binding so fireAutoContinue's DueAt.Equal guard
+  -- (in-memory armed instant vs the DB roundtrip of this value) still holds.
+  -- The DO UPDATE below reuses the transformed excluded value.
+  strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(due_at)),
   sqlc.arg(jitter_ms),
   sqlc.arg(next_backoff_ms),
   'active',

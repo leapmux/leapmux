@@ -1709,7 +1709,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 
 	msgID := id.Generate()
 	compressed, compressionType := msgcodec.Compress(contentJSON)
-	now := time.Now()
+	now := nowMillis()
 
 	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
@@ -2317,7 +2317,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 	msgID := id.Generate()
 	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
-	now := time.Now()
+	now := nowMillis()
 
 	// Capture currently-active spans so the notification renders with
 	// passthrough vertical bars instead of breaking the column.

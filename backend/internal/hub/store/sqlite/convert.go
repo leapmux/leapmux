@@ -21,7 +21,9 @@ import (
 // strftime('%Y-%m-%dT%H:%M:%fZ', ...): fixed 3-digit fractional seconds, the
 // same instant grid as this Go layout's ".000". Every SQL-side write path
 // (column DEFAULTs, the Create/Touch strftime wraps, SoftDelete's
-// strftime('now')) stores canonical 24-char values ON DISK, so the raw-string
+// strftime('now')) stores canonical 24-char values ON DISK -- for EVERY
+// DATETIME column of every table, enforced mechanically by
+// CheckCanonicalTimestamps in testhelper.go -- so the raw-string
 // keyset predicates and cleanup cutoff compares -- which run SQL-side against
 // the stored bytes -- are byte-exact against formatSQLiteTime-formatted
 // params, including at trailing-zero milliseconds (pinned by

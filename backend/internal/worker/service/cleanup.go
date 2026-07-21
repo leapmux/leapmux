@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/periodic"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -74,10 +75,11 @@ func (svc *Context) SweepOrphanedAgentState() {
 }
 
 func runCleanup(ctx context.Context, queries *db.Queries) {
-	cutoff := sql.NullTime{
-		Time:  time.Now().UTC().Add(-cleanupRetention),
-		Valid: true,
-	}
+	// Pre-formatted in the canonical strftime layout: the sweeps compare
+	// closed_at/deleted_at as raw strings, so the cutoff must be byte-exact
+	// against the stored bytes (a raw time.Time bind would serialize in the
+	// driver's own layout and skip every same-day row).
+	cutoff := timefmt.Format(time.Now().Add(-cleanupRetention))
 
 	cleanupStep(ctx, "agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
 	cleanupStep(ctx, "terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })

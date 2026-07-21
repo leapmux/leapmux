@@ -29,16 +29,16 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         ptrconv.Int64ToBool(u.EmailVerified),
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: ptrconv.NullTimeToPtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqlutil.NullTimePtr(u.PendingEmailExpiresAt),
 		PendingEmailAttempts:  u.PendingEmailAttempts,
 		PasswordSet:           ptrconv.Int64ToBool(u.PasswordSet),
 		IsAdmin:               ptrconv.Int64ToBool(u.IsAdmin),
 		Prefs:                 u.Prefs,
 		CreatedAt:             u.CreatedAt,
 		UpdatedAt:             u.UpdatedAt,
-		TokensRevokedAt:       ptrconv.NullTimeToPtr(u.TokensRevokedAt),
+		TokensRevokedAt:       sqlutil.NullTimePtr(u.TokensRevokedAt),
 		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             ptrconv.NullTimeToPtr(u.DeletedAt),
+		DeletedAt:             sqlutil.NullTimePtr(u.DeletedAt),
 	}
 }
 
@@ -312,7 +312,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: ptrconv.PtrToNullTime(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: sqlutil.BindNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }

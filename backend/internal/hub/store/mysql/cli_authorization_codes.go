@@ -30,7 +30,7 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 		UserID:        p.UserID,
 		CodeChallenge: p.CodeChallenge,
 		DeviceName:    p.DeviceName,
-		ExpiresAt:     p.ExpiresAt.UTC(),
+		ExpiresAt:     sqlutil.BindTime(p.ExpiresAt),
 	}))
 }
 

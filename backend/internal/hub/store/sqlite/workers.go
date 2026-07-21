@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -160,12 +161,12 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		RegisteredBy:    w.RegisteredBy,
 		Status:          w.Status,
 		CreatedAt:       w.CreatedAt,
-		LastSeenAt:      ptrconv.NullTimeToPtr(w.LastSeenAt),
+		LastSeenAt:      sqlutil.NullTimePtr(w.LastSeenAt),
 		PublicKey:       w.PublicKey,
 		MlkemPublicKey:  w.MlkemPublicKey,
 		SlhdsaPublicKey: w.SlhdsaPublicKey,
 		AutoRegistered:  ptrconv.Int64ToBool(w.AutoRegistered),
-		DeletedAt:       ptrconv.NullTimeToPtr(w.DeletedAt),
+		DeletedAt:       sqlutil.NullTimePtr(w.DeletedAt),
 	}
 }
 

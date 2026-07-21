@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 // workerStore implements store.WorkerStore backed by MySQL.
@@ -160,12 +160,12 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		RegisteredBy:    w.RegisteredBy,
 		Status:          w.Status,
 		CreatedAt:       w.CreatedAt,
-		LastSeenAt:      ptrconv.NullTimeToPtr(w.LastSeenAt),
+		LastSeenAt:      sqlutil.NullTimePtr(w.LastSeenAt),
 		PublicKey:       w.PublicKey,
 		MlkemPublicKey:  w.MlkemPublicKey,
 		SlhdsaPublicKey: w.SlhdsaPublicKey,
 		AutoRegistered:  w.AutoRegistered,
-		DeletedAt:       ptrconv.NullTimeToPtr(w.DeletedAt),
+		DeletedAt:       sqlutil.NullTimePtr(w.DeletedAt),
 	}
 }
 

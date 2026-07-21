@@ -52,7 +52,7 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          revokedAt.UTC(),
+		RevokedAt:          sqlutil.BindTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -88,7 +88,7 @@ func newRevocationEventStore(conn *mysqlConn) *revocationEventStore {
 				return mapErr(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *mysqlConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqlutil.BindTimeValid(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *mysqlConn, lease store.RevocationLease) error {
 				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
@@ -154,6 +154,11 @@ func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, erro
 	return seq, mapErr(err)
 }
 
+// mysqlRevocationNow reads the transaction's clock via SELECT NOW(3). The
+// result is already on the millisecond grid, so revoke paths that bind it
+// back into DATETIME(3) columns (revoked_at, tokens_revoked_at, updated_at)
+// round-trip exactly and deliberately skip the sqlutil.BindTime floor that
+// Go-minted instants require.
 func mysqlRevocationNow(ctx context.Context, conn *mysqlConn) (time.Time, error) {
 	now, err := conn.q.RevocationNow(ctx)
 	if err != nil {
