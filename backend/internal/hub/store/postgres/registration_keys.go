@@ -88,7 +88,7 @@ func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (
 	}))
 }
 
-func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) ([]store.WorkerRegistrationKeyWithCreator, error) {
+func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
 	// Leave Valid=false on the pgtype.Timestamptz values so the
 	// `($N::timestamptz IS NULL OR …)` short-circuits keep every row /
 	// start from the head.
@@ -96,19 +96,12 @@ func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegist
 	if !p.IncludeExpired {
 		nowTs = timeToTs(time.Now().UTC())
 	}
-	cursorTs, err := parseCursorToTs(p.Cursor)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListRegistrationKeysAdmin(ctx, gendb.ListRegistrationKeysAdminParams{
-		Now:    nowTs,
-		Cursor: cursorTs,
-		Limit:  int32(p.Limit),
-	})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return store.MapSlice(rows, fromDBListRegistrationKeysAdminRow), nil
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListRegistrationKeysAdminParams, error) {
+			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, nowTs)
+		},
+		s.conn.q.ListRegistrationKeysAdmin,
+		fromDBListRegistrationKeysAdminRow)
 }
 
 func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {
@@ -120,5 +113,6 @@ func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) st
 			ExpiresAt: tsToTime(r.ExpiresAt),
 		},
 		CreatorUsername: r.CreatorUsername,
+		CreatorDeleted:  r.CreatorDeleted,
 	}
 }

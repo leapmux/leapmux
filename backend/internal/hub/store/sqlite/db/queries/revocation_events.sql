@@ -59,17 +59,20 @@ DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND holder_id = sqlc.arg(ho
 DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND julianday(lease_expires_at) <= julianday('now');
 
 -- name: DeleteCompactablePublishedRevocationEvents :execresult
--- Normalize both sides to the same fixed-width ISO8601 millis format via
--- strftime %f before comparing, so the compare keeps full stored (millisecond)
--- precision. A bare datetime() wrap on both sides truncates to whole seconds and
--- retains sub-second-younger events that postgres/mysql compact -- a
--- cross-dialect divergence. strftime also tolerates whatever time format the
--- driver binds the cutoff in (the reason the datetime() wrap existed).
+-- Raw compare: published_at is written canonical on its only write path (the
+-- publish UPDATE sets strftime('%Y-%m-%dT%H:%M:%fZ','now')), and the Go side
+-- binds a formatSQLiteTime-formatted cutoff (CAST AS TEXT -> string param),
+-- so the lexicographic < is byte-exact at full millisecond precision --
+-- matching what postgres/mysql compact, with no strftime re-normalization per
+-- row. Unlike a function wrap on the column, this is sargable: the partial
+-- idx_revocation_events_published(published_at, seq) serves an upper-bounded
+-- SEARCH (the `ev.seq <= ...` term implies seq IS NOT NULL, satisfying the
+-- partial predicate).
 DELETE FROM revocation_events
 WHERE id IN (
     SELECT ev.id
     FROM revocation_events AS ev
-    WHERE strftime('%Y-%m-%dT%H:%M:%fZ', ev.published_at) < strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(cutoff))
+    WHERE ev.published_at < CAST(sqlc.arg(cutoff) AS TEXT)
       AND ev.seq <= COALESCE(
           (SELECT cursor_seq FROM hub_runtime_lease WHERE singleton_id = 1),
           (SELECT last_seq FROM revocation_event_sequence WHERE id = 1)

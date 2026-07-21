@@ -20,16 +20,17 @@ WHERE id IN (sqlc.slice('workspace_ids'))
 -- refresh -- most reproducibly for fresh accounts whose seed
 -- workspaces land in a batch.
 --
--- BINARY cast on the id tiebreaker pins byte-wise (case-sensitive)
--- ordering. MySQL's default `utf8mb4_general_ci` collation is
--- case-INsensitive, so two ids differing only in case (e.g. "Foo..."
--- vs "foo...") would sort non-deterministically across runs. SQLite
--- and PostgreSQL already collate case-sensitively by default.
+-- The id tiebreaker is byte-wise (case-sensitive) because every table is
+-- created COLLATE=utf8mb4_bin, so no explicit cast is needed. MySQL's
+-- session default `utf8mb4_general_ci` is case-INsensitive; the
+-- table-level binary collation ensures two ids differing only in case
+-- (e.g. "Foo..." vs "foo...") still sort deterministically. SQLite and
+-- PostgreSQL already collate case-sensitively by default.
 SELECT w.* FROM workspaces w
 WHERE w.is_deleted = 0
   AND w.org_id = sqlc.arg(org_id)
   AND w.owner_user_id = sqlc.arg(user_id)
-ORDER BY w.created_at DESC, BINARY w.id DESC;
+ORDER BY w.created_at DESC, w.id DESC;
 
 -- name: RenameWorkspace :execresult
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;

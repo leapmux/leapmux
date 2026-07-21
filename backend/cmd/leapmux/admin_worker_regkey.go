@@ -17,30 +17,31 @@ func runWorkerRegKeyList(cmd adminCmdCtx, args []string) error {
 	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		includeExpired = fs.Bool("include-expired", false, "include revoked or expired keys (forensics; default shows only live keys)")
-		limit = fs.Int64("limit", 50, "maximum number of results")
-		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		rows, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-			Cursor:         *cursor,
-			Limit:          *limit,
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		page, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
+			PageParams:     store.PageParams{Cursor: *cursor, Limit: *limit},
 			IncludeExpired: *includeExpired,
 		})
 		if err != nil {
-			return fmt.Errorf("list registration keys: %w", err)
+			return classifyListError("list registration keys", err)
 		}
 
-		if len(rows) == 0 {
+		if len(page.Rows) == 0 {
 			fmt.Println("No registration keys.")
 			return nil
 		}
 
 		fmt.Printf("%-32s %-20s %-24s %-24s\n", "ID", "CREATED_BY", "CREATED", "EXPIRES")
-		for _, r := range rows {
+		for _, r := range page.Rows {
 			fmt.Printf("%-32s %-20s %-24s %-24s\n",
-				r.ID, r.CreatorUsername, timefmt.Format(r.CreatedAt), timefmt.Format(r.ExpiresAt))
+				r.ID, ownerLabel(r.CreatorUsername, r.CreatorDeleted), timefmt.Format(r.CreatedAt), timefmt.Format(r.ExpiresAt))
 		}
 
-		maybePrintNextCursor(rows, *limit, func(r store.WorkerRegistrationKeyWithCreator) time.Time { return r.CreatedAt })
+		maybePrintNextCursor(page)
 		return nil
 	})
 }

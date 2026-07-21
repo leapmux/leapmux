@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -174,10 +175,10 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
 		_ = SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
 
-		rows, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{Limit: 50})
+		page, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{PageParams: store.PageParams{Limit: 50}})
 		require.NoError(t, err)
 
-		ownerRows := filterRowsByCreator(rows, owner.ID)
+		ownerRows := filterRowsByCreator(page.Rows, owner.ID)
 		require.Len(t, ownerRows, 1)
 		assert.Equal(t, live, ownerRows[0].ID)
 		assert.Equal(t, owner.Username, ownerRows[0].CreatorUsername)
@@ -190,13 +191,13 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
 		dead := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
 
-		rows, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-			Limit:          50,
+		page, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
+			PageParams:     store.PageParams{Limit: 50},
 			IncludeExpired: true,
 		})
 		require.NoError(t, err)
 
-		ownerRows := filterRowsByCreator(rows, owner.ID)
+		ownerRows := filterRowsByCreator(page.Rows, owner.ID)
 		ids := make([]string, 0, len(ownerRows))
 		for _, r := range ownerRows {
 			ids = append(ids, r.ID)
@@ -220,24 +221,77 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		idNew := SeedRegistrationKey(t, st, owner.ID, expires)
 
-		full, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{Limit: 100})
+		full, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{PageParams: store.PageParams{Limit: 100}})
 		require.NoError(t, err)
 
-		ownerRows := filterRowsByCreator(full, owner.ID)
+		ownerRows := filterRowsByCreator(full.Rows, owner.ID)
 		require.Len(t, ownerRows, 3, "all three seeded keys should be visible without a cursor")
 		assert.Equal(t, []string{idNew, idMid, idOld}, []string{ownerRows[0].ID, ownerRows[1].ID, ownerRows[2].ID},
 			"DESC order should put newest-created first")
 
-		cursor := ownerRows[1].CreatedAt.UTC().Format(time.RFC3339Nano)
+		cursor := store.EncodeCursor(ownerRows[1].CreatedAt, ownerRows[1].ID)
 		next, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-			Cursor: cursor,
-			Limit:  100,
+			PageParams: store.PageParams{Cursor: cursor, Limit: 100},
 		})
 		require.NoError(t, err)
 
-		afterCursor := filterRowsByCreator(next, owner.ID)
+		afterCursor := filterRowsByCreator(next.Rows, owner.ID)
 		require.Len(t, afterCursor, 1)
 		assert.Equal(t, idOld, afterCursor[0].ID, "second page should contain only the oldest key")
+	})
+
+	t.Run("list admin cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "regkey-tie-org")
+		owner := SeedUser(t, st, orgID, "regkey-tie-user")
+		expires := time.Now().Add(5 * time.Minute).UTC()
+
+		// Three keys: two share an identical created_at millisecond and the
+		// third is strictly older. The store is fresh, so every row belongs to
+		// this owner and limit=1 pages walk exactly the seeded set.
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedRegistrationKey(t, st, owner.ID, expires)
+		tiedA := SeedRegistrationKey(t, st, owner.ID, expires)
+		tiedB := SeedRegistrationKey(t, st, owner.ID, expires)
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrationKeys, older, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrationKeys, tiedA, tie))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrationKeys, tiedB, tie))
+
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
+			return st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
+				PageParams: store.PageParams{Cursor: cursor, Limit: 1},
+			})
+		})
+		assert.ElementsMatch(t, []string{older, tiedA, tiedB}, seen,
+			"same-millisecond registration keys must not be skipped across page boundaries")
+	})
+
+	t.Run("list admin clamps out-of-range limits", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "regkey-clamp-org")
+		owner := SeedUser(t, st, orgID, "regkey-clamp-user")
+		expires := time.Now().Add(5 * time.Minute).UTC()
+		keyA := SeedRegistrationKey(t, st, owner.ID, expires)
+		keyB := SeedRegistrationKey(t, st, owner.ID, expires)
+
+		// A negative limit clamps to 0 ("no rows") on every dialect, instead
+		// of SQLite's LIMIT -1 semantics (unlimited -- the full-table dump) or
+		// a Postgres/MySQL negative-LIMIT error. A zero-limit page is terminal:
+		// it must not claim a further page it can never advance past.
+		page, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{PageParams: store.PageParams{Limit: -1}})
+		require.NoError(t, err)
+		assert.Empty(t, page.Rows)
+		assert.False(t, page.HasMore())
+
+		// A limit past int32 range clamps to MaxInt32 instead of truncating on
+		// the int32 cast (2^32+1 would silently become LIMIT 1). Both rows fit,
+		// so the page is terminal: no HasMore and no dangling cursor.
+		page, err = st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{PageParams: store.PageParams{Limit: int64(math.MaxInt32) + 2}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 2)
+		assert.ElementsMatch(t, []string{keyA, keyB}, []string{page.Rows[0].ID, page.Rows[1].ID})
+		assert.False(t, page.HasMore())
+		assert.Empty(t, page.NextCursor)
 	})
 }
 

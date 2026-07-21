@@ -1,7 +1,26 @@
 -- +goose Up
 
--- Use binary collation for case-sensitive string comparison.
--- Username and email case-insensitivity is handled at the application layer.
+-- Binary collation is declared per-table (COLLATE=utf8mb4_bin) so every string
+-- column -- ids and FK columns alike -- collates byte-wise (case-sensitive),
+-- keeping cross-table FK collations consistent. SET NAMES alone cannot do this:
+-- it sets the *session* collation, not the column collation the tables inherit.
+-- Every CREATE TABLE here and in future migrations MUST carry
+-- COLLATE=utf8mb4_bin: a table without it silently inherits the server or
+-- database default (typically case-INsensitive), breaking the byte-wise id
+-- tiebreak ordering and FK collation consistency. This convention is
+-- enforced only by this comment today; a schema test that fails any
+-- CREATE TABLE lacking the suffix is tracked in
+-- https://github.com/leapmux/leapmux/issues/300. The database-level default
+-- is intentionally left to the operator (the app connects to a pre-created
+-- database and owns only its tables).
+-- Username/email/display-name case-insensitivity is handled at the application
+-- layer (NormalizeUsername/NormalizeEmail lowercases on write and lookup).
+--
+-- TEXT/BLOB columns intentionally carry NO DEFAULT, unlike their sqlite/
+-- postgres twins: MySQL only allows the expression form -- DEFAULT ('') --
+-- on TEXT/BLOB, and TiDB (which runs this same migration) rejects that
+-- form outright. Every INSERT must therefore supply these columns
+-- explicitly.
 SET NAMES utf8mb4 COLLATE utf8mb4_bin;
 
 -- Personal organizations: exactly one per user, created with the account,
@@ -13,10 +32,9 @@ CREATE TABLE orgs (
     deleted_at  DATETIME(3),
     -- Generated column for partial unique index emulation
     active_name VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED
-);
+) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_orgs_active_name ON orgs(active_name);
 CREATE INDEX idx_orgs_deleted_at ON orgs(deleted_at);
-CREATE INDEX idx_orgs_created_at ON orgs(created_at DESC);
 
 -- Users
 CREATE TABLE users (
@@ -60,19 +78,21 @@ CREATE TABLE users (
     active_username VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN username ELSE NULL END) STORED,
     active_email    VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND email != '' THEN email ELSE NULL END) STORED,
     FOREIGN KEY (org_id) REFERENCES orgs(id)
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_active_username ON users(active_username);
 CREATE UNIQUE INDEX idx_users_active_email ON users(active_email);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at);
-CREATE INDEX idx_users_tokens_revoked_at ON users(tokens_revoked_at);
-CREATE INDEX idx_users_created_at ON users(created_at DESC);
+CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC);
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at);
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
--- MySQL has no partial indexes; the composite covers the filter and sort.
-CREATE INDEX idx_users_is_admin ON users(is_admin, created_at);
+-- MySQL has no partial indexes; the composite indexes deleted_at as a key
+-- part (IS NULL is a ref-able key part in MySQL), so the ORDER BY created_at
+-- + LIMIT 1 lands on the first live admin directly instead of walking past
+-- soft-deleted admins as a residual filter.
+CREATE INDEX idx_users_is_admin ON users(is_admin, deleted_at, created_at);
 
 -- Auth sessions
 CREATE TABLE user_sessions (
@@ -85,9 +105,18 @@ CREATE TABLE user_sessions (
     user_agent      TEXT NOT NULL,
     ip_address      VARCHAR(255) NOT NULL DEFAULT '',
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+) COLLATE=utf8mb4_bin;
+-- Serves the plain user_id lookups (prefix) AND the per-user keyset listing
+-- ListUserSessionsByUserID (user_id =, ORDER BY last_active_at DESC, id DESC),
+-- so that query both seeks and rides the index instead of sorting.
+CREATE INDEX idx_user_sessions_user_last_active ON user_sessions(user_id, last_active_at DESC, id DESC);
 CREATE INDEX idx_user_sessions_expires_at_last_active ON user_sessions(expires_at, last_active_at);
+-- The active-session listing orders by (last_active_at DESC, id DESC) while
+-- filtering expires_at with a range predicate. A range on the leading
+-- expires_at column means the index above can never provide that order (the
+-- engine would top-N sort every page), so the ORDER BY gets its own index and
+-- the expiry check runs as a residual filter during the ordered scan.
+CREATE INDEX idx_user_sessions_last_active ON user_sessions(last_active_at DESC, id DESC);
 
 -- Registered workers
 CREATE TABLE workers (
@@ -106,17 +135,24 @@ CREATE TABLE workers (
     -- accidentally tear down the bundled desktop worker -- it would just
     -- re-register on next launch and the running process would noisily
     -- exit with "invalid auth token" in between.
-    auto_registered TINYINT(1) NOT NULL DEFAULT 0,
+    auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
     deleted_at    DATETIME(3),
     FOREIGN KEY (registered_by) REFERENCES users(id)
-);
-CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC);
+) COLLATE=utf8mb4_bin;
+CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC, id DESC);
 -- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
 -- (registered_by, status, created_at) index because registered_by is the
 -- leading column.
-CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC);
+CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC, id DESC);
+-- Admin per-user listing (ListWorkersAdminByUser: registered_by=?, deleted_at IS
+-- NULL, no status filter). The (registered_by, status, created_at, id) composite
+-- above can't serve this query's ORDER BY because status sits between the
+-- registered_by equality and the created_at sort key. MySQL has no partial
+-- indexes, so deleted_at IS NULL is a residual filter rather than an index
+-- predicate (mirrors idx_workers_created_at below).
+CREATE INDEX idx_workers_registered_by_created ON workers(registered_by, created_at DESC, id DESC);
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at);
-CREATE INDEX idx_workers_created_at ON workers(created_at DESC);
+CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC);
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
@@ -130,7 +166,7 @@ CREATE TABLE worker_notifications (
     created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     delivered_at DATETIME(3),
     FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(worker_id, status);
 
 -- Active worker registration keys.
@@ -149,26 +185,10 @@ CREATE TABLE worker_registration_keys (
     created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at  DATETIME(3) NOT NULL,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys(expires_at);
 CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
-CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at);
-
--- Workspaces (hub-owned registry)
-CREATE TABLE workspaces (
-    id            VARCHAR(255) PRIMARY KEY,
-    org_id        VARCHAR(255) NOT NULL,
-    owner_user_id VARCHAR(255) NOT NULL,
-    title         TEXT NOT NULL,
-    is_deleted    BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    deleted_at    DATETIME(3),
-    FOREIGN KEY (org_id) REFERENCES orgs(id),
-    FOREIGN KEY (owner_user_id) REFERENCES users(id)
-);
-CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id);
-CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
-CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at);
+CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at DESC, id DESC);
 
 -- Sidebar sections (per-user organization of sidebar panels)
 CREATE TABLE workspace_sections (
@@ -180,8 +200,24 @@ CREATE TABLE workspace_sections (
     sidebar      INT NOT NULL DEFAULT 1,
     created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
+
+-- Workspaces (hub-owned registry) -- must come before workspace_section_items
+CREATE TABLE workspaces (
+    id            VARCHAR(255) PRIMARY KEY,
+    org_id        VARCHAR(255) NOT NULL,
+    owner_user_id VARCHAR(255) NOT NULL,
+    title         TEXT NOT NULL,
+    is_deleted    BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    deleted_at    DATETIME(3),
+    FOREIGN KEY (org_id) REFERENCES orgs(id),
+    FOREIGN KEY (owner_user_id) REFERENCES users(id)
+) COLLATE=utf8mb4_bin;
+CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id);
+CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
+CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at);
 
 -- Workspace-to-section assignments (per-user)
 CREATE TABLE workspace_section_items (
@@ -193,7 +229,7 @@ CREATE TABLE workspace_section_items (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
     FOREIGN KEY (section_id) REFERENCES workspace_sections(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
 -- See sqlite migration for full rationale on the CRDT schema.
@@ -212,7 +248,7 @@ CREATE TABLE org_op_batches (
     committed_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (org_id, physical_ms, logical, origin_client),
     FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_org_op_batches_dedup ON org_op_batches(org_id, batch_id);
 
 CREATE TABLE org_state (
@@ -223,7 +259,7 @@ CREATE TABLE org_state (
     updated_at       DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (org_id),
     FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 
 CREATE TABLE workspace_tab_owned (
     org_id       VARCHAR(255) NOT NULL,
@@ -235,7 +271,7 @@ CREATE TABLE workspace_tab_owned (
     position     TEXT NOT NULL,
     PRIMARY KEY (org_id, tab_id),
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(worker_id);
 CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
 
@@ -249,7 +285,7 @@ CREATE TABLE workspace_tab_rendered (
     position     TEXT NOT NULL,
     PRIMARY KEY (org_id, tab_id),
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
 -- LocateAccessibleRenderedTab filters on tab_id alone; the PK has tab_id
 -- as the trailing column so it is not seekable.
@@ -268,7 +304,7 @@ CREATE TABLE org_recent_batch_ids (
     expires_at            DATETIME(6) NOT NULL,
     PRIMARY KEY (org_id, batch_id),
     FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_org_recent_batch_ids_expires ON org_recent_batch_ids(expires_at);
 
 CREATE TABLE lifecycle_outbox (
@@ -279,7 +315,7 @@ CREATE TABLE lifecycle_outbox (
     enqueued_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     consumed_at DATETIME(6),
     FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id);
 
 CREATE TABLE revocation_events (
@@ -292,15 +328,15 @@ CREATE TABLE revocation_events (
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     seq BIGINT UNIQUE CHECK (seq IS NULL OR seq > 0),
     published_at DATETIME(6),
-    CHECK ((seq IS NULL AND published_at IS NULL) OR (seq IS NOT NULL AND published_at IS NOT NULL))
-);
+    CHECK ((seq IS NULL) = (published_at IS NULL))
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_revocation_events_pending ON revocation_events(seq, created_at, id);
 CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq);
 
 CREATE TABLE revocation_event_sequence (
     id       INT PRIMARY KEY CHECK (id = 1),
     last_seq BIGINT NOT NULL CHECK (last_seq >= 0)
-);
+) COLLATE=utf8mb4_bin;
 INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0);
 
 CREATE TABLE hub_runtime_lease (
@@ -308,7 +344,7 @@ CREATE TABLE hub_runtime_lease (
     holder_id        VARCHAR(64) NOT NULL CHECK (holder_id <> ''),
     cursor_seq       BIGINT NOT NULL CHECK (cursor_seq >= 0),
     lease_expires_at DATETIME(6) NOT NULL
-);
+) COLLATE=utf8mb4_bin;
 
 -- See sqlite migration for full rationale on api_tokens.
 CREATE TABLE api_tokens (
@@ -329,10 +365,19 @@ CREATE TABLE api_tokens (
     refresh_expires_at            DATETIME(3),
     revoked_at                    DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_api_tokens_user ON api_tokens(user_id, client_type);
-CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at);
+-- Keyset index for the admin ListAllAPITokens listing. MySQL has no partial
+-- indexes, so revoked_at IS NULL stays a residual filter; the (created_at DESC,
+-- id DESC) shape still lets the composite ORDER BY ride the index.
+CREATE INDEX idx_api_tokens_created_at ON api_tokens(created_at DESC, id DESC);
+-- Keyset index for the admin ListAllAPITokensByUser listing (the --user-id
+-- path): the leading user_id equality seeks, and (created_at DESC, id DESC)
+-- rides the composite ORDER BY. Plain (no partial indexes in MySQL);
+-- revoked_at IS NULL stays a residual filter. Mirrors
+-- idx_workers_registered_by_created. Its leftmost user_id prefix also
+-- enforces the user_id FK (no separate user_id index).
+CREATE INDEX idx_api_tokens_user_created ON api_tokens(user_id, created_at DESC, id DESC);
 
 CREATE TABLE delegation_tokens (
     id                            VARCHAR(255) PRIMARY KEY,
@@ -354,25 +399,35 @@ CREATE TABLE delegation_tokens (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
 CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at);
+-- Keyset index for the admin ListAllDelegationTokens listing (see
+-- idx_api_tokens_created_at for the rationale).
+CREATE INDEX idx_delegation_tokens_created_at ON delegation_tokens(created_at DESC, id DESC);
+-- Per-user keyset twin (see idx_api_tokens_user_created). Its leftmost
+-- user_id prefix also enforces the user_id FK (no separate user_id index).
+CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, created_at DESC, id DESC);
+-- Serves the hourly DeleteExpiredDelegationTokensBefore sweep of this
+-- high-churn table: seek the expired live rows instead of scanning every
+-- live token. Plain (no partial indexes in MySQL); revoked_at IS NULL is a
+-- residual filter.
+CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at);
 
 CREATE TABLE device_authorizations (
     device_code           VARCHAR(255) PRIMARY KEY,
     user_code             VARCHAR(64) NOT NULL UNIQUE,
     device_name           VARCHAR(255) NOT NULL DEFAULT '',
     user_id               VARCHAR(255),
-    approved              INT NOT NULL DEFAULT 0,
+    approved              INT NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
     last_polled_at        DATETIME(3),
     interval_seconds      INT NOT NULL DEFAULT 5,
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
 CREATE TABLE cli_authorization_codes (
@@ -384,7 +439,7 @@ CREATE TABLE cli_authorization_codes (
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
@@ -399,7 +454,7 @@ CREATE TABLE oauth_providers (
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
-);
+) COLLATE=utf8mb4_bin;
 
 -- Links between local users and OAuth provider identities
 CREATE TABLE oauth_user_links (
@@ -410,7 +465,7 @@ CREATE TABLE oauth_user_links (
     PRIMARY KEY (user_id, provider_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_oauth_user_links_provider_subject ON oauth_user_links(provider_id, provider_subject);
 
 -- Encrypted OAuth tokens per user per provider
@@ -426,7 +481,7 @@ CREATE TABLE oauth_tokens (
     PRIMARY KEY (user_id, provider_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id) ON DELETE CASCADE
-);
+) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_oauth_tokens_provider_id ON oauth_tokens(provider_id);
 CREATE INDEX idx_oauth_tokens_expires_at ON oauth_tokens(expires_at);
 CREATE INDEX idx_oauth_tokens_key_version ON oauth_tokens(key_version);
@@ -440,7 +495,7 @@ CREATE TABLE oauth_states (
     expires_at      DATETIME(3) NOT NULL,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
-);
+) COLLATE=utf8mb4_bin;
 
 -- Pending OAuth signups (new users choosing their username)
 CREATE TABLE pending_oauth_signups (
@@ -458,7 +513,7 @@ CREATE TABLE pending_oauth_signups (
     expires_at       DATETIME(3) NOT NULL,
     created_at       DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
-);
+) COLLATE=utf8mb4_bin;
 
 -- +goose Down
 DROP TABLE IF EXISTS cli_authorization_codes;

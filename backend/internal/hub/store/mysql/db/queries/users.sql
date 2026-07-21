@@ -47,8 +47,8 @@ SELECT EXISTS(
 
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
-  AND (? IS NULL OR created_at < ?)
-ORDER BY created_at DESC LIMIT ?;
+  AND (sqlc.narg(cursor_time) IS NULL OR created_at < sqlc.narg(cursor_time) OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC LIMIT ?;
 
 -- The query arg is pre-folded (store.FoldSearchText) by the Go glue, and username
 -- and email are already stored lowercased, so a plain LIKE against the pre-folded
@@ -57,12 +57,16 @@ ORDER BY created_at DESC LIMIT ?;
 -- name: SearchUsers :many
 SELECT * FROM users
 WHERE deleted_at IS NULL
+-- The query arg arrives as a complete LIKE prefix pattern built by
+-- store.SearchLikePattern (folded + backslash-escaped + trailing '%');
+-- backslash is MySQL's default LIKE escape character, so the escaped
+-- metacharacters match literally without an ESCAPE clause.
   AND (sqlc.narg(query) IS NULL
-   OR username LIKE CONCAT(sqlc.narg(query), '%')
-   OR display_name_folded LIKE CONCAT(sqlc.narg(query), '%')
-   OR email LIKE CONCAT(sqlc.narg(query), '%'))
-  AND (? IS NULL OR created_at < ?)
-ORDER BY created_at DESC
+   OR username LIKE sqlc.narg(query)
+   OR display_name_folded LIKE sqlc.narg(query)
+   OR email LIKE sqlc.narg(query))
+  AND (sqlc.narg(cursor_time) IS NULL OR created_at < sqlc.narg(cursor_time) OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC
 LIMIT ?;
 
 -- name: UpdateUserPassword :exec

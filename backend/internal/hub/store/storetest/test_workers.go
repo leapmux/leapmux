@@ -106,11 +106,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// ListByUserID is scoped strictly to registered_by: a user sees their own
 		// workers and nothing else, even for co-members of the same org.
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: other.ID,
-			Limit:        10,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
+		workers := page.Rows
 		require.Len(t, workers, 1)
 		assert.Equal(t, ownWorker.ID, workers[0].ID)
 
@@ -131,12 +132,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().MarkDeleted(ctx, dead.ID)
 		require.NoError(t, err)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Limit: 10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, alive.ID, workers[0].ID)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, alive.ID, page.Rows[0].ID)
 	})
 
 	t.Run("list admin filter by user id", func(t *testing.T) {
@@ -147,13 +148,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 		w1 := SeedWorker(t, st, user1.ID)
 		SeedWorker(t, st, user2.ID)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			UserID: &user1.ID,
-			Limit:  10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			UserID:     &user1.ID,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, w1.ID, workers[0].ID)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, w1.ID, page.Rows[0].ID)
 	})
 
 	t.Run("get by auth token excluded after mark deleted", func(t *testing.T) {
@@ -176,12 +177,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 		SeedWorker(t, st, user.ID)
 		SeedWorker(t, st, user.ID)
 
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: user.ID,
-			Limit:        10,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, workers, 2)
+		assert.Len(t, page.Rows, 2)
 	})
 
 	t.Run("list admin", func(t *testing.T) {
@@ -190,12 +191,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 		user := SeedUser(t, st, orgID, "admin-list-user")
 		SeedWorker(t, st, user.ID)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Limit: 10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, "admin-list-user", workers[0].OwnerUsername)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, "admin-list-user", page.Rows[0].OwnerUsername)
 	})
 
 	t.Run("list admin filter by status", func(t *testing.T) {
@@ -210,20 +211,50 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Status: ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE),
-			Limit:  10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE),
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, workers, 1)
+		assert.Len(t, page.Rows, 1)
 
-		workers, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Status: ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING),
-			Limit:  10,
+		page, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING),
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, workers)
-		assert.Empty(t, workers)
+		require.NotNil(t, page.Rows)
+		assert.Empty(t, page.Rows)
+	})
+
+	t.Run("list admin status=deleted surfaces soft-deleted workers", func(t *testing.T) {
+		// Pins the deleted_at-split that the two-query ListAdmin collapse relies
+		// on: the status=nil half filters `deleted_at IS NULL` (hides deleted); the
+		// status-set half drops deleted_at entirely so WORKER_STATUS_DELETED can
+		// surface soft-deleted rows. A regression that applied deleted_at IS NULL
+		// to the status=DELETED case would silently return zero rows here while
+		// every other status-filter test still passed.
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "worker-org")
+		user := SeedUser(t, st, orgID, "deleted-status-user")
+		alive := SeedWorker(t, st, user.ID)
+		dead := SeedWorker(t, st, user.ID)
+		require.NoError(t, st.Workers().MarkDeleted(ctx, dead.ID))
+
+		// No status filter: deleted workers are hidden (the status=nil half).
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, alive.ID, page.Rows[0].ID)
+
+		// status=DELETED: the status-set half surfaces the soft-deleted row.
+		page, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED),
+			PageParams: store.PageParams{Limit: 10},
+		})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1, "status=DELETED must surface soft-deleted workers (no deleted_at filter)")
+		assert.Equal(t, dead.ID, page.Rows[0].ID)
 	})
 
 	t.Run("set status", func(t *testing.T) {
@@ -345,12 +376,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().MarkAllDeletedByUser(ctx, user.ID)
 		require.NoError(t, err)
 
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: user.ID,
-			Limit:        10,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		for _, w := range workers {
+		for _, w := range page.Rows {
 			assert.NotNil(t, w.DeletedAt)
 		}
 	})
@@ -408,24 +439,24 @@ func (s *Suite) testWorkers(t *testing.T) {
 		orgID := SeedOrg(t, st, "worker-org")
 		user := SeedUser(t, st, orgID, "no-workers-user")
 
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: user.ID,
-			Limit:        10,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, workers)
-		assert.Empty(t, workers)
+		require.NotNil(t, page.Rows)
+		assert.Empty(t, page.Rows)
 	})
 
 	t.Run("list admin empty", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Limit: 10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, workers)
-		assert.Empty(t, workers)
+		require.NotNil(t, page.Rows)
+		assert.Empty(t, page.Rows)
 	})
 
 	t.Run("mark deleted excludes from list by user", func(t *testing.T) {
@@ -438,13 +469,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().MarkDeleted(ctx, dead.ID)
 		require.NoError(t, err)
 
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: user.ID,
-			Limit:        10,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, alive.ID, workers[0].ID)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, alive.ID, page.Rows[0].ID)
 	})
 
 	t.Run("mark all deleted by user empty", func(t *testing.T) {
@@ -540,21 +571,21 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 
 		// ListAdmin with status=DEREGISTERING should find it.
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Status: ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING),
-			Limit:  10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING),
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, workers, 1)
-		assert.Equal(t, w.ID, workers[0].ID)
+		assert.Len(t, page.Rows, 1)
+		assert.Equal(t, w.ID, page.Rows[0].ID)
 
 		// ListAdmin with no status filter should also include it.
-		workers, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Limit: 10,
+		page, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
 		found := false
-		for _, wo := range workers {
+		for _, wo := range page.Rows {
 			if wo.ID == w.ID {
 				found = true
 				break
@@ -578,12 +609,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 
 		// ListByUserID filters on status = 1, so only the active worker comes back.
-		workers, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID, Limit: 10,
+		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID,
+			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, workers, 1)
-		assert.Equal(t, active.ID, workers[0].ID)
+		assert.Len(t, page.Rows, 1)
+		assert.Equal(t, active.ID, page.Rows[0].ID)
 	})
 
 	t.Run("list admin filter by user and status", func(t *testing.T) {
@@ -603,14 +635,14 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		workers, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			UserID: &user.ID,
-			Status: ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE),
-			Limit:  10,
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			UserID:     &user.ID,
+			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE),
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, workers, 1)
-		assert.Equal(t, w1.ID, workers[0].ID)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, w1.ID, page.Rows[0].ID)
 	})
 
 	t.Run("set status on deleted worker is no-op", func(t *testing.T) {
@@ -668,10 +700,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 		}
 
 		// First page: newest first (ORDER BY created_at DESC).
-		page1, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID, Limit: 3,
+		res1, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID,
+			PageParams:   store.PageParams{Limit: 3},
 		})
 		require.NoError(t, err)
+		assert.True(t, res1.HasMore())
+		page1 := res1.Rows
 		require.Len(t, page1, 3)
 		for i := 1; i < len(page1); i++ {
 			assert.False(t, page1[i].CreatedAt.After(page1[i-1].CreatedAt),
@@ -680,11 +715,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// Second page using the cursor from the last item of page 1. The cursor
 		// is exclusive (created_at < cursor), so the remaining 2 come back.
-		cursor := page1[len(page1)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
-		page2, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID, Cursor: cursor, Limit: 3,
+		cursor := store.EncodeCursor(page1[len(page1)-1].CreatedAt, page1[len(page1)-1].ID)
+		res2, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+			RegisteredBy: user.ID,
+			PageParams:   store.PageParams{Cursor: cursor, Limit: 3},
 		})
 		require.NoError(t, err)
+		page2 := res2.Rows
 		assert.Len(t, page2, 2, "remaining 2 workers should be on page 2")
 
 		// No overlap between pages, and page 2 is strictly older than the cursor.
@@ -697,6 +734,34 @@ func (s *Suite) testWorkers(t *testing.T) {
 			assert.True(t, w.CreatedAt.Before(page1[len(page1)-1].CreatedAt),
 				"page 2 rows must be strictly older than the cursor")
 		}
+	})
+
+	t.Run("list by user id cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "worker-tie-org")
+		user := SeedUser(t, st, orgID, "tie-user")
+
+		// Three workers: two share an identical created_at millisecond and the
+		// third is strictly older. A single-column created_at cursor drops one of
+		// the tied rows when it lands on a page boundary; the composite
+		// (created_at, id) cursor must surface all three.
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedWorker(t, st, user.ID)
+		tiedA := SeedWorker(t, st, user.ID)
+		tiedB := SeedWorker(t, st, user.ID)
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, older.ID, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, tiedA.ID, tie))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, tiedB.ID, tie))
+
+		// Page through one row at a time; the union must cover all three with no dupes.
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.Worker], error) {
+			return st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+				RegisteredBy: user.ID,
+				PageParams:   store.PageParams{Cursor: cursor, Limit: 1},
+			})
+		})
+		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
+			"same-millisecond workers must not be skipped across page boundaries")
 	})
 
 	t.Run("update public key reflected in get by id", func(t *testing.T) {
@@ -789,17 +854,38 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// First page.
 		page1, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Limit: 2,
+			PageParams: store.PageParams{Limit: 2},
 		})
 		require.NoError(t, err)
-		assert.Len(t, page1, 2)
+		assert.Len(t, page1.Rows, 2)
+		assert.True(t, page1.HasMore())
 
 		// Second page using cursor.
-		cursor := page1[len(page1)-1].CreatedAt.Format(time.RFC3339Nano)
+		last := page1.Rows[len(page1.Rows)-1]
+		cursor := store.EncodeCursor(last.CreatedAt, last.ID)
 		page2, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Cursor: cursor, Limit: 2,
+			PageParams: store.PageParams{Cursor: cursor, Limit: 2},
 		})
 		require.NoError(t, err)
-		assert.Len(t, page2, 2)
+		assert.Len(t, page2.Rows, 2)
+	})
+
+	t.Run("list admin cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "worker-admin-tie-org")
+		user := SeedUser(t, st, orgID, "admin-tie-user")
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedWorker(t, st, user.ID)
+		tiedA := SeedWorker(t, st, user.ID)
+		tiedB := SeedWorker(t, st, user.ID)
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, older.ID, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, tiedA.ID, tie))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, tiedB.ID, tie))
+
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.WorkerWithOwner], error) {
+			return st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Cursor: cursor, Limit: 1}})
+		})
+		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
+			"same-millisecond admin-listed workers must not be skipped across page boundaries")
 	})
 }

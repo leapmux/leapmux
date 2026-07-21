@@ -61,7 +61,7 @@ func TestRun_Idempotent(t *testing.T) {
 	err = bootstrap.Run(ctx, st, true)
 	require.NoError(t, err)
 
-	users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 100})
+	page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 100}})
 	require.NoError(t, err)
-	assert.Len(t, users, 1)
+	assert.Len(t, page.Rows, 1)
 }

@@ -87,28 +87,26 @@ func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (
 	}))
 }
 
-func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) ([]store.WorkerRegistrationKeyWithCreator, error) {
-	// `now` is compared against expires_at (driver-serialized time.Time);
-	// `cursor` is compared against created_at (set via SQL DEFAULT strftime
-	// to ms precision), so the cursor must use parseCursorToSQLiteTime to
-	// match that format.
+func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
+	// `now` is bound as a time.Time and compared against expires_at through a
+	// strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.narg(now)) wrap in the SQL itself (see
+	// worker_registration_keys.sql ListRegistrationKeysAdmin), so the comparison
+	// is canonical-layout against canonical-layout -- expires_at is written
+	// canonical by every Create/Extend/SoftDelete/Consume/AdminSoftDelete path.
+	// The cursor timestamp is compared against created_at (set via SQL DEFAULT
+	// strftime to ms precision), so the cursor must be formatted via decodeCursorParams
+	// to match that format. The id half of the composite cursor is the
+	// deterministic tiebreaker for rows sharing a millisecond.
 	var nowArg any
 	if !p.IncludeExpired {
 		nowArg = time.Now().UTC()
 	}
-	cursorArg, err := parseCursorToSQLiteTime(p.Cursor)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListRegistrationKeysAdmin(ctx, gendb.ListRegistrationKeysAdminParams{
-		Now:    nowArg,
-		Cursor: cursorArg,
-		Limit:  p.Limit,
-	})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return store.MapSlice(rows, fromDBListRegistrationKeysAdminRow), nil
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListRegistrationKeysAdminParams, error) {
+			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, nowArg)
+		},
+		s.conn.q.ListRegistrationKeysAdmin,
+		fromDBListRegistrationKeysAdminRow)
 }
 
 func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {
@@ -120,5 +118,6 @@ func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) st
 			ExpiresAt: r.ExpiresAt,
 		},
 		CreatorUsername: r.CreatorUsername,
+		CreatorDeleted:  r.CreatorDeleted,
 	}
 }

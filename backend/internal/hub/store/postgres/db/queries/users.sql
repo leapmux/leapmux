@@ -47,8 +47,10 @@ SELECT EXISTS(
 
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
-  AND (sqlc.narg(cursor)::timestamptz IS NULL OR created_at < sqlc.narg(cursor))
-ORDER BY created_at DESC LIMIT sqlc.arg('limit');
+  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+       OR created_at < sqlc.narg(cursor_time)::timestamptz
+       OR (created_at = sqlc.narg(cursor_time)::timestamptz AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC LIMIT sqlc.arg('limit');
 
 -- The query arg is pre-folded (store.FoldSearchText) by the Go glue, and username
 -- and email are already stored lowercased, so a plain LIKE (not ILIKE) against the
@@ -57,12 +59,18 @@ ORDER BY created_at DESC LIMIT sqlc.arg('limit');
 -- name: SearchUsers :many
 SELECT * FROM users
 WHERE deleted_at IS NULL
+-- The query arg arrives as a complete LIKE prefix pattern built by
+-- store.SearchLikePattern (folded + backslash-escaped + trailing '%');
+-- backslash is Postgres's default LIKE escape character, so the escaped
+-- metacharacters match literally without an ESCAPE clause.
   AND (sqlc.narg(query)::text IS NULL
-   OR username LIKE sqlc.narg(query) || '%'
-   OR display_name_folded LIKE sqlc.narg(query) || '%'
-   OR email LIKE sqlc.narg(query) || '%')
-  AND (sqlc.narg(cursor)::timestamptz IS NULL OR created_at < sqlc.narg(cursor))
-ORDER BY created_at DESC
+   OR username LIKE sqlc.narg(query)
+   OR display_name_folded LIKE sqlc.narg(query)
+   OR email LIKE sqlc.narg(query))
+  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+       OR created_at < sqlc.narg(cursor_time)::timestamptz
+       OR (created_at = sqlc.narg(cursor_time)::timestamptz AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: UpdateUserPassword :exec

@@ -49,6 +49,10 @@ func (h *mysqlTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEnt
 	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, createdAt)
 }
 
+func (h *mysqlTestHelper) SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error {
+	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, id, lastActiveAt)
+}
+
 func (h *mysqlTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
 	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
 }

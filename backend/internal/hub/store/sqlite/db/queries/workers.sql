@@ -14,8 +14,10 @@ SELECT * FROM workers WHERE auth_token = ? AND status != 3;
 -- name: ListWorkersByUserID :many
 SELECT * FROM workers
 WHERE registered_by = sqlc.arg(registered_by) AND status = 1
-  AND (sqlc.narg(cursor) IS NULL OR created_at < sqlc.narg(cursor))
-ORDER BY created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR created_at < sqlc.narg(cursor_time)
+       OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: GetOwnedWorker :one
@@ -48,41 +50,78 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ? AND deleted_at IS NULL;
 
--- name: ListWorkersAdminAll :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+-- The admin worker listing is a 2x2 matrix over (status nil/set) x (user_id
+-- nil/set), implemented as FOUR separate queries. Two reasons it cannot collapse
+-- to two queries with an opt-in `(narg(user_id) IS NULL OR registered_by =
+-- narg(user_id))` probe:
+--   1. SQLite's OR-optimization falls back to a full partial-index scan +
+--      TEMP B-TREE sort for the user_id-set cases (verified via EXPLAIN),
+--      defeating both the seek and the ORDER-BY-rides-index invariant.
+--   2. sqlc emits the IS-NULL-probed narg as an untyped interface{}; on Postgres
+--      binding NULL raises SQLSTATE 42P08 "could not determine data type of
+--      parameter" and breaks the listing entirely (YugabyteDB inherits the
+--      break via the postgres store). Splitting user_id into its own
+--      REQUIRED-equality query (sqlc.arg, not narg) yields a typed param and
+--      restores the index seek.
+-- The status dimension stays split for partial-index eligibility: status=nil
+-- keeps `deleted_at IS NULL` (partial-index-eligible); status=set drops it so
+-- status=3 (WORKER_STATUS_DELETED) can surface soft-deleted rows. See the
+-- migration for the per-query index rationale.
+
+-- ListWorkersAdmin: status=nil, user_id=nil (all live workers).
+-- name: ListWorkersAdmin :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.deleted_at IS NULL
-  AND (sqlc.narg(cursor) IS NULL OR w.created_at < sqlc.narg(cursor))
-ORDER BY w.created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT sqlc.arg(limit);
 
+-- ListWorkersAdminByUser: status=nil, user_id=set.
+-- name: ListWorkersAdminByUser :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.deleted_at IS NULL
+  AND w.registered_by = sqlc.arg(user_id)
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
+LIMIT sqlc.arg(limit);
+
+-- ListWorkersAdminByStatus: status=set, user_id=nil (all workers in a status).
 -- name: ListWorkersAdminByStatus :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.status = sqlc.arg(status)
-  AND (sqlc.narg(cursor) IS NULL OR w.created_at < sqlc.narg(cursor))
-ORDER BY w.created_at DESC
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT sqlc.arg(limit);
 
--- name: ListWorkersAdminByUser :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
-FROM workers w
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.registered_by = sqlc.arg(user_id) AND w.deleted_at IS NULL
-  AND (sqlc.narg(cursor) IS NULL OR w.created_at < sqlc.narg(cursor))
-ORDER BY w.created_at DESC
-LIMIT sqlc.arg(limit);
-
+-- ListWorkersAdminByUserAndStatus: status=set, user_id=set.
 -- name: ListWorkersAdminByUserAndStatus :many
-SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.registered_by = sqlc.arg(user_id) AND w.status = sqlc.arg(status)
-  AND (sqlc.narg(cursor) IS NULL OR w.created_at < sqlc.narg(cursor))
-ORDER BY w.created_at DESC
+WHERE w.status = sqlc.arg(status)
+  AND w.registered_by = sqlc.arg(user_id)
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR w.created_at < sqlc.narg(cursor_time)
+       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+ORDER BY w.created_at DESC, w.id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: HardDeleteWorkersBefore :execresult
-DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);
+-- Raw compare: deleted_at (strftime-written) against the canonical cutoff string
+-- (CAST AS TEXT so sqlc emits a string param the Go layer fills with
+-- formatSQLiteTime(cutoff), not a time.Time the driver would serialize in its
+-- own layout). Sargable for idx_workers_deleted_at (SEARCH deleted_at<?, not a
+-- SCAN-with-residual under datetime()).
+DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT) LIMIT 1000);

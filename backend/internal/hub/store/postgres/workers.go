@@ -64,63 +64,53 @@ func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams
 	return store.GetOwnedWorker(ctx, p, s.GetByID)
 }
 
-func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) ([]store.Worker, error) {
-	params, err := listWorkersByUserIDParams(p.RegisteredBy, p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListWorkersByUserID(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBWorkers(rows), nil
+func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) (store.Page[store.Worker], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListWorkersByUserIDParams, error) {
+			return listWorkersByUserIDParams(p.RegisteredBy, p.Cursor, p.Limit)
+		},
+		s.conn.q.ListWorkersByUserID,
+		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
 }
 
-func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) ([]store.WorkerWithOwner, error) {
+func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {
+	// The admin worker listing is a 2x2 matrix over (status nil/set) x (user_id
+	// nil/set), dispatched to four generated queries. The user_id dimension is a
+	// required-equality query rather than an opt-in `(narg IS NULL OR registered_by
+	// = narg)` probe: that probe made sqlc emit UserID as an untyped interface{},
+	// and binding NULL raised SQLSTATE 42P08 "could not determine data type of
+	// parameter" (YugabyteDB inherits the break via this store). Splitting
+	// user_id into its own query yields a typed `string` param and restores the
+	// index seek. See workers.sql for the per-query index rationale.
 	switch {
-	case p.UserID == nil && p.Status == nil:
-		params, err := listWorkersAdminAllParams(p.Cursor, p.Limit)
-		if err != nil {
-			return nil, err
-		}
-		rows, err := s.conn.q.ListWorkersAdminAll(ctx, params)
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		return store.MapSlice(rows, fromDBListWorkersAdminAllRow), nil
-
-	case p.UserID == nil && p.Status != nil:
-		params, err := listWorkersAdminByStatusParams(*p.Status, p.Cursor, p.Limit)
-		if err != nil {
-			return nil, err
-		}
-		rows, err := s.conn.q.ListWorkersAdminByStatus(ctx, params)
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		return store.MapSlice(rows, fromDBListWorkersAdminByStatusRow), nil
-
-	case p.UserID != nil && p.Status == nil:
-		params, err := listWorkersAdminByUserParams(*p.UserID, p.Cursor, p.Limit)
-		if err != nil {
-			return nil, err
-		}
-		rows, err := s.conn.q.ListWorkersAdminByUser(ctx, params)
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		return store.MapSlice(rows, fromDBListWorkersAdminByUserRow), nil
-
-	default: // both non-nil
-		params, err := listWorkersAdminByUserAndStatusParams(*p.UserID, *p.Status, p.Cursor, p.Limit)
-		if err != nil {
-			return nil, err
-		}
-		rows, err := s.conn.q.ListWorkersAdminByUserAndStatus(ctx, params)
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		return store.MapSlice(rows, fromDBListWorkersAdminByUserAndStatusRow), nil
+	case p.Status != nil && p.UserID != nil:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByUserAndStatusParams, error) {
+				return listWorkersAdminByUserAndStatusParams(*p.Status, *p.UserID, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersAdminByUserAndStatus,
+			fromDBListWorkersAdminByUserAndStatusRow)
+	case p.Status != nil:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByStatusParams, error) {
+				return listWorkersAdminByStatusParams(*p.Status, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersAdminByStatus,
+			fromDBListWorkersAdminByStatusRow)
+	case p.UserID != nil:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByUserParams, error) {
+				return listWorkersAdminByUserParams(*p.UserID, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersAdminByUser,
+			fromDBListWorkersAdminByUserRow)
+	default:
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminParams, error) {
+				return listWorkersAdminParams(p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersAdmin,
+			fromDBListWorkersAdminRow)
 	}
 }
 
@@ -179,82 +169,25 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 	}
 }
 
-func fromDBWorkers(rows []gendb.Worker) []store.Worker {
-	return store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+// workerWithOwner is the shared body of the four admin-worker Row mappers. The
+// queries select sqlc.embed(w) so every admin Row is {Worker, OwnerUsername};
+// this helper keeps the gendb.Worker -> store.Worker mapping in one site.
+func workerWithOwner(w gendb.Worker, ownerUsername string, ownerDeleted bool) store.WorkerWithOwner {
+	return store.WorkerWithOwner{Worker: *fromDBWorker(w), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
 }
 
-func fromDBListWorkersAdminAllRow(r gendb.ListWorkersAdminAllRow) store.WorkerWithOwner {
-	return store.WorkerWithOwner{
-		Worker: store.Worker{
-			ID:              r.ID,
-			AuthToken:       r.AuthToken,
-			RegisteredBy:    r.RegisteredBy,
-			Status:          r.Status,
-			CreatedAt:       tsToTime(r.CreatedAt),
-			LastSeenAt:      tsToTimePtr(r.LastSeenAt),
-			PublicKey:       r.PublicKey,
-			MlkemPublicKey:  r.MlkemPublicKey,
-			SlhdsaPublicKey: r.SlhdsaPublicKey,
-			AutoRegistered:  r.AutoRegistered,
-			DeletedAt:       tsToTimePtr(r.DeletedAt),
-		},
-		OwnerUsername: r.OwnerUsername,
-	}
-}
-
-func fromDBListWorkersAdminByStatusRow(r gendb.ListWorkersAdminByStatusRow) store.WorkerWithOwner {
-	return store.WorkerWithOwner{
-		Worker: store.Worker{
-			ID:              r.ID,
-			AuthToken:       r.AuthToken,
-			RegisteredBy:    r.RegisteredBy,
-			Status:          r.Status,
-			CreatedAt:       tsToTime(r.CreatedAt),
-			LastSeenAt:      tsToTimePtr(r.LastSeenAt),
-			PublicKey:       r.PublicKey,
-			MlkemPublicKey:  r.MlkemPublicKey,
-			SlhdsaPublicKey: r.SlhdsaPublicKey,
-			AutoRegistered:  r.AutoRegistered,
-			DeletedAt:       tsToTimePtr(r.DeletedAt),
-		},
-		OwnerUsername: r.OwnerUsername,
-	}
+func fromDBListWorkersAdminRow(r gendb.ListWorkersAdminRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
 }
 
 func fromDBListWorkersAdminByUserRow(r gendb.ListWorkersAdminByUserRow) store.WorkerWithOwner {
-	return store.WorkerWithOwner{
-		Worker: store.Worker{
-			ID:              r.ID,
-			AuthToken:       r.AuthToken,
-			RegisteredBy:    r.RegisteredBy,
-			Status:          r.Status,
-			CreatedAt:       tsToTime(r.CreatedAt),
-			LastSeenAt:      tsToTimePtr(r.LastSeenAt),
-			PublicKey:       r.PublicKey,
-			MlkemPublicKey:  r.MlkemPublicKey,
-			SlhdsaPublicKey: r.SlhdsaPublicKey,
-			AutoRegistered:  r.AutoRegistered,
-			DeletedAt:       tsToTimePtr(r.DeletedAt),
-		},
-		OwnerUsername: r.OwnerUsername,
-	}
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+}
+
+func fromDBListWorkersAdminByStatusRow(r gendb.ListWorkersAdminByStatusRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
 }
 
 func fromDBListWorkersAdminByUserAndStatusRow(r gendb.ListWorkersAdminByUserAndStatusRow) store.WorkerWithOwner {
-	return store.WorkerWithOwner{
-		Worker: store.Worker{
-			ID:              r.ID,
-			AuthToken:       r.AuthToken,
-			RegisteredBy:    r.RegisteredBy,
-			Status:          r.Status,
-			CreatedAt:       tsToTime(r.CreatedAt),
-			LastSeenAt:      tsToTimePtr(r.LastSeenAt),
-			PublicKey:       r.PublicKey,
-			MlkemPublicKey:  r.MlkemPublicKey,
-			SlhdsaPublicKey: r.SlhdsaPublicKey,
-			AutoRegistered:  r.AutoRegistered,
-			DeletedAt:       tsToTimePtr(r.DeletedAt),
-		},
-		OwnerUsername: r.OwnerUsername,
-	}
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
 }

@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -16,8 +17,20 @@ import (
 	sqlitelib "modernc.org/sqlite/lib"
 )
 
-// sqliteTimeFormat is the ISO 8601 format matching SQLite's
-// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') output.
+// sqliteTimeFormat is the ISO 8601 layout SQLite writes via
+// strftime('%Y-%m-%dT%H:%M:%fZ', ...): fixed 3-digit fractional seconds, the
+// same instant grid as this Go layout's ".000". Every SQL-side write path
+// (column DEFAULTs, the Create/Touch strftime wraps, SoftDelete's
+// strftime('now')) stores canonical 24-char values ON DISK, so the raw-string
+// keyset predicates and cleanup cutoff compares -- which run SQL-side against
+// the stored bytes -- are byte-exact against formatSQLiteTime-formatted
+// params, including at trailing-zero milliseconds (pinned by
+// TestKeysetCursorTrailingZeroMillisecondTie in sessions_internal_test.go).
+// CAUTION for tests and tooling: modernc TRIMS trailing fractional zeros when
+// a DATETIME column is scanned into a Go string (a stored ".130Z" arrives as
+// ".13Z") -- a driver presentation artifact only; production reads scan into
+// time.Time and are unaffected. Do not mistake a short scanned string for
+// on-disk variability.
 const sqliteTimeFormat = timefmt.ISO8601
 
 func formatSQLiteTime(t time.Time) string {
@@ -41,115 +54,186 @@ func mapErr(err error) error {
 	return err
 }
 
-// parseCursorToSQLiteTime converts an RFC3339Nano cursor string to the
-// ISO 8601 format that SQLite stores via strftime('%Y-%m-%dT%H:%M:%fZ', 'now').
-// Returns nil when cursor is empty (first page).
-func parseCursorToSQLiteTime(cursor string) (any, error) {
-	t, ok, err := store.ParseCursorTime(cursor)
+// decodeCursorParams decodes the composite list cursor into the two nullable sqlc
+// parameters SQLite's keyset queries bind: the cursor timestamp, formatted as
+// the ISO 8601 string SQLite stores via strftime('%Y-%m-%dT%H:%M:%fZ'), and the
+// id tiebreaker. An empty cursor (first page) returns the zero values so the
+// queries' "cursor_time IS NULL" branch selects every row.
+func decodeCursorParams(cursor string) (cursorTime any, cursorID sql.NullString, err error) {
+	c, err := store.ParseCursor(cursor)
 	if err != nil {
-		return nil, err
+		return nil, sql.NullString{}, err
 	}
-	if !ok {
-		return nil, nil
+	if c == nil {
+		return nil, sql.NullString{}, nil
 	}
-	return t.UTC().Format(sqliteTimeFormat), nil
+	return formatSQLiteTime(c.Time), sql.NullString{String: c.ID, Valid: true}, nil
+}
+
+// withCursor decodes the composite list cursor and applies the dialect's
+// fetch-limit clamp, then hands the decoded values to fill, which assembles
+// the dialect-specific sqlc params struct. Centralizing decodeCursorParams + the
+// error short-circuit + store.FetchLimit here means a change to the cursor
+// decode, the clamp rule, or the probe-row accounting edits ONE site per
+// dialect instead of being copy-pasted across every list builder -- the prior
+// shape let ListRegistrationKeysAdmin silently bypass ClampListLimit until this
+// commit's pagination rebuild caught it.
+func withCursor[T any](cursor string, limit int64, fill func(cursorTime any, cursorID sql.NullString, fetchLimit int64) T) (T, error) {
+	cursorTime, cursorID, err := decodeCursorParams(cursor)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return fill(cursorTime, cursorID, store.FetchLimit(limit)), nil
+}
+
+// queryPage forwards to store.QueryPage with this dialect's mapErr bound:
+// every listing in the package routes through it, so the shared
+// build -> query -> NewPage skeleton (and its error wrapping and probe-row
+// accounting) lives once in store instead of drifting per dialect.
+func queryPage[P any, R any, I store.PageCursorer](
+	ctx context.Context,
+	limit int64,
+	build func() (P, error),
+	query func(context.Context, P) ([]R, error),
+	mapRow func(R) I,
+) (store.Page[I], error) {
+	return store.QueryPage(ctx, limit, build, query, mapRow, mapErr)
 }
 
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListAllUsersParams{}, err
-	}
-	return gendb.ListAllUsersParams{
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllUsersParams {
+		return gendb.ListAllUsersParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
 func searchUsersParams(query *string, cursor string, limit int64) (gendb.SearchUsersParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.SearchUsersParams{}, err
-	}
-	return gendb.SearchUsersParams{
-		// Fold the search term the same way the write path folds display_name_folded,
-		// so the plain-LIKE match is case-insensitive (and cross-dialect consistent) for
-		// non-ASCII names. A nil query stays nil (SearchUsers reads it as "no filter").
-		Query:  ptrconv.PtrToNullString(store.FoldSearchQuery(query)),
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.SearchUsersParams {
+		// Build the complete LIKE prefix pattern (fold + metachar escape + trailing
+		// '%') at the one shared site, so the match is case-insensitive and literal
+		// cross-dialect. A nil query stays nil (SearchUsers reads it as "no filter").
+		return gendb.SearchUsersParams{
+			Query:      ptrconv.PtrToNullString(store.SearchLikePattern(query)),
+			CursorTime: ct,
+			CursorID:   cid,
+			Limit:      fl,
+		}
+	})
 }
 
 func listWorkersByUserIDParams(registeredBy, cursor string, limit int64) (gendb.ListWorkersByUserIDParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListWorkersByUserIDParams{}, err
-	}
-	return gendb.ListWorkersByUserIDParams{
-		RegisteredBy: registeredBy,
-		Cursor:       parsedCursor,
-		Limit:        store.ClampListLimit(limit),
-	}, nil
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListWorkersByUserIDParams {
+		return gendb.ListWorkersByUserIDParams{RegisteredBy: registeredBy, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
-func listWorkersAdminAllParams(cursor string, limit int64) (gendb.ListWorkersAdminAllParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListWorkersAdminAllParams{}, err
-	}
-	return gendb.ListWorkersAdminAllParams{
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+// listWorkersAdminParams builds the status=nil, user_id=nil query
+// (ListWorkersAdmin): deleted_at IS NULL, no user filter.
+func listWorkersAdminParams(cursor string, limit int64) (gendb.ListWorkersAdminParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListWorkersAdminParams {
+		return gendb.ListWorkersAdminParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
+// listWorkersAdminByUserParams builds the status=nil, user_id=set query
+// (ListWorkersAdminByUser): deleted_at IS NULL + required registered_by. The
+// user_id dimension is its own query rather than an opt-in `(narg IS NULL OR
+// registered_by = narg)` probe: that probe defeats SQLite's index seek for the
+// user_id-set case (EXPLAIN: full partial-index scan + sort) and emits an
+// untyped interface{} param that breaks Postgres (SQLSTATE 42P08). See
+// workers.sql for the full 2x2 matrix rationale.
+func listWorkersAdminByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminByUserParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListWorkersAdminByUserParams {
+		return gendb.ListWorkersAdminByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listWorkersAdminByStatusParams builds the status=set, user_id=nil query
+// (ListWorkersAdminByStatus): no deleted_at filter (status=3 surfaces
+// soft-deleted rows), no user filter.
 func listWorkersAdminByStatusParams(status leapmuxv1.WorkerStatus, cursor string, limit int64) (gendb.ListWorkersAdminByStatusParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListWorkersAdminByStatusParams{}, err
-	}
-	return gendb.ListWorkersAdminByStatusParams{
-		Status: status,
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListWorkersAdminByStatusParams {
+		return gendb.ListWorkersAdminByStatusParams{Status: status, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
-func listWorkersAdminByUserParams(userID, cursor string, limit int64) (gendb.ListWorkersAdminByUserParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListWorkersAdminByUserParams{}, err
-	}
-	return gendb.ListWorkersAdminByUserParams{
-		UserID: userID,
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
-}
-
-func listWorkersAdminByUserAndStatusParams(userID string, status leapmuxv1.WorkerStatus, cursor string, limit int64) (gendb.ListWorkersAdminByUserAndStatusParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListWorkersAdminByUserAndStatusParams{}, err
-	}
-	return gendb.ListWorkersAdminByUserAndStatusParams{
-		UserID: userID,
-		Status: status,
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+// listWorkersAdminByUserAndStatusParams builds the status=set, user_id=set
+// query (ListWorkersAdminByUserAndStatus): required registered_by + status,
+// riding the (registered_by, status, created_at, id) composite seek.
+func listWorkersAdminByUserAndStatusParams(status leapmuxv1.WorkerStatus, userID string, cursor string, limit int64) (gendb.ListWorkersAdminByUserAndStatusParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListWorkersAdminByUserAndStatusParams {
+		return gendb.ListWorkersAdminByUserAndStatusParams{Status: status, UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
 func listAllActiveSessionsParams(cursor string, limit int64) (gendb.ListAllActiveSessionsParams, error) {
-	parsedCursor, err := parseCursorToSQLiteTime(cursor)
-	if err != nil {
-		return gendb.ListAllActiveSessionsParams{}, err
-	}
-	return gendb.ListAllActiveSessionsParams{
-		Cursor: parsedCursor,
-		Limit:  store.ClampListLimit(limit),
-	}, nil
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllActiveSessionsParams {
+		return gendb.ListAllActiveSessionsParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listUserSessionsParams(userID, cursor string, limit int64) (gendb.ListUserSessionsByUserIDParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListUserSessionsByUserIDParams {
+		return gendb.ListUserSessionsByUserIDParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllAPITokensParams {
+		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAllAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllAPITokensByUserParams {
+		return gendb.ListAllAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllAPITokensIncludingRevokedParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensIncludingRevokedParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllAPITokensIncludingRevokedParams {
+		return gendb.ListAllAPITokensIncludingRevokedParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllAPITokensByUserIncludingRevokedParams(userID, clientType, cursor string, limit int64) (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllAPITokensByUserIncludingRevokedParams {
+		return gendb.ListAllAPITokensByUserIncludingRevokedParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllDelegationTokensParams(cursor string, limit int64) (gendb.ListAllDelegationTokensParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllDelegationTokensParams {
+		return gendb.ListAllDelegationTokensParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllDelegationTokensByUserParams(userID, cursor string, limit int64) (gendb.ListAllDelegationTokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllDelegationTokensByUserParams {
+		return gendb.ListAllDelegationTokensByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllDelegationTokensIncludingRevokedParams(cursor string, limit int64) (gendb.ListAllDelegationTokensIncludingRevokedParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllDelegationTokensIncludingRevokedParams {
+		return gendb.ListAllDelegationTokensIncludingRevokedParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAllDelegationTokensByUserIncludingRevokedParams(userID, cursor string, limit int64) (gendb.ListAllDelegationTokensByUserIncludingRevokedParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListAllDelegationTokensByUserIncludingRevokedParams {
+		return gendb.ListAllDelegationTokensByUserIncludingRevokedParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listRegistrationKeysAdminParams mirrors the other list builders so the
+// registration-key admin listing shares the cursor decode and limit clamp.
+// now is the caller-computed expiry probe (nil when expired rows are
+// included), passed in so the builder stays a pure function of its arguments.
+func listRegistrationKeysAdminParams(cursor string, limit int64, now any) (gendb.ListRegistrationKeysAdminParams, error) {
+	return withCursor(cursor, limit, func(ct any, cid sql.NullString, fl int64) gendb.ListRegistrationKeysAdminParams {
+		return gendb.ListRegistrationKeysAdminParams{Now: now, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }
 
 func rowsAffected(result sql.Result, err error) (int64, error) {

@@ -24,6 +24,14 @@ func TestSQLiteStore(t *testing.T) {
 			require.NoError(t, err)
 			err = st.TestHelper().TruncateAll(context.Background())
 			require.NoError(t, err)
+			// After the subtest's writes (cleanup runs before the next
+			// NewStore truncates), walk every raw-string-compared timestamp
+			// column and assert the canonical on-disk layout -- so ANY store
+			// write path the suite exercises that forgets its strftime wrap
+			// fails here, not as a silent row drop in production.
+			t.Cleanup(func() {
+				require.NoError(t, sqlite.CheckCanonicalTimestamps(context.Background(), st))
+			})
 			return st
 		},
 	}

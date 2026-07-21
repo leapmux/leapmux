@@ -40,10 +40,6 @@ func fromDBUser(u gendb.User) store.User {
 	}
 }
 
-func fromDBUsers(rows []gendb.User) []store.User {
-	return store.MapSlice(rows, fromDBUser)
-}
-
 func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -153,28 +149,16 @@ func (s *userStore) Count(ctx context.Context) (int64, error) {
 	return n, mapErr(err)
 }
 
-func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]store.User, error) {
-	params, err := listAllUsersParams(p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.ListAllUsers(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBUsers(rows), nil
+func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.User], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
+		s.conn.q.ListAllUsers, fromDBUser)
 }
 
-func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]store.User, error) {
-	params, err := searchUsersParams(p.Query, p.Cursor, p.Limit)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.conn.q.SearchUsers(ctx, params)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return fromDBUsers(rows), nil
+func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.User], error) {
+	return queryPage(ctx, p.Limit,
+		func() (gendb.SearchUsersParams, error) { return searchUsersParams(p.Query, p.Cursor, p.Limit) },
+		s.conn.q.SearchUsers, fromDBUser)
 }
 
 // loadUserInfoCacheFields reads the current cached-UserInfo projection for id.

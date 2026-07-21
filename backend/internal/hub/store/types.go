@@ -25,16 +25,30 @@ func NormalizeEmail(s string) string { return strings.ToLower(s) }
 // way, so both sides share this one rule and cannot drift.
 func FoldSearchText(s string) string { return strings.ToLower(s) }
 
-// FoldSearchQuery returns a folded copy of an optional admin-search term, preserving
-// nil (which SearchUsers reads as "no filter -> return all rows"). Folding via
-// FoldSearchText so the term matches the pre-folded display_name_folded column and
-// the lowercased username/email columns consistently across every dialect.
-func FoldSearchQuery(query *string) *string {
+// likeEscaper backslash-escapes the LIKE metacharacters so a search term
+// matches literally: \ itself first, then % (match-any) and _ (match-one).
+// The dialects' SearchUsers queries declare ESCAPE '\' to match.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// SearchLikePattern builds the complete LIKE prefix pattern for an optional
+// admin-search term, preserving nil (which SearchUsers reads as "no filter ->
+// return all rows"). The term is case-folded via FoldSearchText (so it matches
+// the pre-folded display_name_folded column and the lowercased username/email
+// columns consistently across every dialect), its LIKE metacharacters are
+// backslash-escaped so an operator's query matches literally -- `--query '%'`
+// prefix-matches a literal percent sign instead of dumping every user, and a
+// literal `_` in an email (legal in the local part) matches exactly rather
+// than as a single-char wildcard -- and the match-anything `%` suffix is
+// appended here, so the whole pattern is built at this one site and the SQL
+// binds it directly (sqlc's SQLite grammar cannot parse `LIKE x || y ESCAPE`).
+// Escaping lives here -- NOT in FoldSearchText, which the write path uses to
+// store display_name_folded unescaped.
+func SearchLikePattern(query *string) *string {
 	if query == nil {
 		return nil
 	}
-	folded := FoldSearchText(*query)
-	return &folded
+	pattern := likeEscaper.Replace(FoldSearchText(*query)) + "%"
+	return &pattern
 }
 
 // --- Domain model types (backend-agnostic) ---
@@ -70,6 +84,10 @@ type User struct {
 	DeletedAt             *time.Time
 }
 
+// PageCursor returns the keyset position for user listings (ListAll/Search),
+// which order by (created_at DESC, id DESC).
+func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
+
 // UserSession represents an authenticated session.
 type UserSession struct {
 	ID             string
@@ -81,6 +99,11 @@ type UserSession struct {
 	UserAgent      string
 	IPAddress      string
 }
+
+// PageCursor returns the keyset position for the per-user session listing
+// (ListByUserID), which orders by (last_active_at DESC, id DESC) -- not
+// created_at.
+func (s UserSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s.ID }
 
 // SessionWithUser is the result of ValidateSessionWithUser (JOIN).
 type SessionWithUser struct {
@@ -97,15 +120,23 @@ type SessionWithUser struct {
 
 // ActiveSession is a session with the owning username (for admin listing).
 type ActiveSession struct {
-	ID           string
-	UserID       string
+	ID     string
+	UserID string
+	// Username is the owner's username, or "" when the owner is soft-deleted
+	// (UserDeleted true). The store returns the raw state; presentation layers
+	// decide how to render a deleted owner.
 	Username     string
+	UserDeleted  bool
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 	ExpiresAt    time.Time
 	IPAddress    string
 	UserAgent    string
 }
+
+// PageCursor returns the keyset position for the active-session listing,
+// which orders by (last_active_at DESC, id DESC) -- not created_at.
+func (s ActiveSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s.ID }
 
 // Worker represents a registered worker node.
 type Worker struct {
@@ -126,6 +157,11 @@ type Worker struct {
 	DeletedAt      *time.Time
 }
 
+// PageCursor returns the keyset position for worker listings (ListByUserID
+// and, via the WorkerWithOwner embedding, ListAdmin), which order by
+// (created_at DESC, id DESC).
+func (w Worker) PageCursor() (time.Time, string) { return w.CreatedAt, w.ID }
+
 // WorkerPublicKeys holds a worker's public key material.
 type WorkerPublicKeys struct {
 	PublicKey       []byte
@@ -136,7 +172,10 @@ type WorkerPublicKeys struct {
 // WorkerWithOwner is the result of admin worker listing (JOIN with users).
 type WorkerWithOwner struct {
 	Worker
+	// OwnerUsername is "" when the owner is soft-deleted (OwnerDeleted true);
+	// presentation layers decide how to render a deleted owner.
 	OwnerUsername string
+	OwnerDeleted  bool
 }
 
 // WorkerNotification represents a queued notification for a worker.
@@ -167,12 +206,19 @@ type WorkerRegistrationKey struct {
 	ExpiresAt time.Time
 }
 
+// PageCursor returns the keyset position for the admin registration-key
+// listing (via the WorkerRegistrationKeyWithCreator embedding), which orders
+// by (created_at DESC, id DESC).
+func (k WorkerRegistrationKey) PageCursor() (time.Time, string) { return k.CreatedAt, k.ID }
+
 // WorkerRegistrationKeyWithCreator augments WorkerRegistrationKey with the
-// creator's username (JOINed on users). Soft-deleted creators surface as
-// "(deleted)" so admin listings remain readable after a user is purged.
+// creator's username (LEFT JOINed on users) for the admin listing.
 type WorkerRegistrationKeyWithCreator struct {
 	WorkerRegistrationKey
+	// CreatorUsername is "" when the creator is soft-deleted (CreatorDeleted
+	// true); presentation layers decide how to render a deleted creator.
 	CreatorUsername string
+	CreatorDeleted  bool
 }
 
 // Workspace represents a hub-owned workspace.
@@ -439,15 +485,25 @@ type ClearCompetingPendingEmailsParams struct {
 	ExcludeID    string
 }
 
-type SearchUsersParams struct {
-	Query  *string
-	Cursor string // RFC3339Nano of created_at; empty = first page
+// PageParams is the shared keyset-pagination input embedded in every list
+// param struct: the opaque composite cursor (empty = first page; produced by
+// EncodeCursor / maybePrintNextCursor, validated by ParseCursor) and the page
+// limit (normalized via ClampListLimit; 0 = no rows). Each embedding struct
+// notes which ORDER BY tiebreak column its listing pages on -- created_at for
+// most listings, last_active_at for the session listings -- since the cursor
+// must be encoded from that column.
+type PageParams struct {
+	Cursor string
 	Limit  int64
 }
 
+type SearchUsersParams struct {
+	Query      *string
+	PageParams // Keyset on (created_at DESC, id DESC).
+}
+
 type ListAllUsersParams struct {
-	Cursor string // RFC3339Nano of created_at; empty = first page
-	Limit  int64
+	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
 type CreateSessionParams struct {
@@ -475,8 +531,14 @@ type RefreshSessionAuthGenerationParams struct {
 }
 
 type ListAllActiveSessionsParams struct {
-	Cursor string
-	Limit  int64
+	PageParams // Keyset on (last_active_at DESC, id DESC).
+}
+
+// ListUserSessionsParams pages a per-user session listing (ListByUserID),
+// ordered by (last_active_at DESC, id DESC).
+type ListUserSessionsParams struct {
+	UserID     string
+	PageParams // Keyset on (last_active_at DESC, id DESC).
 }
 
 type CreateWorkerParams struct {
@@ -511,8 +573,7 @@ type DeregisterWorkerParams struct {
 
 type ListWorkersByUserIDParams struct {
 	RegisteredBy string
-	Cursor       string // RFC3339Nano of created_at; empty = first page
-	Limit        int64
+	PageParams   // Keyset on (created_at DESC, id DESC).
 }
 
 type GetOwnedWorkerParams struct {
@@ -521,10 +582,9 @@ type GetOwnedWorkerParams struct {
 }
 
 type ListWorkersAdminParams struct {
-	UserID *string
-	Status *leapmuxv1.WorkerStatus
-	Cursor string // RFC3339Nano of created_at; empty = first page
-	Limit  int64
+	UserID     *string
+	Status     *leapmuxv1.WorkerStatus
+	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
 type CreateWorkerNotificationParams struct {
@@ -552,8 +612,7 @@ type SoftDeleteRegistrationKeyParams struct {
 }
 
 type ListRegistrationKeysAdminParams struct {
-	Cursor         string // RFC3339Nano of created_at; empty = first page
-	Limit          int64
+	PageParams          // Keyset on (created_at DESC, id DESC).
 	IncludeExpired bool // true to surface revoked/expired rows for forensics
 }
 
@@ -847,6 +906,20 @@ type APIToken struct {
 	RevokedAt                *time.Time
 }
 
+// APITokenWithOwner augments APIToken with the owner's username (LEFT JOINed
+// on users) for the admin listing. A soft-deleted owner surfaces as
+// OwnerUsername "" + OwnerDeleted true; presentation layers decide how to
+// render a deleted owner.
+type APITokenWithOwner struct {
+	APIToken
+	OwnerUsername string
+	OwnerDeleted  bool
+}
+
+// PageCursor returns the keyset position for the admin api-token listing
+// (ListAllAPITokens), which orders by (created_at DESC, id DESC).
+func (t APITokenWithOwner) PageCursor() (time.Time, string) { return t.CreatedAt, t.ID }
+
 // DelegationToken is a short-lived bearer minted by a worker so a
 // spawned agent (or opt-in terminal) can act for the user against the
 // hub or a sibling worker. Scope is (UserID, WorkspaceID); IssuedFor*
@@ -869,6 +942,19 @@ type DelegationToken struct {
 	RefreshExpiresAt *time.Time
 	RevokedAt        *time.Time
 }
+
+// DelegationTokenWithOwner augments DelegationToken with the owner's username
+// for the admin listing. A soft-deleted owner surfaces as OwnerUsername "" +
+// OwnerDeleted true; presentation layers decide how to render a deleted owner.
+type DelegationTokenWithOwner struct {
+	DelegationToken
+	OwnerUsername string
+	OwnerDeleted  bool
+}
+
+// PageCursor returns the keyset position for the admin delegation-token listing
+// (ListAllDelegationTokens), which orders by (created_at DESC, id DESC).
+func (t DelegationTokenWithOwner) PageCursor() (time.Time, string) { return t.CreatedAt, t.ID }
 
 // DeviceAuthorization is an in-flight RFC 8628 device-code grant.
 type DeviceAuthorization struct {
@@ -921,6 +1007,28 @@ type RotateAPITokenRefreshParams struct {
 type ListAPITokensByUserParams struct {
 	UserID     string
 	ClientType string // empty = all
+}
+
+// ListAllAPITokensParams pages the admin api-token listing (ListAllAPITokens),
+// ordered by (created_at DESC, id DESC) and LEFT JOINed with users so the owner
+// username rides each row (no per-user fanout).
+type ListAllAPITokensParams struct {
+	UserID     *string // nil = all users; non-nil dispatches to the ByUser query twin
+	ClientType string  // empty = all
+	PageParams         // Keyset on (created_at DESC, id DESC).
+	// IncludeRevoked adds revoked rows to the listing (forensics); the default
+	// lists live tokens only and rides the partial keyset indexes.
+	IncludeRevoked bool
+}
+
+// ListAllDelegationTokensParams pages the admin delegation-token listing
+// (ListAllDelegationTokens), ordered by (created_at DESC, id DESC).
+type ListAllDelegationTokensParams struct {
+	UserID     *string // nil = all users; non-nil dispatches to the ByUser query twin
+	PageParams         // Keyset on (created_at DESC, id DESC).
+	// IncludeRevoked adds revoked rows to the listing (forensics); the default
+	// lists live tokens only and rides the partial keyset indexes.
+	IncludeRevoked bool
 }
 
 type CreateDelegationTokenParams struct {

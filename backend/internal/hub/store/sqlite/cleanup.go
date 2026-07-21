@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -19,27 +18,27 @@ func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context) (int64, er
 }
 
 func (s *cleanupStore) HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteWorkspacesBefore(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+	return rowsAffected(s.conn.q.HardDeleteWorkspacesBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff))
+	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteOrgsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteOrgsBefore(ctx, sql.NullTime{Time: cutoff, Valid: true}))
+	return rowsAffected(s.conn.q.HardDeleteOrgsBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
@@ -59,11 +58,11 @@ func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, c
 }
 
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sql.NullTime{Time: cutoff.UTC(), Valid: true}))
+	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, sql.NullTime{Time: cutoff.UTC(), Valid: true}))
+	return rowsAffected(s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, formatSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {

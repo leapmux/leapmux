@@ -180,15 +180,16 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "u3")
 
 		// First page: limit 2.
-		users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 2})
+		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 2}})
 		require.NoError(t, err)
-		assert.Len(t, users, 2)
+		assert.Len(t, page.Rows, 2)
 
 		// Second page: use cursor from last item of first page.
-		cursor := users[len(users)-1].CreatedAt.Format(time.RFC3339Nano)
-		users, err = st.Users().ListAll(ctx, store.ListAllUsersParams{Cursor: cursor, Limit: 10})
+		last := page.Rows[len(page.Rows)-1]
+		cursor := store.EncodeCursor(last.CreatedAt, last.ID)
+		page, err = st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: cursor, Limit: 10}})
 		require.NoError(t, err)
-		assert.Len(t, users, 1)
+		assert.Len(t, page.Rows, 1)
 	})
 
 	t.Run("search", func(t *testing.T) {
@@ -200,12 +201,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "other-carol")
 
 		q := "searchable"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q,
-			Limit: 10,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, users, 2)
+		assert.Len(t, page.Rows, 2)
 	})
 
 	t.Run("search folds non-ASCII display names case-insensitively", func(t *testing.T) {
@@ -228,17 +229,48 @@ func (s *Suite) testUsers(t *testing.T) {
 		// while the pre-folded column + Go-folded query match identically on every backend.
 		for _, query := range []string{"öl", "ÖL", "Öl", "ölaf", "ÖLAF"} {
 			q := query
-			users, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &q, Limit: 10})
+			page, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &q, PageParams: store.PageParams{Limit: 10}})
 			require.NoError(t, err, "query %q", query)
-			require.Len(t, users, 1, "query %q must match the non-ASCII display name case-insensitively", query)
-			assert.Equal(t, "Ölaf Müller", users[0].DisplayName, "the ORIGINAL (unfolded) display name is returned")
+			require.Len(t, page.Rows, 1, "query %q must match the non-ASCII display name case-insensitively", query)
+			assert.Equal(t, "Ölaf Müller", page.Rows[0].DisplayName, "the ORIGINAL (unfolded) display name is returned")
 		}
 
 		// A non-matching prefix still misses.
 		miss := "xyz"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &miss, Limit: 10})
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &miss, PageParams: store.PageParams{Limit: 10}})
 		require.NoError(t, err)
-		assert.Empty(t, users)
+		assert.Empty(t, page.Rows)
+	})
+
+	t.Run("search matches LIKE metacharacters literally", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "like-org")
+
+		// Two users whose emails differ only at the character a bare `_`
+		// wildcard would blur; `_` is legal in an email local part.
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID: id.Generate(), OrgID: orgID, Username: "underscore-user",
+			Email: "a_b@example.com", PasswordSet: true,
+		}))
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID: id.Generate(), OrgID: orgID, Username: "literal-x-user",
+			Email: "axb@example.com", PasswordSet: true,
+		}))
+
+		// `a_b` must match only the literal-underscore email: an unescaped
+		// LIKE would treat `_` as a one-char wildcard and return both rows.
+		q := "a_b"
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{Query: &q, PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1, "`_` must match literally, not as a one-char wildcard")
+		assert.Equal(t, "a_b@example.com", page.Rows[0].Email)
+
+		// `%` must prefix-match a literal percent sign (no user has one), not
+		// act as match-anything and dump every user.
+		pct := "%"
+		page, err = st.Users().Search(ctx, store.SearchUsersParams{Query: &pct, PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		assert.Empty(t, page.Rows, "a literal %-search must not act as a wildcard dump")
 	})
 
 	t.Run("update profile", func(t *testing.T) {
@@ -653,10 +685,10 @@ func (s *Suite) testUsers(t *testing.T) {
 		err := st.Users().Delete(ctx, dead.ID)
 		require.NoError(t, err)
 
-		users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 100})
+		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 100}})
 		require.NoError(t, err)
-		require.Len(t, users, 1)
-		assert.Equal(t, "alive-all-user", users[0].Username)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, "alive-all-user", page.Rows[0].Username)
 	})
 
 	t.Run("deleted user excluded from search", func(t *testing.T) {
@@ -669,13 +701,13 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, err)
 
 		q := "searchdel"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q,
-			Limit: 100,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
-		require.Len(t, users, 1)
-		assert.Equal(t, "searchdel-alive", users[0].Username)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, "searchdel-alive", page.Rows[0].Username)
 	})
 
 	t.Run("duplicate email returns conflict", func(t *testing.T) {
@@ -702,12 +734,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "sqall-b")
 
 		q := ""
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q,
-			Limit: 100,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
-		assert.Len(t, users, 2)
+		assert.Len(t, page.Rows, 2)
 	})
 
 	t.Run("list all pagination", func(t *testing.T) {
@@ -721,15 +753,48 @@ func (s *Suite) testUsers(t *testing.T) {
 		}
 
 		// First page: limit 2.
-		page1, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: 2})
+		page1, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 2}})
 		require.NoError(t, err)
-		assert.Len(t, page1, 2)
+		assert.Len(t, page1.Rows, 2)
+		assert.True(t, page1.HasMore())
 
 		// Second page using cursor from last item.
-		cursor := page1[len(page1)-1].CreatedAt.Format(time.RFC3339Nano)
-		page2, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Cursor: cursor, Limit: 2})
+		last := page1.Rows[len(page1.Rows)-1]
+		cursor := store.EncodeCursor(last.CreatedAt, last.ID)
+		page2, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: cursor, Limit: 2}})
 		require.NoError(t, err)
-		assert.Len(t, page2, 2)
+		assert.Len(t, page2.Rows, 2)
+	})
+
+	t.Run("list all has-more is exact at page boundaries", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "user-org")
+		SeedUser(t, st, orgID, "exact-a")
+		SeedUser(t, st, orgID, "exact-b")
+		SeedUser(t, st, orgID, "exact-c")
+
+		// Limit == total: the limit+1 probe proves no further page exists, so
+		// HasMore must be false and no cursor is handed out (the old
+		// len(rows)==limit heuristic would have claimed more).
+		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 3}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 3)
+		assert.False(t, page.HasMore())
+		assert.Empty(t, page.NextCursor)
+
+		// Limit < total: a further page exists and the store encodes its cursor.
+		page, err = st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 2}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 2)
+		assert.True(t, page.HasMore())
+		require.NotEmpty(t, page.NextCursor)
+
+		// Following the store-produced cursor drains the remaining row.
+		page, err = st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.False(t, page.HasMore())
+		assert.Empty(t, page.NextCursor)
 	})
 
 	t.Run("list all cursor beyond total", func(t *testing.T) {
@@ -738,11 +803,29 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "beyond-user")
 
 		// Use a cursor far in the past to get no results.
-		cursor := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
-		users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Cursor: cursor, Limit: 10})
+		cursor := store.EncodeCursor(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), "beyond")
+		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: cursor, Limit: 10}})
 		require.NoError(t, err)
-		require.NotNil(t, users)
-		assert.Empty(t, users)
+		require.NotNil(t, page.Rows)
+		assert.Empty(t, page.Rows)
+	})
+
+	t.Run("list all cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "user-tie-org")
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedUser(t, st, orgID, "tie-older")
+		tiedA := SeedUser(t, st, orgID, "tie-a")
+		tiedB := SeedUser(t, st, orgID, "tie-b")
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, older.ID, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedA.ID, tie))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedB.ID, tie))
+
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.User], error) {
+			return st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: cursor, Limit: 1}})
+		})
+		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
+			"same-millisecond users must not be skipped across page boundaries")
 	})
 
 	t.Run("has any after delete", func(t *testing.T) {
@@ -865,11 +948,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "searchable-user")
 
 		q := "searchable-user"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Limit: 10,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, users, 1)
+		assert.Len(t, page.Rows, 1)
 	})
 
 	t.Run("delete already deleted user is no-op", func(t *testing.T) {
@@ -891,11 +975,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "nilq-user1")
 		SeedUser(t, st, orgID, "nilq-user2")
 
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: nil, Limit: 100,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      nil,
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(users), 2)
+		assert.GreaterOrEqual(t, len(page.Rows), 2)
 	})
 
 	t.Run("update profile preserves email", func(t *testing.T) {
@@ -943,18 +1028,41 @@ func (s *Suite) testUsers(t *testing.T) {
 		q := "pagesearch"
 		// First page.
 		page1, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Limit: 2,
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 2},
 		})
 		require.NoError(t, err)
-		assert.Len(t, page1, 2)
+		assert.Len(t, page1.Rows, 2)
+		assert.True(t, page1.HasMore())
 
 		// Second page using cursor.
-		cursor := page1[len(page1)-1].CreatedAt.Format(time.RFC3339Nano)
+		last := page1.Rows[len(page1.Rows)-1]
+		cursor := store.EncodeCursor(last.CreatedAt, last.ID)
 		page2, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Cursor: cursor, Limit: 2,
+			Query:      &q,
+			PageParams: store.PageParams{Cursor: cursor, Limit: 2},
 		})
 		require.NoError(t, err)
-		assert.Len(t, page2, 2)
+		assert.Len(t, page2.Rows, 2)
+	})
+
+	t.Run("search cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "search-tie-org")
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedUser(t, st, orgID, "srtie-older")
+		tiedA := SeedUser(t, st, orgID, "srtie-a")
+		tiedB := SeedUser(t, st, orgID, "srtie-b")
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, older.ID, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedA.ID, tie))
+		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedB.ID, tie))
+
+		q := "srtie"
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.User], error) {
+			return st.Users().Search(ctx, store.SearchUsersParams{Query: &q, PageParams: store.PageParams{Cursor: cursor, Limit: 1}})
+		})
+		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
+			"same-millisecond search results must not be skipped across page boundaries")
 	})
 
 	t.Run("search is case insensitive", func(t *testing.T) {
@@ -963,11 +1071,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, orgID, "MixedCaseSearchUser")
 
 		q := "mixedcasesearchuser"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Limit: 10,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, users, 1)
+		assert.Len(t, page.Rows, 1)
 	})
 
 	t.Run("search is prefix not substring", func(t *testing.T) {
@@ -978,12 +1087,13 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		// "alice" is a prefix of "alice" but NOT "superalice".
 		q := "alice"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Limit: 10,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Len(t, users, 1)
-		assert.Equal(t, "alice", users[0].Username)
+		assert.Len(t, page.Rows, 1)
+		assert.Equal(t, "alice", page.Rows[0].Username)
 	})
 
 	t.Run("username and email are case-normalized on create", func(t *testing.T) {
@@ -1054,11 +1164,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		}
 
 		q := "del-search"
-		users, err := st.Users().Search(ctx, store.SearchUsersParams{
-			Query: &q, Limit: 10,
+		page, err := st.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Empty(t, users)
+		assert.Empty(t, page.Rows)
 	})
 
 	t.Run("update profile conflict preserves original fields", func(t *testing.T) {

@@ -50,23 +50,33 @@ SELECT EXISTS(
 
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
-  AND (sqlc.narg(cursor) IS NULL OR created_at < sqlc.narg(cursor))
-ORDER BY created_at DESC LIMIT sqlc.arg(limit);
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR created_at < sqlc.narg(cursor_time)
+       OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC LIMIT sqlc.arg(limit);
 
--- The query arg is pre-folded (store.FoldSearchText) by the Go glue, and username
--- and email are already stored lowercased, so a plain LIKE against the pre-folded
--- display_name_folded column matches case-insensitively for non-ASCII names -- and
--- identically to Postgres/MySQL, which fold the same way. (A bare LIKE on the raw
--- display_name would fold only ASCII on SQLite; see FoldSearchText.)
+-- The query arg arrives as a complete LIKE prefix pattern built by
+-- store.SearchLikePattern: pre-folded (so the match against the pre-folded
+-- display_name_folded column and the lowercased username/email columns is
+-- case-insensitive for non-ASCII names, identically to Postgres/MySQL),
+-- backslash-escaped (so an operator's literal '%'/'_' cannot act as a
+-- wildcard), with the trailing match-anything '%' already appended. (A bare
+-- LIKE on the raw display_name would fold only ASCII on SQLite; see
+-- FoldSearchText.) like(pattern, col, '\') is the LIKE operator's function
+-- form with an explicit escape character: a bare `col LIKE ?` has NO escape
+-- char on SQLite (unlike Postgres/MySQL, whose default is backslash), and
+-- sqlc's SQLite grammar cannot parse the `LIKE ? ESCAPE '\'` clause form.
 -- name: SearchUsers :many
 SELECT * FROM users
 WHERE deleted_at IS NULL
   AND (sqlc.narg(query) IS NULL
-   OR username LIKE sqlc.narg(query) || '%'
-   OR display_name_folded LIKE sqlc.narg(query) || '%'
-   OR email LIKE sqlc.narg(query) || '%')
-  AND (sqlc.narg(cursor) IS NULL OR created_at < sqlc.narg(cursor))
-ORDER BY created_at DESC
+   OR like(sqlc.narg(query), username, '\')
+   OR like(sqlc.narg(query), display_name_folded, '\')
+   OR like(sqlc.narg(query), email, '\'))
+  AND (sqlc.narg(cursor_time) IS NULL
+       OR created_at < sqlc.narg(cursor_time)
+       OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
+ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: UpdateUserPassword :exec
@@ -136,10 +146,13 @@ WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = sqlc.arg(user_i
 -- Gating keeps the workspaces/workers -> users delete order correct under bulk
 -- deletes; the user is reaped on a later pass once its stragglers drain. Mirrors
 -- the NOT EXISTS users gate on HardDeleteOrgsBefore. idx_workspaces_owner_user_id
--- and idx_workers_registered_by make each NOT EXISTS an indexed point probe.
+-- and the leading column of idx_workers_registered_by_status_created make each
+-- NOT EXISTS an indexed point probe.
 DELETE FROM users WHERE rowid IN (
     SELECT u.rowid FROM users u
-    WHERE u.deleted_at IS NOT NULL AND u.deleted_at < ?
+    -- Raw compare: deleted_at (strftime-written) against the canonical cutoff
+    -- string (CAST AS TEXT -> string param; see HardDeleteWorkersBefore).
+    WHERE u.deleted_at IS NOT NULL AND u.deleted_at < CAST(sqlc.arg(cutoff) AS TEXT)
       AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_user_id = u.id)
       AND NOT EXISTS (SELECT 1 FROM workers wk WHERE wk.registered_by = u.id)
     LIMIT 1000
@@ -159,8 +172,15 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
 -- name: SetPendingEmail :exec
-UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
+-- pending_email_expires_at MUST land in the canonical strftime layout, so the
+-- bound instant is wrapped rather than stored in the modernc driver layout a
+-- raw time.Time bind would produce: ConsumeVerificationAttempt's lockout branch
+-- writes the same column via strftime('now'), and ClearStalePendingEmails
+-- compares it raw against a canonical cutoff -- mixing layouts breaks that
+-- lexicographic compare at the ' ' vs 'T' separator byte (byte 10). strftime
+-- passes a NULL bind through as NULL.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', sqlc.arg(pending_email_expires_at)), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = sqlc.arg(id);
 
 -- name: ClearPendingEmail :exec
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -186,8 +206,12 @@ UPDATE users SET pending_email = '', pending_email_token = '', pending_email_exp
 WHERE pending_email = ? AND id != ?;
 
 -- name: ClearStalePendingEmails :execresult
+-- Raw compare: pending_email_expires_at is stored canonical on every write path
+-- (SetPendingEmail wraps the bound instant in strftime; ConsumeVerificationAttempt's
+-- lockout branch writes strftime('now')), so comparing it raw against the canonical
+-- cutoff string (CAST AS TEXT -> string param) is byte-exact; see HardDeleteUsersBefore.
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < ?;
+WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < CAST(sqlc.arg(cutoff) AS TEXT);
 
 -- name: BumpUserTokensRevokedAt :one
 -- Bumps the user-wide revocation timestamp and credential epoch, then

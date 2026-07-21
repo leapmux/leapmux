@@ -13,28 +13,58 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
+// runDelegationTokenList prints delegation tokens through the single
+// keyset-paginated store-level ListAll (a JOINed query carrying each row's
+// owner username). --user-id/--username narrows it to one user via the ByUser
+// query twin, with identical --limit/--cursor behavior on both paths.
 func runDelegationTokenList(cmd adminCmdCtx, args []string) error {
-	var userID string
+	var userID, username string
+	var includeRevoked bool
+	var limit *int64
+	var cursor *string
 	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
-		fs.StringVar(&userID, "user", "", "user id (empty = all users)")
+		fs.StringVar(&userID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
+		fs.StringVar(&username, "username", "", "filter by username")
+		fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
+		limit, cursor = addListFlags(fs)
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
-		rows, err := collectAcrossUsers(ctx, st, userID, func(uid string) ([]store.DelegationToken, error) {
-			return st.DelegationTokens().ListByUser(ctx, uid)
-		})
+		if err := validateListLimit(*limit); err != nil {
+			return err
+		}
+		userFilter, err := resolveUserFilter(ctx, st, userID, username)
 		if err != nil {
 			return err
 		}
-
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		_, _ = fmt.Fprintln(w, "ID\tUSER\tWORKER\tWORKSPACE\tAGENT\tTERMINAL\tCREATED\tEXPIRES")
-		for _, r := range rows {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.ID, r.UserID, r.WorkerID, r.WorkspaceID,
-				cmp.Or(r.AgentID, "-"), cmp.Or(r.TerminalID, "-"),
-				timefmt.Format(r.CreatedAt), timefmt.Format(r.ExpiresAt))
+		page, err := st.DelegationTokens().ListAll(ctx, store.ListAllDelegationTokensParams{
+			UserID:         userFilter,
+			PageParams:     store.PageParams{Cursor: *cursor, Limit: *limit},
+			IncludeRevoked: includeRevoked,
+		})
+		if err != nil {
+			return classifyListError("list delegation tokens", err)
 		}
-		return w.Flush()
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w, "ID\tUSER\tWORKER\tWORKSPACE\tAGENT\tTERMINAL\tCREATED\tEXPIRES\tREVOKED")
+		for _, t := range page.Rows {
+			writeDelegationTokenRow(w, t.DelegationToken, ownerLabel(t.OwnerUsername, t.OwnerDeleted))
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		maybePrintNextCursor(page)
+		return nil
 	})
+}
+
+func writeDelegationTokenRow(w *tabwriter.Writer, t store.DelegationToken, userLabel string) {
+	revoked := "-"
+	if t.RevokedAt != nil {
+		revoked = timefmt.Format(*t.RevokedAt)
+	}
+	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		t.ID, userLabel, t.WorkerID, t.WorkspaceID,
+		cmp.Or(t.AgentID, "-"), cmp.Or(t.TerminalID, "-"),
+		timefmt.Format(t.CreatedAt), timefmt.Format(t.ExpiresAt), revoked)
 }
 
 // runDelegationTokenRevoke marks a delegation_tokens row revoked.

@@ -55,6 +55,16 @@ func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 	return sqlDB, gendb.New(sqlDB)
 }
 
+// listSessions returns every live session row for userID via the paginated
+// generated query, using one oversized page: these CLI tests assert only on
+// membership, not paging behavior.
+func listSessions(t *testing.T, q *gendb.Queries, userID string) []gendb.UserSession {
+	t.Helper()
+	sessions, err := q.ListUserSessionsByUserID(context.Background(), gendb.ListUserSessionsByUserIDParams{UserID: userID, Limit: 1000})
+	require.NoError(t, err)
+	return sessions
+}
+
 // createTestUser creates a user via runUserCreate and returns the user from DB.
 // Uses a fixed password "TestPassword1!" to minimize Argon2id hashing calls.
 func createTestUser(t *testing.T, dir, username string) gendb.User {
@@ -552,11 +562,14 @@ func TestCLI_UserList_WithQuery(t *testing.T) {
 	createTestUser(t, dir, "bob")
 	createTestUser(t, dir, "alicia")
 
-	// Search for "ali" should match alice and alicia.
+	// Search for "ali" should match alice and alicia. The generated query
+	// takes the COMPLETE LIKE pattern (store.SearchLikePattern builds it:
+	// fold + metachar escape + trailing '%'), so build it the same way here.
 	_, q := openTestDB(t, dir)
 
+	term := "ali"
 	users, err := q.SearchUsers(context.Background(), gendb.SearchUsersParams{
-		Query: sql.NullString{String: "ali", Valid: true},
+		Query: sql.NullString{String: *store.SearchLikePattern(&term), Valid: true},
 		Limit: 50,
 	})
 	require.NoError(t, err)
@@ -583,12 +596,13 @@ func TestCLI_UserList_WithLimitAndCursor(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, users, 2)
 
-	// Verify cursor-based pagination works.
-	// The cursor must be passed in the same string format SQLite stores it in.
-	cursor := users[len(users)-1].CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	// Verify cursor-based pagination works. The generated params take the
+	// cursor timestamp in SQLite's storage format plus the id tiebreaker.
+	last := users[len(users)-1]
 	users2, err := q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
-		Cursor: cursor,
-		Limit:  10,
+		CursorTime: last.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		CursorID:   sql.NullString{String: last.ID, Valid: true},
+		Limit:      10,
 	})
 	require.NoError(t, err)
 	assert.Len(t, users2, 3)
@@ -755,8 +769,7 @@ func TestCLI_UserResetPassword(t *testing.T) {
 	assert.NotEqual(t, original.PasswordHash, updated.PasswordHash)
 
 	// Verify sessions deleted.
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	assert.Empty(t, sessions)
 }
 
@@ -781,8 +794,7 @@ func TestCLI_UserResetPassword_PreservesOtherUserSessions(t *testing.T) {
 	// Verify bob's session is still there.
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), bob.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, bob.ID)
 	require.Len(t, sessions, 1)
 	assert.Equal(t, bobSessionID, sessions[0].ID)
 }
@@ -1103,6 +1115,182 @@ func TestCLI_SessionList(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestCLI_APITokenList_UserScopedPagination pins the unified token-listing
+// path: --user-id composes with --limit/--cursor through the same
+// keyset-paginated ListAll (ByUser query twin). The old two-branch shape
+// silently ignored both flags under the user filter, so the malformed-cursor
+// assertion below failed against that code; and an unknown --user-id fails
+// loudly instead of printing an empty table.
+func TestCLI_APITokenList_UserScopedPagination(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+
+	require.NoError(t, runAPITokenIssue(testAdminCtx, []string{
+		"--user", alice.ID, "--client-name", "t1", "--data-dir", dir}))
+	require.NoError(t, runAPITokenIssue(testAdminCtx, []string{
+		"--user", alice.ID, "--client-name", "t2", "--data-dir", dir}))
+
+	// --user-id + --limit are both honored on the unified path.
+	require.NoError(t, runAPITokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--limit", "1", "--data-dir", dir}))
+
+	// A malformed --cursor classifies as operator input error on the --user-id
+	// path too — proving the cursor is parsed there, not silently dropped.
+	err := runAPITokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--cursor", "not-a-cursor", "--data-dir", dir})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrInvalidCursor)
+
+	// Unknown user id fails loudly (the fail-loud contract shared with
+	// `user get` / `user delete`), not empty-table-exit-0.
+	err = runAPITokenList(testAdminCtx, []string{
+		"--user-id", "no-such-user", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user not found")
+
+	// --username resolves the same filter; --user-id and --username together
+	// are rejected as ambiguous.
+	require.NoError(t, runAPITokenList(testAdminCtx, []string{
+		"--username", "alice", "--data-dir", dir}))
+	err = runAPITokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--username", "alice", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+// TestCLI_DelegationTokenList_UserScopedCursorHonored is the delegation twin
+// of the malformed-cursor pin above: --cursor must be parsed on the --user
+// path (the old branch ignored it and returned success).
+func TestCLI_DelegationTokenList_UserScopedCursorHonored(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+
+	err := runDelegationTokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--cursor", "not-a-cursor", "--data-dir", dir})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrInvalidCursor)
+}
+
+// TestCLI_TokenList_SoftDeletedUserScope pins the audit path the token
+// listings' LEFT JOIN exists for: scoping a listing to a SOFT-DELETED user's
+// id must succeed (an operator enumerating a compromised account's still-live
+// tokens), not fail "user not found" — the list filter resolves via
+// GetByIDIncludeDeleted, unlike the user-mutation commands' live-only lookup.
+func TestCLI_TokenList_SoftDeletedUserScope(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+
+	require.NoError(t, runAPITokenIssue(testAdminCtx, []string{
+		"--user", alice.ID, "--client-name", "t1", "--data-dir", dir}))
+	require.NoError(t, runUserDelete(testAdminCtx, []string{
+		"--username", "alice", "--data-dir", dir}))
+
+	require.NoError(t, runAPITokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--data-dir", dir}))
+	require.NoError(t, runDelegationTokenList(testAdminCtx, []string{
+		"--user-id", alice.ID, "--data-dir", dir}))
+
+	// The freed username no longer resolves — a username is not a stable
+	// handle for a deleted account (it can be re-registered); the id is.
+	err := runAPITokenList(testAdminCtx, []string{
+		"--username", "alice", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user not found")
+}
+
+// TestCLI_APITokenList_IncludeRevoked pins the forensics opt-in: after a
+// revoke, --include-revoked lists without error, alone and composed with
+// --user-id (exercising both IncludingRevoked query twins of the 2x2
+// dispatch).
+func TestCLI_APITokenList_IncludeRevoked(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+
+	require.NoError(t, runAPITokenIssue(testAdminCtx, []string{
+		"--user", alice.ID, "--client-name", "t1", "--data-dir", dir}))
+
+	// The mint prints the bearer once and never again; recover the row id
+	// from the DB to drive the revoke.
+	_, q := openTestDB(t, dir)
+	tokens, err := q.ListAPITokensByUser(context.Background(), gendb.ListAPITokensByUserParams{
+		UserID:     alice.ID,
+		ClientType: "",
+	})
+	require.NoError(t, err)
+	require.Len(t, tokens, 1)
+
+	require.NoError(t, runAPITokenRevoke(testAdminCtx, []string{
+		"--id", tokens[0].ID, "--data-dir", dir}))
+
+	// The forensics listing succeeds on the all-users path...
+	require.NoError(t, runAPITokenList(testAdminCtx, []string{
+		"--include-revoked", "--data-dir", dir}))
+	// ...and composed with --user-id (the ByUserIncludingRevoked twin).
+	require.NoError(t, runAPITokenList(testAdminCtx, []string{
+		"--include-revoked", "--user-id", alice.ID, "--data-dir", dir}))
+}
+
+// TestCLI_DelegationTokenList_IncludeRevoked pins the delegation twin's
+// --include-revoked flag wiring through both IncludingRevoked query paths.
+// Delegation tokens are worker-minted, so no CLI issue path exists to seed a
+// revoked row here; the row-level forensics semantics are pinned cross-dialect
+// by the storetest include-revoked subtests. This exercises the flag, the 2x2
+// dispatch, and the generated queries end-to-end.
+func TestCLI_DelegationTokenList_IncludeRevoked(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+
+	require.NoError(t, runDelegationTokenList(testAdminCtx, []string{
+		"--include-revoked", "--data-dir", dir}))
+	require.NoError(t, runDelegationTokenList(testAdminCtx, []string{
+		"--include-revoked", "--user-id", alice.ID, "--data-dir", dir}))
+}
+
+// TestOwnerLabel pins the presentation-layer placeholder decision: the store
+// returns raw (username, deleted) state and the CLI alone renders
+// "(deleted)".
+func TestOwnerLabel(t *testing.T) {
+	assert.Equal(t, "alice", ownerLabel("alice", false))
+	assert.Equal(t, "(deleted)", ownerLabel("", true))
+}
+
+// TestCLI_ListCommands_RejectNonPositiveLimit pins the validateListLimit
+// boundary guard: the store's documented `LIMIT 0 -> no rows` semantics mean a
+// stray `--limit 0` / negative limit would print an empty listing
+// indistinguishable from a genuinely empty result, so the CLI must reject it
+// loudly. Two commands cover the shared-helper wiring at distinct call sites.
+func TestCLI_ListCommands_RejectNonPositiveLimit(t *testing.T) {
+	dir := setupTestDataDir(t)
+	for _, lim := range []string{"0", "-5"} {
+		err := runSessionList(testAdminCtx, []string{"--limit", lim, "--data-dir", dir})
+		require.Error(t, err, "session list --limit %s must be rejected", lim)
+		assert.Contains(t, err.Error(), "--limit")
+
+		err = runWorkerList(testAdminCtx, []string{"--limit", lim, "--data-dir", dir})
+		require.Error(t, err, "worker list --limit %s must be rejected", lim)
+		assert.Contains(t, err.Error(), "--limit")
+	}
+}
+
+func TestCLI_SessionList_MalformedCursorIsFriendlyError(t *testing.T) {
+	dir := setupTestDataDir(t)
+	alice := createTestUser(t, dir, "alice")
+	_, q := openTestDB(t, dir)
+	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
+
+	// A stale / truncated / hand-edited --cursor is bad operator input, not a
+	// server fault: the store surfaces it wrapped in store.ErrInvalidCursor and
+	// classifyListError turns that into an actionable hint. Assert both the
+	// classification (ErrInvalidCursor reaches the CLI) and the human-readable
+	// hint so the operator-facing message cannot silently regress to an opaque
+	// "list sessions: ..." wrap.
+	err := runSessionList(testAdminCtx, []string{"--cursor", "not-a-valid-cursor", "--data-dir", dir})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrInvalidCursor)
+	assert.Contains(t, err.Error(), "invalid cursor")
+	assert.Contains(t, err.Error(), "--cursor")
+}
+
 func TestCLI_SessionRevoke(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
@@ -1115,8 +1303,7 @@ func TestCLI_SessionRevoke(t *testing.T) {
 	// Verify session is gone.
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	assert.Empty(t, sessions)
 }
 
@@ -1132,8 +1319,7 @@ func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	assert.Empty(t, sessions)
 }
 
@@ -1148,8 +1334,7 @@ func TestCLI_SessionRevokeUser_ByUsername(t *testing.T) {
 
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	assert.Empty(t, sessions)
 }
 
@@ -1169,13 +1354,11 @@ func TestCLI_SessionRevokeUser_PreservesOtherUsers(t *testing.T) {
 	_, q = openTestDB(t, dir)
 
 	// Alice's sessions should be gone.
-	aliceSessions, err := q.ListUserSessionsByUserID(context.Background(), alice.ID)
-	require.NoError(t, err)
+	aliceSessions := listSessions(t, q, alice.ID)
 	assert.Empty(t, aliceSessions)
 
 	// Bob's session should remain.
-	bobSessions, err := q.ListUserSessionsByUserID(context.Background(), bob.ID)
-	require.NoError(t, err)
+	bobSessions := listSessions(t, q, bob.ID)
 	require.Len(t, bobSessions, 1)
 	assert.Equal(t, bobSessionID, bobSessions[0].ID)
 }
@@ -1195,8 +1378,7 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 	// Only the active session should remain.
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	require.Len(t, sessions, 1)
 	assert.Equal(t, activeID, sessions[0].ID)
 }
@@ -1233,8 +1415,7 @@ func TestCLI_SessionPurgeExpired_NoneExpired(t *testing.T) {
 	// Session should still be there.
 	_, q = openTestDB(t, dir)
 
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
-	require.NoError(t, err)
+	sessions := listSessions(t, q, user.ID)
 	assert.Len(t, sessions, 1)
 }
 

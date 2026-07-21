@@ -51,21 +51,24 @@ CREATE TABLE users (
     -- value when issued; user-wide revocation increments it so stale
     -- credentials fail without depending on timestamp precision or
     -- cross-host clock agreement.
-    auth_generation          INTEGER NOT NULL DEFAULT 0,
+    auth_generation          BIGINT NOT NULL DEFAULT 0,
     deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE INDEX idx_users_tokens_revoked_at ON users(tokens_revoked_at) WHERE tokens_revoked_at IS NOT NULL;
+CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC) WHERE deleted_at IS NULL;
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
 -- Partial on (is_admin, deleted_at) keeps the index tiny; indexing on
 -- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.
-CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin AND deleted_at IS NULL;
+-- The predicate MUST be spelled `is_admin = 1` -- SQLite's partial-index
+-- matcher is syntactic, so a bare `is_admin` predicate never matches
+-- GetFirstAdmin's `is_admin = 1` term and the index goes unused.
+CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin = 1 AND deleted_at IS NULL;
 
 -- Auth sessions
 CREATE TABLE user_sessions (
@@ -74,12 +77,21 @@ CREATE TABLE user_sessions (
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    auth_generation INTEGER NOT NULL DEFAULT 0,
+    auth_generation BIGINT NOT NULL DEFAULT 0,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+-- Serves the plain user_id lookups (prefix) AND the per-user keyset listing
+-- ListUserSessionsByUserID (user_id =, ORDER BY last_active_at DESC, id DESC),
+-- so that query both seeks and rides the index instead of TEMP-sorting.
+CREATE INDEX idx_user_sessions_user_last_active ON user_sessions(user_id, last_active_at DESC, id DESC);
 CREATE INDEX idx_user_sessions_expires_at_last_active ON user_sessions(expires_at, last_active_at);
+-- The active-session listing orders by (last_active_at DESC, id DESC) while
+-- filtering expires_at with a range predicate. A range on the leading
+-- expires_at column means the index above can never provide that order (the
+-- engine would top-N sort every page), so the ORDER BY gets its own index and
+-- the expiry check runs as a residual filter during the ordered scan.
+CREATE INDEX idx_user_sessions_last_active ON user_sessions(last_active_at DESC, id DESC);
 
 -- Registered workers
 CREATE TABLE workers (
@@ -101,16 +113,33 @@ CREATE TABLE workers (
     auto_registered INTEGER NOT NULL DEFAULT 0,
     deleted_at    DATETIME
 );
-CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC) WHERE deleted_at IS NULL;
--- Full (non-partial) registered_by index for the cleanup FK gate:
--- HardDeleteUsersBefore probes NOT EXISTS a worker (INCLUDING soft-deleted rows)
--- referencing the user, which the partial index above (deleted_at IS NULL) cannot serve.
-CREATE INDEX idx_workers_registered_by ON workers(registered_by);
+-- Non-partial on purpose (matches MySQL): ListWorkersByUserID and
+-- ListWorkersAdminByUserAndStatus filter on registered_by + status with NO
+-- deleted_at predicate, so a WHERE deleted_at IS NULL partial index would be
+-- ineligible and every page would fall back to a full table scan plus sort.
+-- The leading registered_by column also serves HardDeleteUsersBefore's
+-- NOT EXISTS (workers.registered_by = users.id) point probe over ALL rows
+-- (including soft-deleted), so no separate registered_by-only index is needed.
+CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC, id DESC);
 -- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
 -- (registered_by, status, created_at) index because registered_by is the
--- leading column.
-CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC) WHERE deleted_at IS NULL;
+-- leading column. Non-partial on purpose: the query carries no deleted_at
+-- filter (status=3 lists soft-deleted workers), so a WHERE deleted_at IS NULL
+-- partial index would be ineligible and every page would fall back to a full
+-- table scan plus sort.
+CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC, id DESC);
+-- Admin per-user listing (ListWorkersAdminByUser: registered_by=?, deleted_at IS
+-- NULL, no status filter). The (registered_by, status, created_at, id) composite
+-- above can't serve this query's ORDER BY because status sits between the
+-- registered_by equality and the created_at sort key -- within a registered_by
+-- prefix rows are grouped by status, not ordered by created_at, so every page
+-- would top-N sort. This partial index closes that gap and completes the
+-- 'composite ORDER BY rides an index' invariant for all five worker keyset
+-- families. (ListWorkersByUserID is still served by the composite above: it
+-- filters registered_by + status=1, so the composite's prefix matches exactly.)
+CREATE INDEX idx_workers_registered_by_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL;
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
@@ -144,7 +173,7 @@ CREATE TABLE worker_registration_keys (
 );
 CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys(expires_at);
 CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
-CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at);
+CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at DESC, id DESC);
 
 
 -- Sidebar sections (per-user organization of sidebar panels)
@@ -159,17 +188,7 @@ CREATE TABLE workspace_sections (
 );
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 
--- Workspace-to-section assignments (per-user)
-CREATE TABLE workspace_section_items (
-    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    section_id   TEXT NOT NULL REFERENCES workspace_sections(id) ON DELETE CASCADE,
-    position     TEXT NOT NULL,
-    PRIMARY KEY (user_id, workspace_id)
-);
-CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
-
--- Workspaces (hub-owned registry)
+-- Workspaces (hub-owned registry) -- must come before workspace_section_items
 CREATE TABLE workspaces (
     id            TEXT PRIMARY KEY,
     org_id        TEXT NOT NULL REFERENCES orgs(id),
@@ -182,6 +201,16 @@ CREATE TABLE workspaces (
 CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id) WHERE is_deleted = 0;
 CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- Workspace-to-section assignments (per-user)
+CREATE TABLE workspace_section_items (
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    section_id   TEXT NOT NULL REFERENCES workspace_sections(id) ON DELETE CASCADE,
+    position     TEXT NOT NULL,
+    PRIMARY KEY (user_id, workspace_id)
+);
+CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
 -- CRDT op-batch journal. The per-org CRDT manager appends every committed
 -- batch here in the same transaction that updates the in-memory state and
@@ -305,9 +334,9 @@ CREATE TABLE revocation_events (
     subject_id TEXT NOT NULL,
     user_id    TEXT NOT NULL,
     revoked_at DATETIME NOT NULL,
-    user_auth_generation INTEGER NOT NULL DEFAULT 0,
+    user_auth_generation BIGINT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    seq INTEGER UNIQUE CHECK (seq IS NULL OR seq > 0),
+    seq BIGINT UNIQUE CHECK (seq IS NULL OR seq > 0),
     published_at DATETIME,
     CHECK ((seq IS NULL) = (published_at IS NULL))
 );
@@ -316,14 +345,14 @@ CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, 
 
 CREATE TABLE revocation_event_sequence (
     id       INTEGER PRIMARY KEY CHECK (id = 1),
-    last_seq INTEGER NOT NULL CHECK (last_seq >= 0)
+    last_seq BIGINT NOT NULL CHECK (last_seq >= 0)
 );
 INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0);
 
 CREATE TABLE hub_runtime_lease (
     singleton_id     INTEGER PRIMARY KEY CHECK (singleton_id = 1),
     holder_id        TEXT NOT NULL CHECK (holder_id <> ''),
-    cursor_seq       INTEGER NOT NULL CHECK (cursor_seq >= 0),
+    cursor_seq       BIGINT NOT NULL CHECK (cursor_seq >= 0),
     lease_expires_at DATETIME NOT NULL
 );
 
@@ -349,16 +378,28 @@ CREATE TABLE api_tokens (
     previous_refresh_expires_at   DATETIME,
     scope                         TEXT NOT NULL DEFAULT 'remote:*',
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    auth_generation               INTEGER NOT NULL DEFAULT 0,
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,
     last_rotated_at               DATETIME,
     expires_at                    DATETIME,
     refresh_expires_at            DATETIME,
     revoked_at                    DATETIME
 );
-CREATE INDEX idx_api_tokens_user ON api_tokens(user_id, client_type);
-CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
+-- user_id only: the client_type filters are the optional OR-form and never
+-- seek; the remaining job is the user_id seek for the ByUserIncludingRevoked
+-- listing, which the partial idx_api_tokens_user_created cannot serve.
+CREATE INDEX idx_api_tokens_user ON api_tokens(user_id);
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+-- Keyset index for the admin ListAllAPITokens listing: partial on
+-- revoked_at IS NULL to match the query's live-token filter, with the trailing
+-- id DESC so the composite ORDER BY rides the index instead of top-N sorting.
+CREATE INDEX idx_api_tokens_created_at ON api_tokens(created_at DESC, id DESC) WHERE revoked_at IS NULL;
+-- Keyset index for the admin ListAllAPITokensByUser listing (the --user-id
+-- path): the leading user_id equality seeks, and (created_at DESC, id DESC)
+-- rides the composite ORDER BY -- without it the per-user page pays a seek on
+-- idx_api_tokens_user plus a TEMP B-TREE sort. Mirrors
+-- idx_workers_registered_by_created.
+CREATE INDEX idx_api_tokens_user_created ON api_tokens(user_id, created_at DESC, id DESC) WHERE revoked_at IS NULL;
 
 -- Ephemeral, high-churn delegation tokens minted by workers when a
 -- spawned agent (or opt-in terminal) calls into the hub or a sibling
@@ -378,7 +419,7 @@ CREATE TABLE delegation_tokens (
     secret_hash                   BLOB NOT NULL,
     refresh_hash                  BLOB,
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    auth_generation               INTEGER NOT NULL DEFAULT 0,
+    auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,
     expires_at                    DATETIME NOT NULL,
     refresh_expires_at            DATETIME,
@@ -388,6 +429,15 @@ CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
 CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
 CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+-- Keyset index for the admin ListAllDelegationTokens listing (see
+-- idx_api_tokens_created_at for the rationale).
+CREATE INDEX idx_delegation_tokens_created_at ON delegation_tokens(created_at DESC, id DESC) WHERE revoked_at IS NULL;
+-- Per-user keyset twin (see idx_api_tokens_user_created).
+CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, created_at DESC, id DESC) WHERE revoked_at IS NULL;
+-- Serves the hourly DeleteExpiredDelegationTokensBefore sweep of this
+-- high-churn table: seek the expired live rows instead of scanning every
+-- live token. Partial on revoked_at IS NULL to match the sweep's filter.
+CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) WHERE revoked_at IS NULL;
 
 -- RFC 8628 device authorizations. The CLI starts the flow on a headless
 -- machine, the user activates the user_code from any browser, then the
@@ -486,10 +536,6 @@ CREATE TABLE pending_oauth_signups (
     expires_at       DATETIME NOT NULL,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_workers_created_at ON workers(created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_orgs_created_at ON orgs(created_at DESC) WHERE deleted_at IS NULL;
 
 -- +goose Down
 DROP TABLE IF EXISTS cli_authorization_codes;

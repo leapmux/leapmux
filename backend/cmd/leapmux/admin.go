@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
@@ -258,37 +257,6 @@ func adminConfig(dataDir string) *config.Config {
 	return cfg
 }
 
-// adminAllUsersLimit caps how many users `collectAcrossUsers` will
-// scan when --user is unset on a list-style admin command. Hub
-// deployments large enough to bump against this should pass --user
-// to narrow the query; we surface the cap here so changes are
-// reviewed in one place.
-const adminAllUsersLimit = 1000
-
-// collectAcrossUsers runs `fetch` once per user in the store when
-// `userID` is empty, otherwise just once for the named user. The
-// per-user results are concatenated in user-listing order. Shared by
-// `api-token list` and `delegation-token list` which both walk every
-// user when --user is unset.
-func collectAcrossUsers[T any](ctx context.Context, st store.Store, userID string, fetch func(uid string) ([]T, error)) ([]T, error) {
-	if userID != "" {
-		return fetch(userID)
-	}
-	users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: adminAllUsersLimit})
-	if err != nil {
-		return nil, err
-	}
-	var rows []T
-	for _, u := range users {
-		batch, err := fetch(u.ID)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, batch...)
-	}
-	return rows, nil
-}
-
 // withAdminConfig creates a flag set with --data-dir, parses args, and
 // calls fn with the resolved config. Use this for commands that need
 // the config but not a database connection.
@@ -332,6 +300,44 @@ func resolveUser(ctx context.Context, st store.Store, userID, username string) (
 		return nil, fmt.Errorf("get user by username: %w", err)
 	}
 	return user, nil
+}
+
+// resolveUserFilter resolves an optional --user-id/--username flag pair into a
+// user-id list filter for the admin listings. Unlike resolveUser (which serves
+// user-mutation commands and therefore sees only live users), the ID path
+// resolves via GetByIDIncludeDeleted: the admin listings deliberately surface
+// soft-deleted owners' still-live rows for audit, so an operator must be able
+// to scope a listing to a soft-deleted user's id (e.g. to enumerate and revoke
+// a compromised account's outstanding tokens). A username resolves among live
+// users only -- usernames are freed for re-registration on soft-delete, so a
+// name is not a stable handle for a deleted account; use the id instead.
+// Returns nil (no filter) when both flags are empty; a nonexistent id or
+// username fails loudly rather than printing an empty table.
+func resolveUserFilter(ctx context.Context, st store.Store, userID, username string) (*string, error) {
+	if userID == "" && username == "" {
+		return nil, nil
+	}
+	if userID != "" && username != "" {
+		return nil, fmt.Errorf("--user-id and --username are mutually exclusive")
+	}
+	if userID != "" {
+		user, err := st.Users().GetByIDIncludeDeleted(ctx, userID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, fmt.Errorf("user not found: %s", userID)
+			}
+			return nil, fmt.Errorf("get user by ID: %w", err)
+		}
+		return &user.ID, nil
+	}
+	user, err := st.Users().GetByUsername(ctx, username)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("user not found: %s", username)
+		}
+		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	return &user.ID, nil
 }
 
 // friendlyConstraintError translates uniqueness constraint violations
@@ -402,12 +408,69 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
-// maybePrintNextCursor prints a cursor hint for the next page if the result
-// set is exactly limit items (indicating more pages may exist).
-func maybePrintNextCursor[T any](items []T, limit int64, getTime func(T) time.Time) {
-	if n := int64(len(items)); n > 0 && n == limit {
-		fmt.Printf("\nNext page: --cursor %s\n", getTime(items[n-1]).UTC().Format(time.RFC3339Nano))
+// cursorFlagUsage is the shared --cursor help text for the admin list
+// subcommands; the value is the opaque keyset cursor emitted by
+// maybePrintNextCursor.
+const cursorFlagUsage = "cursor for pagination (opaque; copy from the previous page's output)"
+
+// addListFlags registers the shared --limit/--cursor flag pair every admin
+// list subcommand takes, so a new listing cannot register a divergent default
+// or usage string. validateListLimit still runs per command: it needs the
+// parsed value, which exists only after flag parsing inside the run callback.
+func addListFlags(fs *flag.FlagSet) (limit *int64, cursor *string) {
+	limit = fs.Int64("limit", 50, "maximum number of results")
+	cursor = fs.String("cursor", "", cursorFlagUsage)
+	return limit, cursor
+}
+
+// maybePrintNextCursor prints the cursor hint for the next page when the
+// store reports one. The store owns both the has-more probe and the cursor
+// encoding (see store.NewPage), so the CLI cannot mispair the cursor column
+// or hint at a page that turns out empty. The hint goes to stderr so it never
+// pollutes piped output: stdout stays pure tabular data for `| awk`-style
+// consumers, while an interactive operator still sees the hint.
+func maybePrintNextCursor[T store.PageCursorer](page store.Page[T]) {
+	if page.HasMore() {
+		fmt.Fprintf(os.Stderr, "\nNext page: --cursor %s\n", page.NextCursor)
 	}
+}
+
+// classifyListError maps a store list error to a CLI-friendly message. A
+// malformed or stale --cursor is bad operator input (the store surfaces it
+// wrapped in store.ErrInvalidCursor), not a server fault: return an
+// actionable hint so the operator knows to re-copy the cursor or omit it,
+// rather than an opaque wrapped error that reads like a hub failure. Mirrors
+// the ListWorkers RPC's errors.Is(err, store.ErrInvalidCursor) -> connect.Code
+// InvalidArgument classification in worker_mgmt_service.go.
+func classifyListError(cmd string, err error) error {
+	if errors.Is(err, store.ErrInvalidCursor) {
+		return fmt.Errorf("%s: invalid cursor (pass the --cursor value printed at the end of the previous page, or omit --cursor to start from the first page): %w", cmd, err)
+	}
+	return fmt.Errorf("%s: %w", cmd, err)
+}
+
+// ownerLabel renders a JOINed owner/creator username for the admin listings; a
+// soft-deleted owner surfaces as "(deleted)". The store returns the raw
+// (username, deleted) state -- the placeholder is a presentation decision made
+// here, not in SQL.
+func ownerLabel(username string, deleted bool) string {
+	if deleted {
+		return "(deleted)"
+	}
+	return username
+}
+
+// validateListLimit rejects a non-positive --limit. A paginated store listing
+// treats a limit of 0 (and, after clamping, any negative) as "return no rows"
+// (store.FetchLimit / store.ClampListLimit), so a stray `--limit 0` or
+// `--limit -5` would print an empty listing an operator cannot distinguish
+// from a genuinely empty result. Reject it at the CLI boundary so bad input
+// fails loudly instead of masquerading as "none found".
+func validateListLimit(limit int64) error {
+	if limit <= 0 {
+		return fmt.Errorf("--limit must be a positive number (got %d)", limit)
+	}
+	return nil
 }
 
 // truncate shortens a string to maxLen runes, appending "..." if truncated.

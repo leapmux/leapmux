@@ -21,18 +21,17 @@ WHERE user_id = ? AND workspace_id = ?;
 -- Without the workspace_id tiebreaker the planner flips their
 -- relative order across refreshes.
 --
--- BINARY cast pins the tiebreaker to byte-wise (case-sensitive)
--- ordering. MySQL's default `utf8mb4_general_ci` collation is
--- case-INsensitive, so two workspace_ids that differ only in case
--- (e.g. "Foo..." vs "foo...") would sort non-deterministically
--- across runs -- different planner picks land on different orderings,
--- and the storetest tiebreaker-stability test catches it. SQLite and
--- PostgreSQL already collate case-sensitively by default, so they
--- don't need an explicit cast.
+-- The workspace_id tiebreaker is byte-wise (case-sensitive) because every
+-- table is created COLLATE=utf8mb4_bin, so no explicit cast is needed.
+-- MySQL's session default `utf8mb4_general_ci` is case-INsensitive; the
+-- table-level binary collation ensures two workspace_ids differing only in
+-- case still sort deterministically (the storetest tiebreaker-stability
+-- test catches any regression). SQLite and PostgreSQL already collate
+-- case-sensitively by default.
 SELECT wsi.* FROM workspace_section_items wsi
 JOIN workspace_sections ws ON wsi.section_id = ws.id
 WHERE wsi.user_id = ?
-ORDER BY ws.position, wsi.position, BINARY wsi.workspace_id;
+ORDER BY ws.position, wsi.position, wsi.workspace_id;
 
 -- name: DeleteWorkspaceSectionItem :exec
 DELETE FROM workspace_section_items

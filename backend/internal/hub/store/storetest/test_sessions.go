@@ -111,8 +111,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		err := st.Sessions().DeleteByUser(ctx, user.ID)
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
-		require.NoError(t, err)
+		sessions := ListAllSessions(t, st, user.ID)
 		require.NotNil(t, sessions)
 		assert.Empty(t, sessions)
 	})
@@ -131,8 +130,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
-		require.NoError(t, err)
+		sessions := ListAllSessions(t, st, user.ID)
 		require.Len(t, sessions, 1)
 		assert.Equal(t, keep.ID, sessions[0].ID)
 	})
@@ -144,8 +142,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
-		require.NoError(t, err)
+		sessions := ListAllSessions(t, st, user.ID)
 		assert.Len(t, sessions, 2)
 	})
 
@@ -238,10 +235,11 @@ func (s *Suite) testSessions(t *testing.T) {
 		SeedSession(t, st, user1.ID)
 		SeedSession(t, st, user2.ID)
 
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 100,
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
+		sessions := page.Rows
 		assert.GreaterOrEqual(t, len(sessions), 2)
 
 		// Verify fields are populated.
@@ -365,8 +363,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
-		require.NoError(t, err)
+		sessions := ListAllSessions(t, st, user.ID)
 		require.Len(t, sessions, 1)
 		assert.Equal(t, sess.ID, sessions[0].ID)
 	})
@@ -374,12 +371,12 @@ func (s *Suite) testSessions(t *testing.T) {
 	t.Run("list all active empty", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 100,
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, sessions)
-		assert.Empty(t, sessions)
+		require.NotNil(t, page.Rows)
+		assert.Empty(t, page.Rows)
 	})
 
 	t.Run("list all active excludes expired", func(t *testing.T) {
@@ -401,13 +398,13 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 100,
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
 		// Only the valid session should appear.
-		require.Len(t, sessions, 1)
-		assert.Equal(t, user.ID, sessions[0].UserID)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, user.ID, page.Rows[0].UserID)
 	})
 
 	t.Run("list all active with limit", func(t *testing.T) {
@@ -418,11 +415,11 @@ func (s *Suite) testSessions(t *testing.T) {
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 2,
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 2},
 		})
 		require.NoError(t, err)
-		assert.Len(t, sessions, 2)
+		assert.Len(t, page.Rows, 2)
 	})
 
 	t.Run("validate deleted user", func(t *testing.T) {
@@ -440,7 +437,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("list all active excludes sessions of deleted users", func(t *testing.T) {
+	t.Run("list all active surfaces sessions of soft-deleted users", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "sess-org")
 		alive := SeedUser(t, st, orgID, "active-alive-user")
@@ -451,13 +448,26 @@ func (s *Suite) testSessions(t *testing.T) {
 		err := st.Users().Delete(ctx, dead.ID)
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 100,
+		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 100},
 		})
 		require.NoError(t, err)
-		for _, s := range sessions {
-			assert.NotEqual(t, dead.ID, s.UserID, "should not include sessions of deleted users")
+		// The soft-deleted user's still-live session must surface for operator audit
+		// (LEFT JOIN with u.deleted_at IS NULL in the join condition, NOT an INNER
+		// JOIN that drops the row), with UserDeleted set and an empty username
+		// since the soft-deleted user row no longer satisfies the join -- the
+		// presentation layer decides the placeholder. This is the audit surface
+		// for "every active session"; hiding soft-deleted owners' sessions
+		// would let a just-deleted user's sessions linger invisibly until expiry.
+		var sawDead bool
+		for _, s := range page.Rows {
+			if s.UserID == dead.ID {
+				sawDead = true
+				assert.True(t, s.UserDeleted, "soft-deleted owner's session must surface with UserDeleted set")
+				assert.Empty(t, s.Username, "soft-deleted owner must surface with an empty username")
+			}
 		}
+		assert.True(t, sawDead, "soft-deleted user's live session must be listed for audit (LEFT JOIN)")
 	})
 
 	t.Run("list by user excludes expired sessions", func(t *testing.T) {
@@ -477,9 +487,43 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
-		require.NoError(t, err)
+		sessions := ListAllSessions(t, st, user.ID)
 		assert.Len(t, sessions, 1)
+	})
+
+	t.Run("list by user pages by last_active_at", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "sess-org")
+		user := SeedUser(t, st, orgID, "sess-page-user")
+		other := SeedUser(t, st, orgID, "sess-page-other")
+		s1 := SeedSession(t, st, user.ID)
+		s2 := SeedSession(t, st, user.ID)
+		s3 := SeedSession(t, st, user.ID)
+		// The other user's session is the most recent overall; it must not
+		// leak into user's pages even across a cursor boundary.
+		leak := SeedSession(t, st, other.ID)
+		base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, s1.ID, base.Add(1*time.Second)))
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, s2.ID, base.Add(2*time.Second)))
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, s3.ID, base.Add(3*time.Second)))
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, leak.ID, base.Add(10*time.Second)))
+
+		// ListByUserID pages on (last_active_at DESC, id DESC) -- NOT
+		// created_at; a wrong PageCursor column or ORDER BY would misorder or
+		// drop rows across this boundary.
+		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: user.ID, PageParams: store.PageParams{Limit: 2}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 2)
+		assert.Equal(t, s3.ID, page.Rows[0].ID)
+		assert.Equal(t, s2.ID, page.Rows[1].ID)
+		require.True(t, page.HasMore())
+
+		page, err = st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: user.ID, PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, s1.ID, page.Rows[0].ID)
+		assert.False(t, page.HasMore())
+		assert.Empty(t, page.NextCursor)
 	})
 
 	t.Run("list all active with cursor returns next page", func(t *testing.T) {
@@ -495,24 +539,51 @@ func (s *Suite) testSessions(t *testing.T) {
 		}
 
 		// First page.
-		page1, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Limit: 2,
+		res1, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 2},
 		})
 		require.NoError(t, err)
+		assert.True(t, res1.HasMore())
+		page1 := res1.Rows
 		require.Len(t, page1, 2)
 
-		// Second page using last item's LastActiveAt as cursor (RFC3339Nano).
-		cursor := page1[len(page1)-1].LastActiveAt.UTC().Format(time.RFC3339Nano)
-		page2, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-			Cursor: cursor,
-			Limit:  2,
+		// Second page using last item's composite (last_active_at, id) cursor.
+		cursor := store.EncodeCursor(page1[len(page1)-1].LastActiveAt, page1[len(page1)-1].ID)
+		res2, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Cursor: cursor, Limit: 2},
 		})
 		require.NoError(t, err)
+		page2 := res2.Rows
 		require.Len(t, page2, 1)
 
 		// No overlap between pages.
 		page1IDs := map[string]bool{page1[0].ID: true, page1[1].ID: true}
 		assert.False(t, page1IDs[page2[0].ID], "page2 should not overlap with page1")
+	})
+
+	t.Run("list all active cursor survives same-millisecond tie", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "sess-tie-org")
+		user := SeedUser(t, st, orgID, "sess-tie-user")
+
+		// Three sessions: two share an identical last_active_at millisecond and
+		// the third is strictly older. The cursor orders on last_active_at, so
+		// the tie is forced on that column.
+		tie := time.Now().UTC().Truncate(time.Millisecond)
+		older := SeedSession(t, st, user.ID)
+		tiedA := SeedSession(t, st, user.ID)
+		tiedB := SeedSession(t, st, user.ID)
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, older.ID, tie.Add(-time.Second)))
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, tiedA.ID, tie))
+		require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, tiedB.ID, tie))
+
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.ActiveSession], error) {
+			return st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+				PageParams: store.PageParams{Cursor: cursor, Limit: 1},
+			})
+		})
+		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
+			"same-millisecond sessions must not be skipped across page boundaries")
 	})
 
 	t.Run("duplicate session id returns conflict", func(t *testing.T) {
@@ -527,5 +598,33 @@ func (s *Suite) testSessions(t *testing.T) {
 			UserAgent: "test", IPAddress: "127.0.0.1",
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
+	})
+
+	t.Run("list all active rejects malformed cursor with ErrInvalidCursor", func(t *testing.T) {
+		// Pins the store-level cursor-decode contract for a non-ListWorkers
+		// method: a stale, truncated, or hand-edited --cursor must surface as
+		// store.ErrInvalidCursor (not a generic store fault and not a silent
+		// restart from page one) so the RPC and CLI layers can classify it as
+		// bad client input. worker_mgmt_service_test.go covers the ListWorkers
+		// RPC's InvalidArgument mapping; this covers the five sibling list
+		// methods' shared decode path through store.ParseCursor.
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "cursor-err-org")
+		SeedUser(t, st, orgID, "cursor-err-user")
+
+		cases := map[string]string{
+			"missing delimiter": "2026-07-20T12:34:56.789Z",
+			"empty id":          "2026-07-20T12:34:56.789Z_",
+			"bad timestamp":     "not-a-time_abc",
+		}
+		for name, bad := range cases {
+			t.Run(name, func(t *testing.T) {
+				_, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+					PageParams: store.PageParams{Cursor: bad, Limit: 10},
+				})
+				assert.ErrorIs(t, err, store.ErrInvalidCursor,
+					"cursor %q must surface as ErrInvalidCursor, not a generic store fault", bad)
+			})
+		}
 	})
 }

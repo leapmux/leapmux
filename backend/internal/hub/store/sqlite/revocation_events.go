@@ -117,7 +117,7 @@ func newRevocationEventStore(conn *sqliteConn) *revocationEventStore {
 				return mapErr(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *sqliteConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, cutoff))
+				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, formatSQLiteTime(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *sqliteConn, lease store.RevocationLease) error {
 				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{

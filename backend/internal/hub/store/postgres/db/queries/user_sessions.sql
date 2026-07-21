@@ -51,15 +51,20 @@ DELETE FROM user_sessions WHERE user_id = $1 AND id != $2;
 
 -- name: ListUserSessionsByUserID :many
 SELECT * FROM user_sessions
-WHERE user_id = $1 AND expires_at > NOW()
-ORDER BY last_active_at DESC
-LIMIT 1000;
+WHERE user_id = sqlc.arg(user_id) AND expires_at > NOW()
+  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+       OR last_active_at < sqlc.narg(cursor_time)::timestamptz
+       OR (last_active_at = sqlc.narg(cursor_time)::timestamptz AND id < sqlc.narg(cursor_id)))
+ORDER BY last_active_at DESC, id DESC
+LIMIT sqlc.arg('limit');
 
 -- name: ListAllActiveSessions :many
-SELECT s.id, s.user_id, u.username, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
+SELECT s.id, s.user_id, COALESCE(u.username, '') AS username, (u.id IS NULL)::boolean AS user_deleted, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
 FROM user_sessions s
-JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
+LEFT JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
 WHERE s.expires_at > NOW()
-  AND (sqlc.narg(cursor)::timestamptz IS NULL OR s.last_active_at < sqlc.narg(cursor))
-ORDER BY s.last_active_at DESC
+  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+       OR s.last_active_at < sqlc.narg(cursor_time)::timestamptz
+       OR (s.last_active_at = sqlc.narg(cursor_time)::timestamptz AND s.id < sqlc.narg(cursor_id)))
+ORDER BY s.last_active_at DESC, s.id DESC
 LIMIT sqlc.arg('limit');
