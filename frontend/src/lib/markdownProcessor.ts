@@ -4,11 +4,9 @@ import type { HighlighterCore } from 'shiki/core'
 import type { Processor } from 'unified'
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import rehypeStringify from 'rehype-stringify'
-import remarkGfm from 'remark-gfm'
-import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
-import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
+import { createMarkdownParser } from './markdownParse'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
@@ -119,9 +117,7 @@ function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeli
  * own — the rest of the chain (and thus the output) is identical.
  */
 export function createMarkdownProcessor(highlighter: HighlighterCore) {
-  const base = unified()
-    .use(remarkParse)
-    .use(remarkGfm)
+  const base = createMarkdownParser()
     .use(remarkLowercaseCodeLang)
     .use(remarkRehype)
     .use(rehypeShikiFromHighlighter, highlighter as Parameters<typeof rehypeShikiFromHighlighter>[0], {
@@ -157,9 +153,7 @@ export function createMarkdownProcessor(highlighter: HighlighterCore) {
  * container-styled but not theme-colored until the highlighted result swaps in.
  */
 export const plainMarkdownProcessor = withHardeningTail(
-  unified()
-    .use(remarkParse)
-    .use(remarkGfm)
+  createMarkdownParser()
     .use(remarkRehype),
 )
 
