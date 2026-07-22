@@ -478,6 +478,57 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	assert.Equal(t, 0, termWatchers, "no watcher should be registered for closed terminal")
 }
 
+// TestWatchEvents_ForeignWorkspaceAgent_NotWatched pins the access-control
+// filter for the leakiest gateSetFilter handler: an OPEN agent that lives in a
+// workspace outside the channel's accessible set must not be watched. This is a
+// different rejection branch than TestWatchEvents_ClosedAgent_NotWatched — a
+// closed agent is dropped by ListAgentsByIDs (the row never loads), whereas this
+// agent loads fine and is rejected only by the !allowedWorkspaces check. Without
+// that check a foreign workspace's live event stream would leak cross-tenant.
+func TestWatchEvents_ForeignWorkspaceAgent_NotWatched(t *testing.T) {
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	// Agent exists and is open, but in a workspace the channel cannot access.
+	seedAgent(t, svc, "agent-foreign", "ws-other")
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{
+			{AgentId: "agent-foreign", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
+		},
+	}, w)
+
+	// All requested entities rejected => a single NOT_FOUND stream error.
+	require.Len(t, w.streams, 1, "foreign-workspace agent should produce a stream error")
+	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
+	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+
+	svc.Watchers.mu.RLock()
+	agentWatchers := len(svc.Watchers.agents["agent-foreign"])
+	svc.Watchers.mu.RUnlock()
+	assert.Equal(t, 0, agentWatchers, "no watcher should be registered for a foreign-workspace agent")
+}
+
+// TestWatchEvents_ForeignWorkspaceTerminal_NotWatched is the terminal mirror:
+// an open terminal in an inaccessible workspace must not be watched.
+func TestWatchEvents_ForeignWorkspaceTerminal_NotWatched(t *testing.T) {
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	seedTerminal(t, svc, "term-foreign", "ws-other")
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-foreign"}},
+	}, w)
+
+	require.Len(t, w.streams, 1, "foreign-workspace terminal should produce a stream error")
+	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
+	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+
+	svc.Watchers.mu.RLock()
+	termWatchers := len(svc.Watchers.terminals["term-foreign"])
+	svc.Watchers.mu.RUnlock()
+	assert.Equal(t, 0, termWatchers, "no watcher should be registered for a foreign-workspace terminal")
+}
+
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))

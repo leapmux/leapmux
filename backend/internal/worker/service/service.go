@@ -469,27 +469,30 @@ func (svc *Context) persistTerminalOnExit(tid string, exitCode int) bool {
 // accident: they are handed this instead of the raw *channel.Dispatcher, so the
 // gate is a property of where the handler is registered rather than a line each
 // author must remember. Both Register and RegisterTracked are wrapped -- gating
-// only one would leave a silent hole (git uses both).
+// only one would leave a silent hole (git uses both). Each Register also records
+// gateOwnerOnly on the shared registrar so TestEveryRegisteredMethodIsClassified
+// sees the method without replaying the family register functions.
 type ownerOnlyRegistrar struct {
-	d   *channel.Dispatcher
-	svc *Context
+	r registrar
 }
 
-func (r ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
+func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
 	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		if !requireWorkerOwner(r.svc, userID, sender) {
+		if !requireWorkerOwner(o.r.svc, userID, sender) {
 			return
 		}
 		handler(ctx, userID, req, sender)
 	}
 }
 
-func (r ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc) {
-	r.d.Register(method, r.gate(handler))
+func (o ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc) {
+	o.r.record(method, gateOwnerOnly)
+	o.r.d.Register(method, o.gate(handler))
 }
 
-func (r ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
-	r.d.RegisterTracked(method, r.gate(handler))
+func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
+	o.r.record(method, gateOwnerOnly)
+	o.r.d.RegisterTracked(method, o.gate(handler))
 }
 
 // SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
@@ -579,27 +582,46 @@ func requireWorkerOwner(svc *Context, userID string, sender *channel.Sender) boo
 
 // RegisterAll registers all service handlers with the dispatcher.
 //
-// The machine-scoped families receive the ownerOnlyRegistrar, so their owner-only
-// gate is a property of registration -- a handler cannot join them ungated. The
-// workspace-scoped families (terminal, agent, cleanup, tab-move) still take the
-// raw dispatcher and gate by hand inside each handler (requireAccessibleWorkspace
-// and friends), because their workspace id is derived four different ways (request
-// field, loaded entity row, store lookup, dual source+dest) and no single
-// registrar-level extractor models all of them. Making that gate structural too
-// (at minimum for the request-field subset) is tracked in
-// https://github.com/leapmux/leapmux/issues/284 (which absorbed issue 289).
+// Every method records a methodGate at registration time (default-deny: a
+// method with no recorded gate fails TestEveryRegisteredMethodIsClassified):
+//
+//   - gateOwnerOnly  — machine-scoped families (file/git/sysinfo/tunnel) via
+//     ownerOnlyRegistrar, plus the capability probes ListAvailableShells /
+//     ListAvailableProviders (which enumerate installed shells/agent CLIs) via
+//     registerOwnerOnly; only the worker owner may call.
+//   - gateWorkspace  — structural workspace gate via registerWorkspaceGated /
+//     registerAgentGated / registerTerminalGated (+ Tracked / ByID /
+//     ForRestart variants). Unmarshal + access check run before the handler
+//     body; the ByID variants authorize via a workspace_id-only lookup for
+//     handlers that never read the row.
+//   - gateInBody     — heterogeneous in-body gates (file-tab-path dual checks,
+//     MoveTabWorkspace TabType switch); probe-enforced completeness.
+//   - gateSetFilter  — ListAgents / ListTerminals / WatchEvents filter via
+//     AccessibleSet(); denial is an empty result, not PERMISSION_DENIED.
+//   - gateNone       — Ping; a liveness probe that does no work and discloses
+//     nothing, ungated by design.
 func RegisterAll(d *channel.Dispatcher, svc *Context) {
-	registerPingHandler(d, svc)
+	_ = registerAllWithGates(d, svc)
+}
+
+// registerAllWithGates is the registration body shared by RegisterAll and
+// tests that need the gate map. Production call sites use RegisterAll; tests
+// call this on a throwaway dispatcher so the gate map and Methods() come from
+// the same function production runs — replay drift is impossible.
+func registerAllWithGates(d *channel.Dispatcher, svc *Context) map[string]methodGate {
+	r := newRegistrar(d, svc)
+	registerPingHandler(r, svc)
 	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
-	ownerOnly := ownerOnlyRegistrar{d: d, svc: svc}
+	ownerOnly := ownerOnlyRegistrar{r: r}
 	registerFileHandlers(ownerOnly, svc)
 	registerGitHandlers(ownerOnly, svc)
-	registerTerminalHandlers(d, svc)
-	registerAgentHandlers(d, svc)
-	registerCleanupHandlers(d, svc)
-	registerTabMoveHandlers(d, svc)
+	registerTerminalHandlers(r, svc)
+	registerAgentHandlers(r, svc)
+	registerCleanupHandlers(r, svc)
+	registerTabMoveHandlers(r, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	registerTunnelHandlers(ownerOnly)
+	return r.gates
 }
 
 // optionGroupLabelInGroups returns the display label of the option group with the
@@ -791,6 +813,35 @@ func (svc *Context) requireAccessibleTerminalForRestart(sender *channel.Sender, 
 		svc.Queries.GetTerminalForRestart,
 		func(t db.GetTerminalForRestartRow) string { return t.WorkspaceID },
 	)
+}
+
+// requireAccessibleAgentID verifies the agent's workspace is accessible
+// without loading the full row: GetAgentWorkspaceID fetches only the
+// workspace_id column, skipping the options / option-group JSON blobs a
+// full GetAgentByID deserializes. Both queries share the bare `id = ?`
+// predicate, so the error mapping (empty id, missing row, db error,
+// denial) is identical to requireAccessibleAgent — use that one instead
+// when the handler body needs the row.
+func (svc *Context) requireAccessibleAgentID(sender *channel.Sender, agentID string) bool {
+	_, ok := requireAccessibleRow(
+		svc, sender, agentID, "agent",
+		svc.Queries.GetAgentWorkspaceID,
+		func(wsID string) string { return wsID },
+	)
+	return ok
+}
+
+// requireAccessibleTerminalID is the terminal mirror of
+// requireAccessibleAgentID: a workspace_id-only lookup that skips the
+// screen BLOB a full GetTerminal would read. Same predicate and error
+// mapping as requireAccessibleTerminal.
+func (svc *Context) requireAccessibleTerminalID(sender *channel.Sender, terminalID string) bool {
+	_, ok := requireAccessibleRow(
+		svc, sender, terminalID, "terminal",
+		svc.Queries.GetTerminalWorkspaceID,
+		func(wsID string) string { return wsID },
+	)
+	return ok
 }
 
 // requireAccessibleRow factors the ACL + error-mapping shell shared by

@@ -10,8 +10,10 @@ import (
 )
 
 // registerTabMoveHandlers registers the MoveTabWorkspace inner RPC handler.
-func registerTabMoveHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("MoveTabWorkspace", handleMoveTabWorkspace(svc))
+// gateInBody, probe-enforced: dual source+dest + TabType switch cannot use a
+// single structural extractor.
+func registerTabMoveHandlers(d registrar, svc *Context) {
+	registerInBodyGated(d, "MoveTabWorkspace", handleMoveTabWorkspace(svc))
 }
 
 // handleMoveTabWorkspace updates an agent's or terminal's workspace_id in the
@@ -34,15 +36,16 @@ func handleMoveTabWorkspace(svc *Context) channel.HandlerFunc {
 		// Verify the **source** tab's current workspace is accessible on this
 		// channel. Without this check, a user could steal a tab from another
 		// user's workspace by calling MoveTabWorkspace with tabID=<theirs>,
-		// newWorkspaceId=<mine>. requireAccessibleAgent / Terminal also
-		// return NOT_FOUND when the tab id is unknown.
+		// newWorkspaceId=<mine>. requireAccessibleAgentID / TerminalID also
+		// return NOT_FOUND when the tab id is unknown; the id-only variants
+		// suffice because only the authorization decision is needed here.
 		switch r.GetTabType() {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
-			if _, ok := svc.requireAccessibleAgent(sender, tabID); !ok {
+			if !svc.requireAccessibleAgentID(sender, tabID) {
 				return
 			}
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-			if _, ok := svc.requireAccessibleTerminal(sender, tabID); !ok {
+			if !svc.requireAccessibleTerminalID(sender, tabID) {
 				return
 			}
 		default:

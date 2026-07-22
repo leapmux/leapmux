@@ -9,34 +9,23 @@ import (
 )
 
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
-func registerCleanupHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("CleanupWorkspace", handleCleanupWorkspace(svc))
+func registerCleanupHandlers(d registrar, svc *Context) {
+	registerWorkspaceGated(d, "CleanupWorkspace", handleCleanupWorkspace(svc))
 }
 
 // handleCleanupWorkspace cleans up all local resources (agents, terminals,
 // worktrees) for a deleted workspace. This is called via E2EE channel by the
-// frontend after the hub deletes the workspace.
-func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
-	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.CleanupWorkspaceRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+// frontend after the hub deletes the workspace. Workspace access is enforced
+// by registerWorkspaceGated before this runs.
+func handleCleanupWorkspace(svc *Context) func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender *channel.Sender) {
+	return func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender *channel.Sender) {
 		workspaceID := r.GetWorkspaceId()
-		if workspaceID == "" {
-			sendInvalidArgument(sender, "workspace_id is required")
-			return
-		}
-		// Gate on the channel's accessible set. The hub removes the workspace
-		// before calling CleanupWorkspace, but the accessible set is add-only
-		// per-channel — a user who previously owned the workspace (i.e. was
-		// told about it at handshake or via AddAccessibleWorkspaceID) can
-		// still clean up. Fabricated/foreign IDs are rejected.
-		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
-			return
-		}
+		// Gate on the channel's accessible set already ran in
+		// registerWorkspaceGated. The hub removes the workspace before
+		// calling CleanupWorkspace, but the accessible set is add-only
+		// per-channel — a user who previously owned the workspace (i.e.
+		// was told about it at handshake or via AddAccessibleWorkspaceID)
+		// can still clean up. Fabricated/foreign IDs are rejected upstream.
 
 		// 1. Stop all active agents for this workspace.
 		agentIDs, err := svc.Queries.ListOpenAgentIDsByWorkspaceID(bgCtx(), workspaceID)

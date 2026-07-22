@@ -85,12 +85,7 @@ var agentHandlerCases = []agentHandlerCase{
 	{"ListMessageMarks", func(id string) proto.Message {
 		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}
 	}},
-	// InterruptAgent is agent-ID-scoped via requireAccessibleAgent (agent.go),
-	// but was the one such handler missing from this table -- so its
-	// inaccessible-workspace / not-found / empty-id denials had no coverage.
-	// The gate is correct today; these cases guard against a future edit that
-	// drops it (which would let InterruptAgent reach svc.Agents.Interrupt for a
-	// workspace the caller cannot access).
+	// InterruptAgent is agent-ID-scoped via registerAgentGated.
 	{"InterruptAgent", func(id string) proto.Message {
 		return &leapmuxv1.InterruptAgentRequest{AgentId: id}
 	}},
@@ -121,24 +116,6 @@ var terminalHandlerCases = []terminalHandlerCase{
 	}},
 }
 
-// TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace verifies that
-// every agent-ID-scoped handler rejects agents whose workspace is not in the
-// channel's accessible set.
-func TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace(t *testing.T) {
-	for _, tc := range agentHandlerCases {
-		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-			seedAgent(t, svc, "agent-other", "ws-other")
-
-			dispatch(d, tc.method, tc.req("agent-other"), w)
-
-			require.Len(t, w.errors, 1, "%s: expected one error", tc.method)
-			assert.Equal(t, codePermissionDenied, w.errors[0].code, "%s: expected PERMISSION_DENIED", tc.method)
-			assert.Empty(t, w.responses, "%s: no response should be sent", tc.method)
-		})
-	}
-}
-
 // TestAccessControl_AgentHandlers_NotFound verifies that agent-ID-scoped
 // handlers return NOT_FOUND when the agent does not exist.
 func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
@@ -166,23 +143,6 @@ func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 
 			require.Len(t, w.errors, 1, "%s: expected one error", tc.method)
 			assert.Equal(t, codeInvalidArgument, w.errors[0].code, "%s: expected INVALID_ARGUMENT", tc.method)
-		})
-	}
-}
-
-// TestAccessControl_TerminalHandlers_RejectInaccessibleWorkspace is the
-// terminal counterpart.
-func TestAccessControl_TerminalHandlers_RejectInaccessibleWorkspace(t *testing.T) {
-	for _, tc := range terminalHandlerCases {
-		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-			seedTerminal(t, svc, "term-other", "ws-other")
-
-			dispatch(d, tc.method, tc.req("term-other"), w)
-
-			require.Len(t, w.errors, 1, "%s: expected one error", tc.method)
-			assert.Equal(t, codePermissionDenied, w.errors[0].code, "%s: expected PERMISSION_DENIED", tc.method)
-			assert.Empty(t, w.responses)
 		})
 	}
 }
@@ -255,6 +215,223 @@ func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
+}
+
+// gatedMethodProbe describes one foreign-workspace denial probe for a method
+// classified gateWorkspace or gateInBody. Completeness is enforced by
+// TestAccessControl_GatedMethodProbesAreComplete against registerAllWithGates.
+type gatedMethodProbe struct {
+	name   string
+	method string
+	seed   func(t *testing.T, svc *Context)
+	req    func() proto.Message
+}
+
+func seedForeignFileTab(t *testing.T, svc *Context, tabID, workspaceID string) {
+	t.Helper()
+	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
+		OrgID:       "org-1",
+		TabID:       tabID,
+		WorkspaceID: workspaceID,
+		FilePath:    "/tmp/probe.txt",
+	}))
+}
+
+// gatedMethodProbes covers every gateWorkspace ∪ gateInBody method with at
+// least one foreign-workspace denial. Derived entries reuse agentHandlerCases
+// / terminalHandlerCases; the residue is hand-written.
+var gatedMethodProbes = func() []gatedMethodProbe {
+	var probes []gatedMethodProbe
+	for _, tc := range agentHandlerCases {
+		probes = append(probes, gatedMethodProbe{
+			name:   tc.method,
+			method: tc.method,
+			seed:   func(t *testing.T, svc *Context) { seedAgent(t, svc, "agent-other", "ws-other") },
+			req:    func() proto.Message { return tc.req("agent-other") },
+		})
+	}
+	for _, tc := range terminalHandlerCases {
+		probes = append(probes, gatedMethodProbe{
+			name:   tc.method,
+			method: tc.method,
+			seed:   func(t *testing.T, svc *Context) { seedTerminal(t, svc, "term-other", "ws-other") },
+			req:    func() proto.Message { return tc.req("term-other") },
+		})
+	}
+	probes = append(probes,
+		gatedMethodProbe{
+			name:   "OpenAgent",
+			method: "OpenAgent",
+			seed:   func(*testing.T, *Context) {},
+			req: func() proto.Message {
+				return &leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "OpenTerminal",
+			method: "OpenTerminal",
+			seed:   func(*testing.T, *Context) {},
+			req: func() proto.Message {
+				return &leapmuxv1.OpenTerminalRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "WatchWorkspacePrivateEvents",
+			method: "WatchWorkspacePrivateEvents",
+			seed:   func(*testing.T, *Context) {},
+			req: func() proto.Message {
+				return &leapmuxv1.WatchWorkspacePrivateEventsRequest{WorkspaceId: "ws-other"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "RegisterFileTabPath",
+			method: "RegisterFileTabPath",
+			seed:   func(*testing.T, *Context) {},
+			req: func() proto.Message {
+				return &leapmuxv1.RegisterFileTabPathRequest{
+					TabId: "tab-1", OrgId: "org-1", WorkspaceId: "ws-other", FilePath: "/tmp/x",
+				}
+			},
+		},
+		gatedMethodProbe{
+			name:   "CleanupWorkspace",
+			method: "CleanupWorkspace",
+			seed:   func(*testing.T, *Context) {},
+			req: func() proto.Message {
+				return &leapmuxv1.CleanupWorkspaceRequest{WorkspaceId: "ws-other"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "GetFileTabPath",
+			method: "GetFileTabPath",
+			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			req: func() proto.Message {
+				return &leapmuxv1.GetFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "RevokeFileTabPath",
+			method: "RevokeFileTabPath",
+			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			req: func() proto.Message {
+				return &leapmuxv1.RevokeFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
+			},
+		},
+		gatedMethodProbe{
+			name:   "RelocateFileTabPath/foreign-source",
+			method: "RelocateFileTabPath",
+			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			req: func() proto.Message {
+				return &leapmuxv1.RelocateFileTabPathRequest{
+					OrgId: "org-1", TabId: "file-tab-other", NewWorkspaceId: "ws-1",
+				}
+			},
+		},
+		gatedMethodProbe{
+			name:   "RelocateFileTabPath/foreign-destination",
+			method: "RelocateFileTabPath",
+			seed: func(t *testing.T, svc *Context) {
+				seedForeignFileTab(t, svc, "file-tab-mine", "ws-1")
+			},
+			req: func() proto.Message {
+				return &leapmuxv1.RelocateFileTabPathRequest{
+					OrgId: "org-1", TabId: "file-tab-mine", NewWorkspaceId: "ws-other",
+				}
+			},
+		},
+		gatedMethodProbe{
+			name:   "MoveTabWorkspace",
+			method: "MoveTabWorkspace",
+			seed:   func(t *testing.T, svc *Context) { seedAgent(t, svc, "agent-other", "ws-other") },
+			req: func() proto.Message {
+				return &leapmuxv1.MoveTabWorkspaceRequest{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+					TabId:   "agent-other", NewWorkspaceId: "ws-1",
+				}
+			},
+		},
+	)
+	return probes
+}()
+
+func TestAccessControl_GatedMethods_DenyForeignWorkspace(t *testing.T) {
+	for _, tc := range gatedMethodProbes {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			tc.seed(t, svc)
+
+			dispatch(d, tc.method, tc.req(), w)
+
+			require.Len(t, w.errors, 1, "%s: expected one error", tc.name)
+			assert.Equal(t, codePermissionDenied, w.errors[0].code, "%s: expected PERMISSION_DENIED", tc.name)
+			// Pin the denial message too, not just the code: a change that keeps
+			// PERMISSION_DENIED but blanks or leaks the reason (e.g. echoing the
+			// workspace_id) would otherwise slip through. Recovers the message
+			// assertion the deleted open_workspace_required_test.go carried, now
+			// across every gated method rather than just OpenAgent/OpenTerminal.
+			assert.Contains(t, w.errors[0].message, "not accessible", "%s: denial should name the access failure", tc.name)
+			assert.Empty(t, w.responses, "%s: no response should be sent", tc.name)
+		})
+	}
+}
+
+func TestAccessControl_GatedMethodProbesAreComplete(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+
+	var expected []string
+	for method, gate := range gates {
+		if gate == gateWorkspace || gate == gateInBody {
+			expected = append(expected, method)
+		}
+	}
+
+	seen := make(map[string]bool)
+	var probed []string
+	for _, p := range gatedMethodProbes {
+		if !seen[p.method] {
+			seen[p.method] = true
+			probed = append(probed, p.method)
+		}
+	}
+	assert.ElementsMatch(t, expected, probed,
+		"gatedMethodProbes must cover exactly the gateWorkspace ∪ gateInBody methods from registerAllWithGates")
+}
+
+// TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID covers the
+// gateWorkspace methods whose workspace id is a request field (as opposed to
+// a loaded row): registerWorkspaceGated's empty-id branch must fire before
+// any handler code runs. Row-gated methods' empty-id branch is covered by
+// the *_EmptyID tests driven from agentHandlerCases / terminalHandlerCases.
+func TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID(t *testing.T) {
+	cases := []struct {
+		method string
+		req    proto.Message
+	}{
+		{"OpenAgent", &leapmuxv1.OpenAgentRequest{WorkingDir: "/tmp"}},
+		{"OpenTerminal", &leapmuxv1.OpenTerminalRequest{WorkingDir: "/tmp"}},
+		{"WatchWorkspacePrivateEvents", &leapmuxv1.WatchWorkspacePrivateEventsRequest{}},
+		// Every other required field is set, so the assertion also pins the
+		// ordering: workspace_id is validated in the registrar BEFORE the
+		// handler's own required-field check gets a say.
+		{"RegisterFileTabPath", &leapmuxv1.RegisterFileTabPathRequest{
+			TabId: "tab-1", OrgId: "org-1", FilePath: "/tmp/x",
+		}},
+		{"CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+			dispatch(d, tc.method, tc.req, w)
+
+			require.Len(t, w.errors, 1, "%s: expected one error", tc.method)
+			assert.Equal(t, codeInvalidArgument, w.errors[0].code, "%s: expected INVALID_ARGUMENT", tc.method)
+			assert.Equal(t, "workspace_id is required", w.errors[0].message, tc.method)
+			assert.Empty(t, w.responses, "%s: no response should be sent", tc.method)
+		})
+	}
 }
 
 // MoveTabWorkspace-specific tests. The source and destination checks both
@@ -339,18 +516,6 @@ func TestMoveTabWorkspace_AllowsMoveBetweenAccessibleWorkspaces(t *testing.T) {
 // previously-accessible workspace (freshly deleted at the hub) stays cleanable.
 // A workspace never added to the set must be rejected.
 
-func TestCleanupWorkspace_RejectsInaccessibleWorkspace(t *testing.T) {
-	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
-
-	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
-		WorkspaceId: "ws-other",
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.Empty(t, w.responses)
-}
-
 func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	seedAgent(t, svc, "agent-1", "ws-1")
@@ -377,52 +542,28 @@ func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 // all a delegation bearer, which is pinned to one workspace and handed to a
 // prompt-injectable agent.
 //
-// Every family here is gated structurally: registerFileHandlers, registerGitHandlers,
-// registerSysInfoHandlers and registerTunnelHandlers all take an ownerOnlyRegistrar
-// rather than the raw *channel.Dispatcher, so an ungated handler in them cannot be
-// written.
-//
-// The methods are ENUMERATED from the dispatcher rather than listed here. A
-// hand-maintained table backstops only the methods someone remembered to add to it
-// -- it silently stops covering each handler registered after it was written, which
-// is the same "a line each author must remember" flaw the registrar exists to
-// remove, reintroduced in the test that is supposed to guard the registrar. Reading
-// the set back from the dispatcher means a new machine-scoped handler is covered the
-// moment it is registered, and a handler MOVED off the registrar onto the raw
-// dispatcher fails here instead of passing unnoticed.
-//
-// An empty payload suffices: ownerOnlyRegistrar.gate runs requireWorkerOwner BEFORE
-// the handler unmarshals anything, so a non-owner is refused without a valid request
-// ever being built -- which is itself the property worth pinning (an ungated handler
+// Methods are enumerated from the gateOwnerOnly bucket of registerAllWithGates
+// rather than by replaying the four family register functions. An empty payload
+// suffices: ownerOnlyRegistrar.gate runs requireWorkerOwner BEFORE the handler
+// unmarshals anything, so a non-owner is refused without a valid request ever
+// being built -- which is itself the property worth pinning (an ungated handler
 // would get as far as parsing attacker-supplied bytes).
 //
-// Workspace-scoped gating (as opposed to the machine-scoped, owner-only gating
-// enumerated here) has no equivalent mechanical enforcement -- it gates in-body
-// per handler and its coverage rests on the hand-maintained agentHandlerCases /
-// terminalHandlerCases tables above, exactly the "a line each author must
-// remember" flaw this comment describes. InterruptAgent is workspace-gated in
-// code but appears in zero test files here -- proof the drift is already
-// real. See https://github.com/leapmux/leapmux/issues/284 for a typed-
-// registrar shape that closes the gap for most methods.
+// Workspace-scoped gating is enforced structurally via registerWorkspaceGated /
+// registerAgentGated / registerTerminalGated (and Tracked / ForRestart variants),
+// with gateInBody residue covered by gatedMethodProbes. Completeness is asserted
+// by TestAccessControl_GatedMethodProbesAreComplete and
+// TestEveryRegisteredMethodIsClassified.
 func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	svc, d, _ := setupTestService(t)
+	gates := registerAllWithGates(channel.NewDispatcher(), svc)
 
-	// A throwaway dispatcher carrying ONLY the machine-scoped families names the set
-	// of methods that must be owner-only. Enumerating from the production dispatcher
-	// (d) instead would sweep in the workspace-scoped families, which legitimately
-	// serve non-owners.
-	//
-	// The dispatch below then runs against the PRODUCTION dispatcher, so the two
-	// halves cross-check each other: this names what must be gated, and RegisterAll's
-	// wiring is what actually answers.
-	ownerOnlyDispatcher := channel.NewDispatcher()
-	ownerOnly := ownerOnlyRegistrar{d: ownerOnlyDispatcher, svc: svc}
-	registerFileHandlers(ownerOnly, svc)
-	registerGitHandlers(ownerOnly, svc)
-	registerSysInfoHandlers(ownerOnly, svc)
-	registerTunnelHandlers(ownerOnly)
-
-	methods := ownerOnlyDispatcher.Methods()
+	var methods []string
+	for method, gate := range gates {
+		if gate == gateOwnerOnly {
+			methods = append(methods, method)
+		}
+	}
 	require.NotEmpty(t, methods, "the machine-scoped families must register something")
 
 	for _, method := range methods {
@@ -440,57 +581,54 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// The default-deny companion to the test above: EVERY method RegisterAll wires
-// must be CLASSIFIED -- registered by a machine-scoped family (owner-only by
-// construction) or by one of the workspace-/channel-scoped families listed here.
-//
-// The owner-only test enumerates its methods from the dispatcher, but the FAMILY
-// list feeding that dispatcher is still written by hand, so a brand-new
-// machine-scoped family wired to the raw dispatcher in RegisterAll would ship
-// covered by neither list and no test would notice. This closes that gap: an
-// unclassified method fails here until its author decides which side it belongs
-// on, and classifying it machine-scoped puts it under the denial test above
-// automatically.
+// TestListAvailableShells_OwnerAllowed pins the ALLOW side of the
+// registerOwnerOnly gate the capability probes moved behind: the worker owner
+// (the identity the local-IPC remote CLI dispatches with) must still be able
+// to enumerate installed shells. The deny side is covered per-method by
+// TestMachineScopedFamiliesAreOwnerOnly; ListAvailableProviders shares the
+// identical registerOwnerOnly wrapper, so one end-to-end allow probe covers
+// the gate (its body forks discovery subprocesses, too slow for a unit test).
+func TestListAvailableShells_OwnerAllowed(t *testing.T) {
+	_, d, w := setupTestService(t)
+
+	dispatch(d, "ListAvailableShells", &leapmuxv1.ListAvailableShellsRequest{}, w)
+
+	require.Empty(t, w.errors, "the owner must pass the owner-only gate")
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAvailableShellsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.NotEmpty(t, resp.GetShells(), "owner should see at least one installed shell")
+}
+
+// TestEveryRegisteredMethodIsClassified is the default-deny companion: EVERY
+// method registerAllWithGates wires must appear in the gate map, and the two
+// open-by-design buckets are pinned with explicit lists so additions are
+// reviewed decisions. Disjointness (no method recorded twice) is enforced by
+// registrar.record's duplicate panic at registration time.
 func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 	svc, d, _ := setupTestService(t)
+	gates := registerAllWithGates(channel.NewDispatcher(), svc)
 
-	// The machine-scoped families, exactly as RegisterAll hands them the gated
-	// registrar.
-	ownerOnlyDispatcher := channel.NewDispatcher()
-	ownerOnly := ownerOnlyRegistrar{d: ownerOnlyDispatcher, svc: svc}
-	registerFileHandlers(ownerOnly, svc)
-	registerGitHandlers(ownerOnly, svc)
-	registerSysInfoHandlers(ownerOnly, svc)
-	registerTunnelHandlers(ownerOnly)
-
-	// Everything RegisterAll deliberately leaves on the raw dispatcher: ping plus
-	// the workspace-scoped families, which legitimately serve non-owners and gate
-	// on the Hub-supplied accessible-workspace set instead.
-	workspaceScopedDispatcher := channel.NewDispatcher()
-	registerPingHandler(workspaceScopedDispatcher, svc)
-	registerTerminalHandlers(workspaceScopedDispatcher, svc)
-	registerAgentHandlers(workspaceScopedDispatcher, svc)
-	registerCleanupHandlers(workspaceScopedDispatcher, svc)
-	registerTabMoveHandlers(workspaceScopedDispatcher, svc)
-
-	// No method may sit on both sides; the union must be exactly what RegisterAll
-	// produced -- an extra production method is unclassified, a missing one means a
-	// family listed here fell out of RegisterAll.
-	classified := make(map[string]bool)
-	for _, m := range ownerOnlyDispatcher.Methods() {
-		classified[m] = true
+	var gated []string
+	for method := range gates {
+		gated = append(gated, method)
 	}
-	for _, m := range workspaceScopedDispatcher.Methods() {
-		require.False(t, classified[m],
-			"method %q is registered by both a machine-scoped and a workspace-scoped family", m)
-		classified[m] = true
-	}
+	assert.ElementsMatch(t, d.Methods(), gated,
+		"every method RegisterAll wires must have a recorded methodGate")
 
-	var expected []string
-	expected = append(expected, ownerOnlyDispatcher.Methods()...)
-	expected = append(expected, workspaceScopedDispatcher.Methods()...)
-	assert.ElementsMatch(t, expected, d.Methods(),
-		"every method RegisterAll wires must be claimed by exactly one family list in this test -- classify new families as machine-scoped (owner-only) or workspace-scoped")
+	var setFilter, ungated []string
+	for method, gate := range gates {
+		switch gate {
+		case gateSetFilter:
+			setFilter = append(setFilter, method)
+		case gateNone:
+			ungated = append(ungated, method)
+		}
+	}
+	assert.ElementsMatch(t, []string{"ListAgents", "ListTerminals", "WatchEvents"}, setFilter,
+		"gateSetFilter additions must be an explicit reviewed decision")
+	assert.ElementsMatch(t, []string{"Ping"}, ungated,
+		"gateNone additions must be an explicit reviewed decision")
 }
 
 // The owner is written by the connect loop and read by handlers on their own

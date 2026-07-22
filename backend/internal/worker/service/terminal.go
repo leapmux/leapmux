@@ -47,123 +47,111 @@ func (svc *Context) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 }
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
-func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
+func registerTerminalHandlers(d registrar, svc *Context) {
 	// OpenTerminal starts a new PTY terminal session.
-	d.Register("OpenTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.OpenTerminalRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerWorkspaceGated(d, "OpenTerminal",
+		func(ctx context.Context, userID string, r *leapmuxv1.OpenTerminalRequest, sender *channel.Sender) {
+			workspaceID := r.GetWorkspaceId()
 
-		workspaceID := r.GetWorkspaceId()
-		if workspaceID == "" {
-			sendInvalidArgument(sender, "workspace_id is required")
-			return
-		}
-		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
-			return
-		}
+			cols := r.GetCols()
+			if cols == 0 {
+				cols = 80
+			}
+			rows := r.GetRows()
+			if rows == 0 {
+				rows = 25
+			}
 
-		cols := r.GetCols()
-		if cols == 0 {
-			cols = 80
-		}
-		rows := r.GetRows()
-		if rows == 0 {
-			rows = 25
-		}
+			// Resolve the default shell here (not inside terminal.Start) so
+			// the startup-panel label reflects the actual binary, e.g.
+			// "Starting zsh…" rather than a generic "Starting terminal…"
+			// fallback when the client passes shell="".
+			shell := r.GetShell()
+			if shell == "" {
+				shell = terminal.ResolveDefaultShell()
+			}
+			shellStartDir := expandTilde(r.GetShellStartDir())
+			workingDir := expandTilde(r.GetWorkingDir())
+			if workingDir == "" {
+				workingDir = svc.HomeDir
+			}
 
-		// Resolve the default shell here (not inside terminal.Start) so
-		// the startup-panel label reflects the actual binary, e.g.
-		// "Starting zsh…" rather than a generic "Starting terminal…"
-		// fallback when the client passes shell="".
-		shell := r.GetShell()
-		if shell == "" {
-			shell = terminal.ResolveDefaultShell()
-		}
-		shellStartDir := expandTilde(r.GetShellStartDir())
-		workingDir := expandTilde(r.GetWorkingDir())
-		if workingDir == "" {
-			workingDir = svc.HomeDir
-		}
+			// Validate git-mode options on the sync path so bad input fails
+			// the RPC with InvalidArgument before we create any DB row. The
+			// actual mutation happens inside runTerminalStartup.
+			plan, gmErr := svc.validateGitMode(ctx, workingDir, r)
+			if gmErr != nil {
+				sendValidationError(sender, gmErr)
+				return
+			}
 
-		// Validate git-mode options on the sync path so bad input fails
-		// the RPC with InvalidArgument before we create any DB row. The
-		// actual mutation happens inside runTerminalStartup.
-		plan, gmErr := svc.validateGitMode(ctx, workingDir, &r)
-		if gmErr != nil {
-			sendValidationError(sender, gmErr)
-			return
-		}
+			terminalID := id.Generate()
 
-		terminalID := id.Generate()
+			outputFn := svc.makeTerminalOutputFn(terminalID)
+			exitFn := svc.makeTerminalExitFn()
 
-		outputFn := svc.makeTerminalOutputFn(terminalID)
-		exitFn := svc.makeTerminalExitFn()
+			// Persist the initial terminal record using the planned working
+			// dir, so tab sync and post-refresh reads see the eventual path
+			// even before git-mode execution creates the worktree.
+			// Default a random "Terminal <Name>" title here so all spawn
+			// paths (UI + CLI) get a name from one pool, picked one place.
+			// OpenTerminalRequest has no title field by design — the
+			// frontend used to pick client-side and call UpdateTerminalTitle
+			// afterward; now it just reads `title` from this response.
+			terminalTitle := pickTerminalTitle()
+			if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+				ID:            terminalID,
+				WorkspaceID:   workspaceID,
+				WorkingDir:    plan.PlannedWorkingDir,
+				HomeDir:       svc.HomeDir,
+				ShellStartDir: shellStartDir,
+				Shell:         shell,
+				Title:         terminalTitle,
+				Cols:          int64(cols),
+				Rows:          int64(rows),
+				Screen:        []byte{},
+			}); upsertErr != nil {
+				slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
+				sendInternalError(sender, "failed to persist terminal")
+				return
+			}
 
-		// Persist the initial terminal record using the planned working
-		// dir, so tab sync and post-refresh reads see the eventual path
-		// even before git-mode execution creates the worktree.
-		// Default a random "Terminal <Name>" title here so all spawn
-		// paths (UI + CLI) get a name from one pool, picked one place.
-		// OpenTerminalRequest has no title field by design — the
-		// frontend used to pick client-side and call UpdateTerminalTitle
-		// afterward; now it just reads `title` from this response.
-		terminalTitle := pickTerminalTitle()
-		if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-			ID:            terminalID,
-			WorkspaceID:   workspaceID,
-			WorkingDir:    plan.PlannedWorkingDir,
-			HomeDir:       svc.HomeDir,
-			ShellStartDir: shellStartDir,
-			Shell:         shell,
-			Title:         terminalTitle,
-			Cols:          int64(cols),
-			Rows:          int64(rows),
-			Screen:        []byte{},
-		}); upsertErr != nil {
-			slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
-			sendInternalError(sender, "failed to persist terminal")
-			return
-		}
+			// Register the startup in the registry with a cancel ctx so
+			// CloseTerminal during phase 0 aborts executeGitMode, and seed
+			// the STARTING broadcast with the provider label. Phase 0 will
+			// overwrite the message with a mode-specific label (e.g.
+			// `Creating worktree "feature/x"…`) before mutation begins. gs
+			// is nil here because the post-mutation working dir isn't
+			// known yet; phase 1 re-broadcasts with the real value.
+			startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
 
-		// Register the startup in the registry with a cancel ctx so
-		// CloseTerminal during phase 0 aborts executeGitMode, and seed
-		// the STARTING broadcast with the provider label. Phase 0 will
-		// overwrite the message with a mode-specific label (e.g.
-		// `Creating worktree "feature/x"…`) before mutation begins. gs
-		// is nil here because the post-mutation working dir isn't
-		// known yet; phase 1 re-broadcasts with the real value.
-		startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
+			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+				TerminalId: terminalID,
+				Title:      terminalTitle,
+			})
 
-		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
-			TerminalId: terminalID,
-			Title:      terminalTitle,
+			// Kick off git-mode execution + PTY spawn in the background.
+			// The RemoteIPC mint happens inside runTerminalStartup so an
+			// unusually slow factory doesn't stretch the synchronous RPC
+			// latency the user sees.
+			spawnInfo := TerminalSpawnInfo{
+				UserID:      userID,
+				OrgID:       r.GetOrgId(),
+				WorkspaceID: workspaceID,
+				WorkerID:    svc.WorkerID,
+				TabID:       terminalID,
+				WorkingDir:  plan.PlannedWorkingDir,
+			}
+			go svc.runTerminalStartup(startupCtx, terminal.Options{
+				ID:            terminalID,
+				WorkspaceID:   workspaceID,
+				Shell:         shell,
+				WorkingDir:    plan.PlannedWorkingDir,
+				ShellStartDir: shellStartDir,
+				Cols:          uint16(cols),
+				Rows:          uint16(rows),
+			}, spawnInfo, plan, outputFn, exitFn)
 		})
-
-		// Kick off git-mode execution + PTY spawn in the background.
-		// The RemoteIPC mint happens inside runTerminalStartup so an
-		// unusually slow factory doesn't stretch the synchronous RPC
-		// latency the user sees.
-		spawnInfo := TerminalSpawnInfo{
-			UserID:      userID,
-			OrgID:       r.GetOrgId(),
-			WorkspaceID: workspaceID,
-			WorkerID:    svc.WorkerID,
-			TabID:       terminalID,
-			WorkingDir:  plan.PlannedWorkingDir,
-		}
-		go svc.runTerminalStartup(startupCtx, terminal.Options{
-			ID:            terminalID,
-			WorkspaceID:   workspaceID,
-			Shell:         shell,
-			WorkingDir:    plan.PlannedWorkingDir,
-			ShellStartDir: shellStartDir,
-			Cols:          uint16(cols),
-			Rows:          uint16(rows),
-		}, spawnInfo, plan, outputFn, exitFn)
-	})
 
 	// RestartTerminal respawns the shell process for a terminal whose
 	// previous PTY has exited. Reuses the tab's working_dir / shell /
@@ -171,264 +159,223 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
-	d.Register("RestartTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.RestartTerminalRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-		terminalID := r.GetTerminalId()
-		dbTerm, ok := svc.requireAccessibleTerminalForRestart(sender, terminalID)
-		if !ok {
-			return
-		}
+	registerTerminalForRestartGated(d, "RestartTerminal",
+		func(_ context.Context, userID string, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender *channel.Sender) {
+			terminalID := r.GetTerminalId()
 
-		// Reject overlapping restarts: a previous startup hasn't broadcast
-		// READY/FAILED yet (could be the original OpenTerminal still in
-		// flight, or a back-to-back restart).
-		if _, _, _, inFlight := svc.TerminalStartup.status(terminalID); inFlight {
-			sendFailedPrecondition(sender, "terminal startup in progress")
-			return
-		}
-		// Reject synchronously if the PTY is still alive so the user sees
-		// FailedPrecondition rather than waiting for an async
-		// STARTUP_FAILED broadcast from the spawn goroutine. The TOCTOU
-		// between this check and Manager.RestartTerminal's own check is
-		// benign: a PTY that exits between calls yields a false reject
-		// that retrying Enter resolves.
-		if svc.Terminals.IsRunning(terminalID) {
-			sendFailedPrecondition(sender, terminal.ErrTerminalStillRunning.Error())
-			return
-		}
+			// Reject overlapping restarts: a previous startup hasn't broadcast
+			// READY/FAILED yet (could be the original OpenTerminal still in
+			// flight, or a back-to-back restart).
+			if _, _, _, inFlight := svc.TerminalStartup.status(terminalID); inFlight {
+				sendFailedPrecondition(sender, "terminal startup in progress")
+				return
+			}
+			// Reject synchronously if the PTY is still alive so the user sees
+			// FailedPrecondition rather than waiting for an async
+			// STARTUP_FAILED broadcast from the spawn goroutine. The TOCTOU
+			// between this check and Manager.RestartTerminal's own check is
+			// benign: a PTY that exits between calls yields a false reject
+			// that retrying Enter resolves.
+			if svc.Terminals.IsRunning(terminalID) {
+				sendFailedPrecondition(sender, terminal.ErrTerminalStillRunning.Error())
+				return
+			}
 
-		cols := r.GetCols()
-		if cols == 0 {
-			cols = uint32(dbTerm.Cols)
-		}
-		rows := r.GetRows()
-		if rows == 0 {
-			rows = uint32(dbTerm.Rows)
-		}
+			cols := r.GetCols()
+			if cols == 0 {
+				cols = uint32(dbTerm.Cols)
+			}
+			rows := r.GetRows()
+			if rows == 0 {
+				rows = uint32(dbTerm.Rows)
+			}
 
-		// No default-shell fallback — an empty value here means the
-		// OpenTerminal path that wrote the row skipped its own
-		// ResolveDefaultShell() call, which is a real bug we'd rather
-		// surface as a clear STARTUP_FAILED than mask by silently
-		// swapping in a different shell.
-		shell := dbTerm.Shell
-		if shell == "" {
-			sendFailedPrecondition(sender, "terminal has no shell to restart")
-			return
-		}
+			// No default-shell fallback — an empty value here means the
+			// OpenTerminal path that wrote the row skipped its own
+			// ResolveDefaultShell() call, which is a real bug we'd rather
+			// surface as a clear STARTUP_FAILED than mask by silently
+			// swapping in a different shell.
+			shell := dbTerm.Shell
+			if shell == "" {
+				sendFailedPrecondition(sender, "terminal has no shell to restart")
+				return
+			}
 
-		// Seed STARTING without git status — the goroutine fetches and
-		// re-broadcasts with branch/origin once it lands. Mirrors
-		// runTerminalStartup's phase-1 pattern so the RPC round-trip
-		// doesn't block on a slow `git status` against a large worktree.
-		startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
+			// Seed STARTING without git status — the goroutine fetches and
+			// re-broadcasts with branch/origin once it lands. Mirrors
+			// runTerminalStartup's phase-1 pattern so the RPC round-trip
+			// doesn't block on a slow `git status` against a large worktree.
+			startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
 
-		sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
+			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 
-		outputFn := svc.makeTerminalOutputFn(terminalID)
-		exitFn := svc.makeTerminalExitFn()
-		// fallbackOffset seeds the cumulative byte counter only when no
-		// in-memory ScreenBuffer is around (post-worker-restart). For the
-		// common case it's ignored — Manager.RestartTerminal carries the
-		// live buffer's counter through Respawn.
-		var fallbackOffset int64
-		if dbTerm.ScreenLength.Valid {
-			fallbackOffset = dbTerm.ScreenLength.Int64
-		}
-		spawnInfo := TerminalSpawnInfo{
-			UserID:      userID,
-			OrgID:       r.GetOrgId(),
-			WorkspaceID: dbTerm.WorkspaceID,
-			WorkerID:    svc.WorkerID,
-			TabID:       terminalID,
-			WorkingDir:  dbTerm.WorkingDir,
-		}
-		go svc.runTerminalRestart(startupCtx, terminal.Options{
-			ID:            terminalID,
-			WorkspaceID:   dbTerm.WorkspaceID,
-			Shell:         shell,
-			WorkingDir:    dbTerm.WorkingDir,
-			ShellStartDir: dbTerm.ShellStartDir,
-			Cols:          uint16(cols),
-			Rows:          uint16(rows),
-		}, spawnInfo, fallbackOffset, outputFn, exitFn)
-	})
+			outputFn := svc.makeTerminalOutputFn(terminalID)
+			exitFn := svc.makeTerminalExitFn()
+			// fallbackOffset seeds the cumulative byte counter only when no
+			// in-memory ScreenBuffer is around (post-worker-restart). For the
+			// common case it's ignored — Manager.RestartTerminal carries the
+			// live buffer's counter through Respawn.
+			var fallbackOffset int64
+			if dbTerm.ScreenLength.Valid {
+				fallbackOffset = dbTerm.ScreenLength.Int64
+			}
+			spawnInfo := TerminalSpawnInfo{
+				UserID:      userID,
+				OrgID:       r.GetOrgId(),
+				WorkspaceID: dbTerm.WorkspaceID,
+				WorkerID:    svc.WorkerID,
+				TabID:       terminalID,
+				WorkingDir:  dbTerm.WorkingDir,
+			}
+			go svc.runTerminalRestart(startupCtx, terminal.Options{
+				ID:            terminalID,
+				WorkspaceID:   dbTerm.WorkspaceID,
+				Shell:         shell,
+				WorkingDir:    dbTerm.WorkingDir,
+				ShellStartDir: dbTerm.ShellStartDir,
+				Cols:          uint16(cols),
+				Rows:          uint16(rows),
+			}, spawnInfo, fallbackOffset, outputFn, exitFn)
+		})
 
 	// CloseTerminal stops and removes a terminal session.
-	d.RegisterTracked("CloseTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.CloseTerminalRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerTerminalGatedByIDTracked(d, "CloseTerminal",
+		func(_ context.Context, _ string, r *leapmuxv1.CloseTerminalRequest, sender *channel.Sender) {
+			terminalID := r.GetTerminalId()
 
-		terminalID := r.GetTerminalId()
-		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
-			return
-		}
-
-		// Tracked via dispatcher RegisterTracked above so Shutdown
-		// drains the close flow (stop → DB close → unregister →
-		// optional worktree remove) before tearing down the DB pool.
-		// The frontend fires this RPC fire-and-forget after removing
-		// the tab from the UI. The TerminalStartup goroutine's
-		// trailing rollback work is tracked separately by
-		// TerminalStartup.WaitForInFlight and drained in Shutdown.
-		result := svc.closeTabCommon(
-			leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-			terminalID,
-			r.GetWorktreeAction(),
-			func() {
-				svc.TerminalStartup.cancelAndClear(terminalID)
-				svc.Terminals.RemoveTerminal(terminalID)
-				svc.runTerminalCleanup(terminalID)
-			},
-			func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
-		)
-		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
-	})
+			// Tracked via dispatcher RegisterTracked above so Shutdown
+			// drains the close flow (stop → DB close → unregister →
+			// optional worktree remove) before tearing down the DB pool.
+			// The frontend fires this RPC fire-and-forget after removing
+			// the tab from the UI. The TerminalStartup goroutine's
+			// trailing rollback work is tracked separately by
+			// TerminalStartup.WaitForInFlight and drained in Shutdown.
+			result := svc.closeTabCommon(
+				leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+				terminalID,
+				r.GetWorktreeAction(),
+				func() {
+					svc.TerminalStartup.cancelAndClear(terminalID)
+					svc.Terminals.RemoveTerminal(terminalID)
+					svc.runTerminalCleanup(terminalID)
+				},
+				func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
+			)
+			sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
+		})
 
 	// SendInput sends input data to a terminal.
-	d.Register("SendInput", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.SendInputRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerTerminalGatedByID(d, "SendInput",
+		func(_ context.Context, _ string, r *leapmuxv1.SendInputRequest, sender *channel.Sender) {
+			terminalID := r.GetTerminalId()
 
-		terminalID := r.GetTerminalId()
-		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
-			return
-		}
+			if svc.WakeLock != nil {
+				svc.WakeLock.RecordActivity()
+			}
 
-		if svc.WakeLock != nil {
-			svc.WakeLock.RecordActivity()
-		}
+			if err := svc.Terminals.SendInput(terminalID, r.GetData()); err != nil {
+				slog.Error("failed to send input", "terminal_id", terminalID, "error", err)
+				sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+				return
+			}
 
-		if err := svc.Terminals.SendInput(terminalID, r.GetData()); err != nil {
-			slog.Error("failed to send input", "terminal_id", terminalID, "error", err)
-			sendInternalError(sender, fmt.Sprintf("send input: %v", err))
-			return
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
-	})
+			sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
+		})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	d.Register("ResizeTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.ResizeTerminalRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerTerminalGatedByID(d, "ResizeTerminal",
+		func(_ context.Context, _ string, r *leapmuxv1.ResizeTerminalRequest, sender *channel.Sender) {
+			terminalID := r.GetTerminalId()
 
-		terminalID := r.GetTerminalId()
-		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
-			return
-		}
+			cols := r.GetCols()
+			rows := r.GetRows()
+			if cols == 0 || rows == 0 {
+				sendInvalidArgument(sender, "cols and rows must be > 0")
+				return
+			}
 
-		cols := r.GetCols()
-		rows := r.GetRows()
-		if cols == 0 || rows == 0 {
-			sendInvalidArgument(sender, "cols and rows must be > 0")
-			return
-		}
-
-		err := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows))
-		switch {
-		case err == nil:
-			// Drop any dims stashed during STARTING — the resize just
-			// landed on the real PTY, so the post-startup apply in
-			// runTerminalStartup must not overwrite it with older dims.
-			svc.TerminalStartup.clearPendingResize(terminalID)
-		case errors.Is(err, terminal.ErrTerminalNotFound):
-			// Async startup: the tab exists but the PTY isn't in the
-			// Manager yet. Stash the latest dims and ack success so the
-			// frontend's first fit() isn't silently dropped — vim/nvim
-			// would otherwise see the placeholder 80x24 from the
-			// OpenTerminal request on its first TIOCGWINSZ query.
-			if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
-				// Benign TOCTOU: the PTY exited between the frontend's
-				// status check and this RPC arriving. The frontend gates
-				// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
-				// means READY at check time and gone now — no PTY to
-				// resize, but not actionable either.
-				slog.Debug("resize on missing terminal", "terminal_id", terminalID, "error", err)
+			err := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows))
+			switch {
+			case err == nil:
+				// Drop any dims stashed during STARTING — the resize just
+				// landed on the real PTY, so the post-startup apply in
+				// runTerminalStartup must not overwrite it with older dims.
+				svc.TerminalStartup.clearPendingResize(terminalID)
+			case errors.Is(err, terminal.ErrTerminalNotFound):
+				// Async startup: the tab exists but the PTY isn't in the
+				// Manager yet. Stash the latest dims and ack success so the
+				// frontend's first fit() isn't silently dropped — vim/nvim
+				// would otherwise see the placeholder 80x24 from the
+				// OpenTerminal request on its first TIOCGWINSZ query.
+				if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
+					// Benign TOCTOU: the PTY exited between the frontend's
+					// status check and this RPC arriving. The frontend gates
+					// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
+					// means READY at check time and gone now — no PTY to
+					// resize, but not actionable either.
+					slog.Debug("resize on missing terminal", "terminal_id", terminalID, "error", err)
+					sendInternalError(sender, fmt.Sprintf("resize: %v", err))
+					return
+				}
+			default:
+				slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, fmt.Sprintf("resize: %v", err))
 				return
 			}
-		default:
-			slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
-			sendInternalError(sender, fmt.Sprintf("resize: %v", err))
-			return
-		}
 
-		sendProtoResponse(sender, &leapmuxv1.ResizeTerminalResponse{})
-	})
+			sendProtoResponse(sender, &leapmuxv1.ResizeTerminalResponse{})
+		})
 
 	// UpdateTerminalTitle updates a terminal's title in both the in-memory
 	// manager and the database. The frontend throttles calls at 500ms
 	// intervals (kept short so a title set right before shell exit reaches
 	// the worker before the close handler persists meta to DB).
-	d.Register("UpdateTerminalTitle", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.UpdateTerminalTitleRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerTerminalGated(d, "UpdateTerminalTitle",
+		func(_ context.Context, _ string, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender *channel.Sender) {
+			terminalID := r.GetTerminalId()
 
-		terminalID := r.GetTerminalId()
-		dbTerm, ok := svc.requireAccessibleTerminal(sender, terminalID)
-		if !ok {
-			return
-		}
+			title := r.GetTitle()
+			svc.Terminals.UpdateTitle(terminalID, title)
+			screen := dbTerm.Screen
+			if screen == nil {
+				screen = []byte{}
+			}
 
-		title := r.GetTitle()
-		svc.Terminals.UpdateTitle(terminalID, title)
-		screen := dbTerm.Screen
-		if screen == nil {
-			screen = []byte{}
-		}
+			// Persist to DB so it survives restarts.
+			if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+				ID:            dbTerm.ID,
+				WorkspaceID:   dbTerm.WorkspaceID,
+				WorkingDir:    dbTerm.WorkingDir,
+				HomeDir:       dbTerm.HomeDir,
+				ShellStartDir: dbTerm.ShellStartDir,
+				Shell:         dbTerm.Shell,
+				Title:         title,
+				Cols:          dbTerm.Cols,
+				Rows:          dbTerm.Rows,
+				Screen:        screen,
+				ExitCode:      dbTerm.ExitCode,
+				ClosedAt:      dbTerm.ClosedAt,
+			}); err != nil {
+				slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
+				sendInternalError(sender, "failed to update terminal title")
+				return
+			}
 
-		// Persist to DB so it survives restarts.
-		if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-			ID:            dbTerm.ID,
-			WorkspaceID:   dbTerm.WorkspaceID,
-			WorkingDir:    dbTerm.WorkingDir,
-			HomeDir:       dbTerm.HomeDir,
-			ShellStartDir: dbTerm.ShellStartDir,
-			Shell:         dbTerm.Shell,
-			Title:         title,
-			Cols:          dbTerm.Cols,
-			Rows:          dbTerm.Rows,
-			Screen:        screen,
-			ExitCode:      dbTerm.ExitCode,
-			ClosedAt:      dbTerm.ClosedAt,
-		}); err != nil {
-			slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
-			sendInternalError(sender, "failed to update terminal title")
-			return
-		}
+			if svc.PrivateEvents != nil {
+				svc.PrivateEvents.PublishTabRenamed(
+					dbTerm.WorkspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+					title, sender.ChannelID(),
+				)
+			}
 
-		if svc.PrivateEvents != nil {
-			svc.PrivateEvents.PublishTabRenamed(
-				dbTerm.WorkspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-				title, sender.ChannelID(),
-			)
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
-	})
+			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
+		})
 
 	// ListTerminals returns all terminal tabs for a workspace.
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	d.Register("ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListTerminalsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -533,7 +480,12 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// ListAvailableShells returns the shells installed on this worker.
-	d.Register("ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// Owner-only: like sysinfo, it discloses machine-scoped state (which
+	// shell binaries are present on the host), so a non-owner channel --
+	// notably a workspace-pinned delegation bearer -- must not reach it. The
+	// worker owner's own agents (via the local-IPC remote CLI, which
+	// dispatches with the owner's user id) still pass this gate.
+	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
