@@ -62,7 +62,7 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxIncompleteChunked, nil)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxIncompleteChunked)
 	// The message-size ceiling is no longer a NewManager parameter -- it is a fixed
 	// protocol constant in production (channelwire.DefaultMaxMessageSize). Tests that
 	// exercise the size cap override the field directly, before any session is
@@ -246,7 +246,8 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	require.NoError(t, err)
 	sender := newCollectSender()
 	var closeCallbackCount int
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, func(id string) {
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0)
+	mgr.SetOnChannelClose(func(id string) {
 		_ = id
 		closeCallbackCount++
 	})
@@ -337,7 +338,7 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 
 	// Set up a dispatcher with a test handler.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: req.GetPayload(),
 		})
@@ -380,7 +381,7 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -474,7 +475,7 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 
 	gotUserID := make(chan string, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("whoami", func(_ context.Context, userID string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("whoami", func(_ context.Context, userID string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		gotUserID <- userID
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
 	})
@@ -514,7 +515,7 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -648,7 +649,7 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 
 	gotCtxC := make(chan context.Context, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("inspect", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("inspect", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		gotCtxC <- ctx
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
@@ -702,11 +703,11 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0, nil)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("slow", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("slow", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: []byte("done"),
 		})
@@ -764,7 +765,7 @@ func TestMultipleChannels(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("ping", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("ping", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: []byte("pong-" + userID),
 		})
@@ -820,7 +821,7 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -858,7 +859,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: largePayload})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -939,7 +940,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	exactPayloadSize := findPayloadSize(channelwire.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
-	dispatcher.Register("exact", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("exact", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize)})
 	})
 
@@ -959,7 +960,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	// Now add 1 more byte to the payload, which should cause it to overflow.
-	dispatcher.Register("overflow", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("overflow", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize+1)})
 	})
 
@@ -982,7 +983,7 @@ func TestReassembly_E2E(t *testing.T) {
 
 	var receivedPayload []byte
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		receivedPayload = req.GetPayload()
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
 	})
@@ -1151,11 +1152,12 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 
 	// Register a handler that tries to send a response larger than the limit.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		err := s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
 		// sendEncrypted should return an error for oversized messages.
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "message too large")
+		assert.ErrorIs(t, err, ErrMessageRejected,
+			"the size cap is a per-message rejection, not a dead transport")
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1358,13 +1360,12 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	var closedMu sync.Mutex
 	var closedChannels []string
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0,
-		func(channelID string) {
-			closedMu.Lock()
-			closedChannels = append(closedChannels, channelID)
-			closedMu.Unlock()
-		},
-	)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0)
+	mgr.SetOnChannelClose(func(channelID string) {
+		closedMu.Lock()
+		closedChannels = append(closedChannels, channelID)
+		closedMu.Unlock()
+	})
 
 	session := performHandshake(t, mgr, ck, "ch-decrypt-fail", "user-1")
 
@@ -1529,4 +1530,81 @@ func TestQueueErrorSendDoesNotBlockWhenFull(t *testing.T) {
 		t.Fatal("queueErrorSend blocked on a full queue")
 	}
 	assert.Len(t, sess.errorSends, errorSendQueueSize, "the queue holds exactly its cap; overflow is dropped")
+}
+
+// TestSendEncrypted_OversizedMessageIsRejectedNotFatal pins that the
+// size cap reports itself as ErrMessageRejected. The distinction is
+// load-bearing for fan-out callers: the channel is still healthy, so a
+// broadcast must drop the one event rather than unsubscribe the client.
+// Without the sentinel the two are indistinguishable and a single
+// oversized payload silently deafens a live tab.
+func TestSendEncrypted_OversizedMessageIsRejectedNotFatal(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+
+	collector := newCollectSender()
+	cs := &channelSender{
+		channelID:      "test-ch",
+		session:        workerSession,
+		sendFn:         collector.send,
+		maxMessageSize: 8, // smaller than any real envelope
+	}
+
+	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: []byte("a larger payload than the cap")})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMessageRejected,
+		"the size cap is a per-message rejection, not a transport failure")
+	assert.Empty(t, collector.messages(),
+		"an over-cap message must not reach the transport at all")
+}
+
+// TestSendEncrypted_WithinCapDoesNotReportRejection guards the other
+// side of the branch, so the sentinel can't be returned for every send.
+func TestSendEncrypted_WithinCapDoesNotReportRejection(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+
+	collector := newCollectSender()
+	cs := &channelSender{
+		channelID:      "test-ch",
+		session:        workerSession,
+		sendFn:         collector.send,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
+	}
+
+	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: []byte("ok")})
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, collector.messages(), "a within-cap message reaches the transport")
+}
+
+// TestSendEncrypted_MaxSizedPayloadIsNotRejected is the guarantee the
+// envelope headroom exists for: a producer that fills its entire budget
+// must still get its message onto the wire.
+//
+// This is the case that used to fail. The agent stdout scanner accepted
+// lines up to the same 16 MiB the receiver capped the whole reassembled
+// message at, so a maximal line -- wrapped in AgentMessage, AgentEvent,
+// WatchEventsResponse, InnerStreamMessage and InnerMessage -- came out
+// over the limit and was refused. Nothing recovers from that: the stream
+// is ordered and encrypted with no resync, and the transport never
+// errors, so the client is simply missing an event and is never told.
+func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+
+	collector := newCollectSender()
+	cs := &channelSender{
+		channelID:      "test-ch",
+		session:        workerSession,
+		sendFn:         collector.send,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
+	}
+
+	// Exactly the ceiling a producer is allowed to emit.
+	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{
+		Payload: make([]byte, channelwire.MaxInnerPayloadBytes),
+	})
+
+	require.NoError(t, err,
+		"a payload at MaxInnerPayloadBytes must fit once the envelopes are added")
+	assert.NotEmpty(t, collector.messages(), "and must actually reach the transport")
 }

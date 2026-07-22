@@ -13,7 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -104,11 +103,7 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -169,11 +164,7 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -248,11 +239,7 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 		return nil, errors.New("forced restart failure")
 	}
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -300,11 +287,7 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-codex", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-codex"}, w)
 
 	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-codex",
@@ -351,11 +334,7 @@ func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t 
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-claude", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-claude"}, w)
 
 	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-claude",

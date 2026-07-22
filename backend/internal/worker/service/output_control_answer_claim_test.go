@@ -15,7 +15,7 @@ import (
 
 // createClaimTestAgent creates a minimal agent row so the durable answer claim (a control_response_answers
 // row FK-referencing agents) can be inserted.
-func createClaimTestAgent(t *testing.T, svc *Context, id string) {
+func createClaimTestAgent(t *testing.T, svc *Service, id string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID: id, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),

@@ -15,8 +15,16 @@
 /** Maximum plaintext bytes per Noise transport message (65535 - 16 byte auth tag). */
 export const MAX_CHUNK_SIZE = 65535 - 16
 
-/** Default maximum reassembled message size (16 MiB). */
-export const DEFAULT_MAX_MESSAGE_SIZE = 16 * 1024 * 1024
+/**
+ * Default maximum reassembled message size (17 MiB).
+ *
+ * Deliberately one MiB above the 16 MiB ceiling any producer is allowed to
+ * emit, so the payload plus the envelopes wrapped around it still fits.
+ * When the two matched, a producer that filled its budget exactly built a
+ * message this side refused -- and a refusal mid-stream has no resync path,
+ * so the event vanished with nothing to tell the client it had missed one.
+ */
+export const DEFAULT_MAX_MESSAGE_SIZE = 17 * 1024 * 1024
 
 /** Maximum number of in-flight chunked sequences per channel. */
 export const MAX_INCOMPLETE_CHUNKED = 4

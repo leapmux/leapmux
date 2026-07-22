@@ -15,7 +15,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 
@@ -336,7 +335,7 @@ func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
 	run(t, dir, "git", "fetch", "origin")
 
 	// Checkout the remote branch via the service method.
-	svc := &Context{}
+	svc := &Service{}
 	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "origin/feature/remote-test"})
 	require.NoError(t, err)
 
@@ -370,7 +369,7 @@ func TestCheckoutBranchIfRequested_RemoteBranchWithExistingLocal(t *testing.T) {
 	run(t, dir, "git", "checkout", "-") // go back to default branch
 
 	// Checkout the remote branch — should switch to existing local branch, not error.
-	svc := &Context{}
+	svc := &Service{}
 	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "origin/feature/existing"})
 	require.NoError(t, err)
 
@@ -389,7 +388,7 @@ func TestCheckoutBranchIfRequested_LocalBranch(t *testing.T) {
 	run(t, dir, "git", "checkout", "-") // go back to default branch
 
 	// Checkout the local branch.
-	svc := &Context{}
+	svc := &Service{}
 	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "my-feature"})
 	require.NoError(t, err)
 
@@ -646,7 +645,7 @@ func TestQueryGitPathInfo_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
 	require.Equal(t, "feature-branch", branchOrShortSHA(infoWt))
 }
 
-func createAgentForPath(t *testing.T, svc *Context, agentID, workingDir string) {
+func createAgentForPath(t *testing.T, svc *Service, agentID, workingDir string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:          agentID,
@@ -656,7 +655,7 @@ func createAgentForPath(t *testing.T, svc *Context, agentID, workingDir string) 
 	}))
 }
 
-func createTerminalForPath(t *testing.T, svc *Context, terminalID, workingDir string) {
+func createTerminalForPath(t *testing.T, svc *Service, terminalID, workingDir string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:          terminalID,
@@ -2192,8 +2191,7 @@ func TestDeleteBranch_RejectsEmptySwitchTo(t *testing.T) {
 func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 	t.Run("nil error sends the success response and no error", func(t *testing.T) {
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(context.Background(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error { return nil })
+		runBranchMutation(context.Background(), w, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error { return nil })
 		require.Empty(t, w.errors, "success must not emit an error response")
 		require.Len(t, w.responses, 1, "success must emit exactly one proto response")
 		// Payload must unmarshal back to the response shape we passed,
@@ -2204,8 +2202,7 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 
 	t.Run("ErrInvalidArgument wrap routes to InvalidArgument", func(t *testing.T) {
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(context.Background(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error {
+		runBranchMutation(context.Background(), w, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error {
 			return fmt.Errorf("custom: %w", gitutil.ErrInvalidArgument)
 		})
 		require.Empty(t, w.responses, "error path must not emit a success response")
@@ -2219,8 +2216,7 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 		// runBranchMutation as-is and produce InvalidArgument — pin the
 		// route so a future caller can't silently drop the wrap.
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(context.Background(), sender, &leapmuxv1.DeleteBranchResponse{}, func(context.Context) error {
+		runBranchMutation(context.Background(), w, &leapmuxv1.DeleteBranchResponse{}, func(context.Context) error {
 			return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
 		})
 		require.Empty(t, w.responses)
@@ -2230,8 +2226,7 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 
 	t.Run("missing switch_to_branch error routes to InvalidArgument", func(t *testing.T) {
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(context.Background(), sender, &leapmuxv1.DeleteBranchResponse{}, func(context.Context) error {
+		runBranchMutation(context.Background(), w, &leapmuxv1.DeleteBranchResponse{}, func(context.Context) error {
 			return fmt.Errorf("switch_to_branch is required: %w", gitutil.ErrInvalidArgument)
 		})
 		require.Empty(t, w.responses)
@@ -2246,11 +2241,10 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 		// name failures from createBranchInDir / checkoutBranchInDir flow
 		// through here.
 		w := newTestWriter()
-		sender := channel.NewSender(w)
 		err := gitutil.ValidateBranchName("bad name")
 		require.True(t, gitutil.IsBranchNameError(err), "test setup: expected BranchNameError")
 		require.ErrorIs(t, err, gitutil.ErrInvalidArgument, "BranchNameError must unwrap to ErrInvalidArgument")
-		runBranchMutation(context.Background(), sender, &leapmuxv1.CreateBranchResponse{}, func(context.Context) error { return err })
+		runBranchMutation(context.Background(), w, &leapmuxv1.CreateBranchResponse{}, func(context.Context) error { return err })
 		require.Empty(t, w.responses)
 		require.Len(t, w.errors, 1)
 		assert.Equal(t, int32(codes.InvalidArgument), w.errors[0].code)
@@ -2262,8 +2256,7 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 		// check a future "is this user-fault?" predicate could silently
 		// widen and start hiding real bugs as InvalidArgument.
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(context.Background(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error {
+		runBranchMutation(context.Background(), w, &leapmuxv1.CheckoutBranchResponse{}, func(context.Context) error {
 			return errors.New("disk on fire")
 		})
 		require.Empty(t, w.responses)
@@ -2283,8 +2276,7 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 
 		var seenCancelled bool
 		w := newTestWriter()
-		sender := channel.NewSender(w)
-		runBranchMutation(parent, sender, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
+		runBranchMutation(parent, w, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
 			seenCancelled = ctx.Err() != nil
 			return ctx.Err()
 		})
@@ -2299,9 +2291,8 @@ func TestRunBranchMutation_ErrorMapping(t *testing.T) {
 		// handlers wouldn't reach this path, but pin the cap for
 		// defense in depth) must still bound fn's wall-clock.
 		w := newTestWriter()
-		sender := channel.NewSender(w)
 		var deadlineSet bool
-		runBranchMutation(context.Background(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
+		runBranchMutation(context.Background(), w, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
 			_, ok := ctx.Deadline()
 			deadlineSet = ok
 			return nil

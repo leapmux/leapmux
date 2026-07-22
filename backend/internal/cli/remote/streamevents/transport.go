@@ -131,6 +131,23 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 			if closed.Load() {
 				return
 			}
+			// A terminal frame ends the subscription. Without this the
+			// error envelope was handed to decodeWatchFrame, which parsed
+			// its empty payload into a blank WatchEventsResponse and
+			// delivered it as if it were data -- so a stream the worker had
+			// already ended kept the CLI waiting, and the reason never
+			// reached the log. Only the unary respCh arm below was ever
+			// treated as terminal, and a streaming handler no longer
+			// answers that way.
+			if msg.GetIsError() {
+				logTerminalStreamError(transportLogger(t.logger), "channel", msg.GetErrorCode(), msg.GetErrorMessage())
+				cancel()
+				return
+			}
+			if msg.GetEnd() && len(msg.GetPayload()) == 0 {
+				cancel()
+				return
+			}
 			resp, ok := decodeWatchFrame(t.logger, "channel", msg.GetPayload())
 			if !ok {
 				return

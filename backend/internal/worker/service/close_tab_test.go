@@ -31,7 +31,7 @@ import (
 // handlers before any fixture-owned disk is removed.
 
 type closeTabFixture struct {
-	svc   *Context
+	svc   *Service
 	d     *channel.Dispatcher
 	w     *testResponseWriter
 	wtDir string
@@ -285,7 +285,7 @@ func (f *faultingDBTX) QueryRowContext(ctx context.Context, query string, args .
 // against the current svc.Queries, mirroring how the CloseAgent handler
 // invokes it. Returns the partial-failure result so a test can assert
 // the WorktreeRemovalOutcome without unmarshaling an RPC response.
-func closeAgentRemoveDirect(svc *Context, agentID string) *leapmuxv1.CloseTabResult {
+func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabResult {
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,

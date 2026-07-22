@@ -1,12 +1,40 @@
 package agent
 
 import (
+	"bufio"
 	"encoding/base64"
+	"io"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
+
+// stdoutScannerStartBuf is the scanner's initial buffer. It grows on
+// demand up to the ceiling below, so this only decides how many
+// reallocations a long line costs.
+const stdoutScannerStartBuf = 1024 * 1024
+
+// newStdoutScanner returns the line scanner every agent provider reads
+// its subprocess stdout with.
+//
+// The token ceiling is the wire's producer ceiling, not a local guess:
+// each scanned line becomes the payload of one inner message, so a
+// scanner allowed to build a token larger than MaxInnerPayloadBytes
+// produces an envelope the receiver refuses -- and that refusal has no
+// resync path on an ordered encrypted stream.
+//
+// Shared rather than repeated per provider because it is scanner
+// plumbing bound to a shared limit, with nothing provider-specific in
+// it. What IS provider-specific -- how each one interprets the lines --
+// stays in that provider, which is where the read loop the caller hands
+// this to lives.
+func newStdoutScanner(stdout io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, stdoutScannerStartBuf), channelwire.MaxInnerPayloadBytes)
+	return scanner
+}
 
 // encodeDataURI builds a data URI from a MIME type and raw bytes.
 func encodeDataURI(mime string, data []byte) string {

@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/coder/websocket"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestChannelWireLimitsMatchCrossLanguageFixture pins the chunk/message/sequence
@@ -229,3 +231,63 @@ func TestWebSocketCloseDetailsUsesRecoverableClassifier(t *testing.T) {
 type assertError string
 
 func (e assertError) Error() string { return string(e) }
+
+// TestMaxMessageSizeExceedsMaxInnerPayload pins the relationship that
+// makes a mid-stream drop impossible rather than merely unlikely.
+//
+// The receiver caps the whole reassembled InnerMessage; a producer caps
+// only the payload it puts inside one. While both numbers were 16 MiB, an
+// agent line that used its full budget produced an envelope a byte or two
+// over the receiver's limit -- and that refusal has no recovery, because
+// the ordered encrypted stream has no resync path and the transport never
+// errors, so nothing trips the client's reconnect.
+// Asserting DefaultMaxMessageSize > MaxInnerPayloadBytes would prove
+// nothing: the former is DEFINED as the latter plus the headroom, so any
+// such comparison reduces to "the headroom is positive" and holds for
+// whatever the constants are edited to. What has to be true is empirical
+// -- that a real envelope wrapped around a maximum-sized payload still
+// fits under the receiver's cap -- so that is what is measured here.
+func TestMaxMessageSizeExceedsMaxInnerPayload(t *testing.T) {
+	maxPayload := make([]byte, MaxInnerPayloadBytes)
+	// The widest envelope a producer can put a max-sized payload in: a
+	// stream frame also carrying an error, which is every field the
+	// payload travels beside.
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Stream{
+			Stream: &leapmuxv1.InnerStreamMessage{
+				Payload:      maxPayload,
+				End:          true,
+				IsError:      true,
+				ErrorCode:    int32(^uint32(0) >> 1),
+				ErrorMessage: strings.Repeat("e", 1024),
+			},
+		},
+	}
+
+	encoded, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+
+	assert.Greater(t, len(encoded), MaxInnerPayloadBytes,
+		"the envelope must actually cost something, or this proves nothing")
+	assert.LessOrEqual(t, len(encoded), DefaultMaxMessageSize,
+		"a max-sized payload in a real envelope must fit under the receiver's cap; "+
+			"while both numbers were 16 MiB it did not, and the drop had no recovery path")
+}
+
+// TestInnerEnvelopeHeadroomIsNotConsumedByGrowth pins the slack itself,
+// so that adding fields to the envelope shows up here as a shrinking
+// margin long before it becomes a silent mid-stream drop.
+func TestInnerEnvelopeHeadroomIsNotConsumedByGrowth(t *testing.T) {
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Stream{
+			Stream: &leapmuxv1.InnerStreamMessage{Payload: make([]byte, MaxInnerPayloadBytes)},
+		},
+	}
+	encoded, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+
+	overhead := len(encoded) - MaxInnerPayloadBytes
+	assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
+		"envelope overhead has grown into over half the headroom (%d of %d bytes); "+
+			"raise InnerEnvelopeHeadroom rather than letting it converge", overhead, InnerEnvelopeHeadroom)
+}

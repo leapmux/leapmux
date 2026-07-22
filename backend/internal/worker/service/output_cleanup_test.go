@@ -9,7 +9,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -39,8 +38,7 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 	}))
 
 	// Register a watcher so broadcasts have somewhere to go.
-	watcher := &EventWatcher{ChannelID: "test-ch", Sender: channel.NewSender(w)}
-	svc.Watchers.WatchAgent("agent-1", watcher)
+	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
 
 	svc.Output.ClearAgentRuntimeState("agent-1")
 
@@ -70,8 +68,7 @@ func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	watcher := &EventWatcher{ChannelID: "test-ch", Sender: channel.NewSender(w)}
-	svc.Watchers.WatchAgent("agent-empty", watcher)
+	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-empty"}, w)
 
 	svc.Output.ClearAgentRuntimeState("agent-empty")
 

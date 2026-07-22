@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"encoding/base64"
@@ -105,8 +104,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 	}
 	a.drainStderr(stderrPipe)
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner := newStdoutScanner(stdout)
 	go a.readOutput(scanner, a.handlePiResponse, a.handleOutput)
 
 	cleanup := func() {

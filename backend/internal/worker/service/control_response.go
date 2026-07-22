@@ -42,7 +42,7 @@ type controlResponsePlan struct {
 	hasDecision bool
 }
 
-func (svc *Context) loadControlResponseRequestMetadata(agentID string, plugin agent.Provider, content []byte) controlResponseRequestMetadata {
+func (svc *Service) loadControlResponseRequestMetadata(agentID string, plugin agent.Provider, content []byte) controlResponseRequestMetadata {
 	reqID := plugin.ControlResponseRequestID(content)
 	if reqID == "" {
 		return controlResponseRequestMetadata{}
@@ -73,7 +73,7 @@ func (svc *Context) loadControlResponseRequestMetadata(agentID string, plugin ag
 	return meta
 }
 
-func (svc *Context) buildControlResponsePlan(agentID string, dbAgent db.Agent, content []byte) controlResponsePlan {
+func (svc *Service) buildControlResponsePlan(agentID string, dbAgent db.Agent, content []byte) controlResponsePlan {
 	plugin := agent.ProviderFor(dbAgent.AgentProvider)
 	requestMeta := svc.loadControlResponseRequestMetadata(agentID, plugin, content)
 	resolution := plugin.ResolveControlResponse(agent.ControlResponseContext{
@@ -169,7 +169,7 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 // not-yet-run read. Claude can emit a follow-up control_request right after it reads a denial; the
 // winner's delete + cancel clears the stale one from every window. The row is persisted here BEFORE
 // the caller forwards, so the user's answer precedes any async plan-execution rows.
-func (svc *Context) applyWinningControlResponse(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
+func (svc *Service) applyWinningControlResponse(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
 	svc.deleteControlRequest(agentID, dbAgent.AgentProvider, plan.requestMeta, plan.resolution.SelfDisplayed)
 	if plan.isPlanPrompt() {
 		svc.handleControlResponsePromptPlan(agentID, dbAgent, plan)
@@ -186,7 +186,7 @@ func (svc *Context) applyWinningControlResponse(agentID string, dbAgent db.Agent
 // decision is unit-testable without a channel sender. Returns forward=false (nil bytes) for a
 // duplicate (deduped no-op), a plan-mode prompt (handled entirely server-side), or a context-clearing
 // plan approval (withheld so it can't race the restart it kicked off).
-func (svc *Context) processControlResponse(agentID string, dbAgent db.Agent, content []byte, claimToken string) (forwardBytes []byte, forward bool) {
+func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, content []byte, claimToken string) (forwardBytes []byte, forward bool) {
 	// Build the plan (which reads the pending control request and decodes the request id ONCE),
 	// then CLAIM the answer for idempotency. The claim is the concurrency serialization point:
 	// handlers run concurrently (DispatchAsync, no per-agent lock), and an atomic INSERT on
@@ -238,7 +238,7 @@ func (svc *Context) processControlResponse(agentID string, dbAgent db.Agent, con
 	return plan.resolution.Content, true
 }
 
-func (svc *Context) deleteControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
+func (svc *Service) deleteControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
 	if requestMeta.RequestID == "" {
 		return
 	}
@@ -256,7 +256,7 @@ func (svc *Context) deleteControlRequest(agentID string, provider leapmuxv1.Agen
 // row, so a self-displayed answer (Claude's echoed tool_result) draws its dot on the ingested
 // provider row instead of here. Duplicate answers for the same request are gated out one layer up
 // (SendControlResponse's idempotency claim) before reaching here, so the row is never double-marked.
-func (svc *Context) persistControlResponseAnswerRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+func (svc *Service) persistControlResponseAnswerRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
 	if plan.needsStructuredRow() {
 		svc.persistControlResponseRow(agentID, provider, plan)
 	}
@@ -305,7 +305,7 @@ func (plan controlResponsePlan) needsStructuredRow() bool {
 	return true
 }
 
-func (svc *Context) handleControlResponsePromptPlan(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
+func (svc *Service) handleControlResponsePromptPlan(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
 	if !plan.requestMeta.Loaded || !plan.hasDecision {
 		return
 	}
@@ -382,7 +382,7 @@ func (plan controlResponsePlan) withholdsForward() bool {
 // (a pure content-derived predicate, correct for any answer but reached only by the winner), these
 // mutations are side effects the caller gates externally to the winner, not internally.
 // A request-gone or decision-less answer touches nothing (the mutations need the loaded request).
-func (svc *Context) applyControlResponsePlanModeMutations(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
+func (svc *Service) applyControlResponsePlanModeMutations(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
 	if !plan.requestMeta.Loaded || !plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow {
 		return
 	}
@@ -480,7 +480,7 @@ func controlResponseProviderName(p leapmuxv1.AgentProvider) string {
 // was persisted on the pre-#258 path (a USER {content} row); the isSynthetic flag -- not the source
 // -- is what routes it to the control_response renderer. It carries the CONTROL_RESPONSE rail mark.
 // The frontend owns all label text; the backend no longer duplicates it.
-func (svc *Context) persistControlResponseRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+func (svc *Service) persistControlResponseRow(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
 	// Coalesce empty-OR-invalid bytes to nil so the Response field marshals as `null` rather than
 	// making the WHOLE row marshal fail (which would silently drop the user's answer row): a
 	// json.RawMessage marshals only when it holds valid JSON -- empty-but-non-nil bytes error with

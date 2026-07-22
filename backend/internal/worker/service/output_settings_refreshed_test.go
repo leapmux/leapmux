@@ -14,7 +14,7 @@ import (
 )
 
 type refreshTestFixture struct {
-	svc  *Context
+	svc  *Service
 	sink agent.OutputSink
 	mock *mockResponseWriter
 }
@@ -61,8 +61,8 @@ func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 		Options:       seed.options(),
 	}))
 
-	w, mock := newTestWatcher("ch-1")
-	svc.Watchers.WatchAgent("agent-1", w)
+	mock := newTestWatcher("ch-1")
+	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	return refreshTestFixture{svc: svc, sink: sink, mock: mock}

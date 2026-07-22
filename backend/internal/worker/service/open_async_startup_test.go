@@ -17,7 +17,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -1282,10 +1281,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
 			return err
 		}
-		svc.Watchers.WatchAgent(params.ID, &EventWatcher{
-			ChannelID: wWatch.channelID,
-			Sender:    channel.NewSender(wWatch),
-		})
+		svc.Watchers.SetAgentWatches(wWatch.channelID, []string{params.ID}, wWatch)
 		return nil
 	}
 

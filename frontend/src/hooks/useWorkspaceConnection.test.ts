@@ -1,18 +1,33 @@
 import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentTab, TerminalTab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { agentWatchEntry, applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/useWorkspaceConnection'
+import { agentWatchEntry, applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, unsubscribeAllWatchEvents, wireSessionInfoToUpdates } from '~/hooks/useWorkspaceConnection'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createTabStore } from '~/stores/tab.store'
+
+vi.mock('~/api/workerRpc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/workerRpc')>()
+  return {
+    ...actual,
+    watchEventsViaChannel: vi.fn(),
+    // Only getOrOpenChannel is reached from this module, and it must not
+    // attempt a real handshake.
+    channelManager: {
+      getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
+      hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
+    },
+  }
+})
 
 /**
  * Types a simulated catch-up phase as the runtime union so the guard
@@ -1867,5 +1882,78 @@ describe('shouldClearThinkingTokensForMessage', () => {
     // A plugin (e.g. Claude) that always clears overrides the default main-scope
     // gate, so even a message with a non-empty parentSpanId clears.
     expect(shouldClearThinkingTokensForMessage(agentMsg('sys-tu-999'), alwaysClears)).toBe(true)
+  })
+})
+
+describe('retiring watch subscriptions', () => {
+  it('sends an empty request rather than only closing the handle locally', async () => {
+    // Closing a handle removes a stream listener and produces no frame the
+    // worker can see, so the worker would go on shipping events for tabs
+    // nobody is listening to. The empty request is the only unsubscribe.
+    const close = vi.fn()
+    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
+
+    await unsubscribeAllWatchEvents('worker-1')
+
+    expect(watchEventsViaChannel).toHaveBeenCalledWith('worker-1', { agents: [], terminals: [] })
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('swallows a failure, because a dead channel has already retired them', async () => {
+    vi.mocked(watchEventsViaChannel).mockRejectedValue(new Error('channel closed'))
+
+    await expect(unsubscribeAllWatchEvents('worker-1')).resolves.toBeUndefined()
+  })
+
+  it('does not open a channel just to say it is watching nothing', async () => {
+    // A channel that does not exist holds no subscriptions, so opening
+    // one -- a full Noise_NK + ML-KEM handshake plus a hub round trip --
+    // purely to announce that nothing is wanted is cost with no effect.
+    // The watch effect reaches this branch on ordinary paths that never
+    // had a channel, such as a resolved workerId before tabs hydrate.
+    vi.clearAllMocks()
+    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(false)
+
+    await unsubscribeAllWatchEvents('worker-1')
+
+    expect(channelManager.getOrOpenChannel).not.toHaveBeenCalled()
+    expect(watchEventsViaChannel).not.toHaveBeenCalled()
+  })
+
+  it('abandons the unsubscribe if the watch set changed while the channel opened', async () => {
+    // The regression: opening the channel can block on a full handshake, and
+    // the user can open a new tab in that window. Landing afterwards, an empty
+    // request is read as "watching nothing" and wipes the subscription that tab
+    // just made -- with no error, so nothing ever re-subscribes and the tab
+    // goes permanently silent.
+    vi.clearAllMocks()
+    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(true)
+    const close = vi.fn()
+    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
+
+    let current = true
+    vi.mocked(channelManager.getOrOpenChannel).mockImplementation(async () => {
+      // A newer effect run supersedes this one while the open is in flight.
+      current = false
+      return 'ch-1'
+    })
+
+    await unsubscribeAllWatchEvents('worker-1', () => current)
+
+    expect(watchEventsViaChannel).not.toHaveBeenCalled()
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('still unsubscribes when the watch set is unchanged', async () => {
+    vi.clearAllMocks()
+    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(true)
+    const close = vi.fn()
+    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
+    vi.mocked(channelManager.getOrOpenChannel).mockResolvedValue('ch-1')
+
+    await unsubscribeAllWatchEvents('worker-1', () => true)
+
+    expect(watchEventsViaChannel).toHaveBeenCalledWith('worker-1', { agents: [], terminals: [] })
+    expect(close).toHaveBeenCalledOnce()
   })
 })

@@ -10,7 +10,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -45,10 +44,10 @@ func parseSpanLinesJSON(t *testing.T, raw string) []*SpanLine {
 }
 
 // setupAgentWithWatcher creates an agent row, starts a mock agent process,
-// registers an EventWatcher on it, and arranges for shutdown via t.Cleanup.
+// registers a watcher on it, and arranges for shutdown via t.Cleanup.
 // Returns the sink so callers that drive the OutputHandler directly can
 // reach it.
-func setupAgentWithWatcher(t *testing.T, svc *Context, w *testResponseWriter, agentID string, provider leapmuxv1.AgentProvider) agent.OutputSink {
+func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, agentID string, provider leapmuxv1.AgentProvider) agent.OutputSink {
 	t.Helper()
 	ctx := context.Background()
 
@@ -69,10 +68,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Context, w *testResponseWriter, ag
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
 
-	svc.Watchers.WatchAgent(agentID, &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{agentID}, w)
 	return sink
 }
 

@@ -169,6 +169,16 @@ message MoveTabWorkspaceResponse {}
 
 // --- Event Streaming (per-agent / per-terminal) ---
 
+// WatchEventsRequest states the channel's WHOLE current interest, not an
+// increment. Entities the request omits are unsubscribed, so a
+// terminals-only request drops every agent subscription the channel held,
+// and an empty request unsubscribes everything -- that is the only way to
+// retire subscriptions without closing the channel, since a client-side
+// stream close produces no frame the worker can see.
+//
+// A client must therefore send its full set every time, and must send an
+// empty request when it stops watching anything. Sending a partial set
+// silently deafens whatever it left out.
 message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
   repeated WatchTerminalEntry terminals = 2;

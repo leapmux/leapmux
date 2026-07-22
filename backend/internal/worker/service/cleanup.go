@@ -31,7 +31,7 @@ func StartCleanupLoop(ctx context.Context, queries *db.Queries) {
 // StartOrphanSweepLoop starts a background goroutine that periodically reclaims the
 // in-memory tracker state of agents the DB no longer lists as open (see
 // SweepOrphanedAgentState). Shares the cleanup cadence and jitter.
-func (svc *Context) StartOrphanSweepLoop(ctx context.Context) {
+func (svc *Service) StartOrphanSweepLoop(ctx context.Context) {
 	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(context.Context) {
 		svc.SweepOrphanedAgentState()
 	})
@@ -44,7 +44,7 @@ func (svc *Context) StartOrphanSweepLoop(ctx context.Context) {
 // a relaunch can consolidate notifications. Open-but-inactive agents are LEFT ALONE:
 // their state is intentionally retained for a possible relaunch; only agents the DB no
 // longer lists as open are reclaimed.
-func (svc *Context) SweepOrphanedAgentState() {
+func (svc *Service) SweepOrphanedAgentState() {
 	tracked := svc.Output.TrackedAgentIDs()
 	if len(tracked) == 0 {
 		return

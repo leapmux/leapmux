@@ -25,7 +25,7 @@ const (
 )
 
 // seedAgent and seedTerminal create minimal DB rows in the given workspace.
-func seedAgent(t *testing.T, svc *Context, agentID, workspaceID string) {
+func seedAgent(t *testing.T, svc *Service, agentID, workspaceID string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:          agentID,
@@ -35,7 +35,7 @@ func seedAgent(t *testing.T, svc *Context, agentID, workspaceID string) {
 	}))
 }
 
-func seedTerminal(t *testing.T, svc *Context, terminalID, workspaceID string) {
+func seedTerminal(t *testing.T, svc *Service, terminalID, workspaceID string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:          terminalID,
@@ -223,11 +223,11 @@ func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
 type gatedMethodProbe struct {
 	name   string
 	method string
-	seed   func(t *testing.T, svc *Context)
+	seed   func(t *testing.T, svc *Service)
 	req    func() proto.Message
 }
 
-func seedForeignFileTab(t *testing.T, svc *Context, tabID, workspaceID string) {
+func seedForeignFileTab(t *testing.T, svc *Service, tabID, workspaceID string) {
 	t.Helper()
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
@@ -247,7 +247,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		probes = append(probes, gatedMethodProbe{
 			name:   tc.method,
 			method: tc.method,
-			seed:   func(t *testing.T, svc *Context) { seedAgent(t, svc, "agent-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-other", "ws-other") },
 			req:    func() proto.Message { return tc.req("agent-other") },
 		})
 	}
@@ -255,7 +255,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		probes = append(probes, gatedMethodProbe{
 			name:   tc.method,
 			method: tc.method,
-			seed:   func(t *testing.T, svc *Context) { seedTerminal(t, svc, "term-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-other", "ws-other") },
 			req:    func() proto.Message { return tc.req("term-other") },
 		})
 	}
@@ -263,7 +263,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "OpenAgent",
 			method: "OpenAgent",
-			seed:   func(*testing.T, *Context) {},
+			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
 			},
@@ -271,7 +271,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "OpenTerminal",
 			method: "OpenTerminal",
-			seed:   func(*testing.T, *Context) {},
+			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.OpenTerminalRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
 			},
@@ -279,7 +279,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "WatchWorkspacePrivateEvents",
 			method: "WatchWorkspacePrivateEvents",
-			seed:   func(*testing.T, *Context) {},
+			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.WatchWorkspacePrivateEventsRequest{WorkspaceId: "ws-other"}
 			},
@@ -287,7 +287,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "RegisterFileTabPath",
 			method: "RegisterFileTabPath",
-			seed:   func(*testing.T, *Context) {},
+			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.RegisterFileTabPathRequest{
 					TabId: "tab-1", OrgId: "org-1", WorkspaceId: "ws-other", FilePath: "/tmp/x",
@@ -297,7 +297,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "CleanupWorkspace",
 			method: "CleanupWorkspace",
-			seed:   func(*testing.T, *Context) {},
+			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.CleanupWorkspaceRequest{WorkspaceId: "ws-other"}
 			},
@@ -305,7 +305,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "GetFileTabPath",
 			method: "GetFileTabPath",
-			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
 				return &leapmuxv1.GetFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
 			},
@@ -313,7 +313,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "RevokeFileTabPath",
 			method: "RevokeFileTabPath",
-			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
 				return &leapmuxv1.RevokeFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
 			},
@@ -321,7 +321,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "RelocateFileTabPath/foreign-source",
 			method: "RelocateFileTabPath",
-			seed:   func(t *testing.T, svc *Context) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
 				return &leapmuxv1.RelocateFileTabPathRequest{
 					OrgId: "org-1", TabId: "file-tab-other", NewWorkspaceId: "ws-1",
@@ -331,7 +331,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "RelocateFileTabPath/foreign-destination",
 			method: "RelocateFileTabPath",
-			seed: func(t *testing.T, svc *Context) {
+			seed: func(t *testing.T, svc *Service) {
 				seedForeignFileTab(t, svc, "file-tab-mine", "ws-1")
 			},
 			req: func() proto.Message {
@@ -343,7 +343,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 		gatedMethodProbe{
 			name:   "MoveTabWorkspace",
 			method: "MoveTabWorkspace",
-			seed:   func(t *testing.T, svc *Context) { seedAgent(t, svc, "agent-other", "ws-other") },
+			seed:   func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-other", "ws-other") },
 			req: func() proto.Message {
 				return &leapmuxv1.MoveTabWorkspaceRequest{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -363,14 +363,17 @@ func TestAccessControl_GatedMethods_DenyForeignWorkspace(t *testing.T) {
 
 			dispatch(d, tc.method, tc.req(), w)
 
-			require.Len(t, w.errors, 1, "%s: expected one error", tc.name)
-			assert.Equal(t, codePermissionDenied, w.errors[0].code, "%s: expected PERMISSION_DENIED", tc.name)
+			// rejections(), not w.errors: a streaming method reports its
+			// denial as a stream frame, and the denial is what this asserts.
+			rejected := w.rejections()
+			require.Len(t, rejected, 1, "%s: expected one error", tc.name)
+			assert.Equal(t, codePermissionDenied, rejected[0].code, "%s: expected PERMISSION_DENIED", tc.name)
 			// Pin the denial message too, not just the code: a change that keeps
 			// PERMISSION_DENIED but blanks or leaks the reason (e.g. echoing the
 			// workspace_id) would otherwise slip through. Recovers the message
 			// assertion the deleted open_workspace_required_test.go carried, now
 			// across every gated method rather than just OpenAgent/OpenTerminal.
-			assert.Contains(t, w.errors[0].message, "not accessible", "%s: denial should name the access failure", tc.name)
+			assert.Contains(t, rejected[0].message, "not accessible", "%s: denial should name the access failure", tc.name)
 			assert.Empty(t, w.responses, "%s: no response should be sent", tc.name)
 		})
 	}
@@ -426,9 +429,10 @@ func TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID(t *testing.T) {
 
 			dispatch(d, tc.method, tc.req, w)
 
-			require.Len(t, w.errors, 1, "%s: expected one error", tc.method)
-			assert.Equal(t, codeInvalidArgument, w.errors[0].code, "%s: expected INVALID_ARGUMENT", tc.method)
-			assert.Equal(t, "workspace_id is required", w.errors[0].message, tc.method)
+			rejected := w.rejections()
+			require.Len(t, rejected, 1, "%s: expected one error", tc.method)
+			assert.Equal(t, codeInvalidArgument, rejected[0].code, "%s: expected INVALID_ARGUMENT", tc.method)
+			assert.Equal(t, "workspace_id is required", rejected[0].message, tc.method)
 			assert.Empty(t, w.responses, "%s: no response should be sent", tc.method)
 		})
 	}
@@ -631,6 +635,35 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 		"gateNone additions must be an explicit reviewed decision")
 }
 
+// TestEveryStreamingMethodIsRegisteredAsStreaming is the reply-shape
+// companion to the gate check above.
+//
+// A method that answers with stream frames but is registered through a
+// unary helper compiles and passes its own tests; it fails only in
+// production, silently. The browser registers the correlation id as a
+// stream, so the unary error frame a gate rejection or a panic produces
+// is dropped on arrival -- no error, no retry, a subscription that never
+// starts. WatchWorkspacePrivateEvents shipped that way, which is why the
+// list below is explicit: adding to it should be a reviewed decision, and
+// forgetting to add to it should be a red build.
+func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+
+	var streaming []string
+	for method, shape := range shapes {
+		if shape == shapeStream {
+			streaming = append(streaming, method)
+		}
+	}
+
+	assert.ElementsMatch(t,
+		[]string{"WatchEvents", "WatchWorkspacePrivateEvents"}, streaming,
+		"a method that answers with SendStream must be registered through a "+
+			"streaming helper, so its panics and gate rejections reach the client "+
+			"in the shape it is listening for")
+}
+
 // The owner is written by the connect loop and read by handlers on their own
 // goroutines, so the two genuinely race and the field must be atomic.
 //
@@ -648,7 +681,7 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 // concurrent gate reads at all, so a future revert to a plain field is caught the
 // moment anyone runs the detector.
 func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
-	svc := &Context{}
+	svc := &Service{}
 	svc.SetRegisteredBy("user-1")
 
 	const rounds = 200
@@ -670,7 +703,7 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 			defer wg.Done()
 			for range rounds {
 				w := newTestWriter()
-				requireWorkerOwner(svc, "user-1", channel.NewSender(w))
+				requireWorkerOwner(svc, "user-1", w)
 			}
 		}()
 	}
@@ -697,10 +730,10 @@ func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
 		{"real caller against an unset owner", "user-1", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &Context{}
+			svc := &Service{}
 			svc.SetRegisteredBy(tc.registeredBy)
 			w := newTestWriter()
-			assert.False(t, requireWorkerOwner(svc, tc.userID, channel.NewSender(w)),
+			assert.False(t, requireWorkerOwner(svc, tc.userID, w),
 				"an empty identity must never satisfy the owner gate")
 			require.Len(t, w.errors, 1, "the refusal is reported to the caller")
 			assert.Equal(t, codePermissionDenied, w.errors[0].code)

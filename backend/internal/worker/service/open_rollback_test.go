@@ -25,7 +25,7 @@ import (
 // waitForStartupFailure blocks until the agent or terminal startup
 // registry reports STARTUP_FAILED for id, so tests can synchronize on
 // the async startup goroutine's post-rollback work before asserting.
-func waitForStartupFailure(t *testing.T, svc *Context, id string) {
+func waitForStartupFailure(t *testing.T, svc *Service, id string) {
 	t.Helper()
 	testutil.RequireEventually(t, func() bool {
 		if status, _, _, ok := svc.AgentStartup.status(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {

@@ -10,7 +10,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -23,7 +22,7 @@ import (
 
 // seedPendingControlRequest creates a DB row + registers a watcher and
 // returns the request ID, ready for assertions on cleanup behavior.
-func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Context, w *testResponseWriter, agentID, workspaceID string) string {
+func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, w *testResponseWriter, agentID, workspaceID string) string {
 	t.Helper()
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -41,14 +40,11 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Context, 
 		Payload:   []byte(`{"jsonrpc":"2.0","id":1,"method":"tool/permission"}`),
 	}))
 
-	svc.Watchers.WatchAgent(agentID, &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{agentID}, w)
 	return requestID
 }
 
-func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Context, w *testResponseWriter, agentID, expectedRequestID string) {
+func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Service, w *testResponseWriter, agentID, expectedRequestID string) {
 	t.Helper()
 
 	rows, err := svc.Queries.ListControlRequestsByAgentID(ctx, agentID)

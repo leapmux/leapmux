@@ -71,7 +71,7 @@ const (
 	// caller is an io.Copy with a 32 KiB buffer. A writer that hands over a large
 	// buffer in one call (a bufio.Writer, bytes.Buffer.WriteTo, an http.Transport
 	// flushing a big body) would pin up to WriteWindowFrames * DefaultMaxMessageSize
-	// (256 MiB) on the worker, and a single Write above the channel's 16 MiB
+	// (64 * 17 MiB, over 1 GiB) on the worker, and a single Write above the channel's
 	// inner-message limit would fail outright -- which net.Conn.Write, whose
 	// contract accepts a buffer of any size, must never do.
 	//

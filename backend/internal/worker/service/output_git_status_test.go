@@ -12,7 +12,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -81,8 +80,7 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 	}))
 
 	mock := &agentEventCapturingWriter{channelID: "ch-1"}
-	w := &EventWatcher{ChannelID: "ch-1", Sender: channel.NewSender(mock)}
-	svc.Watchers.WatchAgent("agent-1", w)
+	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
 	return sink, mock

@@ -17,7 +17,7 @@ import (
 )
 
 // seedMark persists one message with the given mark type and returns its seq.
-func seedMark(t *testing.T, svc *Context, agentID, id string, mark leapmuxv1.MarkType) int64 {
+func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.MarkType) int64 {
 	t.Helper()
 	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{
 		ID:            id,
@@ -324,7 +324,7 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	svc.replayAgentCatchUp(channel.NewSender(w), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
+	svc.replayAgentCatchUp(newReplaySink(w), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
 
 	var replayed *leapmuxv1.AgentControlRequest
 	for _, stream := range w.streamsSnapshot() {

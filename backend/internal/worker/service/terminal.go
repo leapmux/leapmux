@@ -37,7 +37,7 @@ func terminalStartingLabel(shell string) string {
 // existing git fields when STARTING arrives without them, so a nil
 // first broadcast is non-clobbering). Returns the ctx the caller
 // passes into runTerminalStartup / runTerminalRestart.
-func (svc *Context) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.AgentGitStatus) context.Context {
+func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.AgentGitStatus) context.Context {
 	startupCtx, cancel := context.WithCancel(context.Background())
 	svc.TerminalStartup.begin(terminalID, cancel)
 	msg := terminalStartingLabel(shell)
@@ -47,10 +47,10 @@ func (svc *Context) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 }
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
-func registerTerminalHandlers(d registrar, svc *Context) {
+func registerTerminalHandlers(d registrar, svc *Service) {
 	// OpenTerminal starts a new PTY terminal session.
 	registerWorkspaceGated(d, "OpenTerminal",
-		func(ctx context.Context, userID string, r *leapmuxv1.OpenTerminalRequest, sender *channel.Sender) {
+		func(ctx context.Context, userID string, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
 			workspaceID := r.GetWorkspaceId()
 
 			cols := r.GetCols()
@@ -160,7 +160,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
 	registerTerminalForRestartGated(d, "RestartTerminal",
-		func(_ context.Context, userID string, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender *channel.Sender) {
+		func(_ context.Context, userID string, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Reject overlapping restarts: a previous startup hasn't broadcast
@@ -240,7 +240,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 
 	// CloseTerminal stops and removes a terminal session.
 	registerTerminalGatedByIDTracked(d, "CloseTerminal",
-		func(_ context.Context, _ string, r *leapmuxv1.CloseTerminalRequest, sender *channel.Sender) {
+		func(_ context.Context, _ string, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Tracked via dispatcher RegisterTracked above so Shutdown
@@ -257,7 +257,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 				func() {
 					svc.TerminalStartup.cancelAndClear(terminalID)
 					svc.Terminals.RemoveTerminal(terminalID)
-					svc.runTerminalCleanup(terminalID)
+					svc.terminalCleanups.run(terminalID)
 				},
 				func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
 			)
@@ -266,7 +266,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 
 	// SendInput sends input data to a terminal.
 	registerTerminalGatedByID(d, "SendInput",
-		func(_ context.Context, _ string, r *leapmuxv1.SendInputRequest, sender *channel.Sender) {
+		func(_ context.Context, _ string, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			if svc.WakeLock != nil {
@@ -284,7 +284,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 
 	// ResizeTerminal changes a terminal's dimensions.
 	registerTerminalGatedByID(d, "ResizeTerminal",
-		func(_ context.Context, _ string, r *leapmuxv1.ResizeTerminalRequest, sender *channel.Sender) {
+		func(_ context.Context, _ string, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			cols := r.GetCols()
@@ -331,7 +331,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 	// intervals (kept short so a title set right before shell exit reaches
 	// the worker before the close handler persists meta to DB).
 	registerTerminalGated(d, "UpdateTerminalTitle",
-		func(_ context.Context, _ string, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender *channel.Sender) {
+		func(_ context.Context, _ string, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			title := r.GetTitle()
@@ -375,7 +375,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListTerminalsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -389,10 +389,10 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 		}
 
 		// Filter by access control: only return terminals in accessible
-		// workspaces. AuthorizerForSender abstracts over E2EE channels and
+		// workspaces. AuthorizerFor abstracts over E2EE channels and
 		// local-IPC streams (which have no channel id but carry a token
 		// scope registered at request entry).
-		accessibleWsIDs := svc.AuthorizerForSender(sender).AccessibleSet()
+		accessibleWsIDs := svc.AuthorizerFor(sender.ChannelID()).AccessibleSet()
 
 		// Collect from the in-memory manager and DB-only rows, recording
 		// each terminal's resolved git directory (see gitutil.ResolveGitDir)
@@ -485,7 +485,7 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 	// notably a workspace-pinned delegation bearer -- must not reach it. The
 	// worker owner's own agents (via the local-IPC remote CLI, which
 	// dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -508,24 +508,24 @@ func registerTerminalHandlers(d registrar, svc *Context) {
 // The mint runs inside this goroutine (rather than synchronously, before
 // sendProtoResponse) so an unusually slow RemoteIPC factory doesn't
 // stretch the RPC latency the user sees.
-func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
+func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
 	defer svc.TerminalStartup.finish()
 	terminalID := opts.ID
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
-	// map by the time any concurrent CloseTerminal calls runTerminalCleanup.
+	// map by the time any concurrent CloseTerminal calls terminalCleanups.run.
 	// Ownership lives with this goroutine until we broadcast READY; until
 	// then, the deferred cleanup retires the token on every error path so
 	// a close that lost the register-vs-cleanup race doesn't leak it.
 	// When no token was minted (RemoteIPC disabled or factory failed),
 	// nothing was registered, so the defer skips the mutex roundtrip.
-	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "open", svc.registerTerminalCleanup, func() ([]string, func(), error) {
+	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
 		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
 	})
 	ownsIPCToken := opts.ExtraEnv != nil
 	defer func() {
 		if ownsIPCToken {
-			svc.runTerminalCleanup(terminalID)
+			svc.terminalCleanups.run(terminalID)
 		}
 	}()
 
@@ -619,7 +619,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 // restart never mutates worktrees. spawnInfo + the previous-token
 // release run inside this goroutine so a slow RemoteIPC factory
 // doesn't stretch the RPC latency the user sees.
-func (svc *Context) runTerminalRestart(
+func (svc *Service) runTerminalRestart(
 	ctx context.Context,
 	opts terminal.Options,
 	spawnInfo TerminalSpawnInfo,
@@ -635,14 +635,14 @@ func (svc *Context) runTerminalRestart(
 	// retires the *new* token if the spawn never reaches READY. When
 	// no new token was minted (RemoteIPC disabled / factory failed),
 	// the defer skips the mutex roundtrip.
-	svc.runTerminalCleanup(terminalID)
-	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "restart", svc.registerTerminalCleanup, func() ([]string, func(), error) {
+	svc.terminalCleanups.run(terminalID)
+	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "restart", svc.terminalCleanups.register, func() ([]string, func(), error) {
 		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
 	})
 	ownsIPCToken := opts.ExtraEnv != nil
 	defer func() {
 		if ownsIPCToken {
-			svc.runTerminalCleanup(terminalID)
+			svc.terminalCleanups.run(terminalID)
 		}
 	}()
 
@@ -687,7 +687,7 @@ func (svc *Context) runTerminalRestart(
 // and runTerminalRestart: clear the persisted startup_error, broadcast
 // READY, and mark the registry succeeded last so observers see a durable
 // terminal state.
-func (svc *Context) succeedTerminalStartup(terminalID string) {
+func (svc *Service) succeedTerminalStartup(terminalID string) {
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.broadcastTerminalReady(terminalID)
 	svc.TerminalStartup.succeed(terminalID)
@@ -695,7 +695,7 @@ func (svc *Context) succeedTerminalStartup(terminalID string) {
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the
 // git-mode mutation.
-func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
 	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID))
 }
 
@@ -704,14 +704,14 @@ func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, pl
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
 // before registry) so observers see a durable terminal state.
-func (svc *Context) failTerminalStartup(terminalID string, gm gitModeResult, cause error) {
+func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cause error) {
 	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID))
 }
 
 // persistTerminalStartupError writes (or clears when errMsg is "") the
 // terminals.startup_error column so the startup panel survives a worker
 // restart that wipes the in-memory registry.
-func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
+func (svc *Service) persistTerminalStartupError(terminalID, errMsg string) {
 	if err := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
 		StartupError: errMsg,
 		ID:           terminalID,
@@ -772,7 +772,7 @@ func buildTerminalReadyStatus(terminalID string) *leapmuxv1.TerminalStatusChange
 //     worker restarts (the in-memory registry is wiped on restart).
 //  3. READY otherwise (the caller uses `Exited` to distinguish a
 //     running terminal from an exited one).
-func (svc *Context) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
+func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
 		return sup, errStr, msg
 	}
@@ -785,7 +785,7 @@ func (svc *Context) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 // broadcastTerminalStarting fans out a STARTING TerminalStatusChange.
 // Used by runTerminalStartup for each phase label transition; gs is
 // non-nil only once phase 1 has computed git status.
-func (svc *Context) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.AgentGitStatus) {
+func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.AgentGitStatus) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
@@ -795,7 +795,7 @@ func (svc *Context) broadcastTerminalStarting(terminalID, message string, gs *le
 }
 
 // broadcastTerminalFailed fans out a STARTUP_FAILED TerminalStatusChange.
-func (svc *Context) broadcastTerminalFailed(terminalID, errMsg string) {
+func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
@@ -805,7 +805,7 @@ func (svc *Context) broadcastTerminalFailed(terminalID, errMsg string) {
 }
 
 // broadcastTerminalReady fans out a READY TerminalStatusChange.
-func (svc *Context) broadcastTerminalReady(terminalID string) {
+func (svc *Service) broadcastTerminalReady(terminalID string) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
@@ -816,7 +816,7 @@ func (svc *Context) broadcastTerminalReady(terminalID string) {
 
 // makeTerminalOutputFn builds the OutputHandler closure that broadcasts
 // data events to subscribers and pings the wake lock.
-func (svc *Context) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
+func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
 	return func(data []byte, endOffset int64) {
 		if svc.WakeLock != nil {
 			svc.WakeLock.RecordActivity()
@@ -838,7 +838,7 @@ func (svc *Context) makeTerminalOutputFn(terminalID string) terminal.OutputHandl
 // the final screen + metadata to the DB so a worker restart still finds
 // an exited row, and broadcast TerminalClosed. Does not set closed_at —
 // only explicit user close does that.
-func (svc *Context) makeTerminalExitFn() terminal.ExitHandler {
+func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		svc.persistTerminalOnExit(tid, exitCode)
 		svc.Watchers.BroadcastTerminalEvent(tid, &leapmuxv1.TerminalEvent{

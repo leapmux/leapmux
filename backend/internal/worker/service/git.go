@@ -72,7 +72,7 @@ const wipCommitMessage = "WIP"
 // subprocesses (e.g. deleteBranchInDir's checkout + branch -D pair):
 // sharing branchMutationTimeout across both phases lets the first one
 // drain the budget and leave the second with no time to run.
-func runBranchMutation(parent context.Context, sender *channel.Sender, success proto.Message, fn func(ctx context.Context) error) {
+func runBranchMutation(parent context.Context, sender channel.ResponseWriter, success proto.Message, fn func(ctx context.Context) error) {
 	runBranchMutationCustom(parent, branchMutationTimeout, sender, success, fn)
 }
 
@@ -80,7 +80,7 @@ func runBranchMutation(parent context.Context, sender *channel.Sender, success p
 // outer timeout. Multi-phase mutations pass a budget large enough that
 // each phase can apply its own per-subprocess timeout internally
 // without being starved by sibling phases.
-func runBranchMutationCustom(parent context.Context, timeout time.Duration, sender *channel.Sender, success proto.Message, fn func(ctx context.Context) error) {
+func runBranchMutationCustom(parent context.Context, timeout time.Duration, sender channel.ResponseWriter, success proto.Message, fn func(ctx context.Context) error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if err := fn(ctx); err != nil {
@@ -95,8 +95,8 @@ func runBranchMutationCustom(parent context.Context, timeout time.Duration, send
 }
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
-func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
-	d.Register("GetGitInfo", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
+	d.Register("GetGitInfo", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetGitInfoRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -182,7 +182,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("GetGitFileStatus", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("GetGitFileStatus", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetGitFileStatusRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -269,7 +269,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.Register("ReadGitFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ReadGitFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ReadGitFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -334,7 +334,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.Register("ListGitBranches", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListGitBranches", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListGitBranchesRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -368,7 +368,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.Register("ListGitWorktrees", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListGitWorktrees", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListGitWorktreesRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -394,7 +394,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.RegisterTracked("InspectLastTabClose", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("InspectLastTabClose", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectLastTabCloseRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -419,7 +419,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.RegisterTracked("PushBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("PushBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.PushBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -450,7 +450,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.PushBranchResponse{})
 	})
 
-	d.Register("InspectBranchDeletion", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("InspectBranchDeletion", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectBranchDeletionRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -478,7 +478,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("InspectBranchChange", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("InspectBranchChange", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectBranchChangeRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -504,7 +504,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.RegisterTracked("CheckoutBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("CheckoutBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.CheckoutBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -535,7 +535,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.RegisterTracked("CreateBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("CreateBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.CreateBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -561,7 +561,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.RegisterTracked("DeleteBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("DeleteBranch", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.DeleteBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -608,7 +608,7 @@ func (t *tabGitContext) commitDir() string {
 	return t.repoRoot
 }
 
-func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
+func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	trace := func(phase string) { traceTabClosePhase("inspect", tabID, phase) }
 
 	// Fast path: the only reason to run the expensive git subprocesses
@@ -790,7 +790,7 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 // switch-target picker; the worktree response strips Branches because
 // the worktree dialog renders no picker. Both paths are bounded by
 // max(probe, snapshot, branches) instead of summing them.
-func (svc *Context) inspectBranchDeletion(ctx context.Context, dirPath, branchNameHint string) (*leapmuxv1.InspectBranchDeletionResponse, error) {
+func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNameHint string) (*leapmuxv1.InspectBranchDeletionResponse, error) {
 	var (
 		info        *gitPathInfo
 		infoErr     error
@@ -976,7 +976,7 @@ func (svc *Context) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 // Failure model mirrors inspectBranchDeletion: errNotGitRepo from the
 // path probe surfaces as "not a git repository"; any other goroutine's
 // failure aborts the rest via gctx and returns the raw error.
-func (svc *Context) inspectBranchChange(ctx context.Context, dirPath string) (*leapmuxv1.InspectBranchChangeResponse, error) {
+func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*leapmuxv1.InspectBranchChangeResponse, error) {
 	var (
 		info     *gitPathInfo
 		infoErr  error
@@ -1370,7 +1370,7 @@ func createBranchInDir(ctx context.Context, workingDir, newBranch, baseBranch st
 	return nil
 }
 
-func (svc *Context) pushBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID string) error {
+func (svc *Service) pushBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID string) error {
 	tabCtx, err := svc.loadTabGitContext(ctx, tabType, tabID)
 	if err != nil {
 		return err
@@ -1472,7 +1472,7 @@ func resolvePushStatus(ctx context.Context, dir, branchName string) (pushStatus,
 	return pushStatusForPath(ctx, dir, branchName)
 }
 
-func (svc *Context) loadTabGitContext(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*tabGitContext, error) {
+func (svc *Service) loadTabGitContext(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*tabGitContext, error) {
 	workingDir, err := svc.getTabWorkingDir(ctx, tabType, tabID)
 	if err != nil {
 		return nil, err
@@ -1514,7 +1514,7 @@ func (svc *Context) loadTabGitContext(ctx context.Context, tabType leapmuxv1.Tab
 	return tabCtx, nil
 }
 
-func (svc *Context) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (string, error) {
+func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (string, error) {
 	switch tabType {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
 		agentRow, err := svc.Queries.GetAgentByID(ctx, tabID)
@@ -1540,7 +1540,7 @@ func (svc *Context) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 // rev-parse latency for the typical few-tab case.
 const branchProbeConcurrency = 6
 
-func (svc *Context) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (bool, error) {
+func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (bool, error) {
 	// gitPathInfo lookups dedupe at two levels:
 	//   - `cache` persists results so post-completion lookups skip the fork
 	//     (matters when two terminals share a workingDir and the second
@@ -1628,7 +1628,7 @@ func (svc *Context) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 // sibling errgroup scan that found a hit and cancelled the shared ctx
 // aborts the drain instead of paying full SQL load latency on a
 // workspace with many tabs.
-func (svc *Context) collectTabDirs(ctx context.Context, query, tabID string, skipSelf bool) ([]string, error) {
+func (svc *Service) collectTabDirs(ctx context.Context, query, tabID string, skipSelf bool) ([]string, error) {
 	rows, err := svc.DB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err

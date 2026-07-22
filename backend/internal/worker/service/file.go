@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -27,9 +28,19 @@ const maxDirEntries = 256
 // after accounting for protobuf overhead and the 16-byte AEAD tag.
 const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
+// maxReadLimit caps what a ReadFile request may ask for, whatever it
+// asks for.
+//
+// It is the same producer ceiling the agent stdout scanners bound
+// themselves by, for the same reason: a response above it is one the
+// receiver refuses, and a refusal on the unary path is silent. Without
+// the clamp the limit field also picks the worker's allocation size, so
+// a single request could ask it to reserve gigabytes.
+const maxReadLimit int64 = channelwire.MaxInnerPayloadBytes
+
 // registerFileHandlers registers handlers for file operations on the local filesystem.
-func registerFileHandlers(d ownerOnlyRegistrar, svc *Context) {
-	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
+	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -59,7 +70,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.Register("ReadFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ReadFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ReadFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -105,6 +116,17 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Context) {
 		if limit <= 0 {
 			limit = defaultReadLimit
 		}
+		// Clamp against the producer ceiling. limit comes straight off the
+		// request and is used below as make([]byte, limit), so an
+		// unclamped value is a request field that chooses the worker's
+		// allocation size -- and any value over the ceiling also builds a
+		// response the channel then refuses, which sendProtoResponse
+		// cannot report. Truncating is the honest answer: the response
+		// already carries total_size, so a caller reading a large file
+		// pages rather than being told nothing.
+		if limit > maxReadLimit {
+			limit = maxReadLimit
+		}
 
 		// meta_only_if_truncated: when the file would be truncated by the
 		// read window, return total_size with an empty content payload so
@@ -143,7 +165,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Context) {
 		})
 	})
 
-	d.Register("StatFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("StatFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.StatFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

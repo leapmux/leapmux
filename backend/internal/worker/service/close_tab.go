@@ -22,7 +22,7 @@ import (
 // link and revokes the file_tab row directly, precisely to avoid the
 // worktree-removal branch this flow owns (the hub's "this tab is gone"
 // signal says nothing about whether the worktree should be removed).
-func (svc *Context) closeFileTabCommon(orgID, tabID string, action leapmuxv1.WorktreeAction) *leapmuxv1.CloseTabResult {
+func (svc *Service) closeFileTabCommon(orgID, tabID string, action leapmuxv1.WorktreeAction) *leapmuxv1.CloseTabResult {
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_FILE,
 		tabID,
@@ -60,7 +60,7 @@ func (svc *Context) closeFileTabCommon(orgID, tabID string, action leapmuxv1.Wor
 // result populates failure_message / failure_detail / worktree_path /
 // worktree_id so the UI can toast a warning. The returned
 // *CloseTabResult is never nil.
-func (svc *Context) closeTabCommon(
+func (svc *Service) closeTabCommon(
 	tabType leapmuxv1.TabType,
 	tabID string,
 	action leapmuxv1.WorktreeAction,
@@ -161,7 +161,7 @@ func (svc *Context) closeTabCommon(
 // same-worktree closes wait, so the unbounded hold can never stall an
 // unrelated tab. The same per-worktree lock guards ReapOrphanWorktree, so a
 // close and the orphan GC for one worktree can never interleave.
-func (svc *Context) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID string) {
+func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID string) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()

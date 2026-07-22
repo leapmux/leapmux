@@ -33,14 +33,14 @@ func requireInvalidArgument(t *testing.T, w *testResponseWriter) string {
 	return w.errors[0].message
 }
 
-func countAgentRows(t *testing.T, svc *Context) int {
+func countAgentRows(t *testing.T, svc *Service) int {
 	t.Helper()
 	rows, err := svc.Queries.ListAllAgentIDsAndWorkspaces(context.Background())
 	require.NoError(t, err)
 	return len(rows)
 }
 
-func countTerminalRows(t *testing.T, svc *Context) int {
+func countTerminalRows(t *testing.T, svc *Service) int {
 	t.Helper()
 	// Any existing "count" query would work; reuse the broad
 	// ListTerminalsByIDs with a wildcard-ish inputs or fall back to a

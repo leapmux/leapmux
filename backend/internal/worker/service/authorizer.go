@@ -1,10 +1,6 @@
 package service
 
-import (
-	"strings"
-
-	"github.com/leapmux/leapmux/internal/worker/channel"
-)
+import "strings"
 
 // LocalIPCStreamPrefix marks synthetic channel ids minted by the local
 // IPC router. A handler whose sender.ChannelID() starts with this prefix
@@ -14,11 +10,11 @@ const LocalIPCStreamPrefix = "localipc:"
 
 // WorkspaceAuthorizer abstracts the "is this workspace accessible to the
 // caller?" check so handlers can be invoked over both E2EE channels
-// (channel.Sender carries a channel id; AccessibleWorkspaceIDs comes
+// (channel.ResponseWriter carries a channel id; AccessibleWorkspaceIDs comes
 // from the channelmgr) and local IPC (per-token scope mapped at
 // authentication time, no channel id).
 //
-// Use AuthorizerForSender to pick the right implementation per request.
+// Use AuthorizerFor to pick the right implementation per request.
 type WorkspaceAuthorizer interface {
 	// IsAccessible reports whether the caller may operate on workspaceID.
 	IsAccessible(workspaceID string) bool
@@ -28,10 +24,6 @@ type WorkspaceAuthorizer interface {
 	// authorizer's backing map. Returns nil when no workspaces are
 	// scoped (matches `IsAccessible -> false for all`).
 	AccessibleSet() map[string]bool
-	// SubscriberID is a stable id for watcher cleanup. For E2EE callers
-	// it's the channel id; for local-IPC callers it's the synthetic
-	// stream id assigned at request entry.
-	SubscriberID() string
 }
 
 // copyAccessibleSet returns a fresh map[string]bool with the same
@@ -76,14 +68,16 @@ func (c *channelAuthorizer) AccessibleSet() map[string]bool {
 	return copyAccessibleSet(c.mgr.AccessibleWorkspaceIDs(c.channelID))
 }
 
-func (c *channelAuthorizer) SubscriberID() string { return c.channelID }
-
-// AuthorizerForSender returns a WorkspaceAuthorizer matched to the
-// sender's transport. Synthetic local-IPC channel ids consult the
-// per-Context registry; everything else falls back to the channel
+// AuthorizerFor returns a WorkspaceAuthorizer matched to the transport
+// that channelID came from. Synthetic local-IPC channel ids consult the
+// per-Service registry; everything else falls back to the channel
 // manager.
-func (svc *Context) AuthorizerForSender(sender *channel.Sender) WorkspaceAuthorizer {
-	cid := sender.ChannelID()
+//
+// It takes the id rather than the writer it used to be read off: the
+// authorizer never writes, and the narrower parameter lets callers that
+// have no send-capable writer -- tests, and the local-IPC path -- ask
+// the same question.
+func (svc *Service) AuthorizerFor(cid string) WorkspaceAuthorizer {
 	if strings.HasPrefix(cid, LocalIPCStreamPrefix) {
 		if auth := svc.localAuthorizerFor(cid); auth != nil {
 			return auth
@@ -118,17 +112,11 @@ func (l *LocalIPCAuthorizer) AccessibleSet() map[string]bool {
 	}
 	return copyAccessibleSet(l.WorkspaceIDs)
 }
-func (l *LocalIPCAuthorizer) SubscriberID() string {
-	if l == nil {
-		return ""
-	}
-	return l.StreamID
-}
 
 // RegisterLocalAuthorizer stashes a per-stream authorizer for the
 // duration of one local-IPC request or stream. The router calls this at
-// dispatch entry; UnregisterLocalAuthorizer at exit.
-func (svc *Context) RegisterLocalAuthorizer(streamID string, workspaceIDs []string) {
+// dispatch entry; ReleaseLocalStream at exit.
+func (svc *Service) RegisterLocalAuthorizer(streamID string, workspaceIDs []string) {
 	if streamID == "" {
 		return
 	}
@@ -144,16 +132,28 @@ func (svc *Context) RegisterLocalAuthorizer(streamID string, workspaceIDs []stri
 	})
 }
 
-// UnregisterLocalAuthorizer drops the per-stream authorizer.
-func (svc *Context) UnregisterLocalAuthorizer(streamID string) {
+// ReleaseLocalStream retires everything a local-IPC stream owns: its
+// authorizer and any event subscriptions it registered.
+//
+// The watcher half matters because local-IPC ids never reach the channel
+// manager's close callback -- that fires for E2EE channels only -- and
+// every local stream mints a FRESH synthetic id, so replace-semantics can
+// never reclaim the previous one either. Without this, a `leapmux remote
+// --follow` against an entity that then goes idle leaves a registration
+// pinned for the life of the worker process, because only a failing
+// broadcast would have swept it and no broadcast ever comes.
+func (svc *Service) ReleaseLocalStream(streamID string) {
 	if streamID == "" {
 		return
 	}
 	svc.localAuthorizers.Delete(streamID)
+	if svc.Watchers != nil {
+		svc.Watchers.UnwatchAll(streamID)
+	}
 }
 
 // localAuthorizerFor looks up the authorizer for streamID, or nil.
-func (svc *Context) localAuthorizerFor(streamID string) *LocalIPCAuthorizer {
+func (svc *Service) localAuthorizerFor(streamID string) *LocalIPCAuthorizer {
 	v, ok := svc.localAuthorizers.Load(streamID)
 	if !ok {
 		return nil

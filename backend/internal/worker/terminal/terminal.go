@@ -261,7 +261,7 @@ type Options struct {
 	Cols          uint16
 	Rows          uint16
 	// ExtraEnv is appended verbatim to the spawned shell's environment
-	// after TERM is set. The service.Context populates this with
+	// after TERM is set. The service.Service populates this with
 	// LEAPMUX_REMOTE_* so scripts inside the shell can drive LeapMux
 	// via `leapmux remote`.
 	ExtraEnv []string

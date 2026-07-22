@@ -23,6 +23,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"google.golang.org/grpc/codes"
 )
 
 // testResponseWriter captures responses and stream messages sent by handlers.
@@ -69,7 +70,7 @@ func (w *testResponseWriter) ChannelID() string { return w.channelID }
 
 // testChannelID is the channel id setupTestService's handshake
 // registers; every fresh testResponseWriter in this package shares it
-// so AuthorizerForSender resolves the same accessible-workspace set.
+// so AuthorizerFor resolves the same accessible-workspace set.
 const testChannelID = "test-ch"
 
 // newTestWriter returns a testResponseWriter bound to the package's
@@ -77,6 +78,27 @@ const testChannelID = "test-ch"
 // id change is a single edit here.
 func newTestWriter() *testResponseWriter {
 	return &testResponseWriter{channelID: testChannelID}
+}
+
+// rejections returns every error the handler reported, in whichever
+// shape it used: a unary InnerRpcResponse error for a unary method, or an
+// InnerStreamMessage carrying IsError for a streaming one.
+//
+// A gate rejection means the same thing either way, so a test asserting
+// that a method denies access should not have to know which kind of
+// method it is -- and must not stop checking simply because the shape
+// changed. Both shapes are collected here so the caller keeps asserting
+// the code and the message.
+func (w *testResponseWriter) rejections() []testError {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := append([]testError(nil), w.errors...)
+	for _, m := range w.streams {
+		if m.GetIsError() {
+			out = append(out, testError{code: m.GetErrorCode(), message: m.GetErrorMessage()})
+		}
+	}
+	return out
 }
 
 // streamsSnapshot returns a copy of streams under the lock so callers can
@@ -112,9 +134,9 @@ func withRemoteIPC(ipc RemoteIPCFactory) setupOption {
 	return func(c *setupConfig) { c.remoteIPC = ipc }
 }
 
-// setupTestService creates a minimal service.Context with an in-memory DB
+// setupTestService creates a minimal service.Service with an in-memory DB
 // and a channel manager configured per the supplied options.
-func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dispatcher, *testResponseWriter) {
+func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
 
 	var cfg setupConfig
@@ -131,7 +153,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dis
 	// AccessibleWorkspaceIDs returns the desired workspaces.
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(*leapmuxv1.ConnectRequest) error { return nil }, 0, nil)
+	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(*leapmuxv1.ConnectRequest) error { return nil }, 0)
 
 	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
@@ -142,28 +164,36 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dis
 		AccessibleWorkspaceIds: cfg.workspaceIDs,
 	})
 
-	svc := &Context{
-		DB:              sqlDB,
-		Queries:         db.New(sqlDB),
-		Channels:        chmgr,
-		Agents:          agent.NewManager(nil),
-		HomeDir:         t.TempDir(),
-		DataDir:         t.TempDir(),
-		Watchers:        NewWatcherManager(),
-		Terminals:       terminal.NewManager(),
-		AgentStartup:    newAgentStartupRegistry(),
-		TerminalStartup: newTerminalStartupRegistry(),
-		RemoteIPC:       cfg.remoteIPC,
-	}
-	// The test channel above is opened as "user-1", so make that the worker's owner:
-	// the owner is the ordinary caller in production, and the machine-scoped families
-	// (file/git/sysinfo/tunnel) admit only them. In production this arrives from the
-	// Hub's connect-time WorkerIdentity rather than being set at construction.
-	svc.SetRegisteredBy("user-1")
-	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
-	svc.Output.DataDir = svc.DataDir
+	// Built through service.New, not by hand.
+	//
+	// A hand-rolled &Service{} is the same "declared but never wired"
+	// hazard the Config embedding exists to remove, reintroduced in the
+	// harness: it omitted PrivateEvents and FileTabPaths -- both
+	// documented "always non-nil after New" -- so WatchWorkspacePrivateEvents
+	// returned early on its own nil guard and any test dispatching it
+	// passed without exercising anything. Going through the constructor
+	// means these tests run the wiring production runs, and a field added
+	// to New is covered the moment it exists.
+	svc := New(Config{
+		DB:        sqlDB,
+		Channels:  chmgr,
+		Send:      func(*leapmuxv1.ConnectRequest) error { return nil },
+		Agents:    agent.NewManager(nil),
+		Terminals: terminal.NewManager(),
+		HomeDir:   t.TempDir(),
+		DataDir:   t.TempDir(),
+		// The test channel above is opened as "user-1", so make that the
+		// worker's owner: the owner is the ordinary caller in production,
+		// and the machine-scoped families (file/git/sysinfo/tunnel) admit
+		// only them. In production this arrives from the Hub's
+		// connect-time WorkerIdentity rather than at construction.
+		SeedRegisteredBy: "user-1",
+	})
+	svc.RemoteIPC = cfg.remoteIPC
 
 	d := channel.NewDispatcher()
+	// RegisterAll binds svc.Cleanup itself, so tracked handlers dispatched
+	// here gate Shutdown exactly the way they do in production.
 	RegisterAll(d, svc)
 
 	return svc, d, newTestWriter()
@@ -174,7 +204,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dis
 // full cleanup chain. Returns the working directory assigned to the
 // terminal so tests can use it for follow-up assertions. Used by tests
 // that need a running terminal attached to an accessible workspace.
-func startTestTerminal(t *testing.T, svc *Context, ctx context.Context, id, workspaceID string) string {
+func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id, workspaceID string) string {
 	t.Helper()
 	workingDir := t.TempDir()
 
@@ -196,7 +226,7 @@ func startTestTerminal(t *testing.T, svc *Context, ctx context.Context, id, work
 // unmarshal, and wait for the PTY to register in the manager. Returns
 // the terminal id minted by the worker. Tests that need to assert
 // against the dispatch response should call dispatch directly.
-func openTerminalViaRPC(t *testing.T, svc *Context, d *channel.Dispatcher, w *testResponseWriter, workspaceID, workingDir string) string {
+func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workspaceID, workingDir string) string {
 	t.Helper()
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId: workspaceID,
@@ -257,7 +287,7 @@ func sendShellLine(t *testing.T, d *channel.Dispatcher, terminalID string, line 
 // PTY's stdin buffer until the shell finishes its init scripts and
 // reads it — no prompt-ready handshake is required because the parsed
 // exit code does not depend on the shell having drained `$?`.
-func exitTerminalAndWait(t *testing.T, svc *Context, d *channel.Dispatcher, terminalID, exitArg string) *testResponseWriter {
+func exitTerminalAndWait(t *testing.T, svc *Service, d *channel.Dispatcher, terminalID, exitArg string) *testResponseWriter {
 	t.Helper()
 	if exitArg == "" {
 		exitArg = " 0"
@@ -276,7 +306,7 @@ func exitTerminalAndWait(t *testing.T, svc *Context, d *channel.Dispatcher, term
 // background goroutines' trailing DB writes, git rollback, or broadcast
 // work can race the cleanup, surfacing as "sql: database is closed"
 // warnings or "directory not empty" TempDir removal failures.
-func drainAllInFlight(svc *Context) {
+func drainAllInFlight(svc *Service) {
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
 	svc.Cleanup.Wait()
@@ -440,9 +470,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
 	// Verify no watcher was registered.
-	svc.Watchers.mu.RLock()
-	agentWatchers := len(svc.Watchers.agents["agent-closed"])
-	svc.Watchers.mu.RUnlock()
+	agentWatchers := svc.Watchers.agents.count("agent-closed")
 	assert.Equal(t, 0, agentWatchers, "no watcher should be registered for closed agent")
 }
 
@@ -472,9 +500,7 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
 	// Verify no watcher was registered.
-	svc.Watchers.mu.RLock()
-	termWatchers := len(svc.Watchers.terminals["term-closed"])
-	svc.Watchers.mu.RUnlock()
+	termWatchers := svc.Watchers.terminals.count("term-closed")
 	assert.Equal(t, 0, termWatchers, "no watcher should be registered for closed terminal")
 }
 
@@ -502,9 +528,7 @@ func TestWatchEvents_ForeignWorkspaceAgent_NotWatched(t *testing.T) {
 	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
-	svc.Watchers.mu.RLock()
-	agentWatchers := len(svc.Watchers.agents["agent-foreign"])
-	svc.Watchers.mu.RUnlock()
+	agentWatchers := svc.Watchers.agents.count("agent-foreign")
 	assert.Equal(t, 0, agentWatchers, "no watcher should be registered for a foreign-workspace agent")
 }
 
@@ -523,9 +547,7 @@ func TestWatchEvents_ForeignWorkspaceTerminal_NotWatched(t *testing.T) {
 	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
-	svc.Watchers.mu.RLock()
-	termWatchers := len(svc.Watchers.terminals["term-foreign"])
-	svc.Watchers.mu.RUnlock()
+	termWatchers := svc.Watchers.terminals.count("term-foreign")
 	assert.Equal(t, 0, termWatchers, "no watcher should be registered for a foreign-workspace terminal")
 }
 
@@ -668,4 +690,208 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 			return err == nil && strings.Contains(string(dbTerm.Screen), "exit_notice_test")
 		}, "expected echoed command output to survive in screen snapshot")
 	}
+}
+
+// TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent pins the
+// handler half of replace-semantics: a WatchEvents request states the
+// channel's whole current interest, so an agent the client stops naming
+// is unsubscribed.
+//
+// Nothing else can retire it. Closing a stream is client-local -- there
+// is no cancel frame on the E2EE wire -- so the previous request's
+// sender never errors and the send-failure sweep never fires. Before
+// this, every closed tab left a registration that kept costing a
+// marshal, an AEAD seal and a hub send on every event for the life of
+// the channel.
+func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	for _, id := range []string{"agent-1", "agent-2"} {
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID:          id,
+			WorkspaceID: "ws-1",
+			WorkingDir:  "/tmp",
+			HomeDir:     "/tmp",
+		}))
+	}
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}, {AgentId: "agent-2"}},
+	}, w)
+	require.Equal(t, 1, svc.Watchers.agents.count("agent-1"), "precondition: agent-1 watched")
+	require.Equal(t, 1, svc.Watchers.agents.count("agent-2"), "precondition: agent-2 watched")
+
+	// The agent-2 tab closed; the client re-issues with only agent-1.
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
+	}, w)
+
+	assert.Equal(t, 0, svc.Watchers.agents.count("agent-2"),
+		"the agent the new request omits must be unsubscribed")
+	assert.Equal(t, 1, svc.Watchers.agents.count("agent-1"),
+		"the agent the new request still names stays watched")
+}
+
+// TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions pins
+// the guard on replace-semantics' sharp edge, and the half of it that a
+// count assertion cannot see.
+//
+// The terminal lookup DEGRADES on error (it warns and carries on) rather
+// than returning like the agent one, so a failed query leaves every
+// requested terminal "rejected". Read as a statement of interest that
+// would mean "this channel watches no terminals" and unsubscribe them
+// all -- turning a transient DB blip into a silently dead UI that only a
+// reconnect could fix.
+//
+// Keeping the set is necessary but not sufficient: the request arrived on
+// a NEW stream, so the surviving registrations must be re-pointed at it.
+// Left bound to the previous writer they address a correlation id the
+// client has already torn down -- SendStream still succeeds, so nothing
+// is retired, no error surfaces, and the terminal simply goes quiet.
+func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+	}))
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID:          "term-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+		Cols:        80,
+		Rows:        24,
+		Screen:      []byte("s"),
+	}))
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
+	}
+	dispatch(d, "WatchEvents", req, w)
+	require.Equal(t, 1, svc.Watchers.terminals.count("term-1"), "precondition: term-1 watched")
+
+	// Break ONLY the terminal lookup, so the agent half still verifies and
+	// the request does not fall into the everything-was-rejected branch --
+	// this has to exercise the degrade path itself.
+	//
+	// Done by dropping the table rather than swapping svc.Queries: Queries
+	// is injected wiring, which the Service contract says is never written
+	// once handlers dispatch, and a test that writes it anyway normalises
+	// exactly the race that contract exists to forbid.
+	_, err := svc.DB.Exec("DROP TABLE terminals")
+	require.NoError(t, err)
+
+	// Re-issue on a SECOND writer, standing in for the fresh stream a
+	// resubscribe always arrives on.
+	resubscribed := newTestWriter()
+	dispatch(d, "WatchEvents", req, resubscribed)
+
+	assert.Equal(t, 1, svc.Watchers.terminals.count("term-1"),
+		"a failed lookup must not be read as 'watches no terminals'")
+	assert.Same(t, resubscribed, svc.Watchers.terminals.senderFor("term-1", testChannelID),
+		"the kept subscription must follow the stream that re-issued the request")
+}
+
+// TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry covers
+// the case rebinding cannot serve at all.
+//
+// Rebinding preserves whatever this channel already holds -- but a page
+// refresh mints a NEW channel, which holds nothing. There is then no
+// registration to keep, no registration to create, and (because at least
+// one agent verified) no error either: the handler falls through the
+// success path and the client is told its subscription is live. Its
+// terminal panes stay blank for the channel's whole life, since a
+// healthy-looking stream never trips the retry.
+func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+	}))
+
+	// No prior WatchEvents on this channel: nothing is registered, exactly
+	// as after a page refresh.
+	_, err := svc.DB.Exec("DROP TABLE terminals")
+	require.NoError(t, err)
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
+	}, w)
+
+	assert.Equal(t, 0, svc.Watchers.terminals.count("term-1"),
+		"precondition: a rebind on a fresh channel registers nothing")
+
+	var sawError bool
+	for _, m := range w.streamsSnapshot() {
+		if m.GetIsError() {
+			sawError = true
+			assert.Equal(t, int32(codes.Unavailable), m.GetErrorCode(),
+				"a failed lookup is a worker-side fault, so the client should retry")
+		}
+	}
+	assert.True(t, sawError,
+		"a request whose terminals were never registered must not report success")
+}
+
+// TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError pins the only
+// way a client can retire its subscriptions while keeping the channel.
+//
+// Closing a stream is client-local, so nothing reaches the worker; the
+// frontend therefore sends an empty WatchEvents when its last tab on a
+// worker closes. That has to be treated as a legitimate statement of
+// interest -- unsubscribe everything, say nothing -- and NOT as the
+// "you named entities and all of them were rejected" case, which
+// answers with a NotFound stream error the client would retry on
+// forever.
+func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+	}))
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID:          "term-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+		Cols:        80,
+		Rows:        24,
+		Screen:      []byte("s"),
+	}))
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
+	}, w)
+	require.Equal(t, 1, svc.Watchers.agents.count("agent-1"), "precondition: agent-1 watched")
+	require.Equal(t, 1, svc.Watchers.terminals.count("term-1"), "precondition: term-1 watched")
+
+	unsubscribe := newTestWriter()
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{}, unsubscribe)
+
+	assert.False(t, svc.Watchers.agents.hasEntity("agent-1"),
+		"an empty request must retire the agent subscription")
+	assert.False(t, svc.Watchers.terminals.hasEntity("term-1"),
+		"an empty request must retire the terminal subscription")
+
+	for _, s := range unsubscribe.streamsSnapshot() {
+		assert.False(t, s.GetIsError(),
+			"unsubscribing is a legitimate request, not a NotFound the client should retry")
+	}
+	assert.Empty(t, unsubscribe.errors, "and not an RPC error either")
 }

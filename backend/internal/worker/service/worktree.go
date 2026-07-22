@@ -178,7 +178,7 @@ func probeIsRepo(ctx context.Context, g *errgroup.Group, dir string, out *bool) 
 // All returned errors are CodeInvalidArgument-eligible — callers should
 // surface them via sendInvalidArgument so bad user input fails fast at the
 // RPC boundary without mutating any state or creating any DB row.
-func (svc *Context) validateGitMode(ctx context.Context, workingDir string, r gitModeRequest) (gitModePlan, error) {
+func (svc *Service) validateGitMode(ctx context.Context, workingDir string, r gitModeRequest) (gitModePlan, error) {
 	if r.GetCreateWorktree() {
 		return svc.validateCreateWorktree(ctx, workingDir, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch())
 	}
@@ -202,7 +202,7 @@ func (svc *Context) validateGitMode(ctx context.Context, workingDir string, r gi
 	}, nil
 }
 
-func (svc *Context) validateCreateWorktree(ctx context.Context, workingDir, branch, baseBranch string) (gitModePlan, error) {
+func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, branch, baseBranch string) (gitModePlan, error) {
 	if branch == "" {
 		return gitModePlan{}, errors.New("worktree_branch is required when create_worktree is true")
 	}
@@ -311,7 +311,7 @@ func (svc *Context) validateCreateWorktree(ctx context.Context, workingDir, bran
 	}, nil
 }
 
-func (svc *Context) validateUseWorktreePath(ctx context.Context, workingDir, worktreePath string) (gitModePlan, error) {
+func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, worktreePath string) (gitModePlan, error) {
 	sanitized, err := validate.SanitizePath(worktreePath, svc.HomeDir)
 	if err != nil {
 		return gitModePlan{}, fmt.Errorf("invalid worktree path: %w", err)
@@ -374,7 +374,7 @@ func (svc *Context) validateUseWorktreePath(ctx context.Context, workingDir, wor
 	}, nil
 }
 
-func (svc *Context) validateCreateBranch(ctx context.Context, workingDir, branch, base string) (gitModePlan, error) {
+func (svc *Service) validateCreateBranch(ctx context.Context, workingDir, branch, base string) (gitModePlan, error) {
 	if err := gitutil.ValidateBranchName(branch); err != nil {
 		return gitModePlan{}, err
 	}
@@ -422,7 +422,7 @@ func (svc *Context) validateCreateBranch(ctx context.Context, workingDir, branch
 	}, nil
 }
 
-func (svc *Context) validateCheckoutBranch(ctx context.Context, workingDir, branch string) (gitModePlan, error) {
+func (svc *Service) validateCheckoutBranch(ctx context.Context, workingDir, branch string) (gitModePlan, error) {
 	// queryGitPathInfo and LookupRef are independent existence probes;
 	// run them concurrently so a dialog click pays one fork latency
 	// instead of two.
@@ -479,7 +479,7 @@ type gitModeResult struct {
 // error, so the caller can decide whether to emit a rollback label and then
 // call rollbackGitMode. Honors ctx cancellation between shell-outs so
 // CloseAgent/CloseTerminal can abort an in-progress phase 0.
-func (svc *Context) executeGitMode(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeGitMode(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return gitModeResult{}, err
 	}
@@ -498,7 +498,7 @@ func (svc *Context) executeGitMode(ctx context.Context, plan gitModePlan) (gitMo
 	}
 }
 
-func (svc *Context) executeCreateWorktree(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	rollback := &rollbackWorktree{
 		WorktreePath: plan.WorktreePath,
 		RepoRoot:     plan.RepoRoot,
@@ -531,7 +531,7 @@ func (svc *Context) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	return result, nil
 }
 
-func (svc *Context) executeUseWorktreePath(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeUseWorktreePath(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	wtID, err := svc.ensureTrackedWorktree(ctx, plan.WorktreePath)
 	if err != nil {
 		return gitModeResult{}, err
@@ -542,7 +542,7 @@ func (svc *Context) executeUseWorktreePath(ctx context.Context, plan gitModePlan
 	}, nil
 }
 
-func (svc *Context) executeCreateBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeCreateBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	// Capture the current checkout now so the rollback can restore
 	// HEAD if `git checkout -b` partially succeeds.
 	currentTarget, err := currentCheckoutTarget(ctx, plan.WorkingDir)
@@ -589,7 +589,7 @@ func (svc *Context) executeCreateBranch(ctx context.Context, plan gitModePlan) (
 	return result, nil
 }
 
-func (svc *Context) executeCheckoutBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeCheckoutBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	// Probe + register the worktree association BEFORE the checkout so
 	// a ctx-cancel / DB / git probe failure aborts cleanly, instead of
 	// stranding the working dir on the new branch with no tab linkage.
@@ -630,7 +630,7 @@ func (svc *Context) executeCheckoutBranch(ctx context.Context, plan gitModePlan)
 // checkout. Exposed at package scope so tests can pin the re-stamp
 // invariant without going through the full executeCheckoutBranch
 // pipeline.
-func (svc *Context) restampWorktreeBranch(ctx context.Context, worktreeID, workingDir string) {
+func (svc *Service) restampWorktreeBranch(ctx context.Context, worktreeID, workingDir string) {
 	if worktreeID == "" {
 		return
 	}
@@ -657,7 +657,7 @@ func (svc *Context) restampWorktreeBranch(ctx context.Context, worktreeID, worki
 	}
 }
 
-func (svc *Context) executeUseCurrent(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeUseCurrent(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	// Same return-on-error shape as executeCheckoutBranch /
 	// executeCreateBranch: pass `result` back so any WorktreeID the
 	// attach already wrote stays observable.
@@ -679,7 +679,7 @@ func (svc *Context) executeUseCurrent(ctx context.Context, plan gitModePlan) (gi
 // returns when git says the path isn't in a work tree; ctx cancellation
 // and other unexpected errors are surfaced so the caller can reject the
 // OpenAgent instead of silently shipping an unlinked tab.
-func (svc *Context) attachWorktreeIfPresent(ctx context.Context, result *gitModeResult, dir string) error {
+func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitModeResult, dir string) error {
 	info, err := queryGitPathInfo(ctx, dir)
 	if err != nil {
 		if errors.Is(err, errNotGitRepo) {
@@ -703,7 +703,7 @@ func (svc *Context) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 // links go through FileTabPathStore.linkFileTabToWorktree), so org_id is
 // left "" -- agent/terminal ids are globally unique, so worktree_tab_liveness
 // never needs the org to disambiguate them.
-func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.TabType, tabID string) {
+func (svc *Service) registerTabForWorktree(worktreeID string, tabType leapmuxv1.TabType, tabID string) {
 	if worktreeID == "" {
 		return
 	}
@@ -735,7 +735,7 @@ func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 // is just the fast path for the common close-before-startup case. Shared by
 // runAgentStartup / runTerminalStartup so the skip-vs-link decision can't drift
 // between the two paths.
-func (svc *Context) registerTabForWorktreeUnlessClosed(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool) {
+func (svc *Service) registerTabForWorktreeUnlessClosed(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool) {
 	if closedDuringStartup {
 		slog.Info("tab closed during startup; skipping worktree link",
 			"tab_type", tabType, "tab_id", tabID, "worktree_id", worktreeID)
@@ -744,7 +744,7 @@ func (svc *Context) registerTabForWorktreeUnlessClosed(worktreeID string, tabTyp
 	svc.registerTabForWorktree(worktreeID, tabType, tabID)
 }
 
-func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
+func (svc *Service) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
 	return svc.ensureTrackedWorktreeWith(ctx, worktreePath, "", "")
 }
 
@@ -755,7 +755,7 @@ func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath stri
 // these fields; paying the fork latency twice for the same data is
 // pure dialog-open overhead. Pass "" for either field to fall back to
 // queryGitPathInfo.
-func (svc *Context) ensureTrackedWorktreeWith(ctx context.Context, worktreePath, repoRoot, branchName string) (string, error) {
+func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath, repoRoot, branchName string) (string, error) {
 	canonicalPath := pathutil.Canonicalize(worktreePath)
 
 	existing, err := svc.Queries.GetWorktreeByPath(ctx, canonicalPath)
@@ -813,7 +813,7 @@ func (svc *Context) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 // manually. Branch deletion failures are logged but never bubbled
 // (a retained branch is recoverable manually; mass-deleting unrelated
 // branches is not).
-func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
+func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 	ctx := bgCtx()
 
 	// Resolve the branch to delete BEFORE the worktree-remove call: the
@@ -924,7 +924,7 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 // strand links: worktrees soft-delete, so the worktree_tabs ON DELETE
 // CASCADE never fires for them, and the rows would otherwise over-count a
 // future worktree adopted at the same path.
-func (svc *Context) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
+func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -983,7 +983,7 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 	}, nil
 }
 
-func (svc *Context) rollbackGitMode(result gitModeResult) {
+func (svc *Service) rollbackGitMode(result gitModeResult) {
 	if result.Rollback.CreatedBranch != nil {
 		svc.rollbackCreatedBranch(*result.Rollback.CreatedBranch)
 	}
@@ -992,7 +992,7 @@ func (svc *Context) rollbackGitMode(result gitModeResult) {
 	}
 }
 
-func (svc *Context) rollbackCreatedWorktree(r rollbackWorktree) {
+func (svc *Service) rollbackCreatedWorktree(r rollbackWorktree) {
 	ctx := bgCtx()
 
 	// `git worktree remove` must complete before `git branch -D` — git
@@ -1026,7 +1026,7 @@ func (svc *Context) rollbackCreatedWorktree(r rollbackWorktree) {
 	_ = wg.Wait()
 }
 
-func (svc *Context) rollbackCreatedBranch(r rollbackBranch) {
+func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 	ctx := bgCtx()
 
 	// Restore the original HEAD first so `git branch -D <created>` isn't
@@ -1076,7 +1076,7 @@ func (svc *Context) rollbackCreatedBranch(r rollbackBranch) {
 // stale association). Other callers don't have the worktree in hand and
 // would pay for a GetWorktreeForTab round-trip; the bare (tab_type, tab_id)
 // delete is enough, because (tab_type, tab_id) is unique in practice.
-func (svc *Context) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
+func (svc *Service) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
 	if err := svc.Queries.DeleteWorktreeTabsByTabID(bgCtx(), db.DeleteWorktreeTabsByTabIDParams{
 		TabType: tabType,
 		TabID:   tabID,
@@ -1093,7 +1093,7 @@ func (svc *Context) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
 // error (also logged) so the REMOVE-close path can surface a partial
 // failure rather than letting the surviving link masquerade as a
 // sibling still referencing the worktree.
-func (svc *Context) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) error {
+func (svc *Service) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) error {
 	if err := svc.Queries.RemoveWorktreeTab(bgCtx(), db.RemoveWorktreeTabParams{
 		WorktreeID: worktreeID,
 		TabType:    tabType,

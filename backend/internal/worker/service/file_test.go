@@ -450,3 +450,45 @@ func repeatedByte(n int, b byte) []byte {
 	}
 	return out
 }
+
+// TestReadFile_ClampsAnOversizeLimit pins the upper bound on a
+// request-supplied read window.
+//
+// limit comes straight off the wire and is used as make([]byte, limit),
+// so unclamped it lets one request choose the worker's allocation size.
+// A value above the producer ceiling is also unserviceable on its own
+// terms: the response it builds is one the channel refuses, and on the
+// unary path that refusal reaches the caller as nothing at all.
+//
+// The file is sparse (Truncate, not written bytes) so the boundary is
+// exercised without materialising it, and meta_only_if_truncated is the
+// cheap observation: the clamp is what makes a file this size count as
+// truncated, so an unclamped limit returns content here instead.
+func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
+	svc, d, w := setupTestService(t)
+
+	path := filepath.Join(svc.HomeDir, "sparse.bin")
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	// Larger than the clamp, so the clamp decides the outcome.
+	const totalSize = int64(maxReadLimit) + (1 << 20)
+	require.NoError(t, f.Truncate(totalSize))
+	require.NoError(t, f.Close())
+
+	dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		Path: path,
+		// Far above the ceiling, and above the file: without the clamp
+		// offset+limit exceeds total_size, so nothing looks truncated.
+		Limit:               int64(maxReadLimit) * 4,
+		MetaOnlyIfTruncated: true,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var resp leapmuxv1.ReadFileResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.EqualValues(t, totalSize, resp.GetTotalSize())
+	assert.Empty(t, resp.GetContent(),
+		"a limit above the producer ceiling must be clamped, which makes this file truncated")
+}

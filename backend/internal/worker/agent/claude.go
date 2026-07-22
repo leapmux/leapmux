@@ -245,8 +245,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// Read stdout in a background goroutine. Output will only arrive after
 	// the first message is sent to stdin (Claude Code behavior with
 	// --input-format stream-json).
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner := newStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
 
 	// cleanup terminates the agent process and waits for it to exit.

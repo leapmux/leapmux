@@ -892,7 +892,8 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 	// also unregisters the request. It does not for a stream handler -- a tunnel
 	// Conn's onStreamMessage latches its terminal error but never unregisters -- so
 	// hasHandlerLocked stayed true, the next MORE chunk allocated a fresh buffer,
-	// and the peer could drive re-accumulation to the 16 MiB ceiling indefinitely,
+	// and the peer could drive re-accumulation to the inner-message ceiling
+	// (channelwire.DefaultMaxMessageSize) indefinitely,
 	// burning allocate-and-discard cycles on the channel's sole receive goroutine
 	// and stalling every other RPC, stream and tunnel multiplexed on it. The entry
 	// is cheap (its parts are released by poison, and it holds no cap slot) and

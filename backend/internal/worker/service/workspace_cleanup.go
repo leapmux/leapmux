@@ -9,7 +9,7 @@ import (
 )
 
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
-func registerCleanupHandlers(d registrar, svc *Context) {
+func registerCleanupHandlers(d registrar, svc *Service) {
 	registerWorkspaceGated(d, "CleanupWorkspace", handleCleanupWorkspace(svc))
 }
 
@@ -17,8 +17,8 @@ func registerCleanupHandlers(d registrar, svc *Context) {
 // worktrees) for a deleted workspace. This is called via E2EE channel by the
 // frontend after the hub deletes the workspace. Workspace access is enforced
 // by registerWorkspaceGated before this runs.
-func handleCleanupWorkspace(svc *Context) func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender *channel.Sender) {
-	return func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender *channel.Sender) {
+func handleCleanupWorkspace(svc *Service) func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
+	return func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
 		workspaceID := r.GetWorkspaceId()
 		// Gate on the channel's accessible set already ran in
 		// registerWorkspaceGated. The hub removes the workspace before

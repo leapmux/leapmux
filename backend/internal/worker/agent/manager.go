@@ -63,7 +63,7 @@ func NewManager(onExit ExitHandler) *Manager {
 
 // SetOnExit replaces the exit handler. The runner uses this to wire a
 // service-aware handler (which has access to OutputHandler / DB queries)
-// after the service.Context is constructed. The handler is read inside
+// after the service.Service is constructed. The handler is read inside
 // the per-agent Wait goroutine under m.mu so a concurrent swap is
 // observed atomically by every in-flight exit.
 func (m *Manager) SetOnExit(onExit ExitHandler) {

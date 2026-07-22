@@ -392,8 +392,9 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 		// BYTE bound (InitialReadWindow * MaxChunkBytes) -- but that is the SENDER's
 		// convention, and this client must not trust it any more than the worker
 		// trusts ours. A worker that does not chunk (a buggy or compromised one) is
-		// otherwise bounded only by the channel's 16 MiB inner-message limit, and
-		// readBuf holds ReadBufFrames of them: 256 x 16 MiB = 4 GiB pinned in the
+		// otherwise bounded only by the channel's inner-message limit
+		// (channelwire.DefaultMaxMessageSize, 17 MiB), and readBuf holds
+		// ReadBufFrames of them: 256 x 17 MiB is over 4 GiB pinned in the
 		// client, per conn, against a 4 MiB design target.
 		//
 		// Latch it as terminal rather than dropping the frame: a peer violating the
@@ -536,8 +537,8 @@ func (tc *Conn) Write(b []byte) (int, error) {
 	// just frames: net.Conn.Write accepts a buffer of any size, so a caller that
 	// hands over a large one (a bufio.Writer, bytes.Buffer.WriteTo, an
 	// http.Transport flushing a big body) must neither pin tunnelflow.WriteWindowFrames *
-	// 16 MiB on the worker nor fail outright against the channel's inner-message
-	// limit. Each chunk takes its own sequence and window slot, so the worker still
+	// channelwire.DefaultMaxMessageSize on the worker nor fail outright against the
+	// channel's inner-message limit. Each chunk takes its own sequence and window slot, so the worker still
 	// applies them in order and backpressure still reaches this caller.
 	written := 0
 	for len(b) > 0 {

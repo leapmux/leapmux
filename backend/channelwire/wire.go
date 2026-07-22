@@ -37,12 +37,40 @@ const (
 	// message (MaxCiphertextForChunk - NoiseAEADAuthTagSize).
 	MaxPlaintextPerChunk = MaxCiphertextForChunk - NoiseAEADAuthTagSize
 
-	// DefaultMaxMessageSize is the maximum reassembled message size (16 MiB).
+	// MaxInnerPayloadBytes is the largest application payload a sender may
+	// hand to the channel layer: an agent stdout line, a file body, a
+	// terminal snapshot. Producers bound their own input by THIS, not by
+	// DefaultMaxMessageSize, because what the receiver caps is the payload
+	// plus every envelope wrapped around it.
+	//
+	// When the two were equal, a producer that filled its budget exactly
+	// built an inner message the receiver then refused -- and a refusal
+	// mid-stream has no recovery: the ordered, encrypted stream has no
+	// resync path, so the event was dropped with nothing to tell the
+	// client it had missed anything.
+	MaxInnerPayloadBytes = 16 * 1024 * 1024
+
+	// InnerEnvelopeHeadroom is what DefaultMaxMessageSize adds on top of
+	// MaxInnerPayloadBytes to cover the envelopes a payload is wrapped in
+	// before it reaches the wire -- for the widest case, the WatchEvents
+	// fan-out, that is AgentMessage -> AgentEvent -> WatchEventsResponse ->
+	// InnerStreamMessage -> InnerMessage.
+	//
+	// Real overhead there is field tags, varint lengths and a few ids:
+	// hundreds of bytes, not hundreds of kilobytes. A megabyte is
+	// deliberate slack so that adding a field to any of those envelopes
+	// cannot quietly reintroduce the drop.
+	InnerEnvelopeHeadroom = 1024 * 1024
+
+	// DefaultMaxMessageSize is the maximum reassembled message size.
 	// It is a fixed protocol constant every receiver (hub relay, worker,
 	// tunnel client, browser) enforces independently -- not an operator knob;
 	// reintroducing one requires propagating the value to every receiver and
 	// is tracked in https://github.com/leapmux/leapmux/issues/291.
-	DefaultMaxMessageSize = 16 * 1024 * 1024
+	//
+	// Derived rather than written out so the receiver's cap can never sit
+	// at or below what a producer is allowed to emit.
+	DefaultMaxMessageSize = MaxInnerPayloadBytes + InnerEnvelopeHeadroom
 
 	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
 	// sequences per channel before new ones are rejected.
@@ -264,9 +292,12 @@ func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.Cha
 }
 
 // OrgEventsReadLimit is the per-message read budget for /ws/orgevents
-// subscribers. Matches the 16 MiB ceiling the hub uses on the writer
-// side (large initial-bootstrap snapshots can hit several MB on busy
-// orgs).
+// subscribers (large initial-bootstrap snapshots can hit several MB on
+// busy orgs).
+//
+// Independent of DefaultMaxMessageSize: org events are plaintext CRDT
+// frames on their own socket, not chunked encrypted channel messages, so
+// the two limits answer different questions and are free to diverge.
 const OrgEventsReadLimit = 16 * 1024 * 1024
 
 // OpenOrgEventsWS dials /ws/orgevents on `hubURL` with the supplied

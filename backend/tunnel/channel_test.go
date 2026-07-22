@@ -395,8 +395,8 @@ func TestConnCloseWriteSendsHalfCloseFlag(t *testing.T) {
 // Framing the caller's buffer verbatim made the in-flight byte ceiling a property
 // of the caller (fine for today's 32 KiB io.Copy, but a bufio.Writer or
 // bytes.Buffer.WriteTo passes megabytes in one call), pinning up to
-// tunnelflow.WriteWindowFrames * 16 MiB on the worker -- and a buffer past the channel's
-// 16 MiB inner-message limit failed outright instead of chunking.
+// tunnelflow.WriteWindowFrames * DefaultMaxMessageSize on the worker -- and a buffer
+// past the channel's inner-message limit failed outright instead of chunking.
 func TestConnWriteSplitsLargeBufferIntoWindowedChunks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -844,8 +844,8 @@ func (c *creditRecordingChannel) totalGranted() uint64 {
 // The worker frames at its 32 KiB read buffer, which is what makes InitialReadWindow
 // a BYTE bound (InitialReadWindow * MaxChunkBytes). But that is the SENDER's
 // convention. A worker that does not chunk is otherwise capped only by the channel's
-// 16 MiB inner-message limit, and readBuf holds ReadBufFrames (256) of them: an
-// unchecked client admits 256 x 16 MiB = 4 GiB pinned per conn, against a 4 MiB
+// inner-message limit, and readBuf holds ReadBufFrames (256) of them: an
+// unchecked client admits over 4 GiB pinned per conn, against a 4 MiB
 // design target. The bound has to hold at BOTH receivers or it is not a property of
 // the protocol, only of the peer's good manners.
 func TestConnRejectsOversizeInboundFrame(t *testing.T) {
@@ -1557,7 +1557,7 @@ func TestDeliverRPCErrorFallsBackToStreamHandler(t *testing.T) {
 // no pending handler is left (a tunnel Conn after OpenTunnelConn succeeds), and
 // Conn.onStreamMessage only latches its terminal error -- it never unregisters. So
 // the id keeps a live handler, and simply DELETING the buffer on the violation let
-// the very next MORE chunk allocate a fresh one and re-accumulate to the 16 MiB
+// the very next MORE chunk allocate a fresh one and re-accumulate to the
 // ceiling, over and over, for as long as the peer kept sending: allocate-and-discard
 // cycles on the channel's sole receive goroutine, stalling every other RPC, stream
 // and tunnel multiplexed on it.
