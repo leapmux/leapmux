@@ -1152,6 +1152,86 @@ func TestPortForwardReleasesConnWhenClientAborts(t *testing.T) {
 	assert.Zero(t, remaining, "both ends must be released back to the tunnel")
 }
 
+// TestPortForwardReleasesConnsOnLifetimeCancel pins the context.AfterFunc arm of
+// handlePortForward (issue #280): cancelling the parent lifetime ctx — without
+// tunnel teardown (t.close / DeleteTunnel) and without a client abort — is the
+// only path that closes both conn ends. The AfterFunc callback force-closes
+// local and remote, unblocking the parked copyHalf goroutines so the handler
+// returns and clears tun.connections. Teardown tests go through t.close(),
+// which hard-closes tracked conns independently of the ctx, so they do not
+// exercise this arm.
+func TestPortForwardReleasesConnsOnLifetimeCancel(t *testing.T) {
+	m := NewTunnelManager()
+	defer m.CloseAll()
+	ctx, cancel := context.WithCancel(context.Background())
+	// Do not register cancel on t.Cleanup: the test cancels explicitly as the
+	// trigger under test. A deferred CloseAll still tears the manager down.
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	tun := &tunnel{
+		info: TunnelInfo{
+			ID: "pf-lifetime", WorkerID: "w", Type: tunnelTypePortForward,
+			TargetAddr: "target", TargetPort: 80,
+			BindAddr: "127.0.0.1", BindPort: listener.Addr().(*net.TCPAddr).Port,
+		},
+		hubURL:      "http://hub",
+		listener:    listener,
+		cancel:      cancel,
+		connections: make(map[net.Conn]struct{}),
+	}
+	m.mu.Lock()
+	m.tunnels[tun.info.ID] = tun
+	m.mu.Unlock()
+
+	target, targetPeer := net.Pipe()
+	t.Cleanup(func() {
+		_ = target.Close()
+		_ = targetPeer.Close()
+	})
+	dialed := make(chan struct{})
+	m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
+		close(dialed)
+		return target, nil
+	}
+
+	client, err := net.Dial("tcp", listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	local, err := listener.Accept()
+	require.NoError(t, err)
+
+	handled := make(chan struct{})
+	go func() {
+		defer close(handled)
+		m.handlePortForward(ctx, local, tun, nil)
+	}()
+
+	select {
+	case <-dialed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("port forward never dialled the target")
+	}
+
+	// Cancel only the lifetime ctx — no t.close(), DeleteTunnel, or client abort.
+	// Both copyHalf directions are parked (nothing written); AfterFunc must
+	// force-close both ends so the handler returns.
+	cancel()
+
+	select {
+	case <-handled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handlePortForward did not release on lifetime cancel")
+	}
+	assertConnectionClosed(t, client, "client connection remained open after lifetime cancel")
+	assertConnectionClosed(t, targetPeer, "remote tunnel connection remained open after lifetime cancel")
+	tun.mu.Lock()
+	remaining := len(tun.connections)
+	tun.mu.Unlock()
+	assert.Zero(t, remaining, "both ends must be released back to the tunnel")
+}
+
 // gatedTunnelListener lets a test place an accepted conn into the serve loop at a
 // chosen instant: the first Accept parks until the gate opens (or the serve ctx
 // dies), later ones park until the serve ctx dies. Only the Serve goroutine calls
