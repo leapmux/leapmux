@@ -63,183 +63,162 @@ func (svc *Context) baseAgentOptions(agentID, workingDir string, provider leapmu
 }
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
-func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("OpenAgent", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.OpenAgentRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+func registerAgentHandlers(d registrar, svc *Context) {
+	registerWorkspaceGated(d, "OpenAgent",
+		func(ctx context.Context, userID string, r *leapmuxv1.OpenAgentRequest, sender *channel.Sender) {
+			if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
-		if r.GetWorkspaceId() == "" {
-			sendInvalidArgument(sender, "workspace_id is required")
-			return
-		}
-		if !svc.requireAccessibleWorkspace(sender, r.GetWorkspaceId()) {
-			return
-		}
+			title, err := sanitizeOptionalTitle(r.GetTitle())
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+			// Empty title means "you pick one". Default to a random
+			// "Agent <Name>" from the shared pool so CLI-spawned agents
+			// match the format UI-spawned ones get. Collisions are
+			// allowed (cosmetic; the user can rename either tab).
+			if title == "" {
+				title = pickAgentTitle()
+			}
 
-		if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
-			sendInvalidArgument(sender, err.Error())
-			return
-		}
+			agentID := id.Generate()
+			agent.TraceStartupPhase(agentID, "handler_begin")
 
-		title, err := sanitizeOptionalTitle(r.GetTitle())
-		if err != nil {
-			sendInvalidArgument(sender, err.Error())
-			return
-		}
-		// Empty title means "you pick one". Default to a random
-		// "Agent <Name>" from the shared pool so CLI-spawned agents
-		// match the format UI-spawned ones get. Collisions are
-		// allowed (cosmetic; the user can rename either tab).
-		if title == "" {
-			title = pickAgentTitle()
-		}
+			workingDir := expandTilde(r.GetWorkingDir())
+			if workingDir == "" {
+				workingDir = svc.HomeDir
+			}
 
-		agentID := id.Generate()
-		agent.TraceStartupPhase(agentID, "handler_begin")
+			// Validate git-mode options on the sync path so bad input (invalid
+			// branch name, non-existent base branch, worktree path collision,
+			// etc.) fails the RPC with InvalidArgument before we mutate any
+			// state. The actual mutation happens inside runAgentStartup.
+			plan, gmErr := svc.validateGitMode(ctx, workingDir, r)
+			if gmErr != nil {
+				sendValidationError(sender, gmErr)
+				return
+			}
 
-		workingDir := expandTilde(r.GetWorkingDir())
-		if workingDir == "" {
-			workingDir = svc.HomeDir
-		}
+			// Resolve default model based on agent provider.
+			agentProvider := r.GetAgentProvider()
+			if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+				agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+			}
+			// Resolve the initial option selections: the client's requested values
+			// (model/effort/permissionMode/provider options), filled with provider
+			// defaults for any missing well-known and provider-specific ids.
+			requested := mergeOptions(nil, r.GetOptions())
+			options := resolveProviderDefaults(requested, agentProvider)
+			if options[agent.OptionIDPermissionMode] == "" {
+				options[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(agentProvider, "")
+			}
+			// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
+			// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
+			// dying at startup (Claude fails startup on a bad set_permission_mode). Model and effort are
+			// NOT validated here: every provider discovers its model catalog (and effort tiers) from the
+			// running CLI/daemon, seeding only a static fallback, so a value valid in the live catalog but
+			// absent from the seed would be wrongly rejected -- the running session validates those.
+			if err := agent.ValidateLaunchOptions(agentProvider, requested); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
-		// Validate git-mode options on the sync path so bad input (invalid
-		// branch name, non-existent base branch, worktree path collision,
-		// etc.) fails the RPC with InvalidArgument before we mutate any
-		// state. The actual mutation happens inside runAgentStartup.
-		plan, gmErr := svc.validateGitMode(ctx, workingDir, &r)
-		if gmErr != nil {
-			sendValidationError(sender, gmErr)
-			return
-		}
+			// Track whether this agent was created via session resume.
+			resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
 
-		// Resolve default model based on agent provider.
-		agentProvider := r.GetAgentProvider()
-		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
-			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-		}
-		// Resolve the initial option selections: the client's requested values
-		// (model/effort/permissionMode/provider options), filled with provider
-		// defaults for any missing well-known and provider-specific ids.
-		requested := mergeOptions(nil, r.GetOptions())
-		options := resolveProviderDefaults(requested, agentProvider)
-		if options[agent.OptionIDPermissionMode] == "" {
-			options[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(agentProvider, "")
-		}
-		// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
-		// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
-		// dying at startup (Claude fails startup on a bad set_permission_mode). Model and effort are
-		// NOT validated here: every provider discovers its model catalog (and effort tiers) from the
-		// running CLI/daemon, seeding only a static fallback, so a value valid in the live catalog but
-		// absent from the seed would be wrongly rejected -- the running session validates those.
-		if err := agent.ValidateLaunchOptions(agentProvider, requested); err != nil {
-			sendInvalidArgument(sender, err.Error())
-			return
-		}
+			agent.TraceStartupPhase(agentID, "gitmode_validated")
 
-		// Track whether this agent was created via session resume.
-		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
-
-		agent.TraceStartupPhase(agentID, "gitmode_validated")
-
-		// Persist the agent row + read it back under a fresh background
-		// context: the DB write must survive a mid-RPC disconnect so a
-		// retry from the same client doesn't observe a half-created agent
-		// (the validation phase above is the only step that should
-		// fail-fast on disconnect). The actual worktree mutation happens
-		// later inside runAgentStartup, which uses its own startupCtx.
-		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
-			ID:            agentID,
-			WorkspaceID:   r.GetWorkspaceId(),
-			WorkingDir:    plan.PlannedWorkingDir,
-			HomeDir:       svc.HomeDir,
-			Title:         title,
-			Options:       marshalOptions(options),
-			AgentProvider: agentProvider,
-			Resumed:       resumed,
-		}); err != nil {
-			slog.Error("failed to create agent", "error", err)
-			sendInternalError(sender, "failed to create agent")
-			return
-		}
-
-		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
-		if err != nil {
-			slog.Error("failed to fetch created agent", "error", err)
-			sendInternalError(sender, "failed to fetch created agent")
-			return
-		}
-
-		startupCtx, cancel := context.WithCancel(context.Background())
-		svc.AgentStartup.begin(agentID, cancel)
-
-		remoteEnvs := svc.spawnRemoteIPC("agent", agentID, "", svc.registerAgentCleanup, func() ([]string, func(), error) {
-			return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
-				UserID:        userID,
-				OrgID:         r.GetOrgId(),
+			// Persist the agent row + read it back under a fresh background
+			// context: the DB write must survive a mid-RPC disconnect so a
+			// retry from the same client doesn't observe a half-created agent
+			// (the validation phase above is the only step that should
+			// fail-fast on disconnect). The actual worktree mutation happens
+			// later inside runAgentStartup, which uses its own startupCtx.
+			if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
+				ID:            agentID,
 				WorkspaceID:   r.GetWorkspaceId(),
-				WorkerID:      svc.WorkerID,
-				TabID:         agentID,
 				WorkingDir:    plan.PlannedWorkingDir,
-				AgentProvider: agentlabels.CLIAlias(agentProvider),
+				HomeDir:       svc.HomeDir,
+				Title:         title,
+				Options:       marshalOptions(options),
+				AgentProvider: agentProvider,
+				Resumed:       resumed,
+			}); err != nil {
+				slog.Error("failed to create agent", "error", err)
+				sendInternalError(sender, "failed to create agent")
+				return
+			}
+
+			dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
+			if err != nil {
+				slog.Error("failed to fetch created agent", "error", err)
+				sendInternalError(sender, "failed to fetch created agent")
+				return
+			}
+
+			startupCtx, cancel := context.WithCancel(context.Background())
+			svc.AgentStartup.begin(agentID, cancel)
+
+			remoteEnvs := svc.spawnRemoteIPC("agent", agentID, "", svc.registerAgentCleanup, func() ([]string, func(), error) {
+				return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
+					UserID:        userID,
+					OrgID:         r.GetOrgId(),
+					WorkspaceID:   r.GetWorkspaceId(),
+					WorkerID:      svc.WorkerID,
+					TabID:         agentID,
+					WorkingDir:    plan.PlannedWorkingDir,
+					AgentProvider: agentlabels.CLIAlias(agentProvider),
+				})
 			})
+
+			agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
+			agentOpts.ResumeSessionID = r.GetAgentSessionId()
+			agentOpts.Options = options
+			agentOpts.ExtraEnv = remoteEnvs
+
+			agent.TraceStartupPhase(agentID, "before_response")
+			sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
+				Agent: svc.agentToProto(&dbAgent, false, nil),
+			})
+			agent.TraceStartupPhase(agentID, "response_sent")
+
+			// Kick off subprocess startup in the background.
+			go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts)
 		})
-
-		agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
-		agentOpts.ResumeSessionID = r.GetAgentSessionId()
-		agentOpts.Options = options
-		agentOpts.ExtraEnv = remoteEnvs
-
-		agent.TraceStartupPhase(agentID, "before_response")
-		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: svc.agentToProto(&dbAgent, false, nil),
-		})
-		agent.TraceStartupPhase(agentID, "response_sent")
-
-		// Kick off subprocess startup in the background.
-		go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts)
-	})
 
 	// CloseAgent backgrounds the entire close flow (subprocess stop, DB
 	// close, optional worktree removal) so the work survives a mid-RPC
 	// disconnect from the client that initiated the close. The dispatcher
 	// ctx is intentionally not threaded — using it would cancel the
 	// cleanup partway through if the user clicked away.
-	d.RegisterTracked("CloseAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.CloseAgentRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGatedByIDTracked(d, "CloseAgent",
+		func(_ context.Context, _ string, r *leapmuxv1.CloseAgentRequest, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
-			return
-		}
-
-		// Tracked via dispatcher RegisterTracked above so a concurrent
-		// Shutdown drains the close flow (stop → DB close → unregister
-		// → optional worktree remove) before tearing down the DB pool.
-		// The frontend fires this RPC fire-and-forget after removing
-		// the tab from the UI. The AgentStartup goroutine's trailing
-		// rollback work is tracked separately by
-		// AgentStartup.WaitForInFlight and drained in Shutdown.
-		result := svc.closeTabCommon(
-			leapmuxv1.TabType_TAB_TYPE_AGENT,
-			agentID,
-			r.GetWorktreeAction(),
-			func() {
-				svc.AgentStartup.cancelAndClear(agentID)
-				svc.Agents.StopAgent(agentID)
-				svc.Output.ClearAgentRuntimeState(agentID)
-				svc.runAgentCleanup(agentID)
-			},
-			func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
-		)
-		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
-	})
+			// Tracked via dispatcher RegisterTracked above so a concurrent
+			// Shutdown drains the close flow (stop → DB close → unregister
+			// → optional worktree remove) before tearing down the DB pool.
+			// The frontend fires this RPC fire-and-forget after removing
+			// the tab from the UI. The AgentStartup goroutine's trailing
+			// rollback work is tracked separately by
+			// AgentStartup.WaitForInFlight and drained in Shutdown.
+			result := svc.closeTabCommon(
+				leapmuxv1.TabType_TAB_TYPE_AGENT,
+				agentID,
+				r.GetWorktreeAction(),
+				func() {
+					svc.AgentStartup.cancelAndClear(agentID)
+					svc.Agents.StopAgent(agentID)
+					svc.Output.ClearAgentRuntimeState(agentID)
+					svc.runAgentCleanup(agentID)
+				},
+				func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
+			)
+			sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
+		})
 
 	// SendAgentMessage persists the user message, forwards it to the agent
 	// subprocess, and broadcasts it to every connected watcher. The
@@ -247,251 +226,233 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// + broadcast must complete even if the originating client disconnects
 	// a millisecond after firing the RPC, otherwise *other* watchers in
 	// the same workspace would silently miss the message.
-	d.Register("SendAgentMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.SendAgentMessageRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "SendAgentMessage",
+		func(_ context.Context, _ string, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
-
-		// Reject sends only on permanent startup failure — STARTING
-		// messages are queued on the frontend and dispatched on the
-		// status transition to ACTIVE. A STARTING-state send gate on
-		// the server would race with the ACTIVE broadcast that fires
-		// from the output sink before runAgentStartup's bookkeeping
-		// completes; ensureAgentRunning already restarts crashed
-		// subprocesses on demand. Also reject when the persisted
-		// startup_error is set (covers worker restart: the in-memory
-		// registry was wiped but the DB remembers the failure).
-		if status, _, _, ok := svc.AgentStartup.status(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-			sendFailedPrecondition(sender, "agent failed to start; open a new agent")
-			return
-		}
-		if dbAgent.StartupError != "" && !svc.Agents.HasAgent(agentID) {
-			sendFailedPrecondition(sender, "agent failed to start; open a new agent")
-			return
-		}
-
-		content := r.GetContent()
-		attachments := r.GetAttachments()
-
-		// Validate text: at least 1 character when no attachments,
-		// or allow empty text when attachments are present.
-		trimmed := strings.TrimSpace(content)
-		if len(attachments) == 0 && utf8.RuneCountInString(trimmed) < 1 {
-			sendInvalidArgument(sender, "message must be at least 1 character")
-			return
-		}
-
-		// Validate total attachment size (max 10 MB).
-		const maxAttachmentSize = 10 * 1024 * 1024
-		var totalSize int
-		for _, a := range attachments {
-			totalSize += len(a.GetData())
-		}
-		if totalSize > maxAttachmentSize {
-			sendInvalidArgument(sender, "total attachment size exceeds 10 MB")
-			return
-		}
-
-		// Pre-resolve the resume session ID BEFORE persisting the user
-		// message. HasUserMessages must run before the current message is
-		// written; otherwise the just-persisted message is counted as a
-		// prior conversation and --resume is used for a session that never
-		// had any messages (e.g. after an app restart on an idle tab).
-		resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-
-		attachments, err := agent.NormalizeAttachmentsForProvider(
-			leapmuxv1.AgentProvider(dbAgent.AgentProvider),
-			attachments,
-		)
-		if err != nil {
-			sendInvalidArgument(sender, err.Error())
-			return
-		}
-
-		messageID := id.Generate()
-		now := nowMillis()
-
-		// Store user content as a plain JSON object with a "content" field,
-		// which the frontend classifies as user_content and renders as markdown.
-		// When attachments are present, include their metadata (filename + mime_type)
-		// but not the raw binary data (too large for DB storage).
-		var payload interface{}
-		if len(attachments) > 0 {
-			type attachmentMeta struct {
-				Filename string `json:"filename"`
-				MimeType string `json:"mime_type"`
+			// Reject sends only on permanent startup failure — STARTING
+			// messages are queued on the frontend and dispatched on the
+			// status transition to ACTIVE. A STARTING-state send gate on
+			// the server would race with the ACTIVE broadcast that fires
+			// from the output sink before runAgentStartup's bookkeeping
+			// completes; ensureAgentRunning already restarts crashed
+			// subprocesses on demand. Also reject when the persisted
+			// startup_error is set (covers worker restart: the in-memory
+			// registry was wiped but the DB remembers the failure).
+			if status, _, _, ok := svc.AgentStartup.status(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+				sendFailedPrecondition(sender, "agent failed to start; open a new agent")
+				return
 			}
-			meta := make([]attachmentMeta, len(attachments))
-			for i, a := range attachments {
-				meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
+			if dbAgent.StartupError != "" && !svc.Agents.HasAgent(agentID) {
+				sendFailedPrecondition(sender, "agent failed to start; open a new agent")
+				return
 			}
-			payload = map[string]interface{}{"content": content, "attachments": meta}
-		} else {
-			payload = map[string]string{"content": content}
-		}
-		// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
-		// compress + persist + broadcast an empty-content row (while still handing the
-		// agent the real content), silently corrupting the visible history. Fail the
-		// RPC instead so the caller can retry, mirroring the persist-failure path below.
-		innerJSON, err := json.Marshal(payload)
-		if err != nil {
-			slog.Error("failed to encode user message", "agent_id", agentID, "error", err)
-			sendInternalError(sender, "failed to encode message")
-			return
-		}
-		compressed, compressionType := msgcodec.Compress(innerJSON)
 
-		// Capture currently-active spans so the user message renders with
-		// passthrough vertical bars instead of breaking the column.
-		spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
+			content := r.GetContent()
+			attachments := r.GetAttachments()
 
-		// Persist the user message. mark_type=USER_MESSAGE so the scroll rail
-		// draws a jump dot for every message the human actually typed and sent.
-		seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
-			ID:                 messageID,
-			AgentID:            agentID,
-			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Depth:              0,
-			SpanID:             "",
-			ParentSpanID:       "",
-			SpanLines:          spanLines,
-			SpanColor:          0,
-			AgentProvider:      dbAgent.AgentProvider,
-			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-			CreatedAt:          sqltime.NewSQLiteTime(now),
-		})
-		if err != nil {
-			slog.Error("failed to persist message", "agent_id", agentID, "error", err)
-			sendInternalError(sender, "failed to persist message")
-			return
-		}
+			// Validate text: at least 1 character when no attachments,
+			// or allow empty text when attachments are present.
+			trimmed := strings.TrimSpace(content)
+			if len(attachments) == 0 && utf8.RuneCountInString(trimmed) < 1 {
+				sendInvalidArgument(sender, "message must be at least 1 character")
+				return
+			}
 
-		// Check for leapmux-level slash commands (e.g. /clear) that
-		// Claude Code does not handle natively.
-		isSlashClear := trimmed == "/clear" || trimmed == "/reset" || trimmed == "/new"
+			// Validate total attachment size (max 10 MB).
+			const maxAttachmentSize = 10 * 1024 * 1024
+			var totalSize int
+			for _, a := range attachments {
+				totalSize += len(a.GetData())
+			}
+			if totalSize > maxAttachmentSize {
+				sendInvalidArgument(sender, "total attachment size exceeds 10 MB")
+				return
+			}
 
-		userMsg := &leapmuxv1.AgentChatMessage{
-			Id:                 messageID,
-			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			AgentProvider:      dbAgent.AgentProvider,
-			CreatedAt:          timefmt.Format(now),
-			Depth:              0,
-			SpanLines:          spanLines,
-			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-		}
+			// Pre-resolve the resume session ID BEFORE persisting the user
+			// message. HasUserMessages must run before the current message is
+			// written; otherwise the just-persisted message is counted as a
+			// prior conversation and --resume is used for a session that never
+			// had any messages (e.g. after an app restart on an idle tab).
+			resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
-		// For /clear, broadcast the user message before restarting so live
-		// watchers never see context_cleared ahead of the triggering command.
-		if isSlashClear {
-			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-				AgentId: agentID,
-				Event: &leapmuxv1.AgentEvent_AgentMessage{
-					AgentMessage: userMsg,
-				},
+			attachments, err := agent.NormalizeAttachmentsForProvider(
+				leapmuxv1.AgentProvider(dbAgent.AgentProvider),
+				attachments,
+			)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+
+			messageID := id.Generate()
+			now := nowMillis()
+
+			// Store user content as a plain JSON object with a "content" field,
+			// which the frontend classifies as user_content and renders as markdown.
+			// When attachments are present, include their metadata (filename + mime_type)
+			// but not the raw binary data (too large for DB storage).
+			var payload interface{}
+			if len(attachments) > 0 {
+				type attachmentMeta struct {
+					Filename string `json:"filename"`
+					MimeType string `json:"mime_type"`
+				}
+				meta := make([]attachmentMeta, len(attachments))
+				for i, a := range attachments {
+					meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
+				}
+				payload = map[string]interface{}{"content": content, "attachments": meta}
+			} else {
+				payload = map[string]string{"content": content}
+			}
+			// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
+			// compress + persist + broadcast an empty-content row (while still handing the
+			// agent the real content), silently corrupting the visible history. Fail the
+			// RPC instead so the caller can retry, mirroring the persist-failure path below.
+			innerJSON, err := json.Marshal(payload)
+			if err != nil {
+				slog.Error("failed to encode user message", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to encode message")
+				return
+			}
+			compressed, compressionType := msgcodec.Compress(innerJSON)
+
+			// Capture currently-active spans so the user message renders with
+			// passthrough vertical bars instead of breaking the column.
+			spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
+
+			// Persist the user message. mark_type=USER_MESSAGE so the scroll rail
+			// draws a jump dot for every message the human actually typed and sent.
+			seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
+				ID:                 messageID,
+				AgentID:            agentID,
+				Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+				Content:            compressed,
+				ContentCompression: compressionType,
+				Depth:              0,
+				SpanID:             "",
+				ParentSpanID:       "",
+				SpanLines:          spanLines,
+				SpanColor:          0,
+				AgentProvider:      dbAgent.AgentProvider,
+				MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+				CreatedAt:          sqltime.NewSQLiteTime(now),
 			})
-		}
+			if err != nil {
+				slog.Error("failed to persist message", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to persist message")
+				return
+			}
 
-		// Attempt to send the message to the agent process (unless it's
-		// a command that leapmux handles itself).
-		var deliveryError string
-		if isSlashClear {
-			// /clear: restart the agent with a fresh context.
-			svc.handleClearContext(agentID)
-		} else if !svc.Agents.HasAgent(agentID) {
-			// Agent is not running — try to auto-start it (e.g. after worker restart).
-			if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
-				deliveryError = "agent is not running"
+			// Check for leapmux-level slash commands (e.g. /clear) that
+			// Claude Code does not handle natively.
+			isSlashClear := trimmed == "/clear" || trimmed == "/reset" || trimmed == "/new"
+
+			userMsg := &leapmuxv1.AgentChatMessage{
+				Id:                 messageID,
+				Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+				Content:            compressed,
+				ContentCompression: compressionType,
+				Seq:                seq,
+				AgentProvider:      dbAgent.AgentProvider,
+				CreatedAt:          timefmt.Format(now),
+				Depth:              0,
+				SpanLines:          spanLines,
+				MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+			}
+
+			// For /clear, broadcast the user message before restarting so live
+			// watchers never see context_cleared ahead of the triggering command.
+			if isSlashClear {
+				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+					AgentId: agentID,
+					Event: &leapmuxv1.AgentEvent_AgentMessage{
+						AgentMessage: userMsg,
+					},
+				})
+			}
+
+			// Attempt to send the message to the agent process (unless it's
+			// a command that leapmux handles itself).
+			var deliveryError string
+			if isSlashClear {
+				// /clear: restart the agent with a fresh context.
+				svc.handleClearContext(agentID)
+			} else if !svc.Agents.HasAgent(agentID) {
+				// Agent is not running — try to auto-start it (e.g. after worker restart).
+				if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
+					deliveryError = "agent is not running"
+				} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
+					slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
+					deliveryError = sendErr.Error()
+				}
 			} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
-				slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
+				slog.Error("failed to send input to agent", "agent_id", agentID, "error", sendErr)
 				deliveryError = sendErr.Error()
 			}
-		} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
-			slog.Error("failed to send input to agent", "agent_id", agentID, "error", sendErr)
-			deliveryError = sendErr.Error()
-		}
-		if deliveryError != "" {
-			_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-				DeliveryError: deliveryError,
-				ID:            messageID,
-				AgentID:       agentID,
-			})
-		}
+			if deliveryError != "" {
+				_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
+					DeliveryError: deliveryError,
+					ID:            messageID,
+					AgentID:       agentID,
+				})
+			}
 
-		sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
+			sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
 
-		// Broadcast the user message to all watchers so it appears in
-		// every connected frontend's chat view.
-		if !isSlashClear {
-			userMsg.DeliveryError = deliveryError
-			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-				AgentId: agentID,
-				Event: &leapmuxv1.AgentEvent_AgentMessage{
-					AgentMessage: userMsg,
-				},
-			})
-		}
-
-		// Broadcast delivery error separately (frontend uses both events).
-		if deliveryError != "" {
-			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-				AgentId: agentID,
-				Event: &leapmuxv1.AgentEvent_MessageError{
-					MessageError: &leapmuxv1.AgentMessageError{
-						AgentId:   agentID,
-						MessageId: messageID,
-						Error:     deliveryError,
+			// Broadcast the user message to all watchers so it appears in
+			// every connected frontend's chat view.
+			if !isSlashClear {
+				userMsg.DeliveryError = deliveryError
+				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+					AgentId: agentID,
+					Event: &leapmuxv1.AgentEvent_AgentMessage{
+						AgentMessage: userMsg,
 					},
-				},
-			})
-		}
-	})
+				})
+			}
+
+			// Broadcast delivery error separately (frontend uses both events).
+			if deliveryError != "" {
+				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+					AgentId: agentID,
+					Event: &leapmuxv1.AgentEvent_MessageError{
+						MessageError: &leapmuxv1.AgentMessageError{
+							AgentId:   agentID,
+							MessageId: messageID,
+							Error:     deliveryError,
+						},
+					},
+				})
+			}
+		})
 
 	// SendAgentRawMessage forwards a provider-shaped raw message (Codex
 	// interrupt frames etc.) to the agent subprocess. The forward + any
 	// synthetic-message persistence must complete past a client
 	// disconnect; dispatcher ctx is intentionally not threaded.
-	d.Register("SendAgentRawMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.SendAgentRawMessageRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "SendAgentRawMessage",
+		func(_ context.Context, _ string, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
+			content := r.GetContent()
+			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
+				// An interrupt notice is not the user's answer to a control request, so it
+				// draws no rail dot.
+				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
+			}
 
-		agentID := r.GetAgentId()
-		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
-		content := r.GetContent()
-		if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
-			// An interrupt notice is not the user's answer to a control request, so it
-			// draws no rail dot.
-			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
-		}
-
-		svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
-		sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
-	})
+			svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
+			sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
+		})
 
 	// ListAgents is a synchronous read-only handler: the response shape is
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the DB and git probes. A mid-call client disconnect cancels
 	// the remaining work instead of wasting subprocess forks against
 	// BatchGetGitStatus.
-	d.Register("ListAgents", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	registerSetFiltered(d, "ListAgents", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAgentsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -511,29 +472,34 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Filter by access control: only return agents in accessible
-		// workspaces. AuthorizerForSender abstracts over E2EE channels and
-		// local-IPC streams (which have no channel id but carry a token
-		// scope registered at request entry).
+		// Filter by access control BEFORE computing git status, so no git
+		// subprocess runs for a filtered-out row (matching ListTerminals and
+		// WatchEvents, which also gate first). Only agents in accessible
+		// workspaces are returned. AuthorizerForSender abstracts over E2EE
+		// channels and local-IPC streams (which have no channel id but carry
+		// a token scope registered at request entry).
 		accessibleWsIDs := svc.AuthorizerForSender(sender).AccessibleSet()
-
-		workingDirs := make([]string, len(agents))
+		accessible := make([]db.Agent, 0, len(agents))
 		for i := range agents {
-			workingDirs[i] = agents[i].WorkingDir
+			if accessibleWsIDs[agents[i].WorkspaceID] {
+				accessible = append(accessible, agents[i])
+			}
+		}
+
+		workingDirs := make([]string, len(accessible))
+		for i := range accessible {
+			workingDirs[i] = accessible[i].WorkingDir
 		}
 		gitStatuses := gitutil.BatchGetGitStatus(ctx, workingDirs)
 
-		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
-		for i := range agents {
-			if !accessibleWsIDs[agents[i].WorkspaceID] {
-				continue
-			}
-			hasAgent := svc.Agents.HasAgent(agents[i].ID)
+		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(accessible))
+		for i := range accessible {
+			hasAgent := svc.Agents.HasAgent(accessible[i].ID)
 			// agentToProto -> optionGroupsForAgent -> optionGroupsView already preloads the
 			// cached option-group catalog from the DB for an inactive agent (and decodes
 			// option_groups exactly once), so no separate PreloadCache is needed here -- a
 			// second one would decode and re-seed every closed agent's catalog redundantly.
-			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], hasAgent, gitStatuses[i]))
+			protoAgents = append(protoAgents, svc.agentToProto(&accessible[i], hasAgent, gitStatuses[i]))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -545,103 +511,94 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// response shape is the only side effect, so the inbound dispatcher
 	// ctx is threaded through every DB read. A mid-call client disconnect
 	// cancels the remaining page query instead of wasting DB load.
-	d.Register("ListAgentMessages", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.ListAgentMessagesRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "ListAgentMessages",
+		func(ctx context.Context, _ string, r *leapmuxv1.ListAgentMessagesRequest, agentRow db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
-
-		// Return empty for closed agents.
-		if agentRow.ClosedAt.Valid {
-			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{})
-			return
-		}
-
-		// Resolve the anchor + cursor + caller limit to a query plan. The routing
-		// and the cursor/limit clamps are pure (resolveMessagePage), so they're
-		// unit tested without a DB; this handler only runs the selected query and
-		// plumbs the result.
-		plan := resolveMessagePage(r.GetAnchor(), r.GetCursorSeq(), int64(r.GetLimit()))
-
-		// Only ship the to-do list on the cold-start LATEST page — scroll
-		// pagination requests don't need to re-fetch it (the client
-		// already has the authoritative snapshot from cold start and
-		// receives live mutations via AgentTodosChanged broadcasts).
-		// Derived from the resolved plan, NOT from the raw anchor, so it stays in
-		// lockstep with the query: LATEST, UNSPECIFIED, AND any unknown anchor all
-		// resolve to messagePageLatest (the switch default), so any caller that
-		// gets the latest messages also gets the to-do snapshot -- never the
-		// latest page with an empty to-do list.
-		isLatestPage := plan.mode == messagePageLatest
-		var todoItems []todoevents.Item
-		// Whether the to-do snapshot is authoritative. The client overwrites its
-		// list only when this is true, so a non-latest page (no snapshot) and a
-		// failed LoadTodos (DB error) both leave the client's list intact instead
-		// of wiping it with the empty array a repeated field always serializes to.
-		todosLoaded := false
-		if isLatestPage {
-			items, todoErr := svc.Output.LoadTodos(ctx, agentID)
-			if todoErr != nil {
-				slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
-			} else {
-				todoItems = items
-				todosLoaded = true
+			// Return empty for closed agents.
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{})
+				return
 			}
-		}
 
-		// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
-		dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
-		if queryErr != nil {
-			slog.Error("failed to list messages", "agent_id", agentID, "error", queryErr)
-			sendInternalError(sender, "failed to list messages")
-			return
-		}
+			// Resolve the anchor + cursor + caller limit to a query plan. The routing
+			// and the cursor/limit clamps are pure (resolveMessagePage), so they're
+			// unit tested without a DB; this handler only runs the selected query and
+			// plumbs the result.
+			plan := resolveMessagePage(r.GetAnchor(), r.GetCursorSeq(), int64(r.GetLimit()))
 
-		hasMore := int64(len(dbMessages)) > plan.limit
-		if hasMore {
-			dbMessages = dbMessages[:plan.limit]
-		}
+			// Only ship the to-do list on the cold-start LATEST page — scroll
+			// pagination requests don't need to re-fetch it (the client
+			// already has the authoritative snapshot from cold start and
+			// receives live mutations via AgentTodosChanged broadcasts).
+			// Derived from the resolved plan, NOT from the raw anchor, so it stays in
+			// lockstep with the query: LATEST, UNSPECIFIED, AND any unknown anchor all
+			// resolve to messagePageLatest (the switch default), so any caller that
+			// gets the latest messages also gets the to-do snapshot -- never the
+			// latest page with an empty to-do list.
+			isLatestPage := plan.mode == messagePageLatest
+			var todoItems []todoevents.Item
+			// Whether the to-do snapshot is authoritative. The client overwrites its
+			// list only when this is true, so a non-latest page (no snapshot) and a
+			// failed LoadTodos (DB error) both leave the client's list intact instead
+			// of wiping it with the empty array a repeated field always serializes to.
+			todosLoaded := false
+			if isLatestPage {
+				items, todoErr := svc.Output.LoadTodos(ctx, agentID)
+				if todoErr != nil {
+					slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
+				} else {
+					todoItems = items
+					todosLoaded = true
+				}
+			}
 
-		// LATEST and BEFORE come back descending; flip to ascending so the
-		// response is always ordered oldest-to-newest by seq.
-		if plan.mode.descending() {
-			reverseMessages(dbMessages)
-		}
+			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
+			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
+			if queryErr != nil {
+				slog.Error("failed to list messages", "agent_id", agentID, "error", queryErr)
+				sendInternalError(sender, "failed to list messages")
+				return
+			}
 
-		protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
-		for i := range dbMessages {
-			protoMessages = append(protoMessages, messageToProto(&dbMessages[i]))
-		}
+			hasMore := int64(len(dbMessages)) > plan.limit
+			if hasMore {
+				dbMessages = dbMessages[:plan.limit]
+			}
 
-		// The authoritative live-tail seq, so the --follow CLI can resolve a resume
-		// point even when this page is empty (never inferring a spurious seq 0 from an
-		// empty page on a populated agent). A query error leaves it UNSET (indeterminate),
-		// NOT present-0: a present 0 means "the agent genuinely has no messages" (resume
-		// fresh), so a spurious 0 from an error would wrongly tell the CLI to drain from
-		// the start. An unset field tells the consumer to fall back to its own loaded
-		// cursor instead. See ListAgentMessagesResponse.latest_seq.
-		var latestSeq *int64
-		if seq, maxErr := svc.Queries.GetMaxSeqByAgentID(ctx, agentID); maxErr != nil {
-			slog.Warn("failed to read max seq for list response", "agent_id", agentID, "error", maxErr)
-		} else {
-			latestSeq = &seq
-		}
+			// LATEST and BEFORE come back descending; flip to ascending so the
+			// response is always ordered oldest-to-newest by seq.
+			if plan.mode.descending() {
+				reverseMessages(dbMessages)
+			}
 
-		sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
-			Messages:    protoMessages,
-			HasMore:     hasMore,
-			Todos:       todoevents.ItemsToProto(todoItems),
-			TodosLoaded: todosLoaded,
-			LatestSeq:   latestSeq,
+			protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
+			for i := range dbMessages {
+				protoMessages = append(protoMessages, messageToProto(&dbMessages[i]))
+			}
+
+			// The authoritative live-tail seq, so the --follow CLI can resolve a resume
+			// point even when this page is empty (never inferring a spurious seq 0 from an
+			// empty page on a populated agent). A query error leaves it UNSET (indeterminate),
+			// NOT present-0: a present 0 means "the agent genuinely has no messages" (resume
+			// fresh), so a spurious 0 from an error would wrongly tell the CLI to drain from
+			// the start. An unset field tells the consumer to fall back to its own loaded
+			// cursor instead. See ListAgentMessagesResponse.latest_seq.
+			var latestSeq *int64
+			if seq, maxErr := svc.Queries.GetMaxSeqByAgentID(ctx, agentID); maxErr != nil {
+				slog.Warn("failed to read max seq for list response", "agent_id", agentID, "error", maxErr)
+			} else {
+				latestSeq = &seq
+			}
+
+			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
+				Messages:    protoMessages,
+				HasMore:     hasMore,
+				Todos:       todoevents.ItemsToProto(todoItems),
+				TodosLoaded: todosLoaded,
+				LatestSeq:   latestSeq,
+			})
 		})
-	})
 
 	// GetAgentMessage fetches ONE message by its per-agent seq, for the scroll
 	// rail's dot-hover preview when the marked message is outside the loaded
@@ -649,382 +606,322 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// verifies the caller's channel may reach the agent's workspace, and the
 	// query is scoped to agent_id, so an authorized caller can only read a
 	// message belonging to that agent -- never another agent's or workspace's.
-	d.Register("GetAgentMessage", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.GetAgentMessageRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "GetAgentMessage",
+		func(ctx context.Context, _ string, r *leapmuxv1.GetAgentMessageRequest, agentRow db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
-
-		// Return an unset message for closed agents (mirrors ListAgentMessages,
-		// whose empty response leaves the rail without dots to preview anyway).
-		if agentRow.ClosedAt.Valid {
-			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{})
-			return
-		}
-
-		row, err := svc.Queries.GetMessageByAgentIDAndSeq(ctx, db.GetMessageByAgentIDAndSeqParams{
-			AgentID: agentID,
-			Seq:     r.GetSeq(),
-		})
-		if err != nil {
-			// A mark can outlive its message (deleted / reseq'd since it was recorded):
-			// no row is a normal "no preview available", not an error.
-			if errors.Is(err, sql.ErrNoRows) {
+			// Return an unset message for closed agents (mirrors ListAgentMessages,
+			// whose empty response leaves the rail without dots to preview anyway).
+			if agentRow.ClosedAt.Valid {
 				sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{})
 				return
 			}
-			slog.Error("failed to get agent message", "agent_id", agentID, "seq", r.GetSeq(), "error", err)
-			sendInternalError(sender, "failed to get message")
-			return
-		}
 
-		sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
-	})
+			row, err := svc.Queries.GetMessageByAgentIDAndSeq(ctx, db.GetMessageByAgentIDAndSeqParams{
+				AgentID: agentID,
+				Seq:     r.GetSeq(),
+			})
+			if err != nil {
+				// A mark can outlive its message (deleted / reseq'd since it was recorded):
+				// no row is a normal "no preview available", not an error.
+				if errors.Is(err, sql.ErrNoRows) {
+					sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{})
+					return
+				}
+				slog.Error("failed to get agent message", "agent_id", agentID, "seq", r.GetSeq(), "error", err)
+				sendInternalError(sender, "failed to get message")
+				return
+			}
+
+			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
+		})
 
 	// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
 	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
 	// content decompression -- because mark_type is set at write time.
-	d.Register("ListMessageMarks", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.ListMessageMarksRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "ListMessageMarks",
+		func(ctx context.Context, _ string, r *leapmuxv1.ListMessageMarksRequest, agentRow db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
+			// Return empty for closed agents (mirrors ListAgentMessages, which serves a closed agent
+			// no history -- so the rail has nothing to show). Report a PRESENT, empty (0) range rather
+			// than leaving min/max unset: an unset range is the DB-error "indeterminate" signal, which
+			// the client cannot tell apart from a closed agent and so retries up to
+			// MAX_MESSAGE_MARK_SEED_RESCHEDULES times (~5 round-trips) on every closed-tab view. A
+			// present-0 range seeds the rail `loaded` (it stays hidden over the empty window) and ends
+			// the retry chain.
+			if agentRow.ClosedAt.Valid {
+				zeroSeq := int64(0)
+				sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{MinSeq: &zeroSeq, MaxSeq: &zeroSeq})
+				return
+			}
 
-		// Return empty for closed agents (mirrors ListAgentMessages, which serves a closed agent
-		// no history -- so the rail has nothing to show). Report a PRESENT, empty (0) range rather
-		// than leaving min/max unset: an unset range is the DB-error "indeterminate" signal, which
-		// the client cannot tell apart from a closed agent and so retries up to
-		// MAX_MESSAGE_MARK_SEED_RESCHEDULES times (~5 round-trips) on every closed-tab view. A
-		// present-0 range seeds the rail `loaded` (it stays hidden over the empty window) and ends
-		// the retry chain.
-		if agentRow.ClosedAt.Valid {
-			zeroSeq := int64(0)
-			sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{MinSeq: &zeroSeq, MaxSeq: &zeroSeq})
-			return
-		}
+			tx, txErr := svc.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+			if txErr != nil {
+				slog.Error("failed to start message marks read transaction", "agent_id", agentID, "error", txErr)
+				sendInternalError(sender, "failed to list message marks")
+				return
+			}
+			queries := svc.Queries.WithTx(tx)
 
-		tx, txErr := svc.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if txErr != nil {
-			slog.Error("failed to start message marks read transaction", "agent_id", agentID, "error", txErr)
-			sendInternalError(sender, "failed to list message marks")
-			return
-		}
-		queries := svc.Queries.WithTx(tx)
+			rows, marksErr := queries.ListMessageMarksByAgentID(ctx, agentID)
+			if marksErr != nil {
+				_ = tx.Rollback()
+				slog.Error("failed to list message marks", "agent_id", agentID, "error", marksErr)
+				sendInternalError(sender, "failed to list message marks")
+				return
+			}
+			marks := make([]*leapmuxv1.MessageMark, 0, len(rows))
+			for i := range rows {
+				marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: rows[i].MarkType})
+			}
 
-		rows, marksErr := queries.ListMessageMarksByAgentID(ctx, agentID)
-		if marksErr != nil {
-			_ = tx.Rollback()
-			slog.Error("failed to list message marks", "agent_id", agentID, "error", marksErr)
-			sendInternalError(sender, "failed to list message marks")
-			return
-		}
-		marks := make([]*leapmuxv1.MessageMark, 0, len(rows))
-		for i := range rows {
-			marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: rows[i].MarkType})
-		}
+			// Two endpoint seeks for the whole-history bounds. min/max are left UNSET on error
+			// (both together), matching latest_seq's explicit-presence convention (the client
+			// keeps its current value rather than trusting a bogus 0).
+			var minSeq, maxSeq *int64
+			if seqRange, rangeErr := queries.GetSeqRangeByAgentID(ctx, agentID); rangeErr != nil {
+				slog.Warn("failed to read seq range for marks response", "agent_id", agentID, "error", rangeErr)
+			} else {
+				minSeq, maxSeq = &seqRange.MinSeq, &seqRange.MaxSeq
+			}
+			if commitErr := tx.Commit(); commitErr != nil {
+				slog.Error("failed to finish message marks read transaction", "agent_id", agentID, "error", commitErr)
+				sendInternalError(sender, "failed to list message marks")
+				return
+			}
 
-		// Two endpoint seeks for the whole-history bounds. min/max are left UNSET on error
-		// (both together), matching latest_seq's explicit-presence convention (the client
-		// keeps its current value rather than trusting a bogus 0).
-		var minSeq, maxSeq *int64
-		if seqRange, rangeErr := queries.GetSeqRangeByAgentID(ctx, agentID); rangeErr != nil {
-			slog.Warn("failed to read seq range for marks response", "agent_id", agentID, "error", rangeErr)
-		} else {
-			minSeq, maxSeq = &seqRange.MinSeq, &seqRange.MaxSeq
-		}
-		if commitErr := tx.Commit(); commitErr != nil {
-			slog.Error("failed to finish message marks read transaction", "agent_id", agentID, "error", commitErr)
-			sendInternalError(sender, "failed to list message marks")
-			return
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{
-			Marks:  marks,
-			MinSeq: minSeq,
-			MaxSeq: maxSeq,
+			sendProtoResponse(sender, &leapmuxv1.ListMessageMarksResponse{
+				Marks:  marks,
+				MinSeq: minSeq,
+				MaxSeq: maxSeq,
+			})
 		})
-	})
 
 	// RenameAgent persists the new title and broadcasts a TabRenamed event
 	// to other clients in the same workspace. The DB write + broadcast
 	// must complete past a client disconnect (otherwise sibling clients
 	// would miss the rename); dispatcher ctx is intentionally not threaded.
-	d.Register("RenameAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.RenameAgentRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "RenameAgent",
+		func(_ context.Context, _ string, r *leapmuxv1.RenameAgentRequest, dbAgent db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
+			if _, err := svc.Queries.RenameAgent(bgCtx(), db.RenameAgentParams{
+				Title: r.GetTitle(),
+				ID:    agentID,
+			}); err != nil {
+				slog.Error("failed to rename agent", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to rename agent")
+				return
+			}
 
-		if _, err := svc.Queries.RenameAgent(bgCtx(), db.RenameAgentParams{
-			Title: r.GetTitle(),
-			ID:    agentID,
-		}); err != nil {
-			slog.Error("failed to rename agent", "agent_id", agentID, "error", err)
-			sendInternalError(sender, "failed to rename agent")
-			return
-		}
+			// Broadcast over the worker-private E2EE bus so other clients of
+			// the same workspace can update their tab title without the hub
+			// ever seeing the new title string.
+			if svc.PrivateEvents != nil {
+				svc.PrivateEvents.PublishTabRenamed(
+					dbAgent.WorkspaceID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT,
+					r.GetTitle(), sender.ChannelID(),
+				)
+			}
 
-		// Broadcast over the worker-private E2EE bus so other clients of
-		// the same workspace can update their tab title without the hub
-		// ever seeing the new title string.
-		if svc.PrivateEvents != nil {
-			svc.PrivateEvents.PublishTabRenamed(
-				dbAgent.WorkspaceID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT,
-				r.GetTitle(), sender.ChannelID(),
-			)
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
-	})
+			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
+		})
 
 	// DeleteAgentMessage removes the row and broadcasts a MessageDeleted
 	// event to every watcher. The DB write + broadcast must complete past
 	// a client disconnect; dispatcher ctx is intentionally not threaded.
-	d.Register("DeleteAgentMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.DeleteAgentMessageRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGatedByID(d, "DeleteAgentMessage",
+		func(_ context.Context, _ string, r *leapmuxv1.DeleteAgentMessageRequest, sender *channel.Sender) {
+			agentID := r.GetAgentId()
+			messageID := r.GetMessageId()
 
-		agentID := r.GetAgentId()
-		messageID := r.GetMessageId()
-		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
-			return
-		}
+			// Deletion is allowed ONLY for a FAILED USER message -- the single thing the UI
+			// ever deletes (retrying or dismissing a message that failed to reach the agent;
+			// see useAgentOperations.handleRetryMessage / handleDeleteMessage). Enforcing it
+			// here, not just client-side, keeps the windowing invariants intact: deleting an
+			// arbitrary DELIVERED message -- a mid-history row, a tool_use/tool_result span,
+			// or a reseq'd notification thread -- could strand a windowed reader's loaded rows
+			// above a vanished tail or orphan the (window-scoped) span index. A failed user
+			// message carries no span and sits where it was sent, so removing it can never
+			// drop the live tail below a delivered loaded row -- which is what makes the
+			// windowed client's delete reconcile (chatLiveTail.onDelete) provably safe.
+			row, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
+				ID:      messageID,
+				AgentID: agentID,
+			})
+			if errors.Is(err, sql.ErrNoRows) {
+				// Already gone (idempotent double-delete): the delete that removed it already
+				// broadcast the real seq, so respond OK and skip the broadcast.
+				sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
+				return
+			}
+			if err != nil {
+				slog.Error("failed to read message before delete", "agent_id", agentID, "message_id", messageID, "error", err)
+				sendInternalError(sender, "failed to delete message")
+				return
+			}
+			if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_USER || row.DeliveryError == "" {
+				sendInvalidArgument(sender, "only a failed user message can be deleted")
+				return
+			}
 
-		// Deletion is allowed ONLY for a FAILED USER message -- the single thing the UI
-		// ever deletes (retrying or dismissing a message that failed to reach the agent;
-		// see useAgentOperations.handleRetryMessage / handleDeleteMessage). Enforcing it
-		// here, not just client-side, keeps the windowing invariants intact: deleting an
-		// arbitrary DELIVERED message -- a mid-history row, a tool_use/tool_result span,
-		// or a reseq'd notification thread -- could strand a windowed reader's loaded rows
-		// above a vanished tail or orphan the (window-scoped) span index. A failed user
-		// message carries no span and sits where it was sent, so removing it can never
-		// drop the live tail below a delivered loaded row -- which is what makes the
-		// windowed client's delete reconcile (chatLiveTail.onDelete) provably safe.
-		row, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
-			ID:      messageID,
-			AgentID: agentID,
-		})
-		if errors.Is(err, sql.ErrNoRows) {
-			// Already gone (idempotent double-delete): the delete that removed it already
-			// broadcast the real seq, so respond OK and skip the broadcast.
+			deletedSeq, err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
+				AgentID: agentID,
+				ID:      messageID,
+			})
+			if errors.Is(err, sql.ErrNoRows) {
+				// Raced with a concurrent delete between the read above and here: still an
+				// idempotent no-op -- the delete that won already broadcast the real seq.
+				sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
+				return
+			}
+			if err != nil {
+				slog.Error("failed to delete message", "agent_id", agentID, "message_id", messageID, "error", err)
+				sendInternalError(sender, "failed to delete message")
+				return
+			}
+
 			sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-			return
-		}
-		if err != nil {
-			slog.Error("failed to read message before delete", "agent_id", agentID, "message_id", messageID, "error", err)
-			sendInternalError(sender, "failed to delete message")
-			return
-		}
-		if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_USER || row.DeliveryError == "" {
-			sendInvalidArgument(sender, "only a failed user message can be deleted")
-			return
-		}
 
-		deletedSeq, err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
-			AgentID: agentID,
-			ID:      messageID,
-		})
-		if errors.Is(err, sql.ErrNoRows) {
-			// Raced with a concurrent delete between the read above and here: still an
-			// idempotent no-op -- the delete that won already broadcast the real seq.
-			sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-			return
-		}
-		if err != nil {
-			slog.Error("failed to delete message", "agent_id", agentID, "message_id", messageID, "error", err)
-			sendInternalError(sender, "failed to delete message")
-			return
-		}
+			// The authoritative new live tail AFTER the delete (0 if no rows remain). A
+			// windowed client whose loaded window lags the live tail sets its recorded
+			// live-tail seq to exactly this when the deleted row was that tail -- no
+			// guesswork. On the exceptional query-error path, leave the field UNSET
+			// (indeterminate) rather than guessing deletedSeq - 1: the old guess
+			// under-reported a non-tail delete's tail and conflated a deleted seq 1 with
+			// "agent empty". An unset field tells the client to leave its recorded tail
+			// unchanged (see AgentMessageDeleted.new_latest_seq / removeMessage), always safe.
+			newLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq after delete")
 
-		sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-
-		// The authoritative new live tail AFTER the delete (0 if no rows remain). A
-		// windowed client whose loaded window lags the live tail sets its recorded
-		// live-tail seq to exactly this when the deleted row was that tail -- no
-		// guesswork. On the exceptional query-error path, leave the field UNSET
-		// (indeterminate) rather than guessing deletedSeq - 1: the old guess
-		// under-reported a non-tail delete's tail and conflated a deleted seq 1 with
-		// "agent empty". An unset field tells the client to leave its recorded tail
-		// unchanged (see AgentMessageDeleted.new_latest_seq / removeMessage), always safe.
-		newLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq after delete")
-
-		// Broadcast deletion to all watchers, carrying the deleted row's seq (so a
-		// windowed client can tell whether the deleted row was its recorded tail)
-		// and the authoritative new tail (so it can set the tail exactly).
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_MessageDeleted{
-				MessageDeleted: &leapmuxv1.AgentMessageDeleted{
-					AgentId:      agentID,
-					MessageId:    messageID,
-					Seq:          deletedSeq,
-					NewLatestSeq: newLatestSeq,
+			// Broadcast deletion to all watchers, carrying the deleted row's seq (so a
+			// windowed client can tell whether the deleted row was its recorded tail)
+			// and the authoritative new tail (so it can set the tail exactly).
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_MessageDeleted{
+					MessageDeleted: &leapmuxv1.AgentMessageDeleted{
+						AgentId:      agentID,
+						MessageId:    messageID,
+						Seq:          deletedSeq,
+						NewLatestSeq: newLatestSeq,
+					},
 				},
-			},
+			})
 		})
-	})
 
 	// UpdateAgentSettings persists the new settings and (for providers
 	// that need it) restarts the agent subprocess. Both must complete past
 	// a client disconnect, otherwise the agent ends up in a half-applied
 	// state mismatched with the persisted row. Dispatcher ctx is
 	// intentionally not threaded.
-	d.Register("UpdateAgentSettings", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.UpdateAgentSettingsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "UpdateAgentSettings",
+		func(_ context.Context, _ string, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
+			provider := dbAgent.AgentProvider
+			oldOptions := loadOptions(dbAgent.Options, provider)
+			newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
 
-		provider := dbAgent.AgentProvider
-		oldOptions := loadOptions(dbAgent.Options, provider)
-		newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
-
-		// Optimistic DB write of the requested options; corrected below to the values
-		// the session actually confirms (settledOptions). Persist only the axes this edit
-		// changes, via compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh
-		// (no shared lock) can't be clobbered by a stale full-map blob and vice versa.
-		optimistic, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
-			optionsChangeDelta(oldOptions, newOptions))
-		if err != nil {
-			slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
-			sendInternalError(sender, "failed to update agent settings")
-			return
-		}
-		// Refresh the in-memory row to the blob we just persisted so applySettingsLive's
-		// corrective CAS starts from the current row rather than the pre-write snapshot --
-		// otherwise its first compare-and-swap is guaranteed to miss (the row already moved)
-		// and burns an extra re-read before converging.
-		dbAgent.Options = optimistic
-
-		// settledOptions is the option map the session actually settled on -- the
-		// requested newOptions overlaid with whatever the running provider confirmed,
-		// then filled with provider defaults (confirmedOptions). The provider's
-		// confirmation can differ from the request on ANY axis:
-		//   - effort: selecting ultracode without the workflows entitlement lands on
-		//     xhigh; selecting Auto (or a model switch, which resets effort to Auto)
-		//     relaunches without --effort and the CLI resolves Auto to a concrete level.
-		//   - model: the account-default sentinel ("default") resolves to a concrete
-		//     model the session reports back.
-		//   - options: an ACP reasoning_effort the server downgraded, a Codex
-		//     sandbox/service_tier it adjusted.
-		// Reporting the settled (not requested) values is INTENTIONAL -- the
-		// notification, the persisted row, and the RPC reply all state what the session
-		// is actually running. settledOptions drives all three so they can't disagree.
-		// For an offline edit or a failed restart no agent confirms anything, so it
-		// stays equal to the requested newOptions.
-		settledOptions := newOptions
-		if svc.Agents.HasAgent(agentID) {
-			// Try a live update first; fall back to a full restart for changes the
-			// provider can't apply in place (e.g. Claude Code switching effort to auto).
-			if settled, applied := svc.applySettingsLive(dbAgent, newOptions); applied {
-				settledOptions = settled
-			} else {
-				settledOptions = svc.applySettingsViaRestart(dbAgent, newOptions)
+			// Optimistic DB write of the requested options; corrected below to the values
+			// the session actually confirms (settledOptions). Persist only the axes this edit
+			// changes, via compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh
+			// (no shared lock) can't be clobbered by a stale full-map blob and vice versa.
+			optimistic, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
+				optionsChangeDelta(oldOptions, newOptions))
+			if err != nil {
+				slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to update agent settings")
+				return
 			}
-		}
+			// Refresh the in-memory row to the blob we just persisted so applySettingsLive's
+			// corrective CAS starts from the current row rather than the pre-write snapshot --
+			// otherwise its first compare-and-swap is guaranteed to miss (the row already moved)
+			// and burns an extra re-read before converging.
+			dbAgent.Options = optimistic
 
-		// Broadcast settings_changed notification for the chat view, diffing the
-		// stored options against the settled ones (every axis corrected to the value
-		// the session actually confirmed).
-		changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
-		if len(changes) > 0 {
-			svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-				"type":    agent.NotificationTypeSettingsChanged,
-				"changes": changes,
-			})
-		}
+			// settledOptions is the option map the session actually settled on -- the
+			// requested newOptions overlaid with whatever the running provider confirmed,
+			// then filled with provider defaults (confirmedOptions). The provider's
+			// confirmation can differ from the request on ANY axis:
+			//   - effort: selecting ultracode without the workflows entitlement lands on
+			//     xhigh; selecting Auto (or a model switch, which resets effort to Auto)
+			//     relaunches without --effort and the CLI resolves Auto to a concrete level.
+			//   - model: the account-default sentinel ("default") resolves to a concrete
+			//     model the session reports back.
+			//   - options: an ACP reasoning_effort the server downgraded, a Codex
+			//     sandbox/service_tier it adjusted.
+			// Reporting the settled (not requested) values is INTENTIONAL -- the
+			// notification, the persisted row, and the RPC reply all state what the session
+			// is actually running. settledOptions drives all three so they can't disagree.
+			// For an offline edit or a failed restart no agent confirms anything, so it
+			// stays equal to the requested newOptions.
+			settledOptions := newOptions
+			if svc.Agents.HasAgent(agentID) {
+				// Try a live update first; fall back to a full restart for changes the
+				// provider can't apply in place (e.g. Claude Code switching effort to auto).
+				if settled, applied := svc.applySettingsLive(dbAgent, newOptions); applied {
+					settledOptions = settled
+				} else {
+					settledOptions = svc.applySettingsViaRestart(dbAgent, newOptions)
+				}
+			}
 
-		// Return the settled options so the client reconciles its optimistic state
-		// against the values this RPC confirmed -- not a separately-broadcast catalog,
-		// which would depend on cross-channel ordering (the broadcast arriving before
-		// this reply).
-		sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{ConfirmedOptions: settledOptions})
-	})
+			// Broadcast settings_changed notification for the chat view, diffing the
+			// stored options against the settled ones (every axis corrected to the value
+			// the session actually confirmed).
+			changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
+			if len(changes) > 0 {
+				svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+					"type":    agent.NotificationTypeSettingsChanged,
+					"changes": changes,
+				})
+			}
+
+			// Return the settled options so the client reconciles its optimistic state
+			// against the values this RPC confirmed -- not a separately-broadcast catalog,
+			// which would depend on cross-channel ordering (the broadcast arriving before
+			// this reply).
+			sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{ConfirmedOptions: settledOptions})
+		})
 
 	// SendControlResponse forwards the user's allow/deny on a tool-use
 	// request to the agent subprocess. The forward must reach the agent
 	// even if the originating client window closed (the agent process is
 	// blocked waiting for it); dispatcher ctx is intentionally not threaded.
-	d.Register("SendControlResponse", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.SendControlResponseRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerAgentGated(d, "SendControlResponse",
+		func(_ context.Context, _ string, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender *channel.Sender) {
+			agentID := r.GetAgentId()
 
-		agentID := r.GetAgentId()
-		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
-		if !ok {
-			return
-		}
-
-		// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
-		// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
-		// forward=false for a deduped duplicate / server-side plan-prompt / withheld restart approval.
-		// claimToken is the per-instance token the frontend echoed from the answered AgentControlRequest.
-		if forwardBytes, forward := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken()); forward {
-			if err := svc.Agents.SendRawInput(agentID, forwardBytes); err != nil {
-				slog.Error("failed to send control response to agent",
-					"agent_id", agentID, "error", err)
-				sendNotFoundError(sender, "agent not found or not running")
-				return
+			// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
+			// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
+			// forward=false for a deduped duplicate / server-side plan-prompt / withheld restart approval.
+			// claimToken is the per-instance token the frontend echoed from the answered AgentControlRequest.
+			if forwardBytes, forward := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken()); forward {
+				if err := svc.Agents.SendRawInput(agentID, forwardBytes); err != nil {
+					slog.Error("failed to send control response to agent",
+						"agent_id", agentID, "error", err)
+					sendNotFoundError(sender, "agent not found or not running")
+					return
+				}
 			}
-		}
 
-		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
-	})
+			sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
+		})
 
 	// InterruptAgent sends a signal to the agent subprocess; the signal
 	// delivery must happen even if the requesting client disconnects mid-
 	// RPC. Dispatcher ctx is intentionally not threaded.
-	d.Register("InterruptAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.InterruptAgentRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-		agentID := r.GetAgentId()
-		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
-			return
-		}
-		if err := svc.Agents.Interrupt(agentID); err != nil {
-			slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
-			sendNotFoundError(sender, "agent not found or not running")
-			return
-		}
-		sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
-	})
+	registerAgentGatedByID(d, "InterruptAgent",
+		func(_ context.Context, _ string, r *leapmuxv1.InterruptAgentRequest, sender *channel.Sender) {
+			agentID := r.GetAgentId()
+			if err := svc.Agents.Interrupt(agentID); err != nil {
+				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
+				sendNotFoundError(sender, "agent not found or not running")
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+		})
 
 	// WatchWorkspacePrivateEvents streams worker-private workspace events
 	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked) over the
@@ -1037,81 +934,64 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// cursor's context, intentionally background so a slow snapshot
 	// doesn't get cancelled by the RPC dispatcher unwinding after the
 	// subscribe returns. Dispatcher ctx is intentionally not threaded.
-	d.Register("WatchWorkspacePrivateEvents", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.WatchWorkspacePrivateEventsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-		workspaceID := r.GetWorkspaceId()
-		if workspaceID == "" {
-			sendInvalidArgument(sender, "workspace_id is required")
-			return
-		}
-		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
-			return
-		}
-		if svc.PrivateEvents == nil {
-			return
-		}
-		_ = svc.PrivateEvents.SnapshotAndSubscribe(
-			bgCtx(),
-			workspaceID,
-			func(wsID string) []*leapmuxv1.WorkspacePrivateEvent {
-				if svc.FileTabPaths == nil {
-					return nil
-				}
-				snapshot, err := svc.FileTabPaths.SnapshotForWorkspace(bgCtx(), wsID)
-				if err != nil {
-					return nil
-				}
-				return snapshot
-			},
-			func(evt *leapmuxv1.WorkspacePrivateEvent) error {
-				data, err := proto.Marshal(evt)
-				if err != nil {
-					return err
-				}
-				return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: data})
-			},
-		)
-	})
+	registerWorkspaceGated(d, "WatchWorkspacePrivateEvents",
+		func(_ context.Context, _ string, r *leapmuxv1.WatchWorkspacePrivateEventsRequest, sender *channel.Sender) {
+			workspaceID := r.GetWorkspaceId()
+			if svc.PrivateEvents == nil {
+				return
+			}
+			_ = svc.PrivateEvents.SnapshotAndSubscribe(
+				bgCtx(),
+				workspaceID,
+				func(wsID string) []*leapmuxv1.WorkspacePrivateEvent {
+					if svc.FileTabPaths == nil {
+						return nil
+					}
+					snapshot, err := svc.FileTabPaths.SnapshotForWorkspace(bgCtx(), wsID)
+					if err != nil {
+						return nil
+					}
+					return snapshot
+				},
+				func(evt *leapmuxv1.WorkspacePrivateEvent) error {
+					data, err := proto.Marshal(evt)
+					if err != nil {
+						return err
+					}
+					return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: data})
+				},
+			)
+		})
 
 	// RegisterFileTabPath writes the (tab_id → path) registry row. The
 	// write must survive a client disconnect, otherwise a subsequent
 	// GetFileTabPath from a sibling client would see a stale "not found".
 	// Dispatcher ctx is intentionally not threaded.
-	d.Register("RegisterFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.RegisterFileTabPathRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-		if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetWorkspaceId() == "" || r.GetFilePath() == "" {
-			sendInvalidArgument(sender, "tab_id, org_id, workspace_id, file_path are required")
-			return
-		}
-		if !svc.requireAccessibleWorkspace(sender, r.GetWorkspaceId()) {
-			return
-		}
-		if svc.FileTabPaths == nil {
-			sendInternalError(sender, "file tab path store unavailable")
-			return
-		}
-		if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
-			OrgID: r.GetOrgId(), TabID: r.GetTabId(),
-			WorkspaceID: r.GetWorkspaceId(), FilePath: r.GetFilePath(),
-		}); err != nil {
-			sendInternalError(sender, err.Error())
-			return
-		}
-		sendProtoResponse(sender, &leapmuxv1.RegisterFileTabPathResponse{})
-	})
+	registerWorkspaceGated(d, "RegisterFileTabPath",
+		func(_ context.Context, _ string, r *leapmuxv1.RegisterFileTabPathRequest, sender *channel.Sender) {
+			if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetFilePath() == "" {
+				sendInvalidArgument(sender, "tab_id, org_id, file_path are required")
+				return
+			}
+			if svc.FileTabPaths == nil {
+				sendInternalError(sender, "file tab path store unavailable")
+				return
+			}
+			if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
+				OrgID: r.GetOrgId(), TabID: r.GetTabId(),
+				WorkspaceID: r.GetWorkspaceId(), FilePath: r.GetFilePath(),
+			}); err != nil {
+				sendInternalError(sender, err.Error())
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.RegisterFileTabPathResponse{})
+		})
 
 	// GetFileTabPath is a synchronous read-only handler: the response is
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the store lookup to fail-fast on disconnect.
-	d.Register("GetFileTabPath", func(ctx context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// gateInBody, probe-enforced
+	registerInBodyGated(d, "GetFileTabPath", func(ctx context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.GetFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1151,7 +1031,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// same reason as the register handler — otherwise a stale row would
 	// survive past the user's intended revocation. Dispatcher ctx is
 	// intentionally not threaded.
-	d.RegisterTracked("RevokeFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// gateInBody, probe-enforced
+	registerInBodyGatedTracked(d, "RevokeFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RevokeFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1192,7 +1073,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// disconnect — otherwise the destination workspace would observe a
 	// missing path row even though the CRDT moved the tab. Dispatcher ctx
 	// is intentionally not threaded.
-	d.Register("RelocateFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// gateInBody, probe-enforced
+	registerInBodyGated(d, "RelocateFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RelocateFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1231,7 +1113,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.RelocateFileTabPathResponse{})
 	})
 
-	d.Register("ListAvailableProviders", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// ListAvailableProviders enumerates the agent CLIs installed on this
+	// worker. Owner-only: like sysinfo, it discloses machine-scoped state
+	// (which binaries are present on the host), so a non-owner channel --
+	// notably a workspace-pinned delegation bearer -- must not reach it. The
+	// worker owner's own agents (via the local-IPC remote CLI, which
+	// dispatches with the owner's user id) still pass this gate.
+	registerOwnerOnly(d, "ListAvailableProviders", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAvailableProvidersRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1264,7 +1152,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// Using the dispatcher ctx for the replay's bootstrap reads would
 	// risk cancelling them when the handler unwinds before the bg
 	// goroutines finish writing to the stream.
-	d.Register("WatchEvents", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	registerSetFiltered(d, "WatchEvents", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.WatchEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

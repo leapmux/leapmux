@@ -49,7 +49,7 @@ func TestExpandTilde(t *testing.T) {
 func dispatchOwnerOnlyProbe(svc *Context, userID string) bool {
 	d := channel.NewDispatcher()
 	admitted := false
-	ownerOnlyRegistrar{d: d, svc: svc}.Register("Probe",
+	ownerOnlyRegistrar{r: newRegistrar(d, svc)}.Register("Probe",
 		func(context.Context, string, *leapmuxv1.InnerRpcRequest, *channel.Sender) {
 			admitted = true
 		})
