@@ -18,7 +18,8 @@ use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::{fs::PermissionsExt, net::UnixStream};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    ffi::OsStr,
     fs,
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
@@ -2322,14 +2323,14 @@ fn decode_b64(b64: &str) -> Result<Vec<u8>, String> {
 // transient memory (per chunk × ~3 copies across the IPC boundary) to
 // a few MiB even for multi-hundred-MB downloads.
 //
-// Writes go to a sibling `.tmp` file (`<final>.tmp`); on commit we
-// atomic-rename `.tmp` → final, and on abort we delete the `.tmp`.
+// Writes go to a sibling temp file (`<final>.leapmux.tmp`); on commit we
+// atomic-rename it onto the final path, and on abort we delete it.
 // Consequence: the final name never appears on disk until the save is
 // complete, and (for Save as...) the user's existing file at the chosen
 // path is preserved if the save fails. The Downloads variant iterates
 // candidate names ("foo.ext",
 // "foo (1).ext", ...) skipping any whose final path already exists and
-// claiming each candidate's `<name>.tmp` with `create_new` — that
+// claiming each candidate's `<name>.leapmux.tmp` with `create_new` — that
 // single open both reserves the iteration spot against concurrent
 // LeapMux saves of the same basename and provides the file the bytes
 // stream into.
@@ -2379,6 +2380,32 @@ where
 /// filename is more useful than another increment).
 const MAX_SAVE_COLLISION_ATTEMPTS: u32 = 1024;
 
+/// Suffix appended to the final path to form the streaming partial.
+/// Shared by the producer (`tmp_path_for`), the matcher (`is_partial_name`,
+/// used by `sweep_orphan_tmps`), and the defuser (`defuse_final_path`) so
+/// the three cannot drift.
+///
+/// Two invariants load-bearing for #285:
+/// - Distinctive (`.leapmux.tmp`, not a bare `.tmp`): distinctive enough
+///   that the startup sweep never matches a generic `*.tmp` some other
+///   tool left in Downloads. This is a naming convention, not a hard
+///   guarantee against a foreign file that deliberately reuses the
+///   suffix; what makes the sweep safe for *our* files is that
+///   `defuse_final_path` keeps every LeapMux final clear of the suffix,
+///   so a match is a LeapMux partial by construction.
+/// - Deterministic (no PID/randomness): `create_new` on this fixed
+///   sibling name is what reserves a collision slot against concurrent
+///   same-name saves.
+const SAVE_TMP_SUFFIX: &str = ".leapmux.tmp";
+
+/// Appended to a chosen final whose own name would match `is_partial_name`,
+/// so a committed final can never be mistaken for a partial by the sweep.
+/// The single source of truth for the defuse marker, shared by both defuse
+/// sites (`defuse_final_path` and the inline defuse in `open_unique_tmp`) so
+/// the two cannot drift — the same role `SAVE_TMP_SUFFIX` plays for the
+/// partial suffix. Must not itself end in `SAVE_TMP_SUFFIX`.
+const SAVE_DEFUSE_SUFFIX: &str = ".download";
+
 /// How often the idle-handle GC scans the registry for handles whose
 /// JS pump appears to have died. 60s keeps the scan cost negligible
 /// while still bounding orphan-disk-junk lifetime to roughly
@@ -2390,7 +2417,7 @@ const SAVE_HANDLE_GC_INTERVAL: Duration = Duration::from_secs(60);
 /// per chunk, so the gap can only widen if the JS pump is wedged or
 /// the renderer process died. 5 min is well above any realistic
 /// per-chunk latency (1 MiB chunks rarely take more than seconds) but
-/// short enough that an orphan `.tmp` is gone before the user notices.
+/// short enough that an orphan partial is gone before the user notices.
 const SAVE_HANDLE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Registry entry for a save in progress: the open file plus the
@@ -2404,9 +2431,9 @@ struct OpenSaveStream {
     /// streams run in parallel instead of serializing on a registry-
     /// wide mutex.
     file: Arc<Mutex<std::fs::File>>,
-    /// Sibling `<final>.tmp` path that bytes stream into.
+    /// Sibling `<final>.leapmux.tmp` path that bytes stream into.
     tmp_path: PathBuf,
-    /// Final destination — `.tmp` is atomic-renamed onto this on success.
+    /// Final destination — the partial is atomic-renamed onto this on success.
     final_path: PathBuf,
     /// Updated on insert and on every `write_chunk`. The idle-handle
     /// GC compares this against `SAVE_HANDLE_IDLE_TIMEOUT` to detect
@@ -2468,8 +2495,8 @@ impl SaveStreamRegistry {
     }
 
     /// Finalize the save: take the handle, ensure no write is still in flight,
-    /// then atomic-rename the `.tmp` onto the final path. On any failure the
-    /// partial `.tmp` is discarded.
+    /// then atomic-rename the partial onto the final path. On any failure the
+    /// partial is discarded.
     ///
     /// The in-flight-write check is load-bearing. `write_chunk` clones the
     /// per-handle `Arc<Mutex<File>>` and writes with the registry lock
@@ -2574,9 +2601,12 @@ impl SaveStreamRegistry {
     /// This cleanup is in-memory only: it (and `cleanup_all` on graceful
     /// exit) covers a dead JS pump or a normal quit, but a hard process
     /// death (SIGKILL, crash, power loss) takes this registry down with it
-    /// and orphans the `.tmp` on disk forever, forcing a spurious "(N)"
-    /// suffix on the next same-name download (see `open_unique_tmp`). See
-    /// https://github.com/leapmux/leapmux/issues/285 for an on-disk sweep.
+    /// and strands the partial on disk. `sweep_orphan_tmps` reclaims those
+    /// left in Downloads at the next startup (a Save-as partial stranded
+    /// elsewhere is inert, not swept -- see `open_tmp_for_write`); until
+    /// then a stale partial is indistinguishable from a live reservation
+    /// and forces a spurious "(N)" suffix (see `open_unique_tmp`). See
+    /// https://github.com/leapmux/leapmux/issues/285.
     fn gc_idle(&self, max_idle: Duration) {
         let now = Instant::now();
         let stale_ids: Vec<u64> = {
@@ -2603,20 +2633,170 @@ impl SaveStreamRegistry {
             }
         }
     }
+
+    /// Delete orphaned save partials under `dir` left by a prior hard
+    /// process death. Safe at the sole (startup) call site because three
+    /// legs hold together there:
+    ///
+    /// 1. Distinctive suffix (`is_partial_name`) — a match is a LeapMux
+    ///    save partial by construction: `defuse_final_path` keeps every
+    ///    LeapMux *final* clear of `SAVE_TMP_SUFFIX`, and a generic `*.tmp`
+    ///    from another tool never matches.
+    /// 2. `tauri-plugin-single-instance` — no other LeapMux process can
+    ///    be mid-save when this runs at startup.
+    /// 3. The registry is empty and not yet `manage`d at the call site, so
+    ///    none of our own saves is in flight.
+    ///
+    /// The live-`tmp_path` cross-check below spares any partial already in
+    /// the registry, but it is NOT enough on its own to make a *periodic*
+    /// call safe: `live` is snapshotted before `read_dir`, so a save that
+    /// starts afterward is on disk yet absent from the snapshot, and the
+    /// comparison is byte-exact on uncanonicalized paths. A future periodic
+    /// caller must first close that race (snapshot under the same lock that
+    /// guards insert, or re-check membership immediately before each
+    /// remove) and pass the identical `dirs::download_dir()` value
+    /// `file_save_open` uses. See https://github.com/leapmux/leapmux/issues/285.
+    fn sweep_orphan_tmps(&self, dir: &Path) {
+        let live: HashSet<PathBuf> = {
+            let guard = self.handles.lock().unwrap();
+            guard.values().map(|h| h.tmp_path.clone()).collect()
+        };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            // A missing Downloads dir is benign (fresh machine, or a
+            // relocated/unmounted volume) -- return quietly. Any other
+            // failure (permissions, transient I/O) leaves orphans behind,
+            // so log it rather than no-op invisibly, matching the per-entry
+            // branches below.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return,
+            Err(err) => {
+                eprintln!("leapmux: sweep read dir {}: {err}", dir.display());
+                return;
+            }
+        };
+        for entry in entries {
+            // Log and skip a per-entry read error rather than silently
+            // dropping it (as `entries.flatten()` would): an orphan behind a
+            // transient error self-heals on a later launch, but the failure
+            // should not be invisible. Mirrors the remove_file branch below.
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    eprintln!("leapmux: sweep read dir entry in {}: {err}", dir.display());
+                    continue;
+                }
+            };
+            if !is_partial_name(&entry.file_name()) {
+                continue;
+            }
+            // Don't follow symlinks: dirs/symlinks named like partials
+            // are spared. Log a stat failure rather than skip it silently,
+            // as the read-dir and remove_file branches do.
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(err) => {
+                    eprintln!("leapmux: sweep file type {}: {err}", entry.path().display());
+                    continue;
+                }
+            };
+            if !ft.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if live.contains(&path) {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_file(&path) {
+                eprintln!(
+                    "leapmux: sweep orphan save partial {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
-/// Append `.tmp` to `path` while preserving the existing OsString
-/// (handles non-UTF-8 paths cleanly).
+/// Append `SAVE_TMP_SUFFIX` to `path` while preserving the existing
+/// OsString (handles non-UTF-8 paths cleanly).
 fn tmp_path_for(final_path: &Path) -> PathBuf {
     let mut name = final_path.as_os_str().to_owned();
-    name.push(".tmp");
+    name.push(SAVE_TMP_SUFFIX);
     PathBuf::from(name)
 }
 
-/// Open (or create+truncate) the `.tmp` sibling of `final_path` for
-/// streaming writes. Shared by `file_save_open` and
-/// `file_save_open_dialog`; the Downloads-flow caller wraps the error
-/// to also undo its name reservation.
+/// Whether `name` is a save partial produced by `tmp_path_for`: it ends
+/// in `SAVE_TMP_SUFFIX` and is *strictly* longer than the bare suffix. A
+/// real final name is never empty, so a partial's name always exceeds the
+/// suffix — a file named exactly `.leapmux.tmp` is therefore not ours and
+/// is spared. This is the inverse of `tmp_path_for`, kept beside it so the
+/// two can't drift, and the exact predicate `sweep_orphan_tmps` deletes
+/// on and `defuse_final_path` protects finals against. Byte-wise, so
+/// non-UTF-8 names are handled like `tmp_path_for`.
+fn is_partial_name(name: &OsStr) -> bool {
+    let bytes = name.as_encoded_bytes();
+    bytes.len() > SAVE_TMP_SUFFIX.len() && bytes.ends_with(SAVE_TMP_SUFFIX.as_bytes())
+}
+
+/// Rewrite a chosen final `path` whose file name would be swept as an
+/// orphan partial (`is_partial_name`) by appending `.download`, so a
+/// committed final can never be mistaken for — and silently deleted as —
+/// a partial by `sweep_orphan_tmps`. The OsString is preserved for
+/// non-UTF-8 names. Both save entry points route their final through the
+/// same reserved-suffix defuse: the Downloads auto-name flow inside
+/// `open_unique_tmp`, and the Save-as dialog via this helper. Without it a
+/// server-supplied name like `report.leapmux.tmp` (or a Save-as target
+/// typed into Downloads) would commit a real final the next startup sweep
+/// removes. See https://github.com/leapmux/leapmux/issues/285.
+fn defuse_final_path(path: PathBuf) -> PathBuf {
+    if path.file_name().is_some_and(is_partial_name) {
+        let mut name = path.into_os_string();
+        name.push(SAVE_DEFUSE_SUFFIX);
+        PathBuf::from(name)
+    } else {
+        path
+    }
+}
+
+/// Resolve a Save-as chosen path to its final write target, applying the
+/// reserved-suffix defuse (`defuse_final_path`) and refusing when that defuse
+/// redirects the write onto a pre-existing `.download` file the native dialog
+/// never confirmed. The dialog's overwrite prompt only covers the name the
+/// user picked; when that name ends in `SAVE_TMP_SUFFIX` the bytes actually
+/// land on `<name>.download`, so silently replacing an existing file there
+/// would destroy data the user was never asked about. The check runs only
+/// when the defuse actually rewrote the path (the rare case), so a normal
+/// dialog-confirmed overwrite is untouched. A residual TOCTOU window before
+/// the commit rename degrades to the prior silent replace -- strictly better
+/// than replacing unconditionally. See
+/// https://github.com/leapmux/leapmux/issues/285.
+fn resolve_save_as_final(chosen: PathBuf) -> Result<PathBuf, String> {
+    let final_path = defuse_final_path(chosen.clone());
+    if final_path != chosen {
+        match final_path.try_exists() {
+            Ok(true) => {
+                return Err(format!(
+                    "cannot save: {} already exists (a name ending in \
+                     {SAVE_TMP_SUFFIX} was redirected to avoid the startup sweep)",
+                    final_path.display()
+                ))
+            }
+            Ok(false) => {}
+            Err(err) => return Err(format!("stat {}: {err}", final_path.display())),
+        }
+    }
+    Ok(final_path)
+}
+
+/// Open (or create+truncate) the temp sibling of `final_path` for
+/// streaming writes. Used by the Save-as dialog flow
+/// (`file_save_open_dialog`); the Downloads flow reserves and opens its
+/// partial with `create_new` inside `open_unique_tmp` instead.
+///
+/// A hard death here strands the partial in the user's chosen directory.
+/// `sweep_orphan_tmps` only reclaims Downloads, so a Save-as partial
+/// elsewhere lingers until the user deletes it -- but it is inert: the
+/// truncating open takes no collision reservation, so unlike a Downloads
+/// orphan it forces no "(N)" suffix on later saves (#285).
 fn open_tmp_for_write(final_path: &Path) -> Result<(std::fs::File, PathBuf), String> {
     let tmp_path = tmp_path_for(final_path);
     let tmp_file = std::fs::OpenOptions::new()
@@ -2628,7 +2808,7 @@ fn open_tmp_for_write(final_path: &Path) -> Result<(std::fs::File, PathBuf), Str
     Ok((tmp_file, tmp_path))
 }
 
-/// Remove the partial `.tmp`. Used by both `discard_stream` and the
+/// Remove the partial temp file. Used by both `discard_stream` and the
 /// failure branches of `file_save_commit`, which have already dropped
 /// the `File` themselves. The final path is never ours to remove —
 /// nothing was ever created there.
@@ -2636,7 +2816,7 @@ fn discard_partials(tmp_path: &Path) {
     let _ = std::fs::remove_file(tmp_path);
 }
 
-/// Drop the file handle and remove the partial `.tmp`.
+/// Drop the file handle and remove the partial temp file.
 fn discard_stream(stream: OpenSaveStream) {
     let OpenSaveStream { file, tmp_path, .. } = stream;
     // Drop before remove: Windows refuses `remove_file` while the
@@ -2657,21 +2837,35 @@ struct SaveStreamHandle {
 }
 
 /// Pick a non-colliding "foo (N).ext" candidate under `dir` and open
-/// its `<candidate>.tmp` sibling with `create_new`. The `.tmp` open
-/// serves double duty: it both reserves the iteration spot against
+/// its `<candidate>.leapmux.tmp` sibling with `create_new`. The partial
+/// open serves double duty: it both reserves the iteration spot against
 /// concurrent LeapMux saves of the same basename and provides the file
 /// the bytes stream into. The candidate itself is skipped if it already
 /// exists, preserving the "don't silently overwrite a user file in
 /// Downloads" behavior.
 ///
-/// A stale orphaned `.tmp` left by a hard process crash is indistinguishable
-/// from a live reservation, so it forces "(N)" suffixes on later downloads of
-/// the same name until it's manually removed. See
-/// https://github.com/leapmux/leapmux/issues/285.
+/// A stale orphaned partial left by a hard process crash is
+/// indistinguishable from a live reservation, so it forces "(N)"
+/// suffixes on later downloads of the same name until the next launch's
+/// `sweep_orphan_tmps` reclaims it (#285). Filenames that themselves end
+/// in `SAVE_TMP_SUFFIX` are defused by appending `.download` before the
+/// collision loop — otherwise a committed final ending in the suffix
+/// would be deleted by the next startup sweep.
 fn open_unique_tmp(
     dir: PathBuf,
     filename: String,
 ) -> Result<(std::fs::File, PathBuf, PathBuf), String> {
+    // Defuse reserved-suffix finals: a server-supplied name like
+    // `report.leapmux.tmp` would otherwise commit a final the next
+    // startup sweep would delete. Collision candidates built from the
+    // defused name (`evil.leapmux.tmp (1).download`) never end in the
+    // suffix. `file_save_open_dialog` applies the same defuse
+    // (`defuse_final_path`) to Save-as targets.
+    let filename = if is_partial_name(OsStr::new(&filename)) {
+        format!("{filename}{SAVE_DEFUSE_SUFFIX}")
+    } else {
+        filename
+    };
     let as_path = std::path::Path::new(&filename);
     let stem = as_path
         .file_stem()
@@ -2758,7 +2952,18 @@ async fn file_save_open_dialog(
     let Some(file_path) = path_opt else {
         return Ok(None);
     };
-    let final_path = file_path.into_path().map_err(|e| e.to_string())?;
+    // Defuse a Save-as target whose name ends in the reserved partial
+    // suffix so the next startup sweep can't mistake the committed final
+    // for an orphan and delete it (#285) -- the same guard `open_unique_tmp`
+    // applies to the Downloads flow. This runs after the native dialog's
+    // own overwrite prompt, so for such a name the `.download` variant is
+    // what actually gets written; it is unconditional (not scoped to
+    // Downloads) so no reserved-suffix final ever reaches disk to be swept,
+    // whatever the directory's path spelling. Only a name literally ending
+    // in `.leapmux.tmp` is affected, which a real download never produces --
+    // and if that redirect would land on an existing `.download` the dialog
+    // never confirmed, `resolve_save_as_final` errors rather than clobber it.
+    let final_path = resolve_save_as_final(file_path.into_path().map_err(|e| e.to_string())?)?;
     let registry = registry.inner().clone();
     let (file, tmp_path) = run_blocking({
         let final_path = final_path.clone();
@@ -2799,7 +3004,7 @@ async fn file_save_write(
 }
 
 /// Finalize the save identified by `handle-id`: sync bytes to disk and
-/// atomic-rename `.tmp` onto the final path. Discards partials on
+/// atomic-rename the partial onto the final path. Discards partials on
 /// failure so a partial sync doesn't leave a junk file under the
 /// chosen name.
 #[tauri::command]
@@ -2813,7 +3018,7 @@ async fn file_save_commit(
 }
 
 /// Discard the save identified by `handle-id`: drop the open file and
-/// remove the partial `.tmp`. Idempotent against an already-removed
+/// remove the partial. Idempotent against an already-removed
 /// handle (e.g. the idle GC raced the JS pump) so the failure path on
 /// the JS side stays simple.
 #[tauri::command]
@@ -3228,10 +3433,20 @@ fn main() {
             }
             app.manage(shell);
             let save_registry = Arc::new(SaveStreamRegistry::new());
+            // Reclaim orphaned save partials left by a prior hard death
+            // (#285). Synchronous and pre-`manage`: every save command
+            // resolves the registry via managed `State`, so no save can
+            // be in flight yet; a spawned sweep could race
+            // `file_save_open` between `create_new` and `registry.insert`.
+            // Single-instance + distinctive suffix make every matching
+            // on-disk file at this point definitionally an orphan.
+            if let Some(downloads) = dirs::download_dir() {
+                save_registry.sweep_orphan_tmps(&downloads);
+            }
             // Background GC for orphan save handles: when the renderer
             // dies mid-stream (page reload, crash) the JS pump never
             // calls `file_save_commit` or `file_save_abort`, leaving
-            // the handle + its `.tmp` file alive until `cleanup_all`
+            // the handle + its partial file alive until `cleanup_all`
             // at app exit. The GC bounds that lifetime to roughly
             // `IDLE_TIMEOUT + GC_INTERVAL`.
             let gc_registry = save_registry.clone();
@@ -4554,12 +4769,52 @@ mod tests {
         assert!(dropped.is_err(), "phantom oneshot should be dropped");
     }
 
-    fn save_test_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+    /// A process-unique temp path `<tmpdir>/<prefix>-<pid>-<counter>` (not
+    /// created). The atomic `fetch_add` guarantees intra-process uniqueness
+    /// (any ordering suffices for a bare uniqueness counter); the pid keeps
+    /// concurrent test binaries apart. The socket/pipe helpers deliberately
+    /// add a `{nanos}` component instead, because a reused pid could clash
+    /// with a stale *bound* endpoint from a prior run -- a hazard a
+    /// freshly-created file does not have.
+    fn unique_temp_path(prefix: &str) -> PathBuf {
         let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let base = std::env::temp_dir().join(format!("leapmux-save-{pid}-{counter}"));
-        let final_path = base.with_extension("txt");
+        std::env::temp_dir().join(format!("{prefix}-{}-{counter}", std::process::id()))
+    }
+
+    fn save_test_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+        let final_path = unique_temp_path("leapmux-save").with_extension("txt");
         (tmp_path_for(&final_path), final_path)
+    }
+
+    /// A unique temp path (not created) for sweep / open_unique_tmp tests.
+    fn unique_sweep_dir_path() -> PathBuf {
+        unique_temp_path("leapmux-sweep")
+    }
+
+    /// A freshly-created unique temp directory for sweep / open_unique_tmp
+    /// tests (the unit under test is a dir scan), removed on drop. The
+    /// cleanup is panic-safe: a failing assertion mid-test still reclaims
+    /// the directory, unlike a trailing `remove_dir_all` a panic would skip.
+    struct SweepTestDir {
+        path: PathBuf,
+    }
+
+    impl SweepTestDir {
+        fn new() -> Self {
+            let path = unique_sweep_dir_path();
+            std::fs::create_dir_all(&path).expect("create sweep test dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for SweepTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     // The happy path: a handle with no write in flight commits by atomic-rename,
@@ -4612,5 +4867,380 @@ mod tests {
         assert!(!tmp_path.exists(), "the partial tmp is discarded, not left behind");
         assert!(!final_path.exists(), "no corrupt file is renamed into place");
         drop(in_flight_clone);
+    }
+
+    #[test]
+    fn sweep_removes_orphaned_partials() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let foo = dir.join(format!("foo.txt{SAVE_TMP_SUFFIX}"));
+        let bar = dir.join(format!("bar{SAVE_TMP_SUFFIX}"));
+        std::fs::write(&foo, b"orphan").expect("seed foo");
+        std::fs::write(&bar, b"orphan").expect("seed bar");
+
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+
+        assert!(!foo.exists(), "extensioned orphan must be removed");
+        assert!(!bar.exists(), "extensionless orphan must be removed");
+    }
+
+    #[test]
+    fn sweep_spares_files_not_matching_the_suffix() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        // Load-bearing foreign-file case: bare `.tmp` must never be swept.
+        let foreign_tmp = dir.join("foo.tmp");
+        let plain = dir.join("foo.txt");
+        let suffix_mid = dir.join("foo.leapmux.tmp.txt");
+        let exact_suffix = dir.join(SAVE_TMP_SUFFIX);
+        std::fs::write(&foreign_tmp, b"x").expect("seed foreign");
+        std::fs::write(&plain, b"x").expect("seed plain");
+        std::fs::write(&suffix_mid, b"x").expect("seed mid");
+        std::fs::write(&exact_suffix, b"x").expect("seed exact");
+
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+
+        assert!(foreign_tmp.exists(), "foreign .tmp must survive");
+        assert!(plain.exists(), "plain final must survive");
+        assert!(suffix_mid.exists(), "suffix mid-name must survive");
+        assert!(exact_suffix.exists(), "exact-suffix name must survive");
+    }
+
+    #[test]
+    fn sweep_spares_directories_named_like_partials() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let nested = dir.join(format!("dir{SAVE_TMP_SUFFIX}"));
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        let inside = nested.join("keep.txt");
+        std::fs::write(&inside, b"keep").expect("seed inside");
+
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+
+        assert!(
+            nested.is_dir(),
+            "directory named like a partial must survive"
+        );
+        assert!(inside.exists(), "contents of spared dir must survive");
+    }
+
+    #[test]
+    fn sweep_spares_live_registry_partials() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let live_final = dir.join("live.txt");
+        let live_tmp = tmp_path_for(&live_final);
+        let dead = dir.join(format!("dead.txt{SAVE_TMP_SUFFIX}"));
+        std::fs::write(&live_tmp, b"live").expect("seed live");
+        std::fs::write(&dead, b"dead").expect("seed dead");
+
+        let registry = SaveStreamRegistry::new();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&live_tmp)
+            .expect("open live");
+        let _handle = registry.insert(file, live_tmp.clone(), live_final);
+
+        registry.sweep_orphan_tmps(dir);
+
+        assert!(live_tmp.exists(), "live registry partial must survive");
+        assert!(!dead.exists(), "dead orphan must be removed");
+        // Drop the open handle so Windows can unlink it before the guard's
+        // Drop removes the directory.
+        registry.cleanup_all();
+    }
+
+    #[test]
+    fn sweep_tolerates_missing_dir() {
+        let missing = unique_sweep_dir_path();
+        assert!(!missing.exists());
+        SaveStreamRegistry::new().sweep_orphan_tmps(&missing);
+    }
+
+    /// #285 regression: an orphaned partial forces "(1)" until swept,
+    /// after which the unsuffixed name is free again.
+    #[test]
+    fn orphaned_partial_forces_suffix_until_swept() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let orphan = dir.join(format!("foo.txt{SAVE_TMP_SUFFIX}"));
+        std::fs::write(&orphan, b"orphan").expect("seed orphan");
+
+        let (file, _tmp, final_path) =
+            open_unique_tmp(dir.to_path_buf(), "foo.txt".into()).expect("open while orphaned");
+        assert_eq!(
+            final_path.file_name().and_then(|n| n.to_str()),
+            Some("foo (1).txt"),
+            "orphan must force the (1) collision"
+        );
+        // Windows can't unlink an open file; drop before sweep.
+        drop(file);
+
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+        assert!(!orphan.exists(), "orphan must be gone after sweep");
+
+        let (file2, _tmp2, final2) =
+            open_unique_tmp(dir.to_path_buf(), "foo.txt".into()).expect("open after sweep");
+        assert_eq!(
+            final2.file_name().and_then(|n| n.to_str()),
+            Some("foo.txt"),
+            "unsuffixed name must be free after sweep"
+        );
+        // Drop the open handle so Windows can unlink it before the guard's
+        // Drop removes the directory (the partials it leaves are inside it).
+        drop(file2);
+    }
+
+    #[test]
+    fn open_unique_tmp_defuses_reserved_suffix_names() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let (file, _tmp, final_path) =
+            open_unique_tmp(dir.to_path_buf(), format!("evil{SAVE_TMP_SUFFIX}"))
+                .expect("open defused name");
+        let final_name = final_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 name");
+        assert_eq!(final_name, format!("evil{SAVE_TMP_SUFFIX}.download"));
+        assert!(
+            !final_name.ends_with(SAVE_TMP_SUFFIX),
+            "final must not end in the reserved suffix"
+        );
+        drop(file);
+    }
+
+    // An existing final (not just an existing partial) must also push the
+    // candidate iteration to "(1)" — the `try_exists` skip preserves the
+    // "don't silently overwrite a user file in Downloads" behavior.
+    #[test]
+    fn open_unique_tmp_skips_existing_finals() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        std::fs::write(dir.join("foo.txt"), b"user file").expect("seed final");
+
+        let (file, tmp, final_path) =
+            open_unique_tmp(dir.to_path_buf(), "foo.txt".into()).expect("open with final present");
+        assert_eq!(
+            final_path.file_name().and_then(|n| n.to_str()),
+            Some("foo (1).txt"),
+            "existing final must force the (1) collision"
+        );
+        assert!(tmp.exists(), "the (1) candidate's partial must be reserved");
+        drop(file);
+    }
+
+    // The defuse invariant must survive the collision loop: even when the
+    // defused name itself collides, no "(N)" candidate may end in the
+    // reserved suffix, or the next startup sweep would eat the committed
+    // final.
+    #[test]
+    fn open_unique_tmp_defused_collisions_never_end_in_suffix() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        std::fs::write(dir.join(format!("evil{SAVE_TMP_SUFFIX}.download")), b"x")
+            .expect("seed defused final");
+
+        let (file, _tmp, final_path) =
+            open_unique_tmp(dir.to_path_buf(), format!("evil{SAVE_TMP_SUFFIX}"))
+                .expect("open colliding defused name");
+        let final_name = final_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 name");
+        assert_eq!(final_name, format!("evil{SAVE_TMP_SUFFIX} (1).download"));
+        assert!(
+            !final_name.ends_with(SAVE_TMP_SUFFIX),
+            "collision candidates must not end in the reserved suffix"
+        );
+        drop(file);
+    }
+
+    #[test]
+    fn tmp_path_for_appends_the_sweep_suffix() {
+        let final_path = PathBuf::from("foo.txt");
+        let tmp = tmp_path_for(&final_path);
+        let name = tmp.file_name().expect("file name");
+        assert!(
+            name.as_encoded_bytes()
+                .ends_with(SAVE_TMP_SUFFIX.as_bytes()),
+            "tmp_path_for must append SAVE_TMP_SUFFIX; got {}",
+            name.to_string_lossy()
+        );
+    }
+
+    // The sweep's matcher: only names strictly longer than the suffix and
+    // ending in it are partials. The `exact_suffix` and `suffix_mid` cases
+    // pin the boundaries the sweep relies on to spare finals.
+    #[test]
+    fn is_partial_name_matches_only_strictly_longer_suffixed_names() {
+        let extensioned = format!("foo.txt{SAVE_TMP_SUFFIX}");
+        let extensionless = format!("bar{SAVE_TMP_SUFFIX}");
+        assert!(is_partial_name(OsStr::new(&extensioned)));
+        assert!(is_partial_name(OsStr::new(&extensionless)));
+        // Exactly the suffix is not a partial: a real final is never empty.
+        assert!(!is_partial_name(OsStr::new(SAVE_TMP_SUFFIX)));
+        assert!(!is_partial_name(OsStr::new("foo.tmp")));
+        assert!(!is_partial_name(OsStr::new("foo.txt")));
+        assert!(!is_partial_name(OsStr::new("foo.leapmux.tmp.txt")));
+    }
+
+    #[test]
+    fn defuse_final_path_appends_download_to_reserved_suffix_names() {
+        let defused = defuse_final_path(PathBuf::from(format!("/x/report{SAVE_TMP_SUFFIX}")));
+        let expected = format!("report{SAVE_TMP_SUFFIX}.download");
+        assert_eq!(
+            defused.file_name().and_then(|n| n.to_str()),
+            Some(expected.as_str())
+        );
+        // The defused result is no longer a partial, so the sweep spares it.
+        assert!(!is_partial_name(defused.file_name().expect("file name")));
+
+        // A normal final is returned unchanged.
+        let plain = PathBuf::from("/x/report.pdf");
+        assert_eq!(defuse_final_path(plain.clone()), plain);
+
+        // A path with no file name is returned unchanged (no panic).
+        assert_eq!(defuse_final_path(PathBuf::from("/")), PathBuf::from("/"));
+    }
+
+    // The defuse marker must not itself end in the reserved partial suffix:
+    // if it did, appending it would leave the final still matching
+    // `is_partial_name`, and the next startup sweep would delete the very
+    // final the defuse was meant to protect. Pins the invariant the
+    // `SAVE_DEFUSE_SUFFIX` doc states.
+    #[test]
+    fn save_defuse_suffix_clears_the_reserved_suffix() {
+        assert!(
+            !SAVE_DEFUSE_SUFFIX.ends_with(SAVE_TMP_SUFFIX),
+            "the defuse marker must clear the reserved suffix, not re-add it"
+        );
+        // Appending the marker to a reserved-suffix name yields a non-partial.
+        let defused = format!("anything{SAVE_TMP_SUFFIX}{SAVE_DEFUSE_SUFFIX}");
+        assert!(!is_partial_name(OsStr::new(&defused)));
+    }
+
+    #[test]
+    fn unique_temp_path_yields_distinct_prefixed_paths() {
+        let a = unique_temp_path("leapmux-uniqtest");
+        let b = unique_temp_path("leapmux-uniqtest");
+        assert_ne!(a, b, "each call must yield a distinct path");
+        assert!(a.starts_with(std::env::temp_dir()));
+        assert!(a
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("leapmux-uniqtest-"));
+    }
+
+    // A name exactly equal to the suffix is deliberately NOT defused --
+    // `is_partial_name` requires strictly-longer -- and that is safe only
+    // because the sweep spares exact-suffix names for the same reason.
+    // This test pins the two sides of that coupling together: the
+    // committed final survives while its genuine orphan partial (which IS
+    // strictly longer) is still reclaimed.
+    #[test]
+    fn open_unique_tmp_exact_suffix_name_stays_undefused_and_unswept() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let (file, tmp, final_path) =
+            open_unique_tmp(dir.to_path_buf(), SAVE_TMP_SUFFIX.to_string())
+                .expect("open exact-suffix name");
+        assert_eq!(
+            final_path.file_name().and_then(|n| n.to_str()),
+            Some(SAVE_TMP_SUFFIX),
+            "exact-suffix name must not be defused"
+        );
+        // Simulate the committed final plus its orphaned partial, then
+        // sweep: the final is spared, the partial is reclaimed.
+        drop(file);
+        std::fs::write(&final_path, b"data").expect("seed final");
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+        assert!(
+            final_path.exists(),
+            "exact-suffix final must survive the sweep"
+        );
+        assert!(!tmp.exists(), "its orphan partial must still be reclaimed");
+    }
+
+    /// #285 Save-as data-loss regression: a Save-as target whose name ends
+    /// in the reserved suffix is defused, so the committed final survives
+    /// the next startup sweep instead of being deleted as an orphan. The
+    /// undefused half of the test demonstrates the bug the defuse closes.
+    #[test]
+    fn defused_save_as_final_survives_the_sweep() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let expected_name = format!("report{SAVE_TMP_SUFFIX}.download");
+
+        // Without defuse, a Save-as of `report.leapmux.tmp` commits this
+        // exact name -- which the sweep then deletes. That is the bug.
+        let undefused = dir.join(format!("report{SAVE_TMP_SUFFIX}"));
+        std::fs::write(&undefused, b"user data").expect("seed undefused");
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+        assert!(
+            !undefused.exists(),
+            "an undefused reserved-suffix final is swept -- the data-loss bug"
+        );
+
+        // With defuse (as `file_save_open_dialog` now applies), the committed
+        // final is `report.leapmux.tmp.download`, which the sweep spares.
+        let committed = defuse_final_path(dir.join(format!("report{SAVE_TMP_SUFFIX}")));
+        assert_eq!(
+            committed.file_name().and_then(|n| n.to_str()),
+            Some(expected_name.as_str())
+        );
+        std::fs::write(&committed, b"user data").expect("seed defused");
+        SaveStreamRegistry::new().sweep_orphan_tmps(dir);
+        assert!(
+            committed.exists(),
+            "the defused Save-as final must survive the sweep"
+        );
+    }
+
+    // A Save-as target literally ending in the reserved suffix redirects the
+    // write to the `.download` twin. If that twin already exists, the resolver
+    // must refuse rather than let commit's rename silently clobber a file the
+    // native dialog never confirmed. Fails against a resolver that only
+    // defuses without the existence check (it would return Ok).
+    #[test]
+    fn resolve_save_as_final_refuses_clobbering_existing_download_twin() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let chosen = dir.join(format!("report{SAVE_TMP_SUFFIX}"));
+        let twin = dir.join(format!("report{SAVE_TMP_SUFFIX}.download"));
+        std::fs::write(&twin, b"precious").expect("seed twin");
+        let err = resolve_save_as_final(chosen).expect_err("must refuse to clobber the twin");
+        assert!(err.contains("already exists"), "unexpected error: {err}");
+        assert_eq!(
+            std::fs::read(&twin).unwrap(),
+            b"precious",
+            "twin must be untouched"
+        );
+    }
+
+    // The guard must not over-block: a reserved-suffix target with no existing
+    // twin still defuses, and a normal dialog-confirmed target passes through
+    // unchanged (its own overwrite prompt already covered it).
+    #[test]
+    fn resolve_save_as_final_allows_defuse_without_twin_and_passes_normal_paths() {
+        let guard = SweepTestDir::new();
+        let dir = guard.path();
+        let chosen = dir.join(format!("report{SAVE_TMP_SUFFIX}"));
+        let resolved = resolve_save_as_final(chosen).expect("no twin -> defuse ok");
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some(format!("report{SAVE_TMP_SUFFIX}.download").as_str())
+        );
+
+        // A normal dialog-confirmed overwrite must not be blocked, even if the
+        // chosen path already exists.
+        let normal = dir.join("report.pdf");
+        std::fs::write(&normal, b"x").expect("seed normal");
+        assert_eq!(
+            resolve_save_as_final(normal.clone()).expect("normal path passes"),
+            normal,
+            "a dialog-confirmed normal overwrite must not be blocked"
+        );
     }
 }

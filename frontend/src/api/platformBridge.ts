@@ -576,8 +576,8 @@ export async function fileSaveWrite(id: number, chunk: Uint8Array): Promise<void
 }
 
 /**
- * Finalize the handle identified by `id` by atomic-renaming the `.tmp`
- * onto the final path. Errors on rename remove the partial so a
+ * Finalize the handle identified by `id` by atomic-renaming the temp
+ * partial onto the final path. Errors on rename remove the partial so a
  * half-save doesn't land under the user's chosen name.
  */
 export async function fileSaveCommit(id: number): Promise<void> {
