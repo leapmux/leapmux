@@ -794,10 +794,16 @@ func (c *blockingCloser) CloseChannelsByBearer(ref auth.BearerRef) int {
 // decoupling, runOnce held w.lease.mu across teardown so the lease could not be
 // renewed and the Hub self-fenced.
 func TestWatcher_SlowTeardownDoesNotSelfFence(t *testing.T) {
+	// renewalLoop renews at the lease half-life, so the slack between a renewal
+	// falling due and the lease actually lapsing is leaseDuration/2 -- the window
+	// in which the heartbeat goroutine must get scheduled. At 40ms that slack was
+	// 20ms, which a loaded CI runner exceeds outright, and the watcher then
+	// self-fenced for real. 200ms buys a 100ms margin while keeping the test fast.
+	const leaseDuration = 200 * time.Millisecond
 	env := setupUnseeded(t)
 	blocking := newBlockingCloser()
 	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(env.cache, blocking, nil),
-		revocationwatcher.WithLeaseDuration(40*time.Millisecond),
+		revocationwatcher.WithLeaseDuration(leaseDuration),
 		revocationwatcher.WithInterval(20*time.Millisecond),
 	)
 	require.NoError(t, w.SeedCursor(context.Background()))
@@ -817,13 +823,25 @@ func TestWatcher_SlowTeardownDoesNotSelfFence(t *testing.T) {
 		t.Fatal("teardown never started")
 	}
 
-	// Hold the teardown for several lease durations. A healthy heartbeat keeps
-	// the lease alive; a self-fence here would surface on the Errors channel.
+	// Hold the teardown for three lease durations: long enough that only a live
+	// heartbeat can still hold the lease, so the test would catch a regression
+	// that let teardown block renewal. A self-fence surfaces on Errors.
 	select {
 	case err := <-w.Errors():
 		t.Fatalf("watcher self-fenced during a slow teardown: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(3 * leaseDuration):
 	}
+
+	// A quiet Errors channel only proves the watcher never *noticed* a lost
+	// lease. Assert the durable row too: three lease durations into the
+	// teardown, a rival can only be fenced out if the heartbeat kept renewing.
+	// (A failing acquire rolls its transaction back, so this probe is inert.)
+	_, err = env.st.RevocationEvents().AcquireHubRuntimeLease(
+		context.Background(),
+		store.AcquireHubRuntimeLeaseParams{HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour},
+	)
+	require.ErrorIs(t, err, store.ErrHubAlreadyRunning,
+		"the heartbeat must keep the durable lease alive across a slow teardown")
 
 	blocking.release()
 	require.Eventually(t, func() bool {

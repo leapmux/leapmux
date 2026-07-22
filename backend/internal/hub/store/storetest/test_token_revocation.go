@@ -12,6 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// expiringLeaseDuration is the lease life used by the cases that need a lease to
+// lapse. Every assertion that depends on it waits a multiple of it, never races
+// it: a test must not require a lease to still be live across a store round-trip,
+// because a loaded CI runner (or a distributed store, where a single statement
+// costs tens of milliseconds) makes that a coin flip.
+const expiringLeaseDuration = 25 * time.Millisecond
+
 func (s *Suite) testTokenRevocation(t *testing.T) {
 	t.Run("API refresh rotation creates one cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -552,10 +559,17 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		_, err = st.RevocationEvents().PublishPending(ctx, 10)
 		require.NoError(t, err)
 
+		// Park the cursor at seq 1 under a LONG lease. The bound this asserts is
+		// the live lease's cursor_seq, and CompactPublished deletes the expired
+		// lease row before compacting, so a lease that lapses between this renew
+		// and the compaction below would silently unbound the sweep to last_seq
+		// and delete all three events. Under a short lease that gap is two store
+		// round-trips wide -- survivable on SQLite, not on a distributed store.
+		// The expiry half of this test drives its own short lease further down.
 		advanced, err = st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
 			HolderID:      "first",
 			CursorSeq:     1,
-			LeaseDuration: 25 * time.Millisecond,
+			LeaseDuration: time.Hour,
 		})
 		require.NoError(t, err)
 		require.True(t, advanced)
@@ -564,20 +578,32 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 			Cutoff: time.Now().UTC().Add(time.Hour),
 		})
 		require.NoError(t, err)
-		require.Equal(t, int64(1), deleted)
+		require.Equal(t, int64(1), deleted, "a live lease must bound compaction to its cursor")
 		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
 		require.NoError(t, err)
 		require.Len(t, events, 2)
 		assert.Equal(t, int64(2), events[0].Seq)
 
-		time.Sleep(100 * time.Millisecond)
+		// Now shorten the lease and outlive it. Re-renewing at the same cursor is
+		// permitted (the guard is cursor_seq <= arg), so this only pulls the
+		// deadline in. Unlike the compaction above, what follows needs the lease
+		// merely to have lapsed -- a lower bound that CI load can only help.
+		advanced, err = st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID:      "first",
+			CursorSeq:     1,
+			LeaseDuration: expiringLeaseDuration,
+		})
+		require.NoError(t, err)
+		require.True(t, advanced)
+
+		time.Sleep(4 * expiringLeaseDuration)
 		advanced, err = st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
 			HolderID:      "first",
 			CursorSeq:     3,
 			LeaseDuration: time.Hour,
 		})
 		require.NoError(t, err)
-		require.False(t, advanced)
+		require.False(t, advanced, "an expired lease must not renew itself")
 
 		fence, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
 			HolderID: "second", PublishLimit: 10, LeaseDuration: time.Hour,
@@ -601,6 +627,59 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 			HolderID: "third", PublishLimit: 10, LeaseDuration: time.Hour,
 		})
 		require.NoError(t, err, "clean release must permit immediate handoff")
+	})
+
+	// The bound compaction applies is the LIVE lease's cursor; an abandoned Hub
+	// must not pin the backlog forever. CompactPublished deletes the expired
+	// lease row before compacting, so the COALESCE bound falls back to last_seq
+	// once the lease lapses. That fallback is exactly what a lease which quietly
+	// expired mid-test turned into a full sweep, so assert it deliberately here
+	// rather than leaving it as the silent failure mode of another case.
+	t.Run("an expired Hub lease stops bounding compaction", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org")
+		user := SeedUser(t, st, orgID, "user")
+
+		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "first", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+
+		for range 2 {
+			tokenID := seedAPIToken(t, st, user.ID)
+			_, err := st.APITokens().Revoke(ctx, tokenID)
+			require.NoError(t, err)
+		}
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), published)
+
+		compact := func() int64 {
+			deleted, compactErr := st.Cleanup().CompactPublishedRevocationEvents(
+				ctx,
+				store.CompactRevocationEventsParams{Cutoff: time.Now().UTC().Add(time.Hour)},
+			)
+			require.NoError(t, compactErr)
+			return deleted
+		}
+
+		// The lease was acquired before either event existed, so its cursor sits at
+		// seq 0: a live Hub has consumed nothing, and no cutoff may collect events
+		// it still owes delivery on.
+		require.Zero(t, compact(), "a live lease at cursor 0 must block compaction entirely")
+
+		// Same holder, deliberately short lease -- then outlive it.
+		advanced, err := st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 0, LeaseDuration: expiringLeaseDuration,
+		})
+		require.NoError(t, err)
+		require.True(t, advanced)
+		time.Sleep(4 * expiringLeaseDuration)
+
+		require.Equal(t, int64(2), compact(), "an expired lease must stop bounding compaction")
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Empty(t, events)
 	})
 }
 
