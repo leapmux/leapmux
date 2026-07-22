@@ -1,5 +1,9 @@
+import type { Root } from 'mdast'
 import { describe, expect, it } from 'vitest'
+import { createMarkdownParser } from './markdownParse'
 import { __setGraphemeSegmenterForTest, truncatePreview } from './textTruncate'
+
+const reparser = createMarkdownParser()
 
 describe('truncate preview', () => {
   it('tidies horizontal whitespace but preserves newlines (for markdown structure)', () => {
@@ -81,5 +85,81 @@ describe('truncate preview', () => {
 
   it('does not split a combining-character grapheme at the truncation boundary', () => {
     expect(truncatePreview(`${'x'.repeat(199)}e\u0301tail`)).toBe(`${'x'.repeat(199)}e\u0301…`)
+  })
+
+  it('closes bold that straddles the limit (no dangling **)', () => {
+    // 200-grapheme budget = `**` opener + 198 a's; the closer is read from the source.
+    expect(truncatePreview(`**${'a'.repeat(250)}**`)).toBe(`**${'a'.repeat(198)}…**`)
+  })
+
+  it('closes a fenced code block that straddles the limit', () => {
+    // 200-grapheme budget = fence line (4 graphemes incl. newline) + 196 x's;
+    // the synthesized closing fence follows the in-code ellipsis.
+    expect(truncatePreview(`\`\`\`\n${'x'.repeat(250)}\n\`\`\``))
+      .toBe(`\`\`\`\n${'x'.repeat(196)}…\n\`\`\``)
+  })
+
+  it('cuts before a late link that straddles the limit', () => {
+    expect(truncatePreview(`${'a'.repeat(180)} [label](https://example.com/path) more`))
+      .toBe(`${'a'.repeat(180)}…`)
+  })
+
+  it('keeps an html entity whole at the truncation boundary', () => {
+    // The 200-grapheme limit lands between `&` and `amp;`; the cut snaps past
+    // the entity instead of splitting it into a literal `&a` fragment.
+    expect(truncatePreview(`${'x'.repeat(198)}&amp;${'y'.repeat(30)}`))
+      .toBe(`${'x'.repeat(198)}&amp;…`)
+  })
+
+  it('rewrites a link reference whose definition is truncated away', () => {
+    const out = truncatePreview(`See [the docs][ref] ${'w'.repeat(250)}\n\n[ref]: https://example.com/docs`)!
+    expect(out.startsWith('See the docs ')).toBe(true)
+    expect(out.includes('[')).toBe(false)
+  })
+
+  it('truncates a long blockquote fenced code block to a single closed code block', () => {
+    // The `> ` markers survive tidying, so the cut lands inside a blockquoted
+    // fence; the synthesized closer (and any boundary ellipsis line) must keep the
+    // `> ` prefix so the result re-parses as one blockquote, not a broken quote +
+    // stray paragraph + second fence.
+    const body = `> \`\`\`\n${Array.from({ length: 30 }, (_, i) => `> code content line number ${i}`).join('\n')}\n> \`\`\``
+    const out = truncatePreview(body)!
+    expect(out.endsWith('…') || out.endsWith('```')).toBe(true)
+    const tree = reparser.parse(out) as Root
+    expect(tree.children.map(c => c.type)).toEqual(['blockquote'])
+  })
+
+  it('previews the prose past a preview-filling dangling image reference', () => {
+    // The first 200 tidied graphemes are one giant dangling image reference;
+    // the rewrite empties the prefix, and the preview must surface the prose
+    // that follows instead of a wall of literal reference markup.
+    const body = `![${'a'.repeat(190)}][ref]\n\nNext paragraph of prose content here\n\n[ref]: https://example.com/image.png`
+    const out = truncatePreview(body)!
+    expect(out.startsWith('Next paragraph of prose content here')).toBe(true)
+    expect(out.includes('[')).toBe(false)
+  })
+
+  it('survives pathologically deep blockquote nesting without a stack overflow', () => {
+    // 5000 `>` markers tidy to a 4000-grapheme run that parses into ~4000
+    // nested blockquotes; the recursive AST walks must degrade to the bounded
+    // hard cut instead of throwing RangeError through the preview pipeline.
+    const out = truncatePreview(`${'>'.repeat(5000)} hello`)!
+    expect(out.endsWith('…')).toBe(true)
+    expect(out.length).toBeLessThanOrEqual(250)
+  })
+
+  it('does not append an ellipsis for exactly-limit content followed by a trailing newline', () => {
+    // Latent-bug fix: trailing-whitespace pop used to leave truncated=true from the
+    // newline append even though the kept content is exactly MAX_PREVIEW_LEN.
+    const out = truncatePreview(`${'b'.repeat(200)}\n`)!
+    expect(out).toBe('b'.repeat(200))
+    expect(out.endsWith('…')).toBe(false)
+  })
+
+  it('composes grapheme safety with markdown delimiter closing around an emoji', () => {
+    // The 200th grapheme is the first `*` of the closing run, so the code-unit
+    // limit lands inside it; the cut clamps back to the bold content's end
+    // (keeping the surrogate-pair emoji whole) and closes with …**.
+    expect(truncatePreview(`**${'c'.repeat(196)}😀**tail`)).toBe(`**${'c'.repeat(196)}😀…**`)
   })
 })

@@ -6,7 +6,9 @@ import { truncatePreview } from '~/lib/textTruncate'
 // ---------------------------------------------------------------------------
 // Scroll-rail mark preview -- shared, provider-neutral extraction
 //
-// A LEAF module (only pure json/text utils) so every provider plugin can import
+// A LEAF module w.r.t. the chat plugin machinery (it imports only lib utils:
+// jsonPick, and textTruncate -- which pulls the shared markdown parser for
+// markdown-safe truncation) so every provider plugin can import
 // `defaultMarkPreview` as the fallback for its `Provider.previewText` WITHOUT pulling in
 // the plugin registry / classifier (chatMarkPreview.ts, which orchestrates the plugins) --
 // that would be a module-init cycle. Provider-specific extraction lives in each plugin's
