@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -53,7 +55,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		found, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   user.ID,
+			UserID:   userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
@@ -67,7 +69,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		_, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   "other-user",
+			UserID:   userid.MustNew("other-user"),
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
@@ -83,14 +85,14 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// or a workspace -- conveys no access to another user's worker.
 		_, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   other.ID,
+			UserID:   userid.MustNew(other.ID),
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		// The registering owner still gets it.
 		found, err := st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 			WorkerID: worker.ID,
-			UserID:   owner.ID,
+			UserID:   userid.MustNew(owner.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
@@ -107,7 +109,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// ListByUserID is scoped strictly to registered_by: a user sees their own
 		// workers and nothing else, even for co-members of the same org.
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: other.ID,
+			RegisteredBy: userid.MustNew(other.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -178,7 +180,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		SeedWorker(t, st, user.ID)
 
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -317,7 +319,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 			ID:           worker.ID,
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -331,7 +333,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 			ID:           worker.ID,
-			RegisteredBy: "other-user",
+			RegisteredBy: userid.MustNew("other-user"),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
@@ -373,11 +375,11 @@ func (s *Suite) testWorkers(t *testing.T) {
 		SeedWorker(t, st, user.ID)
 		SeedWorker(t, st, user.ID)
 
-		err := st.Workers().MarkAllDeletedByUser(ctx, user.ID)
+		err := st.Workers().MarkAllDeletedByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -395,7 +397,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              workerID,
 			AuthToken:       id.Generate(),
-			RegisteredBy:    user.ID,
+			RegisteredBy:    userid.MustNew(user.ID),
 			PublicKey:       []byte("pk"),
 			MlkemPublicKey:  []byte("mlkem"),
 			SlhdsaPublicKey: []byte("slhdsa"),
@@ -440,7 +442,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		user := SeedUser(t, st, orgID, "no-workers-user")
 
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -470,7 +472,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -484,7 +486,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		user := SeedUser(t, st, orgID, "markall-empty-user")
 
 		// Should be a no-op when user has no workers.
-		err := st.Workers().MarkAllDeletedByUser(ctx, user.ID)
+		err := st.Workers().MarkAllDeletedByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 	})
 
@@ -496,7 +498,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 			ID:           worker.ID,
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -527,7 +529,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// Deregister once.
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 			ID:           worker.ID,
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -535,7 +537,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// Deregister again should return 0 (already deregistered).
 		n, err = st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 			ID:           worker.ID,
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
@@ -552,7 +554,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// GetOwned returns ErrNotFound for a deleted worker, even for its owner.
 		_, err = st.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
-			WorkerID: worker.ID, UserID: owner.ID,
+			WorkerID: worker.ID, UserID: userid.MustNew(owner.ID),
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
@@ -610,7 +612,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// ListByUserID filters on status = 1, so only the active worker comes back.
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
@@ -682,7 +684,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		worker := SeedWorker(t, st, user.ID)
 
 		err := st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: worker.ID, AuthToken: id.Generate(), RegisteredBy: user.ID,
+			ID: worker.ID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
 			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
@@ -701,7 +703,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// First page: newest first (ORDER BY created_at DESC).
 		res1, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 3},
 		})
 		require.NoError(t, err)
@@ -717,7 +719,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// is exclusive (created_at < cursor), so the remaining 2 come back.
 		cursor := store.EncodeCursor(page1[len(page1)-1].CreatedAt, page1[len(page1)-1].ID)
 		res2, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: user.ID,
+			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Cursor: cursor, Limit: 3},
 		})
 		require.NoError(t, err)
@@ -756,7 +758,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		// Page through one row at a time; the union must cover all three with no dupes.
 		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.Worker], error) {
 			return st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-				RegisteredBy: user.ID,
+				RegisteredBy: userid.MustNew(user.ID),
 				PageParams:   store.PageParams{Cursor: cursor, Limit: 1},
 			})
 		})
@@ -807,7 +809,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		// Deregister first.
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
-			ID: worker.ID, RegisteredBy: user.ID,
+			ID: worker.ID, RegisteredBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)

@@ -3,12 +3,71 @@ package storetest
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func (s *Suite) testWorkspaces(t *testing.T) {
+	// Every ownership predicate here is a `WHERE owner_user_id = ?` bind, and a
+	// zero caller id unwraps to "" -- which does NOT fail to match, it matches
+	// every blank-owner row. owner_user_id is `NOT NULL REFERENCES users(id)`,
+	// but a blank-id user row is representable in all three dialects, so the
+	// bind has to be refused before the query rather than missed by it.
+	t.Run("ownership gates refuse a zero caller id", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "ws-zeroid-org")
+		owner := SeedUser(t, st, orgID, "ws-zeroid-owner")
+		realWS := SeedWorkspace(t, st, orgID, owner.ID, "Real")
+
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID: "", OrgID: orgID, Username: "ws-blank-id-user",
+			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+		}))
+		blankWS := "ws-blank-owner-gate"
+		require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+			ID: blankWS, OrgID: orgID, OwnerUserID: userid.UserID{}, Title: "blank-owner",
+		}))
+		// Control: the blank-owner row really exists, so the denials below are
+		// about the zero id and not about a missing row.
+		got, err := st.Workspaces().GetByID(ctx, blankWS)
+		require.NoError(t, err)
+		require.Equal(t, "", got.OwnerUserID)
+
+		list, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+			UserID: userid.UserID{}, OrgID: orgID,
+		})
+		require.NoError(t, err)
+		assert.Empty(t, list, "a zero caller id must not list blank-owner workspaces")
+
+		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
+			ID: blankWS, OwnerUserID: userid.UserID{}, Title: "hijacked",
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a zero caller id must not rename a blank-owner workspace")
+
+		n, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+			ID: blankWS, OwnerUserID: userid.UserID{},
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a zero caller id must not delete a blank-owner workspace")
+
+		after, err := st.Workspaces().GetByID(ctx, blankWS)
+		require.NoError(t, err)
+		assert.Equal(t, "blank-owner", after.Title, "neither refused mutation may have landed")
+
+		// Control: the gate still WORKS for a real owner, so the refusals above
+		// are not the gate simply denying everything.
+		list, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+			UserID: userid.MustNew(owner.ID), OrgID: orgID,
+		})
+		require.NoError(t, err)
+		require.Len(t, list, 1)
+		assert.Equal(t, realWS, list[0].ID)
+	})
+
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "ws-org")
@@ -41,7 +100,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		wsDeleted := SeedWorkspace(t, st, orgID, user.ID, "Deleted")
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsDeleted,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 
@@ -69,7 +128,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		SeedWorkspace(t, st, orgID, user.ID, "WS 2")
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -98,7 +157,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		}
 
 		first, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -122,7 +181,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// caching, ANALYZE state, or repeated DISTINCT evaluation.
 		for trial := 0; trial < 3; trial++ {
 			got, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-				UserID: user.ID,
+				UserID: userid.MustNew(user.ID),
 				OrgID:  orgID,
 			})
 			require.NoError(t, err)
@@ -151,7 +210,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 			Title:       "New Title",
 		})
 		require.NoError(t, err)
@@ -170,7 +229,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: "other-user",
+			OwnerUserID: userid.MustNew("other-user"),
 			Title:       "Hacked",
 		})
 		require.NoError(t, err)
@@ -185,7 +244,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		n, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -208,7 +267,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		ws1 := SeedWorkspace(t, st, orgID, user.ID, "WS A")
 		ws2 := SeedWorkspace(t, st, orgID, user.ID, "WS B")
 
-		err := st.Workspaces().SoftDeleteAllByUser(ctx, user.ID)
+		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 
 		for _, wsID := range []string{ws1, ws2} {
@@ -228,7 +287,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// Workspace access is owner-only: another user in the same org
 		// never sees someone else's workspace.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: other.ID,
+			UserID: userid.MustNew(other.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -236,7 +295,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		// The owner does.
 		workspaces, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: owner.ID,
+			UserID: userid.MustNew(owner.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -253,12 +312,12 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          delID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -272,7 +331,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		user := SeedUser(t, st, orgID, "ws-empty-user")
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			OrgID:  orgID,
 		})
 		require.NoError(t, err)
@@ -285,7 +344,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 			ID:          "nonexistent",
-			OwnerUserID: "nonexistent",
+			OwnerUserID: userid.MustNew("nonexistent"),
 			Title:       "New",
 		})
 		require.NoError(t, err)
@@ -300,7 +359,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		n, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -313,7 +372,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// already deleted.
 		n, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n, "second soft-delete must match zero rows on every dialect")
@@ -329,7 +388,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		user := SeedUser(t, st, orgID, "ws-delall-empty-user")
 
 		// Should be a no-op when user has no workspaces.
-		err := st.Workspaces().SoftDeleteAllByUser(ctx, user.ID)
+		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 	})
 
@@ -354,7 +413,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		SeedWorkspace(t, st, orgID, userA.ID, "A's WS")
 		bWS := SeedWorkspace(t, st, orgID, userB.ID, "B's WS")
 
-		err := st.Workspaces().SoftDeleteAllByUser(ctx, userA.ID)
+		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(userA.ID))
 		require.NoError(t, err)
 
 		// B's workspace should be untouched.
@@ -374,7 +433,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// ListAccessible for orgA should only return wsA even though the
 		// owner also has a workspace homed in orgB.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: owner.ID, OrgID: orgA,
+			UserID: userid.MustNew(owner.ID), OrgID: orgA,
 		})
 		require.NoError(t, err)
 		require.Len(t, workspaces, 1)

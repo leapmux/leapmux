@@ -27,7 +27,7 @@ func fromDBCLIAuthorizationCode(c gendb.CliAuthorizationCode) store.CLIAuthoriza
 func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCLIAuthorizationCodeParams) error {
 	return mapErr(s.conn.q.CreateCLIAuthorizationCode(ctx, gendb.CreateCLIAuthorizationCodeParams{
 		Code:          p.Code,
-		UserID:        p.UserID,
+		UserID:        p.UserID.String(),
 		CodeChallenge: p.CodeChallenge,
 		DeviceName:    p.DeviceName,
 		ExpiresAt:     pgtime.New(p.ExpiresAt),

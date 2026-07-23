@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type sessionStore struct{ conn *mysqlConn }
@@ -47,7 +48,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*mysqlStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
-			UserID:    p.UserID,
+			UserID:    p.UserID.String(),
 			ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 			UserAgent: p.UserAgent,
 			IpAddress: p.IPAddress,
@@ -93,13 +94,29 @@ func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 	}, emitCredentialEvent)
 }
 
-func (s *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, userID))
+func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return store.ErrInvalidArgument
+	}
+	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. This method reports only an error,
+		// so returning nil would tell the caller the mutation SUCCEEDED while
+		// addressing no row -- the shape a revocation must never have. See
+		// store.OwnerFilter.
+		return store.ErrInvalidArgument
+	}
 	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
-		UserID: p.UserID,
+		UserID: owner,
 		ID:     p.KeepID,
 	}))
 }
@@ -113,16 +130,28 @@ func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSess
 // than CHANGED rows, and a matched row returns 1 even when its value is
 // unchanged.
 func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.RefreshSessionAuthGenerationParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return 0, nil
+	}
 	return rowsAffected(s.conn.q.RefreshUserSessionAuthGeneration(ctx, gendb.RefreshUserSessionAuthGenerationParams{
 		SessionID: p.SessionID,
-		UserID:    p.UserID,
+		UserID:    owner,
 	}))
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams) (store.Page[store.UserSession], error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return store.Page[store.UserSession]{}, nil
+	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
-			return listUserSessionsParams(p.UserID, p.Cursor, p.Limit)
+			return listUserSessionsParams(owner, p.Cursor, p.Limit)
 		},
 		s.conn.q.ListUserSessionsByUserID, fromDBSession)
 }

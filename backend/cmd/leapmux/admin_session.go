@@ -79,9 +79,16 @@ func runSessionRevokeUser(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
+		// Mint once and refuse a blank id rather than letting it address every
+		// blank-owner row in the bulk operations below.
+		revokeUID, err := mintResolvedUserID(user)
+		if err != nil {
+			return err
+		}
+
 		var apiCount, delegationCount int64
-		err = st.RunInUserAuthTransaction(ctx, user.ID, func(tx store.Store) error {
-			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+		err = st.RunInUserAuthTransaction(ctx, revokeUID, func(tx store.Store) error {
+			if err := tx.Sessions().DeleteByUser(ctx, revokeUID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
 			}
 			// "Revoke all sessions" is the canonical
@@ -94,7 +101,7 @@ func runSessionRevokeUser(cmd adminCmdCtx, args []string) error {
 			// watcher picks this up cross-process and fires
 			// CloseChannelsByUserRevocation on its next sweep.
 			var err error
-			apiCount, delegationCount, err = auth.RevokeAllUserCredentials(ctx, tx, user.ID)
+			apiCount, delegationCount, err = auth.RevokeAllUserCredentials(ctx, tx, revokeUID)
 			return err
 		})
 		if err != nil {

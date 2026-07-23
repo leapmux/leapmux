@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -21,12 +22,12 @@ func TestRegisterWorkspaceGated_InvalidPayload(t *testing.T) {
 
 	called := false
 	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, string, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method:  "ProbeOpen",
 		Payload: []byte("not-a-proto"),
 	}, w)
@@ -44,14 +45,14 @@ func TestRegisterWorkspaceGated_EmptyWorkspaceID(t *testing.T) {
 
 	called := false
 	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, string, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeOpen", Payload: payload,
 	}, w)
 
@@ -68,14 +69,14 @@ func TestRegisterWorkspaceGated_ForeignWorkspaceShortCircuits(t *testing.T) {
 
 	called := false
 	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, string, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-other"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeOpen", Payload: payload,
 	}, w)
 
@@ -91,7 +92,7 @@ func TestRegisterWorkspaceGated_PassesDecodedRequest(t *testing.T) {
 
 	var gotWS string
 	registerWorkspaceGated(r, "ProbeOpen",
-		func(_ context.Context, _ string, req *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, req *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
 			gotWS = req.GetWorkspaceId()
 			sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{})
 		})
@@ -99,7 +100,7 @@ func TestRegisterWorkspaceGated_PassesDecodedRequest(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-1"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeOpen", Payload: payload,
 	}, w)
 
@@ -115,7 +116,7 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 
 	var gotID, gotWS string
 	registerAgentGated(r, "ProbeAgent",
-		func(_ context.Context, _ string, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotWS = row.WorkspaceID
 			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
@@ -124,7 +125,7 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.RenameAgentRequest{AgentId: "agent-1", Title: "x"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgent", Payload: payload,
 	}, w)
 
@@ -141,14 +142,14 @@ func TestRegisterAgentGated_ForeignWorkspaceShortCircuits(t *testing.T) {
 
 	called := false
 	registerAgentGated(r, "ProbeAgent",
-		func(context.Context, string, *leapmuxv1.RenameAgentRequest, db.Agent, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.RenameAgentRequest, db.Agent, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.RenameAgentRequest{AgentId: "agent-other", Title: "x"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgent", Payload: payload,
 	}, w)
 
@@ -165,7 +166,7 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 
 	var gotID string
 	registerAgentGatedByID(r, "ProbeAgentID",
-		func(_ context.Context, _ string, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			gotID = req.GetAgentId()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 		})
@@ -173,7 +174,7 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgentID", Payload: payload,
 	}, w)
 
@@ -189,14 +190,14 @@ func TestRegisterAgentGatedByID_ForeignWorkspaceShortCircuits(t *testing.T) {
 
 	called := false
 	registerAgentGatedByID(r, "ProbeAgentID",
-		func(context.Context, string, *leapmuxv1.InterruptAgentRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.InterruptAgentRequest, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.InterruptAgentRequest{AgentId: "agent-other"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgentID", Payload: payload,
 	}, w)
 
@@ -213,14 +214,14 @@ func TestRegisterTerminalGatedByID_ForeignWorkspaceShortCircuits(t *testing.T) {
 
 	called := false
 	registerTerminalGatedByID(r, "ProbeTermID",
-		func(context.Context, string, *leapmuxv1.SendInputRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.SendInputRequest, channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.SendInputRequest{TerminalId: "term-other"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeTermID", Payload: payload,
 	}, w)
 
@@ -237,7 +238,7 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 
 	var gotID, gotWS string
 	registerTerminalGated(r, "ProbeTerm",
-		func(_ context.Context, _ string, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotWS = row.WorkspaceID
 			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
@@ -246,7 +247,7 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.UpdateTerminalTitleRequest{TerminalId: "term-1", Title: "x"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeTerm", Payload: payload,
 	}, w)
 
@@ -263,7 +264,7 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 
 	var gotWS string
 	registerTerminalForRestartGated(r, "ProbeRestart",
-		func(_ context.Context, _ string, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			gotWS = row.WorkspaceID
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 		})
@@ -271,7 +272,7 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.RestartTerminalRequest{TerminalId: "term-1", Cols: 80, Rows: 25})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeRestart", Payload: payload,
 	}, w)
 
@@ -296,7 +297,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1", "ws-1") },
 			register: func(r registrar, method string, block func()) {
 				registerAgentGatedByIDTracked(r, method,
-					func(context.Context, string, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
+					func(context.Context, userid.UserID, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -307,7 +308,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1", "ws-1") },
 			register: func(r registrar, method string, block func()) {
 				registerTerminalGatedByIDTracked(r, method,
-					func(context.Context, string, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
+					func(context.Context, userid.UserID, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -318,7 +319,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			seed: func(*testing.T, *Service) {},
 			register: func(r registrar, method string, block func()) {
 				registerInBodyGatedTracked(r, method,
-					func(context.Context, string, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+					func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -343,7 +344,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 
 			payload, err := proto.Marshal(tc.req)
 			require.NoError(t, err)
-			d.DispatchAsync(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+			d.DispatchAsync(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 				Method: "slow-probe", Payload: payload,
 			}, newTestWriter())
 
@@ -371,8 +372,8 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	registerUngated(r, "Dup", func(context.Context, string, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+	registerUngated(r, "Dup", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	assert.Panics(t, func() {
-		registerUngated(r, "Dup", func(context.Context, string, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+		registerUngated(r, "Dup", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	})
 }

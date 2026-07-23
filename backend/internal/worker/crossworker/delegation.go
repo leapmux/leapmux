@@ -13,6 +13,7 @@ import (
 
 	"github.com/cenkalti/backoff/v6"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -109,13 +110,24 @@ func delegationHTTPClient(hubURL string) (*http.Client, string) {
 	)
 }
 
+// delegationKey is the cache/refcount/tab key for one (user, workspace)
+// delegation slot. Every map in this store is keyed by it, so the three maps
+// cannot drift apart the way six hand-built concatenations could: change the
+// shape here and every reader follows.
+//
+// The user component is the minted id's underlying string -- the maps are
+// string-keyed because userid.UserID is deliberately non-comparable.
+func delegationKey(userID userid.UserID, workspaceID string) string {
+	return userID.String() + "|" + workspaceID
+}
+
 // GetBearer satisfies DelegationProvider. Cache key includes
 // workspace_id since each delegation row is scoped to one workspace.
 func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) (string, error) {
-	if scope.UserID == "" || scope.WorkspaceID == "" {
+	if scope.UserID.IsZero() || scope.WorkspaceID == "" {
 		return "", errors.New("crossworker: user_id and workspace_id required")
 	}
-	key := scope.UserID + "|" + scope.WorkspaceID
+	key := delegationKey(scope.UserID, scope.WorkspaceID)
 	s.mu.Lock()
 	if c, ok := s.cached[key]; ok && time.Until(c.expiresAt) > s.MintGracePeriod {
 		bearer := c.bearer
@@ -196,13 +208,13 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 
 func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (mintedToken, error) {
 	s.mu.Lock()
-	tab, hasTab := s.tabs[scope.UserID+"|"+scope.WorkspaceID]
+	tab, hasTab := s.tabs[delegationKey(scope.UserID, scope.WorkspaceID)]
 	s.mu.Unlock()
 	if !hasTab || tab.ID == "" {
-		return mintedToken{}, fmt.Errorf("delegation mint: no tab registered for (user=%s, workspace=%s); Acquire must run with tab_id at spawn time", scope.UserID, scope.WorkspaceID)
+		return mintedToken{}, fmt.Errorf("delegation mint: no tab registered for (user=%s, workspace=%s); Acquire must run with tab_id at spawn time", scope.UserID.String(), scope.WorkspaceID)
 	}
 	body, _ := json.Marshal(map[string]any{
-		"user_id":             scope.UserID,
+		"user_id":             scope.UserID.String(),
 		"workspace_id":        scope.WorkspaceID,
 		"issued_for_tab_id":   tab.ID,
 		"issued_for_tab_type": tab.Type,
@@ -266,11 +278,11 @@ func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (
 // `issued_for_tab_id` of the eventual mint. The hub validates "this
 // worker owns that tab", which is true for any tab in this
 // workspace this worker hosts.
-func (s *DelegationStore) Acquire(userID, workspaceID, tabID string, tabType int32) {
-	if userID == "" || workspaceID == "" {
+func (s *DelegationStore) Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32) {
+	if userID.IsZero() || workspaceID == "" {
 		return
 	}
-	key := userID + "|" + workspaceID
+	key := delegationKey(userID, workspaceID)
 	s.mu.Lock()
 	s.refcount[key]++
 	if tabID != "" {
@@ -290,11 +302,11 @@ func (s *DelegationStore) Acquire(userID, workspaceID, tabID string, tabType int
 // The cache delete and the refcount drop happen under one lock so a
 // concurrent Acquire+GetBearer for the same (user, workspace) cannot
 // observe a half-released state and reuse a soon-to-be-revoked bearer.
-func (s *DelegationStore) Release(ctx context.Context, userID, workspaceID string) error {
-	if userID == "" || workspaceID == "" {
+func (s *DelegationStore) Release(ctx context.Context, userID userid.UserID, workspaceID string) error {
+	if userID.IsZero() || workspaceID == "" {
 		return nil
 	}
-	key := userID + "|" + workspaceID
+	key := delegationKey(userID, workspaceID)
 	s.mu.Lock()
 	if s.refcount[key] > 0 {
 		s.refcount[key]--
@@ -317,13 +329,18 @@ func (s *DelegationStore) Release(ctx context.Context, userID, workspaceID strin
 }
 
 // Invalidate drops the cached bearer for (userID, workspaceID) without
-// notifying the hub. Used by 401-handling paths that observe a
-// hub-side revocation has already occurred.
-func (s *DelegationStore) Invalidate(userID, workspaceID string) {
-	if userID == "" || workspaceID == "" {
+// notifying the hub -- the shape a 401-handling path needs, which observes that
+// a hub-side revocation has already happened and must not re-post a revoke.
+//
+// No caller has that shape today: every live path retires its slot through
+// Release. It is exported (and tested) as the counterpart to Release for a
+// caller that learns of an external revocation, so the drop-without-notify
+// semantics live here rather than being open-coded against the cache map.
+func (s *DelegationStore) Invalidate(userID userid.UserID, workspaceID string) {
+	if userID.IsZero() || workspaceID == "" {
 		return
 	}
-	key := userID + "|" + workspaceID
+	key := delegationKey(userID, workspaceID)
 	s.mu.Lock()
 	delete(s.cached, key)
 	s.mu.Unlock()
@@ -380,11 +397,21 @@ func (s *DelegationStore) RunJanitor(ctx context.Context, interval time.Duration
 }
 
 // Revoke notifies the hub to revoke the delegation token cached under
-// (userID, workspaceID). Idempotent. Used by manual revoke paths;
-// callers driving lifecycle should use Release so the refcount is
-// also cleared.
-func (s *DelegationStore) Revoke(ctx context.Context, userID, workspaceID string) error {
-	key := userID + "|" + workspaceID
+// (userID, workspaceID). Idempotent. It is the manual-revoke entrypoint and has
+// no caller today: everything driving spawn lifecycle uses Release, which also
+// clears the refcount, and a lifecycle caller must keep doing so -- Revoke drops
+// the bearer while leaving the slot referenced, so the next GetBearer mints a
+// replacement.
+func (s *DelegationStore) Revoke(ctx context.Context, userID userid.UserID, workspaceID string) error {
+	// Refused rather than looked up, matching its three siblings. No slot with a
+	// blank user component can exist -- Acquire and GetBearer both refuse an
+	// unminted id before writing one -- so this cannot change an outcome; it
+	// keeps a reader from having to prove that to know why one entrypoint
+	// differs.
+	if userID.IsZero() || workspaceID == "" {
+		return nil
+	}
+	key := delegationKey(userID, workspaceID)
 	s.mu.Lock()
 	c, ok := s.cached[key]
 	delete(s.cached, key)

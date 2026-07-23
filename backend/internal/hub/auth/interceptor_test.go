@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -195,7 +197,7 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -218,7 +220,7 @@ func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -245,7 +247,7 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -313,7 +315,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(userID), ClientType: "cli", ClientName: "test",
 		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
 	}))
 
@@ -353,7 +355,7 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 	pastExpiry := time.Now().Add(-1 * time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -379,7 +381,7 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	expiresAt := time.Now().Add(50 * time.Millisecond)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -410,7 +412,7 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("delegation-x25519-key-32-bytes-pad"),
 		MlkemPublicKey:  []byte("dele-mlkem"),
 		SlhdsaPublicKey: []byte("dele-slhdsa"),
@@ -423,7 +425,7 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       user.OrgID,
-		OwnerUserID: userID,
+		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
 
@@ -431,7 +433,7 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		SecretHash:  tv.HashSecret(secret),
@@ -459,7 +461,7 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("revoked-x25519-key-32-bytes-padxx"),
 		MlkemPublicKey:  []byte("rev-mlkem"),
 		SlhdsaPublicKey: []byte("rev-slhdsa"),
@@ -470,7 +472,7 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       user.OrgID,
-		OwnerUserID: userID,
+		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
 
@@ -478,7 +480,7 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		SecretHash:  tv.HashSecret(secret),
@@ -506,7 +508,7 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("expired-x25519-key-32-bytes-padxx"),
 		MlkemPublicKey:  []byte("exp-mlkem"),
 		SlhdsaPublicKey: []byte("exp-slhdsa"),
@@ -517,7 +519,7 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       user.OrgID,
-		OwnerUserID: userID,
+		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
 
@@ -525,7 +527,7 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		SecretHash:  tv.HashSecret(secret),

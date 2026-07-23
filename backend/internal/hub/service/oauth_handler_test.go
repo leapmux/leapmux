@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -624,7 +626,7 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 	// Verify stored tokens use the active key version and can be decrypted
 	// with the user ID as AAD (not the signup token).
 	tok, err := st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ProviderID: providerID,
 	})
 	require.NoError(t, err)
@@ -737,7 +739,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	// Link Alice to GitHub provider.
 	githubProviderID := createTestProvider(t, st, ks)
 	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID:          userID,
+		UserID:          userid.MustNew(userID),
 		ProviderID:      githubProviderID,
 		ProviderSubject: "github-alice-123",
 	})
@@ -775,14 +777,14 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 
 	// 3. Create the OAuth link for the new provider identity.
 	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID:          existingUser.ID,
+		UserID:          userid.MustNew(existingUser.ID),
 		ProviderID:      googleProviderID,
 		ProviderSubject: "google-alice-456",
 	})
 	require.NoError(t, err)
 
 	// Verify: user now has links to both providers.
-	links, err := st.OAuthUserLinks().ListByUser(context.Background(), userID)
+	links, err := st.OAuthUserLinks().ListByUser(context.Background(), userid.MustNew(userID))
 	require.NoError(t, err)
 	assert.Len(t, links, 2)
 
@@ -867,7 +869,7 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 
 	// Insert tokens for both providers.
 	err = st.OAuthTokens().Upsert(context.Background(), store.UpsertOAuthTokensParams{
-		UserID:       admin.ID,
+		UserID:       userid.MustNew(admin.ID),
 		ProviderID:   providerA,
 		AccessToken:  []byte("dummy"),
 		RefreshToken: []byte("dummy"),
@@ -878,7 +880,7 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	err = st.OAuthTokens().Upsert(context.Background(), store.UpsertOAuthTokensParams{
-		UserID:       admin.ID,
+		UserID:       userid.MustNew(admin.ID),
 		ProviderID:   providerBID,
 		AccessToken:  []byte("dummy"),
 		RefreshToken: []byte("dummy"),
@@ -890,21 +892,21 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 
 	// Delete tokens for provider A only.
 	err = st.OAuthTokens().DeleteByUserAndProvider(context.Background(), store.DeleteOAuthTokensByUserAndProviderParams{
-		UserID:     admin.ID,
+		UserID:     userid.MustNew(admin.ID),
 		ProviderID: providerA,
 	})
 	require.NoError(t, err)
 
 	// Provider A's tokens should be gone.
 	_, err = st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
-		UserID:     admin.ID,
+		UserID:     userid.MustNew(admin.ID),
 		ProviderID: providerA,
 	})
 	require.Error(t, err, "provider A tokens should have been deleted")
 
 	// Provider B's tokens should still exist.
 	tok, err := st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
-		UserID:     admin.ID,
+		UserID:     userid.MustNew(admin.ID),
 		ProviderID: providerBID,
 	})
 	require.NoError(t, err, "provider B tokens should still exist")

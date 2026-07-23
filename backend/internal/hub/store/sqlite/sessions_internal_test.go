@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -47,7 +49,7 @@ func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (s
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
 		ID:        sessionID,
-		UserID:    user.ID,
+		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
 	}))
 	return sessionID, user.ID
@@ -65,7 +67,7 @@ func TestSessionExpiryPredicatesPreserveFractionalPrecision(t *testing.T) {
 		require.NoError(t, err)
 		_, err = st.Sessions().ValidateWithUser(context.Background(), sessionID)
 		require.NoError(t, err)
-		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userID, PageParams: store.PageParams{Limit: 1000}})
+		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}})
 		require.NoError(t, err)
 		byUser := byUserPage.Rows
 		assert.Len(t, byUser, 1)
@@ -105,7 +107,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 	for _, sessID := range []string{tieBelowID, tieCursorID} {
 		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
 			ID:        sessID,
-			UserID:    userID,
+			UserID:    userid.MustNew(userID),
 			ExpiresAt: time.Now().Add(time.Hour),
 		}))
 	}
@@ -151,7 +153,7 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
 		ID:        sessionID,
-		UserID:    user.ID,
+		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
 	}))
 
@@ -284,7 +286,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 		sessionID := id.Generate()
 		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
 			ID:        sessionID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		return sessionID
@@ -320,7 +322,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 		boundary, expectTied = expectTied, boundary
 	}
 	page, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{
-		UserID:     user.ID,
+		UserID:     userid.MustNew(user.ID),
 		PageParams: store.PageParams{Cursor: store.EncodeCursor(tieInstant, boundary), Limit: 10},
 	})
 	require.NoError(t, err)

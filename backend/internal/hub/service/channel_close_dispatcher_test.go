@@ -14,7 +14,7 @@ import (
 )
 
 func TestWorkerCloseDispatcher_DoesNotDropLargeBatch(t *testing.T) {
-	workerMgr := workermgr.New()
+	workerMgr := workermgr.New(workermgr.DenyAllReach())
 	var mu sync.Mutex
 	received := make(map[string]struct{})
 	_, _ = workerMgr.Register(&workermgr.Conn{

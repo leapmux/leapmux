@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 const (
@@ -230,12 +231,13 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 
 // getOwnedKey thinly wraps RegistrationKeys().GetOwned with the
 // service's standard error mapping. Ownership is enforced inside the
-// SQL WHERE clause: "missing" and "not yours" both surface as
-// NotFound, matching the convention used elsewhere (Workers().GetOwned)
-// and avoiding an oracle that would let callers probe other users'
-// key IDs.
-func (s *WorkerManagementService) getOwnedKey(ctx context.Context, id, userID string) (*store.WorkerRegistrationKey, error) {
-	row, err := s.store.RegistrationKeys().GetOwned(ctx, id, userID)
+// SQL WHERE clause -- plus the store's zero-id refusal, since a blank
+// created_by parameter would MATCH a blank column rather than fail to:
+// "missing" and "not yours" both surface as NotFound, matching the
+// convention used elsewhere (Workers().GetOwned) and avoiding an oracle
+// that would let callers probe other users' key IDs.
+func (s *WorkerManagementService) getOwnedKey(ctx context.Context, id string, userID userid.UserID) (*store.WorkerRegistrationKey, error) {
+	row, err := s.store.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{ID: id, CreatedBy: userID})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("registration key not found"))
@@ -368,7 +370,7 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send deregister: %w", err))
 	}
 
-	s.broadcaster.NotifyWorkersChanged(user.ID)
+	s.broadcaster.NotifyWorkersChanged(user.ID.String())
 
 	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
 }
@@ -389,7 +391,7 @@ func (s *WorkerManagementService) workerToProto(b *store.Worker, orgID string) *
 	return &leapmuxv1.Worker{
 		Id:             b.ID,
 		OrgId:          orgID,
-		Online:         s.workerMgr.IsOnline(b.ID),
+		Online:         s.workerMgr.OnlineForTrustedPath(b.ID),
 		CreatedAt:      timefmt.Format(b.CreatedAt),
 		LastSeenAt:     lastSeen,
 		RegisteredBy:   b.RegisteredBy,

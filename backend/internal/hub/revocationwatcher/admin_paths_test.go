@@ -11,6 +11,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,7 +29,7 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: apiTokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: []byte("hash"), Scope: "remote:*",
 	}))
 
@@ -51,20 +53,20 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: []byte("hash"), Scope: "remote:*",
 	}))
 	env.seedDelegationToken(t)
 
 	// Mimic the admin transaction sequence.
 	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
-		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		_, err := tx.Users().RevokeUserTokens(context.Background(), env.userID)
+		_, err := tx.Users().RevokeUserTokens(context.Background(), userid.MustNew(env.userID))
 		return err
 	}))
 
@@ -84,19 +86,19 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: []byte("hash"), Scope: "remote:*",
 	}))
 	env.seedDelegationToken(t)
 
 	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
-		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		_, err := tx.Users().RevokeUserTokens(context.Background(), env.userID)
+		_, err := tx.Users().RevokeUserTokens(context.Background(), userid.MustNew(env.userID))
 		return err
 	}))
 
@@ -115,7 +117,7 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: []byte("hash"), Scope: "remote:*",
 	}))
 	env.seedDelegationToken(t)
@@ -123,13 +125,13 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
 		// sessions are hard-deleted in production; from the
 		// watcher's point of view this is a no-op.
-		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), userid.MustNew(env.userID)); err != nil {
 			return err
 		}
-		_, err := tx.Users().RevokeUserTokens(context.Background(), env.userID)
+		_, err := tx.Users().RevokeUserTokens(context.Background(), userid.MustNew(env.userID))
 		return err
 	}))
 

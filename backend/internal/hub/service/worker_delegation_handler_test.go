@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -71,7 +73,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       workerAuthToken,
-		RegisteredBy:    u.ID,
+		RegisteredBy:    userid.MustNew(u.ID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("test-mlkem"),
 		SlhdsaPublicKey: []byte("test-slhdsa"),
@@ -81,7 +83,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       u.OrgID,
-		OwnerUserID: u.ID,
+		OwnerUserID: userid.MustNew(u.ID),
 		Title:       "ws",
 	}))
 
@@ -165,7 +167,7 @@ func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
 	// Validator must accept the minted bearer.
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, info.ID)
+	assert.Equal(t, env.userID, info.ID.String())
 
 	// Persisted row carries the worker_id provenance for revocation
 	// authz.
@@ -218,7 +220,7 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              otherWorkerID,
 		AuthToken:       otherAuthToken,
-		RegisteredBy:    env.userID,
+		RegisteredBy:    userid.MustNew(env.userID),
 		PublicKey:       []byte("other-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("other-mlkem"),
 		SlhdsaPublicKey: []byte("other-slhdsa"),
@@ -322,7 +324,7 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 
 	otherWS := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: otherWS, OrgID: other.OrgID, OwnerUserID: other.ID, Title: "foreign-ws",
+		ID: otherWS, OrgID: other.OrgID, OwnerUserID: userid.MustNew(other.ID), Title: "foreign-ws",
 	}))
 	otherTab := id.Generate()
 	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
@@ -483,7 +485,7 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              otherWorkerID,
 		AuthToken:       otherAuthToken,
-		RegisteredBy:    env.userID,
+		RegisteredBy:    userid.MustNew(env.userID),
 		PublicKey:       []byte("other-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("other-mlkem"),
 		SlhdsaPublicKey: []byte("other-slhdsa"),
@@ -526,4 +528,27 @@ func TestWorkerDelegation_Mint_RejectsMalformedJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// A blank user_id must never reach the mint's identity comparison.
+//
+// handleMint compares `uid.Matches(worker.RegisteredBy)` to refuse minting a
+// bearer for a caller who does not own the host worker. That comparison is only
+// safe because the id is minted first: a blank one is refused at the boundary,
+// so a blank-registrant worker row can never be "owned" by a blank caller. This
+// pins the boundary -- the layer the comparison's fail-closed behaviour is
+// defence in depth behind.
+func TestWorkerDelegation_Mint_RejectsBlankUserID(t *testing.T) {
+	env := setupDelegation(t)
+	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           "",
+		"workspace_id":      env.workspaceID,
+		"issued_for_tab_id": env.tabID,
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest,
+		"a blank user_id must be refused before any identity comparison runs")
+	assert.Less(t, resp.StatusCode, http.StatusInternalServerError,
+		"and refused as a client error, not surfaced as a server fault")
 }

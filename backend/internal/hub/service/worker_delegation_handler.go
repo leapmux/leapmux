@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // WorkerDelegationHandler exposes /worker/delegation-tokens/{mint,revoke}.
@@ -129,7 +130,17 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// blip) -- surface it as a retryable 500, not a permanent 403,
 	// so a brief DB hiccup doesn't fail a legitimate lazy mint (the
 	// tab-ownership lookup above already maps store errors to 500).
-	hasAccess, err := auth.WorkspaceCanRead(r.Context(), h.store, req.WorkspaceID, req.UserID)
+	// Unreachable behind the empty-field validation above, which already 400s a
+	// blank user_id. Kept as the mint boundary's own fail-close so a future
+	// relaxation of that validation cannot hand WorkspaceCanRead a zero id: 403
+	// (not 400) because by this point the request is well-formed and the answer
+	// is "no access", the same shape the hasAccess check below returns.
+	uid, ok := userid.New(req.UserID)
+	if !ok {
+		http.Error(w, "user lacks workspace access", http.StatusForbidden)
+		return
+	}
+	hasAccess, err := auth.WorkspaceCanRead(r.Context(), h.store, auth.AnyOrg(), req.WorkspaceID, uid)
 	if err != nil {
 		http.Error(w, "workspace access check failed", http.StatusInternalServerError)
 		return
@@ -145,7 +156,13 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// predicate in another package -- so a future path that ever lets a worker
 	// host a tab in a workspace it does not own cannot mint a bearer
 	// impersonating that workspace's owner.
-	if worker.RegisteredBy != req.UserID {
+	// Compare through the minted id, not the raw request string: Matches refuses
+	// an empty id on either side, so a blank-registrant row cannot be matched by
+	// a blank req.UserID. That pairing is what the "future relaxation" hedge
+	// above is guarding against -- a raw != would fail OPEN on exactly the input
+	// this check exists to refuse, minting a bearer that impersonates the
+	// workspace's owner.
+	if !uid.Matches(worker.RegisteredBy) {
 		http.Error(w, "user is not the worker's registrant", http.StatusForbidden)
 		return
 	}
@@ -158,7 +175,7 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	pair := h.validator.MintBearerPair(auth.BearerKindDelegation, tokenID, time.Now(), ttl, auth.RefreshTokenTTL)
 	if err := h.store.DelegationTokens().Create(r.Context(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           req.UserID,
+		UserID:           uid,
 		WorkerID:         worker.ID,
 		WorkspaceID:      req.WorkspaceID,
 		AgentID:          req.AgentID,

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -30,7 +32,7 @@ func TestCreateRegistrationKeyStoresExpiresAtCanonical(t *testing.T) {
 	keyID := id.Generate()
 	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{
 		ID:        keyID,
-		CreatedBy: user.ID,
+		CreatedBy: userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
 	}))
 

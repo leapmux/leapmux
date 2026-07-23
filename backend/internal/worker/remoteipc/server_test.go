@@ -19,6 +19,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 	"github.com/leapmux/leapmux/locallisten"
 )
@@ -120,10 +121,10 @@ func startTestServerNoAuth(t *testing.T, info remoteipc.TokenInfo, router *remot
 
 func TestServer_Whoami_HappyPath(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
 	}
 	info := remoteipc.TokenInfo{
-		UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A", TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A", TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 	}
 	_, client := startTestServer(t, info, router)
 
@@ -140,10 +141,10 @@ func TestServer_Whoami_HappyPath(t *testing.T) {
 
 func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
 	}
 	client := startTestServerNoAuth(t, remoteipc.TokenInfo{
-		UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A",
+		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
 	}, router)
 	_, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.Error(t, err)
@@ -155,13 +156,13 @@ func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
 
 func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
 	}
 	sockURL := testSocketURL(t)
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
 		Token:     remoteipc.MintToken(),
-		TokenInfo: remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"},
+		TokenInfo: remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"},
 		Router:    router,
 	})
 	require.NoError(t, err)
@@ -186,12 +187,12 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 	disp := &fakeLocalDispatcher{respPayload: []byte("local-resp")}
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
-		UserID:          "u-1",
+		UserID:          userid.MustNew("u-1"),
 		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
 	info := remoteipc.TokenInfo{
-		UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A",
+		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
 	}
 	_, client := startTestServer(t, info, router)
 
@@ -204,18 +205,18 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("local-resp"), resp.Msg.GetPayload())
 	assert.Equal(t, "OpenAgent", disp.gotMethod)
-	assert.Equal(t, "u-1", disp.gotUserID)
+	assert.Equal(t, "u-1", disp.gotUserID.String())
 }
 
 func TestServer_CallInner_AllowsFilesystemOnSpawningWorker(t *testing.T) {
 	disp := &fakeLocalDispatcher{respPayload: []byte("file-content")}
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
-		UserID:          "u-1",
+		UserID:          userid.MustNew("u-1"),
 		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
-	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	resp, err := client.CallInner(context.Background(), connect.NewRequest(&leapmuxv1.CallInnerRequest{
@@ -234,11 +235,11 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	}
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
-		UserID:          "u-1",
+		UserID:          userid.MustNew("u-1"),
 		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
-	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -272,9 +273,9 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 
 func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
 	}
-	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
 
 	sockURL := testSocketURL(t)
 	rawToken := remoteipc.MintToken()
@@ -328,9 +329,9 @@ func TestServer_SocketIsMode0600(t *testing.T) {
 		t.Skip("named pipes use DACLs, not POSIX file modes")
 	}
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
 	}
-	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
 	sockPath := shortSocketPath(t)
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: "unix:" + sockPath,
@@ -359,13 +360,13 @@ func TestServer_CallInner_RejectsCrossWorkspaceScope(t *testing.T) {
 	// Router scope: only ws-1. Filter rejects anything else.
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
-		UserID:          "u-1",
+		UserID:          userid.MustNew("u-1"),
 		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 		WorkspaceFilter: func(ws string) bool { return ws == "ws-1" },
 	}
 	info := remoteipc.TokenInfo{
-		UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A",
+		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
 	}
 	_, client := startTestServer(t, info, router)
 
@@ -399,12 +400,12 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 	authorizers := &serverAuthorizerSpy{}
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
-		UserID:          "u-1",
+		UserID:          userid.MustNew("u-1"),
 		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 		Authorizers:     authorizers,
 	}
-	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	ctx, cancel := context.WithCancel(context.Background())

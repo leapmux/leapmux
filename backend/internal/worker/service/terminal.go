@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -50,7 +51,7 @@ func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 func registerTerminalHandlers(d registrar, svc *Service) {
 	// OpenTerminal starts a new PTY terminal session.
 	registerWorkspaceGated(d, "OpenTerminal",
-		func(ctx context.Context, userID string, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
+		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
 			workspaceID := r.GetWorkspaceId()
 
 			cols := r.GetCols()
@@ -160,7 +161,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
 	registerTerminalForRestartGated(d, "RestartTerminal",
-		func(_ context.Context, userID string, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
+		func(_ context.Context, userID userid.UserID, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Reject overlapping restarts: a previous startup hasn't broadcast
@@ -240,7 +241,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 	// CloseTerminal stops and removes a terminal session.
 	registerTerminalGatedByIDTracked(d, "CloseTerminal",
-		func(_ context.Context, _ string, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Tracked via dispatcher RegisterTracked above so Shutdown
@@ -266,7 +267,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 	// SendInput sends input data to a terminal.
 	registerTerminalGatedByID(d, "SendInput",
-		func(_ context.Context, _ string, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			if svc.WakeLock != nil {
@@ -284,7 +285,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 	// ResizeTerminal changes a terminal's dimensions.
 	registerTerminalGatedByID(d, "ResizeTerminal",
-		func(_ context.Context, _ string, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			cols := r.GetCols()
@@ -331,7 +332,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// intervals (kept short so a title set right before shell exit reaches
 	// the worker before the close handler persists meta to DB).
 	registerTerminalGated(d, "UpdateTerminalTitle",
-		func(_ context.Context, _ string, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			title := r.GetTitle()
@@ -375,7 +376,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListTerminalsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -485,7 +486,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// notably a workspace-pinned delegation bearer -- must not reach it. The
 	// worker owner's own agents (via the local-IPC remote CLI, which
 	// dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -519,9 +520,18 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// a close that lost the register-vs-cleanup race doesn't leak it.
 	// When no token was minted (RemoteIPC disabled or factory failed),
 	// nothing was registered, so the defer skips the mutex roundtrip.
-	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
+	remoteEnvs, ipcErr := svc.spawnRemoteIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
 		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
 	})
+	if ipcErr != nil {
+		// Only a missing identity is fatal here; every other factory failure
+		// degrades to "no remote control". Route it through the same tail every
+		// other startup failure uses so the frontend gets STARTUP_FAILED rather
+		// than a terminal stuck in STARTING.
+		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr)
+		return
+	}
+	opts.ExtraEnv = remoteEnvs
 	ownsIPCToken := opts.ExtraEnv != nil
 	defer func() {
 		if ownsIPCToken {
@@ -630,16 +640,47 @@ func (svc *Service) runTerminalRestart(
 	defer svc.TerminalStartup.finish()
 	terminalID := opts.ID
 
-	// Release the previous spawn's token before minting a fresh one.
-	// The explicit call retires the *old* token; the deferred cleanup
-	// retires the *new* token if the spawn never reaches READY. When
-	// no new token was minted (RemoteIPC disabled / factory failed),
-	// the defer skips the mutex roundtrip.
-	svc.terminalCleanups.run(terminalID)
-	opts.ExtraEnv = svc.spawnRemoteIPC("terminal", terminalID, "restart", svc.terminalCleanups.register, func() ([]string, func(), error) {
+	// Mint the fresh token BEFORE retiring the previous spawn's, parking the
+	// new cleanup in a local instead of registering it. Both are keyed by
+	// terminalID and register overwrites, so the swap has to be ordered, and
+	// minting first shortens the window a concurrent CloseTerminal can slip
+	// into: the slow factory call no longer sits inside it.
+	//
+	// The previous spawn's token is retired on EVERY exit from here, including
+	// the fatal-identity path. The old PTY has already exited by the time this
+	// runs -- RestartTerminal refuses synchronously while IsRunning -- so there
+	// is no live shell whose remote control needs preserving, and leaving the
+	// old cleanup registered would strand a listening unix socket plus an
+	// unrevoked (user, workspace) delegation bearer for a process that is gone.
+	var newCleanup func()
+	remoteEnvs, ipcErr := svc.spawnRemoteIPC("terminal", terminalID, "restart", func(_ string, fn func()) {
+		newCleanup = fn
+	}, func() ([]string, func(), error) {
 		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
 	})
-	ownsIPCToken := opts.ExtraEnv != nil
+	if ipcErr != nil {
+		// See the open path: a spawn that cannot name its user fails the
+		// restart rather than silently relaunching without remote control.
+		// Retire the dead spawn's token on the way out -- the restart is not
+		// happening, so nothing will come along later to retire it.
+		svc.terminalCleanups.run(terminalID)
+		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr)
+		return
+	}
+	// The mint succeeded: retire the *old* token and take ownership of the
+	// *new* one under the same key. The deferred cleanup below retires the
+	// new token if the spawn never reaches READY.
+	svc.terminalCleanups.run(terminalID)
+	// Ownership is what was REGISTERED, not what the env vars imply. The two
+	// were derived from different values here -- register on `newCleanup != nil`,
+	// own on `remoteEnvs != nil` -- so any factory result with one and not the
+	// other registered a cleanup that the deferred retire would never run,
+	// leaking the socket and its delegation bearer for the tab's whole life.
+	ownsIPCToken := newCleanup != nil
+	if ownsIPCToken {
+		svc.terminalCleanups.register(terminalID, newCleanup)
+	}
+	opts.ExtraEnv = remoteEnvs
 	defer func() {
 		if ownsIPCToken {
 			svc.terminalCleanups.run(terminalID)

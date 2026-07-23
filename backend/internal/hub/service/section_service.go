@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -326,7 +327,11 @@ var errSectionDeleteRollback = errors.New("section delete: roll back to surface 
 // existence + ownership gate, and an earlier duplicate-by-hand copy
 // risked one side diverging on the auth contract (e.g. one branch
 // switching to CodePermissionDenied without the other).
-func (s *SectionService) requireOwnedSection(ctx context.Context, userID, sectionID string) (*store.WorkspaceSection, error) {
+// It takes a userid.UserID rather than a string and compares through Matches --
+// the same mechanism loadOwnedWorkspaceOr403 uses -- so this, the package's
+// OTHER resource-ownership predicate, cannot fail open by matching a blank
+// workspace_sections.user_id against a caller whose id never got populated.
+func (s *SectionService) requireOwnedSection(ctx context.Context, userID userid.UserID, sectionID string) (*store.WorkspaceSection, error) {
 	section, err := s.store.WorkspaceSections().GetByID(ctx, sectionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -334,7 +339,7 @@ func (s *SectionService) requireOwnedSection(ctx context.Context, userID, sectio
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if section.UserID != userID {
+	if !userID.Matches(section.UserID) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 	}
 	return section, nil
@@ -397,79 +402,58 @@ func (s *SectionService) MoveWorkspace(
 	return connect.NewResponse(&leapmuxv1.MoveWorkspaceResponse{}), nil
 }
 
+// defaultSection is one of the sections every new user starts with. Position is
+// omitted: it is derived below from the section's order within its sidebar, so
+// the two cannot disagree.
+type defaultSection struct {
+	name        string
+	sectionType leapmuxv1.SectionType
+	sidebar     leapmuxv1.Sidebar
+}
+
+// defaultSections lists the starting sections in the order they appear, per
+// sidebar. Adding one is a line here rather than a sixth copy of the Create
+// block below -- which is what kept the five copies' UserID, error handling,
+// and id generation identical by construction instead of by inspection.
+var defaultSections = []defaultSection{
+	{"In progress", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS, leapmuxv1.Sidebar_SIDEBAR_LEFT},
+	{"Archived", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED, leapmuxv1.Sidebar_SIDEBAR_LEFT},
+	{"Workers", leapmuxv1.SectionType_SECTION_TYPE_WORKERS, leapmuxv1.Sidebar_SIDEBAR_LEFT},
+	{"Files", leapmuxv1.SectionType_SECTION_TYPE_FILES, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
+	{"To-dos", leapmuxv1.SectionType_SECTION_TYPE_TODOS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
+}
+
 // initDefaultSections creates the default sections for a user.
-func (s *SectionService) initDefaultSections(ctx context.Context, userID string) error {
-	// Left sidebar sections
-	inProgressPos := lexorank.First()
-	archivedPos := lexorank.After(inProgressPos)
+func (s *SectionService) initDefaultSections(ctx context.Context, userID userid.UserID) error {
+	// Each sidebar is ranked independently, starting at First() and chaining
+	// After() down the list -- the same left/right split the literals encoded
+	// by hand, now a consequence of the table's order rather than of five
+	// separately-computed variables that had to be paired with the right rows.
+	lastPos := map[leapmuxv1.Sidebar]string{}
+	for _, section := range defaultSections {
+		position := lexorank.First()
+		if prev, ok := lastPos[section.sidebar]; ok {
+			position = lexorank.After(prev)
+		}
+		lastPos[section.sidebar] = position
 
-	workersPos := lexorank.After(archivedPos)
-
-	// Right sidebar sections
-	filesPos := lexorank.First()
-	todosPos := lexorank.After(filesPos)
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "In progress",
-		Position:    inProgressPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-	}); err != nil {
-		return err
+		if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+			ID:          id.Generate(),
+			UserID:      userID,
+			Name:        section.name,
+			Position:    position,
+			SectionType: section.sectionType,
+			Sidebar:     section.sidebar,
+		}); err != nil {
+			return err
+		}
 	}
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "Archived",
-		Position:    archivedPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-	}); err != nil {
-		return err
-	}
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "Workers",
-		Position:    workersPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-	}); err != nil {
-		return err
-	}
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "Files",
-		Position:    filesPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_FILES,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
-	}); err != nil {
-		return err
-	}
-
-	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
-		UserID:      userID,
-		Name:        "To-dos",
-		Position:    todosPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_TODOS,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
-	}); err != nil {
-		return err
-	}
-
 	return nil
 }
 
 // createWorkersSection creates a Workers section for an existing user.
 // It is positioned after the last left-sidebar section.
-func (s *SectionService) createWorkersSection(ctx context.Context, userID string, sections []store.WorkspaceSection) (*store.WorkspaceSection, error) {
+func (s *SectionService) createWorkersSection(ctx context.Context, userID userid.UserID, sections []store.WorkspaceSection) (*store.WorkspaceSection, error) {
 	var lastLeftPos string
 	for _, sec := range sections {
 		if sec.Sidebar == leapmuxv1.Sidebar_SIDEBAR_LEFT && sec.Position > lastLeftPos {
@@ -498,7 +482,7 @@ func (s *SectionService) createWorkersSection(ctx context.Context, userID string
 
 	return &store.WorkspaceSection{
 		ID:          sectionID,
-		UserID:      userID,
+		UserID:      userID.String(),
 		Name:        "Workers",
 		Position:    position,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,

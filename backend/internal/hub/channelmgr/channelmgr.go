@@ -857,6 +857,12 @@ func (m *Manager) CloseByUsers(userIDs []string, authorize func(ChannelInfo) boo
 // the four cannot drift.
 func (m *Manager) CloseByUserRevocation(userID string, userAuthGeneration int64) []ClosedChannel {
 	if userID == "" {
+		// A blank target is a swallowed revocation, not a no-op: on this path a
+		// missing id means nothing is evicted while the caller is told nothing
+		// went wrong. Log it, so an operator whose containment action quietly
+		// did nothing has something to find.
+		slog.Warn("channel teardown skipped: no user id",
+			"op", "CloseByUserRevocation", "generation", userAuthGeneration)
 		return nil
 	}
 	ids := snapshotIndexedChannelIDs(m, m.channelsByUser, userID)

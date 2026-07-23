@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // runAPITokenList prints api_tokens through the single keyset-paginated
@@ -95,6 +96,10 @@ func runAPITokenIssue(cmd adminCmdCtx, args []string) error {
 		if userID == "" || clientName == "" {
 			return fmt.Errorf("--user and --client-name are required")
 		}
+		// Minted at the guard, not 20 lines down at the store call: MustNew's
+		// contract is "the caller already knows this is non-empty", and the only
+		// thing that can know it is the refusal on the line above.
+		owner := userid.MustNew(userID)
 
 		ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 		if err != nil {
@@ -115,7 +120,7 @@ func runAPITokenIssue(cmd adminCmdCtx, args []string) error {
 		pair := validator.MintBearerPair(auth.BearerKindAPI, tokenID, now, ttl, auth.RefreshTokenTTL)
 		if err := st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID:               tokenID,
-			UserID:           userID,
+			UserID:           owner,
 			ClientType:       clientType,
 			ClientName:       clientName,
 			SecretHash:       pair.AccessHash,

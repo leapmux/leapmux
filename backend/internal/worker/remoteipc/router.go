@@ -14,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
@@ -22,7 +23,7 @@ import (
 // Mirrors the existing dispatcher's DispatchWith signature so the
 // router can inject local-IPC ResponseWriters.
 type LocalDispatcher interface {
-	DispatchWith(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
+	DispatchWith(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
 }
 
 // CrossWorkerClient sends a unary inner RPC to a sibling worker via the
@@ -33,8 +34,8 @@ type LocalDispatcher interface {
 // pool and feeds the mint request, so the same (target, user) pair on
 // a different workspace gets a fresh Noise session.
 type CrossWorkerClient interface {
-	CallInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte) ([]byte, error)
-	StreamInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error
+	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
+	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error
 }
 
 // HubClient is the subset of the worker's hub-bound client the router
@@ -47,7 +48,7 @@ type CrossWorkerClient interface {
 // is `(user_id, workspace_id)` so the bridge always needs a concrete
 // workspace to mint against.
 type HubClient interface {
-	CallInner(ctx context.Context, userID, workspaceID, method string, payload []byte) ([]byte, error)
+	CallInner(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
 }
 
 // HubStreamer forwards a server-streaming hub RPC. The implementation
@@ -55,7 +56,7 @@ type HubClient interface {
 // agent's user/workspace pair. payload is a marshalled request proto;
 // onPayload receives marshalled response protos.
 type HubStreamer interface {
-	StreamHub(ctx context.Context, userID, method string, payload []byte, onPayload func([]byte) error) error
+	StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error
 }
 
 // LocalAuthorizers is the subset of service.Service the router uses to
@@ -74,7 +75,7 @@ type LocalAuthorizers interface {
 //   - "hub.<Service>/<Method>": the hub-bound client.
 type Router struct {
 	WorkerID        string
-	UserID          string
+	UserID          userid.UserID
 	WorkspaceIDs    []string
 	LocalDispatcher LocalDispatcher
 	CrossWorker     CrossWorkerClient
@@ -506,8 +507,8 @@ func tokenIdentitySegment(info TokenInfo) string {
 		return tabTypeWireName(info.TabType) + "-" + info.TabID
 	case info.TabID != "":
 		return "tab-" + info.TabID
-	case info.UserID != "":
-		return "user-" + info.UserID
+	case !info.UserID.IsZero():
+		return "user-" + info.UserID.String()
 	default:
 		return "anon"
 	}

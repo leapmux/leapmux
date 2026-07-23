@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func newBearerAuthHub(
@@ -169,7 +170,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    u.ID,
+		RegisteredBy:    userid.MustNew(u.ID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -177,7 +178,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	wsID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: wsID, OrgID: u.OrgID, OwnerUserID: u.ID, Title: "ws",
+		ID: wsID, OrgID: u.OrgID, OwnerUserID: userid.MustNew(u.ID), Title: "ws",
 	}))
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
@@ -201,7 +202,7 @@ func (e *envT) seedAPIToken(t *testing.T) string {
 	tokenID := id.Generate()
 	require.NoError(t, e.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     e.userID,
+		UserID:     userid.MustNew(e.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
@@ -215,7 +216,7 @@ func (e *envT) seedDelegationToken(t *testing.T) string {
 	tokenID := id.Generate()
 	require.NoError(t, e.st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           e.userID,
+		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,
 		WorkspaceID:      e.wsID,
 		IssuedForTabID:   e.tabID,
@@ -267,7 +268,7 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	refreshExpiresAt := time.Now().Add(24 * time.Hour)
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:               tokenID,
-		UserID:           env.userID,
+		UserID:           userid.MustNew(env.userID),
 		ClientType:       "cli",
 		ClientName:       "remote-cache-test",
 		SecretHash:       validator.HashSecret(oldAccessSecret),
@@ -281,7 +282,7 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	require.NoError(t, authenticateAPIBearer(context.Background(), remoteClient, oldBearer))
 	leaseCtx, cancelLease := context.WithCancel(context.Background())
 	leaseRelease, current := remoteCache.RegisterAuthenticatedLease(context.Background(), &auth.UserInfo{
-		ID: env.userID, Credential: auth.APICredential(tokenID),
+		ID: userid.MustNew(env.userID), Credential: auth.APICredential(tokenID),
 	}, cancelLease)
 	require.True(t, current)
 	t.Cleanup(leaseRelease)
@@ -406,7 +407,7 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)
 	require.NoError(t, err)
-	_, err = env.st.Users().RevokeUserTokens(context.Background(), env.userID)
+	_, err = env.st.Users().RevokeUserTokens(context.Background(), userid.MustNew(env.userID))
 	require.NoError(t, err)
 	_, err = env.st.DelegationTokens().Revoke(context.Background(), delegationToken)
 	require.NoError(t, err)
@@ -464,13 +465,13 @@ func TestWatcher_OlderRevokedAtPublishedAfterNewerEventIsNotSkipped(t *testing.T
 	newerUser := env.userID
 	olderUser := env.seedUser(t, "older-revoked-at")
 
-	_, err := env.st.Users().RevokeUserTokens(context.Background(), newerUser)
+	_, err := env.st.Users().RevokeUserTokens(context.Background(), userid.MustNew(newerUser))
 	require.NoError(t, err)
 	require.NoError(t, env.watcher.RunOnce(context.Background()))
 	require.Equal(t, []string{newerUser}, env.closer.userSnapshot())
 	require.Len(t, env.closer.userGenerationSnapshot(), 1)
 
-	_, err = env.st.Users().RevokeUserTokens(context.Background(), olderUser)
+	_, err = env.st.Users().RevokeUserTokens(context.Background(), userid.MustNew(olderUser))
 	require.NoError(t, err)
 	published, err := env.st.RevocationEvents().PublishPending(context.Background(), 1)
 	require.NoError(t, err)

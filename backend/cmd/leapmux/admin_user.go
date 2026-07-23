@@ -271,14 +271,21 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			return fmt.Errorf("user %q is an admin; pass --force to confirm deletion", user.Username)
 		}
 
-		err = st.RunInUserAuthTransaction(ctx, user.ID, func(tx store.Store) error {
-			if err := tx.Workers().MarkAllDeletedByUser(ctx, user.ID); err != nil {
+		// Refuse a blank id rather than letting it address every
+		// blank-registrant row in the bulk mutations below.
+		delUID, err := mintResolvedUserID(user)
+		if err != nil {
+			return err
+		}
+
+		err = st.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
+			if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
 				return fmt.Errorf("mark workers deleted: %w", err)
 			}
-			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, user.ID); err != nil {
+			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, delUID); err != nil {
 				return fmt.Errorf("soft-delete workspaces: %w", err)
 			}
-			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+			if err := tx.Sessions().DeleteByUser(ctx, delUID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
 			}
 			// User deletion implies every credential the user had —
@@ -288,7 +295,7 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			// in-memory bearer cache and any open channels (cookie
 			// or bearer) are torn down on the watcher's next sweep —
 			// no IPC from this admin CLI required.
-			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, delUID); err != nil {
 				return err
 			}
 			// Users().Delete soft-deletes the personal org too, so the org name is
@@ -335,7 +342,14 @@ func runUserResetPassword(cmd adminCmdCtx, args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		err = st.RunInUserAuthTransaction(ctx, user.ID, func(tx store.Store) error {
+		// Mint once and refuse a blank id rather than letting the credential
+		// revocation below report success having revoked nothing.
+		revokeUID, err := mintResolvedUserID(user)
+		if err != nil {
+			return err
+		}
+
+		err = st.RunInUserAuthTransaction(ctx, revokeUID, func(tx store.Store) error {
 			if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 				PasswordHash: hash,
 				ID:           user.ID,
@@ -343,7 +357,7 @@ func runUserResetPassword(cmd adminCmdCtx, args []string) error {
 				return fmt.Errorf("update password: %w", err)
 			}
 
-			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+			if err := tx.Sessions().DeleteByUser(ctx, revokeUID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
 			}
 
@@ -354,7 +368,7 @@ func runUserResetPassword(cmd adminCmdCtx, args []string) error {
 			// in this transaction so the hub's revocation watcher
 			// picks this up cross-process and fires
 			// CloseChannelsByUserRevocation without an IPC.
-			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, revokeUID); err != nil {
 				return err
 			}
 
@@ -423,8 +437,14 @@ func runUserListSessions(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
+		// Refuse a blank id rather than listing every blank-owner session.
+		listUID, err := mintResolvedUserID(user)
+		if err != nil {
+			return err
+		}
+
 		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
-			UserID:     user.ID,
+			UserID:     listUID,
 			PageParams: store.PageParams{Cursor: *cursor, Limit: *limit},
 		})
 		if err != nil {

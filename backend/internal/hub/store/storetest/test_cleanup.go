@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -21,7 +23,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		sessID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
 			ID:        sessID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test",
 			IPAddress: "127.0.0.1",
@@ -42,7 +44,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// Soft-delete the workspace.
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
-			OwnerUserID: user.ID,
+			OwnerUserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 
@@ -90,7 +92,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		regID := id.Generate()
 		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-48 * time.Hour),
 		})
 		require.NoError(t, err)
@@ -114,7 +116,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		regID := id.Generate()
 		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		})
 		require.NoError(t, err)
@@ -276,7 +278,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// deleting the user would abort on a foreign-key violation.
 		wsUser := SeedUser(t, st, orgID, "user-with-straggler-ws")
 		wsID := SeedWorkspace(t, st, orgID, wsUser.ID, "Straggler WS")
-		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: wsUser.ID})
+		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: userid.MustNew(wsUser.ID)})
 		require.NoError(t, err)
 		require.NoError(t, st.Users().Delete(ctx, wsUser.ID))
 		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, wsUser.ID, back))
@@ -463,7 +465,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// Create an expired session.
 		expiredID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
-			ID: expiredID, UserID: user.ID,
+			ID: expiredID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test", IPAddress: "127.0.0.1",
 		})
@@ -492,16 +494,16 @@ func (s *Suite) testCleanup(t *testing.T) {
 		}))
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-			ID: secID, UserID: user.ID, Name: "Sec",
+			ID: secID, UserID: userid.MustNew(user.ID), Name: "Sec",
 			Position: "a0", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 			Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT,
 		}))
 		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
 		}))
 
 		// Soft-delete and backdate.
-		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: user.ID})
+		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: userid.MustNew(user.ID)})
 		require.NoError(t, err)
 		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityWorkspaces, wsID, time.Now().Add(-48*time.Hour)))
 
@@ -511,7 +513,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		// Verify children are gone.
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
@@ -566,21 +568,21 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// Create child records for user (not covered by workspace cleanup).
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-			ID: secID, UserID: user.ID, Name: "UserSec",
+			ID: secID, UserID: userid.MustNew(user.ID), Name: "UserSec",
 			Position: "a0", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 			Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT,
 		}))
 		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
 		}))
 		prov := SeedOAuthProvider(t, st, "cleanup-user-cascade-prov")
 		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov.ID,
+			UserID: userid.MustNew(user.ID), ProviderID: prov.ID,
 			AccessToken: []byte("a"), RefreshToken: []byte("r"),
 			TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), KeyVersion: 1,
 		}))
 		require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-			UserID: user.ID, ProviderID: prov.ID, ProviderSubject: "user-cascade-sub",
+			UserID: userid.MustNew(user.ID), ProviderID: prov.ID, ProviderSubject: "user-cascade-sub",
 		}))
 
 		// Soft-delete and backdate.
@@ -592,20 +594,20 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 
 		// Verify children are gone.
-		sections, err := st.WorkspaceSections().ListByUserID(ctx, user.ID)
+		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, sections)
 
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, items)
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov.ID,
+			UserID: userid.MustNew(user.ID), ProviderID: prov.ID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
-		links, err := st.OAuthUserLinks().ListByUser(ctx, user.ID)
+		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, links)
 	})

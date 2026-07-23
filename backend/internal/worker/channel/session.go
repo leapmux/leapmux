@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
@@ -48,7 +49,7 @@ type errorSend struct {
 // channelSession tracks an active encrypted channel.
 type channelSession struct {
 	ChannelID string
-	UserID    string
+	UserID    userid.UserID
 	Session   *noiseutil.Session
 	sender    *channelSender // shared sender for this channel (protects Encrypt+Send)
 	// ctx is the session-scoped context handed to every inner-RPC
@@ -239,7 +240,8 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	// side rather than matching two empty strings, verifyDelegationWorkerScope
 	// refuses an unrecorded minter, and both channel clients reject a Hub response
 	// that omits the identity. Fail closed here too.
-	if req.GetUserId() == "" {
+	uid, ok := userid.New(req.GetUserId())
+	if !ok {
 		slog.Warn("rejecting channel open: hub named no authenticated user",
 			"channel_id", req.GetChannelId(),
 		)
@@ -313,7 +315,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	}
 	sess := &channelSession{
 		ChannelID: req.GetChannelId(),
-		UserID:    req.GetUserId(),
+		UserID:    uid,
 		Session:   session,
 		sender: &channelSender{
 			channelID:      req.GetChannelId(),

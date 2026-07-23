@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -110,7 +111,7 @@ func (s *replaySink) alive() bool { return s.dead == nil }
 // risk cancelling them when the handler unwinds before the bg
 // goroutines finish writing to the stream.
 func handleWatchEvents(svc *Service) channel.HandlerFunc {
-	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.WatchEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			// SendStream, not SendError: this call's correlation id is

@@ -42,7 +42,7 @@ type delegationScopeEntry struct {
 // delegationCacheKey is the (minter, bearer-user) pair a resolved scope is
 // cached under. The scope ResolveDelegationWorkerScope returns is a function of
 // BOTH the minter row (its registrant + status) AND the calling user.ID
-// (ownsMinter = minter.RegisteredBy == user.ID, and the allowed-worker set is
+// (ownsMinter = user.ID.Matches(minter.RegisteredBy), and the allowed-worker set is
 // the minter plus the user's own workers) -- so keying by minter alone would
 // serve one user's resolved scope to another user collapsed onto the same
 // singleflight leader if a delegation_tokens row ever bound a worker to a user
@@ -136,7 +136,7 @@ func (c *DelegationScopeCache) Resolve(ctx context.Context, user *UserInfo) (Del
 		// zero value now fails closed (see UnboundedScope).
 		return UnboundedScope(), nil
 	}
-	key := delegationCacheKey{minter: minterID, user: user.ID}
+	key := delegationCacheKey{minter: minterID, user: user.ID.String()}
 
 	c.mu.RLock()
 	if e, ok := c.entries[key]; ok && c.now().Sub(e.cachedAt) < delegationScopeCacheTTL {

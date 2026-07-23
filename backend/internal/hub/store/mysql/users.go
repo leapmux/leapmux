@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type userStore struct {
@@ -405,9 +406,16 @@ func (s *userStore) Delete(ctx context.Context, id string) error {
 	)
 }
 
-func (s *userStore) RevokeUserTokens(ctx context.Context, userID string) (int64, error) {
+func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, userID)
+		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}

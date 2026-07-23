@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,13 +39,72 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
+	// GetOwned / Extend / SoftDelete are ownership gates, and their WHERE
+	// clause is `created_by = ?`. Binding a zero caller id would unwrap to ""
+	// -- which does not fail to match, it MATCHES every blank-created_by row.
+	// created_by is `NOT NULL REFERENCES users(id)`, but a blank-id user row is
+	// representable in all three dialects, so the gate has to refuse a zero id
+	// before the query rather than rely on the query to miss.
+	t.Run("ownership gates refuse a zero caller id", func(t *testing.T) {
+		blankUser := store.CreateUserParams{
+			ID: "", OrgID: orgID, Username: "regkey-blank-id-user",
+			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+		}
+		require.NoError(t, st.Users().Create(ctx, blankUser))
+
+		expires := time.Now().Add(5 * time.Minute).UTC()
+		blankOwnedID := "regkey-blank-owner"
+		require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID: blankOwnedID, CreatedBy: userid.UserID{}, ExpiresAt: expires,
+		}))
+
+		// Control: the blank-owner row really does exist, so the denials below
+		// are about the zero id and not about a missing row.
+		got, err := st.RegistrationKeys().GetByID(ctx, blankOwnedID)
+		require.NoError(t, err)
+		require.Equal(t, "", got.CreatedBy, "control: the row is owned by a blank id")
+
+		_, err = st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
+			ID: blankOwnedID, CreatedBy: userid.UserID{},
+		})
+		assert.ErrorIs(t, err, store.ErrNotFound,
+			"a zero caller must not read a blank-created_by key")
+
+		n, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
+			ID: blankOwnedID, CreatedBy: userid.UserID{}, ExpiresAt: time.Now().Add(time.Hour).UTC(),
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a zero caller must not extend a blank-created_by key")
+
+		n, err = st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
+			ID: blankOwnedID, CreatedBy: userid.UserID{},
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a zero caller must not delete a blank-created_by key")
+
+		// The row is untouched: still live, still the original expiry.
+		after, err := st.RegistrationKeys().GetByID(ctx, blankOwnedID)
+		require.NoError(t, err)
+		assert.WithinDuration(t, expires, after.ExpiresAt, time.Second,
+			"neither refused mutation may have landed")
+
+		// And the gate still WORKS for a real owner, so the refusals above are
+		// not the gate simply denying everything.
+		realID := SeedRegistrationKey(t, st, user.ID, expires)
+		owned, err := st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
+			ID: realID, CreatedBy: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, realID, owned.ID, "control: the real creator still reads their own key")
+	})
+
 	t.Run("extend rewrites expires_at", func(t *testing.T) {
 		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(1*time.Minute).UTC())
 
 		newExpires := time.Now().Add(10 * time.Minute).UTC()
 		rows, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: newExpires,
 		})
 		require.NoError(t, err)
@@ -61,7 +122,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		rows, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(5 * time.Minute).UTC(),
 		})
 		require.NoError(t, err)
@@ -74,7 +135,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		rows, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: intruder.ID,
+			CreatedBy: userid.MustNew(intruder.ID),
 			ExpiresAt: time.Now().Add(10 * time.Minute).UTC(),
 		})
 		require.NoError(t, err)
@@ -86,7 +147,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		rows, err := st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
@@ -103,7 +164,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		rows, err := st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: intruder.ID,
+			CreatedBy: userid.MustNew(intruder.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), rows)
@@ -139,7 +200,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: expires,
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)

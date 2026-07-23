@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -65,7 +67,7 @@ func TestDelegationToken_IssuedForTabIDIsProvenanceOnly(t *testing.T) {
 	// issued_for_tab_id corresponds to a real tab — the row is for
 	// audit, not authorization.
 	tokenID, secret := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:           userID,
+		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
 		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "no-such-tab",
@@ -75,7 +77,7 @@ func TestDelegationToken_IssuedForTabIDIsProvenanceOnly(t *testing.T) {
 
 	info, err := v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
 	require.NoError(t, err)
-	assert.Equal(t, userID, info.ID)
+	assert.Equal(t, userID, info.ID.String())
 
 	row, err := st.DelegationTokens().GetByID(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -100,15 +102,15 @@ func TestDelegationToken_DifferentWorkspacesAreIndependent(t *testing.T) {
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceB,
 		OrgID:       user.OrgID,
-		OwnerUserID: userID,
+		OwnerUserID: userid.MustNew(userID),
 		Title:       "test-ws-b",
 	}))
 
 	tokenA, secretA := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userID, WorkerID: workerID, WorkspaceID: workspaceA,
+		UserID: userid.MustNew(userID), WorkerID: workerID, WorkspaceID: workspaceA,
 	})
 	tokenB, secretB := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userID, WorkerID: workerID, WorkspaceID: workspaceB,
+		UserID: userid.MustNew(userID), WorkerID: workerID, WorkspaceID: workspaceB,
 	})
 
 	// Both validate independently.
@@ -133,7 +135,7 @@ func TestDelegationToken_TouchUpdatesLastUsedAt(t *testing.T) {
 	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
 
 	tokenID, secret := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userID, WorkerID: workerID, WorkspaceID: workspaceID,
+		UserID: userid.MustNew(userID), WorkerID: workerID, WorkspaceID: workspaceID,
 	})
 
 	// Brand-new row: last_used_at is unset until validation runs.
@@ -159,13 +161,13 @@ func TestDelegationToken_DeleteRevokedDelegationTokensBefore_RespectsCutoff(t *t
 
 	// Active (not revoked) token — must be left alone by cleanup.
 	activeID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userID, WorkerID: workerID, WorkspaceID: workspaceID,
+		UserID: userid.MustNew(userID), WorkerID: workerID, WorkspaceID: workspaceID,
 	})
 
 	// Revoked token — should be hard-deleted when cleanup runs with a
 	// cutoff after its revocation timestamp.
 	revokedID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userID, WorkerID: workerID, WorkspaceID: workspaceID,
+		UserID: userid.MustNew(userID), WorkerID: workerID, WorkspaceID: workspaceID,
 	})
 	_, err := st.DelegationTokens().Revoke(context.Background(), revokedID)
 	require.NoError(t, err)
@@ -194,7 +196,7 @@ func TestDelegationToken_DeleteExpiredBefore_RespectsCutoff(t *testing.T) {
 
 	// Long-lived token: must not be swept.
 	freshID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		ExpiresAt:   time.Now().Add(time.Hour),
@@ -202,7 +204,7 @@ func TestDelegationToken_DeleteExpiredBefore_RespectsCutoff(t *testing.T) {
 
 	// Already-expired token: must be swept.
 	expiredID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		ExpiresAt:   time.Now().Add(-time.Minute),

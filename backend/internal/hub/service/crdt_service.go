@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // CRDTService implements OrgCRDTHandler. It delegates every CRDT
@@ -85,8 +86,8 @@ func (s *CRDTService) SubmitOps(
 		OrgID:            orgID,
 		Epoch:            req.Msg.GetEpoch(),
 		Batches:          req.Msg.GetBatches(),
-		PrincipalID:      user.ID,
-		OriginClient:     user.ID,
+		PrincipalID:      user.ID.String(),
+		OriginClient:     user.ID.String(),
 		WorkspaceScopeID: user.Credential.WorkspaceScopeID(),
 		WorkerScope:      workerScopePredicate(workerScope),
 	})
@@ -120,7 +121,7 @@ func (s *CRDTService) GetMaterialized(
 	if err != nil {
 		return nil, err
 	}
-	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, orgID, req.Msg.GetWorkspaceIds(), user)
+	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, auth.BindOrg(orgID), req.Msg.GetWorkspaceIds(), user)
 	if err != nil {
 		// Only a delegation-scope PermissionDenied is a genuine authorization
 		// failure; everything else -- an uncoded transient store failure, or a
@@ -163,8 +164,16 @@ func (s *CRDTService) UpdatePresence(
 	if err := requireDelegationWorkspace(user, req.Msg.GetWorkspaceId()); err != nil {
 		return nil, err
 	}
+	// Presence must bind a concrete org: an absent org_id denies rather than
+	// widening to "any org". Previously this rode on BindOrg("") collapsing to
+	// the deny-all zero value inside the predicate; auth.BoundOrg makes the
+	// requirement explicit here and unrepresentable as AnyOrg.
+	bound, ok := auth.NewBoundOrg(req.Msg.GetOrgId())
+	if !ok {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("workspace access denied"))
+	}
 	allowed, err := auth.WorkspaceCanAccessInOrg(
-		ctx, s.store, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId(), user.ID,
+		ctx, s.store, bound, req.Msg.GetWorkspaceId(), user.ID,
 	)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorize presence workspace: %w", err))
@@ -199,26 +208,26 @@ func presenceClientID(user *auth.UserInfo) string {
 	if principal := user.Credential.PrincipalKey(); principal != "" {
 		return principal
 	}
-	return "user:" + user.ID
+	return "user:" + user.ID.String()
 }
 
 // ResolveAllowedWorkspacesForTest exposes resolveAllowedWorkspaces to
 // the package's external tests so they can exercise the per-user
 // workspace filter without going through the WS handshake. Production
 // callers should use the transport-specific helpers instead.
-func ResolveAllowedWorkspacesForTest(ctx context.Context, st store.Store, orgID string, requested []string, userID string) ([]string, error) {
-	return resolveAllowedWorkspaces(ctx, st, orgID, requested, userID)
+func ResolveAllowedWorkspacesForTest(ctx context.Context, st store.Store, binding auth.OrgBinding, requested []string, userID userid.UserID) ([]string, error) {
+	return resolveAllowedWorkspaces(ctx, st, binding, requested, userID)
 }
 
 // ResolveAllowedWorkspacesForUserForTest exposes the delegation-aware
 // resolver for service tests that assert bearer scope cannot widen
 // the ordinary per-user workspace filter.
-func ResolveAllowedWorkspacesForUserForTest(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) ([]string, error) {
-	return resolveAllowedWorkspacesForUser(ctx, st, orgID, requested, user)
+func ResolveAllowedWorkspacesForUserForTest(ctx context.Context, st store.Store, binding auth.OrgBinding, requested []string, user *auth.UserInfo) ([]string, error) {
+	return resolveAllowedWorkspacesForUser(ctx, st, binding, requested, user)
 }
 
-func resolveAllowedWorkspacesSetForUser(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) (map[string]bool, error) {
-	list, err := resolveAllowedWorkspacesForUser(ctx, st, orgID, requested, user)
+func resolveAllowedWorkspacesSetForUser(ctx context.Context, st store.Store, binding auth.OrgBinding, requested []string, user *auth.UserInfo) (map[string]bool, error) {
+	list, err := resolveAllowedWorkspacesForUser(ctx, st, binding, requested, user)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +238,7 @@ func resolveAllowedWorkspacesSetForUser(ctx context.Context, st store.Store, org
 	return set, nil
 }
 
-func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, orgID string, requested []string, user *auth.UserInfo) ([]string, error) {
+func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, binding auth.OrgBinding, requested []string, user *auth.UserInfo) ([]string, error) {
 	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -240,7 +249,7 @@ func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, orgID 
 	if scoped.Deny {
 		return nil, nil
 	}
-	return resolveAllowedWorkspaces(ctx, st, orgID, scoped.Workspaces, user.ID)
+	return resolveAllowedWorkspaces(ctx, st, binding, scoped.Workspaces, user.ID)
 }
 
 // resolveAllowedWorkspaces is the per-user workspace filter used by
@@ -248,8 +257,47 @@ func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, orgID 
 // means "every
 // workspace I can read"; non-empty narrows the set, dropping any the
 // caller can't read up front.
-func resolveAllowedWorkspaces(ctx context.Context, st store.Store, orgID string, requested []string, userID string) ([]string, error) {
+func resolveAllowedWorkspaces(ctx context.Context, st store.Store, binding auth.OrgBinding, requested []string, userID userid.UserID) ([]string, error) {
+	// A deny-all binding admits nothing under EITHER arm, so both arms must
+	// answer it the same way. Without this hoist they disagree in SHAPE for one
+	// identical verdict: the empty-request arm refuses below (ListFilterOrgID
+	// !ok -> PermissionDenied) while the bulk arm's WorkspacesReadableByUser
+	// short-circuits to (nil, nil), which ListTabs renders as a 200 with no
+	// tabs. "Stop retrying, you are denied" and "you have no tabs" are not
+	// interchangeable to a client. Refuse, for the reason ListFilterOrgID's own
+	// doc gives: a binding that admits nothing is a permanent caller/identity
+	// problem, not an empty set.
+	//
+	// Unreachable today -- listTabsOrgBinding's only deny-all arm is user == nil,
+	// which MustGetUser rejects upstream, and every auth.UserInfo mint site
+	// copies a NOT NULL orgs(id) column -- so this pins the shape a FUTURE
+	// deny-all source inherits rather than fixing a live bug.
+	if binding.DeniesAll() {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("list accessible workspaces: org binding admits no organization"))
+	}
 	if len(requested) == 0 {
+		// "Every workspace I can read" is answered by a single-org store query,
+		// so a binding that names no single org cannot be answered here.
+		// Unreachable today: every caller of this branch resolves a concrete org
+		// (auth.ResolveOrgID, or the ws_orgevents org_id guard), and a delegation
+		// caller -- the only source of AnyOrg -- never arrives with an empty
+		// `requested` because delegationScopedWorkspaceRequest substitutes its
+		// pinned workspace first. Refuse rather than filter on "":
+		// ListAccessibleWorkspaces matches `org_id = ?` exactly, so an empty id
+		// would return no rows and report "you own nothing" for what is really a
+		// caller bug.
+		orgID, ok := binding.ListFilterOrgID()
+		if !ok {
+			// PermissionDenied, not a bare error: both callers map an uncoded
+			// error to Internal, which ListTabs surfaces as a 500 and
+			// /ws/orgevents closes with TryAgainLater -- and the client then
+			// reconnects forever against a condition that will never change.
+			// This is a permanent caller/identity problem (a blank org id), so
+			// it must be reported as one.
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("list accessible workspaces: org binding names no single organization"))
+		}
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userID,
 			OrgID:  orgID,
@@ -266,6 +314,6 @@ func resolveAllowedWorkspaces(ctx context.Context, st store.Store, orgID string,
 	// A specific set was requested: resolve the canonical owner-only read
 	// rule for these workspaces against this user. Centralized in auth so the
 	// per-op / batch-by-users / batch-by-workspaces read paths cannot drift; the
-	// delegation empty-orgID contract (skip the org binding) lives there too.
-	return auth.WorkspacesReadableByUser(ctx, st, orgID, userID, requested)
+	// AnyOrg vs BindOrg contract lives on the OrgBinding the caller passes.
+	return auth.WorkspacesReadableByUser(ctx, st, binding, userID, requested)
 }

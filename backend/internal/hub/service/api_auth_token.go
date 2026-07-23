@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // OAuth 2.0 grant types accepted by /auth/cli/token. Values are
@@ -83,7 +84,17 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 	if deviceName == "" {
 		deviceName = row.DeviceName
 	}
-	h.issueTokenResponse(w, r, row.UserID, deviceName,
+	// The grant row's user_id is a column, so a blank one is corrupt data, not a
+	// programmer error: it is refused as an unusable grant rather than panicked
+	// on. The device-code path has always had this guard (postTouchPollOAuthError
+	// answers authorization_pending); this path did not, so a blank
+	// cli_authorization_codes.user_id reached the mint.
+	grantUID, mintOK := userid.New(row.UserID)
+	if !mintOK {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+		return
+	}
+	h.issueTokenResponse(w, r, grantUID, deviceName,
 		"code expired or already consumed",
 		"authorization code token issuance failed",
 		func(tx store.Store) error {
@@ -107,7 +118,8 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 func (h *APIAuthHandler) issueTokenResponse(
 	w http.ResponseWriter,
 	r *http.Request,
-	userID, deviceName, invalidGrantMsg, internalMsg string,
+	userID userid.UserID,
+	deviceName, invalidGrantMsg, internalMsg string,
 	consume func(tx store.Store) error,
 ) {
 	resp, err := h.issueAPIToken(r.Context(), userID, "cli", deviceName, consume)
@@ -167,7 +179,15 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 		writeInternalError(w, "device authorization poll update failed", err)
 		return
 	}
-	h.issueTokenResponse(w, r, row.UserID, row.DeviceName,
+	// postTouchPollOAuthError above already answers authorization_pending for a
+	// blank user_id, so this cannot fail -- minting rather than asserting keeps
+	// that true if the guard above is ever moved.
+	pollUID, mintOK := userid.New(row.UserID)
+	if !mintOK {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device code expired or already consumed")
+		return
+	}
+	h.issueTokenResponse(w, r, pollUID, row.DeviceName,
 		"device_code expired or already consumed",
 		"device authorization token issuance failed",
 		func(tx store.Store) error {
@@ -496,7 +516,8 @@ func (h *APIAuthHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIAuthHandler) issueAPIToken(
 	ctx context.Context,
-	userID, clientType, clientName string,
+	userID userid.UserID,
+	clientType, clientName string,
 	consumeGrant func(tx store.Store) error,
 ) (*apiTokenResponse, error) {
 	tokenID := id.Generate()
@@ -507,7 +528,7 @@ func (h *APIAuthHandler) issueAPIToken(
 			return err
 		}
 		var err error
-		user, err = tx.Users().GetByID(ctx, userID)
+		user, err = tx.Users().GetByID(ctx, userID.String())
 		if err != nil {
 			return fmt.Errorf("query token user: %w", err)
 		}
@@ -534,7 +555,7 @@ func (h *APIAuthHandler) issueAPIToken(
 		RefreshToken: pair.RefreshBearer,
 		ExpiresIn:    remainingExpiresIn(pair.AccessExpiresAt, time.Now()),
 		TokenID:      tokenID,
-		UserID:       userID,
+		UserID:       userID.String(),
 		Username:     user.Username,
 	}, nil
 }

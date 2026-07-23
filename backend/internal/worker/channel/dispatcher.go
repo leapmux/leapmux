@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/grpc/codes"
 )
 
@@ -41,7 +42,7 @@ type ResponseWriter interface {
 // retained one keeps addressing the stream it was created for. A
 // transport that pooled or reused writers would silently misroute every
 // retained stream, with nothing here to catch it.
-type HandlerFunc func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter)
+type HandlerFunc func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter)
 
 // registered captures a handler plus whether its in-flight invocations
 // must gate Shutdown. tracked=true methods drive cleanup.Add(1) /
@@ -151,7 +152,7 @@ func (d *Dispatcher) BindCleanup(wg *sync.WaitGroup) {
 // Synchronous. Callers that want fire-and-forget behaviour (the
 // session receive loop) should use DispatchAsync, which manages the
 // Add(1)/Done() pairing across the goroutine boundary.
-func (d *Dispatcher) Dispatch(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, requestID uint64, inner *channelSender) {
+func (d *Dispatcher) Dispatch(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, requestID uint64, inner *channelSender) {
 	d.DispatchWith(ctx, userID, req, &boundSender{sender: inner, requestID: requestID, method: req.GetMethod()})
 }
 
@@ -163,7 +164,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, userID string, req *leapmuxv1
 // For tracked methods, Add(1)/Done() bracket the handler call so a
 // SIGTERM mid-request waits for the response to flush before Shutdown
 // tears down the DB.
-func (d *Dispatcher) DispatchWith(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
+func (d *Dispatcher) DispatchWith(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
 	h, ok := d.handlers[req.GetMethod()]
 	if !ok {
 		slog.Warn("unknown inner RPC method", "method", req.GetMethod())
@@ -190,7 +191,7 @@ func (d *Dispatcher) DispatchWith(ctx context.Context, userID string, req *leapm
 // race: Shutdown.Wait could return before the new goroutine reached
 // the Add(1), letting a destructive mutation run against a tearing-
 // down service.
-func (d *Dispatcher) DispatchAsync(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
+func (d *Dispatcher) DispatchAsync(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
 	h, ok := d.handlers[req.GetMethod()]
 	if !ok {
 		// Send the error INLINE rather than spawning a goroutine. Unlike a real
@@ -230,7 +231,7 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, userID string, req *leap
 // semantics — adding a wrap (tracing, metrics) once lands at both
 // entry points. This is the real decorator choke point for handler
 // invocations.
-func (d *Dispatcher) invoke(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w ResponseWriter, h registered) {
+func (d *Dispatcher) invoke(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w ResponseWriter, h registered) {
 	// Recover from handler panics so the goroutine doesn't die silently,
 	// which would leave the frontend waiting until its 30s timeout fires.
 	defer func() {

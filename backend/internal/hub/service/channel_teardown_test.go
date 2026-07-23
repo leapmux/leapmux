@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -52,7 +54,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
 
-	wMgr := workermgr.New()
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
 
@@ -87,7 +89,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       workerAuthTok,
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -95,7 +97,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 
 	wsID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID, OwnerUserID: userID, Title: "ws",
+		ID: wsID, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws",
 	}))
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
@@ -132,7 +134,7 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           e.userID,
+		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,
 		WorkspaceID:      e.workspaceID,
 		IssuedForTabID:   e.tabID,
@@ -260,7 +262,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	workerA := env.workerID
 	workerB := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID: workerB, AuthToken: id.Generate(), RegisteredBy: env.userID,
+		ID: workerB, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(env.userID),
 		PublicKey: []byte("k2-32-bytes-padding-padding-okok"), MlkemPublicKey: []byte("m2"), SlhdsaPublicKey: []byte("s2"),
 	}))
 

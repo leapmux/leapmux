@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/require"
@@ -29,7 +31,7 @@ var ctx = context.Background()
 // membership rather than paging behavior.
 func ListAllSessions(t *testing.T, st store.Store, userID string) []store.UserSession {
 	t.Helper()
-	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userID, PageParams: store.PageParams{Limit: 1000}})
+	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}})
 	require.NoError(t, err)
 	return page.Rows
 }
@@ -117,7 +119,7 @@ func SeedRegistrationKey(t *testing.T, st store.Store, createdBy string, expires
 	regID := id.Generate()
 	err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
 		ID:        regID,
-		CreatedBy: createdBy,
+		CreatedBy: userid.MustNew(createdBy),
 		ExpiresAt: expiresAt,
 	})
 	require.NoError(t, err)
@@ -132,7 +134,7 @@ func SeedWorker(t *testing.T, st store.Store, registeredBy string) *store.Worker
 	err := st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       token,
-		RegisteredBy:    registeredBy,
+		RegisteredBy:    userid.MustNew(registeredBy),
 		PublicKey:       []byte{},
 		MlkemPublicKey:  []byte{},
 		SlhdsaPublicKey: []byte{},
@@ -173,7 +175,7 @@ func SeedWorkspace(t *testing.T, st store.Store, orgID, ownerID, title string) s
 	err := st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       orgID,
-		OwnerUserID: ownerID,
+		OwnerUserID: userid.MustNew(ownerID),
 		Title:       title,
 	})
 	require.NoError(t, err)
@@ -186,7 +188,7 @@ func SeedSession(t *testing.T, st store.Store, userID string) *store.UserSession
 	sessID := id.Generate()
 	err := st.Sessions().Create(ctx, store.CreateSessionParams{
 		ID:        sessID,
-		UserID:    userID,
+		UserID:    userid.MustNew(userID),
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 		UserAgent: "test-agent",
 		IPAddress: "127.0.0.1",

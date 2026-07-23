@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,7 +80,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
-	wMgr := workermgr.New()
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
@@ -251,7 +253,7 @@ func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
 	// Force-expire by soft-deleting the row directly via the store.
 	_, err = env.store.RegistrationKeys().SoftDelete(context.Background(), store.SoftDeleteRegistrationKeyParams{
 		ID:        key,
-		CreatedBy: env.adminID(t),
+		CreatedBy: userid.MustNew(env.adminID(t)),
 	})
 	require.NoError(t, err)
 
@@ -291,7 +293,7 @@ func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
 	// Push the key inside the extend window: 90s remaining < 2min buffer.
 	rows, err := env.store.RegistrationKeys().Extend(context.Background(), store.ExtendRegistrationKeyParams{
 		ID:        key,
-		CreatedBy: env.adminID(t),
+		CreatedBy: userid.MustNew(env.adminID(t)),
 		ExpiresAt: time.Now().Add(90 * time.Second),
 	})
 	require.NoError(t, err)
@@ -349,7 +351,7 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	// buffer check passes.
 	rows, err := env.store.RegistrationKeys().Extend(context.Background(), store.ExtendRegistrationKeyParams{
 		ID:        key,
-		CreatedBy: env.adminID(t),
+		CreatedBy: userid.MustNew(env.adminID(t)),
 		ExpiresAt: time.Now().Add(90 * time.Second),
 	})
 	require.NoError(t, err)
@@ -507,7 +509,7 @@ func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       "auto-token-1",
-		RegisteredBy:    env.adminID(t),
+		RegisteredBy:    userid.MustNew(env.adminID(t)),
 		PublicKey:       []byte{},
 		MlkemPublicKey:  []byte{},
 		SlhdsaPublicKey: []byte{},

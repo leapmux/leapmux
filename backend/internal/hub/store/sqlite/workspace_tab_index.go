@@ -234,8 +234,14 @@ func bulkDeleteTabs(ctx context.Context, exec gendb.DBTX, table string, keys []s
 }
 
 func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p store.LocateAccessibleRenderedTabParams) (*store.WorkspaceTabRow, error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return nil, store.ErrNotFound
+	}
 	row, err := s.conn.q.LocateAccessibleRenderedTab(ctx, gendb.LocateAccessibleRenderedTabParams{
-		UserID:  p.UserID,
+		UserID:  owner,
 		TabID:   p.TabID,
 		TabType: int64(p.TabType),
 	})

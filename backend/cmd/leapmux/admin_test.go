@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -120,6 +122,26 @@ func createTestWorker(t *testing.T, q *gendb.Queries, userID string) string {
 }
 
 // ---- OAuth provider tests ----
+
+// mintResolvedUserID is the single refusal every admin command that resolves a
+// user by --id/--username routes its owner-scoped work through, so both arms
+// are pinned here: an inverted check would silently hand "" to bulk mutations
+// that MATCH every blank-owner row instead of none.
+func TestMintResolvedUserID(t *testing.T) {
+	t.Run("mints a populated row", func(t *testing.T) {
+		uid, err := mintResolvedUserID(&store.User{ID: "u-1", Username: "alice"})
+		require.NoError(t, err)
+		assert.Equal(t, "u-1", uid.String())
+	})
+
+	t.Run("refuses a blank id and names the user", func(t *testing.T) {
+		uid, err := mintResolvedUserID(&store.User{Username: "bob"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"bob"`,
+			"the operator has only the username to go on: the error must name it")
+		assert.True(t, uid.IsZero(), "a refused mint must not return a usable id")
+	})
+}
 
 func TestCLI_AddOAuthProvider_GitHub(t *testing.T) {
 	dir := setupTestDataDir(t)
@@ -406,7 +428,7 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	user := storetest.SeedUser(t, st, orgID, "tokuser")
 	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
 	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       user.ID,
+		UserID:       userid.MustNew(user.ID),
 		ProviderID:   prov.ID,
 		AccessToken:  []byte("a"),
 		RefreshToken: []byte("r"),

@@ -22,6 +22,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type bearerChannelEnv struct {
@@ -50,7 +51,7 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
 
-	wMgr := workermgr.New()
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
 
@@ -103,18 +104,18 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, orgID,
 
 	wsA = id.Generate()
 	require.NoError(t, e.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsA, OrgID: orgID, OwnerUserID: userID, Title: "ws-A",
+		ID: wsA, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws-A",
 	}))
 	wsB = id.Generate()
 	require.NoError(t, e.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsB, OrgID: orgID, OwnerUserID: userID, Title: "ws-B",
+		ID: wsB, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws-B",
 	}))
 
 	workerID = id.Generate()
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -133,7 +134,7 @@ func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID, worksp
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           userID,
+		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
 		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "tab-x",
@@ -207,7 +208,7 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              attackerWorkerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    attackerID,
+		RegisteredBy:    userid.MustNew(attackerID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -236,11 +237,11 @@ func TestOpenChannel_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
 // GetWorkerHandshakeParams either.
 //
 // It asks the identical question OpenChannel does -- "may this principal reach this
-// worker" -- and answers it with the same verifyWorkerAccess call. While the minter
+// worker" -- and answers it with the same AuthorizeWorkerReach call. While the minter
 // bound was bolted onto OpenChannel alone, this entrypoint still handed a
 // cross-tenant bearer the victim worker's key bundle, its live encryption mode, and
 // (via the offline/unavailable split) an online oracle. The bound lives in
-// verifyWorkerAccess so both callers -- and the next one -- inherit it.
+// WorkerReachAuthorizer so both callers -- and the next one -- inherit it.
 func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
 	env := setupBearerChannelEnv(t)
 	victimWorkerID, _, bearer := env.seedCrossTenantDelegation(t)
@@ -347,7 +348,7 @@ func TestOpenChannel_DelegationRejectsRevokedScope(t *testing.T) {
 	// resolves to "no access" → CodePermissionDenied.
 	_, err := env.store.Workspaces().SoftDelete(context.Background(), store.SoftDeleteWorkspaceParams{
 		ID:          wsA,
-		OwnerUserID: userID,
+		OwnerUserID: userid.MustNew(userID),
 	})
 	require.NoError(t, err)
 
@@ -379,7 +380,7 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	}, nil)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userID,
+		ID:         userid.MustNew(userID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential(tokenID, wsA, "worker-mint"),
 	})
@@ -433,7 +434,7 @@ func TestPrepareWorkspaceAccess_DelegationUpdatesOnlyMatchingBearerChannel(t *te
 	// runs the same worker bound as OpenChannel, and a made-up minter id would
 	// be refused as unscopeable rather than exercising the fan-out.
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userID,
+		ID:         userid.MustNew(userID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential(tokenID, wsA, workerID),
 	})
@@ -473,11 +474,11 @@ func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
 
 	wsA := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsA, OrgID: adminUser.OrgID, OwnerUserID: adminUser.ID, Title: "ws-A",
+		ID: wsA, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-A",
 	}))
 	wsB := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsB, OrgID: adminUser.OrgID, OwnerUserID: adminUser.ID, Title: "ws-B",
+		ID: wsB, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-B",
 	}))
 
 	workerID := env.createWorkerWithKey(t, token, []byte("k"))
@@ -524,7 +525,7 @@ func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
 	// A workspace in the caller's own org (baseline).
 	wsHome := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsHome, OrgID: adminUser.OrgID, OwnerUserID: adminUser.ID, Title: "ws-home",
+		ID: wsHome, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-home",
 	}))
 
 	// A workspace owned by a different user (their own personal org) -- never
@@ -537,7 +538,7 @@ func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
 	}))
 	wsForeign := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsForeign, OrgID: orgB, OwnerUserID: ownerB, Title: "ws-foreign",
+		ID: wsForeign, OrgID: orgB, OwnerUserID: userid.MustNew(ownerB), Title: "ws-foreign",
 	}))
 
 	workerID := env.createWorkerWithKey(t, token, []byte("k"))

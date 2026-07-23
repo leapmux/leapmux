@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/internal/hubrpc"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
@@ -58,11 +59,11 @@ func NewHubWorkspaceBridge(hubURL string, dp crossworker.DelegationProvider) *Hu
 // CallHub satisfies HubBridge. workspaceID is the delegation scope
 // the router resolved from the IPC request; method is the bare hub
 // method name (e.g. "GetTab", "AddTab", "ListWorkspaces").
-func (b *HubWorkspaceBridge) CallHub(ctx context.Context, userID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (b *HubWorkspaceBridge) CallHub(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
 	if b.Delegation == nil {
 		return nil, errors.New("remoteipc: delegation provider not configured")
 	}
-	if userID == "" {
+	if userID.IsZero() {
 		return nil, errors.New("remoteipc: user_id required for hub call")
 	}
 	desc, err := hubrpc.Lookup(method)

@@ -9,6 +9,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type userStore struct {
@@ -355,9 +356,16 @@ func (s *userStore) Delete(ctx context.Context, id string) error {
 	)
 }
 
-func (s *userStore) RevokeUserTokens(ctx context.Context, userID string) (int64, error) {
+func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
-		row, err := conn.q.BumpUserTokensRevokedAt(ctx, userID)
+		row, err := conn.q.BumpUserTokensRevokedAt(ctx, owner)
 		if err != nil {
 			mapped := mapErr(err)
 			if errors.Is(mapped, store.ErrNotFound) {

@@ -5,6 +5,8 @@ import (
 	"math"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,19 +109,19 @@ func TestGetOwnedWorker_EmptyUserIDDenied(t *testing.T) {
 	blankRegistrant := func(_ context.Context, id string) (*Worker, error) {
 		return &Worker{ID: id, RegisteredBy: ""}, nil
 	}
-	_, err := GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: ""}, blankRegistrant)
+	_, err := GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: userid.UserID{}}, blankRegistrant)
 	require.ErrorIs(t, err, ErrNotFound, "an empty caller UserID must be denied, not matched to a blank registrant")
 
 	// The registrant path still works for a real, matching id.
 	ownedByAlice := func(_ context.Context, id string) (*Worker, error) {
 		return &Worker{ID: id, RegisteredBy: "alice"}, nil
 	}
-	w, err := GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: "alice"}, ownedByAlice)
+	w, err := GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: userid.MustNew("alice")}, ownedByAlice)
 	require.NoError(t, err)
 	assert.Equal(t, "w1", w.ID)
 
 	// A non-registrant is still ErrNotFound (probe protection).
-	_, err = GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: "mallory"}, ownedByAlice)
+	_, err = GetOwnedWorker(context.Background(), GetOwnedWorkerParams{WorkerID: "w1", UserID: userid.MustNew("mallory")}, ownedByAlice)
 	require.ErrorIs(t, err, ErrNotFound, "a non-registrant must be denied")
 }
 

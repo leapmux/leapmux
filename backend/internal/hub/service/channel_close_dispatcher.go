@@ -7,14 +7,25 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
 
 const (
 	channelCloseSenderLimit = 4
 )
 
+// workerConnRegistry is the narrow live-conn lookup the close dispatcher
+// needs. ConnForTrustedPath performs no authorization, which is correct here:
+// worker ids arrive from channelmgr teardown (a trusted server flow), never
+// from a user-supplied id.
+// Holding this interface instead of *workermgr.Manager keeps Register /
+// the liveness probes / WaitFor* out of reach.
+type workerConnRegistry interface {
+	ConnForTrustedPath(string) *workermgr.Conn
+}
+
 type workerCloseDispatcher struct {
-	workerMgr *workermgr.Manager
+	workerMgr workerConnRegistry
 	ready     []string
 
 	mu      sync.Mutex
@@ -26,7 +37,17 @@ type pendingWorkerCloses struct {
 	channelIDs []string
 }
 
-func newWorkerCloseDispatcher(workerMgr *workermgr.Manager) *workerCloseDispatcher {
+// newWorkerCloseDispatcher requires a registry. The narrow interface above
+// cannot be nil-checked by its holder -- a nil *workermgr.Manager converted to
+// it is a NON-nil interface value -- so an unchecked nil would surface as a nil
+// receiver panic inside enqueueChannelCloses, on the caller's goroutine and
+// outside runWorker's recover. Refusing at construction turns a wiring mistake
+// into a startup failure that names it, rather than a teardown that dies on the
+// first revocation.
+func newWorkerCloseDispatcher(workerMgr workerConnRegistry) *workerCloseDispatcher {
+	if nilcheck.IsNilDependency(workerMgr) {
+		panic("service: worker close dispatcher requires a worker registry")
+	}
 	return &workerCloseDispatcher{
 		workerMgr: workerMgr,
 		pending:   make(map[string]*pendingWorkerCloses),
@@ -41,8 +62,12 @@ func newWorkerCloseDispatcher(workerMgr *workermgr.Manager) *workerCloseDispatch
 // channelCloseEnqueuer interface so this dispatcher satisfies it directly.
 func (d *workerCloseDispatcher) enqueueChannelCloses(closed []channelmgr.ClosedChannel) {
 	d.mu.Lock()
+	// defer, not a trailing Unlock: this body calls out to the registry, and a
+	// panic there with the lock held explicitly would wedge every subsequent
+	// channel teardown rather than failing the one call.
+	defer d.mu.Unlock()
 	for _, cc := range closed {
-		if cc.WorkerID == "" || cc.ChannelID == "" || d.workerMgr.Get(cc.WorkerID) == nil {
+		if cc.WorkerID == "" || cc.ChannelID == "" || d.workerMgr.ConnForTrustedPath(cc.WorkerID) == nil {
 			continue
 		}
 		workerPending := d.pending[cc.WorkerID]
@@ -54,7 +79,6 @@ func (d *workerCloseDispatcher) enqueueChannelCloses(closed []channelmgr.ClosedC
 		workerPending.channelIDs = append(workerPending.channelIDs, cc.ChannelID)
 	}
 	d.startWorkersLocked()
-	d.mu.Unlock()
 }
 
 func (d *workerCloseDispatcher) startWorkersLocked() {
@@ -114,7 +138,7 @@ func (d *workerCloseDispatcher) deliverWorkerCloses(workerID string) {
 	d.mu.Unlock()
 
 	for _, channelID := range channelIDs {
-		conn := d.workerMgr.Get(workerID)
+		conn := d.workerMgr.ConnForTrustedPath(workerID)
 		if conn == nil {
 			continue
 		}

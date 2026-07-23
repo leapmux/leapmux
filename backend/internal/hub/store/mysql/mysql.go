@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // mysqlStore implements store.Store backed by MySQL.
@@ -184,9 +185,15 @@ func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Stor
 	})
 }
 
-func (s *mysqlStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+// A zero userID is deliberately NOT refused here. This selects the row to
+// LOCK; it is not an ownership predicate, and LockUserAuthState is a `:one`
+// query filtered on `deleted_at IS NULL`, so an id matching nothing already
+// aborts the transaction with ErrNotFound. Refusing earlier would additionally
+// make a blank-user session row unconstructible, which is the fixture the
+// corrupt-data fail-close tests need in order to prove ValidateToken denies it.
+func (s *mysqlStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx store.Store) error) error {
 	return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
-		if _, err := conn.q.LockUserAuthState(ctx, userID); err != nil {
+		if _, err := conn.q.LockUserAuthState(ctx, userID.String()); err != nil {
 			return mapErr(err)
 		}
 		return fn(&mysqlStore{conn: conn})

@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // TestListWorkers_RejectsMalformedCursor pins the API-boundary contract: a
@@ -25,7 +26,7 @@ import (
 func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	svc := service.NewWorkerManagementService(st, nil, nil, nil, nil, mail.Renderer{}, &config.Config{}, nil)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "u1", OrgID: "o1"})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1"), OrgID: "o1"})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.
 	_, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{

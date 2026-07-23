@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +20,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   provID,
 			AccessToken:  []byte("access"),
 			RefreshToken: []byte("refresh"),
@@ -29,7 +31,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		token, err := st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: provID,
 		})
 		require.NoError(t, err)
@@ -44,7 +46,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 	t.Run("get not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     "no-user",
+			UserID:     userid.MustNew("no-user"),
 			ProviderID: "no-prov",
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -59,7 +61,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 		for _, v := range []int64{1, 2} {
 			err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-				UserID:       user.ID,
+				UserID:       userid.MustNew(user.ID),
 				ProviderID:   provID,
 				AccessToken:  []byte("access"),
 				RefreshToken: []byte("refresh"),
@@ -71,7 +73,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		}
 
 		token, err := st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: provID,
 		})
 		require.NoError(t, err)
@@ -86,7 +88,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   provID,
 			AccessToken:  []byte("access"),
 			RefreshToken: []byte("refresh"),
@@ -109,7 +111,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   provID,
 			AccessToken:  []byte("access"),
 			RefreshToken: []byte("refresh"),
@@ -140,7 +142,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   provID,
 			AccessToken:  []byte("a"),
 			RefreshToken: []byte("r"),
@@ -154,7 +156,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: provID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -168,7 +170,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   provID,
 			AccessToken:  []byte("a"),
 			RefreshToken: []byte("r"),
@@ -178,11 +180,11 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = st.OAuthTokens().DeleteByUser(ctx, user.ID)
+		err = st.OAuthTokens().DeleteByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: provID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -199,7 +201,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 		for _, provID := range []string{prov1, prov2} {
 			err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-				UserID:       user.ID,
+				UserID:       userid.MustNew(user.ID),
 				ProviderID:   provID,
 				AccessToken:  []byte("a"),
 				RefreshToken: []byte("r"),
@@ -211,19 +213,19 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		}
 
 		err := st.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: prov1,
 		})
 		require.NoError(t, err)
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov1,
+			UserID: userid.MustNew(user.ID), ProviderID: prov1,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		// prov2 should still exist.
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov2,
+			UserID: userid.MustNew(user.ID), ProviderID: prov2,
 		})
 		require.NoError(t, err)
 	})
@@ -237,7 +239,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 		for _, prov := range []*store.OAuthProvider{prov1, prov2} {
 			err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-				UserID:       user.ID,
+				UserID:       userid.MustNew(user.ID),
 				ProviderID:   prov.ID,
 				AccessToken:  []byte("access"),
 				RefreshToken: []byte("refresh"),
@@ -253,13 +255,13 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 
 		// prov1 tokens should be gone.
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov1.ID,
+			UserID: userid.MustNew(user.ID), ProviderID: prov1.ID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		// prov2 tokens should survive.
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: user.ID, ProviderID: prov2.ID,
+			UserID: userid.MustNew(user.ID), ProviderID: prov2.ID,
 		})
 		require.NoError(t, err)
 	})

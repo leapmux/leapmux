@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +130,7 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     u.ID,
+		UserID:     userid.MustNew(u.ID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
@@ -158,7 +160,7 @@ func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: u.ID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
 		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)

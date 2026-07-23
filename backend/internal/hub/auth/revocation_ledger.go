@@ -45,10 +45,10 @@ func ShouldEvictForUserGeneration(cachedGeneration, revokeGeneration int64) bool
 }
 
 func userRevokedAfter(m *sync.Map, user *UserInfo, cacheGeneration uint64) bool {
-	if m == nil || user == nil || user.ID == "" {
+	if m == nil || user == nil || user.ID.IsZero() {
 		return false
 	}
-	v, ok := m.Load(user.ID)
+	v, ok := m.Load(user.ID.String())
 	if !ok {
 		return false
 	}

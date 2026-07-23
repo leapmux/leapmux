@@ -32,6 +32,7 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -154,7 +155,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	shutdownCh := make(chan struct{})
 
-	wMgr := workermgr.New()
+	// The registry is built WITH its gate: ConnForUser cannot serve a
+	// user-supplied worker id without the ownership + delegation-scope check,
+	// and a composition that forgot to supply one would not compile.
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
@@ -390,10 +394,16 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	workerID := id.Generate()
 	authToken := id.Generate()
 
+	// A worker with a blank registrant is owned by nobody: requireWorkerOwner
+	// would refuse its real owner for the process's life. Refuse to create it.
+	registrantUID, ok := userid.New(registeredBy)
+	if !ok {
+		return nil, errors.New("register worker: registeredBy is required")
+	}
 	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       authToken,
-		RegisteredBy:    registeredBy,
+		RegisteredBy:    registrantUID,
 		PublicKey:       []byte{},
 		MlkemPublicKey:  []byte{},
 		SlhdsaPublicKey: []byte{},

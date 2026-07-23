@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -68,7 +70,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			tokenID := id.Generate()
 			require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 				ID:          tokenID,
-				UserID:      user.ID,
+				UserID:      userid.MustNew(user.ID),
 				WorkerID:    worker.ID,
 				WorkspaceID: wsID,
 				SecretHash:  []byte("secret"),
@@ -113,7 +115,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		apiID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID:         apiID,
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ClientType: "cli",
 			ClientName: "boundary-client",
 			SecretHash: []byte("secret"),
@@ -136,7 +138,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		delID := id.Generate()
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 			ID:          delID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkerID:    worker.ID,
 			WorkspaceID: wsID,
 			SecretHash:  []byte("secret"),
@@ -173,7 +175,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		} {
 			require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
 				Code:          c.code,
-				UserID:        user.ID,
+				UserID:        userid.MustNew(user.ID),
 				CodeChallenge: "challenge",
 				ExpiresAt:     c.expiresAt,
 			}))
@@ -236,7 +238,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			wsID := SeedWorkspace(t, st, orgID, user.ID, "boundary-ws")
 			_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 				ID:          wsID,
-				OwnerUserID: user.ID,
+				OwnerUserID: userid.MustNew(user.ID),
 			})
 			require.NoError(t, err, "workspace %d", i)
 			require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityWorkspaces, wsID, deletedAt))

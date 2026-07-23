@@ -3,6 +3,8 @@ package storetest
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -19,7 +21,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "In Progress",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
@@ -52,7 +54,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		for i, name := range []string{"Sec A", "Sec B"} {
 			err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 				ID:          id.Generate(),
-				UserID:      user.ID,
+				UserID:      userid.MustNew(user.ID),
 				Name:        name,
 				Position:    string(rune('a'+i)) + "0",
 				SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -61,7 +63,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		sections, err := st.WorkspaceSections().ListByUserID(ctx, user.ID)
+		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Len(t, sections, 2)
 	})
@@ -74,7 +76,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Old Name",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -84,7 +86,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 		n, err := st.WorkspaceSections().Rename(ctx, store.RenameWorkspaceSectionParams{
 			ID:     secID,
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			Name:   "New Name",
 		})
 		require.NoError(t, err)
@@ -103,7 +105,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Name",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -113,7 +115,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 		n, err := st.WorkspaceSections().Rename(ctx, store.RenameWorkspaceSectionParams{
 			ID:     secID,
-			UserID: "other-user",
+			UserID: userid.MustNew("other-user"),
 			Name:   "Hacked",
 		})
 		require.NoError(t, err)
@@ -128,7 +130,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Movable",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -138,7 +140,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 		err = st.WorkspaceSections().UpdatePosition(ctx, store.UpdateWorkspaceSectionPositionParams{
 			ID:       secID,
-			UserID:   user.ID,
+			UserID:   userid.MustNew(user.ID),
 			Position: "z0",
 		})
 		require.NoError(t, err)
@@ -156,7 +158,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Sidebar Move",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -166,7 +168,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 		err = st.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
 			ID:       secID,
-			UserID:   user.ID,
+			UserID:   userid.MustNew(user.ID),
 			Sidebar:  leapmuxv1.Sidebar_SIDEBAR_RIGHT,
 			Position: "m0",
 		})
@@ -186,7 +188,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Delete Me",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -196,7 +198,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 		n, err := st.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
 			ID:     secID,
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -214,7 +216,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Has Items",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -223,7 +225,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		require.NoError(t, err)
 
 		err = st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 			SectionID:   secID,
 			Position:    "a0",
@@ -234,7 +236,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// enforced at the service layer, not the store layer).
 		n, err := st.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
 			ID:     secID,
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -251,7 +253,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// Create an in-progress section (default type).
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          id.Generate(),
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "In Progress",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
@@ -262,7 +264,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// Create an archived section (default type).
 		err = st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          id.Generate(),
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Archived",
 			Position:    "b0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
@@ -273,7 +275,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// Create a custom section (not default).
 		err = st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          id.Generate(),
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "Custom",
 			Position:    "c0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -281,7 +283,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, user.ID)
+		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.True(t, has)
 	})
@@ -291,7 +293,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-listempty-user")
 
-		sections, err := st.WorkspaceSections().ListByUserID(ctx, user.ID)
+		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.NotNil(t, sections)
 		assert.Empty(t, sections)
@@ -305,7 +307,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "SB Wrong",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -316,7 +318,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// UpdateSidebarPosition with wrong user should be a no-op.
 		err = st.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
 			ID:       secID,
-			UserID:   "other-user",
+			UserID:   userid.MustNew("other-user"),
 			Sidebar:  leapmuxv1.Sidebar_SIDEBAR_RIGHT,
 			Position: "z0",
 		})
@@ -337,7 +339,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			Name:        "In Progress",
 			Position:    "a0",
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
@@ -348,7 +350,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		// Deleting a non-custom section should return 0 rows affected (no-op).
 		n, err := st.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
 			ID:     secID,
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
@@ -363,7 +365,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		orgID := SeedOrg(t, st, "wsec-org")
 		user := SeedUser(t, st, orgID, "wsec-countzero-user")
 
-		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, user.ID)
+		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.False(t, has)
 	})

@@ -2,10 +2,10 @@ package mysql
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
@@ -57,15 +57,33 @@ func (s *deviceAuthorizationStore) GetByUserCode(ctx context.Context, userCode s
 }
 
 func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveDeviceAuthorizationParams) (int64, error) {
+	// An approval names WHO approved. A zero id would be written as SQL NULL
+	// while the UPDATE still matched the row, so the store would report one
+	// row affected, the browser would say "device authorized", and the CLI
+	// would then poll authorization_pending forever against a row whose
+	// user_id is blank -- told the opposite of what happened. NULL is the
+	// legitimate state of a PENDING row, never of an approved one.
+	if p.UserID.IsZero() {
+		return 0, store.ErrInvalidArgument
+	}
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
-		UserID:     sql.NullString{String: p.UserID, Valid: p.UserID != ""},
+		UserID:     sqlutil.NullUserID(p.UserID),
 		DeviceCode: p.DeviceCode,
 	}))
 }
 
 func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p store.ApproveDeviceAuthorizationByUserCodeParams) (int64, error) {
+	// An approval names WHO approved. A zero id would be written as SQL NULL
+	// while the UPDATE still matched the row, so the store would report one
+	// row affected, the browser would say "device authorized", and the CLI
+	// would then poll authorization_pending forever against a row whose
+	// user_id is blank -- told the opposite of what happened. NULL is the
+	// legitimate state of a PENDING row, never of an approved one.
+	if p.UserID.IsZero() {
+		return 0, store.ErrInvalidArgument
+	}
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
-		UserID:   sql.NullString{String: p.UserID, Valid: p.UserID != ""},
+		UserID:   sqlutil.NullUserID(p.UserID),
 		UserCode: p.UserCode,
 	}))
 }

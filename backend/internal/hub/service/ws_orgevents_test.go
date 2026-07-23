@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +40,7 @@ func TestOrgEventsHandler_ForeignOrgRefusedWithoutMaterializing(t *testing.T) {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    user.ID,
+		RegisteredBy:    userid.MustNew(user.ID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -53,7 +55,7 @@ func TestOrgEventsHandler_ForeignOrgRefusedWithoutMaterializing(t *testing.T) {
 	workspaceID := storetest.SeedWorkspace(t, st, orgID, user.ID, "Owned")
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           user.ID,
+		UserID:           userid.MustNew(user.ID),
 		WorkerID:         workerID,
 		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "tab-1",
@@ -105,7 +107,7 @@ func TestOrgEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    user.ID,
+		RegisteredBy:    userid.MustNew(user.ID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -119,7 +121,7 @@ func TestOrgEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           user.ID,
+		UserID:           userid.MustNew(user.ID),
 		WorkerID:         workerID,
 		WorkspaceID:      allowedWS,
 		IssuedForTabID:   "tab-1",

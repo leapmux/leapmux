@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // Store is the top-level storage abstraction for the Hub.
@@ -50,7 +52,7 @@ type Store interface {
 	// user's auth-state row. Credential creation, password rotation, and
 	// user-wide revocation must use this boundary so their commit order is the
 	// credential validity order. Nested calls reuse the current transaction.
-	RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx Store) error) error
+	RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx Store) error) error
 
 	// Close releases any resources (connection pools, etc.).
 	Close() error
@@ -147,7 +149,7 @@ type UserStore interface {
 	// Idempotent with respect to missing rows, but each successful revoke is
 	// a fresh revocation event because channels opened after an earlier
 	// revoke still need the newer epoch.
-	RevokeUserTokens(ctx context.Context, userID string) (int64, error)
+	RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error)
 }
 
 type SessionStore interface {
@@ -160,7 +162,7 @@ type SessionStore interface {
 	// never advance past the un-updated DB expiry.
 	Touch(ctx context.Context, p TouchSessionParams) (int64, error)
 	Delete(ctx context.Context, id string) (int64, error)
-	DeleteByUser(ctx context.Context, userID string) error
+	DeleteByUser(ctx context.Context, userID userid.UserID) error
 	DeleteOthers(ctx context.Context, p DeleteOtherSessionsParams) error
 	// RefreshAuthGeneration moves the kept current session onto the
 	// user's latest auth_generation after a password change. Other
@@ -189,7 +191,12 @@ type WorkerStore interface {
 	Deregister(ctx context.Context, p DeregisterWorkerParams) (int64, error)
 	ForceDeregister(ctx context.Context, id string) (int64, error)
 	MarkDeleted(ctx context.Context, id string) error
-	MarkAllDeletedByUser(ctx context.Context, registeredBy string) error
+	// MarkAllDeletedByUser soft-deletes every worker registered by
+	// registeredBy. A zero id is ErrInvalidArgument, never a silent no-op:
+	// binding "" would address every blank-registrant row for deletion, and
+	// reporting success having deleted nothing is the worse half of the same
+	// mistake.
+	MarkAllDeletedByUser(ctx context.Context, registeredBy userid.UserID) error
 }
 
 type WorkerNotificationStore interface {
@@ -213,10 +220,11 @@ type RegistrationKeyStore interface {
 	// no row exists with the given id.
 	GetByID(ctx context.Context, id string) (*WorkerRegistrationKey, error)
 	// GetOwned returns the row only if it exists AND was created by
-	// createdBy. Returns ErrNotFound for both "no such id" and "id is
+	// p.CreatedBy. Returns ErrNotFound for both "no such id" and "id is
 	// someone else's" — collapsing them avoids leaking an oracle on
-	// other users' keys.
-	GetOwned(ctx context.Context, id, createdBy string) (*WorkerRegistrationKey, error)
+	// other users' keys. A zero CreatedBy is ErrNotFound too: it is an
+	// ownership gate, so it must never bind a blank owner (see OwnerFilter).
+	GetOwned(ctx context.Context, p GetOwnedRegistrationKeyParams) (*WorkerRegistrationKey, error)
 	// Extend atomically rewrites ExpiresAt iff the row is owned by
 	// CreatedBy and still live (current expires_at > now). Returns
 	// rows-affected: 0 means the row is missing, not owned, or was
@@ -259,7 +267,7 @@ type WorkspaceStore interface {
 	ListAccessible(ctx context.Context, p ListAccessibleWorkspacesParams) ([]Workspace, error)
 	Rename(ctx context.Context, p RenameWorkspaceParams) (int64, error)
 	SoftDelete(ctx context.Context, p SoftDeleteWorkspaceParams) (int64, error)
-	SoftDeleteAllByUser(ctx context.Context, ownerUserID string) error
+	SoftDeleteAllByUser(ctx context.Context, ownerUserID userid.UserID) error
 }
 
 // WorkspaceTabIndexStore is the materialized derived view of every
@@ -384,7 +392,7 @@ type APITokenStore interface {
 	// It emits no per-token events: the user-wide RevokeUserTokens event
 	// (generation-bearing) invalidates every credential atomically, so
 	// per-row events would be redundant.
-	RevokeByUser(ctx context.Context, userID string) (int64, error)
+	RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error)
 }
 
 // DelegationTokenStore manages worker-minted ephemeral tokens.
@@ -395,7 +403,7 @@ type DelegationTokenStore interface {
 	// (LEFT JOIN users), replacing the admin CLI's per-user fanout. Keyset on
 	// created_at.
 	ListAll(ctx context.Context, p ListAllDelegationTokensParams) (Page[DelegationTokenWithOwner], error)
-	ListActiveByUser(ctx context.Context, userID string) ([]DelegationToken, error)
+	ListActiveByUser(ctx context.Context, userID userid.UserID) ([]DelegationToken, error)
 	Touch(ctx context.Context, id string) error
 	Revoke(ctx context.Context, id string) (int64, error)
 	// RevokeByUser bulk-revokes every non-revoked delegation token for
@@ -409,7 +417,7 @@ type DelegationTokenStore interface {
 	// auth basis goes away. Like the api-token counterpart it emits no
 	// per-token events; the user-wide RevokeUserTokens event carries the
 	// generation-bearing signal.
-	RevokeByUser(ctx context.Context, userID string) (int64, error)
+	RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error)
 }
 
 // Credential lifecycle event kinds persisted in revocation_events.kind.
@@ -504,18 +512,18 @@ type CLIAuthorizationCodeStore interface {
 type WorkspaceSectionStore interface {
 	Create(ctx context.Context, p CreateWorkspaceSectionParams) error
 	GetByID(ctx context.Context, id string) (*WorkspaceSection, error)
-	ListByUserID(ctx context.Context, userID string) ([]WorkspaceSection, error)
+	ListByUserID(ctx context.Context, userID userid.UserID) ([]WorkspaceSection, error)
 	Rename(ctx context.Context, p RenameWorkspaceSectionParams) (int64, error)
 	UpdatePosition(ctx context.Context, p UpdateWorkspaceSectionPositionParams) error
 	UpdateSidebarPosition(ctx context.Context, p UpdateWorkspaceSectionSidebarPositionParams) error
 	Delete(ctx context.Context, p DeleteWorkspaceSectionParams) (int64, error)
-	HasDefaultForUser(ctx context.Context, userID string) (bool, error)
+	HasDefaultForUser(ctx context.Context, userID userid.UserID) (bool, error)
 }
 
 type WorkspaceSectionItemStore interface {
 	Set(ctx context.Context, p SetWorkspaceSectionItemParams) error
 	Get(ctx context.Context, p GetWorkspaceSectionItemParams) (*WorkspaceSectionItem, error)
-	ListByUser(ctx context.Context, userID string) ([]WorkspaceSectionItem, error)
+	ListByUser(ctx context.Context, userID userid.UserID) ([]WorkspaceSectionItem, error)
 	Delete(ctx context.Context, p DeleteWorkspaceSectionItemParams) error
 	DeleteBySection(ctx context.Context, sectionID string) error
 	HasItemsBySection(ctx context.Context, sectionID string) (bool, error)
@@ -546,14 +554,14 @@ type OAuthTokenStore interface {
 	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]OAuthToken, error)
 	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
 	DeleteByProvider(ctx context.Context, providerID string) error
-	DeleteByUser(ctx context.Context, userID string) error
+	DeleteByUser(ctx context.Context, userID userid.UserID) error
 	DeleteByUserAndProvider(ctx context.Context, p DeleteOAuthTokensByUserAndProviderParams) error
 }
 
 type OAuthUserLinkStore interface {
 	Create(ctx context.Context, p CreateOAuthUserLinkParams) error
 	Get(ctx context.Context, p GetOAuthUserLinkParams) (*OAuthUserLink, error)
-	ListByUser(ctx context.Context, userID string) ([]OAuthUserLink, error)
+	ListByUser(ctx context.Context, userID userid.UserID) ([]OAuthUserLink, error)
 	Delete(ctx context.Context, p DeleteOAuthUserLinkParams) error
 	DeleteByProvider(ctx context.Context, providerID string) error
 }

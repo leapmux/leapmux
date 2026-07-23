@@ -21,6 +21,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -101,7 +102,7 @@ type Service struct {
 	// still be inside requireWorkerOwner when the next connection's receive loop
 	// writes. The value is identical every time, which is exactly what makes a plain
 	// field's race invisible until the detector or a torn read finds it.
-	registeredBy atomic.Pointer[string]
+	registeredBy atomic.Pointer[userid.UserID]
 
 	// AgentStartup / TerminalStartup track in-flight startups — the
 	// window between OpenAgent/OpenTerminal returning and the subprocess
@@ -189,18 +190,24 @@ func (r *cleanupRegistry) run(id string) {
 // the token. kind is the user-facing tab type ("agent" or "terminal")
 // — embedded in the log message and the slog id field. phase is an
 // optional correlation tag ("open" / "restart" for terminals, empty
-// for agents). Returns nil envs when RemoteIPC is disabled or the
-// factory errors; in both cases the tab still spawns, just without
-// remote control. The factory call is supplied as a closure so the
+// for agents). Returns (nil, nil) when RemoteIPC is disabled or the
+// factory fails DEGRADABLY; in both cases the tab still spawns, just
+// without remote control.
+//
+// It returns a non-nil error ONLY for ErrMissingIdentity, which is
+// fatal: callers MUST abort the spawn rather than continue without
+// remote control, because a tab started as nobody surfaces to the user
+// as an unrelated "socket not configured" error from `leapmux remote`
+// with nothing naming the cause. The factory call is supplied as a closure so the
 // generic helper doesn't have to know about the AgentSpawnInfo /
 // TerminalSpawnInfo type split.
 func (svc *Service) spawnRemoteIPC(
 	kind, tabID, phase string,
 	register func(string, func()),
 	call func() ([]string, func(), error),
-) []string {
+) ([]string, error) {
 	if svc.RemoteIPC == nil {
-		return nil
+		return nil, nil
 	}
 	envs, cleanup, err := call()
 	if err != nil {
@@ -208,13 +215,22 @@ func (svc *Service) spawnRemoteIPC(
 		if phase != "" {
 			attrs = append(attrs, "phase", phase)
 		}
+		// A missing identity is FATAL, not degradable. Every other factory
+		// failure loses remote control and keeps the tab; this one would start
+		// the tab as nobody, and the symptom the user hits is an unrelated
+		// "socket not configured" error from `leapmux remote` with nothing
+		// naming the cause. Fail the spawn so it reports itself.
+		if errors.Is(err, ErrMissingIdentity) {
+			slog.Error("remote IPC spawn has no user identity; refusing to start "+kind, attrs...)
+			return nil, err
+		}
 		slog.Warn("remote IPC factory failed; "+kind+" will start without remote control", attrs...)
-		return nil
+		return nil, nil
 	}
 	if cleanup != nil {
 		register(tabID, cleanup)
 	}
-	return envs
+	return envs, nil
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -312,8 +328,10 @@ func New(cfg Config) *Service {
 		TerminalStartup: newTerminalStartupRegistry(),
 		PrivateEvents:   NewPrivateEventsBus(),
 	}
-	if cfg.SeedRegisteredBy != "" {
-		svc.SetRegisteredBy(cfg.SeedRegisteredBy)
+	// The seed is config data, so it is minted here -- the one place the raw
+	// string exists -- rather than inside the setter.
+	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
+		svc.SetRegisteredBy(seed)
 	}
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, svc.PrivateEvents)
 	svc.startAgentFn = svc.Agents.StartAgent
@@ -536,7 +554,7 @@ type ownerOnlyRegistrar struct {
 }
 
 func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		if !requireWorkerOwner(o.r.svc, userID, sender) {
 			return
 		}
@@ -556,10 +574,19 @@ func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.Handl
 //
 // This is the SEED path only: the startup DB/config value, which is a cache the
 // first connect overrides. The Hub owns workers.registered_by and is the only
-// authority, so the connect loop must use UpdateRegisteredBy instead -- it carries
-// the empty-owner refusal a seed does not need (nothing to clobber before the
-// first store).
-func (svc *Service) SetRegisteredBy(userID string) {
+// authority, so the connect loop must use UpdateRegisteredBy instead -- it
+// carries a drift warning a seed has no basis to emit.
+//
+// It takes an already-minted userid.UserID rather than a string so there is no
+// blank-input branch to disagree with UpdateRegisteredBy about. Those two took
+// the same shape and answered a blank id differently -- this one cleared the
+// owner, that one keeps it -- which is a trap for a reader picking between
+// them. New() is the single caller and already gates on a non-empty
+// cfg.SeedRegisteredBy, so the branch this removes was unreachable anyway.
+func (svc *Service) SetRegisteredBy(userID userid.UserID) {
+	if userID.IsZero() {
+		return
+	}
 	svc.registeredBy.Store(&userID)
 }
 
@@ -579,26 +606,28 @@ func (svc *Service) SetRegisteredBy(userID string) {
 // un-own a live worker (deregistration flows through OnDeregister instead), so an
 // empty push is a bug or a truncated payload, never an instruction.
 func (svc *Service) UpdateRegisteredBy(userID string) {
-	if userID == "" {
+	uid, ok := userid.New(userID)
+	if !ok {
 		slog.Warn("hub delivered an empty worker owner, keeping current",
 			"current", svc.RegisteredBy())
 		return
 	}
-	if prev := svc.RegisteredBy(); prev != "" && prev != userID {
+	if prev := svc.RegisteredBy(); !prev.IsZero() && !prev.MatchesUser(uid) {
 		slog.Warn("hub reported a different worker owner",
-			"previous", prev, "current", userID)
+			"previous", prev, "current", uid)
 	}
-	svc.registeredBy.Store(&userID)
+	svc.registeredBy.Store(&uid)
 }
 
-// RegisteredBy returns the user who registered this worker, or "" if the Hub has not
-// delivered it yet. requireWorkerOwner refuses "" outright, so an undelivered
-// identity fails closed rather than matching another empty id.
-func (svc *Service) RegisteredBy() string {
+// RegisteredBy returns the user who registered this worker, or the zero UserID
+// if the Hub has not delivered it yet. requireWorkerOwner refuses a zero id
+// via MatchesUser, so an undelivered identity fails closed rather than matching
+// another empty id.
+func (svc *Service) RegisteredBy() userid.UserID {
 	if p := svc.registeredBy.Load(); p != nil {
 		return *p
 	}
-	return ""
+	return userid.UserID{}
 }
 
 // requireWorkerOwner gates a handler on the caller being the worker's own
@@ -619,18 +648,17 @@ func (svc *Service) RegisteredBy() string {
 // Workspace-scoped families (agent, terminal, tab moves, cleanup) must NOT use
 // this: they legitimately serve non-owners and gate on the Hub-supplied
 // accessible-workspace set instead (requireAccessibleWorkspace and friends).
-// An empty id on either side is refused rather than matched. Comparing two empty
-// strings succeeds, so a worker whose owner never got populated would admit a caller
-// the Hub named with an empty user id -- a gate whose whole purpose is to fail
-// closed, failing open on the one input it cannot judge. An empty owner now means
-// only "the Hub has not delivered WorkerIdentity yet", which no handler can observe
-// (identity precedes the first ChannelOpen on the same stream), but the refusal
-// stays as the layer that makes that ordering non-load-bearing. Its sibling in this
-// package's Hub counterpart (verifyDelegationWorkerScope) refuses an unrecorded
-// minter for the same reason.
-func requireWorkerOwner(svc *Service, userID string, sender channel.ResponseWriter) bool {
-	owner := svc.RegisteredBy()
-	if userID != "" && owner != "" && userID == owner {
+// An empty id on either side is refused rather than matched. MatchesUser
+// fails closed when either side is zero, so a worker whose owner never got populated
+// would refuse a caller the Hub named with an empty user id -- a gate whose
+// whole purpose is to fail closed, failing closed on the one input it cannot
+// judge. An empty owner now means only "the Hub has not delivered WorkerIdentity
+// yet", which no handler can observe (identity precedes the first ChannelOpen
+// on the same stream), but the refusal stays as the layer that makes that
+// ordering non-load-bearing. Its sibling in this package's Hub counterpart
+// (verifyDelegationWorkerScope) refuses an unrecorded minter for the same reason.
+func requireWorkerOwner(svc *Service, userID userid.UserID, sender channel.ResponseWriter) bool {
+	if userID.MatchesUser(svc.RegisteredBy()) {
 		return true
 	}
 	sendPermissionDenied(sender, "only the worker owner may use this")

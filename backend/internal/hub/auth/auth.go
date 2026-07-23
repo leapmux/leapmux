@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // SessionDuration is the lifetime of a user session.
@@ -52,7 +53,7 @@ const userKey contextKey = iota
 // identity was evicted after this generation, closing the race where a cache
 // hit happens just before the watcher evicts and sweeps current channels.
 type UserInfo struct {
-	ID                  string
+	ID                  userid.UserID
 	OrgID               string
 	Username            string
 	IsAdmin             bool
@@ -113,7 +114,7 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 // Returns the first store error and leaves later steps unrun, so a
 // failed api-token revoke aborts before the delegation-token revoke
 // or the watermark bump.
-func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID string) (int64, int64, error) {
+func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID userid.UserID) (int64, int64, error) {
 	var apiCount, delegationCount int64
 	err := st.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		var err error
@@ -141,8 +142,17 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A blank users.id is corrupt data, not a programmer error, so it is refused
+	// rather than panicked on: MustNew's contract is "the caller already knows
+	// this is non-empty", which holds for a literal but not for a column. The
+	// row is rejected the same way a missing one is -- an identity we cannot
+	// name cannot authenticate anything.
+	id, ok := userid.New(user.ID)
+	if !ok {
+		return nil, fmt.Errorf("solo user row has a blank id")
+	}
 	return &UserInfo{
-		ID:                 user.ID,
+		ID:                 id,
 		OrgID:              user.OrgID,
 		Username:           user.Username,
 		IsAdmin:            user.IsAdmin,
@@ -163,6 +173,15 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 
+	// Mint once, here, from the row we just read. Everything below -- the auth
+	// transaction's lock target and the session it creates -- takes the typed
+	// id, so a blank users.id is refused before any of it rather than panicking
+	// mid-transaction on the credential path.
+	loginUID, mintOK := userid.New(user.ID)
+	if !mintOK {
+		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+	}
+
 	// Verify the password OUTSIDE the auth transaction. On the default
 	// SQLite backend RunInUserAuthTransaction promotes to a write
 	// transaction (LockUserAuthState), which serializes every other hub
@@ -177,7 +196,7 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 
 	var sessionID string
 	var expiresAt time.Time
-	err = st.RunInUserAuthTransaction(ctx, user.ID, func(tx store.Store) error {
+	err = st.RunInUserAuthTransaction(ctx, loginUID, func(tx store.Store) error {
 		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
@@ -200,7 +219,17 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 		if !match {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		sessionID, expiresAt, err = CreateSession(ctx, tx, lockedUser.ID)
+		// Re-mint from the LOCKED row rather than reusing loginUID: the lock
+		// re-read is the authoritative one, and this is a column, so MustNew's
+		// contract ("the caller already knows this is non-empty") does not
+		// hold. A panic here would tear the login connection on every retry
+		// instead of failing closed, so a blank id is refused the same way a
+		// bad password is.
+		sessUID, sessMintOK := userid.New(lockedUser.ID)
+		if !sessMintOK {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
+		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID)
 		if err != nil {
 			return err
 		}
@@ -228,7 +257,13 @@ type SessionMeta struct {
 
 // CreateSession creates a new user session and returns the session ID and
 // expiry time.
-func CreateSession(ctx context.Context, st store.Store, userID string, meta ...SessionMeta) (string, time.Time, error) {
+func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, meta ...SessionMeta) (string, time.Time, error) {
+	// A session for nobody is worse than no session: it would authenticate as a
+	// blank id, which every predicate then has to refuse individually. Refuse to
+	// write the row at all.
+	if userID.IsZero() {
+		return "", time.Time{}, fmt.Errorf("create session: user id is required")
+	}
 	sessionID := id.Generate()
 	expiresAt := time.Now().Add(SessionDuration).UTC()
 	params := store.CreateSessionParams{
@@ -258,8 +293,17 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		return nil, fmt.Errorf("validate session: %w", err)
 	}
 
+	// Refuse rather than panic on a blank joined user_id. This is the highest-
+	// traffic mint site (every cookie-authenticated RPC), and the row is store
+	// data, so an orphaned or hand-edited sessions row must fail closed the same
+	// way the not-found branch above does -- not take down the request with a
+	// panic that reads to the client as a torn connection.
+	id, ok := userid.New(row.UserID)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
+	}
 	return &UserInfo{
-		ID:                  row.UserID,
+		ID:                  id,
 		Credential:          SessionCredential(token),
 		OrgID:               row.OrgID,
 		Username:            row.Username,

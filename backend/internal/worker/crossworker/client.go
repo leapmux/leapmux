@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
@@ -29,7 +30,7 @@ const channelOpenTimeout = tunnel.DefaultChannelOpenTimeout
 // required; the spawn identifiers may be empty for hub-facing calls
 // without a specific spawn provenance.
 type DelegationScope struct {
-	UserID      string
+	UserID      userid.UserID
 	WorkspaceID string
 	AgentID     string
 	TerminalID  string
@@ -105,7 +106,7 @@ func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope De
 	if err := c.validateOpen(targetWorkerID, scope); err != nil {
 		return nil, err
 	}
-	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID, WorkspaceID: scope.WorkspaceID}
+	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID.String(), WorkspaceID: scope.WorkspaceID}
 
 	c.mu.Lock()
 	if existing, ok := c.channels[key]; ok && existing != nil {
@@ -188,7 +189,7 @@ func (c *Client) validateOpen(targetWorkerID string, scope DelegationScope) erro
 	if targetWorkerID == "" {
 		return errors.New("crossworker: target_worker_id required")
 	}
-	if scope.UserID == "" {
+	if scope.UserID.IsZero() {
 		return errors.New("crossworker: user_id required")
 	}
 	if scope.WorkspaceID == "" {
@@ -247,7 +248,7 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		// match its request -- would otherwise pool a channel the Hub authenticated
 		// as X under the key for Y, and every later CallInner on it would silently
 		// run as X with nothing in the stack able to detect it.
-		ExpectedUserID: scope.UserID,
+		ExpectedUserID: scope.UserID.String(),
 	}
 	return tunnel.OpenChannel(openCtx, c.HubURL, targetWorkerID, openOpts)
 }
@@ -256,7 +257,7 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 // is the delegation scope used both for minting the bearer and for
 // keying the channel pool — the same `(user, worker)` pair on a
 // different workspace gets a separate Noise_NK session.
-func (c *Client) CallInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
 	ch, err := c.channelFor(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
 	if err != nil {
 		return nil, err
@@ -284,7 +285,7 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID, userID, workspac
 // CLI simply stops receiving events and never learns why. Pooling is a
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
-func (c *Client) StreamInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
 	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
 	if err != nil {
 		return err

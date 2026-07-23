@@ -19,6 +19,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -65,10 +66,10 @@ func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 	d := channel.NewDispatcher()
 	admitted := false
 	ownerOnlyRegistrar{r: newRegistrar(d, svc)}.Register("Probe",
-		func(context.Context, string, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+		func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 			admitted = true
 		})
-	d.DispatchWith(context.Background(), userID, &leapmuxv1.InnerRpcRequest{Method: "Probe"}, newTestWriter())
+	d.DispatchWith(context.Background(), userid.MustNew(userID), &leapmuxv1.InnerRpcRequest{Method: "Probe"}, newTestWriter())
 	return admitted
 }
 
@@ -82,11 +83,11 @@ func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 // worker (that is what deregistration is for).
 func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
 	svc := &Service{}
-	svc.SetRegisteredBy("user-1")
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
 	svc.UpdateRegisteredBy("")
 
-	assert.Equal(t, "user-1", svc.RegisteredBy(), "an empty push must not clobber the owner")
+	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "an empty push must not clobber the owner")
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"),
 		"the worker must still serve its own owner after an empty push")
 }
@@ -96,25 +97,46 @@ func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
 // converges on it.
 func TestUpdateRegisteredByAppliesOwnerChange(t *testing.T) {
 	svc := &Service{}
-	svc.SetRegisteredBy("user-1")
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
 	// The drift path (prev != "" && prev != new) warns and STILL stores: the Hub is
 	// the authority, so the warning is a breadcrumb, never a veto.
 	svc.UpdateRegisteredBy("user-2")
 
-	assert.Equal(t, "user-2", svc.RegisteredBy())
+	assert.Equal(t, "user-2", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-2"), "the new owner is served")
 	assert.False(t, dispatchOwnerOnlyProbe(svc, "user-1"), "the previous owner is not")
+}
+
+// SetRegisteredBy answers a zero id the same way UpdateRegisteredBy answers a
+// blank one: keep the existing owner.
+//
+// The two used to disagree -- this one stored unconditionally, so a zero id
+// CLEARED the owner -- and the type change made the difference invisible rather
+// than removing it, because both now compile fine either way. If a future edit
+// drops the IsZero guard, requireWorkerOwner starts refusing the machine's real
+// owner after one stray zero set: every owner-only handler (ListDirectory,
+// ReadFile, git, tunnel) answers PERMISSION_DENIED to the legitimate user,
+// indistinguishably from a real cross-tenant refusal. Nothing pinned that.
+func TestSetRegisteredByIgnoresZeroOwner(t *testing.T) {
+	svc := &Service{}
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
+
+	svc.SetRegisteredBy(userid.UserID{})
+
+	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "a zero id must not clear the owner")
+	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"),
+		"the worker must still serve its own owner after a zero set")
 }
 
 // The first delivery on a worker with no seed populates the owner.
 func TestUpdateRegisteredByAppliesFirstOwner(t *testing.T) {
 	svc := &Service{}
-	require.Empty(t, svc.RegisteredBy(), "no owner before the Hub delivers one")
+	require.True(t, svc.RegisteredBy().IsZero(), "no owner before the Hub delivers one")
 
 	svc.UpdateRegisteredBy("user-1")
 
-	assert.Equal(t, "user-1", svc.RegisteredBy())
+	assert.Equal(t, "user-1", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"))
 }
 
@@ -260,7 +282,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 
 	// The one field New still translates by hand: the seed becomes the
 	// atomic the Hub later overwrites.
-	assert.Equal(t, "user-1", svc.RegisteredBy(), "SeedRegisteredBy seeds the owner")
+	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "SeedRegisteredBy seeds the owner")
 
 	// Derived state New is responsible for building.
 	assert.NotNil(t, svc.Queries)
@@ -281,7 +303,7 @@ func TestNew_EmptyRegisteredByLeavesOwnerUnset(t *testing.T) {
 
 	svc := newMinimalService(t, sqlDB)
 
-	assert.Equal(t, "", svc.RegisteredBy())
+	assert.True(t, svc.RegisteredBy().IsZero())
 }
 
 // TestNew_PanicsOnMissingRequiredConfig pins the backstop for an empty
@@ -334,12 +356,12 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	d.RegisterTracked("test.Tracked", func(context.Context, string, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+	d.RegisterTracked("test.Tracked", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 		close(entered)
 		<-release
 	})
 
-	d.DispatchAsync(context.Background(), "user-1",
+	d.DispatchAsync(context.Background(), userid.MustNew("user-1"),
 		&leapmuxv1.InnerRpcRequest{Method: "test.Tracked"}, newTestWriter())
 
 	<-entered

@@ -99,7 +99,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -110,7 +110,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	}
 
 	var linkedProviders []*leapmuxv1.LinkedOAuthProvider
-	links, _ := s.store.OAuthUserLinks().ListByUser(ctx, user.ID)
+	links, _ := s.store.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
 	if len(links) > 0 {
 		// ListAll is acceptable here: the number of configured OAuth
 		// providers is typically in the single digits, and adding a
@@ -233,7 +233,11 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 		// Always create the session — without it, the user can't call the
 		// authenticated VerifyEmail RPC.
-		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, user.ID)
+		uid, mintErr := mintRowUserID(user.ID)
+		if mintErr != nil {
+			return nil, mintErr
+		}
+		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -306,7 +310,11 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 
 // signUpResponse creates a session, sets the cookie, and returns the SignUpResponse.
 func (s *AuthService) signUpResponse(ctx context.Context, user *store.User, orgName string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, user.ID)
+	loginUID, err := mintRowUserID(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -538,8 +546,12 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
+	linkUID, err := mintRowUserID(user.ID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-		UserID:          user.ID,
+		UserID:          linkUID,
 		ProviderID:      pending.ProviderID,
 		ProviderSubject: pending.ProviderSubject,
 	}); err != nil {
@@ -565,7 +577,11 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		finalUser = refetched
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUser.ID)
+	finalUID, mintErr := mintRowUserID(finalUser.ID)
+	if mintErr != nil {
+		return nil, mintErr
+	}
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -601,8 +617,12 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 		return err
 	}
 
+	tokUID, mintErr := mintRowUserID(userID)
+	if mintErr != nil {
+		return mintErr
+	}
 	return st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       userID,
+		UserID:       tokUID,
 		ProviderID:   pending.ProviderID,
 		AccessToken:  encAccess,
 		RefreshToken: encRefresh,

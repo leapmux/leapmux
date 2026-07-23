@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -108,7 +111,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 
-		err := st.Sessions().DeleteByUser(ctx, user.ID)
+		err := st.Sessions().DeleteByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 
 		sessions := ListAllSessions(t, st, user.ID)
@@ -125,7 +128,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		SeedSession(t, st, user.ID)
 
 		err := st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			KeepID: keep.ID,
 		})
 		require.NoError(t, err)
@@ -185,14 +188,14 @@ func (s *Suite) testSessions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), sw.AuthGeneration)
 
-		_, err = st.Users().RevokeUserTokens(ctx, user.ID)
+		_, err = st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		n, err := st.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
 			SessionID: sess.ID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		require.Equal(t, int64(1), n)
@@ -216,7 +219,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		sessID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
 			ID:        sessID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour), // Already expired.
 			UserAgent: "test-agent",
 			IPAddress: "127.0.0.1",
@@ -259,7 +262,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		sessID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
 			ID:        sessID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test-agent",
 			IPAddress: "127.0.0.1",
@@ -358,7 +361,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		// DeleteOthers when user has only one session should keep it.
 		err := st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
-			UserID: user.ID,
+			UserID: userid.MustNew(user.ID),
 			KeepID: sess.ID,
 		})
 		require.NoError(t, err)
@@ -391,7 +394,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		expiredID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
 			ID:        expiredID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "expired-agent",
 			IPAddress: "127.0.0.1",
@@ -481,7 +484,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		// Create an expired session.
 		expiredID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
-			ID: expiredID, UserID: user.ID,
+			ID: expiredID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test-agent", IPAddress: "127.0.0.1",
 		})
@@ -511,14 +514,14 @@ func (s *Suite) testSessions(t *testing.T) {
 		// ListByUserID pages on (last_active_at DESC, id DESC) -- NOT
 		// created_at; a wrong PageCursor column or ORDER BY would misorder or
 		// drop rows across this boundary.
-		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: user.ID, PageParams: store.PageParams{Limit: 2}})
+		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Limit: 2}})
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 2)
 		assert.Equal(t, s3.ID, page.Rows[0].ID)
 		assert.Equal(t, s2.ID, page.Rows[1].ID)
 		require.True(t, page.HasMore())
 
-		page, err = st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: user.ID, PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}})
+		page, err = st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}})
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 1)
 		assert.Equal(t, s1.ID, page.Rows[0].ID)
@@ -593,7 +596,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		sess := SeedSession(t, st, user.ID)
 
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
-			ID: sess.ID, UserID: user.ID,
+			ID: sess.ID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(24 * time.Hour),
 			UserAgent: "test", IPAddress: "127.0.0.1",
 		})
@@ -627,4 +630,83 @@ func (s *Suite) testSessions(t *testing.T) {
 			})
 		}
 	})
+}
+
+// The per-user MUTATIONS must REFUSE an unminted caller, not no-op.
+//
+// These are the destructive half of the store's per-user surface, and their
+// polarity is inverted from an ownership read: binding "" would address every
+// blank-owner row, while silently affecting nothing would report a successful
+// revocation that revoked nothing -- an operator's one containment action
+// failing quietly. Both are worse than an error, so a zero id is refused.
+//
+// The methods below are exactly those whose ONLY channel is an error. A method
+// that also returns a rows-affected count is deliberately absent: there, a
+// refusal is already distinguishable as 0 rows, and every caller maps that to
+// NotFound the same way it maps "someone else's row".
+func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
+	st := s.NewStore(t)
+	orgID := SeedOrg(t, st, "zero-bulk-org")
+	user := SeedUser(t, st, orgID, "zero-bulk-user")
+	ownerID := userid.MustNew(user.ID)
+
+	// Bulk: every row belonging to one user.
+	require.ErrorIs(t, st.Sessions().DeleteByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.Workspaces().SoftDeleteAllByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.OAuthTokens().DeleteByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
+
+	_, err := st.Users().RevokeUserTokens(ctx, userid.UserID{})
+	require.ErrorIs(t, err, store.ErrInvalidArgument)
+	_, err = st.APITokens().RevokeByUser(ctx, userid.UserID{})
+	require.ErrorIs(t, err, store.ErrInvalidArgument)
+	_, err = st.DelegationTokens().RevokeByUser(ctx, userid.UserID{})
+	require.ErrorIs(t, err, store.ErrInvalidArgument)
+
+	// Scoped: one row, or one user's rows within a narrower scope. These used
+	// to return nil -- reporting that a mutation the store refused had
+	// SUCCEEDED. ChangePassword is the sharpest case: it calls DeleteOthers and
+	// answers 200, so a nil here told the user every other device had been
+	// signed out while every session stayed live.
+	require.ErrorIs(t, st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
+		UserID: userid.UserID{}, KeepID: "keep",
+	}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
+		UserID: userid.UserID{}, ProviderID: "github",
+	}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
+		UserID: userid.UserID{}, ProviderID: "github",
+	}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.WorkspaceSections().UpdatePosition(ctx, store.UpdateWorkspaceSectionPositionParams{
+		ID: "sec", UserID: userid.UserID{}, Position: "a",
+	}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
+		ID: "sec", UserID: userid.UserID{}, Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT, Position: "a",
+	}), store.ErrInvalidArgument)
+	require.ErrorIs(t, st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
+		UserID: userid.UserID{}, WorkspaceID: "ws",
+	}), store.ErrInvalidArgument)
+
+	// Control: each still works for a real user, so the refusals above are
+	// about the id rather than the operation being broken. Without a control a
+	// refusal assertion passes for any reason at all, including the method
+	// having become unconditionally broken.
+	require.NoError(t, st.Sessions().DeleteByUser(ctx, ownerID))
+	n, err := st.Users().RevokeUserTokens(ctx, ownerID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "control: a real user's tokens revoke")
+
+	// The scoped mutations address no row for this fixture, but a real id must
+	// reach the query rather than being refused before it.
+	require.NoError(t, st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
+		UserID: ownerID, KeepID: "keep",
+	}), "control: a real caller reaches the query")
+	require.NoError(t, st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
+		UserID: ownerID, ProviderID: "github",
+	}), "control: a real caller reaches the query")
+	require.NoError(t, st.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
+		UserID: ownerID, ProviderID: "github",
+	}), "control: a real caller reaches the query")
+	require.NoError(t, st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
+		UserID: ownerID, WorkspaceID: "ws",
+	}), "control: a real caller reaches the query")
 }

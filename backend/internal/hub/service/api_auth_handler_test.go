@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -231,7 +233,7 @@ func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
 	// Bearer must validate against the in-memory token validator.
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, info.ID)
+	assert.Equal(t, env.userID, info.ID.String())
 }
 
 func TestAPIAuth_LocalRedirect_RejectsNonLoopback(t *testing.T) {
@@ -316,9 +318,9 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 	verifier, challenge := pkceVerifierAndChallenge()
 	code := id.Generate()
 	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
-		Code: code, UserID: env.userID, CodeChallenge: challenge, DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+		Code: code, UserID: userid.MustNew(env.userID), CodeChallenge: challenge, DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
 	}))
-	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID)})
 	require.NoError(t, err)
 
 	statuses := make(chan int, 2)
@@ -345,7 +347,7 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 		got = append(got, status)
 	}
 	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, got)
-	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID)})
 	require.NoError(t, err)
 	assert.Len(t, after, len(before)+1)
 }
@@ -393,7 +395,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 	retryCode := id.Generate()
 	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
 		Code:          retryCode,
-		UserID:        env.userID,
+		UserID:        userid.MustNew(env.userID),
 		CodeChallenge: challenge,
 		DeviceName:    "test",
 		ExpiresAt:     time.Now().Add(time.Minute),
@@ -474,7 +476,7 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, info.ID)
+	assert.Equal(t, env.userID, info.ID.String())
 }
 
 func TestAPIAuth_DeviceCode_SlowDown_OnRapidPoll(t *testing.T) {
@@ -649,7 +651,7 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -680,7 +682,7 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	// bearer is dead-on-arrival.
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err, "rotated access bearer must validate")
-	assert.Equal(t, env.userID, info.ID)
+	assert.Equal(t, env.userID, info.ID.String())
 
 	// The rotated refresh bearer must still be usable for a subsequent
 	// refresh — i.e. it both validates and survives the rotation chain.
@@ -699,7 +701,7 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -736,7 +738,7 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 	prev := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -775,7 +777,7 @@ func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) 
 		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash, Scope: "remote:*",
 	}))
 	storedExpiry := now.Add(10 * time.Second)
@@ -809,7 +811,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	previousRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -853,7 +855,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -890,7 +892,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	tokenID := id.Generate()
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh), Scope: "remote:*",
 	}))
 	underlying := env.store.APITokens()
@@ -932,7 +934,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	currentRefreshHash := env.validator.HashSecret(currentRefresh)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -975,7 +977,7 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 	expiredGrace := time.Now().Add(-time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -1017,7 +1019,7 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     env.userID,
+		UserID:     userid.MustNew(env.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
@@ -1100,7 +1102,7 @@ func (s deviceAuthorizationOverrideStore) DeviceAuthorizations() store.DeviceAut
 	return s.device
 }
 
-func (s deviceAuthorizationOverrideStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(store.Store) error) error {
+func (s deviceAuthorizationOverrideStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
 	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		override := s.device.(deviceAuthorizationOverride)
 		return fn(deviceAuthorizationOverrideStore{
@@ -1145,7 +1147,7 @@ func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string) (
 
 func (s userLookupFailStore) Users() store.UserStore { return s.users }
 
-func (s userLookupFailStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(store.Store) error) error {
+func (s userLookupFailStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
 	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		return fn(userLookupFailStore{Store: tx, users: s.users})
 	})
@@ -1186,7 +1188,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 	code := id.Generate()
 	require.NoError(t, env.store.CLIAuthorizationCodes().Create(context.Background(), store.CreateCLIAuthorizationCodeParams{
 		Code:          code,
-		UserID:        env.userID,
+		UserID:        userid.MustNew(env.userID),
 		CodeChallenge: challenge,
 		DeviceName:    "test",
 		ExpiresAt:     time.Now().Add(time.Minute),
@@ -1198,7 +1200,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 	mux := http.NewServeMux()
 	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
 
-	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID)})
 	require.NoError(t, err)
 	form := url.Values{
 		"grant_type":    {service.GrantTypeAuthorizationCode},
@@ -1211,7 +1213,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 
-	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: env.userID})
+	after, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID)})
 	require.NoError(t, err)
 	assert.Len(t, after, len(before), "failed issuance must roll back the undisclosed token row")
 
@@ -1228,7 +1230,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 		DeviceCode: deviceCode, UserCode: verifycode.Generate(), DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: env.userID,
+		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -1308,7 +1310,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: env.userID,
+		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -1344,7 +1346,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 		DeviceCode: deviceCode, UserCode: verifycode.Generate(), IntervalSeconds: 5, ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: env.userID,
+		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -1397,7 +1399,7 @@ func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
 			refreshSecret := auth.MintAccessSecret()
 			require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 				ID:          tokenID,
-				UserID:      env.userID,
+				UserID:      userid.MustNew(env.userID),
 				ClientType:  "cli",
 				ClientName:  "test",
 				SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
@@ -1467,7 +1469,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     env.userID,
+		UserID:     userid.MustNew(env.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
@@ -1504,7 +1506,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     env.userID,
+		UserID:     userid.MustNew(env.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
@@ -1552,7 +1554,7 @@ func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		SecretHash:  env.validator.HashSecret(secret),
@@ -1602,7 +1604,7 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     env.userID,
+		UserID:     userid.MustNew(env.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
@@ -1631,7 +1633,7 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 	// Real bearer still validates (cache wasn't poisoned, row is alive).
 	user, err := env.validator.ValidateBearer(context.Background(), goodBearer)
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, user.ID)
+	assert.Equal(t, env.userID, user.ID.String())
 }
 
 // TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken pins the same
@@ -1647,7 +1649,7 @@ func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkerID:    workerID,
 		WorkspaceID: workspaceID,
 		SecretHash:  env.validator.HashSecret(secret),
@@ -1689,7 +1691,7 @@ func TestAPIAuth_Revoke_AlreadyRevokedIsIdempotent(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     env.userID,
+		UserID:     userid.MustNew(env.userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
@@ -1756,7 +1758,7 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    env.userID,
+		RegisteredBy:    userid.MustNew(env.userID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("test-mlkem"),
 		SlhdsaPublicKey: []byte("test-slhdsa"),
@@ -1765,8 +1767,51 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       u.OrgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws",
 	}))
 	return workerID, workspaceID
+}
+
+// A grant row naming no user must be REFUSED, not panic the token endpoint.
+//
+// cli_authorization_codes.user_id is a column, so a blank one is corrupt data
+// rather than a programmer error -- and this endpoint is unauthenticated, so a
+// panic there is reachable by anyone holding the code. The device-code sibling
+// has always refused a blank user_id (postTouchPollOAuthError answers
+// authorization_pending); this path had no such guard, so the id went straight
+// into the mint.
+func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.T) {
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	verifier, challenge := pkceVerifierAndChallenge()
+
+	// SQLite accepts "" as a TEXT primary key, so a blank-id user -- and a
+	// grant row referencing it -- inserts cleanly.
+	realUser, err := env.store.Users().GetByID(ctx, env.userID)
+	require.NoError(t, err)
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: "", OrgID: realUser.OrgID, Username: "blank-grant-user",
+		PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+	}))
+	code := id.Generate()
+	require.NoError(t, env.store.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
+		Code: code, UserID: userid.UserID{}, CodeChallenge: challenge,
+		DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+	}))
+
+	resp, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
+		"grant_type":    {service.GrantTypeAuthorizationCode},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err, "the handler must answer, not tear the connection")
+	defer func() { _ = resp.Body.Close() }()
+
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"an unusable grant is a client error, not a server fault")
+	assert.Equal(t, "invalid_grant", body["error"],
+		"and it fails closed in the same shape as an expired code")
 }

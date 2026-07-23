@@ -297,7 +297,7 @@ func (h *handler) Whoami(ctx context.Context, req *connect.Request[leapmuxv1.Who
 		WorkspaceIds: []string{info.WorkspaceID},
 	}
 	return connect.NewResponse(&leapmuxv1.WhoamiResponse{
-		UserId:      info.UserID,
+		UserId:      info.UserID.String(),
 		OrgId:       info.OrgID,
 		WorkspaceId: info.WorkspaceID,
 		WorkerId:    info.WorkerID,
@@ -390,7 +390,7 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 	envs := []string{
 		"LEAPMUX_REMOTE_SOCK=" + socketURL,
 		"LEAPMUX_REMOTE_TOKEN=" + token,
-		"LEAPMUX_REMOTE_USER_ID=" + info.UserID,
+		"LEAPMUX_REMOTE_USER_ID=" + info.UserID.String(),
 		"LEAPMUX_REMOTE_WORKER_ID=" + info.WorkerID,
 	}
 	if info.OrgID != "" {

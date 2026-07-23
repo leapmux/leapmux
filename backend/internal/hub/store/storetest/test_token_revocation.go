@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -27,7 +29,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		tokenID := id.Generate()
 		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: user.ID, ClientType: "cli", ClientName: "test",
+			ID: tokenID, UserID: userid.MustNew(user.ID), ClientType: "cli", ClientName: "test",
 			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash, Scope: "remote:*",
 		}))
 		expiresAt := time.Now().Add(time.Hour)
@@ -123,7 +125,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		_, err = st.RevocationEvents().PublishPending(ctx, 10)
 		require.NoError(t, err)
 
-		n, err := st.APITokens().RevokeByUser(ctx, user.ID)
+		n, err := st.APITokens().RevokeByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.Equal(t, int64(3), n, "only the three still-live tokens are revoked")
 
@@ -142,17 +144,17 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		seedDelegationToken(t, st, orgID, user.ID)
 
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-			apiCount, err := tx.APITokens().RevokeByUser(ctx, user.ID)
+			apiCount, err := tx.APITokens().RevokeByUser(ctx, userid.MustNew(user.ID))
 			if err != nil {
 				return err
 			}
 			require.Equal(t, int64(1), apiCount)
-			delegationCount, err := tx.DelegationTokens().RevokeByUser(ctx, user.ID)
+			delegationCount, err := tx.DelegationTokens().RevokeByUser(ctx, userid.MustNew(user.ID))
 			if err != nil {
 				return err
 			}
 			require.Equal(t, int64(1), delegationCount)
-			_, err = tx.Users().RevokeUserTokens(ctx, user.ID)
+			_, err = tx.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 			return err
 		}))
 
@@ -172,7 +174,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		user := SeedUser(t, st, orgID, "user")
 
 		for range 2 {
-			n, err := st.Users().RevokeUserTokens(ctx, user.ID)
+			n, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 			require.NoError(t, err)
 			require.Equal(t, int64(1), n)
 		}
@@ -202,7 +204,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		// A revoke-after-soft-delete caller must still bump the generation
 		// and emit the durable user_tokens event so cross-process teardown
 		// runs even though the user row is soft-deleted.
-		n, err := st.Users().RevokeUserTokens(ctx, user.ID)
+		n, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.Equal(t, int64(1), n, "soft-deleted user must still be revoked")
 
@@ -220,7 +222,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 	t.Run("user-token revoke on missing user is a no-op", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		n, err := st.Users().RevokeUserTokens(ctx, "does-not-exist")
+		n, err := st.Users().RevokeUserTokens(ctx, userid.MustNew("does-not-exist"))
 		require.NoError(t, err)
 		require.Zero(t, n, "a missing user row is the only case that revokes nothing")
 
@@ -445,7 +447,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		orgID := SeedOrg(t, st, "org")
 		user := SeedUser(t, st, orgID, "user")
 
-		_, err := st.Users().RevokeUserTokens(ctx, user.ID)
+		_, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 
 		apiTokenID := seedAPIToken(t, st, user.ID)
@@ -688,7 +690,7 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:         tokenID,
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
@@ -714,7 +716,7 @@ func seedDelegationToken(t *testing.T, st store.Store, orgID, userID string) str
 	tokenID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           userID,
+		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,
 		WorkspaceID:      wsID,
 		IssuedForTabID:   tabID,

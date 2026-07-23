@@ -3,6 +3,8 @@ package storetest
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -17,7 +19,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID:          secID,
-			UserID:      userID,
+			UserID:      userid.MustNew(userID),
 			Name:        name,
 			Position:    "a0",
 			SectionType: secType,
@@ -35,7 +37,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 			SectionID:   secID,
 			Position:    "a0",
@@ -43,7 +45,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		require.NoError(t, err)
 
 		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 		})
 		require.NoError(t, err)
@@ -56,7 +58,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 	t.Run("get not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID:      "no-user",
+			UserID:      userid.MustNew("no-user"),
 			WorkspaceID: "no-ws",
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -72,7 +74,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 		for i, wsID := range []string{ws1, ws2} {
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-				UserID:      user.ID,
+				UserID:      userid.MustNew(user.ID),
 				WorkspaceID: wsID,
 				SectionID:   secID,
 				Position:    string(rune('a'+i)) + "0",
@@ -80,7 +82,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Len(t, items, 2)
 	})
@@ -109,7 +111,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		for i := 0; i < N; i++ {
 			wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-				UserID:      user.ID,
+				UserID:      userid.MustNew(user.ID),
 				WorkspaceID: wsID,
 				SectionID:   secID,
 				Position:    "n", // lexorank.first()
@@ -118,7 +120,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 			seeded = append(seeded, wsID)
 		}
 
-		first, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		first, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.Len(t, first, N)
 
@@ -136,7 +138,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		// Repeated calls return the same order regardless of planner
 		// state or DISTINCT evaluation order.
 		for trial := 0; trial < 3; trial++ {
-			got, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+			got, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 			require.NoError(t, err)
 			require.Len(t, got, N)
 			for i := range got {
@@ -163,7 +165,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 			SectionID:   secID,
 			Position:    "a0",
@@ -171,13 +173,13 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		require.NoError(t, err)
 
 		err = st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 		})
 		require.NoError(t, err)
 
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -193,7 +195,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 		for _, wsID := range []string{ws1, ws2} {
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-				UserID:      user.ID,
+				UserID:      userid.MustNew(user.ID),
 				WorkspaceID: wsID,
 				SectionID:   secID,
 				Position:    "a0",
@@ -204,7 +206,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		err := st.WorkspaceSectionItems().DeleteBySection(ctx, secID)
 		require.NoError(t, err)
 
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.NotNil(t, items)
 		assert.Empty(t, items)
@@ -220,23 +222,23 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		wsIP := SeedWorkspace(t, st, orgID, user.ID, "Active WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsArch, SectionID: archSec, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsArch, SectionID: archSec, Position: "a0",
 		})
 		require.NoError(t, err)
 		err = st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsIP, SectionID: ipSec, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsIP, SectionID: ipSec, Position: "a0",
 		})
 		require.NoError(t, err)
 
 		isArchived, err := st.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsArch,
 		})
 		require.NoError(t, err)
 		assert.True(t, isArchived)
 
 		isArchived, err = st.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: wsIP,
 		})
 		require.NoError(t, err)
@@ -251,17 +253,17 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
 		})
 		require.NoError(t, err)
 
 		err = st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		require.NoError(t, err)
 
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
@@ -271,7 +273,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		orgID := SeedOrg(t, st, "wsi-org")
 		user := SeedUser(t, st, orgID, "wsi-listempty-user")
 
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.NotNil(t, items)
 		assert.Empty(t, items)
@@ -287,26 +289,26 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 		// Assign workspace to section A.
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: sec1, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: sec1, Position: "a0",
 		})
 		require.NoError(t, err)
 
 		// Reassign to section B.
 		err = st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: sec2, Position: "b0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: sec2, Position: "b0",
 		})
 		require.NoError(t, err)
 
 		// Should be in section B now.
 		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, sec2, item.SectionID)
 		assert.Equal(t, "b0", item.Position)
 
 		// Should only have one item total.
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Len(t, items, 1)
 	})
@@ -320,19 +322,19 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 		// Initial assignment.
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "a0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
 		})
 		require.NoError(t, err)
 
 		// Update position only (same section).
 		err = st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID, SectionID: secID, Position: "b0",
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "b0",
 		})
 		require.NoError(t, err)
 
 		// Verify the item has the new position.
 		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "b0", item.Position)
@@ -344,7 +346,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID: user.ID, WorkspaceID: wsID,
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
@@ -355,7 +357,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		user := SeedUser(t, st, orgID, "wsi-archnf-user")
 
 		isArchived, err := st.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
-			UserID:      user.ID,
+			UserID:      userid.MustNew(user.ID),
 			WorkspaceID: "nonexistent-ws",
 		})
 		require.NoError(t, err)

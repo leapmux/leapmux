@@ -5,6 +5,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // WorkerCanUse reports whether userID is the registrant of workerID.
@@ -24,10 +25,10 @@ import (
 //   - (worker, false, nil) — worker exists but caller is not its
 //     registrant.
 //   - (nil,    false, nil) — worker missing or one of workerID/userID
-//     was empty.
+//     was empty/zero.
 //   - (nil,    false, err) — store error; treat as deny.
-func WorkerCanUse(ctx context.Context, st store.Store, workerID, userID string) (*store.Worker, bool, error) {
-	if workerID == "" || userID == "" {
+func WorkerCanUse(ctx context.Context, st store.Store, workerID string, userID userid.UserID) (*store.Worker, bool, error) {
+	if workerID == "" || userID.IsZero() {
 		return nil, false, nil
 	}
 	w, err := st.Workers().GetByID(ctx, workerID)
@@ -37,7 +38,7 @@ func WorkerCanUse(ctx context.Context, st store.Store, workerID, userID string) 
 		}
 		return nil, false, err
 	}
-	return w, w.RegisteredBy == userID, nil
+	return w, userID.Matches(w.RegisteredBy), nil
 }
 
 // WorkerUsableNow reports whether a loaded worker may be reached at the

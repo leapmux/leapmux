@@ -150,7 +150,7 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// every other subscriber in the org.
 	pending := make(chan *crdt.MarshaledEvent, 64)
 	sub := &crdt.Subscriber{
-		UserID:                user.ID,
+		UserID:                user.ID.String(),
 		ClientID:              presenceClientID(user),
 		RequestedWorkspaceIDs: requested,
 		WorkspaceScopeID:      user.Credential.WorkspaceScopeID(),
@@ -190,7 +190,7 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// error instead). Keying on the specific authz code keeps this robust if the
 	// callee's error coding changes.
 	initial, unsub, err := mgr.SubscribeWithACL(sub, func() (map[string]bool, error) {
-		return resolveAllowedWorkspacesSetForUser(ctx, h.store, orgID, workspaceIDs, user)
+		return resolveAllowedWorkspacesSetForUser(ctx, h.store, auth.BindOrg(orgID), workspaceIDs, user)
 	})
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodePermissionDenied {

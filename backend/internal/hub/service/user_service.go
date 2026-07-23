@@ -110,7 +110,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		return nil, err
 	}
 
-	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -204,7 +204,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -265,7 +265,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 		return nil, err
 	}
 
-	full, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	full, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -304,7 +304,7 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, err
 	}
 
-	updatedUser, err := verifyPendingEmailToken(ctx, s.store, userInfo.ID, req.Msg.GetVerificationToken())
+	updatedUser, err := verifyPendingEmailToken(ctx, s.store, userInfo.ID.String(), req.Msg.GetVerificationToken())
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +312,7 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	// Flush all sessions so the new Email + EmailVerified are picked up
 	// across every device the user is signed in on, not just the one
 	// that hit /verify-email.
-	s.lifecycle.UserInfoInvalidated(userInfo.ID)
+	s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 
 	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
 	if err != nil {
@@ -346,7 +346,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	var committedAuthGeneration int64
 	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
 		var err error
-		user, err = tx.Users().GetByID(ctx, userInfo.ID)
+		user, err = tx.Users().GetByID(ctx, userInfo.ID.String())
 		if err != nil {
 			return fmt.Errorf("query user: %w", err)
 		}
@@ -369,19 +369,23 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 			return fmt.Errorf("update password: %w", err)
 		}
 		sessionID := userInfo.Credential.SessionID()
+		rowUID, mintErr := mintRowUserID(user.ID)
+		if mintErr != nil {
+			return mintErr
+		}
 		if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
-			UserID: user.ID,
+			UserID: rowUID,
 			KeepID: sessionID,
 		}); err != nil {
 			return fmt.Errorf("delete other sessions: %w", err)
 		}
-		if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+		if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, rowUID); err != nil {
 			return err
 		}
 		if sessionID != "" {
 			n, err := tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
 				SessionID: sessionID,
-				UserID:    user.ID,
+				UserID:    rowUID,
 			})
 			if err != nil {
 				return fmt.Errorf("refresh current session auth generation: %w", err)
@@ -456,12 +460,12 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_id is required"))
 	}
 
-	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	links, err := s.store.OAuthUserLinks().ListByUser(ctx, user.ID)
+	links, err := s.store.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -483,8 +487,12 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
 	}
 
+	unlinkUID, mintErr := mintRowUserID(user.ID)
+	if mintErr != nil {
+		return nil, mintErr
+	}
 	if err := s.store.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-		UserID:     user.ID,
+		UserID:     unlinkUID,
 		ProviderID: providerID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -520,7 +528,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	prefs, err := s.store.Users().GetPrefs(ctx, userInfo.ID)
+	prefs, err := s.store.Users().GetPrefs(ctx, userInfo.ID.String())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -563,9 +571,9 @@ func (s *UserService) GetUser(ctx context.Context, req *connect.Request[leapmuxv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
 	// Self-lookups skip the org check (no cross-tenant concern).
-	if target == caller.ID {
+	if caller.ID.Matches(target) {
 		return connect.NewResponse(&leapmuxv1.GetUserResponse{
-			UserId:   caller.ID,
+			UserId:   caller.ID.String(),
 			OrgId:    caller.OrgID,
 			Username: caller.Username,
 		}), nil
@@ -636,7 +644,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		}
 	} else {
 		// Preserve existing value when the field is not provided.
-		existing, err := s.store.Users().GetPrefs(ctx, userInfo.ID)
+		existing, err := s.store.Users().GetPrefs(ctx, userInfo.ID.String())
 		if err == nil {
 			var prev storedPreferences
 			if json.Unmarshal([]byte(existing), &prev) == nil {
@@ -666,7 +674,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 
 	if err := s.store.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
 		Prefs: string(prefsJSON),
-		ID:    userInfo.ID,
+		ID:    userInfo.ID.String(),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

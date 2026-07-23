@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type workspaceStore struct {
@@ -29,7 +30,7 @@ func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspacePara
 	return mapErr(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
 		ID:          p.ID,
 		OrgID:       p.OrgID,
-		OwnerUserID: p.OwnerUserID,
+		OwnerUserID: p.OwnerUserID.String(),
 		Title:       p.Title,
 	}))
 }
@@ -62,8 +63,14 @@ func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.W
 }
 
 func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return nil, nil
+	}
 	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, gendb.ListAccessibleWorkspacesParams{
-		UserID: p.UserID,
+		UserID: owner,
 		OrgID:  p.OrgID,
 	})
 	if err != nil {
@@ -73,20 +80,39 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 }
 
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.OwnerUserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return 0, nil
+	}
 	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
 		Title:       p.Title,
 		ID:          p.ID,
-		OwnerUserID: p.OwnerUserID,
+		OwnerUserID: owner,
 	}))
 }
 
 func (s *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWorkspaceParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.OwnerUserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return 0, nil
+	}
 	return rowsAffected(s.conn.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
 		ID:          p.ID,
-		OwnerUserID: p.OwnerUserID,
+		OwnerUserID: owner,
 	}))
 }
 
-func (s *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID string) error {
-	return mapErr(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, ownerUserID))
+func (s *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID userid.UserID) error {
+	owner, ok := store.OwnerFilter(ownerUserID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return store.ErrInvalidArgument
+	}
+	return mapErr(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, owner))
 }
