@@ -1,6 +1,22 @@
 package auth
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
+
+// warnBlankRevocationTarget records that an eviction-lane call was skipped for
+// want of a user id.
+//
+// It exists because a blank target here is a SWALLOWED revocation rather than a
+// no-op. This lane's polarity is inverted from an authorization check: on a
+// grant path "no id" means deny, which is safe, but on an eviction path it means
+// "revoke nothing" while every caller is told the operation succeeded. These
+// methods return nothing, so the log is the only trace an operator whose
+// containment action quietly did nothing would ever have.
+func warnBlankRevocationTarget(op string, attrs ...any) {
+	slog.Warn("revocation skipped: no user id", append([]any{"op", op}, attrs...)...)
+}
 
 // CredentialChannelCloser is the channel teardown surface required by
 // credential lifecycle effects. Implementations must preserve generation
@@ -139,8 +155,20 @@ func (e *CredentialLifecycleEffects) preserveSession(sessionID string, generatio
 // -- the registry and channel manager both treat a non-positive generation as
 // "drop every current credential" via auth.ShouldEvictForUserGeneration. Only a
 // genuinely absent target (nil effects or empty userID) is a no-op.
+//
+// The empty-userID guard below is POLARITY, not redundancy with userid.UserID:
+// Matches is tuned for grant semantics, where false means "not authorized", but
+// on this path false would mean "do not revoke" -- so a blank id must be
+// refused up front rather than allowed to reach a comparison that silently
+// evicts nothing while the caller reports a revocation. Same rule as
+// interceptor.go's RevokeUserAuthContextAtGeneration and channelmgr's
+// CloseByUserRevocation / CloseByUsers.
 func (e *CredentialLifecycleEffects) UserRevoked(userID string, userAuthGeneration int64) {
-	if e == nil || userID == "" {
+	if e == nil {
+		return
+	}
+	if userID == "" {
+		warnBlankRevocationTarget("UserRevoked", "generation", userAuthGeneration)
 		return
 	}
 	if e.contexts != nil {
@@ -159,7 +187,23 @@ func (e *CredentialLifecycleEffects) UserRevoked(userID string, userAuthGenerati
 // preserving, nor drop the preserve step. The sub-methods keep their own
 // nil/empty guards, so an empty sessionID (a non-cookie caller) simply skips the
 // preserve step while the user-wide revocation still runs.
+//
+// A blank userID is refused HERE rather than delegated to UserRevoked's own
+// guard. Delegating would run preserveSession and skip the revocation --
+// ADVANCING the acting session's lease and channel generation with no
+// revocation below it to justify the restamp, so ShouldEvictForUserGeneration
+// would then spare those holders from a later legitimate revocation at that
+// generation. A revoke-path call whose only surviving effect is to extend
+// credentials is the eviction polarity inverted: on this path "no target" must
+// mean "do nothing at all", never "do the half that needs no target".
 func (e *CredentialLifecycleEffects) RevokeUserPreservingSession(userID, sessionID string, generation int64) {
+	if e == nil {
+		return
+	}
+	if userID == "" {
+		warnBlankRevocationTarget("RevokeUserPreservingSession", "generation", generation)
+		return
+	}
 	e.preserveSession(sessionID, generation)
 	e.UserRevoked(userID, generation)
 }
@@ -167,7 +211,11 @@ func (e *CredentialLifecycleEffects) RevokeUserPreservingSession(userID, session
 // UserInfoInvalidated drops cached profile data without revoking credentials,
 // canceling leases, or closing channels.
 func (e *CredentialLifecycleEffects) UserInfoInvalidated(userID string) {
-	if e == nil || userID == "" || e.contexts == nil {
+	if e == nil || e.contexts == nil {
+		return
+	}
+	if userID == "" {
+		warnBlankRevocationTarget("UserInfoInvalidated")
 		return
 	}
 	e.contexts.EvictByUserID(userID)

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/coder/websocket"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
@@ -33,8 +35,24 @@ func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 }
 
 func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
-	assert.Panics(t, func() { NewChannelRelayHandler(nil, nil, nil, nil, nil, false) })
+	assert.Panics(t, func() { NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, false) })
 	assert.Panics(t, func() { NewOrgEventsHandler(nil, nil, nil, nil, false) })
+}
+
+// TestChannelRelayHandlerRequiresWorkerRegistry pins the OTHER dependency the
+// relay constructor refuses. A nil *workermgr.Manager is not catchable by the
+// close dispatcher that receives it -- narrowed to a one-method interface, a
+// nil pointer becomes a NON-nil interface value -- so without this guard the
+// first channel teardown panics on a nil receiver, on the caller's goroutine,
+// long after startup. Several tests in this file used to pass nil here.
+func TestChannelRelayHandlerRequiresWorkerRegistry(t *testing.T) {
+	assert.Panics(t, func() { NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false) })
+}
+
+// newTestRegistry is a real registry with no user-directed reach, for tests
+// that exercise the relay's auth paths rather than worker delivery.
+func newTestRegistry() *workermgr.Manager {
+	return workermgr.New(workermgr.DenyAllReach())
 }
 
 // TestWSReadLimit_AcceptsLargeChunk verifies that a WebSocket connection with
@@ -107,7 +125,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 }
 
 func TestChannelRelay_NoCookie_Returns401(t *testing.T) {
-	handler := NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false)
+	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	rec := httptest.NewRecorder()
@@ -131,7 +149,7 @@ func (httpAuthFailureSessions) ValidateWithUser(context.Context, string) (*store
 
 func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 	handlers := map[string]http.Handler{
-		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, nil, nil, newTestAuthContexts(t), nil, false),
+		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, false),
 		"org events":    NewOrgEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false),
 	}
 	for name, handler := range handlers {
@@ -148,7 +166,7 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 }
 
 func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
-	handler := NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false)
+	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Sec-WebSocket-Protocol", "channel-relay, auth.token.some-token")
@@ -227,7 +245,7 @@ func newBearerRelay(t *testing.T) (*ChannelRelayHandler, store.Store, *auth.Toke
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	h := NewChannelRelayHandler(st, nil, nil, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
+	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
 	return h, st, tv
 }
 
@@ -238,7 +256,7 @@ func mintAdminAPIToken(t *testing.T, st store.Store, tv *auth.TokenValidator) st
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: u.ID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
 		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
 	}))
 	return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
@@ -284,7 +302,7 @@ func TestChannelRelay_Bearer_RejectsExpiredToken(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	past := time.Now().Add(-time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: u.ID, ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &past, Scope: "remote:*",
 	}))
 
@@ -318,7 +336,7 @@ func TestChannelRelay_Bearer_RejectsWhenValidatorNotWired(t *testing.T) {
 	// opt-in for the multi-user-hub.
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	h := NewChannelRelayHandler(st, nil, nil, newTestAuthContexts(t), nil, false)
+	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Authorization", "Bearer lmx_anything_anything")
@@ -338,7 +356,7 @@ func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
 	require.NoError(t, err)
 
 	cm := channelmgr.New()
-	wm := workermgr.New()
+	wm := workermgr.New(workermgr.DenyAllReach())
 	h := NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
 
 	bearer := mintAdminAPIToken(t, st, tv)
@@ -366,7 +384,7 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 	t.Cleanup(cache.Stop)
 
 	cm := channelmgr.New()
-	wm := workermgr.New()
+	wm := workermgr.New(workermgr.DenyAllReach())
 	handler := NewChannelRelayHandler(st, wm, cm, cache, nil, false).
 		WithTokenValidator(tv)
 	srv := httptest.NewServer(handler)
@@ -407,13 +425,13 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: orgID, OwnerUserID: userID, Title: "relay-ws",
+		ID: workspaceID, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "relay-ws",
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -423,7 +441,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:               tokenID,
-		UserID:           userID,
+		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
 		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "tab-1",
@@ -434,7 +452,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
 
 	cm := channelmgr.New()
-	wm := workermgr.New()
+	wm := workermgr.New(workermgr.DenyAllReach())
 	unscopedChannelID := id.Generate()
 	scopedChannelID := id.Generate()
 	cm.RegisterWithAuthInfo(unscopedChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
@@ -500,20 +518,20 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 	}
 
 	t.Run("empty worker id is a no-op", func(t *testing.T) {
-		h := &ChannelRelayHandler{workerMgr: workermgr.New(), channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New()}
 		err := h.relayFrontendMessageToWorker(channelmgr.ChannelInfo{ChannelID: "ch"}, msg("ch"))
 		require.NoError(t, err)
 	})
 
 	t.Run("offline worker is terminal", func(t *testing.T) {
-		h := &ChannelRelayHandler{workerMgr: workermgr.New(), channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New()}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "gone"}, msg("ch"))
 		require.ErrorIs(t, err, errTerminalChannelRelay)
 	})
 
 	t.Run("live worker receives the wrapped ciphertext", func(t *testing.T) {
-		wm := workermgr.New()
+		wm := workermgr.New(workermgr.DenyAllReach())
 		var got []*leapmuxv1.ConnectResponse
 		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(m *leapmuxv1.ConnectResponse) error {
 			got = append(got, m)
@@ -529,7 +547,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 	})
 
 	t.Run("broken worker stream is terminal", func(t *testing.T) {
-		wm := workermgr.New()
+		wm := workermgr.New(workermgr.DenyAllReach())
 		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
 			return errors.New("stream closed")
 		}})

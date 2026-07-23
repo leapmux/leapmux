@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -14,7 +15,7 @@ import (
 // it cannot fail for any reason other than the session being unusable, which is
 // exactly what it is asked to prove. Recorded as gateNone (ungated by design).
 func registerPingHandler(r registrar, _ *Service) {
-	registerUngated(r, channelwire.PingMethod, func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerUngated(r, channelwire.PingMethod, func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
 }

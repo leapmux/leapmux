@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
 
 // ChannelRelayHandler handles multiplexed WebSocket connections for encrypted
@@ -65,7 +66,7 @@ func NewChannelRelayHandler(
 // WithChannelCloseEnqueuer shares the service's bounded worker notification
 // dispatcher with relay-disconnect teardown.
 func (h *ChannelRelayHandler) WithChannelCloseEnqueuer(enqueuer channelCloseEnqueuer) *ChannelRelayHandler {
-	if !isNilDependency(enqueuer) {
+	if !nilcheck.IsNilDependency(enqueuer) {
 		h.closeDispatcher = enqueuer
 	}
 	return h
@@ -119,11 +120,11 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// below has already closed the socket -- discarding the queue strictly
 	// after the close frame went out, which reads as a decision but would
 	// be an accident of LIFO ordering.
-	writer := newRelayWriter(ctx, wsConn, cancel, user.ID, connID)
+	writer := newRelayWriter(ctx, wsConn, cancel, user.ID.String(), connID)
 	go writer.run()
 
 	// Register this connection for receiving channel messages.
-	h.channelMgr.BindUser(user.ID, connID, func(msg *leapmuxv1.ChannelMessage) error {
+	h.channelMgr.BindUser(user.ID.String(), connID, func(msg *leapmuxv1.ChannelMessage) error {
 		slog.Debug("relaying channel message to frontend",
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", msg.GetCorrelationId(),
@@ -145,7 +146,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// full write timeout before unbinding, delaying the revocation
 		// promptness UnbindUserAndCleanup exists to provide.
 		writer.close()
-		closed := h.channelMgr.UnbindUserAndCleanup(user.ID, connID)
+		closed := h.channelMgr.UnbindUserAndCleanup(user.ID.String(), connID)
 
 		for _, cc := range closed {
 			slog.Info("channel closed (relay disconnected)",
@@ -250,7 +251,7 @@ func (h *ChannelRelayHandler) relayFrontendMessageToWorker(info channelmgr.Chann
 		return errTerminalChannelRelay
 	}
 
-	conn := h.workerMgr.Get(workerID)
+	conn := h.workerMgr.ConnForTrustedPath(workerID)
 	if conn == nil {
 		slog.Warn("channel relay: worker offline",
 			"channel_id", channelID, "worker_id", workerID)

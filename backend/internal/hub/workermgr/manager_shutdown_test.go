@@ -14,7 +14,7 @@ import (
 )
 
 func TestNotifyShutdown_SendsToAllWorkers(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 
 	var mu sync.Mutex
 	var received []*leapmuxv1.ConnectResponse
@@ -49,7 +49,7 @@ func TestNotifyShutdown_SendsToAllWorkers(t *testing.T) {
 }
 
 func TestNotifyShutdown_CustomRetryDelay(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 
 	var received *leapmuxv1.ConnectResponse
 	_, _ = m.Register(&Conn{
@@ -69,13 +69,13 @@ func TestNotifyShutdown_CustomRetryDelay(t *testing.T) {
 }
 
 func TestNotifyShutdown_NoWorkers(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 	// Should not panic when no workers are connected.
 	m.NotifyShutdown(context.Background(), 10)
 }
 
 func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 
 	sendCount := 0
 	var mu sync.Mutex
@@ -111,7 +111,7 @@ func TestNotifyShutdown_ContinuesOnSendError(t *testing.T) {
 }
 
 func TestNotifyShutdown_DoesNotHoldManagerLockDuringSend(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 	started := make(chan struct{})
 	release := make(chan struct{})
 	_, _ = m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
@@ -142,7 +142,7 @@ func TestNotifyShutdown_DoesNotHoldManagerLockDuringSend(t *testing.T) {
 }
 
 func TestNotifyShutdown_ReturnsWhenContextExpires(t *testing.T) {
-	m := New()
+	m := New(DenyAllReach())
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })

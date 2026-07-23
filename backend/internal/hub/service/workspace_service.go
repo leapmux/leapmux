@@ -12,6 +12,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -39,7 +41,7 @@ func NewWorkspaceService(
 	registry *crdt.Registry,
 	channelCloser WorkspaceChannelCloser,
 ) *WorkspaceService {
-	if isNilDependency(channelCloser) {
+	if nilcheck.IsNilDependency(channelCloser) {
 		panic("workspace service requires a workspace channel closer")
 	}
 	return &WorkspaceService{
@@ -95,7 +97,7 @@ func loadWorkspaceOr404(ctx context.Context, st store.Store, workspaceID string)
 // operation requires (loadWorkspaceForRead uses NotFound so a scoped bearer
 // cannot probe existence; PrepareWorkspaceAccess uses PermissionDenied for an
 // explicit prepare-access request).
-func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID, userID, denyMsg string) (*store.Workspace, error) {
+func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID string, userID userid.UserID, denyMsg string) (*store.Workspace, error) {
 	ws, err := loadWorkspaceOr404(ctx, st, workspaceID)
 	if err != nil {
 		return nil, err
@@ -165,7 +167,7 @@ func (s *WorkspaceService) CreateWorkspace(
 				WorkspaceID: wsID,
 				Title:       title,
 				RootNodeID:  rootID,
-			}, buildSeedRootOps(wsID, rootID, user.ID), nil
+			}, buildSeedRootOps(wsID, rootID, user.ID.String()), nil
 		},
 	}); err != nil {
 		return nil, err

@@ -29,7 +29,7 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistrationKeyParams) error {
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
-		CreatedBy: p.CreatedBy,
+		CreatedBy: p.CreatedBy.String(),
 		ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 	}))
 }
@@ -42,10 +42,17 @@ func (s *registrationKeyStore) GetByID(ctx context.Context, id string) (*store.W
 	return fromDBRegistrationKey(r), nil
 }
 
-func (s *registrationKeyStore) GetOwned(ctx context.Context, id, createdBy string) (*store.WorkerRegistrationKey, error) {
+func (s *registrationKeyStore) GetOwned(ctx context.Context, p store.GetOwnedRegistrationKeyParams) (*store.WorkerRegistrationKey, error) {
+	owner, ok := store.OwnerFilter(p.CreatedBy)
+	if !ok {
+		// A blank bind parameter would MATCH a blank created_by column
+		// rather than fail to match, so an unminted caller must be refused
+		// before the query, not by it.
+		return nil, store.ErrNotFound
+	}
 	r, err := s.conn.q.GetOwnedRegistrationKey(ctx, gendb.GetOwnedRegistrationKeyParams{
-		ID:        id,
-		CreatedBy: createdBy,
+		ID:        p.ID,
+		CreatedBy: owner,
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -54,18 +61,26 @@ func (s *registrationKeyStore) GetOwned(ctx context.Context, id, createdBy strin
 }
 
 func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistrationKeyParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.CreatedBy)
+	if !ok {
+		return 0, nil // an unminted caller owns nothing; see OwnerFilter
+	}
 	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
-		CreatedBy:    p.CreatedBy,
+		CreatedBy:    owner,
 		NewExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 		Now:          sqltime.NewMySQLTime(time.Now()),
 	}))
 }
 
 func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDeleteRegistrationKeyParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.CreatedBy)
+	if !ok {
+		return 0, nil // an unminted caller owns nothing; see OwnerFilter
+	}
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
-		CreatedBy: p.CreatedBy,
+		CreatedBy: owner,
 		ExpiresAt: sqltime.NewMySQLTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
 	}))
 }

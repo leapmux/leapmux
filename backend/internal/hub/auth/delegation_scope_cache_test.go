@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // blockingWorkerStore wraps a real WorkerStore and, on the FIRST GetByID, reads
@@ -81,7 +82,7 @@ func TestDelegationScopeCache_EvictionDuringResolveIsNotCached(t *testing.T) {
 	// Deregister the minter behind the cache, then evict -- the operator's
 	// containment action racing the in-flight resolve.
 	rows, err := base.Workers().Deregister(ctx, store.DeregisterWorkerParams{
-		ID: f.workerID, RegisteredBy: f.userID,
+		ID: f.workerID, RegisteredBy: userid.MustNew(f.userID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -124,7 +125,7 @@ func TestDelegationScopeCache_ServesMemoUntilEvicted(t *testing.T) {
 
 	// Deregister the minter behind the cache's back (no eviction).
 	rows, err := f.st.Workers().Deregister(ctx, store.DeregisterWorkerParams{
-		ID: f.workerID, RegisteredBy: f.userID,
+		ID: f.workerID, RegisteredBy: userid.MustNew(f.userID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -149,7 +150,7 @@ func TestDelegationScopeCache_ServesMemoUntilEvicted(t *testing.T) {
 func TestDelegationScopeCache_NonDelegationIsStoreFree(t *testing.T) {
 	cache := auth.NewDelegationScopeCache(nil)
 	scope, err := cache.Resolve(context.Background(), &auth.UserInfo{
-		ID: "u1", Credential: auth.SessionCredential("s1"),
+		ID: userid.MustNew("u1"), Credential: auth.SessionCredential("s1"),
 	})
 	require.NoError(t, err)
 	assert.False(t, scope.IsBounded())

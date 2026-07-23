@@ -260,8 +260,8 @@ func (c *credentialCaches) deleteBearerCacheEntries(ref BearerRef) {
 
 func (c *credentialCaches) indexBearerCacheEntry(key bearerCacheKeyParts, cached cachedSession) {
 	indexSyncMap(&c.bearerKeysByToken, key.bearerRef(), key)
-	if cached.user != nil && cached.user.ID != "" {
-		indexSyncMap(&c.userBearerKeys, cached.user.ID, key)
+	if cached.user != nil && !cached.user.ID.IsZero() {
+		indexSyncMap(&c.userBearerKeys, cached.user.ID.String(), key)
 	}
 }
 
@@ -272,7 +272,7 @@ func (c *credentialCaches) deleteBearerCacheEntry(key bearerCacheKeyParts) {
 	}
 	unindexSyncMap(&c.bearerKeysByToken, key.bearerRef(), key)
 	if cached, ok := value.(cachedSession); ok && cached.user != nil {
-		unindexSyncMap(&c.userBearerKeys, cached.user.ID, key)
+		unindexSyncMap(&c.userBearerKeys, cached.user.ID.String(), key)
 	}
 }
 
@@ -285,7 +285,7 @@ func (c *credentialCaches) deleteStaleSession(key any, stale cachedSession) {
 		return
 	}
 	if stale.user != nil {
-		unindexSyncMap(&c.userSessions, stale.user.ID, key)
+		unindexSyncMap(&c.userSessions, stale.user.ID.String(), key)
 	}
 }
 
@@ -295,7 +295,7 @@ func (c *credentialCaches) deleteStaleBearer(key bearerCacheKeyParts, stale cach
 	}
 	unindexSyncMap(&c.bearerKeysByToken, key.bearerRef(), key)
 	if stale.user != nil {
-		unindexSyncMap(&c.userBearerKeys, stale.user.ID, key)
+		unindexSyncMap(&c.userBearerKeys, stale.user.ID.String(), key)
 	}
 }
 
@@ -326,7 +326,7 @@ func (c *AuthContextRegistry) Evict(sessionID string) {
 	c.state.revocationMu.Lock()
 	if v, ok := c.state.sessions.LoadAndDelete(sessionID); ok {
 		if cached, ok := v.(cachedSession); ok && cached.user != nil {
-			unindexSyncMap(&c.state.userSessions, cached.user.ID, sessionID)
+			unindexSyncMap(&c.state.userSessions, cached.user.ID.String(), sessionID)
 		}
 	}
 	c.state.lastTouch.Delete(sessionID)
@@ -354,7 +354,11 @@ func isSyncMapEmpty(m *sync.Map) bool {
 // Records a user-scoped invalidation unconditionally so validation that raced
 // this call retries even when no indexed session existed yet.
 func (c *AuthContextRegistry) EvictByUserID(userID string) {
-	if c == nil || c.state == nil || userID == "" {
+	if c == nil || c.state == nil {
+		return
+	}
+	if userID == "" {
+		warnBlankRevocationTarget("EvictByUserID")
 		return
 	}
 	c.state.revocationMu.Lock()
@@ -382,8 +386,19 @@ func (c *AuthContextRegistry) evictSessionsByUserID(userID string) {
 // older than the persisted user credential generation. A zero generation is
 // retained for revocation callers that intentionally invalidate every current
 // credential for the user.
+// The userID == "" guard is NOT redundant with userid.UserID's fail-closed
+// comparisons, and must not be deleted as though it were. Matches is tuned for
+// GRANT semantics -- false means "not authorized" -- but on this eviction path
+// false means "do not revoke". A blank id reaching the Matches calls below
+// would therefore skip every cached session, bearer, and lease and report a
+// revocation that silently evicted nothing. Refusing the blank id up front is
+// what keeps the polarity right.
 func (c *AuthContextRegistry) RevokeUserAuthContextAtGeneration(userID string, userAuthGeneration int64) {
-	if c == nil || c.state == nil || userID == "" {
+	if c == nil || c.state == nil {
+		return
+	}
+	if userID == "" {
+		warnBlankRevocationTarget("RevokeUserAuthContextAtGeneration", "generation", userAuthGeneration)
 		return
 	}
 	c.state.revocationMu.Lock()
@@ -402,7 +417,7 @@ func (c *AuthContextRegistry) RevokeUserAuthContextAtGeneration(userID string, u
 		userAuthGeneration: effectiveGeneration,
 	})
 	leases := c.state.removeIndexedLeasesLocked(func(lease *authenticatedLease) bool {
-		return lease.user.ID == userID && ShouldEvictForUserGeneration(lease.user.UserAuthGeneration, effectiveGeneration)
+		return lease.user.ID.Matches(userID) && ShouldEvictForUserGeneration(lease.user.UserAuthGeneration, effectiveGeneration)
 	}, c.state.leasesByUser[userID])
 	c.evictSessionsByUserGeneration(userID, effectiveGeneration)
 	c.evictBearersByUserGeneration(userID, effectiveGeneration)
@@ -432,7 +447,7 @@ func (s *authState) currentSyntheticUser(user *UserInfo) *UserInfo {
 	s.revocationMu.Lock()
 	defer s.revocationMu.Unlock()
 	out := cloneUserInfoWithGeneration(user, s.revocationGen.Load())
-	if value, ok := s.userRevocations.Load(user.ID); ok {
+	if value, ok := s.userRevocations.Load(user.ID.String()); ok {
 		if mark, ok := value.(userRevocationMark); ok && mark.userAuthGeneration > out.UserAuthGeneration {
 			out.UserAuthGeneration = mark.userAuthGeneration
 		}
@@ -451,7 +466,7 @@ func (c *AuthContextRegistry) evictSessionsByUserGeneration(userID string, userA
 			return true
 		}
 		cached, ok := value.(cachedSession)
-		if !ok || cached.user == nil || cached.user.ID != userID {
+		if !ok || cached.user == nil || !cached.user.ID.Matches(userID) {
 			return true
 		}
 		if !ShouldEvictForUserGeneration(cached.user.UserAuthGeneration, userAuthGeneration) {
@@ -479,7 +494,7 @@ func (c *AuthContextRegistry) evictBearersByUserGeneration(userID string, userAu
 			return true
 		}
 		cached, ok := value.(cachedSession)
-		if !ok || cached.user == nil || cached.user.ID != userID {
+		if !ok || cached.user == nil || !cached.user.ID.Matches(userID) {
 			return true
 		}
 		if ShouldEvictForUserGeneration(cached.user.UserAuthGeneration, userAuthGeneration) {
@@ -795,7 +810,7 @@ func (a *authInterceptor) tryAuthenticateBearer(ctx context.Context, authHeader 
 				a.state.revocationMu.Unlock()
 				continue
 			}
-			if userInvalidatedAfter(&a.state.userInvalidations, u.ID, validationGen) {
+			if userInvalidatedAfter(&a.state.userInvalidations, u.ID.String(), validationGen) {
 				a.state.revocationMu.Unlock()
 				continue
 			}
@@ -875,7 +890,7 @@ func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSes
 	// without widening that window.
 	return !a.bearerRevoked(key, cs.user, cs.gen) &&
 		!bearerRevokedAfter(&a.state.bearerInvalidations, key.bearerRef(), cs.gen) &&
-		!userInvalidatedAfter(&a.state.userInvalidations, cs.user.ID, cs.gen)
+		!userInvalidatedAfter(&a.state.userInvalidations, cs.user.ID.String(), cs.gen)
 }
 
 // validateTokenCached returns cached UserInfo if the session was validated
@@ -904,12 +919,12 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 			a.state.revocationMu.Unlock()
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("session revoked"))
 		}
-		if userInvalidatedAfter(&a.state.userInvalidations, userInfo.ID, validationGen) {
+		if userInvalidatedAfter(&a.state.userInvalidations, userInfo.ID.String(), validationGen) {
 			a.state.revocationMu.Unlock()
 			continue
 		}
 		a.state.sessions.Store(token, cachedSession{user: userInfo, cachedAt: time.Now(), gen: validationGen})
-		indexSyncMap(&a.state.userSessions, userInfo.ID, token)
+		indexSyncMap(&a.state.userSessions, userInfo.ID.String(), token)
 		a.state.revocationMu.Unlock()
 
 		return cloneUserInfoWithGeneration(userInfo, validationGen), nil
@@ -923,7 +938,7 @@ func (a *authInterceptor) sessionCacheFresh(sessionID string, cached cachedSessi
 	// Lock-free for the same reason as bearerCacheFresh: monotonic marks in
 	// concurrency-safe sync.Maps, read off the hot auth path without revocationMu.
 	return !a.sessionRevoked(sessionID, cached.user, cached.gen) &&
-		!userInvalidatedAfter(&a.state.userInvalidations, cached.user.ID, cached.gen)
+		!userInvalidatedAfter(&a.state.userInvalidations, cached.user.ID.String(), cached.gen)
 }
 
 // sessionRevoked and bearerRevoked are pure reads over the revocation-mark

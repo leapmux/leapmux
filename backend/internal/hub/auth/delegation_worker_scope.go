@@ -144,7 +144,7 @@ func delegationMinter(user *UserInfo) (minterID string, bounded bool, err error)
 // own target-is-minter clause, so the two can never disagree; it exists only to skip
 // the lookup. It also means a deregistering minter stays reachable BY ITSELF, which
 // is correct and costs nothing: reaching it still requires the target to be ACTIVE,
-// which verifyWorkerAccess checks separately.
+// which WorkerReachAuthorizer.AuthorizeWorkerReach checks separately.
 func CheckDelegationWorkerScope(ctx context.Context, st store.Store, user *UserInfo, targetWorkerID string) error {
 	minterID, bounded, err := delegationMinter(user)
 	if err != nil {
@@ -185,7 +185,7 @@ func CheckDelegationWorkerScope(ctx context.Context, st store.Store, user *UserI
 // The cross-worker bar exists because deregistering a worker is the operator's one
 // containment action against a compromised one: if its outstanding tokens kept
 // reaching that user's OTHER machines for the rest of their TTL, the action would be
-// inert. verifyWorkerAccess already refuses a non-ACTIVE TARGET; the minter is held
+// inert. AuthorizeWorkerReach already refuses a non-ACTIVE TARGET; the minter is held
 // to the same bar. Note this costs the compromised worker nothing it still has: the
 // target-IS-minter case is separately gated on the target being ACTIVE, so a
 // deregistering worker cannot be reached through it either way.
@@ -216,7 +216,7 @@ func ResolveDelegationWorkerScope(ctx context.Context, st store.Store, user *Use
 		}
 		return DenyAllScope(), fmt.Errorf("load minting worker: %w", err)
 	}
-	ownsMinter := minter.RegisteredBy == user.ID && minter.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
+	ownsMinter := user.ID.Matches(minter.RegisteredBy) && minter.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
 	return minterReachScope(minterID, ownsMinter), nil
 }
 

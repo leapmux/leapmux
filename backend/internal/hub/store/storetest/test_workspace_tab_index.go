@@ -3,6 +3,8 @@ package storetest
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
@@ -152,22 +154,22 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 
 		// The owner locates the tab.
 		row, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
-			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: owner.ID,
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: userid.MustNew(owner.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, wsID, row.WorkspaceID)
 
 		// A non-owner -- even in the same org -- gets ErrNotFound.
 		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
-			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: other.ID,
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: userid.MustNew(other.ID),
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound, "locate must be owner-only")
 
 		// The owner cannot locate a tab in a soft-deleted workspace.
-		_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: owner.ID})
+		_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: userid.MustNew(owner.ID)})
 		require.NoError(t, err)
 		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
-			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: owner.ID,
+			TabID: "loc1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, UserID: userid.MustNew(owner.ID),
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound, "a soft-deleted workspace's tabs are unreachable")
 	})

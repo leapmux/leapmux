@@ -18,6 +18,7 @@ import (
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -226,8 +227,14 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 			return
 		}
 		if emailErr == nil && existingUser.EmailVerified {
+			linkUID, mintOK := userid.New(existingUser.ID)
+			if !mintOK {
+				slog.Error("oauth: matched user row has a blank id")
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
 			if err := h.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-				UserID:          existingUser.ID,
+				UserID:          linkUID,
 				ProviderID:      providerID,
 				ProviderSubject: claims.Subject,
 			}); err != nil {
@@ -268,7 +275,13 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		slog.Error("oauth: store tokens", "error", err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, userID, auth.SessionMeta{
+	loginUID, mintOK := userid.New(userID)
+	if !mintOK {
+		slog.Error("oauth: refusing to create a session for a blank user id")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 		IPAddress: r.RemoteAddr,
 	})
@@ -365,8 +378,12 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 
 	expiresAt := tokenExpiryTime(tokenSet)
 
+	tokUID, mintOK := userid.New(userID)
+	if !mintOK {
+		return errors.New("oauth: cannot store tokens for a blank user id")
+	}
 	return h.store.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       userID,
+		UserID:       tokUID,
 		ProviderID:   providerID,
 		AccessToken:  encAccess,
 		RefreshToken: encRefresh,

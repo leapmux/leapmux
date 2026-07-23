@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
@@ -1083,7 +1085,7 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
-	otherSession, _, err := auth.CreateSession(context.Background(), env.store, env.userID)
+	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID))
 	require.NoError(t, err)
 
 	// Verify both sessions are valid.
@@ -1116,7 +1118,7 @@ type onUserAuthTxStore struct {
 	before func()
 }
 
-func (s *onUserAuthTxStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+func (s *onUserAuthTxStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx store.Store) error) error {
 	s.once.Do(s.before)
 	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
 }
@@ -1250,11 +1252,11 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 
 	// Link both to the user.
 	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID: env.userID, ProviderID: "github-1", ProviderSubject: "gh-sub",
+		UserID: userid.MustNew(env.userID), ProviderID: "github-1", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
 	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID: env.userID, ProviderID: "google-1", ProviderSubject: "g-sub",
+		UserID: userid.MustNew(env.userID), ProviderID: "google-1", ProviderSubject: "g-sub",
 	})
 	require.NoError(t, err)
 
@@ -1265,7 +1267,7 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only Google link remains.
-	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), userid.MustNew(env.userID))
 	require.NoError(t, err)
 	assert.Len(t, links, 1)
 	assert.Equal(t, "google-1", links[0].ProviderID)
@@ -1281,7 +1283,7 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 	})
 	require.NoError(t, err)
 	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID: env.userID, ProviderID: "github-2", ProviderSubject: "gh-sub",
+		UserID: userid.MustNew(env.userID), ProviderID: "github-2", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
 
@@ -1291,7 +1293,7 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), userid.MustNew(env.userID))
 	require.NoError(t, err)
 	assert.Empty(t, links)
 }
@@ -1305,7 +1307,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 	})
 	require.NoError(t, err)
 	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID: env.userID, ProviderID: "github-3", ProviderSubject: "gh-sub",
+		UserID: userid.MustNew(env.userID), ProviderID: "github-3", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
 
@@ -1318,7 +1320,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 	assert.Contains(t, err.Error(), "set a password first")
 
 	// Link should still exist.
-	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), userid.MustNew(env.userID))
 	require.NoError(t, err)
 	assert.Len(t, links, 1)
 }
@@ -1430,4 +1432,25 @@ func TestUserService_GetUser_NotFoundForUnknown(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// GetUser's self-lookup branch compares caller.ID.Matches(target), and the only
+// reason a zero caller cannot self-match a blank target is the empty-target
+// refusal above it.
+//
+// That prologue is the load-bearing layer -- Matches is defence in depth behind
+// it -- so this pins the prologue. Without it, a caller whose id is blank and a
+// request naming no user would take the self branch together and be handed a
+// profile for nobody, reported as the caller's own.
+func TestGetUserRejectsEmptyTargetBeforeSelfMatch(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	svc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID: userid.UserID{}, OrgID: "org-1", Username: "blank",
+	})
+
+	_, err := svc.GetUser(ctx, connect.NewRequest(&leapmuxv1.GetUserRequest{UserId: ""}))
+	require.Error(t, err, "an empty target must be refused before the self-match")
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"and refused as a malformed request, not answered as a self-lookup")
 }

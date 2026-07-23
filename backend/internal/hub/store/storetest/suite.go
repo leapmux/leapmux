@@ -17,6 +17,7 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("orgs", s.testOrgs)
 	t.Run("users", s.testUsers)
 	t.Run("sessions", s.testSessions)
+	t.Run("zero id mutations refused", s.testZeroIDMutationsRefused)
 	t.Run("workers", s.testWorkers)
 	t.Run("worker_notifications", s.testWorkerNotifications)
 	t.Run("registrations", s.testRegistrations)

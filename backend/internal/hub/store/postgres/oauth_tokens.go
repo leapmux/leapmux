@@ -6,6 +6,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type oauthTokenStore struct {
@@ -33,7 +34,7 @@ func fromDBOAuthTokens(rows []gendb.OauthToken) []store.OAuthToken {
 
 func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensParams) error {
 	return mapErr(s.conn.q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
-		UserID:       p.UserID,
+		UserID:       p.UserID.String(),
 		ProviderID:   p.ProviderID,
 		AccessToken:  p.AccessToken,
 		RefreshToken: p.RefreshToken,
@@ -44,8 +45,14 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 }
 
 func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams) (*store.OAuthToken, error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return nil, store.ErrNotFound
+	}
 	t, err := s.conn.q.GetOAuthTokens(ctx, gendb.GetOAuthTokensParams{
-		UserID:     p.UserID,
+		UserID:     owner,
 		ProviderID: p.ProviderID,
 	})
 	if err != nil {
@@ -83,13 +90,29 @@ func (s *oauthTokenStore) DeleteByProvider(ctx context.Context, providerID strin
 	return mapErr(s.conn.q.DeleteOAuthTokensByProvider(ctx, providerID))
 }
 
-func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.conn.q.DeleteOAuthTokensByUser(ctx, userID))
+func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return store.ErrInvalidArgument
+	}
+	return mapErr(s.conn.q.DeleteOAuthTokensByUser(ctx, owner))
 }
 
 func (s *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. This method reports only an error,
+		// so returning nil would tell the caller the mutation SUCCEEDED while
+		// addressing no row -- the shape a revocation must never have. See
+		// store.OwnerFilter.
+		return store.ErrInvalidArgument
+	}
 	return mapErr(s.conn.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
-		UserID:     p.UserID,
+		UserID:     owner,
 		ProviderID: p.ProviderID,
 	}))
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -17,8 +18,8 @@ func registerCleanupHandlers(d registrar, svc *Service) {
 // worktrees) for a deleted workspace. This is called via E2EE channel by the
 // frontend after the hub deletes the workspace. Workspace access is enforced
 // by registerWorkspaceGated before this runs.
-func handleCleanupWorkspace(svc *Service) func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
-	return func(_ context.Context, _ string, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
+func handleCleanupWorkspace(svc *Service) func(_ context.Context, _ userid.UserID, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
+	return func(_ context.Context, _ userid.UserID, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
 		workspaceID := r.GetWorkspaceId()
 		// Gate on the channel's accessible set already ran in
 		// registerWorkspaceGated. The hub removes the workspace before

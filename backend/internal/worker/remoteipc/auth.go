@@ -13,12 +13,20 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // TokenInfo describes the credentials a spawned process presents over
 // the local IPC socket.
 type TokenInfo struct {
-	UserID            string
+	// UserID is the typed identity the factory already proved non-zero;
+	// carrying userid.UserID rather than a string keeps this from becoming a
+	// second, untyped copy of Router.UserID that could drift from it and that
+	// would compare with a fail-open `!= ""` instead of IsZero. TokenInfo is a
+	// purely in-process record (no struct tags, never marshalled), so the
+	// string projections belong at its readers -- the Whoami proto field, the
+	// LEAPMUX_REMOTE_USER_ID env var, the local stream-id segment -- not here.
+	UserID            userid.UserID
 	OrgID             string // The user's org. Stable for the lifetime of the spawn — workspaces don't move between orgs.
 	WorkspaceID       string
 	WorkerID          string            // The spawning worker.

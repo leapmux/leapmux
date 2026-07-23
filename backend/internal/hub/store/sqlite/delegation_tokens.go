@@ -6,6 +6,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type delegationTokenStore struct{ conn *sqliteConn }
@@ -37,7 +38,7 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 	return (&sqliteStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*sqliteStore).conn.q.CreateDelegationToken(ctx, gendb.CreateDelegationTokenParams{
 			ID:               p.ID,
-			UserID:           p.UserID,
+			UserID:           p.UserID.String(),
 			WorkerID:         p.WorkerID,
 			WorkspaceID:      p.WorkspaceID,
 			AgentID:          p.AgentID,
@@ -118,8 +119,14 @@ func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDeleg
 	}
 }
 
-func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID string) ([]store.DelegationToken, error) {
-	rows, err := s.conn.q.ListActiveDelegationTokensByUser(ctx, userID)
+func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID userid.UserID) ([]store.DelegationToken, error) {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return nil, nil
+	}
+	rows, err := s.conn.q.ListActiveDelegationTokensByUser(ctx, owner)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -137,6 +144,13 @@ func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, er
 	}, emitCredentialEvent)
 }
 
-func (s *delegationTokenStore) RevokeByUser(ctx context.Context, userID string) (int64, error) {
-	return rowsAffected(s.conn.q.RevokeDelegationTokensByUserFast(ctx, userID))
+func (s *delegationTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return rowsAffected(s.conn.q.RevokeDelegationTokensByUserFast(ctx, owner))
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -40,7 +41,7 @@ const maxReadLimit int64 = channelwire.MaxInnerPayloadBytes
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
-	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register("ListDirectory", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -70,7 +71,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register("ReadFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register("ReadFile", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ReadFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -165,7 +166,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register("StatFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register("StatFile", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.StatFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

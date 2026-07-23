@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/periodic"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 const tokenRefreshInterval = 1 * time.Minute
@@ -60,6 +61,14 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 			continue
 		}
 
+		// A blank owner on an oauth_tokens row is corrupt data; skip the row
+		// rather than letting a zero id address a delete.
+		refreshUID, mintOK := userid.New(tok.UserID)
+		if !mintOK {
+			slog.Error("oauth refresh: token row has a blank user id", "provider_id", tok.ProviderID)
+			continue
+		}
+
 		// Decrypt the refresh token.
 		refreshTokenPlain, err := h.keystore.Decrypt(tok.RefreshToken, keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID))
 		if err != nil {
@@ -71,7 +80,7 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 		if err != nil {
 			slog.Warn("oauth refresh: refresh failed, deleting tokens", "user_id", tok.UserID, "provider_id", tok.ProviderID, "error", err)
 			_ = h.store.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
-				UserID:     tok.UserID,
+				UserID:     refreshUID,
 				ProviderID: tok.ProviderID,
 			})
 			continue

@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
@@ -19,19 +20,19 @@ func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
 	}{
 		{
 			name:        "matching session",
-			user:        &auth.UserInfo{ID: "user", Credential: auth.SessionCredential("session-1")},
+			user:        &auth.UserInfo{ID: userid.MustNew("user"), Credential: auth.SessionCredential("session-1")},
 			channelAuth: channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")},
 			want:        true,
 		},
 		{
 			name:        "different session",
-			user:        &auth.UserInfo{ID: "user", Credential: auth.SessionCredential("session-2")},
+			user:        &auth.UserInfo{ID: userid.MustNew("user"), Credential: auth.SessionCredential("session-2")},
 			channelAuth: channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")},
 		},
 		{
 			name: "matching API token",
 			user: &auth.UserInfo{
-				ID: "user", Credential: auth.APICredential("api-1"),
+				ID: userid.MustNew("user"), Credential: auth.APICredential("api-1"),
 			},
 			channelAuth: channelmgr.AuthInfo{
 				Credential: auth.APICredential("api-1"),
@@ -41,7 +42,7 @@ func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
 		{
 			name: "different API token",
 			user: &auth.UserInfo{
-				ID: "user", Credential: auth.APICredential("api-2"),
+				ID: userid.MustNew("user"), Credential: auth.APICredential("api-2"),
 			},
 			channelAuth: channelmgr.AuthInfo{
 				Credential: auth.APICredential("api-1"),
@@ -50,19 +51,19 @@ func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
 		{
 			name: "credential type mismatch",
 			user: &auth.UserInfo{
-				ID: "user", Credential: auth.APICredential("api-1"),
+				ID: userid.MustNew("user"), Credential: auth.APICredential("api-1"),
 			},
 			channelAuth: channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")},
 		},
 		{
 			name:        "matching credentialless solo user",
-			user:        &auth.UserInfo{ID: "user"},
+			user:        &auth.UserInfo{ID: userid.MustNew("user")},
 			channelAuth: channelmgr.AuthInfo{},
 			want:        true,
 		},
 		{
 			name:        "credentialless user cannot use session channel",
-			user:        &auth.UserInfo{ID: "user"},
+			user:        &auth.UserInfo{ID: userid.MustNew("user")},
 			channelAuth: channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")},
 		},
 	}
@@ -70,6 +71,46 @@ func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, userCanUseChannel(tt.user, tt.channelAuth, "user"))
+		})
+	}
+}
+
+// TestUserCanUseChannelRequiresMatchingIdentity covers the OTHER half of the
+// gate. The table above pins every case at channelUserID == user.ID, so it only
+// ever exercises the credential comparison; the identity comparison
+// (user.ID.Matches) is what keeps one user off another's channel, and it needs
+// its own cases.
+//
+// The empty rows are the fail-close that matters: two empty strings compare
+// equal, so a gate written as `channelUserID == user.ID` would admit a caller
+// whose identity never got populated to a channel whose owner is likewise
+// blank. Matches denies when either side is empty, and each empty row here
+// pairs with a matching-credential channel so the ONLY thing that can refuse it
+// is the identity check.
+func TestUserCanUseChannelRequiresMatchingIdentity(t *testing.T) {
+	sameCred := channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")}
+	userWith := func(id string) *auth.UserInfo {
+		u, _ := userid.New(id)
+		return &auth.UserInfo{ID: u, Credential: auth.SessionCredential("session-1")}
+	}
+
+	tests := []struct {
+		name          string
+		user          *auth.UserInfo
+		channelUserID string
+		want          bool
+	}{
+		{"same user", userWith("user"), "user", true},
+		{"different user", userWith("user"), "other-user", false},
+		{"nil user", nil, "user", false},
+		{"zero user id against a real channel", userWith(""), "user", false},
+		{"real user against a blank channel owner", userWith("user"), "", false},
+		{"blank on both sides must not match", userWith(""), "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, userCanUseChannel(tt.user, sameCred, tt.channelUserID))
 		})
 	}
 }
@@ -124,15 +165,15 @@ func TestChannelWorkspaceUpdateAuthorized(t *testing.T) {
 func TestVerifyDelegationWorkerScopeStoreFreeArms(t *testing.T) {
 	// No store: neither arm may reach one. A nil store makes that mechanical --
 	// if either arm starts doing a lookup, this test panics instead of passing.
-	s := &ChannelService{}
+	a := &WorkerReachAuthorizer{}
 	ctx := context.Background()
 
 	for _, cred := range []auth.CredentialIdentity{
 		auth.SessionCredential("session-1"),
 		auth.APICredential("api-1"),
 	} {
-		user := &auth.UserInfo{ID: "user-1", Credential: cred}
-		assert.NoError(t, s.verifyDelegationWorkerScope(ctx, user, "worker-target"),
+		user := &auth.UserInfo{ID: userid.MustNew("user-1"), Credential: cred}
+		assert.NoError(t, a.verifyDelegationWorkerScope(ctx, user, "worker-target"),
 			"a non-delegation credential must not be gated on the minting worker")
 	}
 
@@ -148,10 +189,10 @@ func TestVerifyDelegationWorkerScopeStoreFreeArms(t *testing.T) {
 	// common `leapmux remote` path must not pay for a query, nor fail when the
 	// target and minter already match.
 	self := &auth.UserInfo{
-		ID:         "user-1",
+		ID:         userid.MustNew("user-1"),
 		Credential: auth.DelegationCredential("d1", "ws-1", "worker-mint"),
 	}
-	assert.NoError(t, s.verifyDelegationWorkerScope(ctx, self, "worker-mint"),
+	assert.NoError(t, a.verifyDelegationWorkerScope(ctx, self, "worker-mint"),
 		"a token must always reach the worker that minted it")
 }
 

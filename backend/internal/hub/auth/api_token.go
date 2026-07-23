@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // TokenPrefix is the canonical leading marker for LeapMux bearer tokens
@@ -444,8 +445,15 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 	if u.DeletedAt != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user deleted"))
 	}
+	// A blank users.id fails closed in the same shape as the two rejections
+	// above, rather than panicking: this runs per bearer validation, so corrupt
+	// store data must deny the request, not crash the handler goroutine.
+	id, ok := userid.New(u.ID)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user not found"))
+	}
 	return &UserInfo{
-		ID:                 u.ID,
+		ID:                 id,
 		OrgID:              u.OrgID,
 		Username:           u.Username,
 		IsAdmin:            u.IsAdmin,

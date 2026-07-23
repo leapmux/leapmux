@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -146,7 +148,7 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		user := SeedUser(t, st, orgID, "cascade-user")
 
 		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   prov.ID,
 			AccessToken:  []byte("access"),
 			RefreshToken: []byte("refresh"),
@@ -157,7 +159,7 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		require.NoError(t, err)
 
 		err = st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-			UserID:          user.ID,
+			UserID:          userid.MustNew(user.ID),
 			ProviderID:      prov.ID,
 			ProviderSubject: "sub-cascade",
 		})
@@ -168,13 +170,13 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 
 		// Tokens should be gone.
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: prov.ID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		// User links should be gone.
-		links, err := st.OAuthUserLinks().ListByUser(ctx, user.ID)
+		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, links)
 	})

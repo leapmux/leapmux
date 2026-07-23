@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -56,7 +58,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	delegationID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 		ID:               delegationID,
-		UserID:           user.ID,
+		UserID:           userid.MustNew(user.ID),
 		WorkerID:         worker.ID,
 		WorkspaceID:      workspaceID,
 		SecretHash:       []byte("dt-secret"),
@@ -70,7 +72,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	rotatedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:               rotatedID,
-		UserID:           user.ID,
+		UserID:           userid.MustNew(user.ID),
 		ClientType:       "cli",
 		ClientName:       "canon-client",
 		SecretHash:       []byte("at-secret"),
@@ -93,7 +95,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	revokedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:         revokedID,
-		UserID:     user.ID,
+		UserID:     userid.MustNew(user.ID),
 		ClientType: "cli",
 		ClientName: "canon-client-revoked",
 		SecretHash: []byte("at-secret-3"),
@@ -115,7 +117,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// oauth_tokens: expires_at on insert, then the ON CONFLICT branch, which
 	// rewrites updated_at.
 	upsert := store.UpsertOAuthTokensParams{
-		UserID:       user.ID,
+		UserID:       userid.MustNew(user.ID),
 		ProviderID:   provider.ID,
 		AccessToken:  []byte("access"),
 		RefreshToken: []byte("refresh"),
@@ -143,7 +145,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// cli_authorization_codes: expires_at on Create, consumed_at on Consume.
 	require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
 		Code:          "canon-code",
-		UserID:        user.ID,
+		UserID:        userid.MustNew(user.ID),
 		CodeChallenge: "challenge",
 		ExpiresAt:     future,
 	}))
@@ -161,7 +163,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code"))
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 		DeviceCode: "canon-device-code",
-		UserID:     user.ID,
+		UserID:     userid.MustNew(user.ID),
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, approved)
@@ -251,7 +253,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// workspace_sections.created_at via its column DEFAULT.
 	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
-		UserID:      user.ID,
+		UserID:      userid.MustNew(user.ID),
 		Name:        "canon-section",
 		Position:    "a0",
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
@@ -260,7 +262,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// oauth_user_links.created_at via its column DEFAULT.
 	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-		UserID:          user.ID,
+		UserID:          userid.MustNew(user.ID),
 		ProviderID:      provider.ID,
 		ProviderSubject: "canon-subject",
 	}))
@@ -287,7 +289,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// users.tokens_revoked_at via RevokeUserTokens, which also enqueues
 	// another pending revocation event.
-	revokedUsers, err := st.Users().RevokeUserTokens(ctx, user.ID)
+	revokedUsers, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 	require.NoError(t, err)
 	require.EqualValues(t, 1, revokedUsers)
 
@@ -312,7 +314,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
 	deletedWs, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 		ID:          workspaceID,
-		OwnerUserID: user.ID,
+		OwnerUserID: userid.MustNew(user.ID),
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, deletedWs)

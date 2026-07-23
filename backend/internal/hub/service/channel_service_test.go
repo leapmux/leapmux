@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type channelTestEnv struct {
@@ -76,7 +77,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	hubtestutil.CreateTestAdmin(t, st)
 
 	cfg := testConfig()
-	wMgr := workermgr.New()
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
@@ -247,7 +248,7 @@ func TestGetWorkerHandshakeParams_RejectsStaleAuthGeneration(t *testing.T) {
 	checker := &freshnessAfterNCalls{staleAfter: 0}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
 	})
 
 	_, err := channelSvc.GetWorkerHandshakeParams(ctx, connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{
@@ -389,17 +390,17 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    user.ID,
+		RegisteredBy:    userid.MustNew(user.ID),
 		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: user.OrgID, OwnerUserID: user.ID, Title: "ws",
+		ID: workspaceID, OrgID: user.OrgID, OwnerUserID: userid.MustNew(user.ID), Title: "ws",
 	}))
 
-	wMgr := workermgr.New()
+	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 100 * time.Millisecond })
 	sent := make(chan *leapmuxv1.ConnectResponse, 1)
@@ -428,7 +429,7 @@ func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) 
 	checker := &freshnessAfterNCalls{staleAfter: 1}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
 	})
 
 	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
@@ -470,7 +471,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 	checker := &freshnessAfterNCalls{staleAfter: 3}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
 	})
 
 	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
@@ -517,7 +518,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 	channelSvc := service.NewChannelService(
 		env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username,
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username,
 	})
 
 	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
@@ -562,7 +563,7 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:                  env.user.ID,
+		ID:                  userid.MustNew(env.user.ID),
 		OrgID:               env.user.OrgID,
 		Username:            env.user.Username,
 		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(50 * time.Millisecond)),
@@ -910,7 +911,7 @@ func (e *channelTestEnv) createWorkspace(t *testing.T, ownerUserID, orgID string
 	err := e.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       orgID,
-		OwnerUserID: ownerUserID,
+		OwnerUserID: userid.MustNew(ownerUserID),
 	})
 	require.NoError(t, err)
 	return wsID
@@ -970,7 +971,7 @@ func TestPrepareWorkspaceAccess_RejectsStaleAuthGeneration(t *testing.T) {
 	checker := &freshnessAfterNCalls{staleAfter: 0}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username, AuthGeneration: 0,
 	})
 
 	_, err := channelSvc.PrepareWorkspaceAccess(ctx, connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
@@ -991,7 +992,7 @@ func TestPrepareWorkspaceAccess_DoesNotWidenDelegationChannel(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	otherWorkspaceID := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: otherWorkspaceID, OrgID: env.user.OrgID, OwnerUserID: env.user.ID, Title: "other-ws",
+		ID: otherWorkspaceID, OrgID: env.user.OrgID, OwnerUserID: userid.MustNew(env.user.ID), Title: "other-ws",
 	}))
 
 	cookieChannelID := id.Generate()
@@ -1022,7 +1023,7 @@ func TestPrepareWorkspaceAccess_DoesNotWidenDelegationChannel(t *testing.T) {
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: env.user.ID, OrgID: env.user.OrgID, Username: env.user.Username, Credential: auth.SessionCredential("session-1"),
+		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username, Credential: auth.SessionCredential("session-1"),
 	})
 
 	_, err := channelSvc.PrepareWorkspaceAccess(ctx, connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
@@ -1215,7 +1216,7 @@ func TestPrepareWorkspaceAccess_NoAccessToWorkspace(t *testing.T) {
 // A Worker serves only the user it is registered to. Owning a workspace never
 // conveys a reach into someone else's Worker, so a caller naming their OWN
 // workspace but another user's worker is still refused here. This pins the
-// verifyWorkerAccess guard in PrepareWorkspaceAccess: the workspace checks
+// WorkerReachAuthorizer guard in PrepareWorkspaceAccess: the workspace checks
 // above it bound WHICH workspace may be named, not WHICH worker.
 func TestPrepareWorkspaceAccess_OwnWorkspaceDoesNotConveyWorkerAccess(t *testing.T) {
 	env := setupChannelTestServer(t)
@@ -1296,13 +1297,13 @@ func TestPrepareWorkspaceAccess_LoadsWorkspaceOnce(t *testing.T) {
 	ctx := context.Background()
 	workspaceID := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: env.user.OrgID, OwnerUserID: env.user.ID, Title: "mine",
+		ID: workspaceID, OrgID: env.user.OrgID, OwnerUserID: userid.MustNew(env.user.ID), Title: "mine",
 	}))
 
 	countingStore := &workspaceLookupCountingStore{Store: env.store}
 	channelSvc := service.NewChannelService(countingStore, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	_, err := channelSvc.PrepareWorkspaceAccess(
-		auth.WithUser(ctx, &auth.UserInfo{ID: env.user.ID, OrgID: env.user.OrgID}),
+		auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID}),
 		connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
 			WorkerId:    env.workerID,
 			WorkspaceId: workspaceID,

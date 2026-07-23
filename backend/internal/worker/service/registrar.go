@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"google.golang.org/grpc/codes"
@@ -150,9 +151,9 @@ type terminalScopedRequest[T any] interface {
 func registerWorkspaceGated[T any, PT workspaceScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
-	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -176,9 +177,9 @@ func registerWorkspaceGated[T any, PT workspaceScopedRequest[T]](
 // Dispatcher / ownerOnlyRegistrar style).
 func agentGatedHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
-	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, row db.Agent, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -198,7 +199,7 @@ func agentGatedHandler[T any, PT agentScopedRequest[T]](
 func registerAgentGated[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchPlain, agentGatedHandler[T, PT](r.svc, fn))
 }
@@ -210,9 +211,9 @@ func registerAgentGated[T any, PT agentScopedRequest[T]](
 // receive the loaded row.
 func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -232,7 +233,7 @@ func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 func registerAgentGatedByID[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchPlain, agentGatedByIDHandler[T, PT](r.svc, fn))
 }
@@ -241,7 +242,7 @@ func registerAgentGatedByID[T any, PT agentScopedRequest[T]](
 func registerAgentGatedByIDTracked[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchTracked, agentGatedByIDHandler[T, PT](r.svc, fn))
 }
@@ -250,9 +251,9 @@ func registerAgentGatedByIDTracked[T any, PT agentScopedRequest[T]](
 // wrapper used by registerTerminalGated.
 func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
-	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -272,7 +273,7 @@ func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
 func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchPlain, terminalGatedHandler[T, PT](r.svc, fn))
 }
@@ -283,9 +284,9 @@ func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 // for handlers that never read the row.
 func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -306,7 +307,7 @@ func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
 func registerTerminalGatedByID[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchPlain, terminalGatedByIDHandler[T, PT](r.svc, fn))
 }
@@ -315,7 +316,7 @@ func registerTerminalGatedByID[T any, PT terminalScopedRequest[T]](
 func registerTerminalGatedByIDTracked[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
 	r.register(method, gateWorkspace, dispatchTracked, terminalGatedByIDHandler[T, PT](r.svc, fn))
 }
@@ -326,9 +327,9 @@ func registerTerminalGatedByIDTracked[T any, PT terminalScopedRequest[T]](
 func registerTerminalForRestartGated(
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
 ) {
-	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var decoded leapmuxv1.RestartTerminalRequest
 		if err := unmarshalRequest(req, &decoded); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -381,9 +382,9 @@ func registerSetFilteredStream(r registrar, method string, handler channel.Handl
 func registerWorkspaceGatedStream[T any, PT workspaceScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, req PT, sender channel.ResponseWriter),
 ) {
-	r.register(method, gateWorkspace, dispatchStreaming, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	r.register(method, gateWorkspace, dispatchStreaming, func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {

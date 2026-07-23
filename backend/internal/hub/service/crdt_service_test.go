@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // memJournal is a minimal in-memory crdt.Journal sufficient for the
@@ -246,7 +247,7 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 // values, so a malicious client cannot spoof them.
 func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "user-alice", OrgID: env.orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: env.orgID})
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
 		OrgId:   env.orgID,
@@ -274,7 +275,7 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 // impersonate the hub or another user.
 func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "user-bob", OrgID: env.orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-bob"), OrgID: env.orgID})
 
 	spoofed := addTabOps("op2", "tB", "root1", "wkr1", "p1")
 	for _, op := range spoofed {
@@ -318,7 +319,7 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 func TestCRDTService_SubmitOps_ForeignOrgIsNotFound(t *testing.T) {
 	env := setupCRDTService(t)
 	// The caller belongs to a DIFFERENT org than the one they name in the request.
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "user-alice", OrgID: "org-alice-personal"})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: "org-alice-personal"})
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
 		OrgId:   env.orgID, // a foreign org id (org-test), not org-alice-personal
@@ -342,7 +343,7 @@ func TestCRDTService_GetMaterialized_ForeignOrgIsNotFound(t *testing.T) {
 	env := setupCRDTService(t)
 	st := hubtestutil.OpenTestStore(t)
 	svc := service.NewCRDTService(st, env.registry, nil, nil)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "user-alice", OrgID: "org-alice-personal"})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: "org-alice-personal"})
 
 	_, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{OrgId: env.orgID}))
 	require.Error(t, err)
@@ -355,7 +356,7 @@ func TestCRDTService_GetMaterialized_ForeignOrgIsNotFound(t *testing.T) {
 // failing, so existing CLI callers that omit org_id keep working.
 func TestCRDTService_SubmitOps_EmptyOrgResolvesToPersonal(t *testing.T) {
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: "user-alice", OrgID: env.orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: env.orgID})
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
 		OrgId:   "", // omitted; resolves to the caller's personal org (env.orgID)
@@ -385,7 +386,7 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 func TestCRDTService_UpdatePresence_DelegationRejectsSiblingWorkspace(t *testing.T) {
 	env := setupCRDTService(t)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         "user-alice",
+		ID:         userid.MustNew("user-alice"),
 		Credential: auth.DelegationCredential("test-delegation", "w1", "worker-mint"),
 	})
 
@@ -410,7 +411,7 @@ func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *tes
 	_ = storetest.SeedWorkspace(t, st, orgID, user.ID, "w1")
 	svc := service.NewCRDTService(st, env.registry, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", "missing-workspace", "worker-mint"),
 	})
@@ -432,7 +433,7 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		workspaceID := storetest.SeedWorkspace(t, st, otherOrgID, user.ID, "Other org")
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
-		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: otherOrgID})
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: otherOrgID})
 		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
 			OrgId: env.orgID, WorkspaceId: workspaceID,
 		}))
@@ -454,7 +455,7 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		// A delegation credential pinned to the right workspace still cannot
 		// heartbeat for a user who does not own it: access is owner-only.
 		ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-			ID:         other.ID,
+			ID:         userid.MustNew(other.ID),
 			OrgID:      env.orgID,
 			Credential: auth.DelegationCredential("delegation-token", workspaceID, "worker-mint"),
 		})
@@ -507,9 +508,9 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 				ID: "shared-id", OrgID: env.orgID, Username: "presence-user",
 			}))
 			require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-				ID: "w1", OrgID: env.orgID, OwnerUserID: "shared-id", Title: "Presence",
+				ID: "w1", OrgID: env.orgID, OwnerUserID: userid.MustNew("shared-id"), Title: "Presence",
 			}))
-			tc.info.ID = "shared-id"
+			tc.info.ID = userid.MustNew("shared-id")
 			svc := service.NewCRDTService(st, env.registry, nil, nil)
 
 			// Subscribe so we can capture the broadcast PresenceUpdate.
@@ -575,33 +576,68 @@ func TestResolveAllowedWorkspaces_FiltersAndDedups(t *testing.T) {
 
 	// Alice owns w1 in her personal org. Bob owns w2 in his.
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: aliceID,
+		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
 	}))
 	bob, err := st.Users().GetByID(ctx, bobID)
 	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-bob", Title: "w-bob", OrgID: bob.OrgID, OwnerUserID: bobID,
+		ID: "w-bob", Title: "w-bob", OrgID: bob.OrgID, OwnerUserID: userid.MustNew(bobID),
 	}))
 
 	// Empty request → returns every workspace alice can read inside her org.
-	allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, alice.OrgID, nil, aliceID)
+	allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), nil, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"w-alice"}, allowed)
 
 	// Requesting Bob's workspace returns nothing (alice has no access).
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, alice.OrgID, []string{"w-bob"}, aliceID)
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"w-bob"}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.Empty(t, allowed)
 
 	// Requesting an unknown id returns nothing rather than an error.
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, alice.OrgID, []string{"ghost"}, aliceID)
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"ghost"}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.Empty(t, allowed)
 
 	// Blank entries inside the requested list are skipped silently.
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, alice.OrgID, []string{"", "w-alice", ""}, aliceID)
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"", "w-alice", ""}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"w-alice"}, allowed)
+}
+
+// TestResolveAllowedWorkspaces_EmptyRequestNeedsSingleOrg pins the refusal on
+// the "every workspace I can read" branch: it is answered by a single-org store
+// query, and ListAccessibleWorkspaces matches org_id EXACTLY (there is no "any
+// org" form). A binding that names no single org must therefore error rather
+// than filter on "", which would return no rows and report "you own nothing"
+// for what is really a caller bug.
+func TestResolveAllowedWorkspaces_EmptyRequestNeedsSingleOrg(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
+	alice, err := st.Users().GetByID(ctx, aliceID)
+	require.NoError(t, err)
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
+	}))
+
+	for name, binding := range map[string]auth.OrgBinding{
+		"any org":      auth.AnyOrg(),
+		"deny-all":     {},
+		"bind empty":   auth.BindOrg(""),
+		"bound (sane)": auth.BindOrg(alice.OrgID),
+	} {
+		t.Run(name, func(t *testing.T) {
+			allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, binding, nil, userid.MustNew(aliceID))
+			if _, ok := binding.ListFilterOrgID(); ok {
+				require.NoError(t, err)
+				assert.ElementsMatch(t, []string{"w-alice"}, allowed)
+				return
+			}
+			require.Error(t, err, "a binding naming no single org must refuse, not return an empty set")
+			assert.Nil(t, allowed)
+		})
+	}
 }
 
 func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
@@ -612,21 +648,30 @@ func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
 	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
 	sibling := storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
 	info := &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	}
 
-	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, nil, info)
+	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), nil, info)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{pinned}, allowed,
 		"an empty delegated workspace request must expand to the pinned workspace only")
 
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, []string{pinned}, info)
+	// AnyOrg is what ListTabs passes for a delegation caller with no org_id,
+	// and it is the ONLY source of an unbound binding. It must still resolve:
+	// the pinned-workspace substitution happens before the org filter, so this
+	// never reaches the single-org store branch that refuses an unbound binding.
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.AnyOrg(), nil, info)
+	require.NoError(t, err,
+		"AnyOrg must not reach the single-org store branch -- the pinned workspace is substituted first")
+	assert.ElementsMatch(t, []string{pinned}, allowed)
+
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{pinned}, info)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{pinned}, allowed)
 
-	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, []string{sibling}, info)
+	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{sibling}, info)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"explicit sibling workspace requests must fail closed instead of silently widening")
@@ -636,8 +681,41 @@ func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
 	// genuinely-empty request does, and NOT widen to every readable workspace the way
 	// a non-delegation empty request does. This is the case the middle bool return of
 	// delegationScopedWorkspaceRequest disambiguates.
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, orgID, []string{""}, info)
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{""}, info)
 	require.NoError(t, err)
 	assert.Empty(t, allowed,
 		"a delegated request of only blank workspace ids must resolve to no workspaces, not the pinned one")
+}
+
+// A deny-all binding must produce the SAME client-visible answer whether or not
+// the caller named workspace ids.
+//
+// The empty-request arm has always refused (ListFilterOrgID reports the binding
+// is not expressible as a store filter). The bulk arm used to answer (nil, nil),
+// which ListTabs renders as a 200 with an empty tab list -- so one authorization
+// verdict reached the client as two incompatible behaviours: "stop retrying, you
+// are denied" versus "you have no tabs". Unreachable today, so this pins the
+// shape a future deny-all source inherits.
+func TestResolveAllowedWorkspaces_DenyAllRefusesUnderBothArms(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
+	alice, err := st.Users().GetByID(ctx, aliceID)
+	require.NoError(t, err)
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
+	}))
+
+	for name, requested := range map[string][]string{
+		"empty request": nil,
+		"bulk request":  {"w-alice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			allowed, err := service.ResolveAllowedWorkspacesForTest(
+				ctx, st, auth.DenyAllOrg(), requested, userid.MustNew(aliceID))
+			require.Error(t, err, "a deny-all binding must refuse, not return an empty set")
+			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+			assert.Nil(t, allowed)
+		})
+	}
 }

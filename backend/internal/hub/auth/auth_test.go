@@ -16,10 +16,21 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func setupStore(t *testing.T) store.Store {
 	return hubtestutil.OpenTestStore(t)
+}
+
+// mustBoundOrg builds the concrete-org binding the CRDT-path predicates
+// require. It fails the test on an empty id rather than silently handing over a
+// zero BoundOrg, so a fixture bug cannot masquerade as an authorization deny.
+func mustBoundOrg(t *testing.T, orgID string) auth.BoundOrg {
+	t.Helper()
+	bound, ok := auth.NewBoundOrg(orgID)
+	require.True(t, ok, "test fixture must supply a non-empty org id")
+	return bound
 }
 
 func createTestUser(t *testing.T, st store.Store) (orgID, userID string) {
@@ -79,32 +90,32 @@ func TestWorkspaceCanReadIsOwnerOnly(t *testing.T) {
 	}
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: orgID, OwnerUserID: ownerID, Title: "mine",
+		ID: workspaceID, OrgID: orgID, OwnerUserID: userid.MustNew(ownerID), Title: "mine",
 	}))
 
-	allowed, err := auth.WorkspaceCanRead(ctx, st, workspaceID, ownerID)
+	allowed, err := auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, userid.MustNew(ownerID))
 	require.NoError(t, err)
 	assert.True(t, allowed, "the owner reads their own workspace")
 
-	allowed, err = auth.WorkspaceCanRead(ctx, st, workspaceID, sameOrgID)
+	allowed, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, userid.MustNew(sameOrgID))
 	require.NoError(t, err)
 	assert.False(t, allowed, "a same-org non-owner is denied")
 
-	allowed, err = auth.WorkspaceCanRead(ctx, st, workspaceID, outsiderID)
+	allowed, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, userid.MustNew(outsiderID))
 	require.NoError(t, err)
 	assert.False(t, allowed, "a user from another org is denied")
 
-	allowed, err = auth.WorkspaceCanRead(ctx, st, "missing-workspace", ownerID)
+	allowed, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), "missing-workspace", userid.MustNew(ownerID))
 	require.NoError(t, err)
 	assert.False(t, allowed, "a missing workspace is a deny, not an error")
 
 	// Empty inputs fail closed without a store round-trip.
-	allowed, err = auth.WorkspaceCanRead(ctx, st, "", ownerID)
+	allowed, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), "", userid.MustNew(ownerID))
 	require.NoError(t, err)
 	assert.False(t, allowed, "an empty workspace id fails closed")
-	allowed, err = auth.WorkspaceCanRead(ctx, st, workspaceID, "")
+	allowed, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, userid.UserID{})
 	require.NoError(t, err)
-	assert.False(t, allowed, "an empty user id fails closed")
+	assert.False(t, allowed, "a zero user id fails closed")
 }
 
 // WorkspaceReadableByUsersInOrg is the batch counterpart of
@@ -128,43 +139,44 @@ func TestWorkspaceReadableByUsersInOrg(t *testing.T) {
 	}
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: orgID, OwnerUserID: ownerID, Title: "ws",
+		ID: workspaceID, OrgID: orgID, OwnerUserID: userid.MustNew(ownerID), Title: "ws",
 	}))
 
-	// The empty user id entry pins the fail-closed guard: it must never be
-	// marked readable, even though it can't match a real owner.
-	users := []string{ownerID, strangerID, ""}
-	readable, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, orgID, workspaceID, users)
+	// The zero UserID entry pins the fail-closed guard: it must never be
+	// marked readable (and its String() key is ""), even though it can't
+	// match a real owner.
+	users := []userid.UserID{userid.MustNew(ownerID), userid.MustNew(strangerID), {}}
+	readable, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, mustBoundOrg(t, orgID), workspaceID, users)
 	require.NoError(t, err)
 	assert.True(t, readable[ownerID], "owner reads")
 	assert.False(t, readable[strangerID], "a non-owner is denied")
-	assert.False(t, readable[""], "an empty user id is never readable")
+	assert.False(t, readable[""], "a zero user id is never readable")
 
 	// The batch verdict must match the per-user check for every user.
 	for _, userID := range users {
-		single, err := auth.WorkspaceCanAccessInOrg(ctx, st, orgID, workspaceID, userID)
+		single, err := auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgID), workspaceID, userID)
 		require.NoError(t, err)
-		assert.Equal(t, single, readable[userID], "batch must agree with per-user check for %s", userID)
+		assert.Equal(t, single, readable[userID.String()], "batch must agree with per-user check for %s", userID)
 	}
 
 	// A wrong org fails closed (deny all), and an unknown workspace denies all.
-	wrongOrg, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, otherOrgID, workspaceID, users)
+	wrongOrg, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, mustBoundOrg(t, otherOrgID), workspaceID, users)
 	require.NoError(t, err)
 	assert.Empty(t, wrongOrg, "org cross-check must deny every user when orgID mismatches")
-	missing, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, orgID, id.Generate(), users)
+	missing, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, mustBoundOrg(t, orgID), id.Generate(), users)
 	require.NoError(t, err)
 	assert.Empty(t, missing, "an unknown workspace denies every user")
 
 	// Empty inputs short-circuit to an empty (non-nil) result.
-	empty, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, orgID, workspaceID, nil)
+	empty, err := auth.WorkspaceReadableByUsersInOrg(ctx, st, mustBoundOrg(t, orgID), workspaceID, nil)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
 
 // WorkspacesReadableByUser is the many-workspaces/single-user read resolver.
-// It must honor owner-only access, apply the org binding when orgID is set,
-// SKIP that binding when orgID is empty (the delegation contract), drop
-// unknown IDs, dedup the request, and preserve input order.
+// It must honor owner-only access, apply BindOrg when set, skip the binding
+// via AnyOrg (the delegation contract), deny on a zero OrgBinding / BindOrg(""),
+// drop unknown IDs, dedup the request, and preserve input order.
 func TestWorkspacesReadableByUser(t *testing.T) {
 	st := setupStore(t)
 	ctx := context.Background()
@@ -184,38 +196,54 @@ func TestWorkspacesReadableByUser(t *testing.T) {
 	wsOwnA1 := id.Generate()
 	wsOwnA2 := id.Generate()
 	wsOwnB := id.Generate()
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnA1, OrgID: orgA, OwnerUserID: ownerID, Title: "own-a1"}))
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnA2, OrgID: orgA, OwnerUserID: ownerID, Title: "own-a2"}))
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnB, OrgID: orgB, OwnerUserID: ownerID, Title: "own-b"}))
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnA1, OrgID: orgA, OwnerUserID: userid.MustNew(ownerID), Title: "own-a1"}))
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnA2, OrgID: orgA, OwnerUserID: userid.MustNew(ownerID), Title: "own-a2"}))
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsOwnB, OrgID: orgB, OwnerUserID: userid.MustNew(ownerID), Title: "own-b"}))
 
 	unknown := id.Generate()
 	// Request order deliberately interleaves the cross-org and unknown IDs.
 	requested := []string{wsOwnA2, wsOwnB, wsOwnA1, unknown}
+	owner := userid.MustNew(ownerID)
+	outsider := userid.MustNew(outsiderID)
 
 	// orgA binding: owner sees its two orgA workspaces in request order; the
 	// cross-org wsOwnB is excluded and the unknown ID is dropped.
-	inA, err := auth.WorkspacesReadableByUser(ctx, st, orgA, ownerID, requested)
+	inA, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgA), owner, requested)
 	require.NoError(t, err)
 	assert.Equal(t, []string{wsOwnA2, wsOwnA1}, inA, "org binding excludes the cross-org workspace and unknown IDs, preserving input order")
 
-	// Empty orgID skips the org binding (delegation contract): the owner now
+	// AnyOrg skips the org binding (delegation contract): the owner now
 	// sees all three owned workspaces regardless of org, in request order.
-	crossOrg, err := auth.WorkspacesReadableByUser(ctx, st, "", ownerID, requested)
+	crossOrg, err := auth.WorkspacesReadableByUser(ctx, st, auth.AnyOrg(), owner, requested)
 	require.NoError(t, err)
-	assert.Equal(t, []string{wsOwnA2, wsOwnB, wsOwnA1}, crossOrg, "empty orgID resolves ownership across orgs")
+	assert.Equal(t, []string{wsOwnA2, wsOwnB, wsOwnA1}, crossOrg, "AnyOrg resolves ownership across orgs")
+
+	// BindOrg("") / zero OrgBinding deny everything (fail closed).
+	emptyOrg, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(""), owner, requested)
+	require.NoError(t, err)
+	assert.Empty(t, emptyOrg, "BindOrg(\"\") fails closed")
+	var zeroBinding auth.OrgBinding
+	zeroOrg, err := auth.WorkspacesReadableByUser(ctx, st, zeroBinding, owner, requested)
+	require.NoError(t, err)
+	assert.Empty(t, zeroOrg, "zero OrgBinding fails closed")
 
 	// A non-owner reads nothing.
-	outsider, err := auth.WorkspacesReadableByUser(ctx, st, orgA, outsiderID, requested)
+	outsiderGot, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgA), outsider, requested)
 	require.NoError(t, err)
-	assert.Empty(t, outsider, "no ownership means no read access")
+	assert.Empty(t, outsiderGot, "no ownership means no read access")
+
+	// Zero UserID denies everything.
+	zeroUser, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgA), userid.UserID{}, requested)
+	require.NoError(t, err)
+	assert.Empty(t, zeroUser, "zero UserID fails closed")
 
 	// Duplicate requested IDs collapse to one.
-	dedup, err := auth.WorkspacesReadableByUser(ctx, st, orgA, ownerID, []string{wsOwnA1, wsOwnA1, wsOwnA1})
+	dedup, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgA), owner, []string{wsOwnA1, wsOwnA1, wsOwnA1})
 	require.NoError(t, err)
 	assert.Equal(t, []string{wsOwnA1}, dedup, "duplicate requested IDs collapse")
 
 	// Empty inputs short-circuit.
-	none, err := auth.WorkspacesReadableByUser(ctx, st, orgA, ownerID, nil)
+	none, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgA), owner, nil)
 	require.NoError(t, err)
 	assert.Empty(t, none)
 }
@@ -239,30 +267,41 @@ func TestWorkspaceCanAccessInOrg(t *testing.T) {
 		require.NoError(t, st.Users().Create(ctx, u))
 	}
 	ws := id.Generate()
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: ws, OrgID: orgA, OwnerUserID: ownerID, Title: "ws"}))
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: ws, OrgID: orgA, OwnerUserID: userid.MustNew(ownerID), Title: "ws"}))
+	owner := userid.MustNew(ownerID)
+	other := userid.MustNew(otherID)
 
 	// Owner may access.
-	can, err := auth.WorkspaceCanAccessInOrg(ctx, st, orgA, ws, ownerID)
+	can, err := auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgA), ws, owner)
 	require.NoError(t, err)
 	assert.True(t, can, "owner may access")
 
 	// A non-owner may not.
-	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, orgA, ws, otherID)
+	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgA), ws, other)
 	require.NoError(t, err)
 	assert.False(t, can, "a non-owner is denied")
 
 	// Org cross-check: the owner cannot access the workspace bound to another org.
-	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, orgB, ws, ownerID)
+	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgB), ws, owner)
 	require.NoError(t, err)
 	assert.False(t, can, "org binding excludes a workspace homed in another org")
 
 	// Missing workspace and empty inputs fail closed (a deny, not an error).
-	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, orgA, id.Generate(), ownerID)
+	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgA), id.Generate(), owner)
 	require.NoError(t, err)
 	assert.False(t, can, "a missing workspace is a deny, not an error")
-	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, "", ws, ownerID)
+	// The empty-org deny moved to the constructor: NewBoundOrg refuses it, so a
+	// caller must branch explicitly instead of relying on a silent prologue.
+	// AnyOrg() cannot be converted to a BoundOrg at all, which is the point --
+	// on this path it used to compile and then deny every workspace.
+	_, boundOK := auth.NewBoundOrg("")
+	assert.False(t, boundOK, "NewBoundOrg(\"\") must refuse")
+	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, auth.BoundOrg{}, ws, owner)
 	require.NoError(t, err)
-	assert.False(t, can, "empty orgID fails closed")
+	assert.False(t, can, "a zero BoundOrg still fails closed")
+	can, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgA), ws, userid.UserID{})
+	require.NoError(t, err)
+	assert.False(t, can, "zero UserID fails closed")
 }
 
 func TestLogin_InvalidPassword(t *testing.T) {
@@ -311,7 +350,7 @@ func (s *beforeTransactionStore) RunInTransaction(ctx context.Context, fn func(t
 	return s.Store.RunInTransaction(ctx, fn)
 }
 
-func (s *beforeTransactionStore) RunInUserAuthTransaction(ctx context.Context, userID string, fn func(tx store.Store) error) error {
+func (s *beforeTransactionStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx store.Store) error) error {
 	if err := s.before(); err != nil {
 		return err
 	}
@@ -379,10 +418,10 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		_, userID := createTestUser(t, st)
 		ctx := context.Background()
 
-		sessionID, _, err := auth.CreateSession(ctx, st, userID)
+		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID))
 		require.NoError(t, err)
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userID)
+			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
 
@@ -397,10 +436,10 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		ctx := context.Background()
 
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userID)
+			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
-		sessionID, _, err := auth.CreateSession(ctx, st, userID)
+		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID))
 		require.NoError(t, err)
 
 		info, err := auth.ValidateToken(ctx, st, sessionID)
@@ -418,7 +457,7 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:         id.Generate(),
-		UserID:     userID,
+		UserID:     userid.MustNew(userID),
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
@@ -428,14 +467,14 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("x25519"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: orgID, OwnerUserID: userID, Title: "test",
+		ID: workspaceID, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "test",
 	}))
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
@@ -444,14 +483,14 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		Position: "a", TileID: "tile-1",
 	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		ID: id.Generate(), UserID: userID, WorkerID: workerID,
+		ID: id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID,
 		WorkspaceID: workspaceID, IssuedForTabID: tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       []byte("hash"), ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
 	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-		apiCount, delegationCount, err := auth.RevokeAllUserCredentials(ctx, tx, userID)
+		apiCount, delegationCount, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 		require.Equal(t, int64(1), apiCount)
 		require.Equal(t, int64(1), delegationCount)
 		return err
@@ -493,9 +532,42 @@ func TestValidateToken_InvalidToken(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A session joined to a blank user id must be REFUSED, not panic.
+//
+// This is the highest-traffic identity mint site -- every cookie-authenticated
+// RPC -- and its input is store data, so a corrupt or hand-seeded row has to
+// fail closed the same way the not-found branch does. Minting with MustNew
+// would panic here instead, turning a denial into a torn connection that
+// repeats on every retry with the same session.
+func TestValidateToken_BlankUserIDIsUnauthenticatedNotPanic(t *testing.T) {
+	st := setupStore(t)
+	ctx := context.Background()
+	orgID := id.Generate()
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "blank-id-org"}))
+	// SQLite accepts "" as a TEXT primary key, so a blank-id user row (and a
+	// session referencing it) inserts cleanly -- the corrupt-data shape this
+	// guards against.
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: "", OrgID: orgID, Username: "blank-id", PasswordHash: "h",
+		DisplayName: "Blank", PasswordSet: true,
+	}))
+	token := id.Generate()
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		ID: token, UserID: userid.UserID{}, ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}))
+
+	assert.NotPanics(t, func() {
+		info, err := auth.ValidateToken(ctx, st, token)
+		require.Error(t, err, "a blank joined user id must not authenticate")
+		assert.Nil(t, info)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+			"it fails closed in the same shape as an invalid token, not as a fault")
+	})
+}
+
 func TestContextUserRoundtrip(t *testing.T) {
 	info := &auth.UserInfo{
-		ID:       "user-1",
+		ID:       userid.MustNew("user-1"),
 		OrgID:    "org-1",
 		Username: "alice",
 		IsAdmin:  true,
@@ -517,7 +589,7 @@ func TestResolveOrgID_EmptyReturnsPersonalOrg(t *testing.T) {
 	orgID, userID := createTestUser(t, st)
 	_ = st
 
-	user := &auth.UserInfo{ID: userID, OrgID: orgID, Username: "testuser"}
+	user := &auth.UserInfo{ID: userid.MustNew(userID), OrgID: orgID, Username: "testuser"}
 	resolved, err := auth.ResolveOrgID(user, "")
 	require.NoError(t, err)
 	assert.Equal(t, orgID, resolved)
@@ -528,7 +600,7 @@ func TestResolveOrgID_OwnOrgReturnsOrgID(t *testing.T) {
 	orgID, userID := createTestUser(t, st)
 	_ = st
 
-	user := &auth.UserInfo{ID: userID, OrgID: orgID, Username: "testuser"}
+	user := &auth.UserInfo{ID: userid.MustNew(userID), OrgID: orgID, Username: "testuser"}
 	resolved, err := auth.ResolveOrgID(user, orgID)
 	require.NoError(t, err)
 	assert.Equal(t, orgID, resolved)
@@ -542,7 +614,7 @@ func TestResolveOrgID_ForeignOrgReturnsNotFound(t *testing.T) {
 	otherOrgID := id.Generate()
 	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: otherOrgID, Name: "other-org"}))
 
-	user := &auth.UserInfo{ID: userID, OrgID: orgID, Username: "testuser"}
+	user := &auth.UserInfo{ID: userid.MustNew(userID), OrgID: orgID, Username: "testuser"}
 	_, err := auth.ResolveOrgID(user, otherOrgID)
 	require.Error(t, err)
 
@@ -571,48 +643,53 @@ func TestWorkspaceCanAccessInOrgEnforcesOrgBindingAndDeletion(t *testing.T) {
 		require.NoError(t, st.Users().Create(ctx, u))
 	}
 	wsID := id.Generate()
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsID, OrgID: orgID, OwnerUserID: ownerID, Title: "readable"}))
+	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{ID: wsID, OrgID: orgID, OwnerUserID: userid.MustNew(ownerID), Title: "readable"}))
 
-	assertRead := func(checkOrgID, userID string, want bool, msg string) {
+	assertRead := func(bound auth.BoundOrg, userID userid.UserID, want bool, msg string) {
 		t.Helper()
-		got, err := auth.WorkspaceCanAccessInOrg(ctx, st, checkOrgID, wsID, userID)
+		got, err := auth.WorkspaceCanAccessInOrg(ctx, st, bound, wsID, userID)
 		require.NoError(t, err)
 		assert.Equal(t, want, got, msg)
 	}
-	assertRead(orgID, ownerID, true, "owner reads in the workspace's org")
-	assertRead(orgID, strangerID, false, "a non-owner is denied")
-	assertRead(otherOrgID, ownerID, false, "the org binding rejects a mismatched org")
-	assertRead("", ownerID, false, "an empty org fails closed")
+	assertRead(mustBoundOrg(t, orgID), userid.MustNew(ownerID), true, "owner reads in the workspace's org")
+	assertRead(mustBoundOrg(t, orgID), userid.MustNew(strangerID), false, "a non-owner is denied")
+	assertRead(mustBoundOrg(t, otherOrgID), userid.MustNew(ownerID), false, "the org binding rejects a mismatched org")
+	// An empty org can no longer REACH this predicate: NewBoundOrg refuses it,
+	// so the deny is now a call-site branch rather than a silent prologue.
+	_, ok := auth.NewBoundOrg("")
+	assert.False(t, ok, "NewBoundOrg(\"\") must refuse, so callers deny explicitly")
+	assertRead(auth.BoundOrg{}, userid.MustNew(ownerID), false, "a zero BoundOrg still fails closed")
+	assertRead(mustBoundOrg(t, orgID), userid.UserID{}, false, "zero UserID fails closed")
 
-	missing, err := auth.WorkspaceCanAccessInOrg(ctx, st, orgID, "missing-workspace", ownerID)
+	missing, err := auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgID), "missing-workspace", userid.MustNew(ownerID))
 	require.NoError(t, err)
 	assert.False(t, missing, "a missing workspace is denied")
 
 	// A soft-deleted workspace is unreadable even by its owner.
-	_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: ownerID})
+	_, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: userid.MustNew(ownerID)})
 	require.NoError(t, err)
-	assertRead(orgID, ownerID, false, "a soft-deleted workspace is unreadable")
+	assertRead(mustBoundOrg(t, orgID), userid.MustNew(ownerID), false, "a soft-deleted workspace is unreadable")
 }
 
 // WorkspaceCanRead must fail closed on an empty workspaceID at its OWN boundary
 // -- not one helper deeper in loadWorkspace -- so a future refactor that swaps
 // loadWorkspace for a lookup without the empty-id guard cannot let an empty id
 // reach IsOwner (which would then answer against whatever workspace row a cache
-// or bulk path handed back). The empty userID fail-close is the same shape;
+// or bulk path handed back). The zero UserID fail-close is the same shape;
 // both are mechanical here rather than dependent on a helper keeping its guard.
 func TestWorkspaceCanReadFailsClosedOnEmptyIDs(t *testing.T) {
 	st := setupStore(t)
 	for _, tc := range []struct {
 		name        string
-		userID      string
+		userID      userid.UserID
 		workspaceID string
 	}{
-		{"empty workspace id", "real-user", ""},
-		{"empty user id", "", "real-ws"},
-		{"both empty", "", ""},
+		{"empty workspace id", userid.MustNew("real-user"), ""},
+		{"zero user id", userid.UserID{}, "real-ws"},
+		{"both empty/zero", userid.UserID{}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, err := auth.WorkspaceCanRead(context.Background(), st, tc.workspaceID, tc.userID)
+			ok, err := auth.WorkspaceCanRead(context.Background(), st, auth.AnyOrg(), tc.workspaceID, tc.userID)
 			assert.NoError(t, err)
 			assert.False(t, ok, "an empty userID or workspaceID must fail closed at the boundary")
 		})
@@ -623,12 +700,59 @@ func TestWorkspaceCanReadFailsClosedOnEmptyIDs(t *testing.T) {
 // IsOwner is advertised as the one owner-only rule every access check routes
 // through, so a nil workspace (a store path that returned (nil, nil), or a batch
 // entry that failed to load) must be a deny rather than a nil-pointer panic on
-// the OwnerUserID deref, and an empty userID must never match a real owner id.
+// the OwnerUserID deref, and a zero UserID must never match a real owner id.
 func TestIsOwnerFailsClosed(t *testing.T) {
 	ws := &store.Workspace{ID: "ws1", OwnerUserID: "owner-1"}
-	assert.True(t, auth.IsOwner(ws, "owner-1"), "the owner matches")
-	assert.False(t, auth.IsOwner(ws, "someone-else"), "a non-owner is denied")
-	assert.False(t, auth.IsOwner(ws, ""), "an empty userID never matches")
-	assert.False(t, auth.IsOwner(nil, "owner-1"), "a nil workspace is a deny, not a panic")
-	assert.False(t, auth.IsOwner(nil, ""), "nil workspace + empty userID is a deny")
+	assert.True(t, auth.IsOwner(ws, userid.MustNew("owner-1")), "the owner matches")
+	assert.False(t, auth.IsOwner(ws, userid.MustNew("someone-else")), "a non-owner is denied")
+	assert.False(t, auth.IsOwner(ws, userid.UserID{}), "a zero UserID never matches")
+	assert.False(t, auth.IsOwner(nil, userid.MustNew("owner-1")), "a nil workspace is a deny, not a panic")
+	assert.False(t, auth.IsOwner(nil, userid.UserID{}), "nil workspace + zero UserID is a deny")
+}
+
+// A blank-id user row must be REFUSED at login, not panicked on.
+//
+// lockedUser.ID is a column, and MustNew's contract ("the caller already knows
+// this is non-empty") holds for a literal but never for stored data. A panic
+// here fires inside RunInUserAuthTransaction on the credential path, so the
+// client sees a torn connection on every retry instead of the same clean
+// Unauthenticated every other bad-credential case returns -- and the
+// transaction unwinds through a panic rather than a rollback. SQLite accepts ""
+// as a TEXT primary key, so the row below inserts cleanly.
+func TestLogin_BlankUserIDRowIsRefusedNotPanicked(t *testing.T) {
+	st := setupStore(t)
+	ctx := context.Background()
+
+	orgID := id.Generate()
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "blank-id-org"}))
+	hash, err := password.Hash("password123")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: "", OrgID: orgID, Username: "blankid",
+		PasswordHash: hash, DisplayName: "Blank", PasswordSet: true,
+	}))
+
+	// The password is CORRECT, so this reaches the session mint -- the deny
+	// must come from the blank id, not from a failed credential check.
+	require.NotPanics(t, func() {
+		token, user, _, loginErr := auth.Login(ctx, st, "blankid", "password123")
+		assert.Error(t, loginErr, "a user row that names no user must not authenticate")
+		assert.Empty(t, token, "no session token may be issued")
+		assert.Nil(t, user)
+	})
+
+	// And no session row was written for the blank id, which would otherwise
+	// authenticate as blank on every later request.
+	//
+	// Counted through ListAllActive, NOT ListByUserID: the latter routes the
+	// caller id through store.OwnerFilter and short-circuits to an empty page
+	// for a zero UserID BEFORE touching SQL, so asserting on it passes whether
+	// or not the row exists. That is the assertion this replaced -- deleting
+	// Login's mint guard left it green, which is exactly the fail-open it was
+	// written to catch.
+	all, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+		PageParams: store.PageParams{Limit: 10},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, all.Rows, "a refused login must leave no session behind")
 }

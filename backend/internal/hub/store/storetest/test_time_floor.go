@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -72,7 +74,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		refreshExpiresAt := floorProbe(base, 1)
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 			ID:               tokenID,
-			UserID:           user.ID,
+			UserID:           userid.MustNew(user.ID),
 			WorkerID:         worker.ID,
 			WorkspaceID:      wsID,
 			SecretHash:       []byte("secret"),
@@ -98,7 +100,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		refreshExpiresAt := floorProbe(base, 1)
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID:               tokenID,
-			UserID:           user.ID,
+			UserID:           userid.MustNew(user.ID),
 			ClientType:       "cli",
 			ClientName:       "floor-client",
 			SecretHash:       []byte("secret"),
@@ -125,7 +127,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		expiresAt := floorProbe(base, 0)
 		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
 			ID:        sessionID,
-			UserID:    user.ID,
+			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: expiresAt,
 		}))
 		sess, err := st.Sessions().GetByID(ctx, sessionID)
@@ -164,7 +166,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		extendedExpiresAt := floorProbe(base, 1)
 		n, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
 			ID:        regID,
-			CreatedBy: user.ID,
+			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: extendedExpiresAt,
 		})
 		require.NoError(t, err)
@@ -182,7 +184,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
 			Code:          "floor-code",
-			UserID:        user.ID,
+			UserID:        userid.MustNew(user.ID),
 			CodeChallenge: "challenge",
 			ExpiresAt:     expiresAt,
 		}))
@@ -297,7 +299,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       user.ID,
+			UserID:       userid.MustNew(user.ID),
 			ProviderID:   prov.ID,
 			AccessToken:  []byte("access"),
 			RefreshToken: []byte("refresh"),
@@ -307,7 +309,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		}))
 
 		tok, err := st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: prov.ID,
 		})
 		require.NoError(t, err)

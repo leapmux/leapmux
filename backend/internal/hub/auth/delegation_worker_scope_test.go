@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // scopeFixture seeds a user who owns one worker, and returns both ids.
@@ -38,7 +39,7 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       id.Generate(),
-		RegisteredBy:    userID,
+		RegisteredBy:    userid.MustNew(userID),
 		PublicKey:       []byte("x25519"),
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
@@ -48,7 +49,7 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 
 func delegationUser(userID, minterID string) *auth.UserInfo {
 	return &auth.UserInfo{
-		ID:         userID,
+		ID:         userid.MustNew(userID),
 		Credential: auth.DelegationCredential("tok-"+minterID, "ws-1", minterID),
 	}
 }
@@ -62,7 +63,7 @@ func TestResolveDelegationWorkerScope_NonDelegationIsUnboundedAndStoreFree(t *te
 		"api":     auth.APICredential("a1"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			scope, err := auth.ResolveDelegationWorkerScope(ctx, nil, &auth.UserInfo{ID: "u1", Credential: cred})
+			scope, err := auth.ResolveDelegationWorkerScope(ctx, nil, &auth.UserInfo{ID: userid.MustNew("u1"), Credential: cred})
 			require.NoError(t, err)
 			assert.False(t, scope.IsBounded(), "a non-delegation credential must carry no worker bound")
 			assert.True(t, scope.Allows("any-worker"), "an unbounded scope must allow every worker")
@@ -210,7 +211,7 @@ func TestCheckDelegationWorkerScope_StoreFreeArms(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, auth.CheckDelegationWorkerScope(ctx, nil,
-		&auth.UserInfo{ID: "u1", Credential: auth.SessionCredential("s1")}, "worker-target"),
+		&auth.UserInfo{ID: userid.MustNew("u1"), Credential: auth.SessionCredential("s1")}, "worker-target"),
 		"a non-delegation credential must not be gated on the minting worker")
 
 	require.NoError(t, auth.CheckDelegationWorkerScope(ctx, nil,

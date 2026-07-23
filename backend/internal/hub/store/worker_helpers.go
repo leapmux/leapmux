@@ -1,26 +1,24 @@
 package store
 
-import (
-	"context"
-)
+import "context"
 
 // GetOwnedWorker implements the common GetOwned logic shared across all backends.
 // It fetches the worker by ID, rejects soft-deleted rows, and requires the caller
 // to be the user the Worker is registered to. A Worker only ever serves its
 // registrant, so ownership is the whole rule -- there is no cross-user path.
 //
-// An empty caller UserID never matches: it is refused up front rather than left
-// to the RegisteredBy comparison, so this shared cross-dialect helper cannot
-// fail open on a blank-registrant row the way its auth-side siblings
-// (auth.WorkerCanUse, auth.IsOwner) already refuse an empty identity. Today
-// workers.registered_by is NOT NULL, so this is defensive -- but the guard keeps
-// the store-side owner rule symmetric with those predicates (issue #288).
+// A zero caller UserID never matches: it is refused up front, and the ownership
+// comparison itself goes through Matches, which additionally refuses a blank
+// registered_by on the row. Today workers.registered_by is NOT NULL, so the
+// blank-row half is defensive -- but SQLite accepts "" as a TEXT primary key,
+// so a blank-id user (and rows owned by it) is representable, and two empty
+// strings must never read as the same principal.
 func GetOwnedWorker(
 	ctx context.Context,
 	p GetOwnedWorkerParams,
 	getByID func(ctx context.Context, id string) (*Worker, error),
 ) (*Worker, error) {
-	if p.UserID == "" {
+	if p.UserID.IsZero() {
 		return nil, ErrNotFound
 	}
 	w, err := getByID(ctx, p.WorkerID)
@@ -30,7 +28,7 @@ func GetOwnedWorker(
 	if w.DeletedAt != nil {
 		return nil, ErrNotFound
 	}
-	if w.RegisteredBy != p.UserID {
+	if !p.UserID.Matches(w.RegisteredBy) {
 		return nil, ErrNotFound
 	}
 	return w, nil

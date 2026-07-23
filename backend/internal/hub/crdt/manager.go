@@ -74,8 +74,8 @@ type SubmitInput struct {
 	// Without it a leaked token minted by worker A carrying its user's identity
 	// can point a tab at ANY worker that user owns through SetTabRegisterOp,
 	// because CanUseWorker only asks "may this USER use this worker". That is
-	// the same cross-machine reach ChannelService.verifyWorkerAccess refuses
-	// one layer over.
+	// the same cross-machine reach service.WorkerReachAuthorizer refuses one
+	// layer over.
 	WorkerScope func(workerID string) bool
 	Internal    bool
 }

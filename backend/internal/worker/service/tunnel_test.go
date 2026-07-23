@@ -19,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -57,7 +58,7 @@ func TestOpenTunnelConn_OwnershipEnforcement(t *testing.T) {
 		TargetAddr: "127.0.0.1",
 		TargetPort: 1234,
 	})
-	d.DispatchWith(context.Background(), "user-2", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
 		Method:  "OpenTunnelConn",
 		Payload: payload,
 	}, w2)
@@ -88,7 +89,7 @@ func TestTunnelMutationOwnershipEnforcement(t *testing.T) {
 			payload, err := proto.Marshal(test.request)
 			require.NoError(t, err)
 			writer := newTestWriter()
-			d.DispatchWith(context.Background(), "user-2", &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
 				Method:  test.method,
 				Payload: payload,
 			}, writer)
@@ -589,7 +590,7 @@ func TestTunnelManagerGrantReadCredit_UnknownConnAcks(t *testing.T) {
 	manager := newTunnelManager()
 	w := newTestWriter()
 
-	manager.grantReadCredit(context.Background(), "user-1", &leapmuxv1.GrantTunnelReadCreditRequest{
+	manager.grantReadCredit(context.Background(), userid.MustNew("user-1"), &leapmuxv1.GrantTunnelReadCreditRequest{
 		ConnId: "never-opened",
 		Credit: 4,
 	}, w)

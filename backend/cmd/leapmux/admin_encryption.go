@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -198,8 +200,19 @@ func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
 					return fmt.Errorf("re-encrypt refresh_token: %w", err)
 				}
 
+				// A blank owner on an oauth_tokens row is corrupt data. Report
+				// it rather than panicking through MustNew: this loop commits
+				// each Upsert independently, so a panic would abort a key
+				// rotation with some rows already at the new version and no
+				// diagnosable cause. Matches the production refresh path in
+				// hub/service/oauth_refresh.go.
+				tokUID, mintOK := userid.New(tok.UserID)
+				if !mintOK {
+					return fmt.Errorf("oauth_tokens row for provider %s has a blank user id", tok.ProviderID)
+				}
+
 				err = st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-					UserID:       tok.UserID,
+					UserID:       tokUID,
 					ProviderID:   tok.ProviderID,
 					AccessToken:  newAccess,
 					RefreshToken: newRefresh,

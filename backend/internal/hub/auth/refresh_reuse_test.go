@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -41,7 +43,7 @@ func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID s
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		ClientType:  "cli",
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(currentSecret),

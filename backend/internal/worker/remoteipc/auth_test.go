@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,7 +17,7 @@ import (
 func TestTokenStore_RegisterLookup(t *testing.T) {
 	store := remoteipc.NewTokenStore()
 	info := remoteipc.TokenInfo{
-		UserID:      "u-1",
+		UserID:      userid.MustNew("u-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "agent-1",
@@ -40,7 +42,7 @@ func TestTokenStore_LookupUnknownReturnsErr(t *testing.T) {
 
 func TestTokenStore_RevokeRemoves(t *testing.T) {
 	store := remoteipc.NewTokenStore()
-	store.Register("t-1", remoteipc.TokenInfo{UserID: "u-1"})
+	store.Register("t-1", remoteipc.TokenInfo{UserID: userid.MustNew("u-1")})
 
 	_, err := store.Lookup("t-1")
 	require.NoError(t, err)
@@ -53,7 +55,7 @@ func TestTokenStore_RevokeRemoves(t *testing.T) {
 
 func TestTokenStore_SetDelegationTokenID(t *testing.T) {
 	store := remoteipc.NewTokenStore()
-	store.Register("t-1", remoteipc.TokenInfo{UserID: "u-1"})
+	store.Register("t-1", remoteipc.TokenInfo{UserID: userid.MustNew("u-1")})
 	store.SetDelegationTokenID("t-1", "del-token-123")
 
 	got, err := store.Lookup("t-1")
@@ -64,14 +66,14 @@ func TestTokenStore_SetDelegationTokenID(t *testing.T) {
 func TestTokenStore_RevokeIdempotent(t *testing.T) {
 	store := remoteipc.NewTokenStore()
 	store.Revoke("never-registered")
-	store.Register("t-1", remoteipc.TokenInfo{UserID: "u-1"})
+	store.Register("t-1", remoteipc.TokenInfo{UserID: userid.MustNew("u-1")})
 	store.Revoke("t-1")
 	store.Revoke("t-1")
 }
 
 func TestEnvVars_NoSessionCookieLeak(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
-		UserID:      "u-1",
+		UserID:      userid.MustNew("u-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "agent-1",
@@ -96,16 +98,16 @@ func TestTokenStore_DistinctTokensResolveDistinctly(t *testing.T) {
 	s := remoteipc.NewTokenStore()
 	tokA := "A" + strings.Repeat("X", 32) + "A"
 	tokB := "B" + strings.Repeat("X", 32) + "B"
-	infoA := remoteipc.TokenInfo{UserID: "user-A"}
-	infoB := remoteipc.TokenInfo{UserID: "user-B"}
+	infoA := remoteipc.TokenInfo{UserID: userid.MustNew("user-A")}
+	infoB := remoteipc.TokenInfo{UserID: userid.MustNew("user-B")}
 	s.Register(tokA, infoA)
 	s.Register(tokB, infoB)
 
 	gotA, err := s.Lookup(tokA)
 	require.NoError(t, err)
-	assert.Equal(t, "user-A", gotA.UserID)
+	assert.Equal(t, userid.MustNew("user-A"), gotA.UserID)
 
 	gotB, err := s.Lookup(tokB)
 	require.NoError(t, err)
-	assert.Equal(t, "user-B", gotB.UserID, "distinct tokens must resolve to distinct TokenInfo")
+	assert.Equal(t, userid.MustNew("user-B"), gotB.UserID, "distinct tokens must resolve to distinct TokenInfo")
 }

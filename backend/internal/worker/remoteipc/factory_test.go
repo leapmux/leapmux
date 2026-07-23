@@ -17,6 +17,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/locallisten"
@@ -36,16 +37,16 @@ type scopedKey struct {
 	TabType                    int32
 }
 
-func (f *fakeDelegationLifecycle) Acquire(userID, workspaceID, tabID string, tabType int32) {
+func (f *fakeDelegationLifecycle) Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.acquires = append(f.acquires, scopedKey{UserID: userID, WorkspaceID: workspaceID, TabID: tabID, TabType: tabType})
+	f.acquires = append(f.acquires, scopedKey{UserID: userID.String(), WorkspaceID: workspaceID, TabID: tabID, TabType: tabType})
 }
 
-func (f *fakeDelegationLifecycle) Release(_ context.Context, userID, workspaceID string) error {
+func (f *fakeDelegationLifecycle) Release(_ context.Context, userID userid.UserID, workspaceID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.releases = append(f.releases, scopedKey{UserID: userID, WorkspaceID: workspaceID})
+	f.releases = append(f.releases, scopedKey{UserID: userID.String(), WorkspaceID: workspaceID})
 	return nil
 }
 
@@ -89,7 +90,7 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      "user-1",
+		UserID:      userid.MustNew("user-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "agent-1",
@@ -125,7 +126,7 @@ func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	}
 
 	envs, cleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:      "user-1",
+		UserID:      userid.MustNew("user-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "term-1",
@@ -158,7 +159,7 @@ func TestFactory_AgentSpawnAdvertisesWorkspaceScope(t *testing.T) {
 	withTempSocketRoot(t)
 	f := &remoteipc.Factory{WorkerID: "worker-A"}
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      "user-1",
+		UserID:      userid.MustNew("user-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "agent-1",
@@ -177,7 +178,7 @@ func TestFactory_NilDelegationIsTolerated(t *testing.T) {
 	f := &remoteipc.Factory{WorkerID: "worker-A"}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      "user-1",
+		UserID:      userid.MustNew("user-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "agent-1",
@@ -255,7 +256,7 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 	var cleanups []func()
 	for i := 0; i < 3; i++ {
 		envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-			UserID:      "user-1",
+			UserID:      userid.MustNew("user-1"),
 			WorkspaceID: "ws-1",
 			WorkerID:    "worker-A",
 			TabID:       "agent-" + string(rune('A'+i)),
@@ -268,7 +269,7 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 
 	// One terminal in the same scope.
 	envs, termCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:      "user-1",
+		UserID:      userid.MustNew("user-1"),
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "term-1",
@@ -286,4 +287,38 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 	}
 	_, rel = lifecycle.snapshot()
 	assert.Len(t, rel, 4, "every cleanup must Release exactly once")
+}
+
+// TestFactory_SpawnRefusesEmptyUserID pins the local-IPC minting boundary:
+// a zero user id must fail the spawn rather than building a Router as nobody
+// (the same fail-closed rule ChannelOpen applies on the E2EE path).
+//
+// It must return service.ErrMissingIdentity specifically, not just any error:
+// spawnRemoteIPC keys on that sentinel to decide FATAL-vs-degrade, so a plain
+// errors.New here would silently make the spawn start without remote control
+// instead of failing the tab.
+func TestFactory_SpawnRefusesEmptyUserID(t *testing.T) {
+	withTempSocketRoot(t)
+	f := &remoteipc.Factory{WorkerID: "worker-A"}
+
+	_, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
+		UserID:      userid.UserID{},
+		WorkspaceID: "ws-1",
+		WorkerID:    "worker-A",
+		TabID:       "agent-1",
+	})
+	require.Error(t, err, "spawn with a zero user id must fail")
+	assert.Nil(t, cleanup)
+	assert.ErrorIs(t, err, service.ErrMissingIdentity,
+		"the sentinel is what makes the caller treat this as fatal rather than degradable")
+
+	_, cleanup, err = f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:      userid.UserID{},
+		WorkspaceID: "ws-1",
+		WorkerID:    "worker-A",
+		TabID:       "term-1",
+	})
+	require.Error(t, err, "terminal spawn with a zero user id must fail")
+	assert.Nil(t, cleanup)
+	assert.ErrorIs(t, err, service.ErrMissingIdentity)
 }

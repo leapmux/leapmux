@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -318,7 +319,7 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
 		Method:  method,
 		Payload: payload,
 	}, w)

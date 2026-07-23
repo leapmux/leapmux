@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type noopWorkspaceChannelCloser struct{}
@@ -52,7 +53,7 @@ func TestWorkspaceServiceDeleteWorkspaceClosesChannelsWithWorkspaceSnapshots(t *
 	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "deleted")
 	closer := &recordingWorkspaceChannelCloser{}
 	svc := service.NewWorkspaceService(st, nil, closer)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: owner.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID), OrgID: orgID})
 
 	_, err := svc.DeleteWorkspace(ctx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID}))
 	require.NoError(t, err)
@@ -72,7 +73,7 @@ func TestWorkspaceService_CreateWorkspace_RejectsNonMemberOrg(t *testing.T) {
 	user := storetest.SeedUser(t, st, homeOrg, "alice") // member of homeOrg only
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: homeOrg})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: homeOrg})
 
 	// A non-member org is rejected with NotFound and creates nothing.
 	_, err := svc.CreateWorkspace(ctx, connect.NewRequest(&leapmuxv1.CreateWorkspaceRequest{
@@ -82,7 +83,7 @@ func TestWorkspaceService_CreateWorkspace_RejectsNonMemberOrg(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	inOther, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-		UserID: user.ID, OrgID: otherOrg,
+		UserID: userid.MustNew(user.ID), OrgID: otherOrg,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, inOther, "a rejected create must not leave a phantom workspace in the non-member org")
@@ -114,7 +115,7 @@ func TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome(t *testing.T) {
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:    user.ID,
+		ID:    userid.MustNew(user.ID),
 		OrgID: orgID,
 	})
 
@@ -144,7 +145,7 @@ func TestWorkspaceService_ListWorkspaces_DelegationPinsToScope(t *testing.T) {
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
@@ -173,7 +174,7 @@ func TestWorkspaceService_ListWorkspaces_ForeignOrgReturnsNothing(t *testing.T) 
 	storetest.SeedWorkspace(t, st, otherOrg, ownerB.ID, "not mine")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: viewer.ID, OrgID: homeOrg})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
 
 	// Explicitly target the foreign org: nothing may surface.
 	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{OrgId: otherOrg}))
@@ -204,7 +205,7 @@ func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) 
 	// Sanity: the pinned workspace is returned when accessible.
 	resp, err := svc.ListWorkspaces(
 		auth.WithUser(context.Background(), &auth.UserInfo{
-			ID:         user.ID,
+			ID:         userid.MustNew(user.ID),
 			OrgID:      orgID,
 			Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 		}),
@@ -217,7 +218,7 @@ func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) 
 	// not surface it.
 	resp, err = svc.ListWorkspaces(
 		auth.WithUser(context.Background(), &auth.UserInfo{
-			ID:         user.ID,
+			ID:         userid.MustNew(user.ID),
 			OrgID:      orgID,
 			Credential: auth.DelegationCredential("test-delegation", otherWS, "worker-mint"),
 		}),
@@ -239,7 +240,7 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 	wsID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "Owned")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: other.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(other.ID), OrgID: orgID})
 
 	_, err := svc.GetWorkspace(ctx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
@@ -249,7 +250,7 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 		"a non-owner must be denied access to someone else's workspace")
 
 	// The owner still reads it.
-	ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: owner.ID, OrgID: orgID})
+	ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID), OrgID: orgID})
 	resp, err := svc.GetWorkspace(ownerCtx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
 	}))
@@ -266,7 +267,7 @@ func TestWorkspaceService_GetWorkspace_DelegationCollapsesSiblingToNotFound(t *t
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
@@ -291,7 +292,7 @@ func TestWorkspaceService_TabReads_DelegationPinsToScope(t *testing.T) {
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
@@ -339,7 +340,7 @@ func TestWorkspaceService_TabReads_DelegationUsesPinnedWorkspaceOrg(t *testing.T
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      homeOrgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
@@ -377,7 +378,7 @@ func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
 		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
 
 	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-1"}))
 	require.NoError(t, err)
@@ -418,7 +419,7 @@ func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 		s.Nodes["leaf-1"] = &leapmuxv1.NodeRecord{NodeId: "leaf-1", ParentId: "mid-1"}
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
 
 	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "leaf-1"}))
 	require.NoError(t, err)
@@ -445,7 +446,7 @@ func TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound(t *testing.T)
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", allowedWS, "worker-mint"),
 	})
@@ -488,7 +489,7 @@ func TestWorkspaceService_LocateTile_DelegationUsesPinnedWorkspaceOrg(t *testing
 
 	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         user.ID,
+		ID:         userid.MustNew(user.ID),
 		OrgID:      homeOrgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
@@ -518,7 +519,7 @@ func TestWorkspaceService_LocateTile_ForeignWorkspaceTileIsNotFound(t *testing.T
 	})
 
 	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: viewer.ID, OrgID: homeOrg})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
 
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-secret"}))
 	require.Error(t, err)
@@ -535,7 +536,7 @@ func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
 	user := storetest.SeedUser(t, st, orgID, "alice")
 	env := setupLocateTileEnv(t, orgID)
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
 
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: ""}))
 	require.Error(t, err)
@@ -552,7 +553,7 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 	user := storetest.SeedUser(t, st, orgID, "alice")
 	env := setupLocateTileEnv(t, orgID)
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
 
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "ghost"}))
 	require.Error(t, err)
@@ -606,7 +607,7 @@ func TestWorkspaceService_LocateTile_TransientOrgErrorWithNoMatchIsRetryable(t *
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: viewer.ID, OrgID: homeOrg})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "missing"}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),

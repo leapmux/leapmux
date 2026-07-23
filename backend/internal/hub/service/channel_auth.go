@@ -6,7 +6,7 @@ import (
 )
 
 func userCanUseChannel(user *auth.UserInfo, channelAuth channelmgr.AuthInfo, channelUserID string) bool {
-	if user == nil || user.ID == "" || channelUserID != user.ID {
+	if user == nil || !user.ID.Matches(channelUserID) {
 		return false
 	}
 	return channelAuth.Credential.Matches(user.Credential)

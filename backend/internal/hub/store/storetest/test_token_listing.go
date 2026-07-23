@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +20,7 @@ func seedAPITokenForList(t *testing.T, st store.Store, userID, clientType, clien
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		ClientType:  clientType,
 		ClientName:  clientName,
 		SecretHash:  []byte("hash"),
@@ -34,7 +36,7 @@ func seedDelegationTokenForList(t *testing.T, st store.Store, userID, workspaceI
 	tokenID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		ID:          tokenID,
-		UserID:      userID,
+		UserID:      userid.MustNew(userID),
 		WorkerID:    worker.ID,
 		WorkspaceID: workspaceID,
 		SecretHash:  []byte("hash"),

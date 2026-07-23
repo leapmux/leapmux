@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // workerStore implements store.WorkerStore backed by PostgreSQL.
@@ -16,7 +17,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:              p.ID,
 		AuthToken:       p.AuthToken,
-		RegisteredBy:    p.RegisteredBy,
+		RegisteredBy:    p.RegisteredBy.String(),
 		PublicKey:       p.PublicKey,
 		MlkemPublicKey:  p.MlkemPublicKey,
 		SlhdsaPublicKey: p.SlhdsaPublicKey,
@@ -65,9 +66,15 @@ func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams
 }
 
 func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) (store.Page[store.Worker], error) {
+	owner, ok := store.OwnerFilter(p.RegisteredBy)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return store.Page[store.Worker]{}, nil
+	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListWorkersByUserIDParams, error) {
-			return listWorkersByUserIDParams(p.RegisteredBy, p.Cursor, p.Limit)
+			return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
 		},
 		s.conn.q.ListWorkersByUserID,
 		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
@@ -135,9 +142,15 @@ func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerP
 }
 
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
+	owner, ok := store.OwnerFilter(p.RegisteredBy)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return 0, nil
+	}
 	return rowsAffected(s.conn.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
 		ID:           p.ID,
-		RegisteredBy: p.RegisteredBy,
+		RegisteredBy: owner,
 	}))
 }
 
@@ -149,8 +162,14 @@ func (s *workerStore) MarkDeleted(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.MarkWorkerDeleted(ctx, id))
 }
 
-func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy string) error {
-	return mapErr(s.conn.q.MarkAllWorkersDeletedByUser(ctx, registeredBy))
+func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy userid.UserID) error {
+	owner, ok := store.OwnerFilter(registeredBy)
+	if !ok {
+		// Binding "" here would address every blank-registrant row for
+		// deletion; reporting success having deleted nothing is no better.
+		return store.ErrInvalidArgument
+	}
+	return mapErr(s.conn.q.MarkAllWorkersDeletedByUser(ctx, owner))
 }
 
 func fromDBWorker(w gendb.Worker) *store.Worker {

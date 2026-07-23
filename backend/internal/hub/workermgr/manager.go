@@ -11,7 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
 
 // Conn represents a connected worker's bidirectional stream.
@@ -92,14 +94,114 @@ type Manager struct {
 
 	regMu      sync.Mutex
 	regWaiters map[string]chan struct{} // regToken -> notify channel
+
+	// reachAuth gates every USER-DIRECTED read of the registry. It is supplied
+	// at construction by the component that owns the ownership +
+	// delegation-scope rules, because those need the store and this package
+	// must not. Immutable after New, so "is this registry gated?" is a fact
+	// about the value rather than a runtime state a later caller can change.
+	reachAuth ReachAuthorizer
 }
 
-// New creates a new Manager.
-func New() *Manager {
+// ReachAuthorizer answers "may this user reach this worker".
+//
+// Making the registry hold this -- rather than trusting each entrypoint to call
+// a check first -- is what moves the gate from convention into structure: there
+// is no exported accessor that takes a user-supplied worker id and skips it.
+type ReachAuthorizer interface {
+	AuthorizeWorkerReach(ctx context.Context, user *auth.UserInfo, workerID string) error
+}
+
+// ErrReachDenied is the deny a registry with no user-directed reach returns,
+// and the deny ConnForUser returns for a nil principal. It is an answer, not a
+// fault.
+//
+// It carries a connect code because requireOnlineWorker forwards it verbatim to
+// the RPC boundary, alongside the coded denials the real authorizer returns
+// (NotFound / PermissionDenied). A bare error there maps to CodeUnknown, which
+// tells a client "something went wrong, try again" about a decision that will
+// never change -- so a permanent deny would drive a permanent retry loop.
+// errors.Is still matches on identity, so callers testing for the sentinel are
+// unaffected.
+var ErrReachDenied = connect.NewError(connect.CodePermissionDenied,
+	errors.New("workermgr: worker reach is not authorized on this registry"))
+
+// denyAllReach refuses every user-directed reach.
+type denyAllReach struct{}
+
+func (denyAllReach) AuthorizeWorkerReach(context.Context, *auth.UserInfo, string) error {
+	return ErrReachDenied
+}
+
+// DenyAllReach is the authorizer for a registry that serves no user-directed
+// reach at all (a relay-only composition, or a test that only exercises
+// Register/trusted-path accessors). Naming it keeps the fail-closed intent
+// legible and greppable, mirroring auth.DenyAllScope -- and, because New
+// requires SOME authorizer, choosing it is deliberate rather than an omission.
+func DenyAllReach() ReachAuthorizer { return denyAllReach{} }
+
+// ConnForUser is the ONLY user-directed way to reach a worker connection.
+//
+// It runs the ReachAuthorizer the Manager was constructed with before touching
+// the map, so an entrypoint that takes a worker id off a request cannot read
+// the registry without the ownership + delegation-scope check -- previously a
+// convention each new entrypoint had to remember. A nil connection with a nil
+// error means the worker is not reachable -- authorized but offline, or being
+// torn down.
+func (m *Manager) ConnForUser(ctx context.Context, user *auth.UserInfo, workerID string) (*Conn, error) {
+	// A nil principal is a deny, not a panic. This accessor is the fail-closed
+	// gate, so its own degenerate input has to be refused HERE -- every
+	// authorizer dereferences user.ID, so passing nil through would crash the
+	// request goroutine instead of answering "no".
+	if user == nil {
+		return nil, ErrReachDenied
+	}
+	if err := m.reachAuth.AuthorizeWorkerReach(ctx, user, workerID); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	// A worker the operator has deregistered is not reachable by its user, even
+	// while its connection is still open.
+	//
+	// Deregistration is asynchronous: MarkDeregistering runs when the notification
+	// is sent, and ClearDeregistering only after the worker ACKS it. Without this
+	// check the whole of that window -- unbounded, since an offline worker's
+	// notification sits queued until it reconnects -- still handed the user a live
+	// conn for a machine being torn down. Deregistering is the operator's
+	// containment action; a containment action that leaves the thing reachable
+	// until it politely acknowledges is not one.
+	//
+	// The trusted path is deliberately NOT gated: ConnForTrustedPath is how the
+	// deregister notification itself reaches the worker, so gating it would make
+	// the teardown unable to complete and the flag permanent.
+	if m.deregistering[workerID] {
+		return nil, nil
+	}
+	return m.conns[workerID], nil
+}
+
+// New creates a new Manager gated by a. Pass DenyAllReach() for a registry that
+// serves no user-directed reach.
+//
+// The authorizer is required rather than wired afterwards so a hub that forgets
+// the gate cannot be built at all: "unwired" is not a reachable state, and two
+// components cannot silently repoint one registry's gate at each other.
+func New(a ReachAuthorizer) *Manager {
+	// nilcheck, not `a == nil`: a nil concrete value converted to the interface
+	// is a NON-nil interface value, and it would panic on the first reach
+	// instead of being caught at construction -- exactly the failure this
+	// constructor exists to make impossible. The shared helper covers every
+	// nilable kind; a Pointer-only check would still admit a nil func- or
+	// map-typed authorizer, which is an ordinary shape for a policy hook.
+	if nilcheck.IsNilDependency(a) {
+		panic("workermgr: New requires a ReachAuthorizer (use DenyAllReach() for an ungated-by-design registry)")
+	}
 	return &Manager{
 		conns:         make(map[string]*Conn),
 		deregistering: make(map[string]bool),
 		regWaiters:    make(map[string]chan struct{}),
+		reachAuth:     a,
 	}
 }
 
@@ -152,22 +254,33 @@ func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 	return removed
 }
 
-// Get returns a worker connection by ID, or nil if not connected.
-func (m *Manager) Get(workerID string) *Conn {
+// ConnForTrustedPath returns a worker connection by ID for a caller whose
+// worker id did NOT come from a user request -- a server-initiated flow
+// (notification delivery, revocation teardown) or an already-authorized
+// channel record.
+//
+// It performs no authorization, which is why the name says so. Anything
+// holding a user-supplied worker id must use ConnForUser instead.
+func (m *Manager) ConnForTrustedPath(workerID string) *Conn {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.conns[workerID]
 }
 
-// IsOnline returns true if the worker is currently connected.
-func (m *Manager) IsOnline(workerID string) bool {
+// OnlineForTrustedPath reports whether a worker is currently connected, for a
+// caller whose worker id did not come from a user request. The online/offline
+// bit is a cross-tenant liveness oracle when probed with an arbitrary id, so a
+// user-supplied id must go through ConnForUser (nil conn == offline) instead.
+func (m *Manager) OnlineForTrustedPath(workerID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.conns[workerID]
 	return ok
 }
 
-// MarkDeregistering marks a worker as being deregistered.
+// MarkDeregistering marks a worker as being deregistered, which makes it
+// unreachable through ConnForUser until the flag is cleared. The trusted path
+// stays open so the deregister notification itself can be delivered.
 func (m *Manager) MarkDeregistering(workerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/remote"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 )
 
@@ -50,7 +51,7 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 	sockURL := shortIPCSocket(t)
 	rawToken := remoteipc.MintToken()
 	info := remoteipc.TokenInfo{
-		UserID:      "u-1",
+		UserID:      userid.MustNew("u-1"),
 		WorkerID:    "worker-A",
 		WorkspaceID: "ws-1",
 		TabID:       "term-1",
@@ -60,7 +61,7 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 		SocketURL: sockURL,
 		Token:     rawToken,
 		TokenInfo: info,
-		Router:    &remoteipc.Router{WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"}},
+		Router:    &remoteipc.Router{WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"}},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
@@ -101,7 +102,7 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	sockURL := shortIPCSocket(t)
 	rawToken := remoteipc.MintToken()
 	info := remoteipc.TokenInfo{
-		UserID:      "u-1",
+		UserID:      userid.MustNew("u-1"),
 		WorkerID:    "worker-A",
 		WorkspaceID: "ws-1",
 		TabID:       "term-1",
@@ -118,7 +119,7 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 		TokenInfo: info,
 		Router: &remoteipc.Router{
 			WorkerID:     "worker-A",
-			UserID:       "u-1",
+			UserID:       userid.MustNew("u-1"),
 			WorkspaceIDs: []string{"ws-1"},
 		},
 	})

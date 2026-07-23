@@ -259,7 +259,7 @@ func (r *authenticatedLeaseRegistry) addLeaseLocked(lease *authenticatedLease) u
 	r.nextLeaseID++
 	id := r.nextLeaseID
 	r.leases[id] = lease
-	indexLease(r.leasesByUser, lease.user.ID, id)
+	indexLease(r.leasesByUser, lease.user.ID.String(), id)
 	if sessionID := lease.user.Credential.SessionID(); sessionID != "" {
 		indexLease(r.leasesBySession, sessionID, id)
 	}
@@ -271,7 +271,7 @@ func (r *authenticatedLeaseRegistry) addLeaseLocked(lease *authenticatedLease) u
 
 func (r *authenticatedLeaseRegistry) removeLeaseLocked(id uint64, lease *authenticatedLease) {
 	delete(r.leases, id)
-	removeLeaseIndex(r.leasesByUser, lease.user.ID, id)
+	removeLeaseIndex(r.leasesByUser, lease.user.ID.String(), id)
 	if sessionID := lease.user.Credential.SessionID(); sessionID != "" {
 		removeLeaseIndex(r.leasesBySession, sessionID, id)
 	}

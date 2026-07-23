@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type adminCommand struct {
@@ -300,6 +301,24 @@ func resolveUser(ctx context.Context, st store.Store, userID, username string) (
 		return nil, fmt.Errorf("get user by username: %w", err)
 	}
 	return user, nil
+}
+
+// mintResolvedUserID mints the typed id of a user row resolveUser returned.
+//
+// The id is a COLUMN, not a literal, so it cannot go through userid.MustNew: a
+// blank one is corrupt data in the users table, and the admin commands that
+// need the typed form are the ones about to hand it to an owner-scoped bulk
+// mutation or listing (delete-user, revoke-password, revoke-sessions,
+// list-sessions). An unminted id unwraps to "" there, which MATCHES every
+// blank-owner row instead of none -- so a command would either touch the wrong
+// rows or report success having revoked nothing. One refusal, one wording, for
+// every command that resolves a user by --id/--username.
+func mintResolvedUserID(user *store.User) (userid.UserID, error) {
+	uid, ok := userid.New(user.ID)
+	if !ok {
+		return userid.UserID{}, fmt.Errorf("user %q has a blank id", user.Username)
+	}
+	return uid, nil
 }
 
 // resolveUserFilter resolves an optional --user-id/--username flag pair into a

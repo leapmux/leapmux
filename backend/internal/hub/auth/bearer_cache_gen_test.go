@@ -15,6 +15,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type validationErrorStore struct {
@@ -161,10 +162,10 @@ func TestBearerCacheFresh_TTL(t *testing.T) {
 	now := time.Now()
 	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
 
-	fresh := cachedSession{user: &UserInfo{ID: "u"}, cachedAt: now, gen: 0}
+	fresh := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: now, gen: 0}
 	assert.True(t, a.bearerCacheFresh(key, fresh), "newly cached entry must be fresh")
 
-	stale := cachedSession{user: &UserInfo{ID: "u"}, cachedAt: now.Add(-2 * sessionCacheTTL), gen: 0}
+	stale := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: now.Add(-2 * sessionCacheTTL), gen: 0}
 	assert.False(t, a.bearerCacheFresh(key, stale), "entry beyond TTL must be stale")
 }
 
@@ -174,7 +175,7 @@ func TestValidateTokenCachedUnindexesStaleSessionWhenRevalidationFails(t *testin
 	state.revocationGen.Store(2)
 	state.userInvalidations.Store("user", revocationMark{generation: 2, recordedAt: time.Now()})
 	state.sessions.Store("session", cachedSession{
-		user:     &UserInfo{ID: "user"},
+		user:     &UserInfo{ID: userid.MustNew("user")},
 		cachedAt: time.Now(),
 		gen:      1,
 	})
@@ -203,18 +204,18 @@ func TestSweepCachesOnce_EvictsStaleRetainsFresh(t *testing.T) {
 	state := &authState{}
 
 	// Sessions: one stale, one fresh, each with a reverse index entry.
-	state.sessions.Store("s-stale", cachedSession{user: &UserInfo{ID: "u-stale"}, cachedAt: stale})
+	state.sessions.Store("s-stale", cachedSession{user: &UserInfo{ID: userid.MustNew("u-stale")}, cachedAt: stale})
 	indexSyncMap(&state.userSessions, "u-stale", "s-stale")
-	state.sessions.Store("s-fresh", cachedSession{user: &UserInfo{ID: "u-fresh"}, cachedAt: now})
+	state.sessions.Store("s-fresh", cachedSession{user: &UserInfo{ID: userid.MustNew("u-fresh")}, cachedAt: now})
 	indexSyncMap(&state.userSessions, "u-fresh", "s-fresh")
 
 	// Bearers: one stale, one fresh, each with both reverse index entries.
 	staleBearer := bearerCacheKey(BearerKindAPI, "tok-stale", []byte("sec"))
-	state.bearers.Store(staleBearer, cachedSession{user: &UserInfo{ID: "ub-stale"}, cachedAt: stale})
+	state.bearers.Store(staleBearer, cachedSession{user: &UserInfo{ID: userid.MustNew("ub-stale")}, cachedAt: stale})
 	indexSyncMap(&state.bearerKeysByToken, staleBearer.bearerRef(), staleBearer)
 	indexSyncMap(&state.userBearerKeys, "ub-stale", staleBearer)
 	freshBearer := bearerCacheKey(BearerKindAPI, "tok-fresh", []byte("sec"))
-	state.bearers.Store(freshBearer, cachedSession{user: &UserInfo{ID: "ub-fresh"}, cachedAt: now})
+	state.bearers.Store(freshBearer, cachedSession{user: &UserInfo{ID: userid.MustNew("ub-fresh")}, cachedAt: now})
 	indexSyncMap(&state.bearerKeysByToken, freshBearer.bearerRef(), freshBearer)
 	indexSyncMap(&state.userBearerKeys, "ub-fresh", freshBearer)
 
@@ -249,13 +250,13 @@ func TestSweepCachesOnce_EvictsStaleRetainsFresh(t *testing.T) {
 func TestSweepCachesOnce_RefreshBetweenScanAndDeleteSurvives(t *testing.T) {
 	now := time.Now()
 	state := &authState{}
-	staleSnap := cachedSession{user: &UserInfo{ID: "u"}, cachedAt: now.Add(-2 * sessionCacheTTL)}
+	staleSnap := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: now.Add(-2 * sessionCacheTTL)}
 	state.sessions.Store("s", staleSnap)
 	indexSyncMap(&state.userSessions, "u", "s")
 
 	// A concurrent slide refreshes the entry between the lock-free scan (which
 	// observed staleSnap) and the locked delete.
-	freshSnap := cachedSession{user: &UserInfo{ID: "u"}, cachedAt: now}
+	freshSnap := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: now}
 	state.sessions.Store("s", freshSnap)
 
 	// The locked phase deletes the snapshot the scan observed -- its CAS must fail.
@@ -548,7 +549,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 }
 
 func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
-	solo := &UserInfo{ID: "solo", UserAuthGeneration: 1}
+	solo := &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1}
 	state := &authState{}
 	a := &authInterceptor{soloUser: solo, state: state}
 	cache := &AuthContextRegistry{state: state}
@@ -597,7 +598,7 @@ func TestEvictByUserIDInvalidatesBearerUserInfo(t *testing.T) {
 	state := &authState{}
 	registry := &AuthContextRegistry{state: state}
 	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
-	cached := cachedSession{user: &UserInfo{ID: "user", Credential: APICredential("token")}}
+	cached := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("token")}}
 	state.bearers.Store(key, cached)
 	registry.state.indexBearerCacheEntry(key, cached)
 
@@ -626,7 +627,7 @@ func TestAuthenticateHTTPRefreshesSyntheticUserGeneration(t *testing.T) {
 	req := httptest.NewRequest("GET", "/ws/channel", nil)
 
 	user, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
-		SoloUser: &UserInfo{ID: "solo", UserAuthGeneration: 1},
+		SoloUser: &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1},
 		Contexts: contexts,
 	})
 
@@ -639,14 +640,14 @@ func TestAuthenticatedLeaseExactSessionRevocation(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	revokedCtx, revokedCancel := context.WithCancel(context.Background())
 	revokedRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("session-1"),
+		ID: userid.MustNew("user"), Credential: SessionCredential("session-1"),
 	}, revokedCancel)
 	require.True(t, ok)
 	defer revokedRelease()
 
 	otherCtx, otherCancel := context.WithCancel(context.Background())
 	otherRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("session-2"),
+		ID: userid.MustNew("user"), Credential: SessionCredential("session-2"),
 	}, otherCancel)
 	require.True(t, ok)
 	defer otherRelease()
@@ -668,14 +669,14 @@ func TestAuthenticatedLeaseExactBearerRevocation(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	revokedCtx, revokedCancel := context.WithCancel(context.Background())
 	revokedRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: APICredential("token-1"),
+		ID: userid.MustNew("user"), Credential: APICredential("token-1"),
 	}, revokedCancel)
 	require.True(t, ok)
 	defer revokedRelease()
 
 	otherCtx, otherCancel := context.WithCancel(context.Background())
 	otherRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: APICredential("token-2"),
+		ID: userid.MustNew("user"), Credential: APICredential("token-2"),
 	}, otherCancel)
 	require.True(t, ok)
 	defer otherRelease()
@@ -697,14 +698,14 @@ func TestAuthenticatedLeaseUserRevocationIsGenerationSelective(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	oldCtx, oldCancel := context.WithCancel(context.Background())
 	oldRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("old"), UserAuthGeneration: 4,
+		ID: userid.MustNew("user"), Credential: SessionCredential("old"), UserAuthGeneration: 4,
 	}, oldCancel)
 	require.True(t, ok)
 	defer oldRelease()
 
 	currentCtx, currentCancel := context.WithCancel(context.Background())
 	currentRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("current"), UserAuthGeneration: 5,
+		ID: userid.MustNew("user"), Credential: SessionCredential("current"), UserAuthGeneration: 5,
 	}, currentCancel)
 	require.True(t, ok)
 	defer currentRelease()
@@ -728,18 +729,18 @@ func TestUserRevocationGenerationDoesNotRegress(t *testing.T) {
 	sc.RevokeUserAuthContextAtGeneration("user", 4)
 
 	assert.False(t, sc.IsAuthContextCurrent(&UserInfo{
-		ID: "user", UserAuthGeneration: 4,
+		ID: userid.MustNew("user"), UserAuthGeneration: 4,
 	}))
 	assert.True(t, sc.IsAuthContextCurrent(&UserInfo{
-		ID: "user", UserAuthGeneration: 5,
+		ID: userid.MustNew("user"), UserAuthGeneration: 5,
 	}))
 }
 
 func TestUserRevocationCacheEvictionIsGenerationSelective(t *testing.T) {
 	state := &authState{}
 	sc := &AuthContextRegistry{state: state}
-	oldUser := &UserInfo{ID: "user", Credential: SessionCredential("old"), UserAuthGeneration: 4}
-	currentUser := &UserInfo{ID: "user", Credential: SessionCredential("current"), UserAuthGeneration: 5}
+	oldUser := &UserInfo{ID: userid.MustNew("user"), Credential: SessionCredential("old"), UserAuthGeneration: 4}
+	currentUser := &UserInfo{ID: userid.MustNew("user"), Credential: SessionCredential("current"), UserAuthGeneration: 5}
 	state.sessions.Store("old", cachedSession{user: oldUser})
 	state.sessions.Store("current", cachedSession{user: currentUser})
 	inner := &sync.Map{}
@@ -748,8 +749,8 @@ func TestUserRevocationCacheEvictionIsGenerationSelective(t *testing.T) {
 	state.userSessions.Store("user", inner)
 	oldBearer := bearerCacheKey(BearerKindAPI, "old", []byte("secret"))
 	currentBearer := bearerCacheKey(BearerKindAPI, "current", []byte("secret"))
-	oldBearerSession := cachedSession{user: &UserInfo{ID: "user", Credential: APICredential("old"), UserAuthGeneration: 4}}
-	currentBearerSession := cachedSession{user: &UserInfo{ID: "user", Credential: APICredential("current"), UserAuthGeneration: 5}}
+	oldBearerSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("old"), UserAuthGeneration: 4}}
+	currentBearerSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("current"), UserAuthGeneration: 5}}
 	state.bearers.Store(oldBearer, oldBearerSession)
 	state.bearers.Store(currentBearer, currentBearerSession)
 	sc.state.indexBearerCacheEntry(oldBearer, oldBearerSession)
@@ -767,13 +768,77 @@ func TestUserRevocationCacheEvictionIsGenerationSelective(t *testing.T) {
 	assert.True(t, currentBearerExists)
 }
 
+// TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration pins the blank-id
+// prologue on the revocation entrypoint, which is the ONE thing keeping the
+// three Matches calls beneath it correct.
+//
+// Matches is tuned for GRANT semantics: false means "not authorized", which is
+// safe on an authorization path. On this EVICTION path false means "do not
+// revoke", so a blank id reaching the comparisons would skip every cached
+// session, bearer, and lease -- an operator's containment action reporting
+// success having evicted nothing. Nothing about userid.UserID prevents that;
+// only the `userID == ""` guard does, and until this test existed deleting it
+// as "redundant with userid.UserID" left the entire suite green.
+//
+// The generation is the observable: without the guard the call still bumps it
+// and records a junk revocation mark under the empty key, which invalidates
+// every warm cache entry in the process while revoking nothing.
+func TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration(t *testing.T) {
+	newFixture := func() (*authState, *AuthContextRegistry, bearerCacheKeyParts) {
+		state := &authState{}
+		sc := &AuthContextRegistry{state: state}
+		user := &UserInfo{ID: userid.MustNew("user"), Credential: SessionCredential("sess"), UserAuthGeneration: 4}
+		state.sessions.Store("sess", cachedSession{user: user})
+		inner := &sync.Map{}
+		inner.Store("sess", struct{}{})
+		state.userSessions.Store("user", inner)
+		bearer := bearerCacheKey(BearerKindAPI, "tok", []byte("secret"))
+		bearerSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("tok"), UserAuthGeneration: 4}}
+		state.bearers.Store(bearer, bearerSession)
+		state.indexBearerCacheEntry(bearer, bearerSession)
+		return state, sc, bearer
+	}
+
+	t.Run("blank id changes nothing", func(t *testing.T) {
+		state, sc, bearer := newFixture()
+		before := state.revocationGen.Load()
+
+		sc.RevokeUserAuthContextAtGeneration("", 5)
+
+		assert.Equal(t, before, state.revocationGen.Load(),
+			"a blank id must not bump the revocation generation: it revokes nobody while invalidating every warm cache entry")
+		_, marked := state.userRevocations.Load("")
+		assert.False(t, marked, "a blank id must not record a revocation mark")
+		_, sessionExists := state.sessions.Load("sess")
+		_, bearerExists := state.bearers.Load(bearer)
+		assert.True(t, sessionExists, "a blank id must not disturb a real user's cached session")
+		assert.True(t, bearerExists, "a blank id must not disturb a real user's cached bearer")
+	})
+
+	// Control: the same fixture, revoked by the id that actually owns it. This
+	// is what makes the case above mean "refused", not "the fixture was never
+	// reachable in the first place".
+	t.Run("control: the owning id evicts", func(t *testing.T) {
+		state, sc, bearer := newFixture()
+		before := state.revocationGen.Load()
+
+		sc.RevokeUserAuthContextAtGeneration("user", 5)
+
+		assert.Greater(t, state.revocationGen.Load(), before)
+		_, sessionExists := state.sessions.Load("sess")
+		_, bearerExists := state.bearers.Load(bearer)
+		assert.False(t, sessionExists, "control: the owner's cached session is evicted")
+		assert.False(t, bearerExists, "control: the owner's cached bearer is evicted")
+	})
+}
+
 func TestAuthenticatedLeaseRegistrationRejectsRevokedIdentity(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	sc.Evict("session")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	release, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("session"), AuthGeneration: 0,
+		ID: userid.MustNew("user"), Credential: SessionCredential("session"), AuthGeneration: 0,
 	}, cancel)
 	defer release()
 	assert.False(t, ok)
@@ -788,7 +853,7 @@ func TestAuthenticatedLeaseExpiresWithCredential(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	release, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: "user", Credential: SessionCredential("session"), CredentialExpiresAt: DeadlineAt(time.Now().Add(20 * time.Millisecond)),
+		ID: userid.MustNew("user"), Credential: SessionCredential("session"), CredentialExpiresAt: DeadlineAt(time.Now().Add(20 * time.Millisecond)),
 	}, cancel)
 	require.True(t, ok)
 	defer release()
@@ -805,7 +870,7 @@ func TestAuthenticatedLeaseExpiresWithCredential(t *testing.T) {
 func TestBearerCacheFresh_UnmarkedGenerationBumpDoesNotInvalidate(t *testing.T) {
 	a := &authInterceptor{state: &authState{}}
 	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
-	cs := cachedSession{user: &UserInfo{ID: "u"}, cachedAt: time.Now(), gen: a.state.revocationGen.Load()}
+	cs := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: time.Now(), gen: a.state.revocationGen.Load()}
 	assert.True(t, a.bearerCacheFresh(key, cs))
 
 	a.state.revocationGen.Add(1)
@@ -875,7 +940,7 @@ func TestAuthContextRegistry_IsAuthContextCurrentIsScoped(t *testing.T) {
 	t.Cleanup(sc.Stop)
 
 	gen := sc.state.revocationGen.Load()
-	user := &UserInfo{ID: "u-1", Credential: SessionCredential("sess-1"), AuthGeneration: gen}
+	user := &UserInfo{ID: userid.MustNew("u-1"), Credential: SessionCredential("sess-1"), AuthGeneration: gen}
 	assert.True(t, sc.IsAuthContextCurrent(user))
 
 	sc.EvictByUserID("u-2")
@@ -890,12 +955,12 @@ func TestAuthContextRegistry_IsAuthContextCurrentIsScoped(t *testing.T) {
 	assert.False(t, sc.IsAuthContextCurrent(user), "user-wide revocation must reject older user auth contexts")
 
 	gen = sc.state.revocationGen.Load()
-	sessionUser := &UserInfo{ID: "u-3", Credential: SessionCredential("sess-3"), AuthGeneration: gen}
+	sessionUser := &UserInfo{ID: userid.MustNew("u-3"), Credential: SessionCredential("sess-3"), AuthGeneration: gen}
 	sc.Evict("sess-3")
 	assert.False(t, sc.IsAuthContextCurrent(sessionUser), "session revocation must reject that session")
 
 	gen = sc.state.revocationGen.Load()
-	bearerUser := &UserInfo{ID: "u-4", Credential: APICredential("tok-4"), AuthGeneration: gen}
+	bearerUser := &UserInfo{ID: userid.MustNew("u-4"), Credential: APICredential("tok-4"), AuthGeneration: gen}
 	sc.EvictBearer(NewBearerRef(BearerKindAPI, "tok-4"))
 	assert.False(t, sc.IsAuthContextCurrent(bearerUser), "bearer revocation must reject that bearer")
 }
@@ -906,7 +971,7 @@ func TestAuthContextRegistry_CurrentCredentialExpiryReadsSlidSessionDeadline(t *
 	e1 := time.Now().Add(40 * time.Minute).UTC()
 
 	// A cookie-session request that captured e0 before a concurrent slide.
-	sessionUser := &UserInfo{ID: "u-1", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(e0)}
+	sessionUser := &UserInfo{ID: userid.MustNew("u-1"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(e0)}
 
 	// No cache entry yet: fall back to the caller's captured deadline.
 	assert.Equal(t, DeadlineAt(e0), reg.CurrentCredentialExpiry(context.Background(), sessionUser))
@@ -916,14 +981,14 @@ func TestAuthContextRegistry_CurrentCredentialExpiryReadsSlidSessionDeadline(t *
 	// caller's stale e0 -- this is what keeps a channel armed at the current
 	// deadline when a slide raced its registration.
 	reg.state.sessions.Store("sess-1", cachedSession{
-		user: &UserInfo{ID: "u-1", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(e1)},
+		user: &UserInfo{ID: userid.MustNew("u-1"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(e1)},
 	})
 	assert.Equal(t, DeadlineAt(e1), reg.CurrentCredentialExpiry(context.Background(), sessionUser),
 		"must return the slid deadline recorded in the session cache, not the caller's captured value")
 
 	// A bearer credential has no session id and no recorded rotation extension
 	// yet, so it falls back to the caller's captured value.
-	bearerUser := &UserInfo{ID: "u-1", Credential: APICredential("tok-1"), CredentialExpiresAt: DeadlineAt(e0)}
+	bearerUser := &UserInfo{ID: userid.MustNew("u-1"), Credential: APICredential("tok-1"), CredentialExpiresAt: DeadlineAt(e0)}
 	assert.Equal(t, DeadlineAt(e0), reg.CurrentCredentialExpiry(context.Background(), bearerUser))
 
 	// Nil-safe on both the receiver and the user.
@@ -942,9 +1007,9 @@ func TestAuthContextRegistry_CurrentCredentialExpiryCacheHitNeverShrinksBelowCon
 	connectTime := time.Now().Add(40 * time.Minute).UTC() // caller captured a later deadline
 	staleCached := time.Now().Add(10 * time.Minute).UTC() // cache row holds an earlier one
 
-	sessionUser := &UserInfo{ID: "u-1", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(connectTime)}
+	sessionUser := &UserInfo{ID: userid.MustNew("u-1"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(connectTime)}
 	reg.state.sessions.Store("sess-1", cachedSession{
-		user: &UserInfo{ID: "u-1", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(staleCached)},
+		user: &UserInfo{ID: userid.MustNew("u-1"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(staleCached)},
 	})
 
 	assert.Equal(t, DeadlineAt(connectTime), reg.CurrentCredentialExpiry(context.Background(), sessionUser),
@@ -959,7 +1024,7 @@ func TestAuthContextRegistry_CurrentCredentialExpiryCacheHitNeverShrinksBelowCon
 func TestAuthContextRegistry_CurrentCredentialExpiryFallsBackToDBOnCacheMiss(t *testing.T) {
 	connectTime := time.Now().Add(10 * time.Minute).UTC() // value captured at request validation
 	slid := time.Now().Add(40 * time.Minute).UTC()        // authoritative DB value after a slide
-	sessionUser := &UserInfo{ID: "u", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(connectTime)}
+	sessionUser := &UserInfo{ID: userid.MustNew("u"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(connectTime)}
 
 	// No cache row for the session (evicted); the DB fallback returns the slid deadline.
 	var gotSessionID string
@@ -992,7 +1057,7 @@ func TestAuthContextRegistry_CurrentCredentialExpiryFallsBackToDBOnCacheMiss(t *
 		return time.Time{}, false, nil
 	}
 	reg.state.sessions.Store("sess-1", cachedSession{
-		user: &UserInfo{ID: "u", Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(slid)},
+		user: &UserInfo{ID: userid.MustNew("u"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(slid)},
 	})
 	assert.Equal(t, DeadlineAt(slid), reg.CurrentCredentialExpiry(context.Background(), sessionUser))
 }
@@ -1009,7 +1074,7 @@ func TestAuthContextRegistry_CurrentCredentialExpiryReadsRotatedBearerDeadline(t
 	ref := NewBearerRef(BearerKindAPI, "tok-1")
 
 	// Validated at e0; a rotation raced the channel open and extended to e1.
-	bearerUser := &UserInfo{ID: "u-1", Credential: APICredential("tok-1"), CredentialExpiresAt: DeadlineAt(e0)}
+	bearerUser := &UserInfo{ID: userid.MustNew("u-1"), Credential: APICredential("tok-1"), CredentialExpiresAt: DeadlineAt(e0)}
 	assert.Equal(t, DeadlineAt(e0), reg.CurrentCredentialExpiry(context.Background(), bearerUser), "no recorded extension: caller's value")
 
 	reg.RecordBearerExpiry(ref, DeadlineAt(e1))
@@ -1088,7 +1153,7 @@ func TestAuthInterceptor_SweepsBearerAndRevocationCaches(t *testing.T) {
 	old := time.Now().Add(-SessionDuration - time.Minute)
 
 	a.state.bearers.Store(bearerCacheKey(BearerKindAPI, "tok-1", []byte("secret-hash")), cachedSession{
-		user:     &UserInfo{ID: "u-1"},
+		user:     &UserInfo{ID: userid.MustNew("u-1")},
 		cachedAt: time.Now().Add(-2 * sessionCacheTTL),
 	})
 	a.state.sessionRevocations.Store("sess-1", revocationMark{generation: 1, recordedAt: old})
@@ -1123,8 +1188,8 @@ func TestStaleCacheSweepDoesNotDeleteFreshReplacements(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, freshTime, gotTime)
 
-	oldSession := cachedSession{user: &UserInfo{ID: "user"}, cachedAt: oldTime}
-	freshSession := cachedSession{user: &UserInfo{ID: "user"}, cachedAt: freshTime}
+	oldSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user")}, cachedAt: oldTime}
+	freshSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user")}, cachedAt: freshTime}
 	caches.sessions.Store("session", freshSession)
 	indexSyncMap(&caches.userSessions, "user", "session")
 	caches.deleteStaleSession("session", oldSession)
@@ -1146,7 +1211,7 @@ func TestStaleCredentialCacheSweepSerializesWithValidation(t *testing.T) {
 	state := &authState{}
 	a := &authInterceptor{state: state}
 	stale := cachedSession{
-		user:     &UserInfo{ID: "user"},
+		user:     &UserInfo{ID: userid.MustNew("user")},
 		cachedAt: time.Now().Add(-2 * sessionCacheTTL),
 	}
 	state.lastTouch.Store("touch", time.Now().Add(-2*SessionDuration))

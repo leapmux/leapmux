@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,7 +53,7 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cross-worker pool did not stop with its lifetime context")
 	}
-	_, err := c.channelFor(context.Background(), "worker-2", DelegationScope{UserID: "user-1", WorkspaceID: "ws-1"})
+	_, err := c.channelFor(context.Background(), "worker-2", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
@@ -61,7 +63,7 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 // silently start opening unscoped channels.
 func TestChannelFor_RejectsEmptyTarget(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: "user-1", WorkspaceID: "ws-1"})
+	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target_worker_id required")
 }
@@ -82,7 +84,7 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 	dp := &stubDelegationProvider{err: errors.New("mint refused: workspace gone")}
 	c := New(context.Background(), "http://hub.test", &PinStore{}, dp)
 
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: "user-1", WorkspaceID: "ws-1", AgentID: "agent-1"})
+	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1", AgentID: "agent-1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delegation token")
 	assert.Contains(t, err.Error(), "mint refused")
@@ -132,7 +134,7 @@ func TestChannelFor_PoolKeyComposition(t *testing.T) {
 // pool layer.
 func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	_, err := c.CallInner(context.Background(), "worker-B", "user-1", "ws-1", "OpenAgent", []byte("payload"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "ws-1", "OpenAgent", []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
@@ -142,7 +144,7 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	err := c.StreamInner(context.Background(), "worker-B", "user-1", "ws-1", "WatchEvents", nil, nil)
+	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "ws-1", "WatchEvents", nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
@@ -152,7 +154,7 @@ func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 // network I/O because the delegation bearer is per-workspace.
 func TestCallInner_RequiresWorkspaceID(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.CallInner(context.Background(), "worker-B", "user-1", "", "OpenAgent", []byte("p"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "", "OpenAgent", []byte("p"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workspace_id required")
 }
@@ -203,7 +205,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			_, err := c.channelFor(context.Background(), "worker-B",
-				DelegationScope{UserID: "user-1", WorkspaceID: "ws-1"})
+				DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
 			errs[idx] = err
 		}(i)
 	}

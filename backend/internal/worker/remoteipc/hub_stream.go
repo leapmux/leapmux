@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	"github.com/leapmux/leapmux/locallisten"
 )
@@ -63,7 +64,7 @@ func NewHubWorkspaceStreamer(hubURL string, delegation *crossworker.DelegationSt
 // method: spawned-agent CLI invocations consume the org-scoped CRDT
 // stream by tunneling `/ws/orgevents` through the same delegation-
 // token channel as unary calls.
-func (s *HubWorkspaceStreamer) StreamHub(ctx context.Context, userID, method string, payload []byte, onPayload func([]byte) error) error {
+func (s *HubWorkspaceStreamer) StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error {
 	if s.Delegation == nil {
 		return errors.New("remoteipc: delegation store not configured")
 	}
@@ -81,7 +82,7 @@ func (s *HubWorkspaceStreamer) StreamHub(ctx context.Context, userID, method str
 // is `[4-byte big-endian length][protobuf WatchOrgEvent]`; we strip
 // the length prefix before re-emitting so the IPC consumer sees
 // proto bytes directly.
-func (s *HubWorkspaceStreamer) watchOrg(ctx context.Context, userID string, payload []byte, onPayload func([]byte) error) error {
+func (s *HubWorkspaceStreamer) watchOrg(ctx context.Context, userID userid.UserID, payload []byte, onPayload func([]byte) error) error {
 	var req leapmuxv1.WatchOrgRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return fmt.Errorf("decode WatchOrgRequest: %w", err)

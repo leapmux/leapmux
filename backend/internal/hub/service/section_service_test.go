@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
@@ -127,6 +129,40 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 	assert.True(t, hasWorkers, "missing workers section")
 	assert.True(t, hasFiles, "missing files section")
 	assert.True(t, hasTodos, "missing todos section")
+
+	// Ordering is the half the checks above cannot see: they confirm each
+	// section EXISTS with the right name and sidebar, which stays true even if
+	// every position collapsed to the same rank or the two sidebars were ranked
+	// against one shared chain. Assert the ranks directly, per sidebar, so the
+	// order the user actually sees is pinned rather than inferred.
+	positions := map[leapmuxv1.SectionType]string{}
+	for _, s := range sections {
+		positions[s.GetSectionType()] = s.GetPosition()
+	}
+	for _, chain := range [][]leapmuxv1.SectionType{
+		{
+			leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+			leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+			leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
+		},
+		{
+			leapmuxv1.SectionType_SECTION_TYPE_FILES,
+			leapmuxv1.SectionType_SECTION_TYPE_TODOS,
+		},
+	} {
+		for i := 1; i < len(chain); i++ {
+			prev, cur := positions[chain[i-1]], positions[chain[i]]
+			require.NotEmpty(t, prev)
+			require.NotEmpty(t, cur)
+			assert.Less(t, prev, cur, "%v must rank before %v within its sidebar", chain[i-1], chain[i])
+		}
+	}
+	// Each sidebar starts its own chain, so the two first entries share a rank.
+	// That is the property a single shared chain would break.
+	assert.Equal(t,
+		positions[leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS],
+		positions[leapmuxv1.SectionType_SECTION_TYPE_FILES],
+		"each sidebar is ranked independently, so both start at the same first rank")
 }
 
 func TestSectionService_CreateSection(t *testing.T) {
@@ -225,7 +261,7 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	err := env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws for delete test",
 	})
 	require.NoError(t, err)
@@ -298,14 +334,14 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsInProgress,
 		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws in progress",
 	}))
 	wsCustom := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsCustom,
 		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws custom",
 	}))
 
@@ -351,7 +387,7 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 		&leapmuxv1.DeleteSectionRequest{SectionId: customID}, env.token))
 	require.NoError(t, err)
 
-	items, err := env.store.WorkspaceSectionItems().ListByUser(ctx, env.userID)
+	items, err := env.store.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(env.userID))
 	require.NoError(t, err)
 	posByWs := map[string]string{}
 	sectionByWs := map[string]string{}
@@ -438,7 +474,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "test workspace",
 	})
 	require.NoError(t, err)
@@ -479,7 +515,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
+		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "test workspace",
 	})
 	require.NoError(t, err)
@@ -499,7 +535,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 
 	// Not archived initially (not in any section).
 	archived, err := env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkspaceID: workspaceID,
 	})
 	require.NoError(t, err)
@@ -509,7 +545,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a"}, env.token))
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkspaceID: workspaceID,
 	})
 	require.NoError(t, err)
@@ -519,7 +555,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: archivedID, Position: "a"}, env.token))
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkspaceID: workspaceID,
 	})
 	require.NoError(t, err)
@@ -529,7 +565,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a"}, env.token))
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
-		UserID:      env.userID,
+		UserID:      userid.MustNew(env.userID),
 		WorkspaceID: workspaceID,
 	})
 	require.NoError(t, err)
@@ -543,4 +579,48 @@ func TestSectionService_Unauthenticated(t *testing.T) {
 		connect.NewRequest(&leapmuxv1.ListSectionsRequest{}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// A caller whose identity never got populated must not own a section whose
+// user_id is likewise blank.
+//
+// requireOwnedSection is the package's OTHER resource-ownership predicate
+// (loadOwnedWorkspaceOr403 is the first), and it compared raw strings, so two
+// empty ids matched and granted Move/Delete on that row. It now compares
+// through userid.UserID.Matches, which refuses an empty id on either side.
+// Both fixtures below are reachable: SQLite accepts "" as a TEXT primary key,
+// so a blank-id user and rows owned by it insert cleanly.
+func TestMoveSectionDeniesZeroCallerOnBlankOwnedSection(t *testing.T) {
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	orgID := id.Generate()
+	require.NoError(t, env.store.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "blank-owner-org"}))
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: "", OrgID: orgID, Username: "blank-id-user", PasswordHash: "h",
+		DisplayName: "Blank", PasswordSet: true,
+	}))
+	sectionID := id.Generate()
+	require.NoError(t, env.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID: sectionID, UserID: userid.UserID{}, Name: "blank-owned", Position: "n",
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}))
+
+	// A UserInfo whose ID never got minted -- the zero value.
+	zeroCaller := auth.WithUser(ctx, &auth.UserInfo{OrgID: orgID, Username: "nobody"})
+	_, err := service.NewSectionService(env.store).MoveSection(zeroCaller,
+		connect.NewRequest(&leapmuxv1.MoveSectionRequest{
+			SectionId: sectionID,
+			Position:  "z",
+			Sidebar:   leapmuxv1.Sidebar_SIDEBAR_LEFT,
+		}))
+	require.Error(t, err, "a zero caller id must not own a blank-owner section")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"non-owner hits masquerade as NotFound so section ids do not leak")
+
+	// The row is untouched: the deny happened before the update.
+	section, getErr := env.store.WorkspaceSections().GetByID(ctx, sectionID)
+	require.NoError(t, getErr)
+	assert.Equal(t, "n", section.Position, "the denied move must not have written")
 }

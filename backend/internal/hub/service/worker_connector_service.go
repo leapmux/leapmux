@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -110,10 +111,16 @@ func (s *WorkerConnectorService) Register(
 		}
 
 		registeredBy = row.CreatedBy
+		// The key's creator is the worker's registrant; a blank one would make
+		// the worker owned by nobody and unreachable by its real owner.
+		registrantUID, mintOK := userid.New(registeredBy)
+		if !mintOK {
+			return connect.NewError(connect.CodeInternal, errors.New("registration key has a blank creator"))
+		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              workerID,
 			AuthToken:       authToken,
-			RegisteredBy:    registeredBy,
+			RegisteredBy:    registrantUID,
 			PublicKey:       publicKey,
 			MlkemPublicKey:  mlkemPublicKey,
 			SlhdsaPublicKey: slhdsaPublicKey,

@@ -1,5 +1,21 @@
 package service
 
+import (
+	"errors"
+
+	"github.com/leapmux/leapmux/internal/util/userid"
+)
+
+// ErrMissingIdentity reports a spawn whose user id was never minted.
+//
+// It is part of the RemoteIPCFactory contract rather than an implementation
+// detail, because the service layer must tell it apart from every other
+// factory failure. Those are degradable -- the tab starts without remote
+// control -- but this one is not: a spawn that cannot name its user would run
+// every handler as nobody, so it fails the tab outright, matching HandleOpen,
+// which refuses the whole channel rather than installing an unnamed session.
+var ErrMissingIdentity = errors.New("remote IPC spawn requires a non-empty user id")
+
 // RemoteIPCFactory abstracts the per-agent local-IPC server lifecycle so
 // the service layer doesn't depend on the worker's runtime
 // (cmd/leapmux/worker.go) directly. Implementations live there and wire
@@ -27,7 +43,11 @@ type RemoteIPCFactory interface {
 // derives it from the tab id at command time via the hub's LocateTab
 // RPC.
 type AgentSpawnInfo struct {
-	UserID        string
+	// UserID is already minted: the identity descends from the channel
+	// session, whose HandleOpen refuses a blank one. Carrying the type here
+	// rather than a string removes a String()/re-mint round-trip and makes a
+	// blank spawn identity a compile-time impossibility at every call site.
+	UserID        userid.UserID
 	OrgID         string
 	WorkspaceID   string
 	WorkerID      string
@@ -38,7 +58,8 @@ type AgentSpawnInfo struct {
 
 // TerminalSpawnInfo identifies a spawning terminal.
 type TerminalSpawnInfo struct {
-	UserID      string
+	// UserID is already minted -- see AgentSpawnInfo.UserID.
+	UserID      userid.UserID
 	OrgID       string
 	WorkspaceID string
 	WorkerID    string

@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"google.golang.org/protobuf/proto"
 )
@@ -261,9 +262,9 @@ type connRequest[T any] interface {
 func registerConnHandler[T any, PT connRequest[T]](
 	d ownerOnlyRegistrar,
 	method string,
-	fn func(ctx context.Context, userID string, r PT, sender channel.ResponseWriter),
+	fn func(ctx context.Context, userID userid.UserID, r PT, sender channel.ResponseWriter),
 ) {
-	d.Register(method, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(method, func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		r := PT(&msg)
 		if err := unmarshalRequest(req, r); err != nil {
@@ -297,7 +298,7 @@ func registerTunnelHandlers(d ownerOnlyRegistrar) {
 }
 
 // openConn dials the target address and starts streaming data back.
-func (m *tunnelManager) openConn(ctx context.Context, userID string, r *leapmuxv1.OpenTunnelConnRequest, sender channel.ResponseWriter) {
+func (m *tunnelManager) openConn(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	if !m.beginOpen(connID, dialCancel) {
@@ -353,7 +354,7 @@ func (m *tunnelManager) openConn(ctx context.Context, userID string, r *leapmuxv
 }
 
 // sendData writes data to the target connection.
-func (m *tunnelManager) sendData(ctx context.Context, _ string, r *leapmuxv1.SendTunnelDataRequest, sender channel.ResponseWriter) {
+func (m *tunnelManager) sendData(ctx context.Context, _ userid.UserID, r *leapmuxv1.SendTunnelDataRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 
 	tc := m.get(connID)
@@ -418,7 +419,7 @@ func classifyTunnelWriteError(err error, connID string, seq uint64, sender chann
 }
 
 // closeConn closes a tunnel connection.
-func (m *tunnelManager) closeConn(ctx context.Context, _ string, r *leapmuxv1.CloseTunnelConnRequest, sender channel.ResponseWriter) {
+func (m *tunnelManager) closeConn(ctx context.Context, _ userid.UserID, r *leapmuxv1.CloseTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 
 	// Graceful close: flush pending writes before tearing down, so a client
@@ -450,7 +451,7 @@ func (m *tunnelManager) closeConn(ctx context.Context, _ string, r *leapmuxv1.Cl
 
 // grantReadCredit replenishes a conn's read-send credit so the read loop can send
 // more inbound frames (read flow control).
-func (m *tunnelManager) grantReadCredit(_ context.Context, _ string, r *leapmuxv1.GrantTunnelReadCreditRequest, sender channel.ResponseWriter) {
+func (m *tunnelManager) grantReadCredit(_ context.Context, _ userid.UserID, r *leapmuxv1.GrantTunnelReadCreditRequest, sender channel.ResponseWriter) {
 	// A grant for an already-gone conn is a benign race (the read loop ended
 	// and removed it): ack without error so the client does not treat it as a
 	// failure.

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -114,6 +115,13 @@ var terminalHandlerCases = []terminalHandlerCase{
 	{"UpdateTerminalTitle", func(id string) proto.Message {
 		return &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: id, Title: "renamed"}
 	}},
+}
+
+// useridFromTest mints a UserID for tests; empty input yields the zero value
+// (matching userid.New's fail-closed mint).
+func useridFromTest(s string) userid.UserID {
+	u, _ := userid.New(s)
+	return u
 }
 
 // TestAccessControl_AgentHandlers_NotFound verifies that agent-ID-scoped
@@ -574,7 +582,7 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 		t.Run(method+" denies a non-owner", func(t *testing.T) {
 			w := newTestWriter()
 			// "user-2" holds a valid channel but does not own this worker.
-			d.DispatchWith(context.Background(), "user-2", &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -682,7 +690,7 @@ func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 // moment anyone runs the detector.
 func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 	svc := &Service{}
-	svc.SetRegisteredBy("user-1")
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
 	const rounds = 200
 	var wg sync.WaitGroup
@@ -692,7 +700,7 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range rounds {
-			svc.SetRegisteredBy("user-1")
+			svc.SetRegisteredBy(userid.MustNew("user-1"))
 		}
 	}()
 
@@ -703,22 +711,22 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 			defer wg.Done()
 			for range rounds {
 				w := newTestWriter()
-				requireWorkerOwner(svc, "user-1", w)
+				requireWorkerOwner(svc, userid.MustNew("user-1"), w)
 			}
 		}()
 	}
 	wg.Wait()
 
-	assert.Equal(t, "user-1", svc.RegisteredBy(), "the owner must survive concurrent access")
+	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "the owner must survive concurrent access")
 }
 
 // An empty caller id must NOT match an empty RegisteredBy.
 //
-// The gate is a string compare, so two empty ids satisfy it -- and a worker whose
-// RegisteredBy never got populated (the standalone path reads it from a state file
-// with `omitempty` and, unlike solo mode, backfills nothing) would then hand the
-// whole machine to a caller the Hub named with an empty user id. A gate that exists
-// to fail closed must not fail open on the one input it cannot judge.
+// MatchesUser fails closed when either side is zero -- so a worker whose
+// RegisteredBy never got populated (the standalone path reads it from a state
+// file with `omitempty` and, unlike solo mode, backfills nothing) refuses a
+// caller the Hub named with an empty user id. A gate that exists to fail closed
+// must not fail open on the one input it cannot judge.
 func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -731,9 +739,9 @@ func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &Service{}
-			svc.SetRegisteredBy(tc.registeredBy)
+			svc.SetRegisteredBy(useridFromTest(tc.registeredBy))
 			w := newTestWriter()
-			assert.False(t, requireWorkerOwner(svc, tc.userID, w),
+			assert.False(t, requireWorkerOwner(svc, useridFromTest(tc.userID), w),
 				"an empty identity must never satisfy the owner gate")
 			require.Len(t, w.errors, 1, "the refusal is reported to the caller")
 			assert.Equal(t, codePermissionDenied, w.errors[0].code)

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -19,7 +20,7 @@ func registerTabMoveHandlers(d registrar, svc *Service) {
 // handleMoveTabWorkspace updates an agent's or terminal's workspace_id in the
 // worker DB. The frontend calls this when dragging a tab between workspaces.
 func handleMoveTabWorkspace(svc *Service) channel.HandlerFunc {
-	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.MoveTabWorkspaceRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

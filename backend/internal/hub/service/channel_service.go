@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
 
 // ChannelService implements the Hub-side relay for encrypted Frontend <-> Worker channels.
@@ -51,10 +52,10 @@ func NewChannelService(
 	pr *workermgr.PendingRequests,
 	freshness AuthFreshnessChecker,
 ) *ChannelService {
-	if isNilDependency(freshness) {
+	if nilcheck.IsNilDependency(freshness) {
 		panic("channel service requires an auth freshness checker")
 	}
-	s := &ChannelService{
+	return &ChannelService{
 		store:           st,
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
@@ -62,7 +63,6 @@ func NewChannelService(
 		closeDispatcher: newWorkerCloseDispatcher(wMgr),
 		authFreshness:   freshness,
 	}
-	return s
 }
 
 // GetWorkerHandshakeParams returns the persisted public key material and the
@@ -120,7 +120,7 @@ func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.
 	if user.Credential.IsDelegation() {
 		// Re-verify the pin against current ownership so deleted / transferred
 		// workspaces are caught at channel open time.
-		hasAccess, err := auth.WorkspaceCanRead(ctx, s.store, user.Credential.WorkspaceScopeID(), user.ID)
+		hasAccess, err := auth.WorkspaceCanRead(ctx, s.store, auth.AnyOrg(), user.Credential.WorkspaceScopeID(), user.ID)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify delegation scope: %w", err))
 		}
@@ -170,7 +170,7 @@ func (s *ChannelService) OpenChannel(
 	// The credential identity is recorded so per-token revoke paths
 	// (CloseChannelsByBearer / CloseChannelsByUserRevocation) can find every
 	// channel an `lmx_…` token authorized.
-	s.channelMgr.RegisterWithAuthInfo(channelID, workerID, user.ID, channelAuthInfo(user), nil)
+	s.channelMgr.RegisterWithAuthInfo(channelID, workerID, user.ID.String(), channelAuthInfo(user), nil)
 	openAttempted := false
 	registrationCommitted := false
 	defer func() {
@@ -209,7 +209,7 @@ func (s *ChannelService) OpenChannel(
 				Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
 					ChannelOpen: &leapmuxv1.ChannelOpenRequest{
 						ChannelId:              channelID,
-						UserId:                 user.ID,
+						UserId:                 user.ID.String(),
 						HandshakePayload:       req.Msg.GetHandshakePayload(),
 						AccessibleWorkspaceIds: accessibleWSIDs,
 					},
@@ -271,7 +271,7 @@ func (s *ChannelService) OpenChannel(
 	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
 		ChannelId:        channelID,
 		HandshakePayload: openResp.GetHandshakePayload(),
-		UserId:           user.ID,
+		UserId:           user.ID.String(),
 	}), nil
 }
 
@@ -390,7 +390,7 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 	if err != nil {
 		return nil, err
 	}
-	channelIDs := s.channelMgr.AuthorizedChannelIDsForUserWorker(user.ID, workerID, channelWorkspaceUpdateAuthorized(user.Credential, workspaceID))
+	channelIDs := s.channelMgr.AuthorizedChannelIDsForUserWorker(user.ID.String(), workerID, channelWorkspaceUpdateAuthorized(user.Credential, workspaceID))
 
 	// Send a ChannelAccessUpdate to each matching channel and wait for
 	// the worker to ack before returning. Without the ack the caller
@@ -484,76 +484,50 @@ func (s *ChannelService) notifyWorkersClosed(closed []channelmgr.ClosedChannel) 
 	s.closeDispatcher.enqueueChannelCloses(closed)
 }
 
-// verifyDelegationWorkerScope bounds WHICH workers a delegation bearer may reach.
-// The rule itself -- and the reasoning behind it -- lives in
-// auth.DelegationWorkerScope, because the CRDT validator needs the identical bound
-// on the worker ids a SetTabRegisterOp names and cannot reach into this package for
-// it. See that type's doc for why the bound exists.
-//
-// It is called from verifyWorkerAccess rather than from each entrypoint: that is the
-// one function THIS package has that answers "may this principal reach this worker",
-// so folding the bound into it scopes every worker-directed call here -- OpenChannel,
-// GetWorkerHandshakeParams, and PrepareWorkspaceAccess, which are its only callers --
-// and any future one, provided it keeps routing through verifyWorkerAccess rather than
-// reading workerMgr directly. Bolted onto OpenChannel alone it left
-// GetWorkerHandshakeParams -- which asks the identical question one line apart --
-// still willing to hand a cross-tenant bearer the victim worker's key bundle, live
-// encryption mode, and online status.
-func (s *ChannelService) verifyDelegationWorkerScope(ctx context.Context, user *auth.UserInfo, targetWorkerID string) error {
-	err := auth.CheckDelegationWorkerScope(ctx, s.store, user, targetWorkerID)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, auth.ErrDelegationMinterUnknown),
-		errors.Is(err, auth.ErrDelegationWorkerOutOfScope):
-		// Permanent: the token either cannot be scoped or is out of scope. Both are
-		// definitive answers, not faults -- a retryable code would invite a client to
-		// hammer a decision that will never change.
-		return connect.NewError(connect.CodePermissionDenied, err)
-	default:
-		// A store fault must not become a permanent deny-or-allow: surface it as
-		// retryable, matching verifyWorkerAccess.
-		return connect.NewError(connect.CodeInternal, err)
-	}
-}
-
-// verifyWorkerAccess checks that the user owns the worker (a worker serves only
-// its registrant -- see auth.WorkerCanUse), AND -- for a delegation bearer --
-// that this worker is one the token's minter is entitled to reach (see
-// verifyDelegationWorkerScope).
-//
-// WorkerCanUse alone is not enough: it answers "may this USER use this worker", and a
-// delegation token can carry a user the minting worker does not own. Both checks live
-// here so no caller can take one without the other.
-func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) error {
-	worker, ok, err := auth.WorkerCanUse(ctx, s.store, workerID, user.ID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-	if worker == nil || !ok || !auth.WorkerUsableNow(worker) {
-		return connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
-	}
-	return s.verifyDelegationWorkerScope(ctx, user, workerID)
-}
-
 // requireOnlineWorker verifies the caller may reach workerID -- ownership plus, for
 // a delegation bearer, that the token's minter is entitled to reach it (via
-// verifyWorkerAccess) -- and returns its live connection. Bundling the scope check
+// WorkerReachAuthorizer) -- and returns its live connection. Bundling the scope check
 // with the registry read is what keeps a worker-directed entrypoint from reaching
-// workerMgr.Get without first clearing verifyWorkerAccess: workerMgr.Get is an
-// unfiltered map read, so reaching it with an arbitrary worker id would turn the
-// offline/online split into a cross-tenant liveness oracle for any caller holding
-// one readable workspace. Every legitimate caller already satisfies the check, so
-// the gate is a property of this one primitive rather than a line each entrypoint
-// must remember. It remains a CONVENTION, though: workerMgr.Get is still exported
-// and ungated, so a future worker-directed entrypoint could read it directly and
-// be born unscoped. Making that structural (a capability token minted only by
-// verifyWorkerAccess) is tracked in https://github.com/leapmux/leapmux/issues/290.
+// ConnForTrustedPath with a user-supplied id: ConnForTrustedPath is an unfiltered map read, so
+// reaching it with an arbitrary worker id would turn the offline/online split into
+// a cross-tenant liveness oracle for any caller holding one readable workspace.
+// Every legitimate user-gated caller already satisfies the check, so the gate is a
+// property of this one primitive rather than a line each entrypoint must remember.
+//
+// The remaining structure that keeps ConnForTrustedPath from growing unscoped callers:
+//
+//   - The method name itself (ConnForTrustedPath) signals "no auth here"; rg ConnForTrustedPath
+//     is the audit trail.
+//   - audit.workerReachSites classifies every call site IN THE REPOSITORY
+//     (reachEstablishedChan / reachServerInitiated / reachStoreScoped);
+//     TestRepoInvariants fails any new call that is not listed, wherever it is
+//     written. A package that takes *workermgr.Manager wholesale and reads a
+//     trusted-path accessor does not compile-and-pass: it fails the net until
+//     someone adds a classified entry, which is a reviewed decision rather than
+//     an omission.
+//   - Downstream consumers (notifier, channel-close dispatcher) hold narrow
+//     interfaces that expose ConnForTrustedPath but not the rest of *workermgr.Manager,
+//     so they cannot grow into Register / OnlineForTrustedPath / WaitFor* casually.
+//
+// What that does NOT cover, stated plainly so the next reader does not
+// over-trust it: ConnForTrustedPath and the liveness probes stay exported on
+// *workermgr.Manager, so the gate is "you must justify this in a table", not
+// "you cannot write this". Making them unreachable is not simply a matter of an
+// internal/ package -- Go's internal/ visibility is path-based, and every
+// trusted consumer (notifier, channel-close dispatcher, ws_channel_relay,
+// worker_mgmt_service) is a SIBLING of workermgr rather than a descendant, so
+// an internal registry package would cut off the legitimate callers along with
+// the illegitimate ones. The classification table is the enforcement, not a
+// placeholder for a structural change that would work.
 func (s *ChannelService) requireOnlineWorker(ctx context.Context, user *auth.UserInfo, workerID string) (*workermgr.Conn, error) {
-	if err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
+	// ConnForUser runs the authorizer the registry was CONSTRUCTED with before
+	// it touches the map, so the access check cannot be skipped by reaching the
+	// registry directly -- that is the whole point of routing through it rather
+	// than checking here and then reading.
+	conn, err := s.workerMgr.ConnForUser(ctx, user, workerID)
+	if err != nil {
 		return nil, err
 	}
-	conn := s.workerMgr.Get(workerID)
 	if conn == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
 	}

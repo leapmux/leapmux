@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -19,7 +21,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-			UserID:          user.ID,
+			UserID:          userid.MustNew(user.ID),
 			ProviderID:      provID,
 			ProviderSubject: "sub-123",
 		})
@@ -53,14 +55,14 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			prov := SeedOAuthProvider(t, st, fmt.Sprintf("oul-list-prov-%d", i))
 			err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-				UserID:          user.ID,
+				UserID:          userid.MustNew(user.ID),
 				ProviderID:      prov.ID,
 				ProviderSubject: "sub-" + id.Generate(),
 			})
 			require.NoError(t, err)
 		}
 
-		links, err := st.OAuthUserLinks().ListByUser(ctx, user.ID)
+		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Len(t, links, 2)
 	})
@@ -73,14 +75,14 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-			UserID:          user.ID,
+			UserID:          userid.MustNew(user.ID),
 			ProviderID:      provID,
 			ProviderSubject: "sub-del",
 		})
 		require.NoError(t, err)
 
 		err = st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-			UserID:     user.ID,
+			UserID:     userid.MustNew(user.ID),
 			ProviderID: provID,
 		})
 		require.NoError(t, err)
@@ -100,7 +102,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		provID := prov.ID
 
 		err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-			UserID:          user.ID,
+			UserID:          userid.MustNew(user.ID),
 			ProviderID:      provID,
 			ProviderSubject: "sub-dbp",
 		})
@@ -109,7 +111,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		err = st.OAuthUserLinks().DeleteByProvider(ctx, provID)
 		require.NoError(t, err)
 
-		links, err := st.OAuthUserLinks().ListByUser(ctx, user.ID)
+		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.NotNil(t, links)
 		assert.Empty(t, links)
@@ -124,7 +126,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 		for _, prov := range []*store.OAuthProvider{prov1, prov2} {
 			err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-				UserID:          user.ID,
+				UserID:          userid.MustNew(user.ID),
 				ProviderID:      prov.ID,
 				ProviderSubject: "sub-" + prov.Name,
 			})
@@ -153,7 +155,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		orgID := SeedOrg(t, st, "oul-org")
 		user := SeedUser(t, st, orgID, "oul-listempty-user")
 
-		links, err := st.OAuthUserLinks().ListByUser(ctx, user.ID)
+		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		require.NotNil(t, links)
 		assert.Empty(t, links)
@@ -163,7 +165,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		st := s.NewStore(t)
 
 		err := st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-			UserID:     "nonexistent-user",
+			UserID:     userid.MustNew("nonexistent-user"),
 			ProviderID: "nonexistent-prov",
 		})
 		require.NoError(t, err)

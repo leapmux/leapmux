@@ -13,6 +13,42 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
+// listTabsOrgBinding decides which organization policy a ListTabs call runs
+// under. Empty `workspace_ids` means "every workspace I can read", so this
+// picks what "I can read" is scoped to.
+//
+// It is a named function rather than a prologue inside the handler because it
+// holds the only CONDITIONAL AnyOrg() in the hub: every other site passes
+// AnyOrg() as a fixed argument, this one decides. A delegation bearer is
+// already pinned to one workspace, which may live outside the caller's home
+// org, so binding to the home org there would hide the caller's own pinned
+// workspace. That is a deliberate authorization carve-out, and it belongs
+// somewhere a unit test can reach without building a full request.
+//
+// The full set of org-check skips is not a `rg AnyOrg` exercise that goes stale
+// as sites are added: internal/audit's orgCheckSkipSites enumerates them and
+// TestRepoInvariants fails any AnyOrg() call whose enclosing function it does
+// not list.
+func listTabsOrgBinding(reqOrgID string, user *auth.UserInfo) auth.OrgBinding {
+	// No principal, no binding -- and this comes FIRST, before the request's
+	// own org_id is honoured. ListTabs cannot reach here with a nil user
+	// (auth.MustGetUser fails the RPC), so this arm exists for the next caller,
+	// and for that caller "the request named an org" must not be enough to bind
+	// one: an unidentified caller supplying its own scope is the fail-OPEN
+	// shape. A leading guard also drops the `user != nil &&` from the
+	// delegation arm below, so every arm after this one may dereference user.
+	if user == nil {
+		return auth.DenyAllOrg()
+	}
+	if reqOrgID != "" {
+		return auth.BindOrg(reqOrgID)
+	}
+	if user.Credential.IsDelegation() {
+		return auth.AnyOrg()
+	}
+	return auth.BindOrg(user.OrgID)
+}
+
 // ListTabs reads the materialized rendered-tab view, filtered to the
 // requested workspaces. Mutations now flow through OrgCRDT.SubmitOps;
 // this RPC is read-only.
@@ -25,16 +61,8 @@ func (s *WorkspaceService) ListTabs(
 		return nil, err
 	}
 
-	orgID := req.Msg.GetOrgId()
-	// Empty `requested` means "every workspace I can read." Default
-	// the listOrgID to the authenticated user's home org only for
-	// unrestricted callers. Delegation callers are already pinned to a
-	// concrete workspace, which may live outside the user's home org.
-	listOrgID := orgID
-	if listOrgID == "" && !user.Credential.IsDelegation() {
-		listOrgID = user.OrgID
-	}
-	workspaceIDs, err := resolveAllowedWorkspacesForUser(ctx, s.store, listOrgID, req.Msg.GetWorkspaceIds(), user)
+	workspaceIDs, err := resolveAllowedWorkspacesForUser(
+		ctx, s.store, listTabsOrgBinding(req.Msg.GetOrgId(), user), req.Msg.GetWorkspaceIds(), user)
 	if err != nil {
 		// Only a delegation-scope PermissionDenied is a genuine authorization
 		// failure; an uncoded transient store failure must surface as a retryable

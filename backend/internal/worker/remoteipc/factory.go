@@ -7,6 +7,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	"github.com/leapmux/leapmux/internal/worker/service"
@@ -26,8 +27,8 @@ import (
 // workspace) supplies the provenance tab; concurrent spawns share
 // the same cached bearer.
 type DelegationLifecycle interface {
-	Acquire(userID, workspaceID, tabID string, tabType int32)
-	Release(ctx context.Context, userID, workspaceID string) error
+	Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32)
+	Release(ctx context.Context, userID userid.UserID, workspaceID string) error
 }
 
 // revokeRevokeTimeout caps the hub call we make from the cleanup
@@ -90,7 +91,7 @@ type Factory struct {
 // request's WorkspaceId field, falling back to the spawning agent's
 // workspace when callers omit it.
 type HubBridge interface {
-	CallHub(ctx context.Context, userID, workspaceID, method string, payload []byte) ([]byte, error)
+	CallHub(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
 }
 
 // spawnCommon carries the union of fields AgentSpawning and
@@ -98,7 +99,7 @@ type HubBridge interface {
 // exported entrypoints project their service-package input into this
 // shape so the listen/acquire/cleanup wiring is in one place.
 type spawnCommon struct {
-	UserID        string
+	UserID        userid.UserID
 	OrgID         string
 	WorkspaceID   string
 	WorkerID      string
@@ -109,6 +110,13 @@ type spawnCommon struct {
 }
 
 func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) ([]string, func(), error) {
+	// The identity is typed all the way from the channel session, so a blank one
+	// is already a compile-time impossibility at every call site. This is the
+	// residual zero-value guard, and it is FATAL rather than degrading: a spawn
+	// that cannot name its user must not start as nobody. See ErrMissingIdentity.
+	if sc.UserID.IsZero() {
+		return nil, nil, service.ErrMissingIdentity
+	}
 	socketURL := DefaultSocketPath(sc.WorkerID, socketKind, sc.TabID)
 	token := MintToken()
 	tokenInfo := TokenInfo{
@@ -134,7 +142,7 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 	if f.Delegation != nil {
 		f.Delegation.Acquire(sc.UserID, sc.WorkspaceID, sc.TabID, int32(sc.TabType))
 	}
-	cleanup := f.makeCleanup(spawnKey, sc.TabID, sc.UserID, sc.WorkspaceID, srv)
+	cleanup := f.makeCleanup(spawnKey, sc, srv)
 	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
 }
 
@@ -173,23 +181,29 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // The revoke runs synchronously with a short timeout — failures here
 // are non-fatal because the row's TTL bounds the worst-case lifetime,
 // but logging makes silent revoke leaks observable.
-func (f *Factory) makeCleanup(spawnKey, spawnID, userID, workspaceID string, srv *Server) func() {
+//
+// It closes over the whole spawnCommon rather than the three fields it reads:
+// they all come from the same spawn, and re-listing them as bare parameters
+// invites a caller to pass one spawn's user with another's workspace.
+// spawnKey stays separate -- it is the slog attribute NAME ("agent_id" /
+// "terminal_id"), not spawn data.
+func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func() {
 	return func() {
 		if err := srv.Close(); err != nil {
-			slog.Warn("remote IPC close failed", spawnKey, spawnID, "error", err)
+			slog.Warn("remote IPC close failed", spawnKey, sc.TabID, "error", err)
 		}
 		if f.Delegation != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
 			defer cancel()
-			if err := f.Delegation.Release(ctx, userID, workspaceID); err != nil {
-				slog.Warn("delegation release failed", spawnKey, spawnID, "user_id", userID, "workspace_id", workspaceID, "error", err)
+			if err := f.Delegation.Release(ctx, sc.UserID, sc.WorkspaceID); err != nil {
+				slog.Warn("delegation release failed", spawnKey, sc.TabID, "user_id", sc.UserID, "workspace_id", sc.WorkspaceID, "error", err)
 			}
 		}
 	}
 }
 
 // newRouter builds a router scoped to (userID, workspaceID).
-func (f *Factory) newRouter(userID, workspaceID string) *Router {
+func (f *Factory) newRouter(userID userid.UserID, workspaceID string) *Router {
 	return &Router{
 		WorkerID:        f.WorkerID,
 		UserID:          userID,
@@ -206,7 +220,7 @@ func (f *Factory) newRouter(userID, workspaceID string) *Router {
 // dispatcherAdapter satisfies LocalDispatcher.
 type dispatcherAdapter struct{ d *channel.Dispatcher }
 
-func (a dispatcherAdapter) DispatchWith(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (a dispatcherAdapter) DispatchWith(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	if a.d == nil {
 		_ = w.SendError(2, "no dispatcher")
 		return
@@ -217,14 +231,14 @@ func (a dispatcherAdapter) DispatchWith(ctx context.Context, userID string, req 
 // crossWorkerAdapter satisfies CrossWorkerClient.
 type crossWorkerAdapter struct{ c *crossworker.Client }
 
-func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
 	if a.c == nil {
 		return nil, errors.New("cross-worker client not configured")
 	}
 	return a.c.CallInner(ctx, targetWorkerID, userID, workspaceID, method, payload)
 }
 
-func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
 	if a.c == nil {
 		return errors.New("cross-worker client not configured")
 	}
@@ -237,7 +251,7 @@ func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID, use
 // scope the hub validates on /worker/delegation-tokens/mint).
 type hubBridgeAdapter struct{ b HubBridge }
 
-func (a hubBridgeAdapter) CallInner(ctx context.Context, userID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
 	if a.b == nil {
 		return nil, errors.New("hub bridge not configured")
 	}

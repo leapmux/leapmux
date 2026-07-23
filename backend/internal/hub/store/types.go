@@ -5,6 +5,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -508,7 +509,7 @@ type ListAllUsersParams struct {
 
 type CreateSessionParams struct {
 	ID        string
-	UserID    string
+	UserID    userid.UserID
 	ExpiresAt time.Time
 	UserAgent string
 	IPAddress string
@@ -521,13 +522,13 @@ type TouchSessionParams struct {
 }
 
 type DeleteOtherSessionsParams struct {
-	UserID string
+	UserID userid.UserID
 	KeepID string
 }
 
 type RefreshSessionAuthGenerationParams struct {
 	SessionID string
-	UserID    string
+	UserID    userid.UserID
 }
 
 type ListAllActiveSessionsParams struct {
@@ -537,14 +538,14 @@ type ListAllActiveSessionsParams struct {
 // ListUserSessionsParams pages a per-user session listing (ListByUserID),
 // ordered by (last_active_at DESC, id DESC).
 type ListUserSessionsParams struct {
-	UserID     string
+	UserID     userid.UserID
 	PageParams // Keyset on (last_active_at DESC, id DESC).
 }
 
 type CreateWorkerParams struct {
 	ID              string
 	AuthToken       string
-	RegisteredBy    string
+	RegisteredBy    userid.UserID
 	PublicKey       []byte
 	MlkemPublicKey  []byte
 	SlhdsaPublicKey []byte
@@ -568,17 +569,17 @@ type UpdateWorkerPublicKeyParams struct {
 
 type DeregisterWorkerParams struct {
 	ID           string
-	RegisteredBy string
+	RegisteredBy userid.UserID
 }
 
 type ListWorkersByUserIDParams struct {
-	RegisteredBy string
+	RegisteredBy userid.UserID
 	PageParams   // Keyset on (created_at DESC, id DESC).
 }
 
 type GetOwnedWorkerParams struct {
 	WorkerID string
-	UserID   string
+	UserID   userid.UserID
 }
 
 type ListWorkersAdminParams struct {
@@ -596,19 +597,27 @@ type CreateWorkerNotificationParams struct {
 
 type CreateRegistrationKeyParams struct {
 	ID        string
-	CreatedBy string
+	CreatedBy userid.UserID
 	ExpiresAt time.Time
+}
+
+// GetOwnedRegistrationKeyParams names the ownership gate's two halves so the
+// caller id cannot be an untyped positional string, mirroring
+// GetOwnedWorkerParams.
+type GetOwnedRegistrationKeyParams struct {
+	ID        string
+	CreatedBy userid.UserID
 }
 
 type ExtendRegistrationKeyParams struct {
 	ID        string
-	CreatedBy string
+	CreatedBy userid.UserID
 	ExpiresAt time.Time
 }
 
 type SoftDeleteRegistrationKeyParams struct {
 	ID        string
-	CreatedBy string
+	CreatedBy userid.UserID
 }
 
 type ListRegistrationKeysAdminParams struct {
@@ -619,24 +628,24 @@ type ListRegistrationKeysAdminParams struct {
 type CreateWorkspaceParams struct {
 	ID          string
 	OrgID       string
-	OwnerUserID string
+	OwnerUserID userid.UserID
 	Title       string
 }
 
 type ListAccessibleWorkspacesParams struct {
-	UserID string
+	UserID userid.UserID
 	OrgID  string
 }
 
 type RenameWorkspaceParams struct {
 	ID          string
-	OwnerUserID string
+	OwnerUserID userid.UserID
 	Title       string
 }
 
 type SoftDeleteWorkspaceParams struct {
 	ID          string
-	OwnerUserID string
+	OwnerUserID userid.UserID
 }
 
 // UpsertOwnedTabParams / UpsertRenderedTabParams target the two
@@ -687,7 +696,7 @@ type TabIndexKey struct {
 // pre-scoping by workspace; the impl applies the user's accessibility
 // filter so the lookup is safe across orgs.
 type LocateAccessibleRenderedTabParams struct {
-	UserID  string
+	UserID  userid.UserID
 	TabType leapmuxv1.TabType
 	TabID   string
 }
@@ -767,7 +776,7 @@ type MarkLifecycleOutboxConsumedParams struct {
 
 type CreateWorkspaceSectionParams struct {
 	ID          string
-	UserID      string
+	UserID      userid.UserID
 	Name        string
 	Position    string
 	SectionType leapmuxv1.SectionType
@@ -776,47 +785,47 @@ type CreateWorkspaceSectionParams struct {
 
 type RenameWorkspaceSectionParams struct {
 	ID     string
-	UserID string
+	UserID userid.UserID
 	Name   string
 }
 
 type UpdateWorkspaceSectionPositionParams struct {
 	ID       string
-	UserID   string
+	UserID   userid.UserID
 	Position string
 }
 
 type UpdateWorkspaceSectionSidebarPositionParams struct {
 	ID       string
-	UserID   string
+	UserID   userid.UserID
 	Sidebar  leapmuxv1.Sidebar
 	Position string
 }
 
 type DeleteWorkspaceSectionParams struct {
 	ID     string
-	UserID string
+	UserID userid.UserID
 }
 
 type SetWorkspaceSectionItemParams struct {
-	UserID      string
+	UserID      userid.UserID
 	WorkspaceID string
 	SectionID   string
 	Position    string
 }
 
 type DeleteWorkspaceSectionItemParams struct {
-	UserID      string
+	UserID      userid.UserID
 	WorkspaceID string
 }
 
 type GetWorkspaceSectionItemParams struct {
-	UserID      string
+	UserID      userid.UserID
 	WorkspaceID string
 }
 
 type IsWorkspaceInArchivedSectionParams struct {
-	UserID      string
+	UserID      userid.UserID
 	WorkspaceID string
 }
 
@@ -846,7 +855,7 @@ type CreateOAuthStateParams struct {
 }
 
 type UpsertOAuthTokensParams struct {
-	UserID       string
+	UserID       userid.UserID
 	ProviderID   string
 	AccessToken  []byte
 	RefreshToken []byte
@@ -856,17 +865,17 @@ type UpsertOAuthTokensParams struct {
 }
 
 type GetOAuthTokensParams struct {
-	UserID     string
+	UserID     userid.UserID
 	ProviderID string
 }
 
 type DeleteOAuthTokensByUserAndProviderParams struct {
-	UserID     string
+	UserID     userid.UserID
 	ProviderID string
 }
 
 type CreateOAuthUserLinkParams struct {
-	UserID          string
+	UserID          userid.UserID
 	ProviderID      string
 	ProviderSubject string
 }
@@ -877,7 +886,7 @@ type GetOAuthUserLinkParams struct {
 }
 
 type DeleteOAuthUserLinkParams struct {
-	UserID     string
+	UserID     userid.UserID
 	ProviderID string
 }
 
@@ -984,7 +993,7 @@ type CLIAuthorizationCode struct {
 
 type CreateAPITokenParams struct {
 	ID               string
-	UserID           string
+	UserID           userid.UserID
 	ClientType       string
 	ClientName       string
 	SecretHash       []byte
@@ -1005,7 +1014,7 @@ type RotateAPITokenRefreshParams struct {
 }
 
 type ListAPITokensByUserParams struct {
-	UserID     string
+	UserID     userid.UserID
 	ClientType string // empty = all
 }
 
@@ -1033,7 +1042,7 @@ type ListAllDelegationTokensParams struct {
 
 type CreateDelegationTokenParams struct {
 	ID               string
-	UserID           string
+	UserID           userid.UserID
 	WorkerID         string
 	WorkspaceID      string
 	AgentID          string
@@ -1056,17 +1065,17 @@ type CreateDeviceAuthorizationParams struct {
 
 type ApproveDeviceAuthorizationParams struct {
 	DeviceCode string
-	UserID     string
+	UserID     userid.UserID
 }
 
 type ApproveDeviceAuthorizationByUserCodeParams struct {
 	UserCode string
-	UserID   string
+	UserID   userid.UserID
 }
 
 type CreateCLIAuthorizationCodeParams struct {
 	Code          string
-	UserID        string
+	UserID        userid.UserID
 	CodeChallenge string
 	DeviceName    string
 	ExpiresAt     time.Time

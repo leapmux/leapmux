@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -63,7 +64,7 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d registrar, svc *Service) {
 	registerWorkspaceGated(d, "OpenAgent",
-		func(ctx context.Context, userID string, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
+		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
 			if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
@@ -160,7 +161,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			startupCtx, cancel := context.WithCancel(context.Background())
 			svc.AgentStartup.begin(agentID, cancel)
 
-			remoteEnvs := svc.spawnRemoteIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
+			remoteEnvs, err := svc.spawnRemoteIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
 				return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
 					UserID:        userID,
 					OrgID:         r.GetOrgId(),
@@ -171,6 +172,53 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					AgentProvider: agentlabels.CLIAlias(agentProvider),
 				})
 			})
+			if err != nil {
+				// Only a missing identity reaches here; every other factory
+				// failure degrades to "no remote control".
+				//
+				// runAgentStartup is what normally carries `defer finish()`,
+				// and it never launches on this path -- so release the
+				// in-flight count begin() added here, or Shutdown's
+				// WaitForInFlight blocks forever. cancel() disposes the
+				// context nothing else will ever own.
+				//
+				// finish() comes LAST, after the failure is durable. It is the
+				// deferred call on every other startup path precisely so the
+				// DB write and broadcast complete first: WaitForInFlight is
+				// documented to leave callers observing a quiescent DB, and
+				// Shutdown closes the database handle once it returns. Calling
+				// it before persistAgentStartupError would let a concurrent
+				// shutdown win the race and drop the startup_error write with
+				// "database is closed", leaving the tab stuck in STARTING with
+				// nothing naming the cause -- which is what this whole branch
+				// exists to prevent.
+				cancel()
+				// The same tail the terminal path uses: the agent row is
+				// already committed, so persist startup_error and broadcast
+				// STARTUP_FAILED first. The persisted cause is what a later
+				// reader (support, an operator reading the worker DB) has to
+				// go on -- this branch never reaches a client that could be
+				// told anything else.
+				svc.failAgentStartup(&dbAgent, gitModeResult{}, err, nil)
+				// Then tombstone the row. This branch is the ONE startup failure
+				// that answers with an RPC error instead of an OpenAgentResponse,
+				// so the client never learns the agent id: it cannot list the tab
+				// (ListAgents resolves only client-held ids) and will never send
+				// CloseAgent. Left open, the row is a tab nobody can name and
+				// nobody can close, reclaimed only when the hourly
+				// OrphanReconciler notices the hub never heard of it. Closing it
+				// here makes the worker's own state consistent the moment the
+				// failure is durable and lets the retention sweep
+				// (DeleteClosedAgentsBefore, closed_at-driven) reclaim it.
+				if closeErr := svc.Queries.CloseAgent(bgCtx(), agentID); closeErr != nil {
+					slog.Warn("failed to close the agent row refused for a missing identity",
+						"agent_id", agentID, "error", closeErr)
+				}
+				slog.Error("refusing to start agent without an identity", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to start agent")
+				svc.AgentStartup.finish()
+				return
+			}
 
 			agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
 			agentOpts.ResumeSessionID = r.GetAgentSessionId()
@@ -193,7 +241,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// ctx is intentionally not threaded — using it would cancel the
 	// cleanup partway through if the user clicked away.
 	registerAgentGatedByIDTracked(d, "CloseAgent",
-		func(_ context.Context, _ string, r *leapmuxv1.CloseAgentRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.CloseAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Tracked via dispatcher RegisterTracked above so a concurrent
@@ -225,7 +273,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// a millisecond after firing the RPC, otherwise *other* watchers in
 	// the same workspace would silently miss the message.
 	registerAgentGated(d, "SendAgentMessage",
-		func(_ context.Context, _ string, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Reject sends only on permanent startup failure — STARTING
@@ -432,7 +480,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// synthetic-message persistence must complete past a client
 	// disconnect; dispatcher ctx is intentionally not threaded.
 	registerAgentGated(d, "SendAgentRawMessage",
-		func(_ context.Context, _ string, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			content := r.GetContent()
 			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
@@ -450,7 +498,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// through the DB and git probes. A mid-call client disconnect cancels
 	// the remaining work instead of wasting subprocess forks against
 	// BatchGetGitStatus.
-	registerSetFiltered(d, "ListAgents", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerSetFiltered(d, "ListAgents", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAgentsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -510,7 +558,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// ctx is threaded through every DB read. A mid-call client disconnect
 	// cancels the remaining page query instead of wasting DB load.
 	registerAgentGated(d, "ListAgentMessages",
-		func(ctx context.Context, _ string, r *leapmuxv1.ListAgentMessagesRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ userid.UserID, r *leapmuxv1.ListAgentMessagesRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Return empty for closed agents.
@@ -605,7 +653,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// query is scoped to agent_id, so an authorized caller can only read a
 	// message belonging to that agent -- never another agent's or workspace's.
 	registerAgentGated(d, "GetAgentMessage",
-		func(ctx context.Context, _ string, r *leapmuxv1.GetAgentMessageRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ userid.UserID, r *leapmuxv1.GetAgentMessageRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Return an unset message for closed agents (mirrors ListAgentMessages,
@@ -638,7 +686,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
 	// content decompression -- because mark_type is set at write time.
 	registerAgentGated(d, "ListMessageMarks",
-		func(ctx context.Context, _ string, r *leapmuxv1.ListMessageMarksRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ userid.UserID, r *leapmuxv1.ListMessageMarksRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Return empty for closed agents (mirrors ListAgentMessages, which serves a closed agent
@@ -701,7 +749,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// must complete past a client disconnect (otherwise sibling clients
 	// would miss the rename); dispatcher ctx is intentionally not threaded.
 	registerAgentGated(d, "RenameAgent",
-		func(_ context.Context, _ string, r *leapmuxv1.RenameAgentRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.RenameAgentRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			if _, err := svc.Queries.RenameAgent(bgCtx(), db.RenameAgentParams{
@@ -730,7 +778,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// event to every watcher. The DB write + broadcast must complete past
 	// a client disconnect; dispatcher ctx is intentionally not threaded.
 	registerAgentGatedByID(d, "DeleteAgentMessage",
-		func(_ context.Context, _ string, r *leapmuxv1.DeleteAgentMessageRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.DeleteAgentMessageRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			messageID := r.GetMessageId()
 
@@ -814,7 +862,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// state mismatched with the persisted row. Dispatcher ctx is
 	// intentionally not threaded.
 	registerAgentGated(d, "UpdateAgentSettings",
-		func(_ context.Context, _ string, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			provider := dbAgent.AgentProvider
@@ -888,7 +936,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// even if the originating client window closed (the agent process is
 	// blocked waiting for it); dispatcher ctx is intentionally not threaded.
 	registerAgentGated(d, "SendControlResponse",
-		func(_ context.Context, _ string, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
@@ -911,7 +959,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// delivery must happen even if the requesting client disconnects mid-
 	// RPC. Dispatcher ctx is intentionally not threaded.
 	registerAgentGatedByID(d, "InterruptAgent",
-		func(_ context.Context, _ string, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			if err := svc.Agents.Interrupt(agentID); err != nil {
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
@@ -938,7 +986,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// the access set has landed, or a panic -- is dropped on arrival and
 	// the subscription hangs with no error to retry from.
 	registerWorkspaceGatedStream(d, "WatchWorkspacePrivateEvents",
-		func(_ context.Context, _ string, r *leapmuxv1.WatchWorkspacePrivateEventsRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.WatchWorkspacePrivateEventsRequest, sender channel.ResponseWriter) {
 			workspaceID := r.GetWorkspaceId()
 			if svc.PrivateEvents == nil {
 				return
@@ -971,7 +1019,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// GetFileTabPath from a sibling client would see a stale "not found".
 	// Dispatcher ctx is intentionally not threaded.
 	registerWorkspaceGated(d, "RegisterFileTabPath",
-		func(_ context.Context, _ string, r *leapmuxv1.RegisterFileTabPathRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, _ userid.UserID, r *leapmuxv1.RegisterFileTabPathRequest, sender channel.ResponseWriter) {
 			if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetFilePath() == "" {
 				sendInvalidArgument(sender, "tab_id, org_id, file_path are required")
 				return
@@ -994,7 +1042,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the store lookup to fail-fast on disconnect.
 	// gateInBody, probe-enforced
-	registerInBodyGated(d, "GetFileTabPath", func(ctx context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGated(d, "GetFileTabPath", func(ctx context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1035,7 +1083,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// survive past the user's intended revocation. Dispatcher ctx is
 	// intentionally not threaded.
 	// gateInBody, probe-enforced
-	registerInBodyGatedTracked(d, "RevokeFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGatedTracked(d, "RevokeFileTabPath", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.RevokeFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1077,7 +1125,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// missing path row even though the CRDT moved the tab. Dispatcher ctx
 	// is intentionally not threaded.
 	// gateInBody, probe-enforced
-	registerInBodyGated(d, "RelocateFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGated(d, "RelocateFileTabPath", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.RelocateFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1122,7 +1170,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// notably a workspace-pinned delegation bearer -- must not reach it. The
 	// worker owner's own agents (via the local-IPC remote CLI, which
 	// dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, "ListAvailableProviders", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerOwnerOnly(d, "ListAvailableProviders", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAvailableProvidersRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

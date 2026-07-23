@@ -10,6 +10,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type apiTokenStore struct{ conn *mysqlConn }
@@ -41,7 +42,7 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*mysqlStore).conn.q.CreateAPIToken(ctx, gendb.CreateAPITokenParams{
 			ID:               p.ID,
-			UserID:           p.UserID,
+			UserID:           p.UserID.String(),
 			ClientType:       p.ClientType,
 			ClientName:       p.ClientName,
 			SecretHash:       p.SecretHash,
@@ -63,8 +64,14 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 }
 
 func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) ([]store.APIToken, error) {
+	owner, ok := store.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See store.OwnerFilter.
+		return nil, nil
+	}
 	rows, err := s.conn.q.ListAPITokensByUser(ctx, gendb.ListAPITokensByUserParams{
-		UserID:     p.UserID,
+		UserID:     owner,
 		ClientType: p.ClientType,
 	})
 	if err != nil {
@@ -189,6 +196,13 @@ func (s *apiTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 	}, emitCredentialEvent)
 }
 
-func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID string) (int64, error) {
-	return rowsAffected(s.conn.q.RevokeAPITokensByUserFast(ctx, userID))
+func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
+	owner, ok := store.OwnerFilter(userID)
+	if !ok {
+		// An unminted caller names no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success
+		// having changed nothing. See store.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return rowsAffected(s.conn.q.RevokeAPITokensByUserFast(ctx, owner))
 }
