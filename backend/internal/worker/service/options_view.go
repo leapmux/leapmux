@@ -55,7 +55,7 @@ func optionValueInGroup(g *leapmuxv1.AvailableOptionGroup, v string) bool {
 // groups: the manager's catalog (running provider, cached, or static fallback)
 // overlaid with the agent's persisted current selections plus any additional
 // overrides (e.g. a permission-mode change being broadcast before it is re-read
-// from the DB). Package-level so both *Context and *OutputHandler can use it.
+// from the DB). Package-level so both *Service and *OutputHandler can use it.
 func optionGroupsView(agents *agent.Manager, a *db.Agent, overrides map[string]string) []*leapmuxv1.AvailableOptionGroup {
 	current := loadOptions(a.Options, a.AgentProvider)
 	for k, v := range overrides {
@@ -78,6 +78,6 @@ func optionGroupsView(agents *agent.Manager, a *db.Agent, overrides map[string]s
 
 // optionGroupsForAgent returns the agent's option groups overlaid with its
 // persisted current selections.
-func (svc *Context) optionGroupsForAgent(a *db.Agent) []*leapmuxv1.AvailableOptionGroup {
+func (svc *Service) optionGroupsForAgent(a *db.Agent) []*leapmuxv1.AvailableOptionGroup {
 	return optionGroupsView(svc.Agents, a, nil)
 }

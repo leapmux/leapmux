@@ -46,7 +46,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		method string
 	}
 
-	d.Register("test.method", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *Sender) {
+	d.Register("test.method", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		calledWith.userID = userID
 		calledWith.method = req.GetMethod()
 		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
@@ -94,7 +94,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 func TestDispatcher_PanicRecovery(t *testing.T) {
 	d := NewDispatcher()
 
-	d.Register("panicking", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {
+	d.Register("panicking", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		panic("test panic in handler")
 	})
 
@@ -138,7 +138,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 
 func TestDispatcher_UnknownMethod(t *testing.T) {
 	d := NewDispatcher()
-	d.Register("known", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {})
+	d.Register("known", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
 
 	workerSession, initiatorSession := setupTestSessions(t)
 
@@ -186,7 +186,7 @@ func TestDispatcher_CtxPropagated(t *testing.T) {
 	d := NewDispatcher()
 
 	gotCtxC := make(chan context.Context, 1)
-	d.Register("inspect-ctx", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender *Sender) {
+	d.Register("inspect-ctx", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		gotCtxC <- ctx
 		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
@@ -228,7 +228,7 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 	d := NewDispatcher()
 
 	seenC := make(chan bool, 1)
-	d.Register("watch", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender *Sender) {
+	d.Register("watch", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		select {
 		case <-ctx.Done():
 			seenC <- true
@@ -295,7 +295,7 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 	// pre-completion WaitGroup state from outside.
 	release := make(chan struct{})
 	handlerEntered := make(chan struct{})
-	d.RegisterTracked("slow-mutation", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {
+	d.RegisterTracked("slow-mutation", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		close(handlerEntered)
 		<-release
 	})
@@ -347,7 +347,7 @@ func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 	d.BindCleanup(&wg)
 
 	done := make(chan struct{})
-	d.Register("readonly", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {
+	d.Register("readonly", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		close(done)
 	})
 
@@ -384,8 +384,8 @@ func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
 
-	d.RegisterTracked("ok", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {})
-	d.RegisterTracked("boom", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {
+	d.RegisterTracked("ok", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
+	d.RegisterTracked("boom", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		panic("handler panic")
 	})
 
@@ -441,4 +441,43 @@ func TestDispatcher_DispatchAsync_UnknownMethod(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	require.Equal(t, int32(1), w.sent.Load(), "DispatchAsync must still send a response for an unknown method")
+}
+
+// TestDispatcher_InvokePassesWriterThrough pins that invoke hands the
+// ResponseWriter to the handler by identity — no wrapping pass-through
+// layer between DispatchWith and the handler. Reintroducing a wrapper
+// (e.g. the deleted Sender) would allocate per dispatch and break Same.
+func TestDispatcher_InvokePassesWriterThrough(t *testing.T) {
+	d := NewDispatcher()
+
+	var got ResponseWriter
+	d.Register("identity", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+		got = sender
+	})
+
+	w := &stubWriter{}
+	d.DispatchWith(context.Background(), "u", &leapmuxv1.InnerRpcRequest{Method: "identity"}, w)
+	assert.Same(t, w, got, "handler must receive the DispatchWith writer by identity")
+}
+
+// TestDispatcher_AsyncPassesWriterThrough is the DispatchAsync twin of
+// TestDispatcher_InvokePassesWriterThrough — both entry points share
+// invoke, so a future wrap must fail both paths.
+func TestDispatcher_AsyncPassesWriterThrough(t *testing.T) {
+	d := NewDispatcher()
+
+	gotC := make(chan ResponseWriter, 1)
+	d.Register("identity", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+		gotC <- sender
+	})
+
+	w := &stubWriter{}
+	d.DispatchAsync(context.Background(), "u", &leapmuxv1.InnerRpcRequest{Method: "identity"}, w)
+
+	select {
+	case got := <-gotC:
+		assert.Same(t, w, got, "handler must receive the DispatchAsync writer by identity")
+	case <-time.After(time.Second):
+		t.Fatal("handler was not invoked")
+	}
 }

@@ -8,18 +8,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
-	"github.com/leapmux/leapmux/internal/worker/channel"
-	"github.com/leapmux/leapmux/internal/worker/crossworker"
+	"github.com/leapmux/leapmux/internal/worker/bootstrap"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/internal/worker/remoteipc"
-	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
@@ -74,6 +71,18 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	client := hub.New(cfg.HubURL)
 	defer client.Stop()
 
+	// runShutdown drains service state. It must run BEFORE the bidi
+	// stream is torn down, not merely before client.Stop(): Client.Connect
+	// unregisters every watcher via channelMgr.CloseAll() as it unwinds,
+	// so a Shutdown deferred behind ConnectWithReconnect broadcasts the
+	// "[Worker disconnected - Press Enter to restart]" notice to an empty
+	// registry and only reaches the database. The `leapmux worker` CLI
+	// already ordered it this way; this entry point did not, which is the
+	// same one-does-it-the-other-doesn't defect the bootstrap package
+	// exists to remove -- startup was unified, teardown was not.
+	var shutdownOnce sync.Once
+	runShutdown := func() {}
+
 	// Set up E2EE channel manager if composite key is provided.
 	if cfg.CompositeKey != nil {
 		homeDir, _ := os.UserHomeDir()
@@ -81,205 +90,56 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		wakeLockTracker := wakelock.NewActivityTracker()
 		defer wakeLockTracker.Close()
 
-		// Create the service context first so the close callback can reference it.
-		svcCtx := service.NewContext(
-			sqlDB,
-			client.AgentManager(),
-			client.TerminalManager(),
-			homeDir,
-			cfg.DataDir,
-			wakeLockTracker,
-		)
-
-		channelMgr := channel.NewManager(
-			cfg.CompositeKey, cfg.EncryptionMode, client.Send,
-			cfg.MaxIncompleteChunked,
-			func(channelID string) { svcCtx.Watchers.UnwatchAll(channelID) },
-		)
-
-		svcCtx.WorkerID = cfg.WorkerID
-		svcCtx.SetRegisteredBy(cfg.RegisteredBy)
+		workerName := cfg.Name
 		switch {
-		case cfg.Name != "":
-			svcCtx.Name = cfg.Name
+		case workerName != "":
 		case os.Getenv("LEAPMUX_WORKER_NAME") != "":
-			svcCtx.Name = os.Getenv("LEAPMUX_WORKER_NAME")
+			workerName = os.Getenv("LEAPMUX_WORKER_NAME")
 		default:
-			hostname, _ := os.Hostname()
-			svcCtx.Name = hostname
+			workerName, _ = os.Hostname()
 		}
-		svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout
-		svcCtx.APITimeout = cfg.APITimeout
-		svcCtx.UseLoginShell = cfg.UseLoginShell
-		svcCtx.Send = client.Send
-		svcCtx.Channels = channelMgr
-		svcCtx.Init()
 
-		// Drop pending control_requests on every subprocess exit (graceful
-		// stop, crash, worker tear-down) so request_ids bound to the
-		// exited subprocess don't reappear stale on resume. This fires on a
-		// RELAUNCH's old-process stop too, so it must NOT run the full
-		// ClearAgentRuntimeState: that clears the in-memory notification thread
-		// (and to-do/span trackers), which must survive a relaunch so two
-		// settings-change notifications bracketing a model/effort switch stay in
-		// one thread and consolidate. Permanent teardown does the full cleanup
-		// via its own ClearAgentRuntimeState call.
-		client.AgentManager().SetOnExit(func(agentID string, _ int, _ error) {
-			svcCtx.Output.ClearPendingControlRequests(agentID)
+		wiring := bootstrap.Wire(bootstrap.Params{
+			Ctx:                  ctx,
+			Client:               client,
+			DB:                   sqlDB,
+			CompositeKey:         cfg.CompositeKey,
+			EncryptionMode:       cfg.EncryptionMode,
+			MaxIncompleteChunked: cfg.MaxIncompleteChunked,
+			WorkerID:             cfg.WorkerID,
+			Name:                 workerName,
+			HomeDir:              homeDir,
+			DataDir:              cfg.DataDir,
+			HubURL:               cfg.HubURL,
+			AuthToken:            cfg.AuthToken,
+			SeedRegisteredBy:     cfg.RegisteredBy,
+			AgentStartupTimeout:  cfg.AgentStartupTimeout,
+			APITimeout:           cfg.APITimeout,
+			UseLoginShell:        cfg.UseLoginShell,
+			WakeLock:             wakeLockTracker,
 		})
-		// Shutdown must run before client.Stop() so terminal screen snapshots
-		// are persisted while in-memory state is still available.
-		defer svcCtx.Shutdown()
 
-		dispatcher := channel.NewDispatcher()
-		service.RegisterAll(dispatcher, svcCtx)
-		channelMgr.SetDispatcher(dispatcher)
-
-		// Per-agent local-IPC factory backing the leapmux remote CLI.
-		// Cross-worker calls use TOFU pin storage in the worker data
-		// dir; failures here are non-fatal — the worker still serves
-		// its own agents over the existing E2EE channel.
-		pins, pinErr := crossworker.NewPinStore(cfg.DataDir)
-		if pinErr != nil {
-			slog.Warn("cross-worker pin store unavailable; sibling-worker calls disabled", "error", pinErr)
-		}
-		var cwClient *crossworker.Client
-		var delegation *crossworker.DelegationStore
-		if pins != nil {
-			delegation = crossworker.NewDelegationStore(cfg.HubURL, cfg.AuthToken, cfg.WorkerID)
-			// Defense-in-depth: a periodic sweep drops cached
-			// delegation rows whose access token has expired AND whose
-			// refcount fell to zero through an abnormal Release path.
-			// The healthy lifecycle (Acquire → GetBearer → Release)
-			// already keeps the cache bounded; this catches orphans.
-			go delegation.RunJanitor(ctx, time.Hour)
-			cwClient = crossworker.New(ctx, cfg.HubURL, pins, delegation)
-		}
-		var hubStreams remoteipc.HubStreamer
-		var hubBridge remoteipc.HubBridge
-		if delegation != nil {
-			hubStreams = remoteipc.NewHubWorkspaceStreamer(cfg.HubURL, delegation)
-			// HubBridge mirrors HubStreamer for unary hub-bound RPCs
-			// (workspace/tab/tile/layout). Wired with the same
-			// delegation store so streaming and unary share a single
-			// (user, workspace) → bearer cache and one revoke path.
-			hubBridge = remoteipc.NewHubWorkspaceBridge(cfg.HubURL, delegation)
-		}
-		svcCtx.RemoteIPC = &remoteipc.Factory{
-			WorkerID:    cfg.WorkerID,
-			Dispatcher:  dispatcher,
-			CrossWorker: cwClient,
-			HubBridge:   hubBridge,
-			HubStreams:  hubStreams,
-			Authorizers: svcCtx,
-			Delegation:  delegation,
-		}
-
-		client.SetChannelMgr(channelMgr)
-		client.EncryptionMode = cfg.EncryptionMode
-		client.PublicKey = cfg.CompositeKey.X25519Public
-		client.MlkemPublicKey = cfg.CompositeKey.MlkemPublicKeyBytes()
-		slhdsaPub, _ := cfg.CompositeKey.SlhdsaPublicKeyBytes()
-		client.SlhdsaPublicKey = slhdsaPub
-
-		// Provide workspace tab sync data on connect.
-		queries := db.New(sqlDB)
-		client.TabSyncProvider = func() *leapmuxv1.WorkspaceTabsSync {
-			return buildTabSync(queries)
-		}
-
-		// Periodic orphan reconciler: walks worker-local file-tab rows
-		// against the hub's CRDT-derived workspace_tab_owned view and
-		// drops / relocates rows the CRDT no longer agrees with. Runs
-		// once at startup and every hour after; cancelled on ctx done.
-		reconciler := service.NewOrphanReconciler(
-			queries,
-			svcCtx.FileTabPaths,
-			func(rctx context.Context) ([]*leapmuxv1.OwnedTab, error) {
-				return client.ListOwnedTabsForWorker(rctx)
-			},
-			service.OrphanReconcilerOptions{
-				// Stop the in-memory exec.Cmd / PTY alongside the
-				// DB closed_at write. Without these, an orphan
-				// reconcile only stops future respawns; the live
-				// subprocess keeps running until the worker
-				// itself exits.
-				Agents:    svcCtx.Agents,
-				Terminals: svcCtx.Terminals,
-				// Reclaim worktrees whose tab links are all startup-race
-				// strands (no live tab references them). Backstops the
-				// startup link guards so a close that raced startup can't
-				// leak the worktree dir.
-				ReapWorktree: svcCtx.ReapOrphanWorktree,
-			},
-		)
-		go reconciler.Run(ctx)
-
-		// Hub's connect-time WorkspaceTabsSync reply only signals that
-		// the hub has finished its side of the reconciliation; trigger
-		// the worker-side reconciler so this worker converges on every
-		// reconnect (not just on the hourly tick).
-		client.OnTabSyncResponse = func(*leapmuxv1.WorkspaceTabsSyncResponse) {
-			reconciler.Trigger()
-		}
-
-		// The Hub owns workers.registered_by and re-delivers it on every connect. It
-		// overrides RunConfig.RegisteredBy, which is only a DB-sourced seed: the Hub's
-		// answer is the authority, and taking it on every connect means a worker whose
-		// seed was wrong or absent still converges rather than serving with no owner.
-		//
-		// The handler is service.Context's own method, not a closure around it, so the
-		// drift warning and the empty-owner refusal cannot diverge between this entry
-		// point and `leapmux worker`'s.
-		client.OnWorkerIdentity = svcCtx.UpdateRegisteredBy
-
-		// Periodically reclaim in-memory agent tracker state orphaned by a
-		// closed/deleted agent that never routed through a cleanup path (the
-		// per-exit handler keeps the state for a possible relaunch).
-		svcCtx.StartOrphanSweepLoop(ctx)
+		runShutdown = func() { shutdownOnce.Do(wiring.Service.Shutdown) }
+		defer runShutdown()
+	} else {
+		// No composite key means no E2EE channel and therefore no service
+		// to wire, but the retention loops are about rows on disk and still
+		// have to run.
+		bootstrap.StartRetentionLoops(ctx, sqlDB, cfg.DataDir)
 	}
 
-	// Start the periodic cleanup loop to hard-delete agents and terminals
-	// that have been closed for longer than the retention period.
-	service.StartCleanupLoop(ctx, db.New(sqlDB))
+	// Detach the connect loop from ctx so cancellation reaches it only
+	// after runShutdown has finished. Watching ctx directly here instead
+	// would race: the loop and this goroutine would both observe the
+	// cancellation, and CloseAll could win.
+	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelRun()
+	go func() {
+		<-ctx.Done()
+		runShutdown()
+		cancelRun()
+	}()
 
-	// Start the daily plan-archive loop to roll up old plan year directories
-	// (`<data_dir>/plans/<YYYY>/`) into per-year zip files.
-	service.StartPlanArchiveLoop(ctx, cfg.DataDir, db.New(sqlDB))
-
-	client.ConnectWithReconnect(ctx, cfg.AuthToken)
+	client.ConnectWithReconnect(runCtx, cfg.AuthToken)
 	return nil
-}
-
-// buildTabSync constructs a WorkspaceTabsSync message from the worker's
-// database: all agents and all terminals.
-func buildTabSync(queries *db.Queries) *leapmuxv1.WorkspaceTabsSync {
-	ctx := context.Background()
-	var tabs []*leapmuxv1.WorkspaceTabEntry
-
-	// Add agent tabs from DB (includes both active and closed agents).
-	agents, err := queries.ListAllAgentIDsAndWorkspaces(ctx)
-	if err == nil {
-		for _, agent := range agents {
-			tabs = append(tabs, &leapmuxv1.WorkspaceTabEntry{
-				WorkspaceId: agent.WorkspaceID,
-				TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:       agent.ID,
-			})
-		}
-	}
-
-	// Add terminal tabs from DB.
-	terminals, err := queries.ListAllTerminals(ctx)
-	if err == nil {
-		for _, t := range terminals {
-			tabs = append(tabs, &leapmuxv1.WorkspaceTabEntry{
-				WorkspaceId: t.WorkspaceID,
-				TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-				TabId:       t.ID,
-			})
-		}
-	}
-
-	return &leapmuxv1.WorkspaceTabsSync{Tabs: tabs}
 }

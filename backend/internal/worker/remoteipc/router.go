@@ -58,12 +58,12 @@ type HubStreamer interface {
 	StreamHub(ctx context.Context, userID, method string, payload []byte, onPayload func([]byte) error) error
 }
 
-// LocalAuthorizers is the subset of service.Context the router uses to
+// LocalAuthorizers is the subset of service.Service the router uses to
 // stash a per-stream WorkspaceAuthorizer that worker handlers consult
 // instead of the channelmgr lookup.
 type LocalAuthorizers interface {
 	RegisterLocalAuthorizer(streamID string, workspaceIDs []string)
-	UnregisterLocalAuthorizer(streamID string)
+	ReleaseLocalStream(streamID string)
 }
 
 // Router dispatches local-IPC requests to the appropriate backend.
@@ -152,7 +152,7 @@ func (r *Router) withLocalAuthorizer(info TokenInfo, fn func(streamID string)) {
 	streamID := newLocalStreamID(info)
 	if r.Authorizers != nil {
 		r.Authorizers.RegisterLocalAuthorizer(streamID, r.WorkspaceIDs)
-		defer r.Authorizers.UnregisterLocalAuthorizer(streamID)
+		defer r.Authorizers.ReleaseLocalStream(streamID)
 	}
 	fn(streamID)
 }
@@ -389,12 +389,13 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 	}
 	// A streaming handler that signals completion via SendResponse may
 	// still carry a final payload (a fast-path that produced a single
-	// terminal frame, a unary-shaped result over a streaming Sender, or
-	// a handler reusing the same Sender for both unary and stream
-	// surfaces). Forwarding the payload through onMsg keeps that frame
-	// observable to the IPC caller; dropping it silently corrupted the
-	// stream end. Skip the forward only when there is no payload — an
-	// empty SendResponse is the documented "done, nothing more" signal.
+	// terminal frame, a unary-shaped result over a streaming
+	// ResponseWriter, or a handler reusing the same ResponseWriter for
+	// both unary and stream surfaces). Forwarding the payload through
+	// onMsg keeps that frame observable to the IPC caller; dropping it
+	// silently corrupted the stream end. Skip the forward only when
+	// there is no payload — an empty SendResponse is the documented
+	// "done, nothing more" signal.
 	if len(resp.GetPayload()) > 0 {
 		if onMsgErr := c.onMsg(&leapmuxv1.StreamInnerEnvelope{
 			Payload: resp.GetPayload(),
@@ -418,13 +419,28 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	if c.ctx.Err() != nil {
 		return c.ctx.Err()
 	}
-	return c.onMsg(&leapmuxv1.StreamInnerEnvelope{
+	err := c.onMsg(&leapmuxv1.StreamInnerEnvelope{
 		Payload:      m.GetPayload(),
 		End:          m.GetEnd(),
 		IsError:      m.GetIsError(),
 		ErrorMessage: m.GetErrorMessage(),
 		ErrorCode:    m.GetErrorCode(),
 	})
+
+	// A terminal frame finishes the collector, exactly as SendResponse and
+	// SendError do.
+	//
+	// Only those two used to, which was enough while every handler answered
+	// unary. Now that a streaming handler reports its failures as stream
+	// frames -- a rejected request, a panic -- a caller would sit in wait()
+	// until its own context expired, because the frame that WAS the ending
+	// did not look like one to this type.
+	if m.GetEnd() || m.GetIsError() {
+		if c.finish() && m.GetIsError() {
+			c.err = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
+		}
+	}
+	return err
 }
 
 func (c *streamCollector) ChannelID() string { return c.streamID }

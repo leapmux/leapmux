@@ -116,9 +116,9 @@ type reassemblyOutcome struct {
 //
 // Deleting the buffer on breach (as this once did) let the very next MORE
 // chunk find no entry, pass the max-incomplete check against a map the delete
-// had just shrunk, allocate a fresh buffer and re-accumulate to the 16 MiB
+// had just shrunk, allocate a fresh buffer and re-accumulate to the
 // ceiling -- erroring, deleting and repeating for as long as the peer kept
-// sending. Each cycle burns 16 MiB plus an error goroutine on the worker's
+// sending. Each cycle burns a full message budget plus an error goroutine on the worker's
 // sole receive goroutine. Unlike the client's channel, this receiver's
 // requests are PEER-initiated, so there is no live-handler check to bound it:
 // the tombstone is the bound. It is also the same defect already fixed on the
@@ -206,7 +206,7 @@ func (r *reassembler) accept(requestID uint64, chunk []byte, more bool) reassemb
 		// wire.go states the ceiling is a fixed protocol constant EVERY receiver
 		// enforces independently, and this was the one path that leaned on the
 		// Hub's per-ciphertext cap instead. That cap (65535) bounds a decrypted
-		// single chunk well below the 16 MiB ceiling today, so this never fires on
+		// single chunk well below the reassembly ceiling today, so this never fires on
 		// legitimate traffic, but enforcing it here makes the "every receiver
 		// enforces independently" claim literally true and keeps an unbounded
 		// plaintext off proto.Unmarshal if the upstream cap ever relaxes.

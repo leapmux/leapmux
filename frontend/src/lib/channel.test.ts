@@ -1016,6 +1016,43 @@ describe('channelManager', () => {
       expect(errorFn.mock.calls[0][0].message).toBe('stream broke')
     })
 
+    it('should error the stream when the worker replies with a unary error', async () => {
+      // A streaming method whose error arrives as an InnerRpcResponse
+      // rather than a stream frame: a gate rejection, a panic in a handler
+      // registered as unary, or the dispatcher's Unimplemented reply for a
+      // method it has no registration for at all -- which cannot know the
+      // shape by construction. Dropping it left the subscription waiting
+      // forever with nothing to retry from.
+      const channelId = await openTestChannel('w1')
+      const errorFn = vi.fn()
+      const handle = mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+      handle.onError(errorFn)
+
+      sendErrorResponseFromWorker(channelId, handle.requestId, 'workspace not accessible')
+
+      expect(errorFn).toHaveBeenCalledOnce()
+      expect(errorFn.mock.calls[0][0].message).toBe('workspace not accessible')
+      expect(channelInternals(mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
+    })
+
+    it('should ignore a non-error unary reply on a stream id', async () => {
+      // The inverse guard: a success payload on a stream id is not
+      // something a listener can interpret, so dropping it stays correct
+      // and must not be mistaken for an error.
+      const channelId = await openTestChannel('w1')
+      const errorFn = vi.fn()
+      const endFn = vi.fn()
+      const handle = mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+      handle.onError(errorFn)
+      handle.onEnd(endFn)
+
+      sendResponseFromWorker(channelId, handle.requestId, new Uint8Array([7]))
+
+      expect(errorFn).not.toHaveBeenCalled()
+      expect(endFn).not.toHaveBeenCalled()
+      expect(channelInternals(mgr, channelId).streamListeners.has(handle.requestId)).toBe(true)
+    })
+
     it('should throw if channel is not open', async () => {
       expect(() => mgr.stream('nonexistent', 'WatchEvents', new Uint8Array())).toThrow('channel not open')
     })

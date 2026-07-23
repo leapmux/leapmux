@@ -617,12 +617,13 @@ type OutputHandler struct {
 	autoContinue sync.Map // scheduleKey -> *autoContinueTimerState
 
 	// sendMessageFunc is called by auto-continue to inject a synthetic
-	// user message. Set via SetSendMessageFunc during service Init.
+	// user message. Set via SetSendMessageFunc in service.New.
 	sendMessageFunc func(agentID, content string)
 
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
-	// during service Init; nil in tests, where no startup is in progress.
+	// in service.New; nil in tests that build an OutputHandler directly, where
+	// no startup is in progress.
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool

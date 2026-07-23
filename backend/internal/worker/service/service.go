@@ -36,30 +36,57 @@ import (
 // SendFunc sends a ConnectRequest message to the Hub.
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
-// Context holds shared dependencies for all service implementations.
-//
-// The name collides with the stdlib context.Context it sits beside in every
-// handler signature, and the struct mixes injected wiring with mutable runtime
-// state; renaming it is filed as
-// https://github.com/leapmux/leapmux/issues/274 -- a dedicated mechanical
-// rename rather than a rider on an unrelated change.
-type Context struct {
-	DB                  *sql.DB
-	Queries             *db.Queries
-	Agents              *agent.Manager
-	Terminals           *terminal.Manager
-	Channels            *channel.Manager // E2EE channel manager (for workspace access lookups)
-	HomeDir             string
-	DataDir             string
-	WorkerID            string                    // This worker's ID (set after registration)
-	Name                string                    // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Send                SendFunc                  // Forwards messages to the Hub via WebSocket
-	Watchers            *WatcherManager           // Fan-out manager for event broadcasting
-	Output              *OutputHandler            // Agent output NDJSON processor
-	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
-	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
-	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
-	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+// Service holds the shared dependencies and runtime state behind every
+// worker-side RPC handler. Its methods ARE the handlers; RegisterAll wires
+// them into the inner-RPC dispatcher.
+type Service struct {
+	// ---- Injected wiring: assigned during construction and bootstrap
+	// (New, then the worker entry points cmd/leapmux/worker.go and
+	// worker/runner.go; test setup additionally substitutes the function
+	// seams, always before the first dispatch). Nothing here is written
+	// once handlers start dispatching, so handlers read these without
+	// synchronisation.
+	//
+	// Keep it that way: what makes it safe is bootstrap sequence, not a
+	// lock. Every field here is assigned before RegisterAll, which is the
+	// last point at which a write is unambiguously ordered ahead of any
+	// handler goroutine. A write added after it would be a data race on
+	// whatever handler reads the field. ----
+
+	// Config is embedded rather than copied field by field, so a field
+	// added to Config is reachable on Service the moment it is declared.
+	// A hand-written copy in New made "declared but never wired" a silent
+	// failure -- the one hazard a parameter object otherwise introduces
+	// while removing the swapped-argument one.
+	Config
+
+	Queries  *db.Queries
+	Watchers *WatcherManager // Fan-out manager for event broadcasting
+	Output   *OutputHandler  // Agent output NDJSON processor
+
+	// RemoteIPC supplies per-agent local-IPC servers for the
+	// `leapmux remote` CLI. Nil disables remote control (env vars are
+	// not injected and no socket is created).
+	//
+	// It is NOT part of Config: remoteipc.Factory takes the Service as its
+	// Authorizers, so it cannot be built until New has returned. Bootstrap
+	// assigns it before RegisterAll, which keeps it inside this block's
+	// contract.
+	RemoteIPC RemoteIPCFactory
+
+	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
+	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
+
+	// ---- Mutable runtime state: everything that changes over the worker's
+	// life, touched concurrently by the handler goroutines DispatchAsync
+	// spawns. The fields mutated in place (registeredBy, Cleanup, the two
+	// cleanup registries, the sync.Maps) each carry their own
+	// synchronisation. The pointer fields are assigned once but own the
+	// mutable state behind them -- the startup registries and PrivateEvents
+	// guard theirs internally, and FileTabPaths keeps its rows in the DB.
+	// Do not add a plain, unsynchronised mutable field to this block. ----
 
 	// registeredBy is the user who registered this worker -- the fact
 	// requireWorkerOwner gates every machine-scoped RPC family (file, git, sysinfo,
@@ -76,11 +103,6 @@ type Context struct {
 	// field's race invisible until the detector or a torn read finds it.
 	registeredBy atomic.Pointer[string]
 
-	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
-	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
-	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
-	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
-
 	// AgentStartup / TerminalStartup track in-flight startups — the
 	// window between OpenAgent/OpenTerminal returning and the subprocess
 	// being ready. See startupstate.go.
@@ -89,18 +111,13 @@ type Context struct {
 
 	// PrivateEvents is the worker-local pub/sub for E2EE-only events
 	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked). Always
-	// non-nil after NewContext.
+	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
 	// FileTabPaths persists (org_id, tab_id) -> (workspace_id,
-	// file_path) for FILE-typed tabs. Always non-nil after NewContext.
+	// file_path) for FILE-typed tabs. Always non-nil after New.
 	// The hub never sees these rows; clients fetch paths over E2EE.
 	FileTabPaths *FileTabPathStore
-
-	// RemoteIPC supplies per-agent local-IPC servers for the
-	// `leapmux remote` CLI. Nil disables remote control (env vars are
-	// not injected and no socket is created).
-	RemoteIPC RemoteIPCFactory
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
@@ -135,13 +152,13 @@ type Context struct {
 
 // worktreeRemovalLock returns the per-worktree mutex that serializes the
 // count-then-remove critical section in closeTabCommon.
-func (svc *Context) worktreeRemovalLock(worktreeID string) *sync.Mutex {
+func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
 	v, _ := svc.worktreeRemovalLocks.LoadOrStore(worktreeID, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
 // cleanupRegistry holds id → cleanup callbacks under a single mutex.
-// Used twice on Context (agentCleanups, terminalCleanups) so the two
+// Used twice on Service (agentCleanups, terminalCleanups) so the two
 // tab kinds keep distinct namespaces.
 type cleanupRegistry struct {
 	mu sync.Mutex
@@ -167,22 +184,6 @@ func (r *cleanupRegistry) run(id string) {
 	}
 }
 
-func (svc *Context) registerAgentCleanup(agentID string, cleanupFn func()) {
-	svc.agentCleanups.register(agentID, cleanupFn)
-}
-
-func (svc *Context) runAgentCleanup(agentID string) {
-	svc.agentCleanups.run(agentID)
-}
-
-func (svc *Context) registerTerminalCleanup(terminalID string, cleanupFn func()) {
-	svc.terminalCleanups.register(terminalID, cleanupFn)
-}
-
-func (svc *Context) runTerminalCleanup(terminalID string) {
-	svc.terminalCleanups.run(terminalID)
-}
-
 // spawnRemoteIPC mints LEAPMUX_REMOTE_* env vars and registers the
 // matching cleanup so a later close (or pre-restart re-mint) retires
 // the token. kind is the user-facing tab type ("agent" or "terminal")
@@ -193,7 +194,7 @@ func (svc *Context) runTerminalCleanup(terminalID string) {
 // remote control. The factory call is supplied as a closure so the
 // generic helper doesn't have to know about the AgentSpawnInfo /
 // TerminalSpawnInfo type split.
-func (svc *Context) spawnRemoteIPC(
+func (svc *Service) spawnRemoteIPC(
 	kind, tabID, phase string,
 	register func(string, func()),
 	call func() ([]string, func(), error),
@@ -218,7 +219,7 @@ func (svc *Context) spawnRemoteIPC(
 
 // agentStartupTimeout returns the configured agent startup timeout,
 // or the default if not set.
-func (svc *Context) agentStartupTimeout() time.Duration {
+func (svc *Service) agentStartupTimeout() time.Duration {
 	if svc.AgentStartupTimeout > 0 {
 		return svc.AgentStartupTimeout
 	}
@@ -226,42 +227,117 @@ func (svc *Context) agentStartupTimeout() time.Duration {
 }
 
 // agentAPITimeout returns the configured API timeout, or the default if not set.
-func (svc *Context) agentAPITimeout() time.Duration {
+func (svc *Service) agentAPITimeout() time.Duration {
 	if svc.APITimeout > 0 {
 		return svc.APITimeout
 	}
 	return agent.DefaultAPITimeout
 }
 
-// NewContext creates a new service context with all dependencies.
-func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string, wl *wakelock.ActivityTracker) *Context {
-	queries := db.New(sqlDB)
+// Config is the full injected wiring for a Service. Every field a worker
+// entry point supplies lives here, so "did I remember to set Send?" is a
+// question the struct literal answers rather than one Init discovers at
+// runtime.
+//
+// It is a struct rather than a parameter list because the two adjacent
+// path strings are otherwise silently swappable, and because the set has
+// grown past what positional arguments can keep readable. Service embeds
+// it, so every field below is readable as svc.<Field>.
+type Config struct {
+	// Enforced: New panics without Channels or Send, since a Service
+	// missing either cannot answer a single RPC.
+	Channels *channel.Manager // E2EE channel manager (for workspace access lookups)
+	Send     SendFunc         // Forwards messages to the Hub via WebSocket
+
+	// Supplied by every worker entry point, but NOT validated: a zero
+	// value here surfaces as a nil dereference at first use rather than a
+	// startup panic. Listed apart from the enforced pair above so the
+	// comment states what the code actually checks.
+	DB        *sql.DB
+	Agents    *agent.Manager
+	Terminals *terminal.Manager
+	HomeDir   string // Empty disables ~ expansion in workspace paths
+	DataDir   string // Empty makes data-dir-relative paths resolve to CWD
+
+	// Optional.
+	WorkerID string // This worker's ID (set after registration)
+	Name     string // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	// SeedRegisteredBy seeds the worker owner. The Hub is the authority
+	// and re-delivers it on every Connect, so an entry point that expects
+	// the Hub to supply it leaves this empty (see UpdateRegisteredBy).
+	//
+	// Named "Seed" rather than "RegisteredBy" because Service embeds
+	// Config and already has a RegisteredBy() accessor over the atomic the
+	// Hub writes; a promoted field of that name would compile while
+	// shadowing nothing and reading like the live value.
+	SeedRegisteredBy    string
+	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
+	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
+	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
+	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+}
+
+// New creates a fully wired Service.
+//
+// It panics if Channels or Send are missing, because a Service without
+// either cannot answer a single RPC and the two worker entry points
+// always supply both. Config makes the omission visible at the struct
+// literal; this is the backstop for an empty or partially-filled one, so
+// the failure lands at the line that built it rather than on the first
+// request.
+//
+// There is no second Init step. There used to be, because Channels and
+// Send arrived after construction -- Config carries them now, so a
+// separate call could only be forgotten. What genuinely cannot happen in
+// a constructor is the DB read that re-arms persisted schedules; that is
+// RestoreState, which says so in its name.
+func New(cfg Config) *Service {
+	if cfg.Channels == nil {
+		panic("service.New: Channels must be set")
+	}
+	if cfg.Send == nil {
+		panic("service.New: Send must be set")
+	}
+
+	queries := db.New(cfg.DB)
 	watchers := NewWatcherManager()
-	output := NewOutputHandler(sqlDB, queries, watchers, agents, wl)
-	output.DataDir = dataDir
-	svc := &Context{
-		DB:              sqlDB,
+	output := NewOutputHandler(cfg.DB, queries, watchers, cfg.Agents, cfg.WakeLock)
+	output.DataDir = cfg.DataDir
+	svc := &Service{
+		Config:          cfg,
 		Queries:         queries,
-		Agents:          agents,
-		Terminals:       terminals,
-		HomeDir:         homeDir,
-		DataDir:         dataDir,
 		Watchers:        watchers,
 		Output:          output,
-		WakeLock:        wl,
 		AgentStartup:    newAgentStartupRegistry(),
 		TerminalStartup: newTerminalStartupRegistry(),
 		PrivateEvents:   NewPrivateEventsBus(),
+	}
+	if cfg.SeedRegisteredBy != "" {
+		svc.SetRegisteredBy(cfg.SeedRegisteredBy)
 	}
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, svc.PrivateEvents)
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
+
+	// Wire auto-continue so OutputHandler can send synthetic user messages.
+	// An auto-continue injection is not a human-typed input, so it stays
+	// UNSPECIFIED (no scroll-rail jump dot).
+	svc.Output.SetSendMessageFunc(func(agentID, content string) {
+		svc.sendSyntheticUserMessage(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+	})
+	// Let PersistSettingsRefresh detect the startup window so it doesn't
+	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
+	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
+		_, _, _, ok := svc.AgentStartup.status(agentID)
+		return ok
+	})
+
 	return svc
 }
 
-func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
 	if svc.startAgentFn != nil {
 		return svc.startAgentFn(ctx, opts, sink)
 	}
@@ -270,7 +346,7 @@ func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink age
 
 // restartAgent preserves Manager.RestartAgent's stop-before-start ordering while
 // routing the new process through the service-level starter seam.
-func (svc *Context) restartAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+func (svc *Service) restartAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
 	unlock := svc.Agents.LockAgent(opts.AgentID)
 	defer unlock()
 
@@ -278,14 +354,14 @@ func (svc *Context) restartAgent(ctx context.Context, opts agent.Options, sink a
 	return svc.startAgent(ctx, opts, sink)
 }
 
-func (svc *Context) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
 	if svc.startTerminalFn != nil {
 		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}
 	return svc.Terminals.StartTerminal(ctx, opts, outputFn, exitFn)
 }
 
-func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
 	// Every agent row must carry a real provider: the client renders each of the
 	// agent's messages through that provider's renderers, and createMessageRow
 	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
@@ -303,44 +379,27 @@ func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgent
 	return svc.Queries.CreateAgent(ctx, params)
 }
 
-func (svc *Context) getAgentByID(ctx context.Context, agentID string) (db.Agent, error) {
+func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent, error) {
 	if svc.getAgentByIDFn != nil {
 		return svc.getAgentByIDFn(ctx, agentID)
 	}
 	return svc.Queries.GetAgentByID(ctx, agentID)
 }
 
-// Init performs one-time startup tasks such as clearing stale agent state
-// left over from a previous Worker process.
+// RestoreState re-arms what a previous worker process left persisted --
+// today, the auto-continue schedules whose timers inject synthetic user
+// messages when they fire.
 //
-// Init panics if required fields (Channels, Send) have not been set.
-// These fields are not part of NewContext because they depend on
-// components that are created separately (e.g. the channel manager).
-func (svc *Context) Init() {
-	// Validate required fields that are set after NewContext.
-	if svc.Channels == nil {
-		panic("service.Context.Init: Channels must be set before calling Init")
-	}
-	if svc.Send == nil {
-		panic("service.Context.Init: Send must be set before calling Init")
-	}
-
-	// Wire auto-continue so OutputHandler can send synthetic user messages. An
-	// auto-continue injection is not a human-typed input, so it stays UNSPECIFIED
-	// (no scroll-rail jump dot).
-	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		svc.sendSyntheticUserMessage(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
-	})
-	// Let PersistSettingsRefresh detect the startup window so it doesn't clobber
-	// a settings change made mid-startup (see SetAgentStartingFunc).
-	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
-		_, _, _, ok := svc.AgentStartup.status(agentID)
-		return ok
-	})
+// Separate from New because it reads the database and starts timers.
+// Construction should not do either: it is what lets every unit test
+// build a Service without touching the auto_continue tables or arming a
+// background goroutine it then has to stop.
+//
+// Agents and terminals need no equivalent: their status is derived from
+// runtime state (HasAgent/HasTerminal), not from the DB, so there is no
+// stale row to clear at startup.
+func (svc *Service) RestoreState() {
 	svc.Output.restoreAutoContinueSchedules()
-
-	// No need to deactivate agents/terminals on startup — status is now
-	// derived from runtime state (HasAgent/HasTerminal), not from the DB.
 }
 
 // Shutdown persists in-memory terminal state to the database so it
@@ -348,7 +407,7 @@ func (svc *Context) Init() {
 // manager (which clears in-memory state). Callers must have already
 // stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal
 // requests; otherwise the Wait calls below can race with a fresh Add.
-func (svc *Context) Shutdown() {
+func (svc *Service) Shutdown() {
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
 	// closes the DB or removes data directories.
@@ -413,7 +472,7 @@ func formatTerminalExitedNotice(exitCode int) []byte {
 // real exit code, so we skip to avoid clobbering it with the
 // "worker disconnected" sentinel. The non-shutdown caller path (the
 // exit handler itself) never passes exitCodeUnknown.
-func (svc *Context) persistTerminalOnExit(tid string, exitCode int) bool {
+func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	var (
 		src    terminal.TerminalMeta
 		screen []byte
@@ -477,7 +536,7 @@ type ownerOnlyRegistrar struct {
 }
 
 func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		if !requireWorkerOwner(o.r.svc, userID, sender) {
 			return
 		}
@@ -486,13 +545,11 @@ func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFun
 }
 
 func (o ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc) {
-	o.r.record(method, gateOwnerOnly)
-	o.r.d.Register(method, o.gate(handler))
+	o.r.register(method, gateOwnerOnly, dispatchPlain, o.gate(handler))
 }
 
 func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
-	o.r.record(method, gateOwnerOnly)
-	o.r.d.RegisterTracked(method, o.gate(handler))
+	o.r.register(method, gateOwnerOnly, dispatchTracked, o.gate(handler))
 }
 
 // SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
@@ -502,7 +559,7 @@ func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.Handl
 // authority, so the connect loop must use UpdateRegisteredBy instead -- it carries
 // the empty-owner refusal a seed does not need (nothing to clobber before the
 // first store).
-func (svc *Context) SetRegisteredBy(userID string) {
+func (svc *Service) SetRegisteredBy(userID string) {
 	svc.registeredBy.Store(&userID)
 }
 
@@ -521,7 +578,7 @@ func (svc *Context) SetRegisteredBy(userID string) {
 // Keeping the previous owner is the safe direction: the Hub cannot legitimately
 // un-own a live worker (deregistration flows through OnDeregister instead), so an
 // empty push is a bug or a truncated payload, never an instruction.
-func (svc *Context) UpdateRegisteredBy(userID string) {
+func (svc *Service) UpdateRegisteredBy(userID string) {
 	if userID == "" {
 		slog.Warn("hub delivered an empty worker owner, keeping current",
 			"current", svc.RegisteredBy())
@@ -537,7 +594,7 @@ func (svc *Context) UpdateRegisteredBy(userID string) {
 // RegisteredBy returns the user who registered this worker, or "" if the Hub has not
 // delivered it yet. requireWorkerOwner refuses "" outright, so an undelivered
 // identity fails closed rather than matching another empty id.
-func (svc *Context) RegisteredBy() string {
+func (svc *Service) RegisteredBy() string {
 	if p := svc.registeredBy.Load(); p != nil {
 		return *p
 	}
@@ -571,7 +628,7 @@ func (svc *Context) RegisteredBy() string {
 // stays as the layer that makes that ordering non-load-bearing. Its sibling in this
 // package's Hub counterpart (verifyDelegationWorkerScope) refuses an unrecorded
 // minter for the same reason.
-func requireWorkerOwner(svc *Context, userID string, sender *channel.Sender) bool {
+func requireWorkerOwner(svc *Service, userID string, sender channel.ResponseWriter) bool {
 	owner := svc.RegisteredBy()
 	if userID != "" && owner != "" && userID == owner {
 		return true
@@ -600,7 +657,19 @@ func requireWorkerOwner(svc *Context, userID string, sender *channel.Sender) boo
 //     AccessibleSet(); denial is an empty result, not PERMISSION_DENIED.
 //   - gateNone       — Ping; a liveness probe that does no work and discloses
 //     nothing, ungated by design.
-func RegisterAll(d *channel.Dispatcher, svc *Context) {
+//
+// RegisterAll also binds svc.Cleanup as the drain every RegisterTracked
+// dispatch gates on, so a dispatcher cannot carry this service's tracked
+// handlers without the WaitGroup Shutdown waits on. Both objects are
+// already arguments here, which is what makes the binding derivable from
+// the call rather than a second one an entry point has to remember: a
+// worker entry point once shipped without it, and registering tracked
+// handlers against an unbound dispatcher is silent -- the Add(1)/Done()
+// pair is skipped, so Shutdown waits on an always-zero WaitGroup and
+// returns while a close handler is still mutating the DB that teardown is
+// about to shut.
+func RegisterAll(d *channel.Dispatcher, svc *Service) {
+	d.BindCleanup(&svc.Cleanup)
 	_ = registerAllWithGates(d, svc)
 }
 
@@ -608,7 +677,15 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 // tests that need the gate map. Production call sites use RegisterAll; tests
 // call this on a throwaway dispatcher so the gate map and Methods() come from
 // the same function production runs — replay drift is impossible.
-func registerAllWithGates(d *channel.Dispatcher, svc *Context) map[string]methodGate {
+func registerAllWithGates(d *channel.Dispatcher, svc *Service) map[string]methodGate {
+	gates, _ := registerAllClassified(d, svc)
+	return gates
+}
+
+// registerAllClassified is registerAllWithGates plus the reply-shape map,
+// so a test can assert both classifications came from the one function
+// production runs.
+func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]methodGate, map[string]methodShape) {
 	r := newRegistrar(d, svc)
 	registerPingHandler(r, svc)
 	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
@@ -621,7 +698,7 @@ func registerAllWithGates(d *channel.Dispatcher, svc *Context) map[string]method
 	registerTabMoveHandlers(r, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	registerTunnelHandlers(ownerOnly)
-	return r.gates
+	return r.gates, r.shapes
 }
 
 // optionGroupLabelInGroups returns the display label of the option group with the
@@ -689,18 +766,57 @@ func optionGroupOffersValue(groups []*leapmuxv1.AvailableOptionGroup, key, value
 	return findOptionInGroup(groups, key, value) != nil
 }
 
+// protoJSONValue defers protojson.Format until a handler actually emits
+// the record it is attached to.
+//
+// Go evaluates call arguments eagerly, so passing protojson.Format(msg)
+// straight to slog.Debug runs a full reflection-driven proto->JSON
+// serialization on every call and throws the string away at the default
+// INFO level. These payloads ride the per-RPC and per-event hot paths,
+// so that is real work per request and per streamed frame. slog resolves
+// a LogValuer only once the record survives the level check, which for
+// a disabled level is never.
+type protoJSONValue struct{ msg proto.Message }
+
+// LogValue implements slog.LogValuer.
+func (p protoJSONValue) LogValue() slog.Value {
+	return slog.StringValue(protojson.Format(p.msg))
+}
+
+// lazyProtoJSON wraps msg so its protojson rendering happens only if the
+// log record is actually emitted.
+func lazyProtoJSON(msg proto.Message) protoJSONValue {
+	return protoJSONValue{msg: msg}
+}
+
 // sendProtoResponse is a helper that serializes a proto response and sends it.
-func sendProtoResponse(sender *channel.Sender, msg proto.Message) {
-	slog.Debug("response payload", "payload", protojson.Format(msg))
+func sendProtoResponse(sender channel.ResponseWriter, msg proto.Message) {
+	slog.Debug("response payload", "payload", lazyProtoJSON(msg))
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		slog.Error("failed to marshal response", "error", err)
 		_ = sender.SendError(int32(codes.Internal), "internal: marshal response")
 		return
 	}
-	_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
-		Payload: data,
-	})
+	if err := sender.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: data}); err != nil {
+		// A rejected message is the one send failure worth answering: the
+		// channel refused THIS payload on its own terms (it is over the
+		// size cap), so the transport is fine and a small reply will get
+		// through. Discarding it left the caller with nothing at all on
+		// the wire, waiting out its request timeout with no diagnosis --
+		// and every oversize unary response looked identical to a hung
+		// worker.
+		//
+		// Any other error means the transport itself is gone, where a
+		// second send would fail the same way and there is nobody left to
+		// read it.
+		if errors.Is(err, channel.ErrMessageRejected) {
+			slog.Warn("response too large for the channel; answering with an error instead",
+				"bytes", len(data), "error", err)
+			_ = sender.SendError(int32(codes.ResourceExhausted),
+				"response too large to deliver; request a smaller range")
+		}
+	}
 }
 
 // unmarshalRequest is a helper that deserializes an InnerRpcRequest payload.
@@ -710,36 +826,58 @@ func unmarshalRequest(req *leapmuxv1.InnerRpcRequest, msg proto.Message) error {
 	}
 	slog.Debug("request payload",
 		"method", req.GetMethod(),
-		"payload", protojson.Format(msg),
+		"payload", lazyProtoJSON(msg),
 	)
 	return nil
 }
 
 // sendInternalError sends an Internal error response.
-func sendInternalError(sender *channel.Sender, msg string) {
+func sendInternalError(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.Internal), msg)
 }
 
 // sendNotFoundError sends a NotFound error response.
-func sendNotFoundError(sender *channel.Sender, msg string) {
+func sendNotFoundError(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.NotFound), msg)
 }
 
 // sendPermissionDenied sends a PermissionDenied error response.
-func sendPermissionDenied(sender *channel.Sender, msg string) {
+func sendPermissionDenied(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.PermissionDenied), msg)
 }
 
 // sendInvalidArgument sends an InvalidArgument error response.
-func sendInvalidArgument(sender *channel.Sender, msg string) {
+func sendInvalidArgument(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.InvalidArgument), msg)
+}
+
+// sendStreamError reports a terminal failure on a STREAMING method.
+//
+// The sender helpers above emit an InnerRpcResponse, which the frontend
+// routes through pendingRequests. A streaming call's correlation id lives
+// in streamListeners instead, and deliverResponse drops a frame it finds
+// no pending request for -- so an ordinary SendError on a stream is
+// discarded silently and the client waits forever. Streaming handlers
+// must report failure in-band, as an InnerStreamMessage with IsError.
+func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string) {
+	_ = sender.SendStream(&leapmuxv1.InnerStreamMessage{
+		// End as well as IsError: this frame ENDS the stream, and saying so
+		// is what lets a receiver terminate on it generically instead of
+		// having to special-case the error flag. The browser checks isError
+		// before end (see deliverStream), so it still reports the error
+		// rather than a clean close.
+		End:          true,
+		IsError:      true,
+		ErrorCode:    int32(code),
+		ErrorMessage: msg,
+	})
 }
 
 // sendFailedPrecondition sends a FailedPrecondition error response.
 // Used when the request is valid but the target is not in a state that
 // permits the operation (e.g. sending a message to an agent that is
 // still starting up).
-func sendFailedPrecondition(sender *channel.Sender, msg string) {
+func sendFailedPrecondition(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
@@ -751,7 +889,7 @@ func sendFailedPrecondition(sender *channel.Sender, msg string) {
 // "invalid_argument: context canceled", which is misleading both for
 // the user-facing toast and for any client-side telemetry that filters
 // by code.
-func sendValidationError(sender *channel.Sender, err error) {
+func sendValidationError(sender channel.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, context.Canceled):
 		_ = sender.SendError(int32(codes.Canceled), err.Error())
@@ -768,25 +906,32 @@ func sendValidationError(sender *channel.Sender, err error) {
 // channel handshake by the hub's list of workspaces the user owns). The
 // caller is responsible for rejecting empty workspace_id up front.
 //
-// Authorization is delegated to AuthorizerForSender so both E2EE channels
+// Authorization is delegated to AuthorizerFor so both E2EE channels
 // (channelmgr-backed) and local-IPC callers (registered LocalIPCAuthorizer)
 // take the same code path. Callers that need the authorizer for follow-up
 // checks (list filters, watcher subscriber ids) should use
-// AuthorizerForSender directly.
-func (svc *Context) requireAccessibleWorkspace(sender *channel.Sender, workspaceID string) bool {
-	auth := svc.AuthorizerForSender(sender)
-	if !auth.IsAccessible(workspaceID) {
+// AuthorizerFor directly.
+func (svc *Service) requireAccessibleWorkspace(sender channel.ResponseWriter, workspaceID string) bool {
+	if !svc.workspaceAccessible(sender.ChannelID(), workspaceID) {
 		sendPermissionDenied(sender, "workspace is not accessible")
 		return false
 	}
 	return true
 }
 
+// workspaceAccessible is requireAccessibleWorkspace's decision without
+// its reply. It exists for callers that must shape their own denial --
+// a streaming registration, whose errors have to be stream frames -- so
+// they can ask the same question rather than reimplementing it.
+func (svc *Service) workspaceAccessible(channelID, workspaceID string) bool {
+	return svc.AuthorizerFor(channelID).IsAccessible(workspaceID)
+}
+
 // requireAccessibleAgent looks up the agent and verifies its workspace is
 // accessible on the sender's channel. Sends the appropriate error response
 // and returns ok=false on empty id, missing row, db error, or denial. The
 // returned Agent is the freshly-loaded row so callers can reuse it.
-func (svc *Context) requireAccessibleAgent(sender *channel.Sender, agentID string) (db.Agent, bool) {
+func (svc *Service) requireAccessibleAgent(sender channel.ResponseWriter, agentID string) (db.Agent, bool) {
 	return requireAccessibleRow(
 		svc, sender, agentID, "agent",
 		svc.Queries.GetAgentByID,
@@ -796,7 +941,7 @@ func (svc *Context) requireAccessibleAgent(sender *channel.Sender, agentID strin
 
 // requireAccessibleTerminal looks up the terminal and verifies its workspace
 // is accessible on the sender's channel. Mirror of requireAccessibleAgent.
-func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID string) (db.Terminal, bool) {
+func (svc *Service) requireAccessibleTerminal(sender channel.ResponseWriter, terminalID string) (db.Terminal, bool) {
 	return requireAccessibleRow(
 		svc, sender, terminalID, "terminal",
 		svc.Queries.GetTerminal,
@@ -807,7 +952,7 @@ func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID
 // requireAccessibleTerminalForRestart is the narrow-query variant used
 // by the RestartTerminal handler: returns metadata + length(screen)
 // without loading the screen BLOB. See GetTerminalForRestart for why.
-func (svc *Context) requireAccessibleTerminalForRestart(sender *channel.Sender, terminalID string) (db.GetTerminalForRestartRow, bool) {
+func (svc *Service) requireAccessibleTerminalForRestart(sender channel.ResponseWriter, terminalID string) (db.GetTerminalForRestartRow, bool) {
 	return requireAccessibleRow(
 		svc, sender, terminalID, "terminal",
 		svc.Queries.GetTerminalForRestart,
@@ -822,7 +967,7 @@ func (svc *Context) requireAccessibleTerminalForRestart(sender *channel.Sender, 
 // predicate, so the error mapping (empty id, missing row, db error,
 // denial) is identical to requireAccessibleAgent — use that one instead
 // when the handler body needs the row.
-func (svc *Context) requireAccessibleAgentID(sender *channel.Sender, agentID string) bool {
+func (svc *Service) requireAccessibleAgentID(sender channel.ResponseWriter, agentID string) bool {
 	_, ok := requireAccessibleRow(
 		svc, sender, agentID, "agent",
 		svc.Queries.GetAgentWorkspaceID,
@@ -835,7 +980,7 @@ func (svc *Context) requireAccessibleAgentID(sender *channel.Sender, agentID str
 // requireAccessibleAgentID: a workspace_id-only lookup that skips the
 // screen BLOB a full GetTerminal would read. Same predicate and error
 // mapping as requireAccessibleTerminal.
-func (svc *Context) requireAccessibleTerminalID(sender *channel.Sender, terminalID string) bool {
+func (svc *Service) requireAccessibleTerminalID(sender channel.ResponseWriter, terminalID string) bool {
 	_, ok := requireAccessibleRow(
 		svc, sender, terminalID, "terminal",
 		svc.Queries.GetTerminalWorkspaceID,
@@ -850,8 +995,8 @@ func (svc *Context) requireAccessibleTerminalID(sender *channel.Sender, terminal
 // "terminal"); fetch is the sqlc query; workspaceID extracts the row's
 // workspace id for the access check.
 func requireAccessibleRow[T any](
-	svc *Context,
-	sender *channel.Sender,
+	svc *Service,
+	sender channel.ResponseWriter,
 	id, kind string,
 	fetch func(context.Context, string) (T, error),
 	workspaceID func(T) string,

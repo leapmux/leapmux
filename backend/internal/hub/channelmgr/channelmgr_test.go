@@ -1492,3 +1492,53 @@ func TestExpireDueChannelsBoundedFanOutClosesAll(t *testing.T) {
 		assert.False(t, m.Exists(fmt.Sprintf("ch-%d", i)), "every due channel must be torn down")
 	}
 }
+
+// TestChannelInfoCarriesTheCurrentConnID pins the field a close predicate
+// needs to tell one frontend binding from another.
+//
+// A relay that fails to deliver tears the channel down, but the frontend
+// can rebind that channel to a fresh connection in the window between the
+// failure and the close. Without ConnID a predicate can only match on the
+// worker, so it would close the NEW binding -- exactly what
+// UnbindUserAndCleanup's own ConnID check exists to protect.
+func TestChannelInfoCarriesTheCurrentConnID(t *testing.T) {
+	m := New()
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-old", func(*leapmuxv1.ChannelMessage) error { return nil }, nil)
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-old",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// A close aimed at the binding that failed still finds it.
+	closed := m.CloseByIDIf("ch1", func(info ChannelInfo) bool {
+		return info.WorkerID == "w1" && info.ConnID == "conn-old"
+	})
+	assert.Len(t, closed, 1, "the failing binding must be closable")
+}
+
+// TestCloseByIDIfSkipsAChannelReboundToAnotherConnection is the guard
+// itself: a close carrying a stale conn id must leave the new binding
+// alone.
+func TestCloseByIDIfSkipsAChannelReboundToAnotherConnection(t *testing.T) {
+	m := New()
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-new", func(*leapmuxv1.ChannelMessage) error { return nil }, nil)
+
+	// The channel has moved on to a fresh relay connection.
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-new",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// A teardown raised against the PREVIOUS connection must not take it.
+	closed := m.CloseByIDIf("ch1", func(info ChannelInfo) bool {
+		return info.WorkerID == "w1" && info.ConnID == "conn-old"
+	})
+
+	assert.Empty(t, closed, "a stale conn id must not close the rebound channel")
+	assert.True(t, m.Exists("ch1"), "the new binding survives")
+}

@@ -22,36 +22,6 @@ type ResponseWriter interface {
 	ChannelID() string
 }
 
-// Sender provides methods for sending responses back to the caller.
-type Sender struct {
-	inner ResponseWriter
-}
-
-// NewSender creates a Sender from a ResponseWriter.
-func NewSender(w ResponseWriter) *Sender {
-	return &Sender{inner: w}
-}
-
-// SendResponse sends an InnerRpcResponse.
-func (s *Sender) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
-	return s.inner.SendResponse(resp)
-}
-
-// SendError sends an error response.
-func (s *Sender) SendError(code int32, message string) error {
-	return s.inner.SendError(code, message)
-}
-
-// SendStream sends an InnerStreamMessage.
-func (s *Sender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
-	return s.inner.SendStream(msg)
-}
-
-// ChannelID returns the E2EE channel ID for this sender.
-func (s *Sender) ChannelID() string {
-	return s.inner.ChannelID()
-}
-
 // HandlerFunc is the signature for an inner RPC method handler. `ctx`
 // is bound to the inbound request's lifecycle (per-session for E2EE
 // channel handlers, per-call for cleartext local IPC) and is cancelled
@@ -60,7 +30,18 @@ func (s *Sender) ChannelID() string {
 // stops the work instead of letting it run to completion. Fire-and-
 // forget post-response work that must outlive the request should keep
 // using `bgCtx()`.
-type HandlerFunc func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *Sender)
+//
+// `sender` is the dispatcher's writer, handed over by identity rather
+// than wrapped. A handler MAY retain it past return -- WatchEvents does
+// exactly that, parking it in the watcher registry to carry live events
+// for the rest of the channel's life. That is only sound because every
+// transport mints a FRESH writer per inbound request (see the
+// boundSender built in HandleMessage, and remoteipc's per-call
+// collectors): the writer carries the request's correlation id, so a
+// retained one keeps addressing the stream it was created for. A
+// transport that pooled or reused writers would silently misroute every
+// retained stream, with nothing here to catch it.
+type HandlerFunc func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter)
 
 // registered captures a handler plus whether its in-flight invocations
 // must gate Shutdown. tracked=true methods drive cleanup.Add(1) /
@@ -69,6 +50,13 @@ type HandlerFunc func(ctx context.Context, userID string, req *leapmuxv1.InnerRp
 type registered struct {
 	fn      HandlerFunc
 	tracked bool
+	// streaming records that this method answers with InnerStreamMessage
+	// frames rather than a single InnerRpcResponse. invoke needs it to
+	// report a panic in a shape the caller is actually listening for: a
+	// streaming call's correlation id is registered as a stream on the
+	// client, and an InnerRpcResponse on a stream id is dropped with no
+	// pending request to receive it.
+	streaming bool
 }
 
 // Dispatcher routes inner RPC method calls to registered handlers.
@@ -76,7 +64,7 @@ type Dispatcher struct {
 	handlers map[string]registered
 	// cleanup, when non-nil, is incremented before every tracked
 	// dispatch and decremented when the handler returns. Callers
-	// (typically the worker service.Context) Wait on it from Shutdown
+	// (typically the worker service.Service) Wait on it from Shutdown
 	// so destructive mutations finish before DB / data-dir teardown.
 	cleanup *sync.WaitGroup
 }
@@ -116,6 +104,16 @@ func (d *Dispatcher) RegisterTracked(method string, handler HandlerFunc) {
 	d.handlers[method] = registered{fn: handler, tracked: true}
 }
 
+// RegisterStream adds a handler for a server-streaming method, whose
+// replies are InnerStreamMessage frames rather than one
+// InnerRpcResponse. Registering with Register instead still works for
+// the happy path -- the handler chooses its own reply shape -- but a
+// panic would then be reported as an InnerRpcResponse the client drops,
+// leaving the tab waiting with no events and no error.
+func (d *Dispatcher) RegisterStream(method string, handler HandlerFunc) {
+	d.handlers[method] = registered{fn: handler, streaming: true}
+}
+
 // Methods returns every registered method name, unordered.
 //
 // It exists so a test can assert a property of EVERY handler a registrar installed
@@ -135,6 +133,11 @@ func (d *Dispatcher) Methods() []string {
 // Pass nil to disable cleanup tracking (e.g. in tests that don't care
 // about Shutdown drain semantics). Must be called before the first
 // dispatch; concurrent BindCleanup + Dispatch is a programming error.
+//
+// Callers registering the worker service's handlers do NOT call this:
+// service.RegisterAll binds svc.Cleanup itself, so the two can't drift.
+// It stays exported for the channel-package tests and for any registrar
+// that wires a dispatcher without a Service behind it.
 func (d *Dispatcher) BindCleanup(wg *sync.WaitGroup) {
 	d.cleanup = wg
 }
@@ -225,10 +228,8 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, userID string, req *leap
 // invoke runs a resolved handler with panic recovery. Centralised so
 // DispatchWith and DispatchAsync stay in sync on the wrapping
 // semantics — adding a wrap (tracing, metrics) once lands at both
-// entry points. This is also the real decorator choke point, which is
-// why the anaemic Sender pass-through below can be deleted (handlers
-// taking ResponseWriter directly) -- a large-ripple cleanup tracked in
-// https://github.com/leapmux/leapmux/issues/294.
+// entry points. This is the real decorator choke point for handler
+// invocations.
 func (d *Dispatcher) invoke(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w ResponseWriter, h registered) {
 	// Recover from handler panics so the goroutine doesn't die silently,
 	// which would leave the frontend waiting until its 30s timeout fires.
@@ -239,9 +240,19 @@ func (d *Dispatcher) invoke(ctx context.Context, userID string, req *leapmuxv1.I
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
+			if h.streaming {
+				// The caller registered this correlation id as a stream, so
+				// it has no pending request an InnerRpcResponse could
+				// resolve; report in-band instead.
+				_ = w.SendStream(&leapmuxv1.InnerStreamMessage{
+					IsError:      true,
+					ErrorCode:    int32(codes.Internal),
+					ErrorMessage: "internal error",
+				})
+				return
+			}
 			_ = w.SendError(int32(codes.Internal), "internal error")
 		}
 	}()
-	sender := &Sender{inner: w}
-	h.fn(ctx, userID, req, sender)
+	h.fn(ctx, userID, req, w)
 }

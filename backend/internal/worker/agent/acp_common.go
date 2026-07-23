@@ -1614,8 +1614,7 @@ func (b *acpBase) startACPHandshake(
 	// Pi wrap in their own constructors; they do not run this handshake.
 	b.sink = newThinkingResetSink(b.sink, &b.thinkingTokens)
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner := newStdoutScanner(stdout)
 	go b.readOutputLoop(scanner, b.handleOutput)
 
 	cleanup := b.stopAndWait

@@ -32,6 +32,8 @@ type fakeSMTPServer struct {
 	listener net.Listener
 	tlsCfg   *tls.Config // server-side cert (used for STARTTLS or implicit-TLS listener)
 
+	// Set by options at construction and never written afterwards, so
+	// serve() can read them from its own goroutine without synchronisation.
 	advertiseSTARTTLS bool // when false, EHLO response omits STARTTLS
 	requireImplicit   bool // when true, the listener wraps every accepted conn in TLS
 
@@ -47,7 +49,25 @@ type receivedMessage struct {
 	data string
 }
 
-func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
+// fakeSMTPOption configures the server BEFORE its accept loop starts.
+//
+// These have to be options rather than fields a test assigns afterwards:
+// serve() reads them on every accepted connection from its own goroutine,
+// so a post-construction write races the read. The race detector caught
+// exactly that on requireImplicit.
+type fakeSMTPOption func(*fakeSMTPServer)
+
+// withoutSTARTTLS makes the EHLO response omit STARTTLS.
+func withoutSTARTTLS() fakeSMTPOption {
+	return func(s *fakeSMTPServer) { s.advertiseSTARTTLS = false }
+}
+
+// withImplicitTLS wraps every accepted connection in TLS.
+func withImplicitTLS() fakeSMTPOption {
+	return func(s *fakeSMTPServer) { s.requireImplicit = true }
+}
+
+func newFakeSMTPServer(t *testing.T, opts ...fakeSMTPOption) *fakeSMTPServer {
 	t.Helper()
 	tlsCfg, _ := newSelfSignedTLS(t, "127.0.0.1")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -60,6 +80,11 @@ func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
 		tlsCfg:            tlsCfg,
 		advertiseSTARTTLS: true,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	// Started only once configuration is complete, so serve() never reads
+	// a field a test is still writing.
 	go s.serve()
 	t.Cleanup(func() { _ = ln.Close() })
 	return s
@@ -264,8 +289,7 @@ func dialerToHostPort(target string) func(ctx context.Context, network, addr str
 }
 
 func TestSMTPSender_None_PlaintextDelivery(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.advertiseSTARTTLS = false
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
 		Host:    "127.0.0.1",
@@ -307,8 +331,7 @@ func TestSMTPSender_None_PlaintextDelivery(t *testing.T) {
 }
 
 func TestSMTPSender_None_AuthPLAIN(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.advertiseSTARTTLS = false
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
 		Host:     "127.0.0.1",
@@ -371,8 +394,7 @@ func TestSMTPSender_STARTTLS_Upgrade(t *testing.T) {
 }
 
 func TestSMTPSender_STARTTLS_RequiredButMissing(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.advertiseSTARTTLS = false
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
 		Host:    "127.0.0.1",
@@ -390,8 +412,7 @@ func TestSMTPSender_STARTTLS_RequiredButMissing(t *testing.T) {
 }
 
 func TestSMTPSender_Implicit_TLSDelivery(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.requireImplicit = true
+	srv := newFakeSMTPServer(t, withImplicitTLS())
 	clientPool := poolFromServerCfg(t, srv.tlsCfg)
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
@@ -418,8 +439,7 @@ func TestSMTPSender_Implicit_TLSDelivery(t *testing.T) {
 }
 
 func TestSMTPSender_RejectsHeaderInjection(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.advertiseSTARTTLS = false
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
 		Host:    "127.0.0.1",
@@ -459,8 +479,7 @@ func TestSMTPSender_RejectsHeaderInjection(t *testing.T) {
 }
 
 func TestSMTPSender_SubjectEncoding(t *testing.T) {
-	srv := newFakeSMTPServer(t)
-	srv.advertiseSTARTTLS = false
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
 
 	sender := mail.NewSMTPSender(mail.SMTPConfig{
 		Host:    "127.0.0.1",

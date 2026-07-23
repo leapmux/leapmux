@@ -11,7 +11,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -531,10 +530,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: "test-ch",
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
 
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
@@ -970,7 +966,7 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{ChannelID: "test-ch", Sender: channel.NewSender(w)})
+	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
 
 	answer := &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",

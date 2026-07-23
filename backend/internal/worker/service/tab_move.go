@@ -12,14 +12,14 @@ import (
 // registerTabMoveHandlers registers the MoveTabWorkspace inner RPC handler.
 // gateInBody, probe-enforced: dual source+dest + TabType switch cannot use a
 // single structural extractor.
-func registerTabMoveHandlers(d registrar, svc *Context) {
+func registerTabMoveHandlers(d registrar, svc *Service) {
 	registerInBodyGated(d, "MoveTabWorkspace", handleMoveTabWorkspace(svc))
 }
 
 // handleMoveTabWorkspace updates an agent's or terminal's workspace_id in the
 // worker DB. The frontend calls this when dragging a tab between workspaces.
-func handleMoveTabWorkspace(svc *Context) channel.HandlerFunc {
-	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+func handleMoveTabWorkspace(svc *Service) channel.HandlerFunc {
+	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.MoveTabWorkspaceRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

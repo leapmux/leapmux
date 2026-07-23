@@ -25,7 +25,7 @@ type startupCallbacks struct {
 // the git-mode mutation. Returns the result (with rollback metadata
 // populated iff a mutation partially succeeded before failing) and any
 // error.
-func (svc *Context) runStartupPhase0(ctx context.Context, plan gitModePlan, cb startupCallbacks) (gitModeResult, error) {
+func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb startupCallbacks) (gitModeResult, error) {
 	if label := plan.PhaseLabel(); label != "" {
 		cb.setMessage(label)
 		cb.broadcastStarting(label)
@@ -38,7 +38,7 @@ func (svc *Context) runStartupPhase0(ctx context.Context, plan gitModePlan, cb s
 // git-mode mutation, persist the error, broadcast STARTUP_FAILED, and
 // mark the registry failed last so observers see a durable terminal
 // state.
-func (svc *Context) failStartup(gm gitModeResult, cause error, cb startupCallbacks) {
+func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbacks) {
 	if gm.Rollback.HasPartialMutation() {
 		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
 			cb.setMessage(label)
@@ -57,7 +57,7 @@ func (svc *Context) failStartup(gm gitModeResult, cause error, cb startupCallbac
 // `gitStatus` is forwarded only to the STARTUP_FAILED broadcast; the
 // STARTING broadcasts always carry nil (no git status is available at
 // label-emission time).
-func (svc *Context) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) startupCallbacks {
+func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) startupCallbacks {
 	return startupCallbacks{
 		setMessage:        func(label string) { svc.AgentStartup.setMessage(dbAgent.ID, label) },
 		broadcastStarting: func(label string) { svc.broadcastAgentStarting(dbAgent, label, nil) },
@@ -70,7 +70,7 @@ func (svc *Context) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv
 // terminalStartupCallbacks wires the terminal-specific registry,
 // broadcast and persistence hooks into the shared startupCallbacks
 // shape.
-func (svc *Context) terminalStartupCallbacks(terminalID string) startupCallbacks {
+func (svc *Service) terminalStartupCallbacks(terminalID string) startupCallbacks {
 	return startupCallbacks{
 		setMessage:        func(label string) { svc.TerminalStartup.setMessage(terminalID, label) },
 		broadcastStarting: func(label string) { svc.broadcastTerminalStarting(terminalID, label, nil) },

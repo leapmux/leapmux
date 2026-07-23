@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -67,7 +66,7 @@ func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 	}))
 
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{ChannelID: "ch-1", Sender: channel.NewSender(mock)})
+	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
@@ -110,7 +109,7 @@ func TestNotificationReseqBroadcast_CarriesMarkType(t *testing.T) {
 	}))
 
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{ChannelID: "ch-1", Sender: channel.NewSender(mock)})
+	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})

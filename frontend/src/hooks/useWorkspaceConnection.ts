@@ -10,7 +10,7 @@ import type { createTabStore } from '~/stores/tab.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
+import { channelManager, sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
@@ -47,6 +47,61 @@ export function agentWatchEntry(agentId: string, resumeSeq: bigint): WatchAgentE
   return (resumeSeq > 0n
     ? { agentId, replay: WatchReplayMode.AFTER_CURSOR, cursorSeq: resumeSeq }
     : { agentId, replay: WatchReplayMode.LATEST, cursorSeq: BigInt(0) }) as WatchAgentEntry
+}
+
+/**
+ * Tell the worker this channel is watching nothing.
+ *
+ * Closing a WatchEvents handle is purely client-local: it removes a stream
+ * listener and produces no frame the worker can see. So when the last tab on a
+ * worker goes away there is nothing to retire its subscriptions, and the worker
+ * keeps marshalling, encrypting and shipping every event for tabs nobody is
+ * listening to for the life of the pooled channel.
+ *
+ * The worker reads a WatchEvents request as the channel's whole current
+ * interest, so an empty one IS the unsubscribe.
+ *
+ * `stillWanted` is re-checked immediately before the send, and that check is
+ * the point of the seam. Opening the channel can block behind a handshake, so
+ * between deciding to unsubscribe and reaching the wire the user may well have
+ * opened a new tab and subscribed. Landing afterwards, this request would then
+ * be read as "watching nothing" and wipe the subscription that tab just made --
+ * silently, because an empty request is a legitimate one that answers with no
+ * error, so nothing would ever re-subscribe.
+ */
+export async function unsubscribeAllWatchEvents(
+  workerId: string,
+  stillWanted: () => boolean = () => true,
+): Promise<void> {
+  try {
+    if (!stillWanted())
+      return
+    // No channel, nothing to retire. Checked before opening one, because
+    // a channel that does not exist holds no subscriptions -- opening one
+    // (a full Noise_NK + ML-KEM handshake plus a hub round trip) purely
+    // to say nothing is wanted is cost with no effect. The watch effect
+    // reaches here on ordinary paths that never had a channel: a resolved
+    // workerId before tabs hydrate, or a workspace whose only tab on that
+    // worker is a FILE tab.
+    if (!channelManager.hasOpenChannelForWorker(workerId))
+      return
+    // Open (in practice, resolve the existing) channel first, then
+    // re-check. The open is the part that can block; everything
+    // watchEventsViaChannel does after it is synchronous, so re-checking
+    // here shrinks the race window from a hub round trip to a microtask.
+    await channelManager.getOrOpenChannel(workerId)
+    if (!stillWanted())
+      return
+    const handle = await watchEventsViaChannel(workerId, { agents: [], terminals: [] })
+    handle.close()
+  }
+  catch (err) {
+    // A closed channel retires the subscriptions on its own, so that case is
+    // genuinely nothing to do. Logged rather than swallowed silently because
+    // any OTHER failure leaves the worker shipping events to nobody for the
+    // pooled channel's remaining life, and that is invisible from the UI.
+    log.debug('unsubscribe-all WatchEvents did not reach the worker', { workerId, error: String(err) })
+  }
 }
 
 export function buildWatchTargetsKey(
@@ -1453,9 +1508,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
     currentTargetsKey = newKey
 
-    // Start new stream if there's anything to watch. If the new set is empty, no
-    // replacement stream will arrive to retire the previous handle, so close it now.
+    // Nothing left to watch.
     if (!workerId || (agentEntries.length === 0 && terminalIds.length === 0)) {
+      if (workerId) {
+        // currentTargetsKey is the generation: this effect assigned newKey to
+        // it just above, so any later run that changes the watch set moves it
+        // and abandons this unsubscribe before it can wipe the newer one.
+        void unsubscribeAllWatchEvents(workerId, () => currentTargetsKey === newKey)
+      }
       previousHandle?.close()
       previousHandle = null
       return

@@ -45,8 +45,8 @@ type Factory struct {
 	CrossWorker *crossworker.Client
 	HubBridge   HubBridge
 	HubStreams  HubStreamer
-	// Authorizers is the worker service.Context wearing its
-	// RegisterLocalAuthorizer / UnregisterLocalAuthorizer hat. The
+	// Authorizers is the worker service.Service wearing its
+	// RegisterLocalAuthorizer / ReleaseLocalStream hat. The
 	// router uses this to expose the bearer's scope to handlers.
 	Authorizers LocalAuthorizers
 

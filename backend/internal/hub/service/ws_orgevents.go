@@ -128,8 +128,10 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Per-message read limit so a malformed client can't blow our
 	// memory. WatchOrgEvent payloads are bounded by the protobuf
-	// envelope; 16 MiB is the same ceiling channelwire uses.
-	wsConn.SetReadLimit(16 * 1024 * 1024)
+	// envelope. Named rather than repeated as a literal so this socket
+	// and the subscribers reading from it cannot drift apart: the two
+	// matching was previously only a claim in this comment.
+	wsConn.SetReadLimit(channelwire.OrgEventsReadLimit)
 
 	ctx, cleanupLease, current := h.authLease.bind(r.Context(), user, wsConn)
 	if !current {
@@ -261,10 +263,28 @@ func (h *OrgEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // across N subscribers pay the proto.Marshal cost ONCE: the first WS
 // writer that reaches this function fills the cache and N−1 others
 // reuse the result.
+// Each write is bounded by relayWriteTimeout, the same per-write budget
+// the channel relay applies.
+//
+// This socket does NOT need the channel relay's queue: the broadcaster
+// already feeds it through a bounded `pending` channel whose Send drops
+// and cancels rather than blocking, so the backlog is bounded at the
+// source and a relayWriter here would only queue behind a queue.
+//
+// What was genuinely missing is a bound on ONE write. Without it a
+// client that accepts the connection and stops reading parks this
+// goroutine inside the write forever, pinning the subscription and the
+// conn -- and the broadcaster's own escape hatch does not help, because
+// it only fires once enough further events pile up, which on a quiet org
+// never happens. Cancelling the write context tears the connection down,
+// which is the intended recovery: the client reconnects and re-reads the
+// materialized state.
 func writeOrgEvent(ctx context.Context, ws *websocket.Conn, evt *crdt.MarshaledEvent) error {
 	data, err := evt.Bytes()
 	if err != nil {
 		return fmt.Errorf("marshal orgevent: %w", err)
 	}
-	return channelwire.WriteFramedBytes(ctx, ws, data)
+	writeCtx, cancel := context.WithTimeout(ctx, relayWriteTimeout)
+	defer cancel()
+	return channelwire.WriteFramedBytes(writeCtx, ws, data)
 }

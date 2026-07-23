@@ -102,7 +102,7 @@ The encrypted channel is not a fire-and-forget tunnel; it has built-in limits th
 | Channel max age | 1 hour | The Frontend closes and re-handshakes channels older than this |
 | Decrypt failure | — | Treated as unrecoverable: both sides close the channel |
 
-The Hub enforces resource limits **without decrypting**: it caps the reassembled message size (16 MiB) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
+The Hub enforces resource limits **without decrypting**: it caps the reassembled message size (17 MiB) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
 
 Rekey and max-age are **Frontend** behaviors specifically, and both are checked lazily — when the Frontend reuses a pooled channel, not on a background timer. An idle channel is rotated at next use rather than on schedule.
 

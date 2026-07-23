@@ -19,7 +19,7 @@ const failedEntryTTL = 5 * time.Minute
 // startupEntry tracks the in-flight (or recently-failed) startup of a single
 // agent or terminal. It exists to:
 //   - expose STARTING / STARTUP_FAILED status to callers of ListAgents /
-//     ListTerminals and to Context.agentToProto — status is otherwise derived from
+//     ListTerminals and to Service.agentToProto — status is otherwise derived from
 //     "is the process in the Manager?" which doesn't distinguish "starting"
 //     from "inactive".
 //   - let CloseAgent / CloseTerminal cancel an in-flight startup goroutine.

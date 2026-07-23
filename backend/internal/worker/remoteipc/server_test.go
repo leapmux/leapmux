@@ -459,7 +459,7 @@ func (s *serverAuthorizerSpy) RegisterLocalAuthorizer(streamID string, _ []strin
 	defer s.mu.Unlock()
 	s.registered = append(s.registered, streamID)
 }
-func (s *serverAuthorizerSpy) UnregisterLocalAuthorizer(streamID string) {
+func (s *serverAuthorizerSpy) ReleaseLocalStream(streamID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unregistered = append(s.unregistered, streamID)

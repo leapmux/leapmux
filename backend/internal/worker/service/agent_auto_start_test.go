@@ -10,7 +10,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -92,11 +91,7 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -148,11 +143,7 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    sender,
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",

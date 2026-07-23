@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -144,8 +143,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	a.drainStderr(stderrPipe)
 
 	// Read stdout JSONL in background.
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner := newStdoutScanner(stdout)
 	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {

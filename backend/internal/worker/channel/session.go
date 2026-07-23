@@ -5,6 +5,7 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -15,6 +16,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
+
+// ErrMessageRejected marks a send that the channel refused on the
+// message's own terms -- it was unmarshalable or over the size cap --
+// rather than because the transport failed. The channel stays healthy
+// and later sends on it can still succeed.
+//
+// It exists so fan-out callers can tell the two apart. Retiring a
+// subscriber on one of these would silently deafen a live client: no
+// transport error follows, so nothing trips the frontend's reconnect and
+// the subscription is never re-established.
+var ErrMessageRejected = errors.New("channel rejected the message")
 
 // SendFunc sends a ConnectRequest (containing ChannelMessage) to the Hub.
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
@@ -124,12 +136,19 @@ type Manager struct {
 
 // NewManager creates a new channel Manager.
 // Pass 0 for maxIncompleteChunked to use the default.
+//
+// The close callback is wired separately via SetOnChannelClose rather
+// than taken here, because its only real implementation reaches into the
+// worker service -- which cannot be constructed until this Manager
+// exists. Taking it as a constructor argument forced both entry points
+// to declare a nil *service.Service, capture it in the callback, and
+// assign it afterwards: safe only for as long as nothing closed a
+// channel during bootstrap, and a nil dereference the day something did.
 func NewManager(
 	compositeKey *noiseutil.CompositeKeypair,
 	encryptionMode leapmuxv1.EncryptionMode,
 	sendFn SendFunc,
 	maxIncompleteChunked int,
-	closeCallback CloseCallback,
 ) *Manager {
 	// The reassembled-message ceiling is a fixed protocol constant shared with
 	// the tunnel client and the browser (channelwire.DefaultMaxMessageSize), not
@@ -148,13 +167,21 @@ func NewManager(
 		sendFn:               sendFn,
 		maxMessageSize:       channelwire.DefaultMaxMessageSize,
 		maxIncompleteChunked: maxIncompleteChunked,
-		closeCallback:        closeCallback,
 	}
 }
 
 // SetDispatcher sets the inner RPC dispatcher for handling decrypted requests.
 func (m *Manager) SetDispatcher(d *Dispatcher) {
 	m.dispatcher = d
+}
+
+// SetOnChannelClose registers the callback fired when a channel closes,
+// which is what retires that channel's event subscriptions. Call it
+// after the service exists and before the Manager is reachable from the
+// connect loop (SetChannelMgr); like SetDispatcher, it is a bootstrap
+// write, not a runtime one.
+func (m *Manager) SetOnChannelClose(cb CloseCallback) {
+	m.closeCallback = cb
 }
 
 // Dispatcher returns the inner RPC dispatcher.
@@ -648,11 +675,21 @@ type channelSender struct {
 func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.InnerMessage) error {
 	data, err := proto.Marshal(envelope)
 	if err != nil {
+		// Deliberately NOT ErrMessageRejected. That sentinel means "this
+		// message was refused, the channel is fine and the next one may
+		// well succeed" -- true of the size cap below, which is a property
+		// of the payload. A marshal failure is a defect in an envelope the
+		// worker built itself, so it is neither client-attributable nor
+		// likely to stop recurring; classifying it as a per-message
+		// rejection would keep the subscriber, log a warning, and drop
+		// every affected event forever with no transport error to trip a
+		// reconnect.
 		return fmt.Errorf("marshal inner message: %w", err)
 	}
 
 	if len(data) > s.maxMessageSize {
-		return fmt.Errorf("message too large: %d > %d", len(data), s.maxMessageSize)
+		return fmt.Errorf("message too large: %d > %d: %w",
+			len(data), s.maxMessageSize, ErrMessageRejected)
 	}
 
 	s.mu.Lock()

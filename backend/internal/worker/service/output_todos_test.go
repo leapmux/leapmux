@@ -374,7 +374,7 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 
 // Note: AgentTodosChanged broadcast is a one-line call adjacent to the
 // already-tested broadcast for AgentMessage; covering it would require a
-// second-level test harness around channel.Sender. The above persistence
+// second-level test harness around channel.ResponseWriter. The above persistence
 // tests prove the upstream extract/apply pipeline; the broadcast is a
 // trivial mechanical fan-out via WatcherManager.BroadcastAgentEvent.
 

@@ -22,7 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-func tunnelTestSetup(t *testing.T) (*Context, *channel.Dispatcher, *testResponseWriter) {
+func tunnelTestSetup(t *testing.T) (*Service, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
 	// setupTestService already registers the worker to "user-1", the identity its
 	// test channel is opened with.
@@ -273,7 +273,7 @@ func TestTunnelReadLoopHalfCloseEvictsOnLifetimeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	target, peer := net.Pipe()
 	const connID = "half-closed-target"
-	tc := newTunnelConn(manager, connID, target, channel.NewSender(newTestWriter()), ctx)
+	tc := newTunnelConn(manager, connID, target, newTestWriter(), ctx)
 	require.True(t, manager.beginOpen(connID, func() {}))
 	require.True(t, manager.store(connID, tc))
 
@@ -392,7 +392,7 @@ func openTestTunnelConn(t *testing.T, d *channel.Dispatcher, connID string) {
 //
 // Conn.Write splitting at MaxChunkBytes is what makes the send window a BYTE
 // bound rather than a frame-count bound -- but that is the client's convention. A
-// client that does not split is otherwise capped only by the channel's 16 MiB
+// client that does not split is otherwise capped only by the channel's
 // inner-message limit, and the write gate parks up to tunnelflow.MaxWriteSeqLookahead (256)
 // in-flight seqs per conn, so an unchecked handler admits ~4 GiB of buffered payload
 // on the worker per conn. The gate already NAKs an out-of-window seq for exactly this
@@ -466,7 +466,7 @@ func TestClassifyTunnelWriteError_TeardownRaceIsInternalButNotErrorLogged(t *tes
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	w := newTestWriter()
-	classifyTunnelWriteError(net.ErrClosed, "conn-race", 7, channel.NewSender(w))
+	classifyTunnelWriteError(net.ErrClosed, "conn-race", 7, w)
 
 	require.Len(t, w.errors, 1, "the teardown race surfaces the documented internal code")
 	assert.Equal(t, int32(13), w.errors[0].code, "a teardown race stays internal per the writeSeqGate doc (INTERNAL = 13)")
@@ -490,7 +490,7 @@ func TestClassifyTunnelWriteError_GenericFaultIsErrorLogged(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	w := newTestWriter()
-	classifyTunnelWriteError(errors.New("target disk full"), "conn-fault", 1, channel.NewSender(w))
+	classifyTunnelWriteError(errors.New("target disk full"), "conn-fault", 1, w)
 
 	require.Len(t, w.errors, 1)
 	assert.Equal(t, int32(13), w.errors[0].code, "a genuine write fault surfaces Internal")
@@ -592,7 +592,7 @@ func TestTunnelManagerGrantReadCredit_UnknownConnAcks(t *testing.T) {
 	manager.grantReadCredit(context.Background(), "user-1", &leapmuxv1.GrantTunnelReadCreditRequest{
 		ConnId: "never-opened",
 		Credit: 4,
-	}, channel.NewSender(w))
+	}, w)
 
 	assert.Empty(t, w.errors, "a grant for an evicted conn is a benign race, not a failure")
 	assert.Len(t, w.responses, 1)
@@ -1413,7 +1413,7 @@ func TestTunnelReadLoopCapsSendsAtReadWindow(t *testing.T) {
 	}
 	conn := newFramingConn(frames)
 	w := newTestWriter()
-	tc := newTunnelConn(nil, "", conn, channel.NewSender(w), context.Background())
+	tc := newTunnelConn(nil, "", conn, w, context.Background())
 	mgr := newTunnelManager()
 	go tunnelReadLoop(mgr, "capped", tc)
 	t.Cleanup(func() { tc.close() })
@@ -1453,7 +1453,7 @@ func TestTunnelReadLoopPreservesFrameContent(t *testing.T) {
 		"frames must fit the initial window so no credit grant is needed")
 	conn := newFramingConn(frames)
 	w := newTestWriter()
-	tc := newTunnelConn(nil, "content", conn, channel.NewSender(w), context.Background())
+	tc := newTunnelConn(nil, "content", conn, w, context.Background())
 	mgr := newTunnelManager()
 	go tunnelReadLoop(mgr, "content", tc)
 	t.Cleanup(func() { tc.close() })

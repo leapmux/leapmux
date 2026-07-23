@@ -20,7 +20,7 @@ import (
 // tunnelConn tracks a single tunnel connection to a remote target.
 type tunnelConn struct {
 	conn   net.Conn
-	sender *channel.Sender
+	sender channel.ResponseWriter
 	closed atomic.Bool
 
 	// stopCtxWatch detaches the single ctx->close watcher registered in
@@ -49,7 +49,7 @@ type tunnelConn struct {
 // the call sites below so the type (uint64 for seqs, int64 for credit) is the
 // use site's own.
 
-func newTunnelConn(mgr *tunnelManager, connID string, conn net.Conn, sender *channel.Sender, ctx context.Context) *tunnelConn {
+func newTunnelConn(mgr *tunnelManager, connID string, conn net.Conn, sender channel.ResponseWriter, ctx context.Context) *tunnelConn {
 	tc := &tunnelConn{
 		conn:      conn,
 		sender:    sender,
@@ -261,9 +261,9 @@ type connRequest[T any] interface {
 func registerConnHandler[T any, PT connRequest[T]](
 	d ownerOnlyRegistrar,
 	method string,
-	fn func(ctx context.Context, userID string, r PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, r PT, sender channel.ResponseWriter),
 ) {
-	d.Register(method, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register(method, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		r := PT(&msg)
 		if err := unmarshalRequest(req, r); err != nil {
@@ -297,7 +297,7 @@ func registerTunnelHandlers(d ownerOnlyRegistrar) {
 }
 
 // openConn dials the target address and starts streaming data back.
-func (m *tunnelManager) openConn(ctx context.Context, userID string, r *leapmuxv1.OpenTunnelConnRequest, sender *channel.Sender) {
+func (m *tunnelManager) openConn(ctx context.Context, userID string, r *leapmuxv1.OpenTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	if !m.beginOpen(connID, dialCancel) {
@@ -353,7 +353,7 @@ func (m *tunnelManager) openConn(ctx context.Context, userID string, r *leapmuxv
 }
 
 // sendData writes data to the target connection.
-func (m *tunnelManager) sendData(ctx context.Context, _ string, r *leapmuxv1.SendTunnelDataRequest, sender *channel.Sender) {
+func (m *tunnelManager) sendData(ctx context.Context, _ string, r *leapmuxv1.SendTunnelDataRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 
 	tc := m.get(connID)
@@ -396,7 +396,7 @@ func (m *tunnelManager) sendData(ctx context.Context, _ string, r *leapmuxv1.Sen
 // race stays internal per the writeSeqGate doc, but is EXPECTED on any tunnel whose
 // channels churn (reconnects, credential rotations, pool evictions), so it logs at
 // Debug rather than spamming the operator log per racing frame.
-func classifyTunnelWriteError(err error, connID string, seq uint64, sender *channel.Sender) {
+func classifyTunnelWriteError(err error, connID string, seq uint64, sender channel.ResponseWriter) {
 	switch {
 	case errors.Is(err, errChunkTooLarge):
 		sendInvalidArgument(sender, err.Error())
@@ -418,7 +418,7 @@ func classifyTunnelWriteError(err error, connID string, seq uint64, sender *chan
 }
 
 // closeConn closes a tunnel connection.
-func (m *tunnelManager) closeConn(ctx context.Context, _ string, r *leapmuxv1.CloseTunnelConnRequest, sender *channel.Sender) {
+func (m *tunnelManager) closeConn(ctx context.Context, _ string, r *leapmuxv1.CloseTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 
 	// Graceful close: flush pending writes before tearing down, so a client
@@ -450,7 +450,7 @@ func (m *tunnelManager) closeConn(ctx context.Context, _ string, r *leapmuxv1.Cl
 
 // grantReadCredit replenishes a conn's read-send credit so the read loop can send
 // more inbound frames (read flow control).
-func (m *tunnelManager) grantReadCredit(_ context.Context, _ string, r *leapmuxv1.GrantTunnelReadCreditRequest, sender *channel.Sender) {
+func (m *tunnelManager) grantReadCredit(_ context.Context, _ string, r *leapmuxv1.GrantTunnelReadCreditRequest, sender channel.ResponseWriter) {
 	// A grant for an already-gone conn is a benign race (the read loop ended
 	// and removed it): ack without error so the client does not treat it as a
 	// failure.
@@ -485,9 +485,9 @@ func (tc *tunnelConn) writeData(ctx context.Context, seq uint64, data []byte, cl
 	// (WriteWindowFrames * MaxChunkBytes) rather than a frame-count bound -- but
 	// that is the SENDER's convention, and the worker must not trust the sender. A
 	// client that does not split (a buggy or hostile one) is otherwise bounded only
-	// by the channel's 16 MiB inner-message limit, and the write gate parks up to
+	// by the channel's inner-message limit, and the write gate parks up to
 	// tunnelflow.MaxWriteSeqLookahead in-flight seqs per conn, so the ceiling an unchecked
-	// worker admits is 256 x 16 MiB = 4 GiB of buffered payload -- per conn.
+	// worker admits is 256 x that limit -- over 4 GiB of buffered payload, per conn.
 	//
 	// It lives HERE, after the write-turn wait and under the writeGate.advance defer,
 	// rather than in the handler ahead of the gate: seqs are contiguous, so a frame
@@ -556,7 +556,7 @@ func (tc *tunnelConn) close() bool {
 	return false
 }
 
-func sendTunnelOpenResponse(sender *channel.Sender, connID string) error {
+func sendTunnelOpenResponse(sender channel.ResponseWriter, connID string) error {
 	payload, err := proto.Marshal(&leapmuxv1.OpenTunnelConnResponse{ConnId: connID})
 	if err != nil {
 		return fmt.Errorf("marshal open tunnel response: %w", err)
@@ -665,7 +665,7 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 }
 
 // sendTunnelEvent sends a TunnelConnEvent as a stream message.
-func sendTunnelEvent(sender *channel.Sender, event *leapmuxv1.TunnelConnEvent) error {
+func sendTunnelEvent(sender channel.ResponseWriter, event *leapmuxv1.TunnelConnEvent) error {
 	payload, err := proto.Marshal(event)
 	if err != nil {
 		slog.Error("failed to marshal tunnel event", "error", err)

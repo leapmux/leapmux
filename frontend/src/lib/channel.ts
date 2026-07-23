@@ -794,6 +794,28 @@ export class ChannelManager {
     return ch !== undefined && ch.state !== 'closed'
   }
 
+  /**
+   * Whether a usable channel to this worker already exists.
+   *
+   * For callers that only have something to say IF a channel is already
+   * up, and for whom opening one would be self-defeating — retiring
+   * subscriptions is the case: a channel that does not exist holds no
+   * subscriptions, so opening one (a full Noise_NK + ML-KEM handshake
+   * plus a hub round trip) purely to announce that nothing is wanted is
+   * pure cost.
+   *
+   * Mirrors getOrOpenChannel's reuse test, `verified` included: an open
+   * still in progress is not yet a channel anyone could have subscribed
+   * on.
+   */
+  hasOpenChannelForWorker(workerId: string): boolean {
+    for (const ch of this.channels.values()) {
+      if (ch.workerId === workerId && ch.state === 'verified')
+        return true
+    }
+    return false
+  }
+
   /** Get the worker ID for a channel. */
   getWorkerId(channelId: string): string | undefined {
     return this.channels.get(channelId)?.workerId
@@ -1409,7 +1431,34 @@ export class ChannelManager {
       else {
         pending.resolve(resp)
       }
+      return
     }
+
+    // A unary reply on a correlation id we registered as a STREAM. Without
+    // this arm the frame is dropped and the subscription waits forever
+    // with no error to retry from, which is a silent dead tab.
+    //
+    // It cannot be fixed purely by registering every streaming method as
+    // streaming on the worker: some of these replies come from places
+    // that cannot know the method's shape at all -- the dispatcher's
+    // Unimplemented answer for a method it has no registration for is the
+    // clearest case. This is the one point every inbound reply passes, so
+    // the fallback belongs here. Errors only: a non-error unary payload on
+    // a stream id is not something a listener can interpret, and dropping
+    // it stays the safe reading.
+    if (!resp.isError) {
+      return
+    }
+    const listener = ch.streamListeners.get(correlationId)
+    if (!listener) {
+      return
+    }
+    this.unregisterRequest(ch, correlationId)
+    const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
+    this.notifyError(ch.workerId, err)
+    // safeCall for the same reason rejectPendingRequest uses it: a throwing
+    // app callback must not unwind back through handleMessage.
+    safeCall(() => listener.onError(err), 'stream onError listener')
   }
 
   /** Route an InnerStreamMessage to its stream listener. */

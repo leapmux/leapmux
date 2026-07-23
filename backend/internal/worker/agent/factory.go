@@ -112,7 +112,7 @@ type Options struct {
 	AgentProvider  leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 	// ExtraEnv is appended verbatim to the spawned process's
 	// environment after the provider-specific env-var setup. The
-	// service.Context populates this with LEAPMUX_REMOTE_* so the
+	// service.Service populates this with LEAPMUX_REMOTE_* so the
 	// running agent can drive the worker via the leapmux remote CLI.
 	ExtraEnv []string
 }

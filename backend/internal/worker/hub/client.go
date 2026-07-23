@@ -70,7 +70,7 @@ type Client struct {
 	EncryptionMode leapmuxv1.EncryptionMode
 
 	// TabSyncProvider returns the current tab state for WorkspaceTabsSync
-	// on connect. Set by the runner after initializing the service context.
+	// on connect. Set by the runner after initializing the worker service.
 	TabSyncProvider func() *leapmuxv1.WorkspaceTabsSync
 
 	mu           sync.Mutex

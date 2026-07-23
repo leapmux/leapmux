@@ -94,7 +94,7 @@ func (f *fakeAuthorizers) RegisterLocalAuthorizer(streamID string, ws []string) 
 	f.lastWorkspace = ws
 	f.mu.Unlock()
 }
-func (f *fakeAuthorizers) UnregisterLocalAuthorizer(streamID string) {
+func (f *fakeAuthorizers) ReleaseLocalStream(streamID string) {
 	f.mu.Lock()
 	f.unregistered = append(f.unregistered, streamID)
 	f.mu.Unlock()
@@ -424,7 +424,7 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 // silently dropped resp.Payload — a streaming-shaped sender that
 // emitted a single final frame via SendResponse (a fast-path that
 // produced one terminal message, or a unary-shaped result reaching a
-// streaming Sender) ended the stream with the payload lost.
+// streaming ResponseWriter) ended the stream with the payload lost.
 func TestRouter_StreamInner_TerminalResponsePayloadForwarded(t *testing.T) {
 	dispatcher := &fakeLocalDispatcher{
 		// No intermediate frames; the entire response rides on the

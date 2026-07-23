@@ -394,7 +394,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	// Route channel messages from worker to frontend.
 	if chMsg := msg.GetChannelMessageResp(); chMsg != nil {
 		if s.channelMgr != nil {
-			matched, err := s.channelMgr.RelayWorkerMessage(chMsg, workerID)
+			matched, connID, err := s.channelMgr.RelayWorkerMessage(chMsg, workerID)
 			if !matched {
 				slog.Warn("channel relay: worker sent message for an unowned channel",
 					"worker_id", workerID,
@@ -409,7 +409,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 					"correlation_id", chMsg.GetCorrelationId(),
 					"error", err,
 				)
-				s.closeWorkerChannel(conn, workerID, chMsg.GetChannelId())
+				s.closeWorkerChannel(conn, workerID, connID, chMsg.GetChannelId())
 				return nil
 			}
 
@@ -429,9 +429,24 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	return nil
 }
 
-func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, workerID, channelID string) {
+// closeWorkerChannel tears down a channel whose frontend delivery failed.
+//
+// connID is the connection the failed relay was addressed to, and the
+// predicate checks it as well as the worker. The frontend relay flips its
+// writer closed a few instructions before UnbindUserAndCleanup runs, so a
+// tab that reconnects inside that window can rebind this channel to a
+// fresh connection before this close lands -- and matching on worker
+// identity alone would tear down that new binding, which is exactly what
+// UnbindUserAndCleanup's own ConnID predicate exists to avoid.
+//
+// An empty connID means the relay never resolved a binding, so there is
+// nothing newer to protect and the worker check stands alone.
+func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, workerID, connID, channelID string) {
 	closed := s.channelMgr.CloseByIDIf(channelID, func(info channelmgr.ChannelInfo) bool {
-		return info.WorkerID == workerID
+		if info.WorkerID != workerID {
+			return false
+		}
+		return connID == "" || info.ConnID == connID
 	})
 	if len(closed) == 0 {
 		return

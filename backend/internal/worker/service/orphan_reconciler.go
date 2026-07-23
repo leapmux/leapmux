@@ -82,7 +82,7 @@ type OrphanReconcilerOptions struct {
 	Terminals TerminalStopper
 	// ReapWorktree, when set, enables the orphan-worktree GC pass: it is
 	// invoked for each worktree confirmed orphaned across two consecutive
-	// reconcile passes. Wire it to (*Context).ReapOrphanWorktree.
+	// reconcile passes. Wire it to (*Service).ReapOrphanWorktree.
 	ReapWorktree func(ctx context.Context, wt db.Worktree)
 }
 

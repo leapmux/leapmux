@@ -6,6 +6,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -13,9 +14,10 @@ import (
 //
 // Every method RegisterAll wires must record exactly one gate via the
 // registrar helpers (or ownerOnlyRegistrar). A method with no recorded
-// gate fails TestEveryRegisteredMethodIsClassified; a duplicate record
-// panics at registration time. The gate is a property of WHERE the
-// handler is registered rather than a line each author must remember.
+// gate fails TestEveryRegisteredMethodIsClassified; a duplicate
+// registration panics in registrar.register. The gate is a property of
+// WHERE the handler is registered rather than a line each author must
+// remember.
 type methodGate int
 
 const (
@@ -28,25 +30,91 @@ const (
 
 // registrar wraps a dispatcher and records each method's gate kind.
 //
-// It is passed by value; the gates map is shared. record() panics on a
+// It is passed by value; the maps are shared. register() panics on a
 // duplicate method — Dispatcher.Register silently overwrites, and without
 // the panic the disjointness check that TestEveryRegisteredMethodIsClassified
 // previously enforced by hand would be lost.
 type registrar struct {
-	d     *channel.Dispatcher
-	svc   *Context
-	gates map[string]methodGate
+	d      *channel.Dispatcher
+	svc    *Service
+	gates  map[string]methodGate
+	shapes map[string]methodShape
 }
 
-func newRegistrar(d *channel.Dispatcher, svc *Context) registrar {
-	return registrar{d: d, svc: svc, gates: make(map[string]methodGate)}
+// methodShape names how a method ANSWERS, as methodGate names how it is
+// guarded.
+//
+// Reply shape needs recording for the same reason access does. A method
+// that answers with stream frames but is registered through a unary
+// helper still compiles, still passes its tests, and fails only at
+// runtime in the one way nothing reports: the browser holds the
+// correlation id as a stream, so a unary error frame is dropped on
+// arrival and the caller waits on a subscription that will never carry
+// anything and never errors.
+//
+// WatchWorkspacePrivateEvents shipped exactly that way. The gate table
+// already turned "did the author remember to gate this?" into a test
+// failure; this turns "did the author remember RegisterStream?" into one.
+type methodShape int
+
+const (
+	shapeUnary  methodShape = iota // answers with an InnerRpcResponse
+	shapeStream                    // answers with InnerStreamMessage frames
+)
+
+func newRegistrar(d *channel.Dispatcher, svc *Service) registrar {
+	return registrar{
+		d:      d,
+		svc:    svc,
+		gates:  make(map[string]methodGate),
+		shapes: make(map[string]methodShape),
+	}
 }
 
-func (r registrar) record(method string, gate methodGate) {
+// dispatchMode selects which Dispatcher entry point a registration uses.
+//
+// It is the second axis of every registration, crossing the gate kind
+// above. Naming it lets the two vary independently instead of being
+// enumerated as one named helper per combination, so a new pairing --
+// streaming + tracked, say -- costs an argument rather than another
+// exported function.
+type dispatchMode int
+
+const (
+	dispatchPlain     dispatchMode = iota // Dispatcher.Register
+	dispatchTracked                       // Dispatcher.RegisterTracked
+	dispatchStreaming                     // Dispatcher.RegisterStream
+)
+
+// register records a method's gate and reply shape, then wires it through
+// the dispatcher entry point mode names.
+//
+// Deriving the shape from the mode is the point: they were previously two
+// independent lines at each call site, so a handler could be registered
+// through RegisterStream while recording shapeUnary (or the reverse) and
+// nothing would notice -- which is precisely the class of mistake the
+// shape table exists to catch.
+func (r registrar) register(method string, gate methodGate, mode dispatchMode, handler channel.HandlerFunc) {
+	// Dispatcher.Register silently overwrites, so a duplicate would
+	// otherwise replace a handler with no sign anything had happened.
 	if _, exists := r.gates[method]; exists {
 		panic("duplicate method registration: " + method)
 	}
+	shape := shapeUnary
+	if mode == dispatchStreaming {
+		shape = shapeStream
+	}
 	r.gates[method] = gate
+	r.shapes[method] = shape
+
+	switch mode {
+	case dispatchTracked:
+		r.d.RegisterTracked(method, handler)
+	case dispatchStreaming:
+		r.d.RegisterStream(method, handler)
+	case dispatchPlain:
+		r.d.Register(method, handler)
+	}
 }
 
 // workspaceScopedRequest constrains a request message to the shape the
@@ -82,10 +150,9 @@ type terminalScopedRequest[T any] interface {
 func registerWorkspaceGated[T any, PT workspaceScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -108,10 +175,10 @@ func registerWorkspaceGated[T any, PT workspaceScopedRequest[T]](
 // constraint-inference edge cases in nested generic calls (mirroring
 // Dispatcher / ownerOnlyRegistrar style).
 func agentGatedHandler[T any, PT agentScopedRequest[T]](
-	svc *Context,
-	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender *channel.Sender),
+	svc *Service,
+	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -131,10 +198,9 @@ func agentGatedHandler[T any, PT agentScopedRequest[T]](
 func registerAgentGated[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, agentGatedHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchPlain, agentGatedHandler[T, PT](r.svc, fn))
 }
 
 // agentGatedByIDHandler builds the unmarshal → requireAccessibleAgentID → fn
@@ -143,10 +209,10 @@ func registerAgentGated[T any, PT agentScopedRequest[T]](
 // that never read the row; ones that do use registerAgentGated instead and
 // receive the loaded row.
 func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
-	svc *Context,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	svc *Service,
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -166,29 +232,27 @@ func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 func registerAgentGatedByID[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, agentGatedByIDHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchPlain, agentGatedByIDHandler[T, PT](r.svc, fn))
 }
 
 // registerAgentGatedByIDTracked is RegisterTracked + registerAgentGatedByID.
 func registerAgentGatedByIDTracked[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.RegisterTracked(method, agentGatedByIDHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchTracked, agentGatedByIDHandler[T, PT](r.svc, fn))
 }
 
 // terminalGatedHandler builds the unmarshal → requireAccessibleTerminal → fn
 // wrapper used by registerTerminalGated.
 func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
-	svc *Context,
-	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender *channel.Sender),
+	svc *Service,
+	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -208,10 +272,9 @@ func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
 func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, terminalGatedHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchPlain, terminalGatedHandler[T, PT](r.svc, fn))
 }
 
 // terminalGatedByIDHandler builds the unmarshal → requireAccessibleTerminalID
@@ -219,10 +282,10 @@ func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 // Mirror of agentGatedByIDHandler: workspace_id-only lookup (no screen BLOB)
 // for handlers that never read the row.
 func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
-	svc *Context,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	svc *Service,
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
@@ -243,20 +306,18 @@ func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
 func registerTerminalGatedByID[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, terminalGatedByIDHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchPlain, terminalGatedByIDHandler[T, PT](r.svc, fn))
 }
 
 // registerTerminalGatedByIDTracked is RegisterTracked + registerTerminalGatedByID.
 func registerTerminalGatedByIDTracked[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req PT, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.RegisterTracked(method, terminalGatedByIDHandler[T, PT](r.svc, fn))
+	r.register(method, gateWorkspace, dispatchTracked, terminalGatedByIDHandler[T, PT](r.svc, fn))
 }
 
 // registerTerminalForRestartGated is the sole user of
@@ -265,10 +326,9 @@ func registerTerminalGatedByIDTracked[T any, PT terminalScopedRequest[T]](
 func registerTerminalForRestartGated(
 	r registrar,
 	method string,
-	fn func(ctx context.Context, userID string, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender *channel.Sender),
+	fn func(ctx context.Context, userID string, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
 ) {
-	r.record(method, gateWorkspace)
-	r.d.Register(method, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	r.register(method, gateWorkspace, dispatchPlain, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var decoded leapmuxv1.RestartTerminalRequest
 		if err := unmarshalRequest(req, &decoded); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -286,21 +346,60 @@ func registerTerminalForRestartGated(
 // The handler keeps its heterogeneous in-body gate; completeness is enforced
 // by TestAccessControl_GatedMethodProbesAreComplete.
 func registerInBodyGated(r registrar, method string, handler channel.HandlerFunc) {
-	r.record(method, gateInBody)
-	r.d.Register(method, handler)
+	r.register(method, gateInBody, dispatchPlain, handler)
 }
 
 // registerInBodyGatedTracked is RegisterTracked + registerInBodyGated.
 func registerInBodyGatedTracked(r registrar, method string, handler channel.HandlerFunc) {
-	r.record(method, gateInBody)
-	r.d.RegisterTracked(method, handler)
+	r.register(method, gateInBody, dispatchTracked, handler)
 }
 
 // registerSetFiltered records gateSetFilter and registers without wrapping.
 // Denial is an empty result via AccessibleSet(), not PERMISSION_DENIED.
 func registerSetFiltered(r registrar, method string, handler channel.HandlerFunc) {
-	r.record(method, gateSetFilter)
-	r.d.Register(method, handler)
+	r.register(method, gateSetFilter, dispatchPlain, handler)
+}
+
+// registerSetFilteredStream is registerSetFiltered for a method that
+// answers with stream frames, so the dispatcher reports a panic in a
+// shape the caller is listening for. See channel.Dispatcher.RegisterStream.
+func registerSetFilteredStream(r registrar, method string, handler channel.HandlerFunc) {
+	r.register(method, gateSetFilter, dispatchStreaming, handler)
+}
+
+// registerWorkspaceGatedStream is registerWorkspaceGated for a method
+// that answers with stream frames.
+//
+// It differs in both halves that decide reply shape, because both matter
+// and they are easy to fix by halves. Registering through RegisterStream
+// makes the DISPATCHER report a panic as a stream frame; routing this
+// wrapper's own rejections through sendStreamError makes the GATE do the
+// same. A unary InnerRpcResponse on a correlation id the browser holds in
+// streamListeners is dropped outright, so getting either half wrong
+// leaves the caller waiting on a stream that will never carry anything
+// and never errors.
+func registerWorkspaceGatedStream[T any, PT workspaceScopedRequest[T]](
+	r registrar,
+	method string,
+	fn func(ctx context.Context, userID string, req PT, sender channel.ResponseWriter),
+) {
+	r.register(method, gateWorkspace, dispatchStreaming, func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		var msg T
+		decoded := PT(&msg)
+		if err := unmarshalRequest(req, decoded); err != nil {
+			sendStreamError(sender, codes.InvalidArgument, "invalid request")
+			return
+		}
+		if decoded.GetWorkspaceId() == "" {
+			sendStreamError(sender, codes.InvalidArgument, "workspace_id is required")
+			return
+		}
+		if !r.svc.workspaceAccessible(sender.ChannelID(), decoded.GetWorkspaceId()) {
+			sendStreamError(sender, codes.PermissionDenied, "workspace not accessible")
+			return
+		}
+		fn(ctx, userID, decoded, sender)
+	})
 }
 
 // registerOwnerOnly records gateOwnerOnly and gates the handler on the caller
@@ -317,6 +416,5 @@ func registerOwnerOnly(r registrar, method string, handler channel.HandlerFunc) 
 // for a probe that does no work and discloses nothing (Ping's liveness check);
 // anything that reads or enumerates machine state must use registerOwnerOnly.
 func registerUngated(r registrar, method string, handler channel.HandlerFunc) {
-	r.record(method, gateNone)
-	r.d.Register(method, handler)
+	r.register(method, gateNone, dispatchPlain, handler)
 }

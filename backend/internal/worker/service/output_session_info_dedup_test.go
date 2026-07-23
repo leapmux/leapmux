@@ -13,7 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -85,8 +84,7 @@ func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturin
 	}))
 
 	mock := &sessionInfoCapturingWriter{channelID: "ch-1"}
-	w := &EventWatcher{ChannelID: "ch-1", Sender: channel.NewSender(mock)}
-	svc.Watchers.WatchAgent("agent-1", w)
+	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	return sink, mock

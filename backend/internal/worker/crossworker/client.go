@@ -102,17 +102,8 @@ func New(lifetimeCtx context.Context, hubURL string, pins *PinStore, dp Delegati
 // scope.WorkspaceID is forwarded to the delegation mint call so the
 // token's scope matches the eventual call site.
 func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
-	if err := c.ctx.Err(); err != nil {
+	if err := c.validateOpen(targetWorkerID, scope); err != nil {
 		return nil, err
-	}
-	if targetWorkerID == "" {
-		return nil, errors.New("crossworker: target_worker_id required")
-	}
-	if scope.UserID == "" {
-		return nil, errors.New("crossworker: user_id required")
-	}
-	if scope.WorkspaceID == "" {
-		return nil, errors.New("crossworker: workspace_id required")
 	}
 	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID, WorkspaceID: scope.WorkspaceID}
 
@@ -158,11 +149,59 @@ func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope De
 	}
 }
 
+// dedicatedChannel opens an unpooled channel to targetWorkerID. The
+// caller owns it and must Close it.
+//
+// It shares channelFor's argument validation but deliberately not its
+// cache: see StreamInner for why a subscriber needs a channel id nobody
+// else is registering against.
+func (c *Client) dedicatedChannel(ctx context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
+	if err := c.validateOpen(targetWorkerID, scope); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Bound the open by the CALLER's context as well as the Client's.
+	//
+	// The pooled path deliberately does not do this -- its open is shared,
+	// so one caller walking away must not abort it for the others -- but
+	// this channel has exactly one caller by construction. Without the
+	// join, a cancelled StreamInner stayed parked here for up to
+	// channelOpenTimeout completing a handshake it then immediately
+	// closed, holding the worker-side stream handler goroutine open long
+	// after the client was gone.
+	openCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(c.ctx, cancel)()
+
+	return c.openChannel(openCtx, targetWorkerID, scope)
+}
+
+// validateOpen rejects the arguments no channel open can proceed without,
+// and the already-shut-down Client. Shared by both open paths so a new
+// required field cannot be enforced on one and forgotten on the other.
+func (c *Client) validateOpen(targetWorkerID string, scope DelegationScope) error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	if targetWorkerID == "" {
+		return errors.New("crossworker: target_worker_id required")
+	}
+	if scope.UserID == "" {
+		return errors.New("crossworker: user_id required")
+	}
+	if scope.WorkspaceID == "" {
+		return errors.New("crossworker: workspace_id required")
+	}
+	return nil
+}
+
 // runChannelOpen performs a single shared channel open and publishes the result
 // to every waiter. It caches a successful channel and always clears the
 // in-flight marker so the next cache miss starts a fresh open.
 func (c *Client) runChannelOpen(open *channelOpen, key clientKey, targetWorkerID string, scope DelegationScope) {
-	ch, err := c.openChannel(targetWorkerID, scope)
+	ch, err := c.openChannel(c.ctx, targetWorkerID, scope)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -185,8 +224,13 @@ func (c *Client) runChannelOpen(open *channelOpen, key clientKey, targetWorkerID
 
 // openChannel mints a delegation token and opens a fresh E2EE channel, bounded
 // by channelOpenTimeout so a stalled hub cannot wedge the shared open.
-func (c *Client) openChannel(targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
-	openCtx, cancel := context.WithTimeout(c.ctx, channelOpenTimeout)
+//
+// parent decides what else can abort it: the pooled path passes the
+// Client's lifetime, because that open is shared and no single waiter may
+// cancel it, while the dedicated path passes a context joined with its
+// one caller's.
+func (c *Client) openChannel(parent context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
+	openCtx, cancel := context.WithTimeout(parent, channelOpenTimeout)
 	defer cancel()
 
 	bearer, err := c.Delegation.GetBearer(openCtx, scope)
@@ -227,11 +271,25 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID, userID, workspac
 // StreamInner subscribes to a server-streaming inner RPC and invokes
 // onMsg for every message. Returns when the stream ends or ctx is
 // cancelled. workspaceID semantics match CallInner.
+//
+// Unlike CallInner this does NOT use the pooled channel: it opens a
+// dedicated one and closes it when the stream ends.
+//
+// Subscription state on the target worker is keyed by channel id -- the
+// watcher registry holds one registration per (entity, channel) -- and a
+// WatchEvents request states that channel's whole current interest. Two
+// concurrent streams sharing a pooled channel therefore overwrite each
+// other: the second subscription silently unsubscribes every entity the
+// first one uniquely held, with no error on either side, so the first
+// CLI simply stops receiving events and never learns why. Pooling is a
+// connection-reuse optimisation; it must not make two independent
+// subscribers share an identity.
 func (c *Client) StreamInner(ctx context.Context, targetWorkerID, userID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
-	ch, err := c.channelFor(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
+	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
 	if err != nil {
 		return err
 	}
+	defer ch.Close()
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	var streamErr error

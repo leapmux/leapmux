@@ -1,4 +1,4 @@
-package worker
+package bootstrap
 
 import (
 	"context"
@@ -8,9 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/hub"
 )
 
 func setupTestDB(t *testing.T) *db.Queries {
@@ -27,7 +29,7 @@ func setupTestDB(t *testing.T) *db.Queries {
 
 func TestBuildTabSync_Empty(t *testing.T) {
 	queries := setupTestDB(t)
-	sync := buildTabSync(queries)
+	sync := BuildTabSync(queries)
 
 	require.NotNil(t, sync)
 	assert.Empty(t, sync.GetTabs())
@@ -56,7 +58,7 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 	err = queries.CloseAgent(ctx, "agent-2")
 	require.NoError(t, err)
 
-	sync := buildTabSync(queries)
+	sync := BuildTabSync(queries)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 2)
@@ -91,7 +93,7 @@ func TestBuildTabSync_TerminalsFromDB(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sync := buildTabSync(queries)
+	sync := BuildTabSync(queries)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 1)
@@ -123,7 +125,7 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sync := buildTabSync(queries)
+	sync := BuildTabSync(queries)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 2)
@@ -135,4 +137,86 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 	}
 	assert.Equal(t, 1, types[leapmuxv1.TabType_TAB_TYPE_AGENT])
 	assert.Equal(t, 1, types[leapmuxv1.TabType_TAB_TYPE_TERMINAL])
+}
+
+// wireForTest assembles a Wiring against an in-memory DB and an
+// unconnected hub client, which is all Wire needs: it registers handlers
+// and starts background loops but never dials.
+func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Client) {
+	t.Helper()
+
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, workerdb.Migrate(sqlDB))
+
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	client := hub.New("http://127.0.0.1:0")
+	t.Cleanup(client.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	w := Wire(Params{
+		Ctx:            ctx,
+		Client:         client,
+		DB:             sqlDB,
+		CompositeKey:   key,
+		EncryptionMode: mode,
+		WorkerID:       "worker-1",
+		Name:           "test",
+		HomeDir:        t.TempDir(),
+		DataDir:        t.TempDir(),
+	})
+	t.Cleanup(w.Service.Shutdown)
+	return w, client
+}
+
+// TestWire_AdvertisesPostQuantumKeysInEveryMode is the regression for a
+// silent identity change.
+//
+// The keys describe the worker, not the session's cipher: the handshake
+// picks its mode from EncryptionMode alone. Withholding them in classic
+// mode still overwrites the hub's stored columns with empty blobs, and
+// every client that had pinned the worker then fails TOFU verification
+// with a key mismatch it cannot clear without manual intervention.
+func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
+	for _, mode := range []leapmuxv1.EncryptionMode{
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			_, client := wireForTest(t, mode)
+
+			assert.NotEmpty(t, client.PublicKey, "X25519 key must be advertised")
+			assert.NotEmpty(t, client.MlkemPublicKey,
+				"ML-KEM key must be advertised so a heartbeat cannot blank the stored pin")
+			assert.NotEmpty(t, client.SlhdsaPublicKey,
+				"SLH-DSA key must be advertised so a heartbeat cannot blank the stored pin")
+			assert.Equal(t, mode, client.EncryptionMode,
+				"the mode, not key presence, is what selects the handshake")
+		})
+	}
+}
+
+// TestWire_PerformsEveryStepBothEntryPointsRelyOn pins the wiring steps
+// whose omission in one entry point is why this package exists. Each was
+// a shipped defect: a missing RemoteIPC left `leapmux remote` with no
+// socket, and an unbound cleanup WaitGroup let Shutdown return while a
+// close handler was still writing.
+func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	require.NotNil(t, w.Service)
+	assert.NotNil(t, w.Service.RemoteIPC,
+		"RemoteIPC must be wired; the CLI once shipped without it")
+	assert.NotNil(t, client.OnWorkerIdentity,
+		"the Hub delivers the owner on connect and is the authority")
+	assert.NotNil(t, client.TabSyncProvider, "tab sync must be published")
+
+	// Construction must not have left the always-non-nil fields nil.
+	assert.NotNil(t, w.Service.PrivateEvents)
+	assert.NotNil(t, w.Service.FileTabPaths)
 }

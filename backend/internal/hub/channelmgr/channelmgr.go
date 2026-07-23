@@ -107,7 +107,13 @@ type ChannelInfo struct {
 	ChannelID string
 	WorkerID  string
 	UserID    string
-	AuthInfo  AuthInfo
+	// ConnID is the frontend connection the channel is bound to RIGHT
+	// NOW. A predicate that acts on a failure observed against an earlier
+	// binding must check it: the frontend can rebind a channel to a fresh
+	// relay connection between the failure and the close, and closing on
+	// worker identity alone would tear down the new binding.
+	ConnID   string
+	AuthInfo AuthInfo
 }
 
 // RegisterWithAuthInfo records the full authentication basis for a channel.
@@ -979,18 +985,22 @@ func (m *Manager) SendToFrontendIf(msg *leapmuxv1.ChannelMessage, authorize func
 // RelayWorkerMessage validates worker ownership and chunk constraints, then
 // sends to the bound frontend while holding the channel operation lock. This
 // keeps teardown from clearing chunk state between validation and delivery.
-func (m *Manager) RelayWorkerMessage(msg *leapmuxv1.ChannelMessage, workerID string) (bool, error) {
+func (m *Manager) RelayWorkerMessage(msg *leapmuxv1.ChannelMessage, workerID string) (bool, string, error) {
 	ch, ok := m.acquireChannelOp(msg.GetChannelId())
 	if !ok {
-		return false, nil
+		return false, "", nil
 	}
 	defer ch.opMu.Unlock()
 	m.mu.RLock()
 	if !m.channelLiveLocked(msg.GetChannelId(), ch) || ch.WorkerID != workerID {
 		m.mu.RUnlock()
-		return false, nil
+		return false, "", nil
 	}
-	sender := m.getConnSender(ch.UserID, ch.ConnID)
+	// Captured under the lock and returned so a caller reacting to a
+	// failure can tell whether the channel is still bound where the
+	// failure happened.
+	connID := ch.ConnID
+	sender := m.getConnSender(ch.UserID, connID)
 	m.mu.RUnlock()
 
 	// An out-of-spec flags value is a protocol violation refused like any
@@ -998,20 +1008,20 @@ func (m *Manager) RelayWorkerMessage(msg *leapmuxv1.ChannelMessage, workerID str
 	// channelwire.ChunkContinuation).
 	more, validFlags := channelwire.ChunkContinuation(msg.GetFlags())
 	if !validFlags {
-		return true, fmt.Errorf("out-of-spec channel message flags: %d", msg.GetFlags())
+		return true, connID, fmt.Errorf("out-of-spec channel message flags: %d", msg.GetFlags())
 	}
 	if err := m.ChunkTracker.Track(
 		msg.GetChannelId(), "w2fe", msg.GetCorrelationId(), len(msg.GetCiphertext()), more,
 	); err != nil {
-		return true, err
+		return true, connID, err
 	}
 	if sender == nil {
-		return true, fmt.Errorf("frontend channel sender is unavailable")
+		return true, connID, fmt.Errorf("frontend channel sender is unavailable")
 	}
 	if err := sender(msg); err != nil {
-		return true, fmt.Errorf("send to frontend: %w", err)
+		return true, connID, fmt.Errorf("send to frontend: %w", err)
 	}
-	return true, nil
+	return true, connID, nil
 }
 
 // GetChannelInfo returns a lock-consistent snapshot of a channel. Callers
@@ -1033,6 +1043,7 @@ func channelInfo(ch *channel) ChannelInfo {
 		ChannelID: ch.ChannelID,
 		WorkerID:  ch.WorkerID,
 		UserID:    ch.UserID,
+		ConnID:    ch.ConnID,
 		AuthInfo:  ch.AuthInfo,
 	}
 }

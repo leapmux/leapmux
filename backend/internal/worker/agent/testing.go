@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"os"
 	"os/exec"
@@ -75,8 +74,7 @@ func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *ex
 		return nil, err
 	}
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner := newStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
 
 	return a, nil

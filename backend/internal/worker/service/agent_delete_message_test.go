@@ -10,7 +10,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -44,10 +43,7 @@ func TestDeleteAgentMessage_BroadcastsDeletedSeq(t *testing.T) {
 		DeliveryError: "delivery failed", ID: "msg-1", AgentID: "agent-1",
 	}))
 
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{
 		AgentId:   "agent-1",
@@ -116,10 +112,7 @@ func TestDeleteAgentMessage_ReportsNewLatestSeq(t *testing.T) {
 	require.Less(t, seq1, seq2)
 	require.Less(t, seq2, seq3)
 
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	// Delete a NON-tail row (msg-1): the live tail is unchanged (still seq3).
 	dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{AgentId: "agent-1", MessageId: "msg-1"}, w)
@@ -175,10 +168,7 @@ func TestDeleteAgentMessage_RejectsNonFailedUserMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
-		ChannelID: w.channelID,
-		Sender:    channel.NewSender(w),
-	})
+	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
 	for _, id := range []string{"user-ok", "agent-msg"} {
 		dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{

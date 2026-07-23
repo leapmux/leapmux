@@ -9,13 +9,11 @@ import (
 	"sync"
 	"syscall"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/bootstrap"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -51,7 +49,7 @@ func runWorker(args []string) error {
 	}
 
 	// Use a manually-cancelled context (rather than signal.NotifyContext)
-	// so SIGTERM/SIGINT can run svcCtx.Shutdown() *before* the bidi stream
+	// so SIGTERM/SIGINT can run svc.Shutdown() *before* the bidi stream
 	// is torn down. Otherwise the disconnect-notice broadcasts emitted by
 	// Shutdown race a closed connection and never reach watchers.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,33 +146,32 @@ func runWorker(args []string) error {
 	// Set up E2EE channel manager with service handlers.
 	encMode := cfg.EncryptionModeProto()
 
-	// Create the service context first so the close callback can reference it.
-	svcCtx := service.NewContext(
-		sqlDB,
-		client.AgentManager(),
-		client.TerminalManager(),
-		homeDir,
-		cfg.DataDir,
-		wakeLockTracker,
-	)
-
-	channelMgr := channel.NewManager(
-		compositeKey, encMode, client.Send,
-		cfg.MaxIncompleteChunked,
-		func(channelID string) { svcCtx.Watchers.UnwatchAll(channelID) },
-	)
-
-	svcCtx.WorkerID = state.WorkerID
-	// The owner is NOT seeded from state: the Hub delivers it on connect (see
-	// client.OnWorkerIdentity below), which is the only authority for it.
-	svcCtx.Name = cfg.Name
-	svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout()
-	svcCtx.APITimeout = cfg.APITimeout()
-	svcCtx.UseLoginShell = cfg.UseLoginShell
-	svcCtx.Send = client.Send
-	svcCtx.Channels = channelMgr
-	svcCtx.Init()
-	// svcCtx.Shutdown persists terminal screen snapshots and broadcasts the
+	// SeedRegisteredBy is deliberately not set: the Hub delivers the owner
+	// on connect (see Client.OnWorkerIdentity, wired by Wire) and is the
+	// only authority for it. Everything else this entry point needs --
+	// remote IPC, the orphan reconciler, the retention loops -- comes from
+	// the shared sequence rather than being re-listed here, which is how
+	// this entry point silently lost svc.RemoteIPC before.
+	wiring := bootstrap.Wire(bootstrap.Params{
+		Ctx:                  ctx,
+		Client:               client,
+		DB:                   sqlDB,
+		CompositeKey:         compositeKey,
+		EncryptionMode:       encMode,
+		MaxIncompleteChunked: cfg.MaxIncompleteChunked,
+		WorkerID:             state.WorkerID,
+		Name:                 cfg.Name,
+		HomeDir:              homeDir,
+		DataDir:              cfg.DataDir,
+		HubURL:               cfg.HubURL,
+		AuthToken:            state.AuthToken,
+		AgentStartupTimeout:  cfg.AgentStartupTimeout(),
+		APITimeout:           cfg.APITimeout(),
+		UseLoginShell:        cfg.UseLoginShell,
+		WakeLock:             wakeLockTracker,
+	})
+	svc := wiring.Service
+	// svc.Shutdown persists terminal screen snapshots and broadcasts the
 	// "[Worker disconnected - Press Enter to restart]" notice to live
 	// watchers. Wrap it in sync.Once so all exit paths (signal,
 	// OnDeregister, defer fallback) converge on a single invocation that
@@ -184,7 +181,7 @@ func runWorker(args []string) error {
 	runShutdown := func() {
 		shutdownOnce.Do(func() {
 			slog.Info("draining worker state for graceful shutdown")
-			svcCtx.Shutdown()
+			svc.Shutdown()
 		})
 	}
 	defer runShutdown()
@@ -202,39 +199,12 @@ func runWorker(args []string) error {
 		}
 	}()
 
-	dispatcher := channel.NewDispatcher()
-	// Bind the service.Context's Cleanup WaitGroup BEFORE registering
-	// handlers so RegisterTracked entries are wired against the same
-	// drain Shutdown.Wait observes. Without this, tracked methods
-	// silently skip the Add(1)/Done() pair.
-	dispatcher.BindCleanup(&svcCtx.Cleanup)
-	service.RegisterAll(dispatcher, svcCtx)
-	channelMgr.SetDispatcher(dispatcher)
-
-	client.SetChannelMgr(channelMgr)
-	client.EncryptionMode = encMode
-	client.PublicKey = compositeKey.X25519Public
-	if encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
-		client.MlkemPublicKey = compositeKey.MlkemPublicKeyBytes()
-		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-		client.SlhdsaPublicKey = slhdsaPub
-	}
-
 	client.OnDeregister = func() {
 		slog.Info("worker deregistered by hub, clearing state and shutting down")
 		_ = cfg.ClearState()
 		runShutdown()
 		cancel()
 	}
-
-	// The Hub owns workers.registered_by and re-delivers it on every connect, so the
-	// worker never caches it. It arrives before any ChannelOpen on the same stream,
-	// hence before any handler the owner gates can run.
-	//
-	// UpdateRegisteredBy (not a closure over SetRegisteredBy) so the drift warning and
-	// the empty-owner refusal are shared with worker.Run's connect loop rather than
-	// copy-pasted here.
-	client.OnWorkerIdentity = svcCtx.UpdateRegisteredBy
 
 	client.ConnectWithReconnect(ctx, state.AuthToken)
 

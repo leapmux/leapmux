@@ -109,18 +109,42 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// for the same user (e.g. browser + test helper) can coexist.
 	connID := id.Generate()
 
+	// All writes to this websocket go through one goroutine, so the hub's
+	// per-worker read loop never blocks on this client's socket. See
+	// relayWriter for why that matters and why a lagging client is
+	// dropped rather than having its frames dropped.
+	//
+	// No deferred close here: run owns that (`defer w.close()`), and a
+	// defer registered at this point would run AFTER the disconnect block
+	// below has already closed the socket -- discarding the queue strictly
+	// after the close frame went out, which reads as a decision but would
+	// be an accident of LIFO ordering.
+	writer := newRelayWriter(ctx, wsConn, cancel, user.ID, connID)
+	go writer.run()
+
 	// Register this connection for receiving channel messages.
 	h.channelMgr.BindUser(user.ID, connID, func(msg *leapmuxv1.ChannelMessage) error {
 		slog.Debug("relaying channel message to frontend",
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", msg.GetCorrelationId(),
 		)
-		return channelwire.WriteChannelMessage(ctx, wsConn, msg)
+		return writer.enqueue(msg)
 	}, cancel)
 
 	slog.Info("channel relay connected", "user_id", user.ID, "conn_id", connID)
 	defer func() {
 		slog.Info("channel relay disconnected", "user_id", user.ID, "conn_id", connID)
+		// Stop accepting and discard the backlog BEFORE the socket goes, so
+		// no NEW frame starts once teardown has begun (pop refuses after
+		// close). It does not join the drain goroutine, so a write already
+		// in flight can still be running when wsConn.Close lands below --
+		// which is safe rather than merely tolerated: coder/websocket
+		// documents every method except Reader/Read as callable
+		// concurrently, and Close unblocks goroutines inside the conn.
+		// Joining instead would make this defer wait out a wedged client's
+		// full write timeout before unbinding, delaying the revocation
+		// promptness UnbindUserAndCleanup exists to provide.
+		writer.close()
 		closed := h.channelMgr.UnbindUserAndCleanup(user.ID, connID)
 
 		for _, cc := range closed {
