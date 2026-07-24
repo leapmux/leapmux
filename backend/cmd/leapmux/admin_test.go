@@ -834,6 +834,10 @@ func TestCLI_UserGrantAdmin(t *testing.T) {
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), updated.IsAdmin)
+	// A grant (is_admin false->true) is not a reduction: it stays on the soft
+	// user_info cache signal and must NOT bump auth_generation (no logout).
+	assert.Equal(t, user.AuthGeneration, updated.AuthGeneration,
+		"grant-admin must not bump auth_generation")
 }
 
 func TestCLI_UserGrantAdmin_AlreadyAdmin(t *testing.T) {
@@ -887,6 +891,12 @@ func TestCLI_UserRevokeAdmin(t *testing.T) {
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), updated.IsAdmin)
+	// A demotion (is_admin true->false) is an auth-gate reduction: the store
+	// escalates it to a generation-bearing user_tokens revocation that fences
+	// the user's live streams and logs them out. Assert the generation bumped
+	// so the CLI path stays wired to that fence end-to-end.
+	assert.Equal(t, user.AuthGeneration+1, updated.AuthGeneration,
+		"revoke-admin must bump auth_generation to fence the demoted user")
 }
 
 func TestCLI_UserRevokeAdmin_AlreadyNonAdmin(t *testing.T) {
@@ -902,6 +912,12 @@ func TestCLI_UserRevokeAdmin_AlreadyNonAdmin(t *testing.T) {
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), updated.IsAdmin)
+	// Revoking admin from a non-admin is a no-op: it fences nothing, so
+	// auth_generation must stay put. The CLI's "nothing to revoke" message
+	// depends on this (there is no reduction to escalate to a user_tokens
+	// revocation).
+	assert.Equal(t, user.AuthGeneration, updated.AuthGeneration,
+		"revoke-admin on a non-admin must not bump auth_generation")
 }
 
 func TestCLI_UserListSessions(t *testing.T) {

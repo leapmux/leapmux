@@ -236,6 +236,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		orgID := SeedOrg(t, st, "org")
 		user := SeedUser(t, st, orgID, "user")
 
+		// Grant (false→true) stays on the soft user_info path.
 		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
 			ID:      user.ID,
 			IsAdmin: true,
@@ -252,6 +253,42 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Equal(t, user.ID, events[0].Event.UserID)
 		assert.Equal(t, int64(0), events[0].Event.UserAuthGeneration, "user_info is a cache signal, not generation-bearing")
 		assert.False(t, events[0].Event.RevokedAt.IsZero())
+	})
+
+	t.Run("admin demotion (is_admin true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org")
+		user := SeedUser(t, st, orgID, "user")
+
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID: user.ID, IsAdmin: true,
+		}))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		before, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		genBefore := before.AuthGeneration
+
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID: user.ID, IsAdmin: false,
+		}))
+		published, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		ev := events[1].Event
+		assert.Equal(t, store.RevocationEventKindUserTokens, ev.Kind)
+		assert.Greater(t, ev.UserAuthGeneration, int64(0))
+		assert.Equal(t, user.ID, ev.SubjectID)
+		assert.Equal(t, user.ID, ev.UserID)
+
+		after, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, genBefore+1, after.AuthGeneration)
+		assert.Equal(t, after.AuthGeneration, ev.UserAuthGeneration)
 	})
 
 	t.Run("admin change on missing user emits nothing", func(t *testing.T) {
@@ -357,15 +394,109 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 	t.Run("email_verified change emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user") // seeded email_verified = true
-		assertUserInfoEvent(t, st, user.ID, func() error {
-			// Flip the gate off -- a real change to the cached field, so the
-			// projection compare must emit.
+		// Seed unverified so the flip to true is a grant (soft user_info path).
+		userID := id.Generate()
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID:            userID,
+			OrgID:         orgID,
+			Username:      "unverified-grant",
+			PasswordHash:  "hash",
+			DisplayName:   "Unverified",
+			Email:         "unverified-grant@example.com",
+			EmailVerified: false,
+			PasswordSet:   true,
+			IsAdmin:       false,
+		}))
+		assertUserInfoEvent(t, st, userID, func() error {
 			return st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
-				ID:            user.ID,
-				EmailVerified: false,
+				ID:            userID,
+				EmailVerified: true,
 			})
 		})
+	})
+
+	t.Run("email un-verify (email_verified true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org")
+		userID := id.Generate()
+		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID:            userID,
+			OrgID:         orgID,
+			Username:      "to-unverify",
+			PasswordHash:  "hash",
+			DisplayName:   "To Unverify",
+			Email:         "to-unverify@example.com",
+			EmailVerified: false,
+			PasswordSet:   true,
+			IsAdmin:       false,
+		}))
+
+		require.NoError(t, st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+			ID: userID, EmailVerified: true,
+		}))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		before, err := st.Users().GetByID(ctx, userID)
+		require.NoError(t, err)
+		genBefore := before.AuthGeneration
+
+		require.NoError(t, st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+			ID: userID, EmailVerified: false,
+		}))
+		published, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		ev := events[1].Event
+		assert.Equal(t, store.RevocationEventKindUserTokens, ev.Kind)
+		assert.Greater(t, ev.UserAuthGeneration, int64(0))
+		assert.Equal(t, userID, ev.SubjectID)
+		assert.Equal(t, userID, ev.UserID)
+
+		after, err := st.Users().GetByID(ctx, userID)
+		require.NoError(t, err)
+		assert.Equal(t, genBefore+1, after.AuthGeneration)
+		assert.Equal(t, after.AuthGeneration, ev.UserAuthGeneration)
+	})
+
+	t.Run("email address change dropping verified stays on the soft user_info path", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "org")
+		user := SeedUser(t, st, orgID, "user") // seeded email_verified = true
+
+		// Establish a distinct email+verified state via UpdateEmail (soft), drain it.
+		require.NoError(t, st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+			ID: user.ID, Email: "verified@example.com", EmailVerified: true,
+		}))
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		before, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		genBefore := before.AuthGeneration
+
+		// Address change that also drops verified must NOT fence (self-service path).
+		require.NoError(t, st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+			ID: user.ID, Email: "new@example.com", EmailVerified: false,
+		}))
+		published, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2)
+		ev := events[1].Event
+		assert.Equal(t, store.RevocationEventKindUserInfo, ev.Kind)
+		assert.Equal(t, int64(0), ev.UserAuthGeneration)
+
+		after, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, genBefore, after.AuthGeneration)
+		assert.False(t, after.EmailVerified)
+		assert.Equal(t, "new@example.com", after.Email)
 	})
 
 	t.Run("no-op update to a cached field emits no user_info event", func(t *testing.T) {

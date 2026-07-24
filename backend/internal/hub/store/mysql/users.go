@@ -200,12 +200,31 @@ func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (s
 // runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
 // projection read, locked clock reading, and user_info event insert, so the
 // durable cache-invalidation is derived from the before/after cached-field
-// projection rather than a hand-computed flag. MySQL has no RETURNING, so it
+// projection rather than a hand-computed flag. Soft path only (nil fence):
+// grants and non-gate changes stay on user_info. MySQL has no RETURNING, so it
 // locks the row FOR UPDATE to fix a single clock reading (shared by the UPDATE
 // and the emitted event) before running update; a missing id is a no-op. update
 // runs against the locked row and reports ok=false to force a no-op (e.g. a
 // promote that matched no pending email).
 func (s *userStore) runUserInfoMutation(ctx context.Context, id string, update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error)) error {
+	return s.runCachedUserMutation(ctx, id, update, nil)
+}
+
+// runAuthGateMutation is the UpdateAdmin / UpdateEmailVerified sibling of
+// runUserInfoMutation: a privilege reduction (is_admin / email_verified
+// true→false) escalates to a generation-bearing user_tokens revocation that
+// fences live streams and logs the user out; a grant stays on the soft
+// user_info signal.
+func (s *userStore) runAuthGateMutation(ctx context.Context, id string, update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error)) error {
+	return s.runCachedUserMutation(ctx, id, update, fenceUserTokensLocked)
+}
+
+func (s *userStore) runCachedUserMutation(
+	ctx context.Context,
+	id string,
+	update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error),
+	fence func(context.Context, *mysqlConn, string, time.Time) error,
+) error {
 	// Lock the user row before the before-read so a concurrent same-user mutation
 	// cannot commit between the before and after cached-field projections and hide
 	// a change (which would drop the durable user_info invalidation for that field).
@@ -239,7 +258,36 @@ func (s *userStore) runUserInfoMutation(ctx context.Context, id string, update f
 		func(ctx context.Context, conn *mysqlConn, userID string, updatedAt time.Time) error {
 			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, updatedAt, 0)
 		},
+		fence,
 	)
+}
+
+// fenceUserTokensLocked bumps auth_generation + tokens_revoked_at and inserts a
+// user_tokens event inside the already-open, row-locked transaction. Same effect
+// as RevokeUserTokens's mutate body, done in-transaction so an auth-gate
+// reduction and its fence share one commit. GetUserTokensRevocationForUpdate
+// re-locks the row (re-entrant within the tx) to read the current generation.
+func fenceUserTokensLocked(ctx context.Context, conn *mysqlConn, id string, _ time.Time) error {
+	row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	updatedAt := row.NowAt.UTC()
+	revokedAt := updatedAt
+	nextGeneration := row.AuthGeneration + 1
+	n, err := rowsAffected(conn.q.SetUserTokensRevokedAt(ctx, gendb.SetUserTokensRevokedAtParams{
+		ID:              row.ID,
+		TokensRevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
+		AuthGeneration:  nextGeneration,
+		UpdatedAt:       sqltime.NewMySQLTime(updatedAt),
+	}))
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("bump user token revocation %q: updated %d rows after locking live row", row.ID, n)
+	}
+	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, revokedAt, nextGeneration)
 }
 
 // requireSingleRowUpdate maps a rowsAffected result into the (changed, err) pair
@@ -300,8 +348,13 @@ func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswo
 }
 
 // UpdateEmail changes the email and its verified flag; runUserInfoMutation emits
-// a user_info cache-invalidation event iff a cached field (email/email_verified,
-// an auth gate) actually changed. A missing id is a no-op with no event.
+// a user_info cache-invalidation event iff a cached field (email/email_verified)
+// actually changed. Stays on the soft path even when email_verified drops
+// true→false: this is also the self-service email-change path
+// (RequestEmailChange → SetEmailAndClearCompeting), and fencing would log the
+// user out for changing their own address. The pure un-verify
+// (UpdateEmailVerified false) is the canonical gate flip and does fence. A
+// missing id is a no-op with no event.
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
@@ -314,12 +367,12 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 	})
 }
 
-// UpdateEmailVerified flips the email_verified auth gate; runUserInfoMutation
-// emits a user_info cache-invalidation event iff the gate actually changed, so
-// the change is observed cross-process without waiting out the cache TTL. A
-// missing id is a no-op with no event.
+// UpdateEmailVerified flips the email_verified auth gate. A reduction
+// (true→false) escalates to a generation-bearing user_tokens revocation that
+// fences the user's live streams and logs them out; a grant (false→true) stays
+// on the soft user_info cache signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 			EmailVerified: p.EmailVerified,
 			UpdatedAt:     sqltime.NewMySQLTime(updatedAt),
@@ -329,11 +382,12 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 	})
 }
 
-// UpdateAdmin flips the IsAdmin flag; runUserInfoMutation emits a user_info
-// cache-invalidation event iff is_admin actually changed, dropping a stale
-// cached UserInfo cross-process. A missing id is a no-op with no event.
+// UpdateAdmin flips the IsAdmin flag. A reduction (true→false) escalates to a
+// generation-bearing user_tokens revocation that fences the user's live streams
+// and logs them out; a grant (false→true) stays on the soft user_info cache
+// signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 			IsAdmin:   p.IsAdmin,
 			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
@@ -362,8 +416,10 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 // PromotePendingEmail moves pending_email into email (email_verified=1). A row
 // with no pending email matches zero rows and is a no-op; otherwise
 // runUserInfoMutation emits a user_info cache-invalidation event iff the
-// promotion changed a cached field (email/email_verified, an auth gate) -- the
-// same guarantee its sibling UpdateEmail/UpdateEmailVerified give.
+// promotion changed a cached field (email/email_verified, an auth gate). Like
+// UpdateEmail, it stays on the soft path (runUserInfoMutation, nil fence): a
+// promotion only grants email_verified (false→true), so it never reduces an
+// auth gate and never fences.
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
 		n, err := rowsAffected(conn.q.PromotePendingEmail(ctx, gendb.PromotePendingEmailParams{

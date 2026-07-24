@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -137,5 +138,49 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 
 	require.NoError(t, env.watcher.RunOnce(context.Background()))
 	assert.Empty(t, env.closer.bearerSnapshot())
+	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
+}
+
+// TestAdminPath_RevokeAdmin_FencesUserCredentials mirrors
+// `leapmux admin user revoke-admin`. A grant stays on the soft user_info
+// path (no channel teardown); a demotion emits a generation-bearing
+// user_tokens event that CloseChannelsByUserRevocation fences.
+func TestAdminPath_RevokeAdmin_FencesUserCredentials(t *testing.T) {
+	env := setup(t)
+	ctx := context.Background()
+	// Use a non-admin so UpdateAdmin(true) is a real grant, not a no-op on
+	// the already-admin fixture.
+	targetID := hubtestutil.CreateTestUser(t, env.st, "gate-user", "password-gate-user-123")
+
+	require.NoError(t, env.st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+		ID: targetID, IsAdmin: true,
+	}))
+	require.NoError(t, env.watcher.RunOnce(ctx))
+	assert.Empty(t, env.closer.userSnapshot(), "grant must not fence live streams")
+
+	require.NoError(t, env.st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+		ID: targetID, IsAdmin: false,
+	}))
+	require.NoError(t, env.watcher.RunOnce(ctx))
+	assert.Equal(t, []string{targetID}, env.closer.userSnapshot())
+}
+
+// TestAdminPath_UnverifyEmail_FencesUserCredentials mirrors an admin
+// `user update --email-verified=false`. Verify (grant) stays soft; un-verify
+// fences via the same user_tokens watcher path as revoke-admin.
+func TestAdminPath_UnverifyEmail_FencesUserCredentials(t *testing.T) {
+	env := setup(t)
+	ctx := context.Background()
+
+	require.NoError(t, env.st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+		ID: env.userID, EmailVerified: true,
+	}))
+	require.NoError(t, env.watcher.RunOnce(ctx))
+	assert.Empty(t, env.closer.userSnapshot(), "verify grant must not fence live streams")
+
+	require.NoError(t, env.st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+		ID: env.userID, EmailVerified: false,
+	}))
+	require.NoError(t, env.watcher.RunOnce(ctx))
 	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
 }

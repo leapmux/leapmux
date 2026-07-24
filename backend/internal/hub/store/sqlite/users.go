@@ -182,8 +182,27 @@ func loadUserInfoCacheFields(ctx context.Context, conn *sqliteConn, id string) (
 // runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
 // projection read and user_info event insert, so each Update* method supplies
 // only its UPDATE and the durable cache-invalidation is derived from the
-// before/after projection rather than a hand-computed flag.
+// before/after projection rather than a hand-computed flag. Soft path only
+// (nil fence): grants and non-gate changes stay on user_info.
 func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error)) error {
+	return s.runCachedUserMutation(ctx, id, mutate, nil)
+}
+
+// runAuthGateMutation is the UpdateAdmin / UpdateEmailVerified sibling of
+// runUserInfoMutation: a privilege reduction (is_admin / email_verified
+// true→false) escalates to a generation-bearing user_tokens revocation that
+// fences live streams and logs the user out; a grant stays on the soft
+// user_info signal.
+func (s *userStore) runAuthGateMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error)) error {
+	return s.runCachedUserMutation(ctx, id, mutate, fenceUserTokensLocked)
+}
+
+func (s *userStore) runCachedUserMutation(
+	ctx context.Context,
+	id string,
+	mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error),
+	fence func(context.Context, *sqliteConn, string, time.Time) error,
+) error {
 	// Lock the user row before the before-read so a concurrent same-user mutation
 	// cannot commit between the before and after cached-field projections and hide
 	// a change (which would drop the durable user_info invalidation for that field).
@@ -203,7 +222,24 @@ func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate f
 		func(ctx context.Context, conn *sqliteConn, userID string, updatedAt time.Time) error {
 			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, updatedAt, 0)
 		},
+		fence,
 	)
+}
+
+// fenceUserTokensLocked bumps auth_generation + tokens_revoked_at and inserts a
+// user_tokens event inside the already-open, row-locked transaction. Same effect
+// as RevokeUserTokens's mutate body, done in-transaction so an auth-gate
+// reduction and its fence share one commit.
+func fenceUserTokensLocked(ctx context.Context, conn *sqliteConn, id string, _ time.Time) error {
+	row, err := conn.q.BumpUserTokensRevokedAt(ctx, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	revokedAt, err := sqlutil.RequireTime(row.TokensRevokedAt.Time, row.TokensRevokedAt.Valid, "tokens_revoked_at")
+	if err != nil {
+		return err
+	}
+	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, revokedAt, row.AuthGeneration)
 }
 
 // updatedUserResult maps a RETURNING (id, updated_at) row plus error into the
@@ -263,8 +299,13 @@ func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswo
 }
 
 // UpdateEmail changes the email and its verified flag; runUserInfoMutation emits
-// a user_info cache-invalidation event iff a cached field (email/email_verified,
-// an auth gate) actually changed. A missing id is a no-op with no event.
+// a user_info cache-invalidation event iff a cached field (email/email_verified)
+// actually changed. Stays on the soft path even when email_verified drops
+// true→false: this is also the self-service email-change path
+// (RequestEmailChange → SetEmailAndClearCompeting), and fencing would log the
+// user out for changing their own address. The pure un-verify
+// (UpdateEmailVerified false) is the canonical gate flip and does fence. A
+// missing id is a no-op with no event.
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
 		row, err := conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
@@ -276,12 +317,12 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 	})
 }
 
-// UpdateEmailVerified flips the email_verified auth gate; runUserInfoMutation
-// emits a user_info cache-invalidation event iff the gate actually changed, so
-// the change is observed cross-process without waiting out the cache TTL. A
-// missing id is a no-op with no event.
+// UpdateEmailVerified flips the email_verified auth gate. A reduction
+// (true→false) escalates to a generation-bearing user_tokens revocation that
+// fences the user's live streams and logs them out; a grant (false→true) stays
+// on the soft user_info cache signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
 		row, err := conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
@@ -290,11 +331,12 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 	})
 }
 
-// UpdateAdmin flips the IsAdmin flag; runUserInfoMutation emits a user_info
-// cache-invalidation event iff is_admin actually changed, dropping a stale
-// cached UserInfo cross-process. A missing id is a no-op with no event.
+// UpdateAdmin flips the IsAdmin flag. A reduction (true→false) escalates to a
+// generation-bearing user_tokens revocation that fences the user's live streams
+// and logs them out; a grant (false→true) stays on the soft user_info cache
+// signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
 		row, err := conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 			IsAdmin: ptrconv.BoolToInt64(p.IsAdmin),
 			ID:      p.ID,
@@ -322,8 +364,9 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 // PromotePendingEmail moves pending_email into email (email_verified=1). A row
 // with no pending email is a no-op; otherwise runUserInfoMutation emits a
 // user_info cache-invalidation event iff the promotion changed a cached field
-// (email/email_verified, an auth gate) -- the same guarantee its sibling
-// UpdateEmail/UpdateEmailVerified give.
+// (email/email_verified, an auth gate). Like UpdateEmail, it stays on the soft
+// path (runUserInfoMutation, nil fence): a promotion only grants email_verified
+// (false→true), so it never reduces an auth gate and never fences.
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
 		row, err := conn.q.PromotePendingEmail(ctx, id)

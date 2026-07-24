@@ -415,6 +415,10 @@ func (s *Suite) testUsers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		before, err := st.Users().GetByID(ctx, userID)
+		require.NoError(t, err)
+		genBefore := before.AuthGeneration
+
 		err = st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
 			ID:            userID,
 			EmailVerified: true,
@@ -424,6 +428,18 @@ func (s *Suite) testUsers(t *testing.T) {
 		updated, err := st.Users().GetByID(ctx, userID)
 		require.NoError(t, err)
 		assert.True(t, updated.EmailVerified)
+		assert.Equal(t, genBefore, updated.AuthGeneration, "grant must not bump auth_generation")
+
+		err = st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+			ID:            userID,
+			EmailVerified: false,
+		})
+		require.NoError(t, err)
+
+		reduced, err := st.Users().GetByID(ctx, userID)
+		require.NoError(t, err)
+		assert.False(t, reduced.EmailVerified)
+		assert.Equal(t, genBefore+1, reduced.AuthGeneration, "reduction must bump auth_generation")
 	})
 
 	t.Run("update admin", func(t *testing.T) {
@@ -431,7 +447,11 @@ func (s *Suite) testUsers(t *testing.T) {
 		orgID := SeedOrg(t, st, "user-org")
 		user := SeedUser(t, st, orgID, "admin-user")
 
-		err := st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+		before, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		genBefore := before.AuthGeneration
+
+		err = st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
 			ID:      user.ID,
 			IsAdmin: true,
 		})
@@ -440,6 +460,18 @@ func (s *Suite) testUsers(t *testing.T) {
 		updated, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
 		assert.True(t, updated.IsAdmin)
+		assert.Equal(t, genBefore, updated.AuthGeneration, "grant must not bump auth_generation")
+
+		err = st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      user.ID,
+			IsAdmin: false,
+		})
+		require.NoError(t, err)
+
+		reduced, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.False(t, reduced.IsAdmin)
+		assert.Equal(t, genBefore+1, reduced.AuthGeneration, "reduction must bump auth_generation")
 	})
 
 	t.Run("update prefs", func(t *testing.T) {
