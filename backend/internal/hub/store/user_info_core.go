@@ -32,12 +32,27 @@ func UserInfoCacheFieldsOf(u User) UserInfoCacheFields {
 	}
 }
 
+// AuthGateReduced reports whether a UserInfoCacheFields transition is a
+// privilege reduction on an auth gate (is_admin or email_verified true→false).
+// Callers that opt into fencing escalate such a reduction from the soft
+// user_info cache signal to a generation-bearing user_tokens revocation, which
+// tears down the user's live streams and logs them out. Grants (false→true)
+// and unrelated field changes return false.
+func AuthGateReduced(before, after UserInfoCacheFields) bool {
+	return (before.IsAdmin && !after.IsAdmin) || (before.EmailVerified && !after.EmailVerified)
+}
+
 // RunUserInfoMutation runs a user-row mutation inside a transaction and emits a
 // durable user_info cache-invalidation event iff the mutation changed a cached
 // UserInfo field, derived by comparing the projection loadFields reports before
 // and after the change. This makes a forgotten invalidation mechanically
 // impossible for any mutation routed through it and removes the need for callers
 // to hand-signal "did a cached field change".
+//
+// When fence is non-nil and AuthGateReduced(before, after) is true, fence runs
+// instead of emit so an opted-in auth-gate mutation can escalate a privilege
+// reduction to a generation-bearing user_tokens revocation. A nil fence keeps
+// the soft emit path for every change (including reductions).
 //
 // loadFields reports the target row's cached-field projection and whether the
 // row exists. mutate runs the UPDATE and returns the row id, the updated_at to
@@ -52,6 +67,7 @@ func RunUserInfoMutation[C any](
 	loadFields func(context.Context, C) (fields UserInfoCacheFields, exists bool, err error),
 	mutate func(context.Context, C) (userID string, updatedAt time.Time, ok bool, err error),
 	emit func(context.Context, C, string, time.Time) error,
+	fence func(context.Context, C, string, time.Time) error,
 ) error {
 	return inTransaction(ctx, func(conn C) error {
 		before, existedBefore, err := loadFields(ctx, conn)
@@ -66,9 +82,20 @@ func RunUserInfoMutation[C any](
 		if err != nil {
 			return err
 		}
-		if existedBefore && existedAfter && before == after {
-			return nil
+		if existedBefore && existedAfter {
+			if before == after {
+				return nil
+			}
+			if fence != nil && AuthGateReduced(before, after) {
+				return fence(ctx, conn, userID, updatedAt)
+			}
+			return emit(ctx, conn, userID, updatedAt)
 		}
+		// Existence flipped around an id-keyed single-row update (not expected):
+		// fail-safe to the soft emit, preserving prior behavior. A reduction that
+		// somehow reaches here is only soft-emitted, never fenced -- unreachable
+		// today because LockUserRow plus the deleted_at-filtered existence reads
+		// keep a live mutation's before and after both existing.
 		return emit(ctx, conn, userID, updatedAt)
 	})
 }

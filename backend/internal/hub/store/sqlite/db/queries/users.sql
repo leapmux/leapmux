@@ -217,12 +217,15 @@ WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pen
 -- Bumps the user-wide revocation timestamp and credential epoch, then
 -- returns the row that moved so the store layer can emit a durable
 -- revocation event carrying the new epoch. The query itself has no
--- deleted_at guard, so it would act on a soft-deleted row -- but the only
--- caller (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction,
--- whose LockUserAuthState filters deleted_at IS NULL, so revoking an
--- already-soft-deleted user aborts before this runs. Every revoke path
--- revokes before soft-deleting, so that ordering is not exercised today.
--- Only a truly missing row (no id match) is a no-op.
+-- deleted_at guard, so it would act on a soft-deleted row -- but neither
+-- caller can reach one: RevokeUserTokens (via RevokeAllUserCredentials)
+-- runs inside RunInUserAuthTransaction, whose LockUserAuthState filters
+-- deleted_at IS NULL; fenceUserTokensLocked (the auth-gate reduction fence)
+-- runs only in RunUserInfoMutation's existedBefore && existedAfter branch,
+-- and both existence reads use GetUserByID, which also filters
+-- deleted_at IS NULL. Every revoke path revokes before soft-deleting, so
+-- that ordering is not exercised today. Only a truly missing row (no id
+-- match) is a no-op.
 UPDATE users
 SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     auth_generation   = auth_generation + 1,

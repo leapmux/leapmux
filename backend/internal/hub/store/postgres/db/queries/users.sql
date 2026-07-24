@@ -197,11 +197,14 @@ WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pen
 
 -- name: BumpUserTokensRevokedAt :one
 -- The query itself has no deleted_at guard, so it would act on a
--- soft-deleted row -- but the only caller (RevokeAllUserCredentials) runs
--- inside RunInUserAuthTransaction, whose LockUserAuthState filters
--- deleted_at IS NULL, so revoking an already-soft-deleted user aborts
--- before this runs. Every revoke path revokes before soft-deleting, so
--- that ordering is not exercised today. Only a missing id is a no-op.
+-- soft-deleted row -- but neither caller can reach one: RevokeUserTokens
+-- (via RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
+-- LockUserAuthState filters deleted_at IS NULL; fenceUserTokensLocked (the
+-- auth-gate reduction fence) runs only in RunUserInfoMutation's
+-- existedBefore && existedAfter branch, and both existence reads use
+-- GetUserByID, which also filters deleted_at IS NULL. Every revoke path
+-- revokes before soft-deleting, so that ordering is not exercised today.
+-- Only a missing id is a no-op.
 UPDATE users
 SET tokens_revoked_at = revocation_clock.now_at,
     auth_generation   = auth_generation + 1,

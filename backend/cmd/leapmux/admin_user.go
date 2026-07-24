@@ -410,11 +410,19 @@ func runUserSetAdmin(cmd adminCmdCtx, args []string, admin bool) error {
 			return fmt.Errorf("update admin: %w", err)
 		}
 
-		action := "Granted"
 		if !admin {
-			action = "Revoked"
+			// Only claim a fence when the user was actually an admin: a demotion
+			// (is_admin true->false) is the auth-gate reduction that revokes
+			// sessions/tokens, whereas revoking admin from a non-admin is a
+			// no-op that fences nothing.
+			if user.IsAdmin {
+				fmt.Printf("Revoked admin privileges for user %q (id: %s); active sessions and tokens revoked.\n", user.Username, user.ID)
+			} else {
+				fmt.Printf("User %q (id: %s) is not an admin; nothing to revoke.\n", user.Username, user.ID)
+			}
+			return nil
 		}
-		fmt.Printf("%s admin privileges for user %q (id: %s)\n", action, user.Username, user.ID)
+		fmt.Printf("Granted admin privileges for user %q (id: %s)\n", user.Username, user.ID)
 		return nil
 	})
 }
