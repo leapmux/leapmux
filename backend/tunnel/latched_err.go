@@ -20,7 +20,7 @@ type errBox struct{ err error }
 // so the semantics are defined once instead of being re-derived per latch; a
 // reader who learns it once knows both. Err is an atomic load, keeping the Write
 // hot path lock-free -- which matters because writeErr is published by
-// awaitWriteAck goroutines that must not take the write lock.
+// runAckLoop, which must not take the write lock.
 //
 // Its zero value is a usable, unlatched latch: the done channel is created on first
 // use, matching ctxutil.Mutex. A constructor returning it by value instead would copy

@@ -240,7 +240,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	sqlDB := newServiceTestDB(t)
 
 	cfg := Config{
-		Channels:            channel.NewManager(nil, 0, nil, 0),
+		Channels:            channel.NewManager(nil, 0, nil, nil, 0),
 		Send:                func(*leapmuxv1.ConnectRequest) error { return nil },
 		DB:                  sqlDB,
 		Agents:              agent.NewManager(nil),
@@ -321,7 +321,7 @@ func TestNew_PanicsOnMissingRequiredConfig(t *testing.T) {
 
 	t.Run("missing Send", func(t *testing.T) {
 		assert.PanicsWithValue(t, "service.New: Send must be set", func() {
-			New(Config{DB: sqlDB, Channels: channel.NewManager(nil, 0, nil, 0)})
+			New(Config{DB: sqlDB, Channels: channel.NewManager(nil, 0, nil, nil, 0)})
 		})
 	})
 }
@@ -423,7 +423,7 @@ func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 	t.Helper()
 	return New(Config{
 		DB:       sqlDB,
-		Channels: channel.NewManager(nil, 0, nil, 0),
+		Channels: channel.NewManager(nil, 0, nil, nil, 0),
 		Send:     func(*leapmuxv1.ConnectRequest) error { return nil },
 	})
 }

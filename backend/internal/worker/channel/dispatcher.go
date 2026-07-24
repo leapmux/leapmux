@@ -23,6 +23,18 @@ type ResponseWriter interface {
 	ChannelID() string
 }
 
+// errorQueuer is implemented by response writers that can hand an error to a
+// drainer instead of sending it inline. DispatchAsync's unknown-method arm runs
+// on the worker's shared Connect receive goroutine, where an inline send takes
+// the session's encryption gate and can park behind a handler that is itself
+// parked on the connection writer's byte budget -- wedging the ONE receive
+// loop that serves every channel on this worker. Queuing keeps that loop free;
+// writers that are not on the shared receive path (the local-IPC router) keep
+// the inline SendError fallback.
+type errorQueuer interface {
+	QueueError(code int32, message string)
+}
+
 // HandlerFunc is the signature for an inner RPC method handler. `ctx`
 // is bound to the inbound request's lifecycle (per-session for E2EE
 // channel handlers, per-call for cleartext local IPC) and is cancelled
@@ -194,25 +206,21 @@ func (d *Dispatcher) DispatchWith(ctx context.Context, userID userid.UserID, req
 func (d *Dispatcher) DispatchAsync(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
 	h, ok := d.handlers[req.GetMethod()]
 	if !ok {
-		// Send the error INLINE rather than spawning a goroutine. Unlike a real
-		// handler (which DispatchAsync exists to offload -- WatchEvents, agent
-		// calls can block for seconds), an unknown-method response is just a
-		// marshal+encrypt+send, so spawning a goroutine per frame would let a peer
-		// flooding unknown-method frames pin one goroutine (and one sender.mu
-		// waiter) per frame; sending inline bounds the cost to the receive loop's
-		// own decryption rate.
-		//
-		// This is NOT fully safe on the receive goroutine the way the comment used
-		// to claim: SendError takes sender.mu and writes on the Connect stream,
-		// which can block on the stream's HTTP/2 send window under Hub backpressure
-		// -- the same wedge the per-session bounded error-send queue exists to
-		// close (session.go, tracked in
-		// https://github.com/leapmux/leapmux/issues/293). Unifying this path behind
-		// that bounded writer would close it; until then an unknown-method storm
-		// under backpressure can stall the receive loop, a tradeoff chosen here
-		// over the goroutine-per-frame flood it prevents.
+		// Prefer the bounded error queue when the writer offers one: an
+		// unknown-method response is just a marshal+encrypt+send, but on the
+		// encrypted channel path that still takes the session's encryption
+		// gate -- and a peer flooding unknown-method frames must not pin one
+		// goroutine (or one gate waiter) per frame, nor park the shared
+		// receive loop behind a handler that is itself parked on the
+		// connection writer's byte budget. Writers without a queue (local
+		// IPC) keep the inline path, which is correct there: they are not on
+		// the shared receive goroutine.
 		slog.Warn("unknown inner RPC method", "method", req.GetMethod())
-		_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
+		if q, ok := w.(errorQueuer); ok {
+			q.QueueError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
+		} else {
+			_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
+		}
 		return
 	}
 	if h.tracked && d.cleanup != nil {

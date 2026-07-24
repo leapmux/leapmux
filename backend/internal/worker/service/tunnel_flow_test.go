@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -202,88 +201,6 @@ func TestWriteSeqGateWaitReachedHonoursContext(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a cancelled context must release waitReached")
-	}
-}
-
-// close must release a read loop parked on credit, or teardown strands it on a
-// grant that will never arrive.
-func TestCreditWindowCloseReleasesAcquire(t *testing.T) {
-	w := newCreditWindow(1)
-	require.True(t, w.acquire(), "the seeded window admits the first frame")
-
-	result := make(chan bool, 1)
-	go func() { result <- w.acquire() }()
-	select {
-	case <-result:
-		t.Fatal("acquire returned with no credit available")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	w.close()
-	select {
-	case ok := <-result:
-		assert.False(t, ok, "a window closed under a waiter must not hand out credit")
-	case <-time.After(2 * time.Second):
-		t.Fatal("close did not release the parked acquire")
-	}
-}
-
-// A grant wakes the parked read loop.
-func TestCreditWindowAddWakesAcquire(t *testing.T) {
-	w := newCreditWindow(1)
-	require.True(t, w.acquire())
-
-	result := make(chan bool, 1)
-	go func() { result <- w.acquire() }()
-	w.add(1)
-	select {
-	case ok := <-result:
-		assert.True(t, ok, "a granted credit must release the read loop")
-	case <-time.After(2 * time.Second):
-		t.Fatal("a grant did not wake the parked acquire")
-	}
-}
-
-// add clamps every peer-supplied grant into [0, max], including the hostile
-// overflow cases the doc at creditWindow.add hardens against.
-//
-// The peer's credit is a uint64 cast to int64 before the add, so a value in
-// [2^63, 2^64) casts NEGATIVE and a value near max can push the int64 sum past
-// MaxInt64 -- either would wedge the read loop on a credit that never comes if it
-// slipped through as a negative window. The guard `next < w.credit || next > max`
-// catches both because a two's-complement overflow of two same-signed operands
-// always flips the sign. This pins that guard across the uint64 domain edges,
-// which the existing add(1) test does not exercise.
-func TestCreditWindowAddClampsHostileGrants(t *testing.T) {
-	const maxWindow = 64
-
-	cases := []struct {
-		name    string
-		drain   int    // acquires before the grant, so credit = maxWindow-drain
-		grant   uint64 // the peer-supplied credit
-		wantAvl int64  // expected available() after the grant
-	}{
-		{"zero grant is a no-op", 10, 0, maxWindow - 10},
-		{"in-budget grant adds exactly", 10, 4, maxWindow - 6},
-		{"grant to exactly max", 10, 10, maxWindow},
-		{"grant past max clamps", 10, 30, maxWindow},
-		{"MaxUint64 clamps, never negative", 10, math.MaxUint64, maxWindow},
-		{"grant in [2^63,2^64) casts negative, clamps", 10, 1 << 63, maxWindow},
-		{"MaxInt64 grant clamps", 10, math.MaxInt64, maxWindow},
-		{"overflow from a full window clamps", 0, math.MaxUint64, maxWindow},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newCreditWindow(maxWindow)
-			for i := 0; i < tc.drain; i++ {
-				require.True(t, w.acquire(), "seeded window must admit drain %d", i)
-			}
-			w.add(tc.grant)
-			got := w.available()
-			assert.Equal(t, tc.wantAvl, got, "clamped credit")
-			assert.GreaterOrEqual(t, got, int64(0), "credit must never go negative")
-			assert.LessOrEqual(t, got, int64(maxWindow), "credit must never exceed the window")
-		})
 	}
 }
 

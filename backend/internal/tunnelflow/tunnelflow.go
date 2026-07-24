@@ -1,10 +1,11 @@
 // Package tunnelflow is the single source of truth for the tunnel data path's
-// end-to-end flow-control window sizes. The client half lives in the public
-// tunnel package (Conn's send window and read buffer) and the worker half lives
-// in internal/worker/service (the per-conn write-seq gate and read-send credit),
-// and the two packages do not import each other -- so before these constants
-// were centralized here their correctness relationships were coupled by prose
-// comments alone. A retune of one silently broke the others.
+// end-to-end flow-control window sizes and the window mechanism that consumes
+// them. The client half lives in the public tunnel package (Conn's send window
+// and read buffer) and the worker half lives in internal/worker/service (the
+// per-conn write-seq gate and read-send credit), and the two packages do not
+// import each other -- so before these constants were centralized here their
+// correctness relationships were coupled by prose comments alone. A retune of
+// one silently broke the others.
 //
 // Three invariants must hold or tunnelled traffic breaks. They are enforced at
 // compile time below, so a retune that violates one fails the build (pointing at

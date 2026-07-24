@@ -121,6 +121,21 @@ func NewErrorResponse(code int32, message string) *leapmuxv1.InnerRpcResponse {
 	return &leapmuxv1.InnerRpcResponse{IsError: true, ErrorCode: code, ErrorMessage: message}
 }
 
+// NewChannelMessage wraps one encrypted chunk in the ChannelMessage envelope
+// both Go senders put on the wire. It owns ProtocolVersion: 1 so a version bump
+// is one edit instead of a literal in each sender (and in the empty-payload
+// terminating frame SendChannelFrames used to build inline).
+func NewChannelMessage(channelID string, correlationID uint64,
+	flags leapmuxv1.ChannelMessageFlags, ciphertext []byte) *leapmuxv1.ChannelMessage {
+	return &leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       channelID,
+		CorrelationId:   correlationID,
+		Flags:           flags,
+		Ciphertext:      ciphertext,
+	}
+}
+
 // HTTPToWS converts an http(s) URL to the corresponding ws(s) URL.
 func HTTPToWS(rawURL string) string {
 	if strings.HasPrefix(rawURL, "https://") {
@@ -216,59 +231,36 @@ func WriteChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1
 	return WriteFramedBytes(ctx, ws, data)
 }
 
-// SendChannelFrames splits plaintext into MaxPlaintextPerChunk-sized chunks,
-// encrypts each under encrypt, wraps each in a ChannelMessage addressed to
-// channelID/correlationID with the MORE flag set on every chunk but the last,
-// and passes each frame to send in order. It is the one place the chunk-split /
-// per-chunk-encrypt / ChannelMessage-build sequence lives, shared by the two Go
-// senders of this wire contract -- the worker's channelSender.sendEncrypted and
-// the tunnel client's Channel.sendInnerContext -- so a chunking change (the
-// flag, the cap, the envelope) lands once instead of drifting between them.
-// The browser keeps its own copy (frontend/src/lib/channel.ts), which cannot
-// import Go.
+// SendChannelFrames splits plaintext into MaxPlaintextPerChunk-sized chunks and
+// hands each to sendChunk in order, with the MORE flag set on every chunk but
+// the last.
 //
-// It encrypts and sends one chunk per iteration -- it does NOT buffer the whole
-// message's ciphertext -- so a large send peaks at one chunk of ciphertext
-// beyond the plaintext, not the full reassembled size. send is called under the
-// same serialisation the caller enforces (the worker's channelSender mutex; the
-// tunnel's single-slot sendPermit), so it must not re-enter either.
+// sendChunk owns the per-chunk encrypt + ChannelMessage build + write as ONE
+// step. That pairing is not a convenience: noiseutil.CipherState.Encrypt uses an
+// implicit counter nonce (backend/internal/noise/noise.go) and the peer decrypts
+// in strict arrival order, so ciphertext order must equal wire order. Owning
+// both inside the callback is what lets a sender serialize exactly one chunk at
+// a time (see SendGate) instead of a whole message.
 //
-// Returns the first error from encrypt (wrapped) or send (passed through); on a
-// mid-message failure earlier chunks have already been sent, so the caller
-// owns the recovery (the tunnel cancels its channel; the worker returns the
-// error to its single sender). Empty plaintext emits exactly one zero-byte
-// frame and terminates -- both callers marshal an InnerMessage with a set oneof
-// (always >= 1 byte), but handling empty here forecloses the infinite-loop
-// landmine the boundary math once carried as a standalone helper.
-func SendChannelFrames(
-	encrypt func([]byte) ([]byte, error),
-	channelID string,
-	correlationID uint64,
-	plaintext []byte,
-	send func(*leapmuxv1.ChannelMessage) error,
-) error {
+// Returns sendChunk's first error unchanged; on a mid-message failure earlier
+// chunks are already on the wire, so the caller owns the recovery (the tunnel
+// cancels its channel; the worker returns the error to its single sender).
+// Empty plaintext emits exactly one zero-byte frame and terminates -- both
+// callers marshal an InnerMessage with a set oneof (always >= 1 byte), but
+// handling empty here forecloses the infinite-loop landmine the boundary math
+// once carried as a standalone helper.
+func SendChannelFrames(plaintext []byte, sendChunk func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error) error {
 	for offset := 0; ; {
 		end := offset + MaxPlaintextPerChunk
 		more := true
 		if end >= len(plaintext) {
-			end = len(plaintext)
-			more = false
-		}
-		ciphertext, err := encrypt(plaintext[offset:end])
-		if err != nil {
-			return fmt.Errorf("encrypt inner message: %w", err)
+			end, more = len(plaintext), false
 		}
 		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
 		if more {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
-		if err := send(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       channelID,
-			CorrelationId:   correlationID,
-			Flags:           flags,
-			Ciphertext:      ciphertext,
-		}); err != nil {
+		if err := sendChunk(plaintext[offset:end], flags); err != nil {
 			return err
 		}
 		offset = end
