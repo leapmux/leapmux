@@ -660,7 +660,7 @@ func TestConnWriteSurfacesTargetWriteError(t *testing.T) {
 	require.Equal(t, 1, n)
 	require.True(t, ch.nakOne(13, "write: broken pipe"), "the worker NAKs the outstanding frame")
 
-	// awaitWriteAck latches the error on its own goroutine; wait for it, then the
+	// runAckLoop latches the error on its own goroutine; wait for it, then the
 	// next Write / CloseWrite must observe it and fail.
 	require.Eventually(t, func() bool { return tc.writeErr.Err() != nil }, time.Second, time.Millisecond,
 		"the NAK must latch a terminal write error")
@@ -1019,6 +1019,32 @@ func TestDialTunnelSendFailureReleasesCreditLoop(t *testing.T) {
 		"dials abandoned before their open was sent leaked creditLoop goroutines")
 }
 
+// An abandoned dial must also release runAckLoop (started in newConn alongside
+// the credit loop). endLife on the failure path is what retires both.
+func TestDialTunnelAbandonedReleasesAckLoop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := &alwaysFailSendChannel{ctx: ctx}
+
+	settled := func() int {
+		runtime.GC()
+		return runtime.NumGoroutine()
+	}
+	time.Sleep(50 * time.Millisecond)
+	baseline := settled()
+
+	const dials = 20
+	for range dials {
+		conn, err := dialTunnelContext(ctx, ch, "example.test", 443)
+		require.Error(t, err)
+		require.Nil(t, conn)
+	}
+
+	require.Eventually(t, func() bool { return settled() < baseline+dials/2 },
+		2*time.Second, 10*time.Millisecond,
+		"dials abandoned before open was sent leaked runAckLoop goroutines")
+}
+
 func newReassemblyTestChannel(t *testing.T) *Channel {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1026,7 +1052,6 @@ func newReassemblyTestChannel(t *testing.T) *Channel {
 	return &Channel{
 		ctx:        ctx,
 		cancel:     cancel,
-		sendPermit: make(chan struct{}, 1),
 		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:  make(map[uint64]*streamCallback),
 		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
@@ -1106,9 +1131,9 @@ func TestAllocateReqIDSkipsReservedAndLiveIDs(t *testing.T) {
 }
 
 // deliverResponse delivers with a non-blocking send, so an unbuffered response
-// channel would have its ONLY response silently dropped -- and logged as a
-// spurious "duplicate". The convention was documented but unenforced; reject it
-// at the call so a future caller fails loudly instead of losing a response.
+// channel would have its ONLY response silently dropped. The convention was
+// documented but unenforced; reject it at the call so a future caller fails
+// loudly instead of losing a response.
 func TestSendRPCNoWaitRejectsUnbufferedResponseChannel(t *testing.T) {
 	ch := newReassemblyTestChannel(t)
 	unbuffered := make(chan *leapmuxv1.InnerRpcResponse)
@@ -1165,7 +1190,6 @@ func newReadTestConn(t *testing.T) *Conn {
 	ch := &Channel{
 		ctx:        ctx,
 		cancel:     cancel,
-		sendPermit: make(chan struct{}, 1),
 		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:  make(map[uint64]*streamCallback),
 		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
@@ -1225,8 +1249,26 @@ func TestConnReadDeadlineUpdateInterruptsExistingRead(t *testing.T) {
 func TestConnWriteDeadlineInterruptsSendPermitWait(t *testing.T) {
 	tc := newReadTestConn(t)
 	channel := tc.ch.(*Channel)
-	channel.sendPermit <- struct{}{}
-	t.Cleanup(func() { <-channel.sendPermit })
+	// Hold the gate's frame permit with a concurrent Send that blocks inside
+	// sendChunk, so Write parks on frame-permit acquisition (the same path a
+	// contended multi-chunk send leaves other senders waiting on).
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = channel.sendGate.Send(context.Background(), channel.ctx, []byte("hold"),
+			func([]byte, leapmuxv1.ChannelMessageFlags) error {
+				close(held)
+				<-release
+				return nil
+			})
+	}()
+	select {
+	case <-held:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking send never acquired the frame permit")
+	}
+	t.Cleanup(func() { close(release) })
+
 	require.NoError(t, tc.SetWriteDeadline(time.Now().Add(20*time.Millisecond)))
 
 	started := time.Now()
@@ -1475,8 +1517,8 @@ func TestDeliverRPCError(t *testing.T) {
 // deliverResponse must ALWAYS deliver the first (and only legitimate) response
 // for a correlation id -- the buffered send never drops it, even for a caller
 // that has not drained the channel yet -- while a second response for the same
-// id (a peer protocol violation) is dropped rather than wedging recvLoop, and
-// the real first response is preserved intact.
+// id finds no registration (delivery takes-and-deletes) and is dropped rather
+// than wedging recvLoop, and the real first response is preserved intact.
 func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -1494,18 +1536,24 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	require.True(t, ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("first")}),
 		"a registered pending handler must be reported as delivered")
 
-	// A duplicate response for the same id, arriving while the first is still
-	// buffered, must not block (the wedge this guards against) and must not evict
-	// the real first response the caller is about to read.
+	ch.mu.Lock()
+	_, stillRegistered := ch.pending[reqID]
+	ch.mu.Unlock()
+	assert.False(t, stillRegistered, "delivery retires the one-shot pending registration")
+
+	// A duplicate response for the same id must not block (the wedge this guards
+	// against) and must not evict the real first response the caller is about to
+	// read -- there is no registration left to send into.
 	done := make(chan struct{})
 	go func() {
-		ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("duplicate")})
+		assert.False(t, ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("duplicate")}),
+			"a second response finds no registration")
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("deliverResponse wedged on a full buffer instead of dropping the duplicate")
+		t.Fatal("deliverResponse wedged instead of dropping the unregistered duplicate")
 	}
 
 	got := <-respCh

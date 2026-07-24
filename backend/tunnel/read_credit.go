@@ -8,22 +8,20 @@ import (
 // readCredit batches a tunnel conn's read-credit grants and sends them off the read
 // path.
 //
-// It owns the whole "never block Read, coalesce grants, stop with the conn"
-// contract, which was previously five Conn fields, a spawned goroutine, and a
-// teardown call that had to be remembered at three exit sites. As a type, that
-// contract can be read (and tested) in one place: consume accrues, the loop sends,
-// stop ends it.
+// It owns the whole "never block Read, coalesce grants, end with the conn
+// lifetime" contract, which was previously five Conn fields, a spawned goroutine,
+// and a teardown call that had to be remembered at three exit sites. As a type,
+// that contract can be read (and tested) in one place: consume accrues, the loop
+// sends, the conn lifetime ends it.
 //
-// The batching is not an optimisation but the reason the type exists. A grant sent
-// inline from Read would park the consumer on the channel-wide send permit --
-// contended by every other conn's writes on this shared E2EE channel, and bound to
-// the CHANNEL's lifetime context, so it honours neither the read deadline nor
-// Conn.Close. A stalled transport would then hang the read goroutine while it still
-// held bytes it had already dequeued, until the whole channel tore down. Handing the
-// send to a dedicated goroutine keeps the download path off the shared write path.
-//
-// This workaround is itself evidence that the shared send permit is worth fixing at
-// the source -- see https://github.com/leapmux/leapmux/issues/276.
+// The batching is a 16:1 RPC reduction (ReadCreditBatch frames per grant) AND the
+// reason the type exists as a dedicated loop: a grant sent inline from Read would
+// park the consumer on the shared send path -- contended by every other conn's
+// writes on this E2EE channel, and bound to the CHANNEL's lifetime context, so it
+// honours neither the read deadline nor Conn.Close. A stalled transport would then
+// hang the read goroutine while it still held bytes it had already dequeued, until
+// the whole channel tore down. Handing the send to a dedicated goroutine keeps the
+// download path off the shared write path.
 type readCredit struct {
 	mu sync.Mutex
 	// pending is the count of consumed frames not yet granted back to the worker.
@@ -34,25 +32,23 @@ type readCredit struct {
 	// signal subsumes every grant accrued before it is serviced -- which is what
 	// lets consume poke it without ever blocking.
 	signal chan struct{}
-	// ctx bounds the loop and its in-flight grant. It derives from the channel's
-	// lifetime and is cancelled by stop, so a grant parked on the shared send permit
-	// unwinds when the conn closes instead of lingering until the whole channel
-	// tears down.
-	ctx    context.Context
-	cancel context.CancelFunc
+	// ctx bounds the loop and its in-flight grant. It is the conn's lifetime
+	// (see connLifetime), so a grant parked on the shared send path unwinds when
+	// the conn closes instead of lingering until the whole channel tears down.
+	ctx context.Context
 	// send delivers one accumulated grant. It may block on the shared send path,
 	// which is exactly why only the loop calls it.
 	send func(ctx context.Context, credit uint64)
 }
 
-// newReadCredit starts the grant loop, bounded by parent. The caller must stop it.
-func newReadCredit(parent context.Context, batch uint64, send func(context.Context, uint64)) *readCredit {
+// newReadCredit starts the grant loop, bounded by ctx (the conn's lifetime).
+func newReadCredit(ctx context.Context, batch uint64, send func(context.Context, uint64)) *readCredit {
 	c := &readCredit{
 		batch:  batch,
 		signal: make(chan struct{}, 1),
+		ctx:    ctx,
 		send:   send,
 	}
-	c.ctx, c.cancel = context.WithCancel(parent)
 	go c.loop()
 	return c
 }
@@ -80,7 +76,7 @@ func (c *readCredit) consume(frames uint64) {
 }
 
 // loop sends accumulated grants for the conn's lifetime. It is the only caller of
-// send, so a grant blocked on the shared send permit delays nothing but later
+// send, so a grant blocked on the shared send path delays nothing but later
 // grants -- which coalesce into it anyway.
 func (c *readCredit) loop() {
 	for {
@@ -99,11 +95,7 @@ func (c *readCredit) loop() {
 	}
 }
 
-// stop ends the loop and aborts any grant parked on the shared send path.
-// Idempotent, so every teardown path can call it without coordinating.
-func (c *readCredit) stop() { c.cancel() }
-
-// done is closed when the loop has been stopped. For tests asserting that a
-// teardown path actually released it, rather than leaving a goroutine alive until
-// the whole channel dies.
+// done is closed when the conn lifetime ends. For tests asserting that a teardown
+// path actually released it, rather than leaving a goroutine alive until the whole
+// channel dies.
 func (c *readCredit) done() <-chan struct{} { return c.ctx.Done() }

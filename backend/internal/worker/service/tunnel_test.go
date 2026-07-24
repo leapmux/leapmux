@@ -1160,38 +1160,36 @@ func TestTunnelReadLoop_TargetHalfCloseKeepsClientUploadOpen(t *testing.T) {
 	}
 }
 
-// credit.add clamps to tunnelflow.InitialReadWindow so a buggy or hostile owner cannot
-// drive sendCredit negative via an overflowing int64(credit) (which would wedge
-// the read loop) or accumulate an unbounded window that starves the shared
-// channel. A correct client never grants past the window, so the clamp cannot
-// under-credit a well-behaved stream.
+// credit.Grant clamps to tunnelflow.InitialReadWindow so a buggy or hostile owner cannot
+// accumulate an unbounded window that starves the shared channel. A correct client
+// never grants past the window, so the clamp cannot under-credit a well-behaved stream.
 func TestTunnelConnAddReadCredit_ClampsToWindow(t *testing.T) {
 	tc := newTunnelConn(nil, "", nil, nil, nil)
-	require.Equal(t, int64(tunnelflow.InitialReadWindow), tc.credit.available())
+	require.Equal(t, tunnelflow.InitialReadWindow, tc.credit.Available())
 
 	// Drain the whole seeded window.
-	for i := int64(0); i < int64(tunnelflow.InitialReadWindow); i++ {
-		require.True(t, tc.credit.acquire())
+	for i := 0; i < tunnelflow.InitialReadWindow; i++ {
+		require.NoError(t, tc.credit.Acquire(context.Background()))
 	}
-	require.Equal(t, int64(0), tc.credit.available())
+	require.Equal(t, 0, tc.credit.Available())
 
-	// An overflowing grant (int64(^uint64(0)) is negative) must not leave the
-	// window negative: it clamps to the ceiling so the read loop keeps flowing.
-	tc.credit.add(^uint64(0))
-	require.Equal(t, int64(tunnelflow.InitialReadWindow), tc.credit.available())
-	require.True(t, tc.credit.acquire(), "read loop must not be wedged by an overflowing grant")
+	// An overflowing grant must not leave the window negative: it clamps to the
+	// ceiling so the read loop keeps flowing.
+	tc.credit.Grant(^uint64(0))
+	require.Equal(t, tunnelflow.InitialReadWindow, tc.credit.Available())
+	require.NoError(t, tc.credit.Acquire(context.Background()), "read loop must not be wedged by an overflowing grant")
 
 	// A large-but-positive over-grant also clamps to the window.
-	tc.credit.add(uint64(tunnelflow.InitialReadWindow) * 10)
-	require.Equal(t, int64(tunnelflow.InitialReadWindow), tc.credit.available())
+	tc.credit.Grant(uint64(tunnelflow.InitialReadWindow) * 10)
+	require.Equal(t, tunnelflow.InitialReadWindow, tc.credit.Available())
 
 	// A normal grant that stays within the window is applied verbatim, so the
 	// clamp never under-credits a well-behaved stream.
-	require.True(t, tc.credit.acquire())
-	require.True(t, tc.credit.acquire())
-	require.Equal(t, int64(tunnelflow.InitialReadWindow)-2, tc.credit.available())
-	tc.credit.add(1)
-	require.Equal(t, int64(tunnelflow.InitialReadWindow)-1, tc.credit.available())
+	require.NoError(t, tc.credit.Acquire(context.Background()))
+	require.NoError(t, tc.credit.Acquire(context.Background()))
+	require.Equal(t, tunnelflow.InitialReadWindow-2, tc.credit.Available())
+	tc.credit.Grant(1)
+	require.Equal(t, tunnelflow.InitialReadWindow-1, tc.credit.Available())
 }
 
 // A SendTunnelData with close_write=true must write the data AND half-close the
@@ -1328,23 +1326,23 @@ func TestWaitWriteSeqReachedIsBoundedByContext(t *testing.T) {
 func TestTunnelConnReadCreditBlocksAndReleases(t *testing.T) {
 	tc := newTunnelConn(nil, "", &recordingWriteConn{}, nil, nil)
 	for range tunnelflow.InitialReadWindow {
-		require.True(t, tc.credit.acquire(), "the initial window is available")
+		require.NoError(t, tc.credit.Acquire(context.Background()), "the initial window is available")
 	}
 
-	acquired := make(chan bool, 1)
-	go func() { acquired <- tc.credit.acquire() }()
+	acquired := make(chan error, 1)
+	go func() { acquired <- tc.credit.Acquire(context.Background()) }()
 	select {
 	case <-acquired:
-		t.Fatal("credit.acquire returned though the read window was exhausted")
+		t.Fatal("credit.Acquire returned though the read window was exhausted")
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	tc.credit.add(1)
+	tc.credit.Grant(1)
 	select {
-	case ok := <-acquired:
-		assert.True(t, ok, "credit.acquire proceeds once the client grants credit")
+	case err := <-acquired:
+		require.NoError(t, err, "credit.Acquire proceeds once the client grants credit")
 	case <-time.After(time.Second):
-		t.Fatal("credit.acquire did not proceed after a grant")
+		t.Fatal("credit.Acquire did not proceed after a grant")
 	}
 }
 
@@ -1353,17 +1351,18 @@ func TestTunnelConnReadCreditBlocksAndReleases(t *testing.T) {
 func TestTunnelConnReadCreditUnblocksOnClose(t *testing.T) {
 	tc := newTunnelConn(nil, "", &recordingWriteConn{}, nil, nil)
 	for range tunnelflow.InitialReadWindow {
-		require.True(t, tc.credit.acquire())
+		require.NoError(t, tc.credit.Acquire(context.Background()))
 	}
 
-	acquired := make(chan bool, 1)
-	go func() { acquired <- tc.credit.acquire() }()
+	acquired := make(chan error, 1)
+	go func() { acquired <- tc.credit.Acquire(context.Background()) }()
 	time.Sleep(50 * time.Millisecond) // let it park on the exhausted window
 
 	tc.close()
 	select {
-	case ok := <-acquired:
-		assert.False(t, ok, "a credit-starved acquire returns false once the conn closes")
+	case err := <-acquired:
+		require.ErrorIs(t, err, tunnelflow.ErrWindowClosed,
+			"a credit-starved Acquire returns ErrWindowClosed once the conn closes")
 	case <-time.After(time.Second):
 		t.Fatal("close did not wake the credit-starved read loop")
 	}
@@ -1429,7 +1428,7 @@ func TestTunnelReadLoopCapsSendsAtReadWindow(t *testing.T) {
 		"read loop must not send past the window without a credit grant")
 
 	// Granting credit lets exactly the remaining frames flow.
-	tc.credit.add(extra)
+	tc.credit.Grant(uint64(extra))
 	testutil.AssertEventually(t, func() bool {
 		return len(w.streamsSnapshot()) == int(tunnelflow.InitialReadWindow)+extra
 	}, "granting credit releases the withheld frames")

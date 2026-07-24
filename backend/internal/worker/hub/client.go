@@ -21,11 +21,42 @@ import (
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/locallisten"
+	"google.golang.org/protobuf/proto"
 )
+
+const (
+	// connectQueueMaxBytes caps the Connect bidi stream's outbound queue by
+	// payload plus per-frame overhead. It is the memory bound for one worker's
+	// Hub link: a wall-clock stall cutoff on a server-to-server connection
+	// invites a reconnect storm under sustained load, so there is none -- the
+	// byte budget alone disconnects a Hub that cannot keep up.
+	connectQueueMaxBytes = 32 * 1024 * 1024
+
+	// connectControlReserve is the slice of connectQueueMaxBytes that data
+	// paths (Send / EnqueueWait) leave free for must-deliver receive-goroutine
+	// control frames (ChannelOpenResp, ChannelAccessUpdateAck, DeregisterAck,
+	// nonce-desync CLOSE). Sized for many tiny control frames; a saturated
+	// bulk burst must not silently drop a handshake/teardown frame.
+	connectControlReserve = 256 * 1024
+
+	// connectWriteTimeout bounds ONE stream.Send. A frame that cannot leave
+	// the process within this window means the Hub's receive window has been
+	// full for that long.
+	connectWriteTimeout = 30 * time.Second
+
+	// connectFrameOverhead is charged per queued ConnectRequest on top of its
+	// marshalled size, so many tiny frames (heartbeats, acks) still cost the
+	// budget something.
+	connectFrameOverhead = 256
+)
+
+// ErrNotConnected is returned by Send when no Connect stream is active.
+var ErrNotConnected = errors.New("not connected")
 
 // Client manages the connection to the Hub.
 type Client struct {
@@ -75,8 +106,9 @@ type Client struct {
 
 	mu           sync.Mutex
 	stream       *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
+	writer       *sendq.Writer[*leapmuxv1.ConnectRequest]
 	connCancel   context.CancelFunc // cancel function for current connection context
-	lastSendTime time.Time          // last time a message was sent (for idle heartbeat)
+	lastSendTime time.Time          // last time a message was ENQUEUED (for idle heartbeat)
 	stopOnce     sync.Once
 	// identityReceived is set when the Hub delivers WorkerIdentity on the
 	// current connection. A watchdog (see watchForIdentity) force-closes the
@@ -169,26 +201,73 @@ func (c *Client) TerminalManager() *terminal.Manager {
 	return c.terminals
 }
 
-// Send sends a message to the Hub via the bidi stream.
-// The mutex is held for the entire send to prevent concurrent writes,
-// which would corrupt the HTTP/2 frame buffer ("short write" errors).
-// On send failure, the connection context is canceled to trigger
-// immediate reconnection rather than waiting for the Hub's idle timeout.
+// Send hands msg to the connection's writer. A nil return means QUEUED, not on
+// the wire: the writer owns the only stream.Send, so no caller holds a lock
+// across network I/O any more.
+//
+// It BLOCKS while the writer is over its byte budget, which is deliberate --
+// handler-originated data (agent output, event broadcasts, tunnel downloads) has
+// no application-level window of its own, so parking the producer is what makes
+// the upstream source throttle itself. Callers on the shared receive goroutine
+// must use TrySend or TrySendOrReset instead.
 func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	w := c.currentWriter()
+	if w == nil {
+		return ErrNotConnected
+	}
+	if err := w.EnqueueWait(context.Background(), msg); err != nil {
+		return err
+	}
+	c.markEnqueued()
+	return nil
+}
 
-	if c.stream == nil {
-		return fmt.Errorf("not connected")
+// TrySend enqueues msg if the budget allows and reports whether it did. For
+// best-effort sends issued from the Connect RECEIVE goroutine, which serves
+// every channel on this worker and must never block. A false return does NOT
+// tear the connection down -- use TrySendOrReset for must-deliver control
+// frames (open responses, access acks, deregister acks, teardown CLOSE).
+func (c *Client) TrySend(msg *leapmuxv1.ConnectRequest) bool {
+	w := c.currentWriter()
+	if w == nil {
+		return false
 	}
-	err := c.stream.Send(msg)
-	if err == nil {
-		c.lastSendTime = time.Now()
-	} else if c.connCancel != nil {
-		slog.Warn("bidi stream send failed, canceling connection for reconnect", "error", err)
-		c.connCancel()
+	if !w.TryEnqueue(msg) {
+		return false
 	}
-	return err
+	c.markEnqueued()
+	return true
+}
+
+// TrySendOrReset enqueues a must-deliver control frame on the receive
+// goroutine via the control-reserve budget (TryEnqueueControl). A drop
+// still cancels the connection so reconnect recovers the handshake -- that
+// path is reached only when even the reserved headroom is exhausted.
+func (c *Client) TrySendOrReset(msg *leapmuxv1.ConnectRequest) bool {
+	w := c.currentWriter()
+	if w == nil {
+		c.cancelConn()
+		return false
+	}
+	if !w.TryEnqueueControl(msg) {
+		c.cancelConn()
+		return false
+	}
+	c.markEnqueued()
+	return true
+}
+
+func (c *Client) currentWriter() *sendq.Writer[*leapmuxv1.ConnectRequest] {
+	c.mu.Lock()
+	w := c.writer
+	c.mu.Unlock()
+	return w
+}
+
+func (c *Client) markEnqueued() {
+	c.mu.Lock()
+	c.lastSendTime = time.Now()
+	c.mu.Unlock()
 }
 
 // ListOwnedTabsForWorker calls the hub's WorkerReconcilerService.
@@ -216,7 +295,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	c.authToken = authToken
 	c.mu.Unlock()
 
-	// Create a connection-scoped context so that Send failures can
+	// Create a connection-scoped context so that write failures can
 	// cancel the connection and trigger immediate reconnection.
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
@@ -224,26 +303,9 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	stream := c.connector.Connect(connCtx)
 	stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
 
-	c.mu.Lock()
-	c.stream = stream
-	c.connCancel = connCancel
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		c.stream = nil
-		c.connCancel = nil
-		c.mu.Unlock()
-
-		// Close all channel sessions so watchers are unregistered and
-		// the Frontend detects the disconnect. New channels will be
-		// opened on reconnection.
-		if c.channelMgr != nil {
-			c.channelMgr.CloseAll()
-		}
-	}()
-
-	// Send an initial heartbeat to trigger the Hub's bidi stream handler.
-	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first Send().
+	// Send an initial heartbeat INLINE on the stream before the writer exists.
+	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first
+	// Send(), and nothing else may enqueue until the writer is published.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
@@ -257,6 +319,52 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		return fmt.Errorf("initial heartbeat: %w", err)
 	}
 
+	writer := sendq.New(connCtx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write: func(_ context.Context, m *leapmuxv1.ConnectRequest) error {
+			return stream.Send(m)
+		},
+		Size: func(m *leapmuxv1.ConnectRequest) int {
+			return proto.Size(m)
+		},
+		MaxBytes:       connectQueueMaxBytes,
+		ControlReserve: connectControlReserve,
+		FrameOverhead:  connectFrameOverhead,
+		WriteTimeout:   connectWriteTimeout,
+		OnGiveUp: func(err error) {
+			slog.Warn("hub connect stream writer gave up; reconnecting", "error", err)
+			connCancel()
+		},
+		OnDiscard: func(frames, bytes int) {
+			slog.Debug("hub connect stream discarded queued frames",
+				"frames", frames, "bytes", bytes)
+		},
+	})
+
+	c.mu.Lock()
+	c.stream = stream
+	c.writer = writer
+	c.connCancel = connCancel
+	c.lastSendTime = time.Now()
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		w := c.writer
+		c.stream = nil
+		c.writer = nil
+		c.connCancel = nil
+		c.mu.Unlock()
+		if w != nil {
+			w.Close()
+		}
+
+		// Close all channel sessions so watchers are unregistered and
+		// the Frontend detects the disconnect. New channels will be
+		// opened on reconnection.
+		if c.channelMgr != nil {
+			c.channelMgr.CloseAll()
+		}
+	}()
+
 	slog.Info("connected to hub", "url", c.hubURL)
 
 	// Reset identity tracking for this connection and arm the watchdog that
@@ -269,7 +377,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	// Send workspace tab sync if a provider is configured.
 	if c.TabSyncProvider != nil {
 		if tabSync := c.TabSyncProvider(); tabSync != nil {
-			if err := stream.Send(&leapmuxv1.ConnectRequest{
+			if err := c.Send(&leapmuxv1.ConnectRequest{
 				Payload: &leapmuxv1.ConnectRequest_WorkspaceTabsSync{
 					WorkspaceTabsSync: tabSync,
 				},

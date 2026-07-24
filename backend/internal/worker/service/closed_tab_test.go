@@ -152,11 +152,15 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 
 	// Set up a channel manager with a handshake so
 	// AccessibleWorkspaceIDs returns the desired workspaces.
+	// Classical encryption keeps setupTestService cheap under -race: these
+	// tests exercise service/dispatcher behaviour, not the PQ handshake, and
+	// SLH-DSA under the race detector otherwise dominates the package runtime.
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(*leapmuxv1.ConnectRequest) error { return nil }, 0)
+	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0)
+	t.Cleanup(chmgr.CloseAll)
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
 	require.NoError(t, err)
 	chmgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:              testChannelID,
