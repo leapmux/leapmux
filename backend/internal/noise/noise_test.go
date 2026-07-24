@@ -1,6 +1,7 @@
 package noise
 
 import (
+	"encoding/hex"
 	"fmt"
 	"testing"
 
@@ -208,7 +209,78 @@ func TestNeedsRekey(t *testing.T) {
 	session, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 
-	assert.False(t, session.NeedsRekey(), "NeedsRekey should be false at nonce 0")
+	assert.False(t, session.Send.NeedsRekey(), "NeedsRekey should be false at nonce 0")
+}
+
+func TestCipherStateRekey(t *testing.T) {
+	key := [keyLen]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+	cs := &CipherState{k: key}
+	ctOld, err := cs.Encrypt([]byte("before"))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), cs.Nonce())
+
+	cs.Rekey()
+	assert.Equal(t, uint64(0), cs.Nonce(), "Rekey must reset nonce")
+	assert.NotEqual(t, key, cs.k, "Rekey must change the key")
+
+	// Ciphertext produced under the old key must not decrypt under the new key.
+	_, err = cs.Decrypt(ctOld)
+	require.Error(t, err)
+
+	ctNew, err := cs.Encrypt([]byte("after"))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), cs.Nonce())
+
+	peer := &CipherState{k: key}
+	peer.Rekey()
+	pt, err := peer.Decrypt(ctNew)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("after"), pt)
+}
+
+func TestSessionNeedsRekeyEither(t *testing.T) {
+	send := &CipherState{k: [keyLen]byte{1}}
+	recv := &CipherState{k: [keyLen]byte{2}}
+	session := &Session{Send: send, Receive: recv}
+
+	assert.False(t, session.NeedsRekeyEither())
+
+	send.SetNonceForTest(SoftNonceLimit + 1)
+	assert.True(t, session.NeedsRekeyEither(), "send soft nonce must trip either")
+
+	send.SetNonceForTest(0)
+	recv.SetNonceForTest(SoftNonceLimit + 1)
+	assert.True(t, session.NeedsRekeyEither(), "receive soft nonce must trip either")
+}
+
+func TestCipherStateRekeyMatchesHKDF(t *testing.T) {
+	// Fixed vector shared with frontend/src/lib/noise.test.ts so Go and TS
+	// stay on the same application-defined REKEY.
+	key := [keyLen]byte{
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	}
+	cs := &CipherState{k: key}
+	_, err := cs.Encrypt([]byte("x"))
+	require.NoError(t, err)
+	cs.Rekey()
+
+	expectedK, _ := noiseHKDF(key[:], nil)
+	var want [keyLen]byte
+	copy(want[:], expectedK[:keyLen])
+	assert.Equal(t, want, cs.k)
+
+	ct, err := cs.Encrypt([]byte("hello-rekey"))
+	require.NoError(t, err)
+	assert.Equal(t, "a65694004d00816424626539afa175fb55106807e2c4af79c2c464", hex.EncodeToString(ct),
+		"post-rekey ciphertext must match the TypeScript interop vector")
+
+	peer := &CipherState{k: want}
+	pt, err := peer.Decrypt(ct)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello-rekey"), pt)
 }
 
 func TestTamperedMlkemCiphertextCausesAEADFailure(t *testing.T) {

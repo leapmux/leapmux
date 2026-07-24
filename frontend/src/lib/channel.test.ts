@@ -13,14 +13,29 @@ import {
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
   InnerStreamMessageSchema,
+  RekeyAckSchema,
+  RekeyRejectSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
 import {
   ChannelError,
   ChannelManager,
+  MIN_REKEY_INTERVAL_MS,
   PING_METHOD,
+  SESSION_KEY_HARD_CEILING_MS,
+  SESSION_KEY_MAX_AGE_MS,
 } from './channel'
 import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, MAX_INCOMPLETE_CHUNKED } from './reassembler'
+
+/** Age a channel past SESSION_KEY_MAX_AGE_MS using the monotonic clock. */
+function agePastMaxAge(ch: { lastRekeyAt: number }): void {
+  ch.lastRekeyAt = performance.now() - SESSION_KEY_MAX_AGE_MS - 1
+}
+
+/** Age a channel past SESSION_KEY_HARD_CEILING_MS using the monotonic clock. */
+function agePastHardCeiling(ch: { lastRekeyAt: number }): void {
+  ch.lastRekeyAt = performance.now() - SESSION_KEY_HARD_CEILING_MS
+}
 
 // ---- Test helpers ----
 
@@ -54,6 +69,21 @@ class TestCipherState {
 
   needsRekey(): boolean {
     return false
+  }
+
+  rekey(): void {
+    // Application-defined REKEY matching production CipherState: new key from
+    // a deterministic tweak so tests stay decryptable without full HKDF, then
+    // reset nonce. Pair sessions both rekey the same mirrored keys.
+    const next = new Uint8Array(this.k)
+    for (let i = 0; i < next.length; i++)
+      next[i] = (next[i] + 1) & 0xFF
+    this.k = next
+    this.n = 0
+  }
+
+  nonce(): number {
+    return this.n
   }
 }
 
@@ -287,6 +317,8 @@ describe('channelManager', () => {
     mgr = new ChannelManager(createMockTransport(mockWs), {
       handshake1: mockHandshake1,
       handshake2: mockHandshake2,
+      idleRekeyIntervalMs: 0,
+      installWakeListener: false,
     })
   })
 
@@ -325,6 +357,37 @@ describe('channelManager', () => {
     expect(inner.kind.case).toBe('request')
     const resp = create(InnerRpcResponseSchema, { isError: false })
     const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+    const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
+  }
+
+  /** Answer an in-band RekeyRequest the way the worker does (Receive.Rekey → Ack → Send.Rekey). */
+  function simulateRekeyAck(ws: MockWebSocket = mockWs, sessionMap = sessions) {
+    const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
+    const pair = sessionMap.get(sentMsg.channelId)!
+    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    expect(inner.kind.case).toBe('rekeyRequest')
+    pair.responder.receive.rekey()
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, {}) },
+    })
+    const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    pair.responder.send.rekey()
+    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
+  }
+
+  /** Rate-limit Reject: decrypt Request, leave CipherStates unchanged, reply Reject. */
+  function simulateRekeyReject(ws: MockWebSocket = mockWs, sessionMap = sessions, retryAfterMs = 0) {
+    const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
+    const pair = sessionMap.get(sentMsg.channelId)!
+    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    expect(inner.kind.case).toBe('rekeyRequest')
+    const envelope = create(InnerMessageSchema, {
+      kind: {
+        case: 'rekeyReject',
+        value: create(RekeyRejectSchema, retryAfterMs > 0 ? { retryAfterMs: BigInt(retryAfterMs) } : {}),
+      },
+    })
     const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
   }
@@ -1149,30 +1212,265 @@ describe('channelManager', () => {
       expect(mgr.isOpen(ch2)).toBe(true)
     })
 
-    // The three staleReason branches: a pooled channel is rotated out rather than
-    // reused when it aged out, needs a rekey, or was opened under a now-stale
-    // identity. Before staleReason was extracted these paths had no test.
-    it('reopens a pooled channel that has aged past its max age', async () => {
+    // Age / soft-nonce use in-band rekey (same channel id); identity drift still
+    // closes and reopens.
+    it('rekeys a pooled channel that has aged past its max age without closing', async () => {
       const ch1 = await openTestChannel('w1')
-      // Backdate the open so the age check trips.
-      ;(mgr as any).channels.get(ch1).openedAt = 0
-      const ch2Promise = mgr.getOrOpenChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
       await flushMicrotasks()
-      simulatePingAccept()
-      const ch2 = await ch2Promise
-      expect(ch2).not.toBe(ch1)
+      simulateRekeyAck()
+      const ch2 = await reusePromise
+      expect(ch2).toBe(ch1)
+      expect(mgr.isOpen(ch1)).toBe(true)
+      const ch = (mgr as any).channels.get(ch1)
+      expect(ch.lastRekeyAt).toBeGreaterThan(performance.now() - 5_000)
+      expect(ch.session.send.nonce()).toBe(0)
+      expect(ch.session.receive.nonce()).toBe(0)
+    })
+
+    it('rekeys a pooled channel whose send session needs a rekey without closing', async () => {
+      const ch1 = await openTestChannel('w1')
+      let soft = true
+      ;(mgr as any).channels.get(ch1).session.send.needsRekey = () => soft
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      soft = false
+      simulateRekeyAck()
+      const ch2 = await reusePromise
+      expect(ch2).toBe(ch1)
+      expect(mgr.isOpen(ch1)).toBe(true)
+    })
+
+    it('keeps the channel usable after a rate-limit RekeyReject', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      simulateRekeyReject()
+      const ch2 = await reusePromise
+      expect(ch2).toBe(ch1)
+      expect(mgr.isOpen(ch1)).toBe(true)
+      // Age-only retry suppressed until short reject backoff (monotonic).
+      expect((mgr as any).channels.get(ch1).rekeyNotBefore).toBeGreaterThan(performance.now())
+    })
+
+    it('honors retry_after_ms from RekeyReject for the backoff window', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      const before = performance.now()
+      simulateRekeyReject(mockWs, sessions, 120_000)
+      await reusePromise
+      const notBefore = (mgr as any).channels.get(ch1).rekeyNotBefore as number
+      expect(notBefore).toBeGreaterThanOrEqual(before + 119_000)
+      expect(notBefore).toBeLessThan(before + 121_000)
+    })
+
+    it('falls back to a one-minute backoff when RekeyReject omits retry_after_ms', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      const before = performance.now()
+      simulateRekeyReject() // retryAfterMs defaults to 0 / unset
+      await reusePromise
+      const notBefore = (mgr as any).channels.get(ch1).rekeyNotBefore as number
+      expect(notBefore).toBeGreaterThanOrEqual(before + 59_000)
+      expect(notBefore).toBeLessThan(before + 61_000)
+    })
+
+    it('checkChannelsAfterWake closes a pooled channel past the hard ceiling', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastHardCeiling((mgr as any).channels.get(ch1))
+      mgr.checkChannelsAfterWake()
+      await flushMicrotasks()
       expect(mgr.isOpen(ch1)).toBe(false)
     })
 
-    it('reopens a pooled channel whose send session needs a rekey', async () => {
+    it('starts and stops the idle rekey timer with the pooled channel', async () => {
+      const timedWs = new MockWebSocket()
+      const timed = new ChannelManager(createMockTransport(timedWs), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+        idleRekeyIntervalMs: 60_000,
+        installWakeListener: false,
+      })
+      // Wire the same open helpers against this manager's socket.
+      const prevMgr = mgr
+      const prevWs = mockWs
+      mgr = timed
+      mockWs = timedWs
+      try {
+        const ch1 = await openTestChannel('w1')
+        expect((timed as any).idleRekeyTimer).not.toBeNull()
+        await timed.closeChannel(ch1)
+        expect((timed as any).idleRekeyTimer).toBeNull()
+      }
+      finally {
+        timed.closeAll()
+        mgr = prevMgr
+        mockWs = prevWs
+      }
+    })
+
+    it('does not re-initiate an age-only rekey while reject backoff is active', async () => {
       const ch1 = await openTestChannel('w1')
-      ;(mgr as any).channels.get(ch1).session.send.needsRekey = () => true
-      const ch2Promise = mgr.getOrOpenChannel('w1')
+      const ch = (mgr as any).channels.get(ch1)
+      agePastMaxAge(ch)
+      const first = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      simulateRekeyReject()
+      await first
+
+      const sentBefore = mockWs.sent.length
+      const second = await mgr.getOrOpenChannel('w1')
+      expect(second).toBe(ch1)
+      expect(mockWs.sent.length).toBe(sentBefore)
+    })
+
+    it('still initiates soft-nonce rekey while reject backoff is active', async () => {
+      const ch1 = await openTestChannel('w1')
+      const ch = (mgr as any).channels.get(ch1)
+      agePastMaxAge(ch)
+      const first = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      simulateRekeyReject()
+      await first
+
+      let soft = true
+      ch.session.send.needsRekey = () => soft
+      const sentBefore = mockWs.sent.length
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      expect(mockWs.sent.length).toBe(sentBefore + 1)
+      soft = false
+      simulateRekeyAck()
+      expect(await reusePromise).toBe(ch1)
+      expect(ch.rekeyNotBefore).toBe(0)
+    })
+
+    it('shares one in-flight rekey across concurrent getOrOpenChannel callers', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const sentBefore = mockWs.sent.length
+      const a = mgr.getOrOpenChannel('w1')
+      const b = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      expect(mockWs.sent.length - sentBefore).toBe(1)
+      simulateRekeyAck()
+      expect(await a).toBe(ch1)
+      expect(await b).toBe(ch1)
+    })
+
+    it('reopens a pooled channel past the session-key hard ceiling', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastHardCeiling((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
       await flushMicrotasks()
       simulatePingAccept()
-      const ch2 = await ch2Promise
+      const ch2 = await reusePromise
       expect(ch2).not.toBe(ch1)
       expect(mgr.isOpen(ch1)).toBe(false)
+      expect(mgr.isOpen(ch2)).toBe(true)
+    })
+
+    it('closes and reopens after RekeyReject once past hard ceiling', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const reusePromise = mgr.getOrOpenChannel('w1')
+      await flushMicrotasks()
+      // Age past the hard ceiling while waiting for Reject (slow peer).
+      agePastHardCeiling((mgr as any).channels.get(ch1))
+      simulateRekeyReject()
+      await flushMicrotasks()
+      simulatePingAccept()
+      const ch2 = await reusePromise
+      expect(ch2).not.toBe(ch1)
+      expect(mgr.isOpen(ch1)).toBe(false)
+      expect(mgr.isOpen(ch2)).toBe(true)
+    })
+
+    it('rejects call when pooled channel is past hard ceiling', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastHardCeiling((mgr as any).channels.get(ch1))
+      await expect(mgr.call(ch1, 'Echo', new Uint8Array([1]))).rejects.toThrow(/hard ceiling/)
+      expect(mgr.isOpen(ch1)).toBe(false)
+    })
+
+    it('rejects call past hard ceiling even during reject backoff', async () => {
+      const ch1 = await openTestChannel('w1')
+      const ch = (mgr as any).channels.get(ch1)
+      agePastHardCeiling(ch)
+      // Active backoff would make shouldInitiateRekey false; ceiling must still win.
+      ch.rekeyNotBefore = performance.now() + 60_000
+      await expect(mgr.call(ch1, 'Echo', new Uint8Array([1]))).rejects.toThrow(/hard ceiling/)
+      expect(mgr.isOpen(ch1)).toBe(false)
+    })
+
+    it('delivers stream rekey failure to onError after the handle returns', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastHardCeiling((mgr as any).channels.get(ch1))
+      const errorFn = vi.fn()
+      const endFn = vi.fn()
+      const handle = mgr.stream(ch1, 'WatchEvents', new Uint8Array())
+      handle.onError(errorFn)
+      handle.onEnd(endFn)
+      expect(errorFn).not.toHaveBeenCalled()
+      await flushMicrotasks()
+      expect(errorFn).toHaveBeenCalledTimes(1)
+      expect(errorFn.mock.calls[0][0].message).toMatch(/hard ceiling/)
+      expect(endFn).not.toHaveBeenCalled()
+      expect(mgr.isOpen(ch1)).toBe(false)
+    })
+
+    it('rekeys before call when the pooled channel has aged', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const callPromise = mgr.call(ch1, 'Echo', new Uint8Array([7]))
+      await flushMicrotasks()
+      simulateRekeyAck()
+      await flushMicrotasks()
+      const echoWire = decodeWireMessage(mockWs.sent.at(-1)!)
+      sendResponseFromWorker(ch1, Number(echoWire.correlationId), new Uint8Array([9]))
+      const resp = await callPromise
+      expect(resp.payload).toEqual(new Uint8Array([9]))
+      expect(mgr.isOpen(ch1)).toBe(true)
+    })
+
+    it('closes the channel when rekey Ack/Reject never arrives', async () => {
+      vi.useFakeTimers()
+      try {
+        const ch1 = await openTestChannel('w1')
+        agePastMaxAge((mgr as any).channels.get(ch1))
+        const reusePromise = mgr.getOrOpenChannel('w1')
+        await flushMicrotasks()
+        vi.advanceTimersByTime(10_000)
+        await flushMicrotasks()
+        // Timeout closes the aged channel; getOrOpenChannel falls through and
+        // opens a fresh one (transparent to the caller).
+        simulatePingAccept()
+        const ch2 = await reusePromise
+        expect(ch2).not.toBe(ch1)
+        expect(mgr.isOpen(ch1)).toBe(false)
+        expect(mgr.isOpen(ch2)).toBe(true)
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('rejects call when AbortSignal fires during an in-flight rekey', async () => {
+      const ch1 = await openTestChannel('w1')
+      agePastMaxAge((mgr as any).channels.get(ch1))
+      const controller = new AbortController()
+      const callPromise = mgr.call(ch1, 'Echo', new Uint8Array([1]), undefined, controller.signal)
+      await flushMicrotasks()
+      controller.abort(new Error('navigated away'))
+      simulateRekeyAck()
+      await flushMicrotasks()
+      await expect(callPromise).rejects.toThrow('navigated away')
     })
 
     it('reopens a pooled channel whose hub-authenticated identity has drifted', async () => {
@@ -2425,11 +2723,15 @@ function makeMockSession(): Session {
       encrypt: (pt: Uint8Array) => pt,
       decrypt: (ct: Uint8Array) => ct,
       needsRekey: () => false,
+      rekey: () => {},
+      nonce: () => 0,
     },
     receive: {
       encrypt: (pt: Uint8Array) => pt,
       decrypt: (ct: Uint8Array) => ct,
       needsRekey: () => false,
+      rekey: () => {},
+      nonce: () => 0,
     },
   } as Session
 }
@@ -2587,6 +2889,8 @@ function makeIdentityCipherManager(transport: ChannelTransport, opts?: { expecte
   return new ChannelManager(transport, {
     classicHandshake1: (_rs: Uint8Array) => ({ message1: new Uint8Array(48), handshakeState: {} as any }),
     classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    idleRekeyIntervalMs: 0,
+    installWakeListener: false,
     ...opts,
   })
 }
@@ -2652,8 +2956,10 @@ describe('channelManager open-time verification', () => {
 
       simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
 
-      await expect(open).rejects.toThrow('session is dead')
-      await expect(racer).rejects.toThrow('session is dead')
+      await Promise.all([
+        expect(open).rejects.toThrow('session is dead'),
+        expect(racer).rejects.toThrow('session is dead'),
+      ])
       expect(cm.hasOpenChannel('worker-1')).toBe(false)
       expect(cm.isOpen('ch-1')).toBe(false)
       // The Hub-side registration was rolled back.
@@ -2685,10 +2991,10 @@ describe('channelManager open-time verification', () => {
       cm.stream('ch-1', 'WatchEvents', new Uint8Array()).onError(streamErr)
 
       simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
-      await expect(open).rejects.toThrow('session is dead')
-
-      // Settled now -- not in 15 seconds, and not never.
-      await expect(raced).rejects.toThrow('session is dead')
+      await Promise.all([
+        expect(open).rejects.toThrow('session is dead'),
+        expect(raced).rejects.toThrow('session is dead'),
+      ])
       expect(streamErr).toHaveBeenCalledOnce()
     }
     finally {
@@ -2912,12 +3218,15 @@ describe('channel-wire protocol limits', () => {
       resolve(dirname(fileURLToPath(import.meta.url)), '../../../testdata/channelwire_limits.json'),
       'utf-8',
     ),
-  ) as { maxPlaintextPerChunk: number, maxMessageSize: number, maxIncompleteChunked: number, pingMethod: string }
+  ) as { maxPlaintextPerChunk: number, maxMessageSize: number, maxIncompleteChunked: number, pingMethod: string, sessionKeyMaxAgeMs: number, minRekeyIntervalMs: number, sessionKeyHardCeilingMs: number }
 
   it('match the cross-language fixture the Go side also asserts', () => {
     expect(MAX_CHUNK_SIZE).toBe(limits.maxPlaintextPerChunk)
     expect(DEFAULT_MAX_MESSAGE_SIZE).toBe(limits.maxMessageSize)
     expect(MAX_INCOMPLETE_CHUNKED).toBe(limits.maxIncompleteChunked)
     expect(PING_METHOD).toBe(limits.pingMethod)
+    expect(SESSION_KEY_MAX_AGE_MS).toBe(limits.sessionKeyMaxAgeMs)
+    expect(MIN_REKEY_INTERVAL_MS).toBe(limits.minRekeyIntervalMs)
+    expect(SESSION_KEY_HARD_CEILING_MS).toBe(limits.sessionKeyHardCeilingMs)
   })
 })

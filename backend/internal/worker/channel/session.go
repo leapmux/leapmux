@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -71,6 +72,11 @@ type channelSession struct {
 	// not the inner per-session map.
 	awsMu                  sync.RWMutex
 	accessibleWorkspaceIDs map[string]bool // workspaces the user can access (set from ChannelOpenRequest)
+	// lastRekeyAt is the handshake time until the first successful in-band
+	// rekey, then the time of the latest accepted rekey. Captured via
+	// time.Now(); Go embeds a monotonic reading so MinRekeyInterval checks
+	// via Before/Sub are immune to NTP wall-clock steps within the process.
+	lastRekeyAt time.Time
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -287,6 +293,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		cancel:                 cancel,
 		reassembly:             newReassembler(m.maxMessageSize, m.maxIncompleteChunked),
 		accessibleWorkspaceIDs: awsIDs,
+		lastRekeyAt:            time.Now(),
 	}
 	m.sessions[req.GetChannelId()] = sess
 	m.mu.Unlock()
@@ -493,12 +500,65 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			sess.sender.queueError(requestID, int32(codes.Unimplemented), "no dispatcher configured")
 		}
 
+	case *leapmuxv1.InnerMessage_RekeyRequest:
+		sess.handleRekeyRequest(requestID)
+
 	default:
 		slog.Warn("unexpected inner message kind",
 			"channel_id", msg.GetChannelId(),
 			"kind", fmt.Sprintf("%T", envelope.GetKind()),
 		)
 	}
+}
+
+// handleRekeyRequest applies the worker half of in-band Noise rekey.
+// Rate-limited requests get RekeyReject without rotating keys (Request decrypt
+// and Reject encrypt still advance nonces); accepted ones rotate receive before
+// Ack and send after Ack is on the wire.
+//
+// Soft-nonce inspection of Send and Send.Rekey both run under the SendGate
+// frame permit so they cannot race concurrent Encrypt from DispatchAsync
+// handlers. Rekey still runs on the receive goroutine (RekeyReceive must
+// happen before the next Decrypt); rekey is rare (~hourly) so a brief gate
+// wait is acceptable versus the error-send queue's flood path.
+func (sess *channelSession) handleRekeyRequest(requestID uint64) {
+	now := time.Now()
+	soft := sess.Session.Receive.NeedsRekey() || sess.sender.peekSendNeedsRekey()
+	if !channelwire.AllowRekey(now, sess.lastRekeyAt, soft) {
+		retryAfter := channelwire.RejectRetryAfter(now, sess.lastRekeyAt)
+		if err := sess.sender.sendEncrypted(requestID, &leapmuxv1.InnerMessage{
+			Kind: &leapmuxv1.InnerMessage_RekeyReject{RekeyReject: &leapmuxv1.RekeyReject{
+				RetryAfterMs: retryAfter.Milliseconds(),
+			}},
+		}); err != nil {
+			slog.Warn("failed to send rekey reject",
+				"channel_id", sess.ChannelID,
+				"correlation_id", requestID,
+				"error", err,
+			)
+		}
+		return
+	}
+
+	sess.Session.RekeyReceive()
+	if err := sess.sender.sendEncryptedAfter(requestID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyAck{RekeyAck: &leapmuxv1.RekeyAck{}},
+	}, func() {
+		// Still holding the frame permit: no concurrent Encrypt can observe
+		// a half-rotated Send CipherState.
+		sess.Session.RekeySend()
+	}); err != nil {
+		// Receive is already rotated; without an Ack the initiator will not
+		// rotate Send and the session is desynced. Fail closed.
+		slog.Error("failed to send rekey ack after receive rekey; closing channel",
+			"channel_id", sess.ChannelID,
+			"correlation_id", requestID,
+			"error", err,
+		)
+		sess.cancel()
+		return
+	}
+	sess.lastRekeyAt = time.Now()
 }
 
 // reactToReassembly acts on one reassembly outcome: it logs each arm with
@@ -690,6 +750,26 @@ func (s *channelSender) drainErrorSends() {
 // the size cap, and wrapping each frame in the ConnectRequest the Hub relay
 // expects (the tunnel writes raw ChannelMessages instead).
 func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.InnerMessage) error {
+	return s.sendEncryptedAfter(requestID, envelope, nil)
+}
+
+// peekSendNeedsRekey reads Send.NeedsRekey under the frame permit so it cannot
+// race a concurrent Encrypt incrementing the nonce.
+func (s *channelSender) peekSendNeedsRekey() bool {
+	var needs bool
+	if err := s.gate.WithFrame(context.Background(), s.lifetime, func() error {
+		needs = s.session.Send.NeedsRekey()
+		return nil
+	}); err != nil {
+		// Lifetime ended or aborted — treat as not soft; age gate still applies.
+		return false
+	}
+	return needs
+}
+
+// sendEncryptedAfter is sendEncrypted plus an optional hook that runs after the
+// final chunk is on the wire, while the SendGate frame permit is still held.
+func (s *channelSender) sendEncryptedAfter(requestID uint64, envelope *leapmuxv1.InnerMessage, afterFinal func()) error {
 	data, err := proto.Marshal(envelope)
 	if err != nil {
 		// Deliberately NOT ErrMessageRejected. That sentinel means "this
@@ -727,6 +807,9 @@ func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.Inne
 				},
 			}); err != nil {
 				return fmt.Errorf("send channel message: %w", err)
+			}
+			if afterFinal != nil && flags != leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE {
+				afterFinal()
 			}
 			return nil
 		})

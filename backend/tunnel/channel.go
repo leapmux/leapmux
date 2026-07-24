@@ -32,32 +32,12 @@ const sessionVerifyTimeout = 10 * time.Second
 // Channel manages a single E2EE channel from the desktop app to a Worker
 // via the Hub's WebSocket relay.
 //
-// Deliberately absent: the age- and nonce-based rotation the frontend does in
-// channel.ts's getOrOpenChannel. This asymmetry is a decision, not an oversight.
-//
-//   - Max age is already enforced from the outside, and more tightly than a
-//     client-side timer could manage: the Hub arms every channel to expire with
-//     the credential that opened it (service.ChannelService.OpenChannel ->
-//     ScheduleExpiry), and both auth.AccessTokenTTL (the `leapmux remote` CLI)
-//     and auth.DelegationTokenTTL (crossworker) are one hour. Re-implementing a
-//     ceiling here would duplicate a hub-enforced invariant with a weaker copy
-//     that drifts.
-//   - Rotating anyway would be destructive where it is not redundant. The
-//     desktop pool keys one Channel per {hub, worker, revision}, so a single
-//     channel multiplexes EVERY live tunnel.Conn to that worker. Close-and-
-//     re-handshake -- which is all the frontend's "rekey" is -- would RST every
-//     port-forward and SOCKS5 conn riding it. The frontend can afford that
-//     because its only long-lived streams are cursor-resumable subscriptions
-//     with a reconnect loop; a relayed TCP conn has no resume semantics.
-//   - The nonce ceiling is unreachable in practice and fail-closed if reached:
-//     tunnelflow.MaxChunkBytes is 32 KiB, so noise.HardNonceLimit (2^32)
-//     is ~128 TiB through ONE uninterrupted channel, and the Encrypt error path
-//     below cancels the channel so pooled callers re-open (see the comment
-//     there). noise.Session.NeedsRekey exists to mirror the TS implementation
-//     and has no caller here on purpose -- if you are reaching for it to add
-//     rotation, re-read this list first. Bounding the desktop channel's key
-//     lifetime would need an in-band rekey that preserves open conns, which is
-//     a both-ends protocol change, not a close-and-reopen.
+// In-band Noise rekey (Request/Ack/Reject) rotates transport keys without
+// closing the channel, so multiplexed tunnel.Conn port-forwards and SOCKS
+// sessions survive. Clients initiate at SessionKeyMaxAge (1h) or SoftNonceLimit;
+// the worker rejects age-only attempts inside MinRekeyInterval (50m) unless
+// SoftNonceLimit is exceeded. Soft/hard nonce ceilings still fail closed on
+// HardNonceLimit. See channelwire.AllowRekey / ShouldInitiateRekey.
 type Channel struct {
 	channelID string
 	// userID is the identity the Hub authenticated this channel's open as. It is
@@ -82,6 +62,25 @@ type Channel struct {
 	streamCbs  map[uint64]*streamCallback
 	reassembly map[uint64]*channelwire.ChunkBuffer
 	closed     atomic.Bool
+
+	// lastRekeyAt is handshake time until the first successful in-band rekey.
+	// Captured via time.Now(); Go embeds a monotonic reading, so Before/Sub/Add
+	// for age / hard-ceiling / reject-backoff are immune to NTP wall-clock steps
+	// within the process. Guarded by rekeyMu together with rekeyNotBefore.
+	// rekeyWait is guarded by ch.mu (set in initiateRekeyLocked, read in
+	// handleRekeyOutcome on recvLoop).
+	lastRekeyAt    time.Time
+	rekeyNotBefore time.Time // after Reject, suppress age-only retries until this
+	rekeyMu        sync.Mutex
+	// rekeyWait is non-nil while initiateRekey is blocked on Ack/Reject.
+	rekeyWait chan rekeyOutcome
+}
+
+// rekeyOutcome is delivered from recvLoop to the goroutine waiting on an
+// in-flight RekeyRequest.
+type rekeyOutcome struct {
+	accepted   bool
+	retryAfter time.Duration // from RekeyReject.retry_after_ms; 0 → DefaultRejectBackoff
 }
 
 // The per-message chunk buffer (accumulate, cap, poison) is the shared
@@ -462,15 +461,16 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 	chCtx, chCancel := context.WithCancel(lifetimeCtx)
 	ch := &Channel{
-		channelID:  channelID,
-		userID:     userID,
-		session:    session,
-		ws:         wsConn,
-		ctx:        chCtx,
-		cancel:     chCancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		channelID:   channelID,
+		userID:      userID,
+		session:     session,
+		ws:          wsConn,
+		ctx:         chCtx,
+		cancel:      chCancel,
+		pending:     make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:   make(map[uint64]*streamCallback),
+		reassembly:  make(map[uint64]*channelwire.ChunkBuffer),
+		lastRekeyAt: time.Now(),
 	}
 
 	// 6. Start receiving. The Hub already told both ends who the caller is (this
@@ -479,6 +479,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// and with no claim there is no reserved correlation id and no pre-recvLoop
 	// pending[0] registration.
 	go ch.recvLoop()
+	go ch.rekeyIdleLoop()
 
 	// 7. Prove the session works end to end before handing the channel out.
 	//
@@ -586,6 +587,12 @@ func (ch *Channel) Close() {
 }
 
 // CallRPC sends a unary inner RPC and waits for the response.
+//
+// Worst-case latency is the in-band rekey RTT (up to sessionVerifyTimeout)
+// plus the 30s response wait below, because SendRPCNoWait may block on
+// ensureRekeyed before this timer starts. Callers with tighter budgets should
+// set ctx accordingly; a cancelled ctx no longer tears down the shared channel
+// mid-rekey (the Ack wait is bound to the channel lifetime + Ack timer).
 func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (*leapmuxv1.InnerRpcResponse, error) {
 	if ctx == nil {
 		return nil, errors.New("rpc operation context is required")
@@ -765,6 +772,137 @@ func (ch *Channel) UserID() string {
 }
 
 func (ch *Channel) sendInnerContext(ctx context.Context, correlationID uint64, msg *leapmuxv1.InnerMessage) error {
+	if ch.session == nil {
+		// Unit tests construct partial Channels (send-gate / deadline only).
+		return ch.sendInnerRaw(ctx, correlationID, msg)
+	}
+	// Hold rekeyMu across ensure+send (the whole message, including every
+	// chunk). That keeps a RekeyRequest from landing between chunks of a
+	// concurrent multi-chunk send (SendGate releases the frame permit
+	// between chunks) and keeps Encrypt off CipherState while recvLoop
+	// rotates keys on Ack.
+	ch.rekeyMu.Lock()
+	defer ch.rekeyMu.Unlock()
+	if err := ch.ensureRekeyedLocked(ctx); err != nil {
+		return err
+	}
+	return ch.sendInnerRaw(ctx, correlationID, msg)
+}
+
+// ensureRekeyed initiates an in-band rekey when age or soft-nonce policy says
+// so. It holds rekeyMu across the Request→Ack/Reject RTT so no other outbound
+// frame is encrypted until keys are settled (or the attempt is rejected).
+func (ch *Channel) ensureRekeyed(ctx context.Context) error {
+	if ch.session == nil {
+		return nil
+	}
+	ch.rekeyMu.Lock()
+	defer ch.rekeyMu.Unlock()
+	return ch.ensureRekeyedLocked(ctx)
+}
+
+// ensureRekeyedLocked is the body of ensureRekeyed; caller holds rekeyMu.
+func (ch *Channel) ensureRekeyedLocked(ctx context.Context) error {
+	now := time.Now()
+	if channelwire.PastHardCeiling(now, ch.lastRekeyAt) {
+		ch.cancel()
+		return errors.New("session key past hard ceiling")
+	}
+	soft := ch.session.NeedsRekeyEither()
+	if !soft && !ch.rekeyNotBefore.IsZero() && now.Before(ch.rekeyNotBefore) {
+		return nil
+	}
+	if !channelwire.ShouldInitiateRekey(now, ch.lastRekeyAt, soft) {
+		return nil
+	}
+	return ch.initiateRekeyLocked(ctx)
+}
+
+// initiateRekeyLocked sends RekeyRequest and waits for Ack/Reject. Caller holds rekeyMu.
+func (ch *Channel) initiateRekeyLocked(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ch.ctx.Err(); err != nil {
+		return fmt.Errorf("channel closed: %w", err)
+	}
+
+	wait := make(chan rekeyOutcome, 1)
+	ch.mu.Lock()
+	if ch.rekeyWait != nil {
+		ch.mu.Unlock()
+		return errors.New("rekey already in flight")
+	}
+	ch.rekeyWait = wait
+	reqID := ch.allocateReqIDLocked()
+	ch.mu.Unlock()
+
+	defer func() {
+		ch.mu.Lock()
+		if ch.rekeyWait == wait {
+			ch.rekeyWait = nil
+		}
+		ch.mu.Unlock()
+	}()
+
+	req := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+	}
+	if err := ch.sendInnerRaw(ctx, reqID, req); err != nil {
+		return fmt.Errorf("send rekey request: %w", err)
+	}
+
+	timer := time.NewTimer(sessionVerifyTimeout)
+	defer timer.Stop()
+	select {
+	case outcome := <-wait:
+		if outcome.accepted {
+			ch.lastRekeyAt = time.Now()
+			ch.rekeyNotBefore = time.Time{}
+		} else {
+			backoff := outcome.retryAfter
+			if backoff <= 0 {
+				backoff = channelwire.DefaultRejectBackoff
+			}
+			ch.rekeyNotBefore = time.Now().Add(backoff)
+			if channelwire.PastHardCeiling(time.Now(), ch.lastRekeyAt) {
+				ch.cancel()
+				return errors.New("session key past hard ceiling after rekey reject")
+			}
+		}
+		return nil
+	case <-timer.C:
+		ch.cancel()
+		return errors.New("rekey timeout")
+	case <-ch.ctx.Done():
+		// Do not select on the caller's ctx here: Request is already on the
+		// wire and the worker may have rotated. Cancelling the shared channel
+		// because one CallRPC/Write deadline expired would RST every
+		// multiplexed Conn. Finish the rekey under ch.ctx + the Ack timer;
+		// the caller's ctx is checked again by sendInnerRaw after we return.
+		return fmt.Errorf("channel closed: %w", ch.ctx.Err())
+	}
+}
+
+// rekeyIdleLoop periodically checks age-based rekey for long-lived channels
+// that may be idle (desktop tunnels) so keys still rotate without waiting for
+// the next outbound send.
+func (ch *Channel) rekeyIdleLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ch.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ch.ensureRekeyed(ch.ctx); err != nil && ch.ctx.Err() == nil {
+				slog.Warn("idle rekey failed", "channel_id", ch.channelID, "error", err)
+			}
+		}
+	}
+}
+
+func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *leapmuxv1.InnerMessage) error {
 	plaintext, err := proto.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal inner message: %w", err)
@@ -1041,7 +1179,49 @@ func (ch *Channel) recvLoop() {
 			if ok {
 				stream.deliver(kind.Stream)
 			}
+
+		case *leapmuxv1.InnerMessage_RekeyAck:
+			ch.handleRekeyOutcome(true, 0)
+
+		case *leapmuxv1.InnerMessage_RekeyReject:
+			retryAfter := time.Duration(kind.RekeyReject.GetRetryAfterMs()) * time.Millisecond
+			ch.handleRekeyOutcome(false, retryAfter)
+
+		case *leapmuxv1.InnerMessage_RekeyRequest:
+			// Clients initiate; workers never send Request to us.
+			slog.Warn("tunnel channel ignored unexpected rekey request",
+				"channel_id", ch.channelID, "correlation_id", correlationID)
 		}
+	}
+}
+
+// handleRekeyOutcome applies CipherState rotation on Ack (before the next
+// decrypt) and wakes the initiator waiting under rekeyMu. Reject leaves keys
+// unchanged. Clears rekeyWait before rotating so a duplicate Ack cannot
+// double-rotate (the FE clears its wait inside the resolver; Go must do it
+// here because the initiator's defer runs on another goroutine).
+func (ch *Channel) handleRekeyOutcome(accepted bool, retryAfter time.Duration) {
+	ch.mu.Lock()
+	wait := ch.rekeyWait
+	ch.rekeyWait = nil
+	ch.mu.Unlock()
+	if wait == nil {
+		slog.Warn("tunnel channel got rekey outcome with no in-flight request",
+			"channel_id", ch.channelID, "accepted", accepted)
+		return
+	}
+	if accepted {
+		// Rotate before signaling so the next recvLoop decrypt uses the new
+		// receive key, and so the initiator's subsequent sends (after it
+		// releases rekeyMu) use the new send key.
+		ch.session.RekeySend()
+		ch.session.RekeyReceive()
+	}
+	select {
+	case wait <- rekeyOutcome{accepted: accepted, retryAfter: retryAfter}:
+	default:
+		slog.Warn("tunnel channel dropped rekey outcome (initiator gone)",
+			"channel_id", ch.channelID, "accepted", accepted)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"hash"
+	"sync/atomic"
 
 	"github.com/cloudflare/circl/sign/slhdsa"
 	"golang.org/x/crypto/blake2b"
@@ -220,9 +221,13 @@ func (ss *symmetricState) hybridSplit(extraKeyMaterial []byte) (*CipherState, *C
 // ---- CipherState (post-handshake) ----
 
 // CipherState manages a key and nonce for post-handshake encryption/decryption.
+//
+// n is atomic so soft-limit peeks (NeedsRekey / NeedsRekeyEither) can run from a
+// send/idle goroutine while recvLoop Decrypt increments the receive nonce —
+// without an unsynchronized data race on the counter.
 type CipherState struct {
 	k [keyLen]byte
-	n uint64
+	n atomic.Uint64
 }
 
 // Encrypt encrypts plaintext using the cipher key.
@@ -230,38 +235,64 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 	if len(plaintext) > MaxPlaintextSize {
 		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), MaxPlaintextSize)
 	}
-	if cs.n > HardNonceLimit {
+	n := cs.n.Load()
+	if n > HardNonceLimit {
 		return nil, fmt.Errorf("noise: send nonce exceeded hard limit")
 	}
-	ct, err := aeadEncrypt(cs.k[:], uint32(cs.n), nil, plaintext)
+	ct, err := aeadEncrypt(cs.k[:], uint32(n), nil, plaintext)
 	if err != nil {
 		return nil, err
 	}
-	cs.n++
+	cs.n.Add(1)
 	return ct, nil
 }
 
 // Decrypt decrypts ciphertext using the cipher key.
 func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
-	if cs.n > HardNonceLimit {
+	n := cs.n.Load()
+	if n > HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
-	pt, err := aeadDecrypt(cs.k[:], uint32(cs.n), nil, ciphertext)
+	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
 	if err != nil {
 		return nil, err
 	}
-	cs.n++
+	cs.n.Add(1)
 	return pt, nil
 }
 
 // Nonce returns the current nonce value.
 func (cs *CipherState) Nonce() uint64 {
-	return cs.n
+	return cs.n.Load()
+}
+
+// SetNonceForTest sets the cipher nonce. For tests that need SoftNonceLimit /
+// HardNonceLimit without encrypting billions of times. Do not use in production.
+func (cs *CipherState) SetNonceForTest(n uint64) {
+	cs.n.Store(n)
 }
 
 // NeedsRekey returns true if the nonce has exceeded the soft limit.
 func (cs *CipherState) NeedsRekey() bool {
-	return cs.n > SoftNonceLimit
+	return cs.n.Load() > SoftNonceLimit
+}
+
+// Rekey derives a new cipher key via HKDF(k, zerolen) and resets the nonce to 0.
+//
+// Application-defined REKEY: Noise's default REKEY uses ENCRYPT(k, 2^64-1, ...),
+// which does not match LeapMux's transport AEAD nonce layout (uint32 in bytes
+// 4-7). Resetting n diverges from Noise section 11.3 (which leaves n unchanged)
+// because without a reset the soft/hard nonce limits would stay stuck after the
+// first soft-limit hit and HardNonceLimit would still kill long-lived sessions.
+//
+// Forward secrecy: HKDF(k) does not introduce fresh DH entropy. Compromise of
+// the current epoch key lets an attacker derive the next (K' = HKDF(K)). The
+// Hub still never learns keys (E2EE relay); this is about endpoint-key
+// compromise across epochs. Tracked in https://github.com/leapmux/leapmux/issues/321
+func (cs *CipherState) Rekey() {
+	newK, _ := noiseHKDF(cs.k[:], nil)
+	copy(cs.k[:], newK[:keyLen])
+	cs.n.Store(0)
 }
 
 // ---- Session ----
@@ -283,9 +314,23 @@ func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
 	return s.Receive.Decrypt(ciphertext)
 }
 
-// NeedsRekey returns true if the send nonce has exceeded the soft limit.
-func (s *Session) NeedsRekey() bool {
-	return s.Send.NeedsRekey()
+// NeedsRekeyEither returns true if either direction's nonce has exceeded the
+// soft limit. Used by in-band rekey policy so a one-sided traffic flood can
+// still force rotation.
+func (s *Session) NeedsRekeyEither() bool {
+	return s.Send.NeedsRekey() || s.Receive.NeedsRekey()
+}
+
+// RekeySend rotates the send CipherState (call after the peer has accepted a
+// rekey and the local send barrier is ready to switch).
+func (s *Session) RekeySend() {
+	s.Send.Rekey()
+}
+
+// RekeyReceive rotates the receive CipherState (call after decrypting a peer
+// rekey frame that commits the switch).
+func (s *Session) RekeyReceive() {
+	s.Receive.Rekey()
 }
 
 // ---- Handshake State (for two-step initiator) ----
