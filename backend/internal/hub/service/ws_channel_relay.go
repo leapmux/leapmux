@@ -110,18 +110,18 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// for the same user (e.g. browser + test helper) can coexist.
 	connID := id.Generate()
 
-	// All writes to this websocket go through one goroutine, so the hub's
-	// per-worker read loop never blocks on this client's socket. See
-	// relayWriter for why that matters and why a lagging client is
-	// dropped rather than having its frames dropped.
+	// All writes to this websocket go through one sendq drain goroutine,
+	// so the hub's per-worker read loop never blocks on this client's
+	// socket. See relayWriter for why that matters and why a lagging
+	// client is dropped rather than having its frames dropped.
 	//
-	// No deferred close here: run owns that (`defer w.close()`), and a
-	// defer registered at this point would run AFTER the disconnect block
-	// below has already closed the socket -- discarding the queue strictly
-	// after the close frame went out, which reads as a decision but would
-	// be an accident of LIFO ordering.
+	// No deferred close here: sendq.Writer.run owns that (`defer
+	// w.Close()`), and a defer registered at this point would run AFTER
+	// the disconnect block below has already closed the socket --
+	// discarding the queue strictly after the close frame went out,
+	// which reads as a decision but would be an accident of LIFO
+	// ordering.
 	writer := newRelayWriter(ctx, wsConn, cancel, user.ID.String(), connID)
-	go writer.run()
 
 	// Register this connection for receiving channel messages.
 	h.channelMgr.BindUser(user.ID.String(), connID, func(msg *leapmuxv1.ChannelMessage) error {

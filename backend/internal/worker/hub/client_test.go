@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,8 +15,10 @@ import (
 	"github.com/cenkalti/backoff/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/sendq"
 )
 
 // TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
@@ -463,4 +466,171 @@ func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
 	})
 	assert.True(t, c.identityReceived.Load(),
 		"identityReceived must be set when WorkerIdentity arrives")
+}
+
+func heartbeatMsg() *leapmuxv1.ConnectRequest {
+	return &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{},
+		},
+	}
+}
+
+func connectReqSize(m *leapmuxv1.ConnectRequest) int { return proto.Size(m) }
+
+// With the transport blocked, a second Send and the receive loop must both
+// proceed: Send only enqueues (#293). A process-global mutex across the write
+// would park every producer — and the receive loop that serves every channel —
+// behind one wedged peer.
+func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+
+	c := &Client{}
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
+			<-blocked
+			return nil
+		},
+		Size:          connectReqSize,
+		MaxBytes:      connectQueueMaxBytes,
+		FrameOverhead: connectFrameOverhead,
+		OnGiveUp:      func(error) { cancel() },
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	require.NoError(t, c.Send(heartbeatMsg()), "first Send enqueues without waiting on the wire")
+
+	done := make(chan error, 1)
+	go func() { done <- c.Send(heartbeatMsg()) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "second Send must return while the transport is blocked")
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Send blocked on the transport — #293 regression")
+	}
+
+	// The receive path must also stay free: handleMessage runs on the Connect
+	// receive goroutine and must not contend with a wedged Send.
+	assert.NotPanics(t, func() {
+		c.handleMessage(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_Heartbeat{
+				Heartbeat: &leapmuxv1.Heartbeat{},
+			},
+		})
+	})
+}
+
+// A drain write failure must cancel the connection so ConnectWithReconnect
+// re-establishes the stream.
+func TestClientWriteFailureCancelsConnection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var cancelled atomic.Bool
+	c := &Client{}
+	c.connCancel = func() {
+		cancelled.Store(true)
+		cancel()
+	}
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
+			return errors.New("stream write failed")
+		},
+		Size:          connectReqSize,
+		MaxBytes:      connectQueueMaxBytes,
+		FrameOverhead: connectFrameOverhead,
+		OnGiveUp: func(error) {
+			c.cancelConn()
+		},
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	require.NoError(t, c.Send(heartbeatMsg()))
+	require.Eventually(t, cancelled.Load, 2*time.Second, 5*time.Millisecond,
+		"a write failure must cancel the connection")
+}
+
+// TrySend must drop rather than block or give up when the byte budget is full —
+// it runs on the shared receive goroutine.
+func TestClientTrySendDropsWhenBudgetFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// writeStarted fires once the drain has POPPED the first item (freeing its
+	// budget) and entered Write; release keeps Write blocked so nothing else
+	// drains. Synchronising on it removes the race where the drain pops the
+	// first filler before the second TrySend runs -- which would free the
+	// budget and let the "over-budget" enqueue succeed, flaking the assert.
+	writeStarted := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	filler := &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: make([]byte, 400)},
+		},
+	}
+	fillSize := connectReqSize(filler)
+	require.Greater(t, fillSize, 400)
+
+	c := &Client{}
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
+			select {
+			case writeStarted <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil
+		},
+		Size:          connectReqSize,
+		MaxBytes:      fillSize + 10, // room for one QUEUED filler beyond the one in flight
+		FrameOverhead: 0,
+		OnGiveUp:      func(error) { t.Error("TrySend must not give up the connection") },
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	// The first enqueue is popped by the drain and parks in Write; wait for that
+	// so the queue is empty and the budget free again.
+	require.True(t, c.TrySend(filler), "first TrySend enqueues")
+	<-writeStarted
+
+	// This one has to sit in the queue (Write is still parked), filling the budget.
+	require.True(t, c.TrySend(filler), "second TrySend fills the now-idle budget")
+	// Budget is full and the drain is blocked, so the third must drop.
+	assert.False(t, c.TrySend(filler), "over-budget TrySend must drop")
+}
+
+// lastSendTime must advance on enqueue so the idle heartbeat does not fire
+// spuriously while the queue still has work.
+func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	c := &Client{}
+	c.lastSendTime = time.Now().Add(-time.Hour)
+	before := c.lastSendTime
+
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
+		Size:          connectReqSize,
+		MaxBytes:      connectQueueMaxBytes,
+		FrameOverhead: connectFrameOverhead,
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	require.NoError(t, c.Send(heartbeatMsg()))
+	c.mu.Lock()
+	after := c.lastSendTime
+	c.mu.Unlock()
+	assert.True(t, after.After(before), "lastSendTime must advance on enqueue")
+
+	before = after
+	require.True(t, c.TrySend(heartbeatMsg()))
+	c.mu.Lock()
+	after = c.lastSendTime
+	c.mu.Unlock()
+	assert.True(t, after.After(before), "lastSendTime must advance on TrySend enqueue")
 }

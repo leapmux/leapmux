@@ -51,19 +51,20 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 // carry as a standalone helper: it must emit exactly one terminating zero-byte
 // frame rather than spin forever.
 func TestSendChannelFrames(t *testing.T) {
-	// encrypt prepends a 1-byte tag so the ciphertext is distinguishable from the
-	// plaintext chunk and the test can assert each frame carries its own chunk.
-	encrypt := func(b []byte) ([]byte, error) {
-		out := make([]byte, 0, len(b)+1)
-		out = append(out, 0x7e)
-		out = append(out, b...)
-		return out, nil
-	}
-
-	run := func(t *testing.T, plaintext []byte) []*leapmuxv1.ChannelMessage {
-		var frames []*leapmuxv1.ChannelMessage
-		err := SendChannelFrames(encrypt, "ch", 42, plaintext, func(chMsg *leapmuxv1.ChannelMessage) error {
-			frames = append(frames, chMsg)
+	run := func(t *testing.T, plaintext []byte) []struct {
+		chunk []byte
+		flags leapmuxv1.ChannelMessageFlags
+	} {
+		var frames []struct {
+			chunk []byte
+			flags leapmuxv1.ChannelMessageFlags
+		}
+		err := SendChannelFrames(plaintext, func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
+			cp := append([]byte(nil), chunk...)
+			frames = append(frames, struct {
+				chunk []byte
+				flags leapmuxv1.ChannelMessageFlags
+			}{cp, flags})
 			return nil
 		})
 		require.NoError(t, err)
@@ -80,20 +81,16 @@ func TestSendChannelFrames(t *testing.T) {
 	t.Run("empty payload emits one terminating zero-byte frame", func(t *testing.T) {
 		frames := run(t, nil)
 		require.Len(t, frames, 1)
-		assert.Equal(t, "ch", frames[0].GetChannelId())
-		assert.Equal(t, uint64(42), frames[0].GetCorrelationId())
-		assert.Equal(t, uint32(1), frames[0].GetProtocolVersion())
-		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[0].GetFlags(),
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[0].flags,
 			"the sole frame of an empty payload must NOT set MORE")
-		// encrypt still ran (the tag byte), so a peer sees one decryptable empty frame.
-		assert.Equal(t, []byte{0x7e}, frames[0].GetCiphertext())
+		assert.Empty(t, frames[0].chunk)
 	})
 
 	t.Run("a sub-max payload is one frame without MORE", func(t *testing.T) {
 		frames := run(t, []byte("abc"))
 		require.Len(t, frames, 1)
-		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[0].GetFlags())
-		assert.Equal(t, append([]byte{0x7e}, "abc"...), frames[0].GetCiphertext())
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[0].flags)
+		assert.Equal(t, []byte("abc"), frames[0].chunk)
 	})
 
 	t.Run("a multi-chunk payload splits at MaxPlaintextPerChunk with MORE on all but the last", func(t *testing.T) {
@@ -105,13 +102,11 @@ func TestSendChannelFrames(t *testing.T) {
 		frames := run(t, plaintext)
 		require.Len(t, frames, 3)
 		for i, f := range frames {
-			assert.Equal(t, more(i, 3), f.GetFlags(), "frame %d MORE flag", i)
+			assert.Equal(t, more(i, 3), f.flags, "frame %d MORE flag", i)
 		}
-		// Reassembling the ciphertext tails (after stripping the tag) reconstructs
-		// the plaintext in order.
 		reassembled := make([]byte, 0, len(plaintext))
 		for _, f := range frames {
-			reassembled = append(reassembled, f.GetCiphertext()[1:]...)
+			reassembled = append(reassembled, f.chunk...)
 		}
 		assert.Equal(t, plaintext, reassembled)
 	})
@@ -120,28 +115,44 @@ func TestSendChannelFrames(t *testing.T) {
 		plaintext := make([]byte, 2*MaxPlaintextPerChunk)
 		frames := run(t, plaintext)
 		require.Len(t, frames, 2, "an exact two-chunk payload is exactly two frames")
-		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, frames[0].GetFlags())
-		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[1].GetFlags())
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, frames[0].flags)
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, frames[1].flags)
 	})
 
-	t.Run("an encrypt error aborts before any frame is sent", func(t *testing.T) {
-		boom := errors.New("nonce exhausted")
-		var frames []*leapmuxv1.ChannelMessage
-		err := SendChannelFrames(func([]byte) ([]byte, error) { return nil, boom }, "ch", 1, []byte("abc"), func(chMsg *leapmuxv1.ChannelMessage) error {
-			frames = append(frames, chMsg)
-			return nil
-		})
-		require.ErrorIs(t, err, boom)
-		assert.Empty(t, frames, "no frame is sent when encryption fails")
-	})
-
-	t.Run("a send error aborts and surfaces the caller's error", func(t *testing.T) {
-		boom := errors.New("write ws")
-		err := SendChannelFrames(encrypt, "ch", 1, []byte("abc"), func(*leapmuxv1.ChannelMessage) error {
+	t.Run("a sendChunk error aborts and surfaces the caller's error", func(t *testing.T) {
+		boom := errors.New("encrypt or write failed")
+		var calls int
+		err := SendChannelFrames([]byte("abc"), func([]byte, leapmuxv1.ChannelMessageFlags) error {
+			calls++
 			return boom
 		})
 		require.ErrorIs(t, err, boom)
+		assert.Equal(t, 1, calls, "sendChunk is invoked once before the error aborts")
 	})
+
+	t.Run("a mid-message sendChunk error leaves earlier chunks emitted", func(t *testing.T) {
+		boom := errors.New("write ws")
+		plaintext := make([]byte, MaxPlaintextPerChunk+1)
+		var calls int
+		err := SendChannelFrames(plaintext, func([]byte, leapmuxv1.ChannelMessageFlags) error {
+			calls++
+			if calls == 2 {
+				return boom
+			}
+			return nil
+		})
+		require.ErrorIs(t, err, boom)
+		assert.Equal(t, 2, calls)
+	})
+}
+
+func TestNewChannelMessage(t *testing.T) {
+	msg := NewChannelMessage("ch", 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte("ct"))
+	assert.Equal(t, uint32(1), msg.GetProtocolVersion())
+	assert.Equal(t, "ch", msg.GetChannelId())
+	assert.Equal(t, uint64(42), msg.GetCorrelationId())
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, msg.GetFlags())
+	assert.Equal(t, []byte("ct"), msg.GetCiphertext())
 }
 
 func TestChunkContinuation(t *testing.T) {

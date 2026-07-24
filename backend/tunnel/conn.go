@@ -48,6 +48,7 @@ type Conn struct {
 	connWrite
 	connDeadlines
 	connClose
+	connLifetime
 	connAddrs
 }
 
@@ -69,14 +70,15 @@ type connRead struct {
 // connWrite holds the outbound half: the write-seq gate, the send-window, the
 // close_write latch, and the first-write-error latch. None of it is touched by
 // the read path. The writeMu is a ctxutil.Mutex (not sync.Mutex) so the graceful
-// close can bound its acquire against a holder parked on the send permit.
+// close can bound its acquire against a holder parked on a full send window or
+// a stalled transport write.
 type connWrite struct {
 	// writeMu serializes the write path (sequence stamping, the send-window
 	// acquire, and the frame's turn on the wire). It is a ctxutil.Mutex, not a
 	// sync.Mutex, because sendRemoteClose must bound its acquire: the holder can
-	// park arbitrarily long on the channel-wide send permit or inside the
-	// WebSocket write, neither of which honours tc.closed, and an unbounded wait
-	// there means the graceful CloseTunnelConn is never even attempted.
+	// park arbitrarily long on a full send window or inside the WebSocket write,
+	// neither of which honours tc.closed, and an unbounded wait there means the
+	// graceful CloseTunnelConn is never even attempted.
 	writeMu  ctxutil.Mutex
 	writeSeq uint64 // per-conn monotonic write sequence, guarded by writeMu
 	// closeWriteSent latches once the close_write frame is actually on the wire.
@@ -86,22 +88,32 @@ type connWrite struct {
 	// send error) would then report success on a retry while never having
 	// emitted the frame, and the target would never see the read-EOF.
 	closeWriteSent bool
-	// sendWindow is a semaphore of in-use slots (a value in the channel is a
-	// slot held by an unacknowledged SendTunnelData). Write blocks acquiring a
-	// slot when tunnelflow.WriteWindowFrames are outstanding; awaitWriteAck releases one
-	// when the worker's SendTunnelDataResponse arrives.
-	sendWindow chan struct{}
+	// sendWindow bounds how many SendTunnelData frames may be outstanding. Write
+	// acquires a token before putting a frame on the wire; runAckLoop grants one
+	// back when the worker's SendTunnelDataResponse arrives.
+	sendWindow *tunnelflow.Window
+	// acks carries every in-flight frame's SendTunnelDataResponse to the conn's
+	// single ack loop. It is registered as the RPCHandlers.Response for EVERY
+	// SendTunnelData frame -- Channel.deliverResponse retires each one-shot
+	// registration on delivery, so no reqID has to be plumbed back here.
+	//
+	// Capacity is exactly tunnelflow.WriteWindowFrames and it CANNOT overflow: a
+	// frame's ack is queued while its window slot is still held (runAckLoop
+	// grants the slot back only after dequeuing), so queued acks + unacked
+	// frames <= WriteWindowFrames at all times. deliverResponse sends
+	// non-blockingly, so an overflow would silently drop an ack and leak a
+	// window slot permanently -- this bound is what makes that unreachable.
+	acks chan *leapmuxv1.InnerRpcResponse
 	// writeErr latches the first terminal error the worker reports for a
 	// SendTunnelData frame -- an IsError SendTunnelDataResponse means the worker's
 	// write to the target failed. Once latched, Write and CloseWrite fail with it,
 	// surfacing a broken target to the local source the way TCP surfaces EPIPE on
 	// a later write, instead of Write reporting success for bytes the worker then
-	// silently drops. awaitWriteAck (its own goroutine) publishes it without the
-	// write lock, so only its lock-free Err and Done are used -- sendFrameLocked
-	// both polls Err (before and after taking a window slot) and selects on Done
-	// while parked on a full window, so a NAK latched mid-park aborts the frame
-	// instead of letting it be marshalled and sent to a target the worker has
-	// already given up on.
+	// silently drops. runAckLoop publishes it without the write lock, so only its
+	// lock-free Err and Done are used -- sendFrameLocked both polls Err (before
+	// and after taking a window slot) and selects on Done while parked on a full
+	// window, so a NAK latched mid-park aborts the frame instead of letting it be
+	// marshalled and sent to a target the worker has already given up on.
 	writeErr latchedErr
 }
 
@@ -118,6 +130,16 @@ type connDeadlines struct {
 type connClose struct {
 	closeOnce sync.Once
 	closed    chan struct{}
+}
+
+// connLifetime bounds every background activity the conn owns -- the read-credit
+// batcher and the write-ack loop -- with ONE context derived from the channel's.
+// unregister() cancels it, so a conn abandoned by a FAILED DIAL (never Closed)
+// releases them exactly as a Closed one does. Two ad-hoc lifetimes preceded
+// this, and only one of them was wired into the dial-failure paths.
+type connLifetime struct {
+	lifetime context.Context
+	endLife  context.CancelFunc
 }
 
 // connAddrs holds the local and remote addresses reported by LocalAddr and
@@ -167,19 +189,19 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 	}
 
 	tc := newConn(ch, connID, targetAddr, targetPort)
-	// newConn starts the credit loop, but a conn this function abandons is never
-	// returned to a caller and so is never Closed. Release it on EVERY failure
-	// exit rather than at each return site: the send-failure path below cannot
-	// even use unregister() (tc.reqID is unset there, so it would target reqID 0,
-	// which allocateReqIDLocked never hands out -- unregistering it would be a
-	// meaningless no-op rather than this conn's cleanup), and a future early return
-	// added here would otherwise silently leak a goroutine for the shared channel's
-	// whole lifetime.
-	// credit.stop is idempotent, so the paths that also unregister are fine.
+	// newConn starts the credit and ack loops, but a conn this function abandons is
+	// never returned to a caller and so is never Closed. Release them on EVERY
+	// failure exit rather than at each return site: the send-failure path below
+	// cannot even use unregister() (tc.reqID is unset there, so it would target
+	// reqID 0, which allocateReqIDLocked never hands out -- unregistering it would
+	// be a meaningless no-op rather than this conn's cleanup), and a future early
+	// return added here would otherwise silently leak goroutines for the shared
+	// channel's whole lifetime.
+	// endLife is idempotent, so the paths that also unregister are fine.
 	opened := false
 	defer func() {
 		if !opened {
-			tc.credit.stop()
+			tc.endLife()
 		}
 	}()
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
@@ -223,7 +245,7 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 			tc.cancelRemoteOpen()
 			return nil, err
 		}
-		// The conn is now the caller's; its credit loop lives until Close.
+		// The conn is now the caller's; its background loops live until Close.
 		opened = true
 		return tc, nil
 
@@ -238,6 +260,7 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 }
 
 func newConn(ch tunnelRPCChannel, connID, targetAddr string, targetPort uint32) *Conn {
+	lifetime, endLife := context.WithCancel(ch.Context())
 	tc := &Conn{
 		ch:     ch,
 		connID: connID,
@@ -245,7 +268,8 @@ func newConn(ch tunnelRPCChannel, connID, targetAddr string, targetPort uint32) 
 			readBuf: make(chan []byte, tunnelflow.ReadBufFrames),
 		},
 		connWrite: connWrite{
-			sendWindow: make(chan struct{}, tunnelflow.WriteWindowFrames),
+			sendWindow: tunnelflow.NewWindow(tunnelflow.WriteWindowFrames),
+			acks:       make(chan *leapmuxv1.InnerRpcResponse, tunnelflow.WriteWindowFrames),
 		},
 		connDeadlines: connDeadlines{
 			readDeadline:  newDeadlineState(),
@@ -254,12 +278,17 @@ func newConn(ch tunnelRPCChannel, connID, targetAddr string, targetPort uint32) 
 		connClose: connClose{
 			closed: make(chan struct{}),
 		},
+		connLifetime: connLifetime{
+			lifetime: lifetime,
+			endLife:  endLife,
+		},
 		connAddrs: connAddrs{
 			localAddr:  &net.TCPAddr{IP: net.IPv4zero},
 			remoteAddr: tunnelAddr{address: net.JoinHostPort(targetAddr, fmt.Sprintf("%d", targetPort))},
 		},
 	}
-	tc.credit = newReadCredit(ch.Context(), tunnelflow.ReadCreditBatch, tc.sendReadCredit)
+	tc.credit = newReadCredit(lifetime, tunnelflow.ReadCreditBatch, tc.sendReadCredit)
+	go tc.runAckLoop()
 	return tc
 }
 
@@ -275,9 +304,9 @@ func (tc *Conn) cancelRemoteOpen() {
 
 // remoteCloseLockBudget bounds how long sendRemoteClose waits to acquire
 // writeMu (to order the close after every prior write). The holder can be parked
-// on the channel-wide send permit or inside the WebSocket write, neither of
-// which honours tc.closed, so an unbounded Lock could block indefinitely. A var
-// so tests can shorten it.
+// on a full send window or inside the WebSocket write, neither of which honours
+// tc.closed, so an unbounded Lock could block indefinitely. A var so tests can
+// shorten it.
 var remoteCloseLockBudget = 5 * time.Second
 
 // remoteCloseSendBudget bounds the best-effort CloseTunnelConn send itself.
@@ -297,10 +326,6 @@ var remoteCloseSendBudget = 5 * time.Second
 // immediately for seq 0), reclaiming the stuck target and NAKing the parked write
 // so the client unparks too. Graceful ordering is lost, but there is nothing
 // left to flush on a wedged conn.
-//
-// The writeMu wedge itself is the deeper bug tracked in
-// https://github.com/leapmux/leapmux/issues/276; this forceful close keeps the
-// conn from leaking until that wedge is bounded.
 func (tc *Conn) sendRemoteClose() {
 	seq, ok := tc.readWriteSeqForClose()
 	tc.sendCloseTunnelConn(seq, !ok)
@@ -347,14 +372,15 @@ func (tc *Conn) sendCloseTunnelConn(seq uint64, forceful bool) {
 }
 
 // unregister detaches the conn from its channel: it drops the channel's handlers
-// and releases the credit loop. Close routes through it, as does every
-// dialTunnelContext failure path that has a reqID to unregister -- those abandon
-// a conn that was never returned to a caller and so is never Closed, and
-// releasing the credit loop only in Close would leak a goroutine per failed dial for
+// and cancels the conn lifetime, releasing both background goroutines (the
+// read-credit batcher and the write-ack loop). Close routes through it, as does
+// every dialTunnelContext failure path that has a reqID to unregister -- those
+// abandon a conn that was never returned to a caller and so is never Closed, and
+// releasing the loops only in Close would leak a goroutine per failed dial for
 // the shared channel's whole lifetime. dialTunnelContext additionally guards its
-// pre-reqID exits with its own deferred credit.stop (see there).
+// pre-reqID exits with its own deferred endLife (see there).
 func (tc *Conn) unregister() {
-	tc.credit.stop()
+	tc.endLife()
 	tc.ch.UnregisterPending(tc.reqID)
 	tc.ch.UnregisterStream(tc.reqID)
 }
@@ -503,11 +529,11 @@ func (tc *Conn) Read(b []byte) (int, error) {
 //
 // Flow control: Write acquires a send-window slot (tunnelflow.WriteWindowFrames) before
 // putting a frame on the wire and releases it once the worker acknowledges the
-// frame (awaitWriteAck). A slow or non-draining target stops the worker acking,
+// frame (runAckLoop). A slow or non-draining target stops the worker acking,
 // the window fills, and Write blocks -- backpressuring the local source through
 // io.Copy instead of letting the worker buffer unbounded data.
 //
-// Note on deadlines: SetWriteDeadline bounds entry -- send-permit acquisition,
+// Note on deadlines: SetWriteDeadline bounds entry -- frame-permit acquisition,
 // the pre-write liveness check, AND the send-window wait, so a Write parked on a
 // full window returns os.ErrDeadlineExceeded when its deadline fires, including
 // when the deadline is set AFTER the Write parked (net.Conn requires a deadline
@@ -559,7 +585,7 @@ func (tc *Conn) Write(b []byte) (int, error) {
 
 // acquireSendSlot blocks until a send-window slot is free, honoring a write
 // deadline and surfacing a concurrent close or latched NAK, and returns the context
-// the rest of the send (the send-permit acquire inside SendRPCNoWait) must run
+// the rest of the send (the frame-permit acquire inside SendRPCNoWait) must run
 // under, plus the flag writeFailure consults to remap an expiry.
 //
 // The common case -- NO write deadline, which is every production caller (the
@@ -571,9 +597,9 @@ func (tc *Conn) Write(b []byte) (int, error) {
 // on every deadline change and bound both this park and the permit acquire below.
 //
 // The park must watch writeErr as well as the slot: the caller polls writeErr once
-// on entry and the park is unbounded, so a NAK latched by an in-flight awaitWriteAck
-// while this frame waits would otherwise be missed -- the frame marshalled and sent
-// to a target the worker has already given up on, its bytes counted as written.
+// on entry and the park is unbounded, so a NAK latched by runAckLoop while this
+// frame waits would otherwise be missed -- the frame marshalled and sent to a
+// target the worker has already given up on, its bytes counted as written.
 //
 // On success the caller owns one send-window slot and must release it; cancel is
 // always non-nil and must be deferred. deadline is nil on the goroutine-free
@@ -582,7 +608,7 @@ func (tc *Conn) Write(b []byte) (int, error) {
 func (tc *Conn) acquireSendSlot() (ctx context.Context, cancel context.CancelFunc, deadline *atomic.Bool, err error) {
 	if deadline0, changed := tc.writeDeadline.snapshot(); deadline0.IsZero() {
 		select {
-		case tc.sendWindow <- struct{}{}:
+		case <-tc.sendWindow.Ready():
 			return tc.ch.Context(), func() {}, nil, nil
 		case <-tc.closed:
 			return nil, func() {}, nil, net.ErrClosed
@@ -597,7 +623,7 @@ func (tc *Conn) acquireSendSlot() (ctx context.Context, cancel context.CancelFun
 	}
 	ctx, cancel, deadline = tc.writeDeadline.context(tc.ch.Context())
 	select {
-	case tc.sendWindow <- struct{}{}:
+	case <-tc.sendWindow.Ready():
 		return ctx, cancel, deadline, nil
 	case <-tc.closed:
 		cancel()
@@ -612,9 +638,9 @@ func (tc *Conn) acquireSendSlot() (ctx context.Context, cancel context.CancelFun
 }
 
 // sendFrameLocked puts one SendTunnelData frame -- carrying data, a close_write
-// half-close, or both -- on the wire and spawns awaitWriteAck to release its
-// window slot and latch a worker NAK. It is the shared core of Write and
-// CloseWrite so the half-close rides the exact same per-conn sequence,
+// half-close, or both -- on the wire. runAckLoop releases its window slot and
+// latches a worker NAK when the response arrives. It is the shared core of Write
+// and CloseWrite so the half-close rides the exact same per-conn sequence,
 // flow-control window, and ack/NAK path as data: a failed target write OR a
 // failed target write-half-close both latch writeErr and surface on the next
 // write the way TCP surfaces EPIPE, rather than being reported as success.
@@ -647,8 +673,8 @@ func (tc *Conn) sendFrameLocked(data []byte, closeWrite bool) error {
 	seq := tc.writeSeq
 
 	// Acquire a send-window slot before putting a frame on the wire. ctx is what
-	// the rest of the send (the permit acquire inside SendRPCNoWait below) runs
-	// under, and deadline reports whether an expiry ended it.
+	// the rest of the send (the frame-permit acquire inside SendRPCNoWait below)
+	// runs under, and deadline reports whether an expiry ended it.
 	ctx, cancel, deadline, err := tc.acquireSendSlot()
 	if err != nil {
 		return err
@@ -659,15 +685,15 @@ func (tc *Conn) sendFrameLocked(data []byte, closeWrite bool) error {
 	// tunnelflow.WriteWindowFrames) until every write on this conn wedges, so make the
 	// release a property of leaving the function rather than something each new
 	// failure exit has to remember: the defer frees it unless the success path
-	// below hands ownership to awaitWriteAck.
+	// below hands ownership to runAckLoop.
 	slotHeld := true
 	defer func() {
 		if slotHeld {
-			<-tc.sendWindow
+			tc.sendWindow.Grant(1)
 		}
 	}()
 
-	// Won the slot -- but a concurrent Close (which frees slots via awaitWriteAck)
+	// Won the slot -- but a concurrent Close (which frees slots via runAckLoop)
 	// or a NAK latched while parked may have fired at the same moment, and a
 	// select that can take the slot arm always may take it regardless. Re-check
 	// both latches now that the slot is held, so a Write racing Close returns
@@ -692,26 +718,18 @@ func (tc *Conn) sendFrameLocked(data []byte, closeWrite bool) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	// Register the ACK handler so awaitWriteAck can release the window slot when
-	// the worker's SendTunnelDataResponse arrives, and latch a NAK for the next
-	// write to surface.
-	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := tc.ch.SendRPCNoWait(ctx, "SendTunnelData", payload, RPCHandlers{Response: respCh})
-	if err != nil {
+	// Register the shared ack channel so runAckLoop can grant the window slot
+	// when the worker's SendTunnelDataResponse arrives, and latch a NAK for the
+	// next write to surface. deliverResponse retires each one-shot registration,
+	// so no reqID has to be plumbed back here.
+	if _, err := tc.ch.SendRPCNoWait(ctx, "SendTunnelData", payload, RPCHandlers{Response: tc.acks}); err != nil {
 		return writeFailure(err, deadline)
 	}
 	tc.writeSeq = seq + 1
-	// The frame is on the wire: its slot now belongs to awaitWriteAck, which frees
-	// it when the ack arrives (or when the conn/channel dies). This is the ONLY
-	// path that hands the slot off, so it is the only one that disarms the defer.
-	//
-	// One goroutine + one cap-1 channel per chunk (Conn.Write splits at
-	// tunnelflow.MaxChunkBytes = 32 KiB, so ~640/sec on a saturated tunnel) is
-	// allocation/scheduling overhead the window bound (WriteWindowFrames = 64
-	// concurrent) caps but does not eliminate. A single long-lived per-conn acker
-	// would remove it; see https://github.com/leapmux/leapmux/issues/278.
+	// The frame is on the wire: its slot now belongs to runAckLoop, which grants
+	// it back when the ack arrives. This is the ONLY path that hands the slot
+	// off, so it is the only one that disarms the defer.
 	slotHeld = false
-	go tc.awaitWriteAck(reqID, respCh)
 	return nil
 }
 
@@ -732,32 +750,42 @@ func writeFailure(err error, deadline *atomic.Bool) error {
 	return err
 }
 
-// awaitWriteAck waits for the worker's SendTunnelDataResponse (success OR error
-// -- either way the frame is no longer in flight) and then frees the frame's
-// send-window slot and unregisters its pending handler. A conn close or channel
-// death also frees the slot, so teardown never strands the goroutine. An IsError
-// response means the worker's target write failed: latch it so the next Write /
-// CloseWrite surfaces the broken target instead of draining bytes the worker
-// silently drops.
-func (tc *Conn) awaitWriteAck(reqID uint64, respCh chan *leapmuxv1.InnerRpcResponse) {
-	select {
-	case resp := <-respCh:
-		if resp.GetIsError() {
-			tc.writeErr.Set(fmt.Errorf("tunnel write rejected (code %d): %s", resp.GetErrorCode(), resp.GetErrorMessage()))
+// runAckLoop is the conn's single consumer of worker write acks. It replaces the
+// goroutine sendFrameLocked used to spawn per 32 KiB chunk (~640/sec on a
+// saturated tunnel): the work is the same -- grant the frame's send-window slot
+// back and latch a NAK off the write lock -- but one long-lived goroutine does
+// it for every frame.
+//
+// An IsError response means the worker's write to the target failed: latch it so
+// the next Write / CloseWrite surfaces the broken target the way TCP surfaces
+// EPIPE, instead of draining bytes the worker silently drops.
+//
+// It exits on the conn lifetime alone. Close routes through unregister, which
+// cancels it, and so does every dial-failure path. Slots still held at that
+// point need no release: a parked Write unparks on tc.closed / writeErr /
+// ch.ctx in acquireSendSlot, and the window dies with the conn.
+func (tc *Conn) runAckLoop() {
+	for {
+		select {
+		case resp := <-tc.acks:
+			if resp.GetIsError() {
+				tc.writeErr.Set(fmt.Errorf("tunnel write rejected (code %d): %s",
+					resp.GetErrorCode(), resp.GetErrorMessage()))
+			}
+			tc.sendWindow.Grant(1)
+		case <-tc.lifetime.Done():
+			return
 		}
-	case <-tc.closed:
-	case <-tc.ch.Context().Done():
 	}
-	tc.ch.UnregisterPending(reqID)
-	<-tc.sendWindow
 }
 
 // Close implements net.Conn.
 func (tc *Conn) Close() error {
 	tc.closeOnce.Do(func() {
 		close(tc.closed)
-		// unregister stops the credit loop and aborts any grant parked on the shared
-		// send permit: the conn is gone, so its read window needs no replenishing.
+		// unregister cancels the conn's background loops (credit + ack) and aborts
+		// any grant parked on the shared send path: the conn is gone, so its read
+		// window needs no replenishing.
 		tc.unregister()
 		go tc.sendRemoteClose()
 	})
@@ -782,16 +810,16 @@ func (tc *Conn) Close() error {
 // the caller as success.
 func (tc *Conn) CloseWrite() error {
 	// Bound the write-lock acquire by the write deadline, mirroring Write's
-	// respect for SetWriteDeadline: a prior Write parked on a full send window
-	// (the #276 wedge) holds writeMu indefinitely against a worker that stopped
-	// acking, and CloseWrite -- whose own deadline handling lives in
-	// sendFrameLocked, AFTER the acquire -- would otherwise block on the acquire
-	// forever with no escape short of Close (which bypasses the lock entirely via
-	// sendRemoteClose). With no write deadline set the derived context never
-	// expires, so the acquire stays unbounded the same way Write's does; with one
-	// set, a timeout returns os.ErrDeadlineExceeded the way a timed-out Write
-	// would, so a port-forward/SOCKS5 copy loop's half-close honors the deadline
-	// its caller configured instead of hanging the goroutine.
+	// respect for SetWriteDeadline: a Write parked on a full send window holds
+	// writeMu indefinitely against a worker that stopped acking, and CloseWrite
+	// -- whose own deadline handling lives in sendFrameLocked, AFTER the acquire
+	// -- would otherwise block on the acquire forever with no escape short of
+	// Close (which bypasses the lock entirely via sendRemoteClose). With no write
+	// deadline set the derived context never expires, so the acquire stays
+	// unbounded the same way Write's does; with one set, a timeout returns
+	// os.ErrDeadlineExceeded the way a timed-out Write would, so a
+	// port-forward/SOCKS5 copy loop's half-close honors the deadline its caller
+	// configured instead of hanging the goroutine.
 	ctx, cancel, exceeded := tc.writeDeadline.context(context.Background())
 	defer cancel()
 	if err := tc.writeMu.Lock(ctx); err != nil {

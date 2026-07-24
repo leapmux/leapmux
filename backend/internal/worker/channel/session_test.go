@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,12 @@ func (c *collectSender) send(msg *leapmuxv1.ConnectRequest) error {
 	return nil
 }
 
+// trySend is the non-blocking twin of send for Manager.trySendFn.
+func (c *collectSender) trySend(msg *leapmuxv1.ConnectRequest) bool {
+	_ = c.send(msg)
+	return true
+}
+
 func (c *collectSender) messages() []*leapmuxv1.ConnectRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -63,7 +70,7 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxIncompleteChunked)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, maxIncompleteChunked)
 	// The message-size ceiling is no longer a NewManager parameter -- it is a fixed
 	// protocol constant in production (channelwire.DefaultMaxMessageSize). Tests that
 	// exercise the size cap override the field directly, before any session is
@@ -247,7 +254,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	require.NoError(t, err)
 	sender := newCollectSender()
 	var closeCallbackCount int
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0)
 	mgr.SetOnChannelClose(func(id string) {
 		_ = id
 		closeCallbackCount++
@@ -704,7 +711,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, nil, 0)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -1361,7 +1368,7 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	var closedMu sync.Mutex
 	var closedChannels []string
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0)
 	mgr.SetOnChannelClose(func(channelID string) {
 		closedMu.Lock()
 		closedChannels = append(closedChannels, channelID)
@@ -1505,16 +1512,16 @@ func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
 
 // The error-send queue exists so the receive goroutine NEVER blocks on an
 // error response: enqueue must return immediately even when the drainer is
-// wedged and the queue is full (the overflow is dropped, per queueErrorSend's
+// wedged and the queue is full (the overflow is dropped, per queueError's
 // contract). A blocking enqueue would reintroduce the receive-loop wedge the
 // queue replaced the inline sends to prevent.
-func TestQueueErrorSendDoesNotBlockWhenFull(t *testing.T) {
+func TestQueueErrorDoesNotBlockWhenFull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// No drainer is started: the queue can only fill.
-	sess := &channelSession{
-		ChannelID:  "ch-full",
-		ctx:        ctx,
+	sender := &channelSender{
+		channelID:  "ch-full",
+		lifetime:   ctx,
 		errorSends: make(chan errorSend, errorSendQueueSize),
 	}
 
@@ -1522,15 +1529,15 @@ func TestQueueErrorSendDoesNotBlockWhenFull(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := range errorSendQueueSize + 8 {
-			sess.queueErrorSend(uint64(i), 1, "overflow")
+			sender.queueError(uint64(i), 1, "overflow")
 		}
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("queueErrorSend blocked on a full queue")
+		t.Fatal("queueError blocked on a full queue")
 	}
-	assert.Len(t, sess.errorSends, errorSendQueueSize, "the queue holds exactly its cap; overflow is dropped")
+	assert.Len(t, sender.errorSends, errorSendQueueSize, "the queue holds exactly its cap; overflow is dropped")
 }
 
 // TestSendEncrypted_OversizedMessageIsRejectedNotFatal pins that the
@@ -1608,4 +1615,271 @@ func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
 	require.NoError(t, err,
 		"a payload at MaxInnerPayloadBytes must fit once the envelopes are added")
 	assert.NotEmpty(t, collector.messages(), "and must actually reach the transport")
+}
+
+// A small single-chunk response must be able to overtake a concurrent
+// multi-chunk send: the chunked permit is held across the big message, but the
+// frame permit is released between chunks.
+func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
+	workerSession, initiatorSession := setupTestSessions(t)
+
+	holdFirst := make(chan struct{})
+	started := make(chan struct{})
+	var (
+		mu     sync.Mutex
+		frames []*leapmuxv1.ChannelMessage
+	)
+	sendFn := func(msg *leapmuxv1.ConnectRequest) error {
+		chMsg := msg.GetChannelMessageResp()
+		require.NotNil(t, chMsg)
+		mu.Lock()
+		first := len(frames) == 0
+		frames = append(frames, chMsg)
+		mu.Unlock()
+		if first {
+			close(started)
+			<-holdFirst
+		}
+		return nil
+	}
+
+	life, endLife := context.WithCancel(context.Background())
+	t.Cleanup(endLife)
+	cs := &channelSender{
+		channelID:      "ch-overtake",
+		session:        workerSession,
+		sendFn:         sendFn,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		lifetime:       life,
+		errorSends:     make(chan errorSend, errorSendQueueSize),
+	}
+
+	big := make([]byte, channelwire.MaxPlaintextPerChunk+100)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		require.NoError(t, cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: big}))
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("multi-chunk send never started")
+	}
+
+	// Park the small send on the frame permit while big holds it; releasing
+	// holdFirst then lets small win the between-chunk acquire. A synchronous
+	// sendResponse here would deadlock on the same permit.
+	smallDone := make(chan error, 1)
+	go func() {
+		smallDone <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("hi")})
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(holdFirst)
+
+	select {
+	case err := <-smallDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("small response did not complete after the first chunk released the frame")
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := append([]*leapmuxv1.ChannelMessage(nil), frames...)
+	mu.Unlock()
+	require.GreaterOrEqual(t, len(got), 3)
+	assert.Equal(t, uint64(1), got[0].GetCorrelationId())
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, got[0].GetFlags())
+	assert.Equal(t, uint64(2), got[1].GetCorrelationId(),
+		"the small response must land between the big message's chunks")
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, got[1].GetFlags())
+	assert.Equal(t, uint64(1), got[2].GetCorrelationId())
+
+	// Peer decryptability in arrival order.
+	for _, fr := range got {
+		_, err := initiatorSession.Decrypt(fr.GetCiphertext())
+		require.NoError(t, err, "peer must decrypt every frame in arrival order")
+	}
+}
+
+// Two concurrent multi-chunk sends must never overlap their MORE runs: the
+// Hub's chunk tracker admits at most one in-flight chunked sequence.
+func TestChannelSenderConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+
+	var (
+		mu      sync.Mutex
+		active  int
+		overlap atomic.Bool
+	)
+	sendFn := func(msg *leapmuxv1.ConnectRequest) error {
+		chMsg := msg.GetChannelMessageResp()
+		require.NotNil(t, chMsg)
+		if chMsg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE {
+			mu.Lock()
+			active++
+			if active > 1 {
+				overlap.Store(true)
+			}
+			mu.Unlock()
+			time.Sleep(time.Millisecond)
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}
+		return nil
+	}
+
+	life, endLife := context.WithCancel(context.Background())
+	t.Cleanup(endLife)
+	cs := &channelSender{
+		channelID:      "ch-more",
+		session:        workerSession,
+		sendFn:         sendFn,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		lifetime:       life,
+		errorSends:     make(chan errorSend, errorSendQueueSize),
+	}
+
+	big := make([]byte, 2*channelwire.MaxPlaintextPerChunk+1)
+	var wg sync.WaitGroup
+	for id := uint64(1); id <= 2; id++ {
+		wg.Add(1)
+		go func(id uint64) {
+			defer wg.Done()
+			require.NoError(t, cs.sendStream(id, &leapmuxv1.InnerStreamMessage{Payload: big}))
+		}(id)
+	}
+	wg.Wait()
+	assert.False(t, overlap.Load(), "two multi-chunk MORE runs must not overlap")
+}
+
+// Cancelling the session lifetime must unwedge a sender parked on the gate.
+func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+
+	hold := make(chan struct{})
+	started := make(chan struct{})
+	var holding atomic.Bool
+	sendFn := func(*leapmuxv1.ConnectRequest) error {
+		if holding.CompareAndSwap(false, true) {
+			close(started)
+			<-hold
+		}
+		return nil
+	}
+
+	life, endLife := context.WithCancel(context.Background())
+	cs := &channelSender{
+		channelID:      "ch-life",
+		session:        workerSession,
+		sendFn:         sendFn,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		lifetime:       life,
+		errorSends:     make(chan errorSend, errorSendQueueSize),
+	}
+
+	go func() {
+		_ = cs.sendResponse(1, &leapmuxv1.InnerRpcResponse{Payload: []byte("hold")})
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("holding send never started")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("parked")})
+	}()
+	select {
+	case <-done:
+		t.Fatal("second send returned while the frame permit was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	endLife()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, channelwire.ErrSendAborted)
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifetime end did not unwedge the parked sender")
+	}
+	close(hold)
+}
+
+// DispatchAsync's unknown-method arm must QueueError (not SendError inline) when
+// the writer offers an errorQueuer -- the receive loop must not park on the gate.
+func TestDispatchAsyncUnknownMethodIsQueued(t *testing.T) {
+	d := NewDispatcher()
+	w := &queueTrackingWriter{}
+	d.DispatchAsync(context.Background(), userid.MustNew("u"),
+		&leapmuxv1.InnerRpcRequest{Method: "no-such-method"}, w)
+	assert.Equal(t, int32(1), w.queued.Load(), "unknown method must go through QueueError")
+	assert.Zero(t, w.sent.Load(), "unknown method must not SendError inline on an errorQueuer")
+}
+
+type queueTrackingWriter struct {
+	queued, sent atomic.Int32
+}
+
+func (w *queueTrackingWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error { return nil }
+func (w *queueTrackingWriter) SendError(int32, string) error {
+	w.sent.Add(1)
+	return nil
+}
+func (w *queueTrackingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error { return nil }
+func (*queueTrackingWriter) ChannelID() string                                { return "" }
+func (w *queueTrackingWriter) QueueError(int32, string)                       { w.queued.Add(1) }
+
+// Decrypt-failure CLOSE must go through trySendFn BEFORE HandleClose tears the
+// session down, so the CLOSE is enqueued on the connection writer's FIFO ahead
+// of teardown.
+func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	const channelID = "ch-decrypt-order"
+	var (
+		mu    sync.Mutex
+		order []string
+	)
+
+	sender := newCollectSender()
+	var mgr *Manager
+	mgr = NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, func(msg *leapmuxv1.ConnectRequest) bool {
+		chMsg := msg.GetChannelMessageResp()
+		require.NotNil(t, chMsg)
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, chMsg.GetFlags())
+
+		mgr.mu.RLock()
+		_, exists := mgr.sessions[channelID]
+		mgr.mu.RUnlock()
+		assert.True(t, exists, "trySendFn must run before HandleClose removes the session")
+
+		mu.Lock()
+		order = append(order, "trySend")
+		mu.Unlock()
+		return true
+	}, 0)
+	mgr.SetOnChannelClose(func(string) {
+		mu.Lock()
+		order = append(order, "handleClose")
+		mu.Unlock()
+	})
+	_ = performHandshake(t, mgr, ck, channelID, "user-1")
+
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       channelID,
+		Ciphertext:      []byte("not-valid-ciphertext"),
+		CorrelationId:   1,
+	})
+
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	assert.Equal(t, []string{"trySend", "handleClose"}, got)
 }

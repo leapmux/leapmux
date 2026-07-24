@@ -230,6 +230,13 @@ var errEventNotMarshalable = errors.New("watch event could not be marshalled")
 // defaulting to dead is the safe direction -- a wrongly-retired
 // subscriber reconnects, a wrongly-kept one goes quiet forever.
 //
+// Transport failures now surface mainly as stream death → the deferred
+// channelMgr.CloseAll() on Connect teardown, rather than as a per-send
+// error: the connection writer's drain goroutine owns the only
+// stream.Send, so a Hub that cannot keep up cancels the connection and
+// CloseAll retires every watcher. Retirement here remains a backstop for
+// the rarer case where a send still fails while the stream looks live.
+//
 // The distinction has two consumers -- broadcast, which decides whether
 // to retire a subscription, and the WatchEvents replay, which decides
 // whether to abandon the rest of a catch-up burst. Both must answer it

@@ -32,14 +32,18 @@ var ErrMessageRejected = errors.New("channel rejected the message")
 // SendFunc sends a ConnectRequest (containing ChannelMessage) to the Hub.
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
-// errorSendQueueSize bounds a session's error-send queue. Sized for a burst of
+// TrySendFunc enqueues a ConnectRequest if the connection writer's budget
+// allows, without blocking. Used from the shared Connect receive goroutine.
+type TrySendFunc func(msg *leapmuxv1.ConnectRequest) bool
+
+// errorSendQueueSize bounds a sender's error-send queue. Sized for a burst of
 // protocol-violation responses; a peer that overflows it is already
 // misbehaving, and a dropped error response costs it nothing its own refusal
-// to drain was not already costing (see queueErrorSend).
+// to drain was not already costing (see queueError).
 const errorSendQueueSize = 16
 
 // errorSend is one queued error response from the receive loop (see
-// channelSession.errorSends).
+// channelSender.errorSends).
 type errorSend struct {
 	requestID uint64
 	code      int32
@@ -67,55 +71,6 @@ type channelSession struct {
 	// not the inner per-session map.
 	awsMu                  sync.RWMutex
 	accessibleWorkspaceIDs map[string]bool // workspaces the user can access (set from ChannelOpenRequest)
-	// errorSends decouples the receive loop's error responses (reassembly cap,
-	// oversize, no dispatcher) from the shared send path. An inline send holds
-	// sender.mu across sendFn, which can block on the Connect stream's HTTP/2
-	// send window under Hub backpressure -- wedging the ONE receive goroutine
-	// that serves every channel on this worker. A goroutine per error frame is
-	// the opposite failure (a peer streaming violations pins one goroutine and
-	// one sender.mu waiter per frame), so a single drainer goroutine consumes
-	// this bounded queue instead: the receive loop never blocks, goroutines
-	// stay bounded at one per session, and nonce ordering is preserved because
-	// the drainer encrypts and sends under the same channelSender mutex as
-	// every other sender. Enqueue is non-blocking; overflow drops the response
-	// (see queueErrorSend). The decrypt-failure CLOSE stays INLINE in
-	// HandleMessage: it must reach the wire before HandleClose tears the
-	// session down, and a queued send would race that teardown. The
-	// unknown-method arm in DispatchAsync also still sends inline; unifying
-	// every receive-goroutine send behind one bounded writer is tracked in
-	// https://github.com/leapmux/leapmux/issues/293.
-	errorSends chan errorSend
-}
-
-// queueErrorSend hands an error response to the session's drainer without
-// blocking the receive loop. Drop-on-full is deliberate: the queue only
-// overflows when the send path is already backpressured or the peer is
-// streaming violations, and in both cases the error response is best-effort
-// -- the caller's own RPC timeout is the backstop, exactly as if the frame
-// had been lost in flight.
-func (s *channelSession) queueErrorSend(requestID uint64, code int32, message string) {
-	select {
-	case s.errorSends <- errorSend{requestID: requestID, code: code, message: message}:
-	default:
-		slog.Debug("dropping error response: error-send queue is full",
-			"channel_id", s.ChannelID,
-			"correlation_id", requestID,
-		)
-	}
-}
-
-// drainErrorSends is the session's sole consumer of errorSends. It exits when
-// the session context is cancelled (HandleClose / CloseAll); anything still
-// queued then is dropped with the session it belonged to.
-func (s *channelSession) drainErrorSends() {
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case es := <-s.errorSends:
-			_ = s.sender.sendError(es.requestID, es.code, es.message)
-		}
-	}
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -129,6 +84,7 @@ type Manager struct {
 	compositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair (X25519 + ML-KEM + SLH-DSA)
 	encryptionMode       leapmuxv1.EncryptionMode    // Encryption mode
 	sendFn               SendFunc                    // Function to send messages to Hub
+	trySendFn            TrySendFunc                 // Non-blocking send for the receive goroutine
 	dispatcher           *Dispatcher                 // Inner RPC dispatcher
 	closeCallback        CloseCallback               // Called when a channel is closed
 	maxMessageSize       int                         // maximum reassembled message size
@@ -149,6 +105,7 @@ func NewManager(
 	compositeKey *noiseutil.CompositeKeypair,
 	encryptionMode leapmuxv1.EncryptionMode,
 	sendFn SendFunc,
+	trySendFn TrySendFunc,
 	maxIncompleteChunked int,
 ) *Manager {
 	// The reassembled-message ceiling is a fixed protocol constant shared with
@@ -166,6 +123,7 @@ func NewManager(
 		compositeKey:         compositeKey,
 		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
+		trySendFn:            trySendFn,
 		maxMessageSize:       channelwire.DefaultMaxMessageSize,
 		maxIncompleteChunked: maxIncompleteChunked,
 	}
@@ -322,18 +280,19 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			session:        session,
 			sendFn:         m.sendFn,
 			maxMessageSize: m.maxMessageSize,
+			lifetime:       ctx,
+			errorSends:     make(chan errorSend, errorSendQueueSize),
 		},
 		ctx:                    ctx,
 		cancel:                 cancel,
 		reassembly:             newReassembler(m.maxMessageSize, m.maxIncompleteChunked),
 		accessibleWorkspaceIDs: awsIDs,
-		errorSends:             make(chan errorSend, errorSendQueueSize),
 	}
 	m.sessions[req.GetChannelId()] = sess
 	m.mu.Unlock()
 	// One drainer per session; it exits when HandleClose/CloseAll cancel
-	// sess.ctx (see channelSession.errorSends).
-	go sess.drainErrorSends()
+	// sess.ctx (see channelSender.errorSends).
+	go sess.sender.drainErrorSends()
 
 	slog.Info("channel opened",
 		"channel_id", req.GetChannelId(),
@@ -433,15 +392,21 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			"error", err,
 		)
 		// Nonce desync is unrecoverable — notify the frontend and tear down.
-		_ = m.sendFn(&leapmuxv1.ConnectRequest{
-			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-				ChannelMessageResp: &leapmuxv1.ChannelMessage{
-					ProtocolVersion: 1,
-					ChannelId:       channelID,
-					Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+		// TrySend enqueues ahead of HandleClose on the connection's FIFO
+		// writer, which is what flush-before-teardown actually needs; a drop
+		// is possible only when the link is already past its byte budget, in
+		// which case the connection is about to reset anyway.
+		if m.trySendFn != nil {
+			_ = m.trySendFn(&leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+					ChannelMessageResp: channelwire.NewChannelMessage(
+						channelID, 0,
+						leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+						nil,
+					),
 				},
-			},
-		})
+			})
+		}
 		m.HandleClose(channelID)
 		return
 	}
@@ -521,11 +486,11 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			// methods.
 			m.dispatcher.DispatchAsync(sess.ctx, sess.UserID, kind.Request, bs)
 		} else {
-			// No dispatcher: route the error through the session's error-send
+			// No dispatcher: route the error through the sender's error-send
 			// queue so this receive-goroutine send can neither block the loop
 			// under backpressure nor spawn a goroutine per frame (see
-			// channelSession.errorSends).
-			sess.queueErrorSend(requestID, int32(codes.Unimplemented), "no dispatcher configured")
+			// channelSender.errorSends).
+			sess.sender.queueError(requestID, int32(codes.Unimplemented), "no dispatcher configured")
 		}
 
 	default:
@@ -537,9 +502,9 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 }
 
 // reactToReassembly acts on one reassembly outcome: it logs each arm with
-// channel context, routes protocol-violation errors through the session's
+// channel context, routes protocol-violation errors through the sender's
 // error-send queue (never inline on the receive goroutine -- see
-// channelSession.errorSends), and reports whether the frame completed a
+// channelSender.errorSends), and reports whether the frame completed a
 // message to dispatch. chunkLen is the decrypted frame's size, logged on the
 // buffered arm. The DECISION (buffer / drop / poison / deliver) belongs to
 // reassembler.accept; only the reaction lives here.
@@ -573,7 +538,7 @@ func (m *Manager) reactToReassembly(
 			"correlation_id", requestID,
 			"count", outcome.incomplete,
 		)
-		sess.queueErrorSend(requestID, int32(codes.ResourceExhausted), "too many incomplete chunked messages")
+		sess.sender.queueError(requestID, int32(codes.ResourceExhausted), "too many incomplete chunked messages")
 		return nil, false
 	case reassemblyTooLarge:
 		slog.Warn("chunked message exceeds max size",
@@ -582,7 +547,7 @@ func (m *Manager) reactToReassembly(
 			"size", outcome.size,
 			"max", m.maxMessageSize,
 		)
-		sess.queueErrorSend(requestID, int32(codes.ResourceExhausted),
+		sess.sender.queueError(requestID, int32(codes.ResourceExhausted),
 			fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, m.maxMessageSize))
 		return nil, false
 	case reassemblyBuffered:
@@ -657,23 +622,69 @@ func (m *Manager) CloseAll() {
 }
 
 // channelSender sends encrypted responses back through a channel.
-// A mutex protects Encrypt+Send to prevent nonce reuse from concurrent access.
+//
+// It owns the session's whole outbound side: the encryption SendGate (so
+// ciphertext order equals wire order and a single-chunk frame can overtake a
+// multi-chunk message), the Connect send, and the receive-goroutine error
+// queue that drains through the same gate.
 type channelSender struct {
-	mu             sync.Mutex
+	gate           channelwire.SendGate // zero value usable
 	channelID      string
 	session        *noiseutil.Session
 	sendFn         SendFunc
 	maxMessageSize int
+	// lifetime is the session's context. It bounds a sender parked on the gate
+	// (or on the connection writer's byte budget) so a torn-down session never
+	// strands one. nil in focused unit tests, which the gate accepts.
+	lifetime context.Context
+	// errorSends carries error responses issued from the worker's SHARED
+	// Connect receive goroutine to this session's drainer. It stays even though
+	// the connection writer removed network blocking, because the receive
+	// goroutine faces a second blocking point: the encryption gate above,
+	// which a handler parked on the writer's byte budget still holds. A
+	// try-once gate acquire would drop error responses on ordinary momentary
+	// contention; this 16-deep queue only drops when the link is genuinely
+	// backed up. Enqueue is non-blocking; overflow drops the response.
+	errorSends chan errorSend
+}
+
+// queueError hands an error response to the sender's drainer without
+// blocking the receive loop. Drop-on-full is deliberate: the queue only
+// overflows when the send path is already backpressured or the peer is
+// streaming violations, and in both cases the error response is best-effort
+// -- the caller's own RPC timeout is the backstop, exactly as if the frame
+// had been lost in flight.
+func (s *channelSender) queueError(requestID uint64, code int32, message string) {
+	select {
+	case s.errorSends <- errorSend{requestID: requestID, code: code, message: message}:
+	default:
+		slog.Debug("dropping error response: error-send queue is full",
+			"channel_id", s.channelID,
+			"correlation_id", requestID,
+		)
+	}
+}
+
+// drainErrorSends is the session's sole consumer of errorSends. It exits when
+// the session lifetime is cancelled (HandleClose / CloseAll); anything still
+// queued then is dropped with the session it belonged to.
+func (s *channelSender) drainErrorSends() {
+	for {
+		select {
+		case <-s.lifetime.Done():
+			return
+		case es := <-s.errorSends:
+			_ = s.sendError(es.requestID, es.code, es.message)
+		}
+	}
 }
 
 // sendEncrypted marshals an InnerMessage envelope, encrypts it, and sends it as
-// one or more channel frames. The chunk-split / per-chunk-encrypt /
-// ChannelMessage-build sequence lives in channelwire.SendChannelFrames, shared
-// with the tunnel client's sendInnerContext, so this sender stays responsible
-// only for what is specific to the worker side: marshalling, the size cap, the
-// per-channel send mutex, and wrapping each frame in the ConnectRequest the Hub
-// relay expects (the tunnel writes raw ChannelMessages instead). send runs
-// under s.mu, which is held across the whole call.
+// one or more channel frames. The chunk-split lives in channelwire.SendGate /
+// SendChannelFrames, shared with the tunnel client's send path, so this sender
+// stays responsible only for what is specific to the worker side: marshalling,
+// the size cap, and wrapping each frame in the ConnectRequest the Hub relay
+// expects (the tunnel writes raw ChannelMessages instead).
 func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.InnerMessage) error {
 	data, err := proto.Marshal(envelope)
 	if err != nil {
@@ -694,24 +705,27 @@ func (s *channelSender) sendEncrypted(requestID uint64, envelope *leapmuxv1.Inne
 			len(data), s.maxMessageSize, ErrMessageRejected)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return channelwire.SendChannelFrames(s.session.Encrypt, s.channelID, requestID, data, func(chMsg *leapmuxv1.ChannelMessage) error {
-		slog.Debug("sending channel message",
-			"channel_id", s.channelID,
-			"correlation_id", requestID,
-			"ciphertext_len", len(chMsg.GetCiphertext()),
-			"flags", chMsg.GetFlags())
-		if err := s.sendFn(&leapmuxv1.ConnectRequest{
-			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-				ChannelMessageResp: chMsg,
-			},
-		}); err != nil {
-			return fmt.Errorf("send channel message: %w", err)
-		}
-		return nil
-	})
+	return s.gate.Send(context.Background(), s.lifetime, data,
+		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
+			ciphertext, err := s.session.Encrypt(chunk)
+			if err != nil {
+				return fmt.Errorf("encrypt inner message: %w", err)
+			}
+			slog.Debug("sending channel message",
+				"channel_id", s.channelID,
+				"correlation_id", requestID,
+				"ciphertext_len", len(ciphertext),
+				"flags", flags)
+			if err := s.sendFn(&leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+					ChannelMessageResp: channelwire.NewChannelMessage(
+						s.channelID, requestID, flags, ciphertext),
+				},
+			}); err != nil {
+				return fmt.Errorf("send channel message: %w", err)
+			}
+			return nil
+		})
 }
 
 // sendResponse sends an InnerRpcResponse (encrypted) back to the frontend.
@@ -790,6 +804,12 @@ func (b *boundSender) SendError(code int32, message string) error {
 		return b.logSendFailure("inner RPC error", err)
 	}
 	return nil
+}
+
+// QueueError hands an error to the session's error-send drainer without
+// blocking. Implements errorQueuer for DispatchAsync's unknown-method arm.
+func (b *boundSender) QueueError(code int32, message string) {
+	b.sender.queueError(b.requestID, code, message)
 }
 
 func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {

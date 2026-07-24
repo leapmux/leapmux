@@ -552,3 +552,62 @@ func TestChannelConcurrentRPCs(t *testing.T) {
 		require.NoError(t, callErr)
 	}
 }
+
+// A large multi-chunk CallRPC must not stall multiplexed tunnel traffic: the
+// SendGate lets single-chunk tunnel frames overtake between chunks, and the
+// Hub's one-in-flight chunked-sequence tracker accepts that interleaving. A
+// violation tears the channel down, so this fails loudly rather than subtly.
+func TestChannelLargeRPCDoesNotStallTunnelTraffic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	echoAddr := testutil.StartEchoServer(t)
+	echoHost, echoPort := testutil.ParseAddr(echoAddr)
+
+	hubURL, _, _, workerID := startTestSolo(t)
+	ctx := context.Background()
+
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	require.NoError(t, err)
+	t.Cleanup(ch.Close)
+
+	conn, err := tunnel.DialTunnel(ch, echoHost, echoPort)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// A payload larger than one Noise transport chunk forces a multi-chunk
+	// CallRPC. Ping ignores the body and returns empty — we only need the
+	// multi-chunk send on the wire.
+	big := make([]byte, 100*1024)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	rpcDone := make(chan error, 1)
+	go func() {
+		_, callErr := ch.CallRPC(ctx, "Ping", big)
+		rpcDone <- callErr
+	}()
+
+	// Drive echo traffic while the large RPC is in flight. If the RPC
+	// head-of-line-blocked the channel, these would stall until it finished.
+	const rounds = 16
+	for i := range rounds {
+		msg := []byte(fmt.Sprintf("echo-%d", i))
+		n, writeErr := conn.Write(msg)
+		require.NoError(t, writeErr)
+		require.Equal(t, len(msg), n)
+
+		buf := make([]byte, len(msg))
+		_, readErr := io.ReadFull(conn, buf)
+		require.NoError(t, readErr, "tunnel frame %d must keep flowing during the large RPC", i)
+		assert.Equal(t, msg, buf)
+	}
+
+	select {
+	case callErr := <-rpcDone:
+		require.NoError(t, callErr, "large multi-chunk Ping must complete")
+	case <-time.After(60 * time.Second):
+		t.Fatal("large CallRPC did not complete")
+	}
+}

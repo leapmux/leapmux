@@ -70,15 +70,12 @@ type Channel struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 
-	// sendPermit is a capacity-1 semaphore held for the entire per-message
-	// encrypt+chunk+write loop (see sendInnerContext), so every conn multiplexed
-	// onto this Channel serializes behind whichever send is in flight -- a large
-	// RPC payload head-of-line-blocks a small tunnel frame. Contention only (see
-	// read_credit.go and Conn.sendRemoteClose for the workarounds this already
-	// forced); the fix is a single writer goroutine + bounded queue, tracked at
-	// https://github.com/leapmux/leapmux/issues/276.
-	sendPermit chan struct{}
-	mu         sync.Mutex
+	// sendGate serializes outbound frames under two permits (one per chunk's
+	// encrypt+write, one across a multi-chunk message) so a small tunnel frame
+	// can overtake a large RPC without abandoning a committed multi-chunk send.
+	// See channelwire.SendGate.
+	sendGate channelwire.SendGate
+	mu       sync.Mutex
 
 	nextReqID  uint64 // last allocated correlation id; guarded by mu (see allocateReqIDLocked)
 	pending    map[uint64]chan<- *leapmuxv1.InnerRpcResponse
@@ -471,7 +468,6 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		ws:         wsConn,
 		ctx:        chCtx,
 		cancel:     chCancel,
-		sendPermit: make(chan struct{}, 1),
 		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:  make(map[uint64]*streamCallback),
 		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
@@ -599,6 +595,8 @@ func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (
 	if err != nil {
 		return nil, err
 	}
+	// deliverResponse retires a pending registration on delivery; this defer
+	// covers only the timeout/cancel path where no response arrived.
 	defer func() {
 		ch.UnregisterPending(reqID)
 	}()
@@ -637,10 +635,10 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 	}
 	// deliverResponse delivers with a non-blocking send so one slow caller can
 	// never wedge the sole receive goroutine, which makes buffering the caller's
-	// contract: an unbuffered channel would have its ONLY response dropped -- and
-	// logged as a spurious "duplicate" -- rather than delivered. Enforce it here
-	// instead of leaving it to a doc comment, so a future caller fails loudly at
-	// the call rather than silently losing a response at delivery.
+	// contract: an unbuffered channel would have its ONLY response dropped rather
+	// than delivered. Enforce it here instead of leaving it to a doc comment, so a
+	// future caller fails loudly at the call rather than silently losing a
+	// response at delivery.
 	if handlers.Response != nil && cap(handlers.Response) < 1 {
 		return 0, errors.New("rpc response channel must be buffered (cap >= 1)")
 	}
@@ -775,52 +773,36 @@ func (ch *Channel) sendInnerContext(ctx context.Context, correlationID uint64, m
 		return fmt.Errorf("inner message too large: %d > %d", len(plaintext), channelwire.DefaultMaxMessageSize)
 	}
 
-	select {
-	case ch.sendPermit <- struct{}{}:
-		defer func() { <-ch.sendPermit }()
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-ch.ctx.Done():
-		return fmt.Errorf("channel closed: %w", ch.ctx.Err())
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := ch.ctx.Err(); err != nil {
 		return fmt.Errorf("channel closed: %w", err)
 	}
-
-	// The chunk-split / per-chunk-encrypt / ChannelMessage-build sequence lives in
-	// channelwire.SendChannelFrames, shared with the worker's sendEncrypted; this
-	// sender stays responsible only for what is specific to the tunnel side --
-	// writing each raw ChannelMessage under the channel's LIFETIME context (NOT
-	// the caller's ctx: see the WriteChannelMessage note below), and cancelling
-	// the channel on any encrypt or write failure.
-	//
-	// Write under the channel's lifetime context, NOT the caller's ctx.
+	// Write under the channel's LIFETIME context, not the caller's ctx:
 	// coder/websocket registers context.AfterFunc(ctx, c.close) for any
-	// cancellable context passed to Write, force-closing the underlying
-	// connection on cancel OR deadline. Routing a per-RPC/deadline context
-	// here would let one caller's cancel or one stream's expired write
-	// deadline tear down the shared E2EE transport for every unrelated
-	// in-flight RPC and stream. The caller's ctx still gates entry: permit
-	// acquisition and the pre-write liveness checks above honor it, so a
-	// cancelled caller unwinds before (or right after) its turn at the
-	// serialized write without ever interrupting an in-flight write.
-	if err := channelwire.SendChannelFrames(
-		ch.session.Encrypt, ch.channelID, correlationID, plaintext,
-		func(chMsg *leapmuxv1.ChannelMessage) error {
-			return channelwire.WriteChannelMessage(ch.ctx, ch.ws, chMsg)
-		},
-	); err != nil {
+	// cancellable context passed to Write, so a per-RPC ctx would let one
+	// caller's cancel tear down the shared E2EE transport. The caller's ctx
+	// still gates ENTRY, inside the gate (see SendGate.Send).
+	if err := ch.sendGate.Send(ctx, ch.ctx, plaintext,
+		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
+			ciphertext, err := ch.session.Encrypt(chunk)
+			if err != nil {
+				return fmt.Errorf("encrypt inner message: %w", err)
+			}
+			return channelwire.WriteChannelMessage(ch.ctx, ch.ws,
+				channelwire.NewChannelMessage(ch.channelID, correlationID, flags, ciphertext))
+		}); err != nil {
 		// An encrypt failure (nonce exhaustion) abandons this message BETWEEN
-		// chunks: the peer is left holding a partial reassembly it can never
-		// complete, and the session can never encrypt again. A write failure means
-		// the transport is broken. Either way the channel must be cancelled --
-		// without it the channel keeps reporting healthy, so a pooled or cached
-		// caller neither re-resolves nor re-handshakes and every later send fails
-		// forever.
-		ch.cancel()
+		// chunks and a write failure means the transport is broken: either way
+		// the channel must be cancelled, or it keeps reporting healthy and every
+		// pooled caller keeps handing out a dead channel. A gate abort is NOT
+		// that -- it means this caller gave up before its frame was written, or
+		// the channel is already cancelled -- so it must not take the channel
+		// down with it.
+		if !errors.Is(err, channelwire.ErrSendAborted) {
+			ch.cancel()
+		}
 		return err
 	}
 	return nil
@@ -1074,19 +1056,29 @@ func netClosedError() error {
 const errCodeResourceExhausted int32 = 8
 
 // deliverResponse routes resp to correlationID's pending response handler and
-// reports whether one was registered. respCh is buffered (size 1) and each
-// correlation id expects EXACTLY ONE response, and recvLoop is the only sender,
-// so the first (and only legitimate) response always finds an empty buffer and
-// is delivered -- never dropped, even for a caller that has not drained it yet.
-// The non-blocking send therefore only ever discards a SECOND response for the
-// same id: a peer protocol violation the caller would never read (it consumes
-// the first response and unregisters). Dropping-and-logging that duplicate is
-// deliberate: a blocking send would wedge recvLoop -- the sole receive goroutine
-// -- until channel teardown, letting one misbehaving id starve every other
-// in-flight RPC/stream/tunnel multiplexed on the shared channel.
+// reports whether one was registered. A pending handler is ONE-SHOT: delivery
+// takes and deletes the registration under ch.mu (and drops any orphaned
+// partial reassembly, matching unregisterRequest), so a second response for the
+// same id finds no entry and is dropped by the !ok path -- the prior
+// "duplicate response" non-blocking-send rationale is gone. The non-blocking
+// send remains only as a defence against a saturated shared ack channel (see
+// Conn.acks); for a correct one-shot handler it always finds room.
 func (ch *Channel) deliverResponse(correlationID uint64, resp *leapmuxv1.InnerRpcResponse) bool {
 	ch.mu.Lock()
 	respCh, ok := ch.pending[correlationID]
+	if ok {
+		// A pending response handler is ONE-SHOT, so its response is what
+		// retires it. Consuming the registration here makes that true by
+		// construction instead of depending on every caller remembering
+		// UnregisterPending -- which is what lets a tunnel Conn register ONE
+		// shared ack channel for all of its in-flight frames without a reqID to
+		// unregister by, and what stops a closed conn's outstanding entries
+		// lingering in this map for the channel's life.
+		delete(ch.pending, correlationID)
+		if !ch.hasHandlerLocked(correlationID) {
+			ch.dropReassemblyLocked(correlationID)
+		}
+	}
 	ch.mu.Unlock()
 	if !ok {
 		return false
@@ -1094,9 +1086,10 @@ func (ch *Channel) deliverResponse(correlationID uint64, resp *leapmuxv1.InnerRp
 	select {
 	case respCh <- resp:
 	default:
-		// Buffer already holds this id's response: a duplicate. Surface it (it
-		// signals a misbehaving peer) instead of dropping silently.
-		slog.Warn("tunnel channel dropped duplicate response for correlation id",
+		// Unreachable for a correct handler: a one-shot registration is
+		// consumed above, and the tunnel's shared ack channel is sized so it
+		// cannot fill (see Conn.acks). Logged as the anomaly it would be.
+		slog.Warn("tunnel channel dropped response for correlation id: handler buffer full",
 			"channel_id", ch.channelID, "correlation_id", correlationID)
 	}
 	return true

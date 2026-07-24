@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,7 +39,7 @@ func TestWriteFailure_DeadlineRemap(t *testing.T) {
 	assert.ErrorIs(t, writeFailure(base, &d), os.ErrDeadlineExceeded, "an exceeded deadline remaps to a timeout error")
 }
 
-// errTargetWriteFailed stands in for the error awaitWriteAck latches when the
+// errTargetWriteFailed stands in for the error runAckLoop latches when the
 // worker NAKs a frame because its write to the target failed.
 var errTargetWriteFailed = errors.New("tunnel write rejected: broken pipe")
 
@@ -130,7 +131,7 @@ func TestConnWriteWithLatchedNAKEmitsNoFrame(t *testing.T) {
 	assert.ErrorIs(t, err, errTargetWriteFailed)
 	assert.Zero(t, n)
 	assert.Zero(t, ch.pendingAcks(), "no frame may reach the wire once writeErr is latched")
-	assert.Zero(t, len(tc.sendWindow), "the refused write must hold no window slot")
+	assert.Zero(t, tc.sendWindow.InUse(), "the refused write must hold no window slot")
 }
 
 // A nil Set must be a no-op rather than latching a terminal state with no
@@ -165,13 +166,13 @@ func TestLatchedErrSetNilIsNoOp(t *testing.T) {
 	assert.ErrorIs(t, l.Err(), want, "a nil Set after a real latch must not clear it")
 }
 
-// CloseWrite must honor SetWriteDeadline when writeMu is contended: a prior
-// Write parked on a full send window (the #276 wedge) holds writeMu against a
-// worker that stopped acking, and CloseWrite -- whose deadline handling lives in
-// sendFrameLocked AFTER the acquire -- would otherwise block on the acquire
-// forever with no escape short of Close. With a write deadline set, the
-// deadline-bounded acquire returns os.ErrDeadlineExceeded instead of hanging the
-// caller (a port-forward/SOCKS5 copy loop's half-close).
+// CloseWrite must honor SetWriteDeadline when writeMu is contended: a Write
+// parked on a full send window holds writeMu against a worker that stopped
+// acking, and CloseWrite -- whose deadline handling lives in sendFrameLocked
+// AFTER the acquire -- would otherwise block on the acquire forever with no
+// escape short of Close. With a write deadline set, the deadline-bounded acquire
+// returns os.ErrDeadlineExceeded instead of hanging the caller (a
+// port-forward/SOCKS5 copy loop's half-close).
 func TestConnCloseWriteHonorsWriteDeadlineWhenWriteMuHeld(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -245,7 +246,7 @@ func TestConnSendFailuresDoNotLeakWindowSlots(t *testing.T) {
 		_, err := tc.Write([]byte("dropped"))
 		require.Error(t, err, "the simulated send failure must surface to the caller")
 	}
-	assert.Zero(t, len(tc.sendWindow),
+	assert.Zero(t, tc.sendWindow.InUse(),
 		"every failed send must return its window slot; a leak shrinks the window until the conn wedges")
 
 	// The window must still be fully usable: a full window's worth of writes must
@@ -281,7 +282,7 @@ func TestConnWriteLosingCloseRaceReleasesWindowSlot(t *testing.T) {
 	close(tc.closed)
 	_, err := tc.Write([]byte("x"))
 	require.ErrorIs(t, err, net.ErrClosed)
-	assert.Zero(t, len(tc.sendWindow), "the closed-race exit must return the slot it won")
+	assert.Zero(t, tc.sendWindow.InUse(), "the closed-race exit must return the slot it won")
 	assert.Zero(t, ch.pendingAcks(), "a closed conn emits no frame")
 }
 
@@ -380,4 +381,65 @@ func TestSendRemoteCloseForcefulWhenWriteMuHeld(t *testing.T) {
 	require.Len(t, closes, 1, "a wedged conn must still send a forceful close, not abandon it")
 	assert.Equal(t, uint64(0), closes[0],
 		"the forceful close carries seq 0 so the worker force-closes without waiting on a flush")
+}
+
+// The ack loop must grant exactly one send-window slot per ack. Under-granting
+// permanently shrinks the window; over-granting would admit more outstanding
+// frames than WriteWindowFrames.
+func TestConnAckLoopGrantsOneSlotPerAck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := &windowTestChannel{ctx: ctx}
+	tc := newConn(ch, "conn-ack-one", "example.test", 443)
+
+	_, err := tc.Write([]byte("x"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, tc.sendWindow.InUse())
+	require.True(t, ch.ackOne())
+	require.Eventually(t, func() bool { return tc.sendWindow.InUse() == 0 },
+		2*time.Second, 5*time.Millisecond, "one ack must free exactly one slot")
+
+	for range 5 {
+		_, err := tc.Write([]byte("y"))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 5, tc.sendWindow.InUse())
+	for range 5 {
+		require.True(t, ch.ackOne())
+	}
+	require.Eventually(t, func() bool { return tc.sendWindow.InUse() == 0 },
+		2*time.Second, 5*time.Millisecond, "N acks must free exactly N slots")
+	assert.Equal(t, tunnelflow.WriteWindowFrames, tc.sendWindow.Available(),
+		"the window must be fully restored, never over-granted")
+}
+
+// Saturated write+ack cycles must not grow goroutines: runAckLoop is one
+// long-lived consumer for every frame's ack.
+func TestConnWriteAckCyclesDoNotGrowGoroutines(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := &seqRecordingChannel{ctx: ctx}
+	tc := newConn(ch, "conn-ack-goroutines", "example.test", 443)
+
+	settled := func() int {
+		runtime.GC()
+		return runtime.NumGoroutine()
+	}
+	time.Sleep(50 * time.Millisecond)
+	baseline := settled()
+
+	const cycles = tunnelflow.WriteWindowFrames * 4
+	for range cycles {
+		_, err := tc.Write([]byte("x"))
+		require.NoError(t, err)
+	}
+	// seqRecordingChannel acks each frame inline, so slots release asynchronously
+	// through runAckLoop; wait for the window to drain before sampling.
+	require.Eventually(t, func() bool { return tc.sendWindow.InUse() == 0 },
+		2*time.Second, 5*time.Millisecond)
+
+	require.Eventually(t, func() bool { return settled() <= baseline+2 },
+		2*time.Second, 10*time.Millisecond,
+		"write+ack cycles must not spawn a goroutine per frame (baseline=%d now=%d)",
+		baseline, settled())
 }

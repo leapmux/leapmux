@@ -96,7 +96,7 @@ func Wire(p Params) *Wiring {
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
 	channelMgr := channel.NewManager(
-		p.CompositeKey, p.EncryptionMode, p.Client.Send, p.MaxIncompleteChunked,
+		p.CompositeKey, p.EncryptionMode, p.Client.Send, p.Client.TrySend, p.MaxIncompleteChunked,
 	)
 
 	svc := service.New(service.Config{

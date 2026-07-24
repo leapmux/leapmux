@@ -37,8 +37,8 @@ type tunnelConn struct {
 	writeGate *writeSeqGate
 
 	// credit is the conn's read-send window: the read loop consumes one per inbound
-	// data frame and blocks at zero. See creditWindow.
-	credit *creditWindow
+	// data frame and blocks at zero. See tunnelflow.Window.
+	credit *tunnelflow.Window
 }
 
 // tunnelflow.MaxWriteSeqLookahead (the write-gate NAK bound writeSeqGate.waitTurn enforces) and
@@ -55,7 +55,7 @@ func newTunnelConn(mgr *tunnelManager, connID string, conn net.Conn, sender chan
 		conn:      conn,
 		sender:    sender,
 		writeGate: newWriteSeqGate(),
-		credit:    newCreditWindow(tunnelflow.InitialReadWindow),
+		credit:    tunnelflow.NewWindow(tunnelflow.InitialReadWindow),
 	}
 	// One per-conn watcher closes the conn AND evicts it from the manager when
 	// its lifetime context is cancelled (channel/session teardown), unblocking a
@@ -456,7 +456,7 @@ func (m *tunnelManager) grantReadCredit(_ context.Context, _ userid.UserID, r *l
 	// and removed it): ack without error so the client does not treat it as a
 	// failure.
 	if tc := m.get(r.GetConnId()); tc != nil {
-		tc.credit.add(r.GetCredit())
+		tc.credit.Grant(r.GetCredit())
 	}
 	sendProtoResponse(sender, &leapmuxv1.GrantTunnelReadCreditResponse{})
 }
@@ -551,7 +551,7 @@ func (tc *tunnelConn) close() bool {
 		// will not be granted. Each subsystem owns its own wake-up, so adding a
 		// third cannot be silently left out of this list.
 		tc.writeGate.close()
-		tc.credit.close()
+		tc.credit.Close()
 		return true
 	}
 	return false
@@ -584,7 +584,7 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 			// which stalls this loop and, in turn, backpressures the target's
 			// send buffer -- rather than letting one stalled tunnel consumer fill
 			// the shared channel and starve every other stream on it.
-			if !tc.credit.acquire() {
+			if err := tc.credit.Acquire(context.Background()); err != nil {
 				break // conn closed while waiting for credit
 			}
 			// buf[:n] is handed to sendTunnelEvent directly -- no defensive copy.
