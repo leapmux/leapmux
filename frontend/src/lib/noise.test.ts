@@ -278,4 +278,34 @@ describe('cipherState limits', () => {
     const cs = new CipherState(key)
     expect(cs.needsRekey()).toBe(false)
   })
+
+  it('rekey should change the key, reset nonce, and reject old ciphertext', () => {
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const ctOld = cs.encrypt(new TextEncoder().encode('before'))
+    expect(cs.nonce()).toBe(1)
+
+    cs.rekey()
+    expect(cs.nonce()).toBe(0)
+    expect(() => cs.decrypt(ctOld)).toThrow()
+
+    const ctNew = cs.encrypt(new TextEncoder().encode('after'))
+    const peerKey = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) peerKey[i] = i + 1
+    const peer = new CipherState(peerKey)
+    peer.rekey()
+    expect(new TextDecoder().decode(peer.decrypt(ctNew))).toBe('after')
+  })
+
+  it('rekey should match the Go HKDF interop vector', () => {
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    cs.encrypt(new TextEncoder().encode('x'))
+    cs.rekey()
+    const ct = cs.encrypt(new TextEncoder().encode('hello-rekey'))
+    const hex = Array.from(ct, b => b.toString(16).padStart(2, '0')).join('')
+    expect(hex).toBe('a65694004d00816424626539afa175fb55106807e2c4af79c2c464')
+  })
 })

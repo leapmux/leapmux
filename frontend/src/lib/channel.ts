@@ -26,11 +26,13 @@ import {
   HubControlFrameSchema,
   InnerMessageSchema,
   InnerRpcRequestSchema,
+  RekeyRequestSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
 import { formatErrorMessage } from './errors'
 import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
+import { monotonicNow } from './monotonicNow'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, Reassembler } from './reassembler'
@@ -72,6 +74,34 @@ const MAX_SAFE_CORRELATION_ID = BigInt(Number.MAX_SAFE_INTEGER)
  * of desyncing the open-time Ping the other end expects.
  */
 export const PING_METHOD = 'Ping'
+
+/**
+ * How long a Noise transport key may live before the initiator should request
+ * an in-band rekey. Must match channelwire.SessionKeyMaxAge / the fixture.
+ */
+export const SESSION_KEY_MAX_AGE_MS = 60 * 60 * 1000 // 1 hour
+
+/**
+ * Earliest another age-only rekey may be accepted after a successful one.
+ * Ten minutes of headroom under SESSION_KEY_MAX_AGE_MS; soft nonce bypasses.
+ * Must match channelwire.MinRekeyInterval / the fixture.
+ */
+export const MIN_REKEY_INTERVAL_MS = 50 * 60 * 1000 // 50 minutes
+
+/**
+ * Absolute age past which the channel must close and re-handshake instead of
+ * serving under the old key. Matches channelwire.SessionKeyHardCeiling.
+ */
+export const SESSION_KEY_HARD_CEILING_MS = SESSION_KEY_MAX_AGE_MS + 10 * 60 * 1000 // 70 minutes
+
+/** Open-time Ping Ack/Reject budget, matching Go sessionVerifyTimeout. */
+const REKEY_TIMEOUT_MS = 10_000
+
+/** Fallback when RekeyReject.retry_after_ms is unset (legacy peers). Matches channelwire.DefaultRejectBackoff. */
+const DEFAULT_REJECT_BACKOFF_MS = 60_000
+
+/** Idle rekey poll interval, matching Go tunnel rekeyIdleLoop. */
+const DEFAULT_IDLE_REKEY_INTERVAL_MS = 60_000
 
 export type KeyPinDecision = 'accept' | 'reject'
 
@@ -152,18 +182,17 @@ interface StreamListener {
   onError: (err: Error) => void
 }
 
-/** Maximum channel age before re-handshake. */
-const CHANNEL_MAX_AGE_MS = 60 * 60 * 1000 // 1 hour
-
 interface ActiveChannel {
   channelId: string
   workerId: string
   session: Session
   /**
    * The identity the Hub authenticated this channel's open as. Recorded because
-   * channels are POOLED for up to CHANNEL_MAX_AGE_MS: the open-time cross-check
-   * only proves who the page was when the channel was created, so getOrOpenChannel
+   * channels are POOLED across in-band rekeys: the open-time cross-check only
+   * proves who the page was when the channel was created, so getOrOpenChannel
    * re-compares this before handing a pooled channel out (see its identity check).
+   * Age rotation uses rekey; past SESSION_KEY_HARD_CEILING_MS the pool closes and
+   * re-handshakes instead of serving under the over-age key.
    */
   userId: string
   pendingRequests: Map<number, PendingRequest>
@@ -185,7 +214,20 @@ interface ActiveChannel {
    *     by a caller mid-teardown.
    */
   state: 'opening' | 'verified' | 'closed'
-  openedAt: number
+  /**
+   * Handshake / last successful in-band rekey time from performance.now()
+   * (monotonic). Used for age / hard-ceiling / reject-backoff policy so NTP
+   * wall-clock steps cannot stretch or shrink key lifetime.
+   */
+  lastRekeyAt: number
+  /** After Reject, suppress age-only retries until this performance.now() value. */
+  rekeyNotBefore: number
+  /** Non-null while waiting for RekeyAck / RekeyReject. */
+  rekeyWait: ((accepted: boolean, retryAfterMs: number) => void) | null
+  /** Correlation id of the in-flight RekeyRequest (so Ack/Reject are not dropped as unknown). */
+  rekeyRequestId: number | null
+  /** Chains concurrent ensureRekeyed callers on this channel. */
+  rekeyChain: Promise<void>
 }
 
 /**
@@ -228,6 +270,17 @@ export interface ChannelManagerOpts {
    * skips the check.
    */
   expectedUserId?: () => string | undefined
+  /**
+   * Idle rekey poll interval in ms (default 60_000, matching Go). Set to 0 to
+   * disable the idle timer (tests that only exercise send-path rekey).
+   */
+  idleRekeyIntervalMs?: number
+  /**
+   * Install document visibility / pageshow wake listeners that force a rekey /
+   * hard-ceiling check after OS suspend. Default true when `document` exists.
+   * Tests that drive wake via checkChannelsAfterWake pass false.
+   */
+  installWakeListener?: boolean
 }
 
 /**
@@ -278,10 +331,13 @@ export class ChannelManager {
    * eager release snapshots this.channels, so an open still parked on an await
    * when the snapshot was taken would otherwise register AFTER it and survive
    * the release -- the identity-transition TOCTOU the eager release exists to
-   * close (the lazy staleReason re-check still prevents cross-user REUSE, but
+   * close (the lazy identityDrift re-check still prevents cross-user REUSE, but
    * the leaked channel and its socket would linger).
    */
   private closeGeneration = 0
+  private idleRekeyIntervalMs: number
+  private idleRekeyTimer: ReturnType<typeof setInterval> | null = null
+  private wakeCleanup: (() => void) | null = null
 
   // Observability hooks
   private stateListeners = new Set<() => void>()
@@ -297,6 +353,10 @@ export class ChannelManager {
     this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
     this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
     this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
+    this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? DEFAULT_IDLE_REKEY_INTERVAL_MS
+    const installWake = opts?.installWakeListener ?? (typeof document !== 'undefined')
+    if (installWake)
+      this.installWakeListener()
   }
 
   /** Subscribe to channel state changes (open/close). Returns an unsubscribe function. */
@@ -324,19 +384,76 @@ export class ChannelManager {
   }
 
   /**
+   * After OS suspend / tab backgrounding, monotonic age understates wall time.
+   * Force a hard-ceiling / rekey check on every verified channel when the page
+   * becomes visible again (visibilitychange) or is restored from bfcache (pageshow).
+   */
+  private installWakeListener(): void {
+    if (typeof document === 'undefined')
+      return
+    const onVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible')
+        return
+      this.checkChannelsAfterWake()
+    }
+    const onPageShow = (ev: PageTransitionEvent) => {
+      // persisted=true is bfcache restore; also re-check on ordinary pageshow
+      // after a suspended background tab is focused again in some engines.
+      if (ev.persisted || (typeof document !== 'undefined' && document.visibilityState === 'visible'))
+        this.checkChannelsAfterWake()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    if (typeof window !== 'undefined')
+      window.addEventListener('pageshow', onPageShow)
+    this.wakeCleanup = () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      if (typeof window !== 'undefined')
+        window.removeEventListener('pageshow', onPageShow)
+    }
+  }
+
+  /** Re-evaluate age / hard ceiling for every verified channel (wake + tests). */
+  checkChannelsAfterWake(): void {
+    for (const ch of this.channels.values()) {
+      if (ch.state !== 'verified')
+        continue
+      if (this.pastHardCeiling(ch) || this.shouldInitiateRekey(ch)) {
+        void this.ensureRekeyed(ch).catch((err) => {
+          log.warn('wake/idle rekey failed', {
+            channel_id: ch.channelId,
+            error: err instanceof Error ? err.message : formatErrorMessage(err),
+          })
+        })
+      }
+    }
+  }
+
+  private startIdleRekeyTimer(): void {
+    if (this.idleRekeyIntervalMs <= 0 || this.idleRekeyTimer !== null)
+      return
+    this.idleRekeyTimer = setInterval(() => this.checkChannelsAfterWake(), this.idleRekeyIntervalMs)
+  }
+
+  private stopIdleRekeyTimerIfEmpty(): void {
+    if (this.channels.size > 0 || this.idleRekeyTimer === null)
+      return
+    clearInterval(this.idleRekeyTimer)
+    this.idleRekeyTimer = null
+  }
+
+  /**
    * Check if a usable channel exists for a worker.
    *
    * An open still awaiting its verification Ping does not count: it is in `channels`
    * only so the ping's reply can route, and its session is not yet known to work.
    *
    * A channel whose Hub-authenticated identity has drifted from who this page now is
-   * (a logout/login or impersonation switch left an up-to-an-hour-old channel
-   * authenticated as another user) does NOT count either: getOrOpenChannel would
-   * reject and reopen it on the next RPC, so reporting "connected" for it would show
-   * a live link the current user cannot actually use as themselves. The aged /
-   * needs-rekey reasons in staleReason are deliberately NOT applied here -- their
-   * rotation is transparent to the caller, so a channel mid-rekey or a minute past
-   * the age cap is still "connected" for indicator purposes.
+   * (a logout/login or impersonation switch left a pooled channel authenticated as
+   * another user) does NOT count either: getOrOpenChannel would reject and reopen it
+   * on the next RPC, so reporting "connected" for it would show a live link the
+   * current user cannot actually use as themselves. Age and soft-nonce rotation use
+   * in-band rekey and are deliberately NOT treated as "not open" here -- a channel
+   * mid-rekey or a minute past the age cap is still "connected" for indicator purposes.
    */
   hasOpenChannel(workerId: string): boolean {
     for (const ch of this.channels.values()) {
@@ -473,7 +590,11 @@ export class ChannelManager {
         reassembly: new Reassembler(this.maxMessageSize),
         nextRequestId: 1,
         state: 'opening',
-        openedAt: Date.now(),
+        lastRekeyAt: monotonicNow(),
+        rekeyNotBefore: 0,
+        rekeyWait: null,
+        rekeyRequestId: null,
+        rekeyChain: Promise.resolve(),
       }
 
       // The channel must be in the map for the ping's reply to route (handleMessage
@@ -494,7 +615,7 @@ export class ChannelManager {
       // Evict the channel if it already entered the pool. verifySession above
       // cleans up after itself, but a throw after the channel reached 'verified'
       // (say a future commitPin that can fail) would otherwise leave a verified ghost that
-      // getOrOpenChannel serves for up to CHANNEL_MAX_AGE_MS while every RPC on it
+      // getOrOpenChannel serves until pastHardCeiling closes it while every RPC on it
       // times out against the Hub registration the rollback below drops. evictGhost
       // is a no-op when verifySession already removed the channel.
       this.evictGhost(
@@ -537,6 +658,7 @@ export class ChannelManager {
       throw failure
     }
     channel.state = 'verified'
+    this.startIdleRekeyTimer()
   }
 
   /**
@@ -557,6 +679,7 @@ export class ChannelManager {
       return
     ghost.state = 'closed'
     this.channels.delete(channelId)
+    this.stopIdleRekeyTimerIfEmpty()
     this.drainChannel(ghost, err, 'error')
   }
 
@@ -570,6 +693,7 @@ export class ChannelManager {
     this.drainChannel(ch, new ChannelError('client', 'channel closed'), 'end')
 
     this.channels.delete(channelId)
+    this.stopIdleRekeyTimerIfEmpty()
 
     this.notifyStateChange()
 
@@ -604,6 +728,26 @@ export class ChannelManager {
       return Promise.reject(signal.reason instanceof Error ? signal.reason : new ChannelError('client', `RPC call '${method}' aborted`))
     }
 
+    // Gate every send on the hard ceiling (matches Go ensureRekeyedLocked): a
+    // reject backoff makes shouldInitiateRekey false even when age is past 70m.
+    if (this.pastHardCeiling(ch) || this.shouldInitiateRekey(ch)) {
+      return this.ensureRekeyed(ch).then(() => {
+        if (ch.state === 'closed' || !this.channels.has(channelId)) {
+          return Promise.reject(new ChannelError('client', 'channel not open'))
+        }
+        if (signal?.aborted) {
+          return Promise.reject(signal.reason instanceof Error ? signal.reason : new ChannelError('client', `RPC call '${method}' aborted`))
+        }
+        return this.callAfterRekey(ch, channelId, method, payload, timeoutMs, signal)
+      })
+    }
+
+    // Fast path: no rekey needed — register and send synchronously so callers
+    // (and tests) that reply in the same turn still find the pending handler.
+    return this.callAfterRekey(ch, channelId, method, payload, timeoutMs, signal)
+  }
+
+  private callAfterRekey(ch: ActiveChannel, channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
     const requestId = ch.nextRequestId++
     const effectiveTimeoutMs = timeoutMs ?? this.rpcTimeoutFn()
 
@@ -662,14 +806,10 @@ export class ChannelManager {
       // linger until the timeout fired and the timer would burn for its full duration
       // on a request that never reached the wire. Undo both here, then let
       // onSendFailure decide whether the channel itself is still usable.
-      try {
-        this.sendEncryptedMessage(ch, plaintext, requestId)
-      }
-      catch (err) {
-        this.unregisterRequest(ch, requestId)
+      const sendErr = this.trySend(ch, plaintext, requestId)
+      if (sendErr) {
         cleanup()
-        this.onSendFailure(ch, err)
-        reject(err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err)))
+        reject(sendErr)
       }
     })
   }
@@ -696,24 +836,58 @@ export class ChannelManager {
 
     log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
 
-    ch.streamListeners.set(requestId, {
-      onMessage: msg => messageCb?.(msg),
-      onEnd: () => endCb?.(),
-      onError: err => errorCb?.(err),
-    })
-
     const plaintext = buildRequestPlaintext(method, payload)
-    // The listener is registered but the handle -- and with it the requestId the caller
-    // would need to removeStreamListener -- has not been returned yet, so a throw here
-    // leaves an entry NOBODY can ever reach or clean up; it would outlive the caller
-    // and only die with the channel. Unregister before rethrowing.
-    try {
-      this.sendEncryptedMessage(ch, plaintext, requestId)
+    const attachListener = () => {
+      ch.streamListeners.set(requestId, {
+        onMessage: msg => messageCb?.(msg),
+        onEnd: () => endCb?.(),
+        onError: err => errorCb?.(err),
+      })
     }
-    catch (err) {
-      this.unregisterRequest(ch, requestId)
-      this.onSendFailure(ch, err)
-      throw err
+
+    // Defer listener registration until after rekey when a rekey/ceiling path
+    // runs: ensureRekeyed may closeChannel→drainChannel with onEnd, and a
+    // request that never hit the wire must terminal only via onError.
+    if (this.pastHardCeiling(ch) || this.shouldInitiateRekey(ch)) {
+      void this.ensureRekeyed(ch).then(() => {
+        if (ch.state === 'closed' || !this.channels.has(channelId)) {
+          queueMicrotask(() => {
+            const e = new ChannelError('client', 'channel not open')
+            if (errorCb)
+              errorCb(e)
+            else
+              log.warn('stream send failed with no onError listener', { channel_id: ch.channelId, error: e.message })
+          })
+          return
+        }
+        attachListener()
+        const sendErr = this.trySend(ch, plaintext, requestId)
+        if (sendErr) {
+          queueMicrotask(() => {
+            if (errorCb)
+              errorCb(sendErr)
+            else
+              log.warn('stream send failed with no onError listener', { channel_id: ch.channelId, error: sendErr.message })
+          })
+        }
+      }).catch((err) => {
+        const e = err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+        queueMicrotask(() => {
+          if (errorCb)
+            errorCb(e)
+          else
+            log.warn('stream rekey failed with no onError listener', { channel_id: ch.channelId, error: e.message })
+        })
+      })
+    }
+    else {
+      // Fast path: register and encrypt+send synchronously so the request is
+      // on the wire before the handle returns (existing callers and tests rely
+      // on that).
+      attachListener()
+      const sendErr = this.trySend(ch, plaintext, requestId)
+      if (sendErr)
+        throw sendErr
     }
 
     return {
@@ -734,10 +908,28 @@ export class ChannelManager {
       // racer waits for the ping instead of being handed the channel the ping might
       // yet reject.
       if (ch.workerId === workerId && ch.state === 'verified') {
-        const reason = this.staleReason(ch)
-        if (reason) {
-          log.debug('reopening stale pooled channel', { channel_id: channelId, worker_id: workerId, reason })
+        if (this.identityDrift(ch)) {
+          log.debug('reopening pooled channel after identity drift', { channel_id: channelId, worker_id: workerId })
           await this.closeChannel(channelId)
+          break
+        }
+        if (this.pastHardCeiling(ch)) {
+          log.debug('reopening pooled channel past session-key hard ceiling', { channel_id: channelId, worker_id: workerId })
+          await this.closeChannel(channelId)
+          break
+        }
+        try {
+          if (this.shouldInitiateRekey(ch))
+            await this.ensureRekeyed(ch)
+        }
+        catch {
+          // Ack timeout closes the channel and rejects; fall through to reopen
+          // rather than surfacing a rotation error to the caller.
+          break
+        }
+        // ensureRekeyed may close the channel on Ack timeout (caught above),
+        // hard-ceiling reject, or a send failure.
+        if (!this.channels.has(channelId) || this.channels.get(channelId)?.state !== 'verified') {
           break
         }
         return channelId
@@ -748,28 +940,124 @@ export class ChannelManager {
   }
 
   /**
-   * Why a verified pooled channel can no longer be reused, or null if it still
-   * can. The three reasons a channel is rotated out of the pool live in one place
-   * so the reuse path (and any future caller) share one policy: it aged past
-   * CHANNEL_MAX_AGE_MS, its send session needs a rekey, or the identity it was
-   * opened under drifted -- this tab logged out and back in as B (or a shared
-   * cookie jar was re-authenticated elsewhere) while this up-to-an-hour-old channel
-   * is still the one the Hub authenticated as A, and serving it would run every
-   * worker RPC B's page issues as A. This is the pooled-read half of the open-time
-   * identity cross-check; the Hub stays authoritative and the stale channel is just
-   * closed and reopened.
+   * Whether a verified pooled channel must be closed and reopened for identity
+   * drift. Age uses in-band rekey until SESSION_KEY_HARD_CEILING_MS, then close.
    */
-  private staleReason(ch: ActiveChannel): 'expired' | 'needs-rekey' | 'identity-drift' | null {
-    if (Date.now() - ch.openedAt > CHANNEL_MAX_AGE_MS) {
-      return 'expired'
+  private identityDrift(ch: ActiveChannel): boolean {
+    return this.identityMismatch(this.expectedUserIdFn(), ch.userId)
+  }
+
+  /** Whether initiator policy says we should start an in-band rekey. */
+  private shouldInitiateRekey(ch: ActiveChannel, now = monotonicNow()): boolean {
+    const soft = ch.session.send.needsRekey() || ch.session.receive.needsRekey()
+    if (soft)
+      return true
+    if (ch.rekeyNotBefore > now)
+      return false
+    return now - ch.lastRekeyAt >= SESSION_KEY_MAX_AGE_MS
+  }
+
+  /** Absolute age past which the channel must close and re-handshake. */
+  private pastHardCeiling(ch: ActiveChannel, now = monotonicNow()): boolean {
+    return now - ch.lastRekeyAt >= SESSION_KEY_HARD_CEILING_MS
+  }
+
+  /**
+   * Encrypt+send one outbound frame. On failure retires the request registration
+   * and runs onSendFailure. Returns null on success, or a ChannelError for the
+   * caller to reject/throw/deliver via onError.
+   */
+  private trySend(ch: ActiveChannel, plaintext: Uint8Array, requestId: number): ChannelError | null {
+    try {
+      this.sendEncryptedMessage(ch, plaintext, requestId)
+      return null
     }
-    if (ch.session.send.needsRekey()) {
-      return 'needs-rekey'
+    catch (err) {
+      this.unregisterRequest(ch, requestId)
+      this.onSendFailure(ch, err)
+      return err instanceof ChannelError ? err : new ChannelError('client', formatErrorMessage(err))
     }
-    if (this.identityMismatch(this.expectedUserIdFn(), ch.userId)) {
-      return 'identity-drift'
+  }
+
+  /**
+   * Initiate in-band rekey when age or soft-nonce policy requires it. Holds a
+   * per-channel chain so concurrent callers share one Request→Ack/Reject RTT
+   * and no app frame is encrypted until keys settle (or Reject leaves them).
+   */
+  private ensureRekeyed(ch: ActiveChannel): Promise<void> {
+    const run = ch.rekeyChain.then(() => this.ensureRekeyedLocked(ch))
+    ch.rekeyChain = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private async ensureRekeyedLocked(ch: ActiveChannel): Promise<void> {
+    if (ch.state === 'closed')
+      return
+    if (this.pastHardCeiling(ch)) {
+      await this.closeChannel(ch.channelId)
+      throw new ChannelError('transport', 'session key past hard ceiling')
     }
-    return null
+    if (!this.shouldInitiateRekey(ch))
+      return
+
+    const requestId = ch.nextRequestId++
+    const outcome = new Promise<{ accepted: boolean, retryAfterMs: number }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (ch.rekeyWait) {
+          ch.rekeyWait = null
+          ch.rekeyRequestId = null
+          void this.closeChannel(ch.channelId)
+          reject(new ChannelError('transport', 'rekey timeout'))
+        }
+      }, REKEY_TIMEOUT_MS)
+      ch.rekeyWait = (accepted, retryAfterMs) => {
+        clearTimeout(timer)
+        ch.rekeyWait = null
+        ch.rekeyRequestId = null
+        resolve({ accepted, retryAfterMs })
+      }
+    })
+    ch.rekeyRequestId = requestId
+
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'rekeyRequest', value: create(RekeyRequestSchema, {}) },
+    })
+    try {
+      this.sendEncryptedMessage(ch, toBinary(InnerMessageSchema, envelope), requestId)
+    }
+    catch (err) {
+      ch.rekeyWait = null
+      ch.rekeyRequestId = null
+      this.onSendFailure(ch, err)
+      throw err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+    }
+
+    const { accepted, retryAfterMs } = await outcome
+    if (accepted) {
+      ch.lastRekeyAt = monotonicNow()
+      ch.rekeyNotBefore = 0
+    }
+    else {
+      const backoff = retryAfterMs > 0 ? retryAfterMs : DEFAULT_REJECT_BACKOFF_MS
+      ch.rekeyNotBefore = monotonicNow() + backoff
+      if (this.pastHardCeiling(ch)) {
+        await this.closeChannel(ch.channelId)
+        throw new ChannelError('transport', 'session key past hard ceiling after rekey reject')
+      }
+    }
+  }
+
+  private handleRekeyOutcome(ch: ActiveChannel, accepted: boolean, retryAfterMs = 0): void {
+    if (!ch.rekeyWait) {
+      log.warn('rekey outcome with no in-flight request', { channel_id: ch.channelId, accepted })
+      return
+    }
+    if (accepted) {
+      ch.session.send.rekey()
+      ch.session.receive.rekey()
+    }
+    const wait = ch.rekeyWait
+    wait(accepted, retryAfterMs)
   }
 
   /**
@@ -1011,9 +1299,9 @@ export class ChannelManager {
    * has already put chunks on the wire, leaving the peer's receive nonce ahead of ours
    * -- either way every later send on this channel is garbage. Cancelling it is what
    * lets pooled callers re-resolve onto a fresh one: getOrOpenChannel caches by worker
-   * and nothing else evicts a channel before its CHANNEL_MAX_AGE_MS check, so a
+   * and nothing else evicts a channel before its SESSION_KEY_HARD_CEILING_MS check, so a
    * poisoned session left in the pool would be handed to every later caller and fail
-   * identically for up to an hour. The Go client cancels the same way.
+   * identically until the hard ceiling. The Go client cancels the same way.
    *
    * A `client` ChannelError -- today, a payload over maxMessageSize -- is the opposite
    * case: the session never encrypted a byte and is untouched, so tearing the channel
@@ -1269,6 +1557,7 @@ export class ChannelManager {
       this.drainChannel(ch, new ChannelError('transport', 'channel closed by server'), 'error')
       ch.state = 'closed'
       this.channels.delete(channelId)
+      this.stopIdleRekeyTimerIfEmpty()
       this.notifyStateChange()
       return
     }
@@ -1349,6 +1638,18 @@ export class ChannelManager {
       case 'stream':
         this.deliverStream(ch, correlationId, envelope.kind.value)
         break
+      case 'rekeyAck':
+        this.handleRekeyOutcome(ch, true)
+        break
+      case 'rekeyReject': {
+        const raw = envelope.kind.value.retryAfterMs
+        const ms = typeof raw === 'bigint' ? Number(raw) : Number(raw ?? 0)
+        this.handleRekeyOutcome(ch, false, Number.isFinite(ms) && ms > 0 ? ms : 0)
+        break
+      }
+      case 'rekeyRequest':
+        log.warn('ignored unexpected rekey request from peer', { channel_id: channelId })
+        break
       default:
         log.warn('Unknown inner message type', envelope.kind.case)
     }
@@ -1379,7 +1680,7 @@ export class ChannelManager {
       correlationId,
       decrypted,
       flags === ChannelMessageFlags.MORE,
-      id => ch.pendingRequests.has(id) || ch.streamListeners.has(id),
+      id => ch.pendingRequests.has(id) || ch.streamListeners.has(id) || id === ch.rekeyRequestId,
     )
     switch (out.kind) {
       case 'deliver':
@@ -1575,6 +1876,7 @@ export class ChannelManager {
       ch.state = 'closed'
       this.channels.delete(channelId)
     }
+    this.stopIdleRekeyTimerIfEmpty()
 
     if (!successorDialing) {
       this.wsPromise = null

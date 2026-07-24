@@ -196,6 +196,28 @@ export class CipherState {
   needsRekey(): boolean {
     return this.n > SOFT_NONCE_LIMIT
   }
+
+  /**
+   * Derive a new cipher key via HKDF(k, zerolen) and reset the nonce to 0.
+   *
+   * Application-defined REKEY (not Noise's default ENCRYPT(k, 2^64-1, ...)),
+   * matching the Go implementation. Resetting n diverges from Noise §11.3
+   * because LeapMux's transport AEAD nonce is a uint32 in bytes 4–7.
+   *
+   * Forward secrecy: HKDF(k) does not introduce fresh DH entropy — compromise
+   * of the current key can derive the next. Hub still never learns keys.
+   * See https://github.com/leapmux/leapmux/issues/321
+   */
+  rekey(): void {
+    const [newK] = hkdf(this.k, new Uint8Array(0))
+    this.k = newK.slice(0, 32)
+    this.n = 0
+  }
+
+  /** Current nonce (for tests and rekey policy). */
+  nonce(): number {
+    return this.n
+  }
 }
 
 /** Session holds the send and receive cipher states after a completed handshake. */

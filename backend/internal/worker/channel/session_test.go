@@ -1883,3 +1883,341 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 	mu.Unlock()
 	assert.Equal(t, []string{"trySend", "handleClose"}, got)
 }
+
+func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-rekey", "user-rekey")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-rekey"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+
+	sendRekey := func(corr uint64) {
+		t.Helper()
+		envelope := &leapmuxv1.InnerMessage{
+			Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+		}
+		pt, err := proto.Marshal(envelope)
+		require.NoError(t, err)
+		ct, err := initiator.Encrypt(pt)
+		require.NoError(t, err)
+		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+			ProtocolVersion: 1,
+			ChannelId:       "ch-rekey",
+			Ciphertext:      ct,
+			CorrelationId:   corr,
+		})
+	}
+
+	decryptOutcome := func(msg *leapmuxv1.ConnectRequest) (kind string, retryAfterMs int64) {
+		t.Helper()
+		chMsg := msg.GetChannelMessageResp()
+		require.NotNil(t, chMsg)
+		pt, err := initiator.Decrypt(chMsg.GetCiphertext())
+		require.NoError(t, err)
+		var envelope leapmuxv1.InnerMessage
+		require.NoError(t, proto.Unmarshal(pt, &envelope))
+		switch k := envelope.GetKind().(type) {
+		case *leapmuxv1.InnerMessage_RekeyAck:
+			return "ack", 0
+		case *leapmuxv1.InnerMessage_RekeyReject:
+			ms := k.RekeyReject.GetRetryAfterMs()
+			assert.Greater(t, ms, int64(0), "age-only Reject must advertise retry_after_ms")
+			return "reject", ms
+		default:
+			t.Fatalf("unexpected kind %T", envelope.GetKind())
+			return "", 0
+		}
+	}
+
+	// Too soon after handshake → Reject, keys unchanged (nonce still advances
+	// from the Request/Reject frames themselves).
+	recvBeforeReject := sess.Session.Receive.Nonce()
+	msgsBefore := len(sender.messages())
+	sendRekey(100)
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	kind, retryMs := decryptOutcome(msgs[len(msgs)-1])
+	assert.Equal(t, "reject", kind)
+	assert.InDelta(t, channelwire.MinRekeyInterval.Milliseconds(), retryMs,
+		float64(2*time.Second.Milliseconds()),
+		"fresh handshake Reject should advertise ~MinRekeyInterval")
+	// Receive advanced by the Request decrypt only; Rekey did not reset it.
+	assert.Equal(t, recvBeforeReject+1, sess.Session.Receive.Nonce())
+
+	// Age past MinRekeyInterval → Ack and both sides can continue.
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	msgsBefore = len(sender.messages())
+	sendRekey(101)
+	msgs = sender.waitForMessages(msgsBefore + 1)
+	kind, _ = decryptOutcome(msgs[len(msgs)-1])
+	assert.Equal(t, "ack", kind)
+	// Initiator applies Ack the way tunnel.Channel does.
+	initiator.RekeySend()
+	initiator.RekeyReceive()
+	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
+	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
+	assert.Equal(t, uint64(0), initiator.Send.Nonce())
+	assert.Equal(t, uint64(0), initiator.Receive.Nonce())
+
+	// Post-rekey RPC still works.
+	dispatcher := NewDispatcher()
+	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	})
+	mgr.SetDispatcher(dispatcher)
+	ct := sendRequest(t, initiator, "ch-rekey", &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("after-rekey"),
+	})
+	msgsBefore = len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-rekey",
+		Ciphertext:      ct,
+		CorrelationId:   102,
+	})
+	msgs = sender.waitForMessages(msgsBefore + 1)
+	innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
+	assert.Equal(t, []byte("after-rekey"), innerResp.GetPayload())
+}
+
+func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-rekey-soft", "user-rekey-soft")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-rekey-soft"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+
+	// Still inside MinRekeyInterval after handshake. Align both ends at the soft
+	// ceiling so decrypting the Request advances Receive past SoftNonceLimit and
+	// AllowRekey's soft-nonce bypass accepts.
+	initiator.Send.SetNonceForTest(noiseutil.SoftNonceLimit)
+	sess.Session.Receive.SetNonceForTest(noiseutil.SoftNonceLimit)
+
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-rekey-soft",
+		Ciphertext:      ct,
+		CorrelationId:   1,
+	})
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, chMsg)
+	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	require.NoError(t, err)
+	var resp leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plain, &resp))
+	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	require.True(t, ok, "soft-nonce rekey inside MinRekeyInterval must Ack, got %T", resp.GetKind())
+
+	initiator.RekeySend()
+	initiator.RekeyReceive()
+	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
+	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
+}
+
+func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-rekey-send-soft", "user-rekey-send-soft")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-rekey-send-soft"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+
+	// Inside MinRekeyInterval: only worker Send is soft. Align initiator Receive
+	// so Ack decrypt still matches after Encrypt under SoftNonceLimit+1.
+	// Receive stays under the limit even after decrypting the Request, so Ack
+	// must come from peekSendNeedsRekey (not Receive.NeedsRekey).
+	sess.Session.Send.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
+	initiator.Receive.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
+	assert.False(t, sess.Session.Receive.NeedsRekey())
+	assert.True(t, sess.Session.Send.NeedsRekey())
+
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-rekey-send-soft",
+		Ciphertext:      ct,
+		CorrelationId:   1,
+	})
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, chMsg)
+	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	require.NoError(t, err)
+	var resp leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plain, &resp))
+	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	require.True(t, ok, "Send soft-nonce via peek must Ack inside MinRekeyInterval, got %T", resp.GetKind())
+	assert.False(t, sess.Session.Receive.NeedsRekey(), "Receive must still be under soft after the Request")
+
+	initiator.RekeySend()
+	initiator.RekeyReceive()
+	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
+	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
+}
+
+func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-rekey-frame", "user-rekey-frame")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-rekey-frame"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sendNonceBefore := sess.Session.Send.Nonce()
+
+	// Occupy the frame permit so peek / Ack Encrypt parks inside handleRekeyRequest.
+	// RekeySend must not run until that same SendGate frame scope can proceed.
+	release := make(chan struct{})
+	holding := make(chan struct{})
+	go func() {
+		_ = sess.sender.gate.WithFrame(context.Background(), sess.sender.lifetime, func() error {
+			close(holding)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-holding:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed to occupy frame permit")
+	}
+
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+
+	msgsBefore := len(sender.messages())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+			ProtocolVersion: 1,
+			ChannelId:       "ch-rekey-frame",
+			Ciphertext:      ct,
+			CorrelationId:   7,
+		})
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("HandleMessage returned while frame permit was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	assert.Equal(t, sendNonceBefore, sess.Session.Send.Nonce(),
+		"RekeySend must not run before the frame permit is available")
+	assert.Equal(t, msgsBefore, len(sender.messages()), "Ack must not be on the wire yet")
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HandleMessage did not complete after frame release")
+	}
+
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, chMsg)
+	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	require.NoError(t, err)
+	var resp leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plain, &resp))
+	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	require.True(t, ok)
+	assert.Equal(t, uint64(0), sess.Session.Send.Nonce(), "RekeySend runs under the same frame as Ack")
+}
+
+func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-rekey-load", "user-rekey-load")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-rekey-load"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	echo := func(corr uint64, payload string) {
+		t.Helper()
+		ct := sendRequest(t, initiator, "ch-rekey-load", &leapmuxv1.InnerRpcRequest{
+			Method:  "echo",
+			Payload: []byte(payload),
+		})
+		msgsBefore := len(sender.messages())
+		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+			ProtocolVersion: 1,
+			ChannelId:       "ch-rekey-load",
+			Ciphertext:      ct,
+			CorrelationId:   corr,
+		})
+		msgs := sender.waitForMessages(msgsBefore + 1)
+		innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
+		assert.Equal(t, []byte(payload), innerResp.GetPayload())
+	}
+
+	echo(1, "before")
+
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-rekey-load",
+		Ciphertext:      ct,
+		CorrelationId:   2,
+	})
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, chMsg)
+	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	require.NoError(t, err)
+	var resp leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plain, &resp))
+	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	require.True(t, ok)
+	initiator.RekeySend()
+	initiator.RekeyReceive()
+
+	for i := 0; i < 8; i++ {
+		echo(uint64(10+i), "after-"+string(rune('a'+i)))
+	}
+}

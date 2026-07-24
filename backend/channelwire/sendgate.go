@@ -87,6 +87,17 @@ func acquire(permit chan struct{}, ctx, lifetime context.Context) error {
 	}
 }
 
+// WithFrame runs fn while holding the frame permit, so callers can inspect or
+// mutate send-side CipherState without racing Encrypt on another goroutine.
+func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) error {
+	g.init()
+	if err := acquire(g.frame, ctx, lifetime); err != nil {
+		return err
+	}
+	defer func() { <-g.frame }()
+	return fn()
+}
+
 // Send splits plaintext and puts every chunk on the wire through sendChunk,
 // under the two permits described on the type.
 //

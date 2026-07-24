@@ -240,6 +240,88 @@ func TestSendGateZeroValueAndNilLifetime(t *testing.T) {
 		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }))
 }
 
+func TestSendGateWithFrameSerializesAgainstSend(t *testing.T) {
+	var gate SendGate
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		require.NoError(t, gate.WithFrame(context.Background(), nil, func() error {
+			close(started)
+			<-release
+			return nil
+		}))
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WithFrame never started")
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- gate.Send(context.Background(), nil, []byte("x"),
+			func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil })
+	}()
+
+	select {
+	case err := <-sendDone:
+		t.Fatalf("Send completed while WithFrame held the frame permit: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-sendDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not complete after WithFrame released")
+	}
+	wg.Wait()
+}
+
+func TestSendGateWithFramePropagatesFnErrorAndReleases(t *testing.T) {
+	var gate SendGate
+	boom := errors.New("inspect failed")
+	err := gate.WithFrame(context.Background(), nil, func() error { return boom })
+	require.ErrorIs(t, err, boom)
+
+	require.NoError(t, gate.Send(context.Background(), nil, []byte("ok"),
+		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }),
+		"frame permit must be free after WithFrame returns an error")
+}
+
+func TestSendGateWithFrameLifetimeAbortsParkedAcquire(t *testing.T) {
+	var gate SendGate
+	gate.init()
+	gate.frame <- struct{}{} // occupy the frame permit
+
+	life, endLife := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- gate.WithFrame(context.Background(), life, func() error { return nil })
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("WithFrame returned while the frame permit was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	endLife()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, ErrSendAborted)
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifetime end did not unwedge WithFrame")
+	}
+	<-gate.frame
+}
+
 // A sendChunk failure MID multi-chunk message must release BOTH permits (frame
 // and chunked), or the next send on this channel wedges forever behind a permit
 // nothing will ever hand back. Drive a failing multi-chunk send, then prove a

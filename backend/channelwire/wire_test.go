@@ -27,10 +27,13 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 	require.NoError(t, err)
 
 	var limits struct {
-		MaxPlaintextPerChunk int    `json:"maxPlaintextPerChunk"`
-		MaxMessageSize       int    `json:"maxMessageSize"`
-		MaxIncompleteChunked int    `json:"maxIncompleteChunked"`
-		PingMethod           string `json:"pingMethod"`
+		MaxPlaintextPerChunk    int    `json:"maxPlaintextPerChunk"`
+		MaxMessageSize          int    `json:"maxMessageSize"`
+		MaxIncompleteChunked    int    `json:"maxIncompleteChunked"`
+		PingMethod              string `json:"pingMethod"`
+		SessionKeyMaxAgeMs      int64  `json:"sessionKeyMaxAgeMs"`
+		MinRekeyIntervalMs      int64  `json:"minRekeyIntervalMs"`
+		SessionKeyHardCeilingMs int64  `json:"sessionKeyHardCeilingMs"`
 	}
 	require.NoError(t, json.Unmarshal(data, &limits))
 
@@ -42,6 +45,12 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 		"DefaultMaxIncompleteChunked must match the cross-language fixture")
 	assert.Equal(t, limits.PingMethod, PingMethod,
 		"PingMethod must match the cross-language fixture the browser client opens the channel with")
+	assert.Equal(t, limits.SessionKeyMaxAgeMs, SessionKeyMaxAge.Milliseconds(),
+		"SessionKeyMaxAge must match the cross-language fixture")
+	assert.Equal(t, limits.MinRekeyIntervalMs, MinRekeyInterval.Milliseconds(),
+		"MinRekeyInterval must match the cross-language fixture")
+	assert.Equal(t, limits.SessionKeyHardCeilingMs, SessionKeyHardCeiling.Milliseconds(),
+		"SessionKeyHardCeiling must match the cross-language fixture")
 }
 
 // SendChannelFrames is the one place the two Go senders (the worker's

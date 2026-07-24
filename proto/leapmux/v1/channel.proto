@@ -150,7 +150,29 @@ message InnerMessage {
     InnerRpcRequest request = 1;
     InnerRpcResponse response = 2;
     InnerStreamMessage stream = 3;
+    // In-band Noise CipherState rekey (preserves the channel and multiplexed
+    // conns). Client initiates; Worker accepts or rate-limit-rejects. See
+    // channelwire SessionKeyMaxAge / MinRekeyInterval.
+    RekeyRequest rekey_request = 4;
+    RekeyAck rekey_ack = 5;
+    RekeyReject rekey_reject = 6;
   }
+}
+
+// RekeyRequest asks the peer to rotate receive keys after this frame; the
+// initiator holds its send barrier until RekeyAck or RekeyReject.
+message RekeyRequest {}
+
+// RekeyAck commits the rekey: sender has rotated receive, will rotate send
+// after this frame; receiver rotates both directions on receipt.
+message RekeyAck {}
+
+// RekeyReject refuses the rekey (rate limit). Neither side rotates CipherState.
+// retry_after_ms is how long the initiator should wait before an age-only retry;
+// soft-nonce retries are never rejected. Zero means "unspecified" (legacy peers /
+// older binaries): initiators fall back to a one-minute backoff.
+message RekeyReject {
+  int64 retry_after_ms = 1;
 }
 
 // Request from Frontend to Worker (encrypted).
