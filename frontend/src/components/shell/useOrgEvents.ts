@@ -8,6 +8,7 @@ import { isTauriApp, parseRelayClosePayload, platformBridge } from '~/api/platfo
 import { WatchOrgEventSchema } from '~/generated/leapmux/v1/org_ops_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { KEY_ORG_EVENTS_RELAY_SEQ } from '~/lib/browserStorage'
+import { unframeBytes } from '~/lib/channelFraming'
 import { createLogger } from '~/lib/logger'
 import { createPersistedSeq } from '~/lib/persistedSeq'
 import { createExponentialBackoff } from '~/lib/retry'
@@ -154,24 +155,23 @@ export function useOrgEvents(opts: UseOrgEventsOpts): OrgEventsHook {
   const decodeFrame = (raw: Uint8Array): WatchOrgEvent | null => {
     // Length-prefixed frame: 4-byte BE uint32 + payload bytes. The
     // hub never sends multi-frame packing on the same WS message,
-    // so a single message carries exactly one event.
-    if (raw.length < 4) {
-      log.warn('dropping org-events frame shorter than its length prefix', { length: raw.length })
-      return null
-    }
-    // `>>> 0` forces an unsigned 32-bit length: a high top byte (frame >= 2 GiB)
-    // would otherwise sign-extend to a negative length that slips past the
-    // bounds check below and yields a garbage subarray.
-    const len = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0
-    // Exact match, mirroring channel.ts's strict framing check: a frame with
-    // trailing bytes is a protocol violation, and quietly decoding its prefix
-    // would mask a hub<->frontend framing desync until it became undebuggable.
-    if (len !== raw.length - 4) {
-      log.warn('dropping org-events frame with a mismatched length prefix', { declared: len, actual: raw.length - 4 })
+    // so a single message carries exactly one event. Same codec as
+    // channelFraming (channel WebSocket frames).
+    const framed = unframeBytes(raw)
+    if (!framed.ok) {
+      if (framed.failure.kind === 'short') {
+        log.warn('dropping org-events frame shorter than its length prefix', { length: framed.failure.length })
+      }
+      else {
+        log.warn('dropping org-events frame with a mismatched length prefix', {
+          declared: framed.failure.declared,
+          actual: framed.failure.actual,
+        })
+      }
       return null
     }
     try {
-      return fromBinary(WatchOrgEventSchema, raw.subarray(4, 4 + len))
+      return fromBinary(WatchOrgEventSchema, framed.payload)
     }
     catch {
       return null

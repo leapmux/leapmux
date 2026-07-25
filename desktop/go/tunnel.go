@@ -207,105 +207,21 @@ func (c *ownedTunnelConn) CloseWrite() error {
 	return tryCloseWrite(c.Conn)
 }
 
-type openChannelFunc func(
-	context.Context,
-	string,
-	string,
-	*tunnelpkg.OpenChannelOptions,
-) (*managedChannel, error)
-
 type dialTunnelFunc func(context.Context, *managedChannel, string, uint32) (net.Conn, error)
-
-// channelHandle is the slice of *tunnelpkg.Channel this manager drives a cached
-// channel through: whether it is still usable, when its lifetime ends, and how to
-// tear it down. *tunnelpkg.Channel satisfies it directly, with no adapter; tests
-// substitute a fake, because opening a real channel needs a hub, a WebSocket, and a
-// Noise handshake.
-//
-// It is ONE interface rather than a set of func fields copied off the channel
-// because those copies are a second source of truth that cannot be wrong out loud:
-// a managedChannel holding a `closed` answering for one channel and a `done`
-// belonging to another is well-typed and silently reports a dead channel as live,
-// and every construction site -- test doubles included -- has to remember all of
-// them (one field was already defended with a nil check the other two never got).
-// A single field cannot disagree with itself.
-type channelHandle interface {
-	// Closed reports whether the channel is no longer usable -- closed, or its
-	// lifetime cancelled out from under it.
-	Closed() bool
-	// Close tears the channel down. It is idempotent.
-	Close()
-	// Context is the channel's lifetime. Its Done channel fires when the channel
-	// dies, which is what evicts it from the cache.
-	Context() context.Context
-}
-
-// managedChannel is one cached E2EE channel.
-type managedChannel struct {
-	// channel is the concrete channel the DEFAULT dial seam needs:
-	// tunnelpkg.DialTunnelContext takes a *tunnelpkg.Channel and nothing narrower.
-	// It is nil under test, where the fake handle is paired with an overridden
-	// TunnelManager.dial that never looks at it.
-	channel *tunnelpkg.Channel
-	// handle is what the manager itself uses, and is always set.
-	handle channelHandle
-}
-
-func (m *managedChannel) closed() bool          { return m.handle.Closed() }
-func (m *managedChannel) close()                { m.handle.Close() }
-func (m *managedChannel) done() <-chan struct{} { return m.handle.Context().Done() }
-
-func wrapChannel(ch *tunnelpkg.Channel) *managedChannel {
-	return &managedChannel{channel: ch, handle: ch}
-}
-
-type channelKey struct {
-	hubURL   string
-	workerID string
-	revision uint64
-}
-
-type channelOpen struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	key     channelKey
-	channel *managedChannel
-	err     error
-}
-
-// channelEpoch is the single invalidation epoch for cached E2EE channels: the
-// revision, the channel lifetime context derived channels/opens bind to, and
-// its cancel all move together. resetChannels replaces the whole value so the
-// three can never drift (e.g. bumping the revision without rotating the
-// lifetime context, which would let a tunnel reuse a torn-down transport).
-type channelEpoch struct {
-	revision uint64
-	ctx      context.Context
-	cancel   context.CancelFunc
-}
 
 // TunnelManager manages all active tunnels for the desktop app.
 type TunnelManager struct {
-	mu       sync.Mutex
-	tunnels  map[string]*tunnel
-	channels map[channelKey]*managedChannel
-	inflight map[channelKey]*channelOpen
-	chanOpts *tunnelpkg.OpenChannelOptions
-	epoch    channelEpoch
-	openCh   openChannelFunc
-	dial     dialTunnelFunc
+	mu      sync.Mutex
+	tunnels map[string]*tunnel
+	pool    *channelPool
+	dial    dialTunnelFunc
 }
 
 // NewTunnelManager creates a new TunnelManager.
 func NewTunnelManager() *TunnelManager {
-	channelCtx, cancelChannels := context.WithCancel(context.Background())
 	return &TunnelManager{
-		tunnels:  make(map[string]*tunnel),
-		channels: make(map[channelKey]*managedChannel),
-		inflight: make(map[channelKey]*channelOpen),
-		epoch:    channelEpoch{revision: 1, ctx: channelCtx, cancel: cancelChannels},
-		openCh: func(
+		tunnels: make(map[string]*tunnel),
+		pool: newChannelPool(func(
 			ctx context.Context,
 			hubURL, workerID string,
 			opts *tunnelpkg.OpenChannelOptions,
@@ -315,7 +231,7 @@ func NewTunnelManager() *TunnelManager {
 				return nil, err
 			}
 			return wrapChannel(ch), nil
-		},
+		}),
 		dial: func(ctx context.Context, ch *managedChannel, targetAddr string, targetPort uint32) (net.Conn, error) {
 			return tunnelpkg.DialTunnelContext(ctx, ch.channel, targetAddr, targetPort)
 		},
@@ -323,18 +239,19 @@ func NewTunnelManager() *TunnelManager {
 }
 
 // SetChannelOptions sets transport options for opening E2EE channels.
+// Holds TunnelManager.mu so CreateTunnel's revision check + tunnel insert
+// cannot race a concurrent identity reset (pool.reset only takes pool.mu).
 func (m *TunnelManager) SetChannelOptions(opts *tunnelpkg.OpenChannelOptions) {
 	m.mu.Lock()
-	if opts == nil {
-		m.chanOpts = nil
-	} else {
-		copied := *opts
-		m.chanOpts = &copied
-	}
-	m.mu.Unlock()
-	// An options change is a connection-identity change. Fence in-flight opens
-	// and discard cached channels so no tunnel can reuse the old transport.
-	m.resetChannels()
+	defer m.mu.Unlock()
+	m.pool.setOptions(opts)
+}
+
+// currentRevision returns the pool's invalidation epoch revision. Tests and
+// CreateTunnel capture it before awaiting an open so a concurrent reset can
+// fence registration.
+func (m *TunnelManager) currentRevision() uint64 {
+	return m.pool.currentRevision()
 }
 
 // CreateTunnel creates and starts a new tunnel.
@@ -345,14 +262,14 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if lifetimeCtx == nil {
 		return nil, fmt.Errorf("lifetime context is required")
 	}
-	revision := m.currentRevision()
+	revision := m.pool.currentRevision()
 
 	if err := cfg.validateAndNormalize(); err != nil {
 		return nil, err
 	}
 
 	// Ensure we have an E2EE channel to the worker.
-	opened, err := m.getOrOpenChannel(operationCtx, revision, cfg)
+	opened, err := m.pool.getOrOpen(operationCtx, revision, cfg.HubURL, cfg.WorkerID)
 	if err != nil {
 		slog.Error("failed to open channel to worker", "worker_id", cfg.WorkerID, "error", err)
 		return nil, fmt.Errorf("open channel to worker: %w", err)
@@ -394,7 +311,7 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if startErr == nil {
 		startErr = lifetimeCtx.Err()
 	}
-	if startErr == nil && revision != m.epoch.revision {
+	if startErr == nil && revision != m.pool.currentRevision() {
 		startErr = fmt.Errorf("tunnel manager reset while creating tunnel")
 	}
 	if startErr != nil {
@@ -481,182 +398,15 @@ func (m *TunnelManager) CloseAll() {
 	m.mu.Lock()
 	tunnels := m.tunnels
 	m.tunnels = make(map[string]*tunnel)
+	// Reset the pool while holding m.mu so CreateTunnel cannot pass its
+	// revision check and insert between the map clear and the epoch bump.
+	m.pool.reset()
 	m.mu.Unlock()
 
 	for _, t := range tunnels {
 		t.close()
 	}
-	m.resetChannels()
 	slog.Info("all tunnels closed")
-}
-
-// resetChannels is the single invalidation epoch for cached E2EE channels: it
-// bumps the revision, rotates channelLifetimeCtx (so every channel/open derived
-// from the old lifetime unwinds), and drops the cached maps. Both a transport
-// change (SetChannelOptions) and a full reset (CloseAll) route through here so
-// one revision comparison fences every caller.
-func (m *TunnelManager) resetChannels() {
-	m.mu.Lock()
-	// Rotate the whole epoch atomically: cancel the old lifetime (so every
-	// channel/open derived from it unwinds), then replace revision+ctx+cancel
-	// together.
-	m.epoch.cancel()
-	nextCtx, nextCancel := context.WithCancel(context.Background())
-	m.epoch = channelEpoch{revision: m.epoch.revision + 1, ctx: nextCtx, cancel: nextCancel}
-	channels := m.channels
-	m.channels = make(map[channelKey]*managedChannel)
-	inflight := m.inflight
-	m.inflight = make(map[channelKey]*channelOpen)
-	m.mu.Unlock()
-
-	for _, open := range inflight {
-		open.cancel()
-	}
-	for _, ch := range channels {
-		ch.close()
-	}
-}
-
-func (m *TunnelManager) currentRevision() uint64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.epoch.revision
-}
-
-// getOrOpenChannel and runChannelOpen are single-flighted by {hubURL,
-// workerID, revision}: this skeleton (mutex-guarded cache + inflight map of
-// done-chans) is structurally duplicated in
-// crossworker.Client.channelFor/runChannelOpen, whose comment mirrors this
-// one back. See https://github.com/leapmux/leapmux/issues/281 for why the
-// divergences (epoch invalidation here, delegation identity pinning there)
-// make a shared generic opener a questionable trade -- read before acting.
-func (m *TunnelManager) getOrOpenChannel(
-	operationCtx context.Context,
-	revision uint64,
-	cfg TunnelConfig,
-) (*managedChannel, error) {
-	m.mu.Lock()
-	if revision != m.epoch.revision {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("tunnel manager reset while opening channel")
-	}
-	key := channelKey{
-		hubURL:   cfg.HubURL,
-		workerID: cfg.WorkerID,
-		revision: m.epoch.revision,
-	}
-	if ch := m.channels[key]; ch != nil {
-		if !ch.closed() {
-			m.mu.Unlock()
-			return ch, nil
-		}
-		delete(m.channels, key)
-	}
-	open := m.inflight[key]
-	if open == nil {
-		openCtx, cancelOpen := context.WithCancel(m.epoch.ctx)
-		open = &channelOpen{
-			ctx:    openCtx,
-			cancel: cancelOpen,
-			done:   make(chan struct{}),
-			key:    key,
-		}
-		m.inflight[key] = open
-		opts := tunnelpkg.OpenChannelOptions{LifetimeContext: m.epoch.ctx}
-		if m.chanOpts != nil {
-			opts = *m.chanOpts
-			opts.LifetimeContext = m.epoch.ctx
-		}
-		go m.runChannelOpen(open, cfg, opts)
-	}
-	m.mu.Unlock()
-
-	select {
-	case <-operationCtx.Done():
-		return nil, operationCtx.Err()
-	case <-open.done:
-		if err := operationCtx.Err(); err != nil {
-			return nil, err
-		}
-		if open.err != nil {
-			return nil, open.err
-		}
-		return open.channel, nil
-	}
-}
-
-func (m *TunnelManager) runChannelOpen(
-	open *channelOpen,
-	cfg TunnelConfig,
-	opts tunnelpkg.OpenChannelOptions,
-) {
-	// Bound the handshake/dial so a stalled hub cannot wedge the open forever.
-	// opts.LifetimeContext (the epoch context) still owns the opened channel, so
-	// this deadline only fences the open itself, not the channel's lifetime.
-	openCtx, cancelOpen := context.WithTimeout(open.ctx, channelOpenTimeout)
-	ch, err := m.openCh(openCtx, cfg.HubURL, cfg.WorkerID, &opts)
-	cancelOpen()
-	open.cancel()
-	if err == nil && ch == nil {
-		err = fmt.Errorf("open channel returned no channel")
-	}
-
-	m.mu.Lock()
-	if err == nil && open.key.revision != m.epoch.revision {
-		err = fmt.Errorf("tunnel manager reset while opening channel")
-	}
-	if current := m.inflight[open.key]; current == open {
-		delete(m.inflight, open.key)
-	}
-	if err == nil {
-		m.channels[open.key] = ch
-		open.channel = ch
-	}
-	open.err = err
-	close(open.done)
-	m.mu.Unlock()
-
-	if err != nil {
-		if ch != nil {
-			ch.close()
-		}
-		return
-	}
-	// Evict the channel from the cache when its lifetime ends. Unconditional: done()
-	// is derived from the handle, so unlike the func-field copy it replaced there is
-	// no nil channel here to receive from forever.
-	go m.removeClosedChannel(open.key, ch)
-}
-
-func (m *TunnelManager) removeClosedChannel(key channelKey, ch *managedChannel) {
-	<-ch.done()
-	m.mu.Lock()
-	if m.channels[key] == ch {
-		delete(m.channels, key)
-	}
-	m.mu.Unlock()
-}
-
-// liveChannel returns a live E2EE channel for a tunnel to dial through. It
-// returns the captured channel unchanged while it is still alive, and re-resolves
-// (opening a fresh one via getOrOpenChannel) when that channel has died -- so a
-// tunnel survives a worker/hub reconnect instead of becoming a zombie that
-// rejects every connection after its captured channel closed (removeClosedChannel
-// only evicts the cache for future opens; it never notified the running tunnel).
-// A nil ch (test injection / no captured channel) is returned as-is so injected
-// dial seams that ignore the channel keep working.
-func (m *TunnelManager) liveChannel(ctx context.Context, ch *managedChannel, hubURL, workerID string) (*managedChannel, error) {
-	if ch == nil {
-		return nil, nil
-	}
-	if !ch.closed() {
-		return ch, nil
-	}
-	opened, err := m.getOrOpenChannel(ctx, m.currentRevision(), TunnelConfig{HubURL: hubURL, WorkerID: workerID})
-	if err != nil {
-		return nil, err
-	}
-	return opened, nil
 }
 
 // serveSocks5 runs a SOCKS5 server on the tunnel's listener.
@@ -674,7 +424,7 @@ func (m *TunnelManager) serveSocks5(ctx context.Context, t *tunnel, ch *managedC
 		port := uint32(p)
 		dialCtx, cancelDial := ctxutil.WithLinkedCancel(ctx, requestCtx)
 		defer cancelDial()
-		live, err := m.liveChannel(dialCtx, ch, t.hubURL, t.info.WorkerID)
+		live, err := m.pool.live(dialCtx, ch, t.hubURL, t.info.WorkerID)
 		if err != nil {
 			return nil, err
 		}
@@ -800,7 +550,7 @@ func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t 
 	}
 	defer func() { _ = local.Close() }()
 
-	live, err := m.liveChannel(ctx, ch, t.hubURL, t.info.WorkerID)
+	live, err := m.pool.live(ctx, ch, t.hubURL, t.info.WorkerID)
 	if err != nil {
 		slog.Error("resolve tunnel channel failed", "tunnel_id", t.info.ID, "error", err)
 		return

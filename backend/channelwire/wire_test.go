@@ -17,7 +17,7 @@ import (
 
 // TestChannelWireLimitsMatchCrossLanguageFixture pins the chunk/message/sequence
 // limits against the shared testdata/channelwire_limits.json fixture that the
-// TypeScript browser client (frontend/src/lib/channel.test.ts) asserts too. Both
+// TypeScript browser client (frontend/src/lib/channel.wire-limits.test.ts) asserts too. Both
 // ends chunk and reassemble the same encrypted channel messages, so a retune on
 // one side that is not mirrored on the other would silently reject or mis-split a
 // legitimate message at the un-updated receiver; keeping both constant sets tied
