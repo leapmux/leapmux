@@ -3,20 +3,48 @@
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 compile_error!("LeapMux Desktop only supports macOS, Linux, and Windows");
 
-mod proto {
+mod frame;
+pub(crate) mod proto {
     include!(concat!(env!("OUT_DIR"), "/leapmux.desktop.v1.rs"));
 }
+
+mod sidecar_ipc;
 
 #[cfg(target_os = "linux")]
 mod tabfix_linux;
 
 use base64::Engine;
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::{fs::PermissionsExt, net::UnixStream};
+// `windows_handshake_async` still names `NamedPipeClient` directly as its return
+// type (the raw async client the handshake exchanges frames on), and the windows
+// `require_same_user_pipe_peer` test uses `ClientOptions` to open a raw client.
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+use crate::frame::{get_sidecar_info_request, read_frame, write_frame};
+#[cfg(windows)]
+use crate::frame::{read_frame_async, write_frame_async};
+#[cfg(windows)]
+use crate::sidecar_ipc::connect_sidecar_endpoint_async;
+#[cfg(windows)]
+use crate::sidecar_ipc::pipe_runtime;
+use crate::sidecar_ipc::{
+    cleanup_dev_sidecar_artifacts, connect_sidecar_endpoint, dev_sidecar_endpoint,
+    dev_sidecar_metadata_path, endpoint_holder_pid, finalize_sidecar_streams, is_sidecar_gone,
+    private_dev_sidecar_endpoint, restrict_dir_permissions, restrict_file_permissions,
+    SidecarReader, SidecarWriter,
+};
+#[cfg(windows)]
+use crate::sidecar_ipc::{SyncPipeReader, SyncPipeWriter};
+// Unix-only peer-credential helpers; referenced by the unix sidecar-IPC tests.
+#[cfg(all(unix, test))]
+use crate::sidecar_ipc::{
+    require_peer_uid, require_same_user_peer, socket_peer_pid, socket_peer_uid,
+};
+#[cfg(all(unix, test))]
+use std::os::unix::net::UnixStream;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
@@ -46,21 +74,13 @@ const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
 #[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
-// Must stay in sync with maxFrameSize in desktop/go/frame.go: it must exceed the
-// 16 MiB org-events read limit plus its Frame/Event envelope so a full-size
-// OrgMaterialized bootstrap is not rejected on read.
-const MAX_FRAME_SIZE: u64 = 20 * 1024 * 1024; // 20 MiB
-                                              // A base-128 varint carries 7 bits per byte, so a u64 length prefix needs at
-                                              // most 10 bytes. A reader that has consumed this many without seeing a
-                                              // terminating byte is being fed a malformed (or malicious) prefix.
-const MAX_VARINT_BYTES: usize = 10;
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 // CONNECT_TIMEOUT is the outer loop budget for "endpoint reachable +
 // handshake succeeds"; HANDSHAKE_TIMEOUT bounds a single attempt. Keep
 // CONNECT meaningfully larger so the loop can retry after a wedged probe.
 const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
-const DEV_SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEV_SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_INITIAL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Cross-language env-var contract; see desktop/go/main.go for semantics.
@@ -83,105 +103,6 @@ struct SidecarMetadata {
     endpoint: String,
     binary_hash: String,
     protocol_version: String,
-}
-
-// --- Frame read/write utilities ---
-//
-// The sync and async halves below are two transports over ONE wire format: the
-// sync half drives stdio (and, on Windows, the named pipe via SyncPipeReader/
-// SyncPipeWriter), the async half drives tokio streams. Every decision that is
-// part of the FORMAT -- the encoding, the size cap, the decode error mapping,
-// the varint state machine -- lives in the shared helpers here and is called by
-// both, so the twins can only ever differ in their I/O loop. See the
-// `#[cfg(any(windows, test))]` gates on the async half: `test` is what makes
-// them compile and run off Windows, so drift fails CI in front of its author
-// instead of on the one OS nobody built.
-//
-// This section is already self-delimited by this banner and has no dependency
-// beyond `mod proto` and the two consts above -- the proposed first extraction
-// out of this 4000+-line file into its own frame.rs module. See
-// https://github.com/leapmux/leapmux/issues/282.
-
-/// Encodes `frame` into a length-delimited buffer ready to hand to a writer.
-fn encode_frame(frame: &proto::Frame) -> io::Result<Vec<u8>> {
-    let mut buf = Vec::with_capacity(frame.encoded_len() + MAX_VARINT_BYTES);
-    frame.encode_length_delimited(&mut buf).map_err(|err| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("encode frame: {err}"))
-    })?;
-    Ok(buf)
-}
-
-/// Checks a decoded length prefix against `MAX_FRAME_SIZE` and narrows it to a
-/// payload length.
-///
-/// Callers MUST call this BEFORE allocating the payload buffer: rejecting the
-/// size is what stops a peer from making us allocate gigabytes off a bogus
-/// varint, and a check that runs after the allocation protects nothing. The cap
-/// is also what makes the `as usize` narrowing lossless on every target we
-/// build for.
-fn frame_len(size: u64) -> io::Result<usize> {
-    if size > MAX_FRAME_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
-        ));
-    }
-    Ok(size as usize)
-}
-
-/// Decodes a frame body -- the bytes AFTER the length prefix, exactly
-/// `frame_len` of them.
-fn decode_frame(data: &[u8]) -> io::Result<proto::Frame> {
-    proto::Frame::decode(data)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
-}
-
-/// Folds one wire byte into an in-progress varint decode.
-///
-/// Returns `Some(value)` when `b` terminates the varint (high bit clear), and
-/// `None` when more bytes are needed -- so a reader keeps only its own read
-/// loop and shares the state machine.
-fn varint_step(x: &mut u64, s: &mut u32, b: u8) -> Option<u64> {
-    if b < 0x80 {
-        return Some(*x | (b as u64) << *s);
-    }
-    *x |= ((b & 0x7f) as u64) << *s;
-    *s += 7;
-    None
-}
-
-/// The error a reader returns once a varint has run past `MAX_VARINT_BYTES`
-/// without terminating.
-fn varint_overflow() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "varint overflow")
-}
-
-fn write_frame(w: &mut impl Write, frame: &proto::Frame) -> io::Result<()> {
-    w.write_all(&encode_frame(frame)?)?;
-    w.flush()
-}
-
-// Note: prost's `decode_length_delimited` requires an in-memory `Buf`, not
-// an `io::Read` stream. For streaming stdio reads we must manually decode the
-// varint length prefix, then `read_exact` the payload before decoding.
-fn read_frame(r: &mut impl Read) -> io::Result<proto::Frame> {
-    let len = frame_len(read_varint(r)?)?;
-    let mut data = vec![0u8; len];
-    r.read_exact(&mut data)?;
-    decode_frame(&data)
-}
-
-fn read_varint(r: &mut impl Read) -> io::Result<u64> {
-    let mut x: u64 = 0;
-    let mut s: u32 = 0;
-    let mut buf = [0u8; 1];
-    for _ in 0..MAX_VARINT_BYTES {
-        r.read_exact(&mut buf)?;
-        if let Some(v) = varint_step(&mut x, &mut s, buf[0]) {
-            return Ok(v);
-        }
-    }
-    Err(varint_overflow())
 }
 
 // --- Tauri types ---
@@ -561,11 +482,6 @@ type DevSidecarConnection = (
     proto::SidecarInfo,
 );
 
-#[cfg(unix)]
-type SidecarReader = UnixStream;
-#[cfg(unix)]
-type SidecarWriter = UnixStream;
-
 fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection>, String> {
     match connect_and_handshake_dev_sidecar(endpoint)? {
         Some((reader, writer, info)) => Ok(Some((
@@ -627,19 +543,17 @@ fn connect_and_handshake_dev_sidecar(
 async fn windows_handshake_async(
     pipe_name: &str,
 ) -> Result<Option<(NamedPipeClient, proto::SidecarInfo)>, String> {
-    let mut client = match open_named_pipe_client(pipe_name).await? {
-        PipeConnect::Connected(c) => c,
-        PipeConnect::NotFound => return Ok(None),
-        PipeConnect::Busy => {
-            return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
-        }
+    // Route through the transport layer so the same-user SID check gates this
+    // connect (see connect_sidecar_endpoint_async); only the handshake exchange
+    // itself is async, because it races against tokio::time::timeout.
+    let mut client = match connect_sidecar_endpoint_async(pipe_name).await? {
+        Some(c) => c,
+        None => return Ok(None),
     };
     let request = proto::Frame {
         message: Some(proto::frame::Message::Request(proto::Request {
             id: 1,
-            method: Some(proto::request::Method::GetSidecarInfo(
-                proto::GetSidecarInfoRequest {},
-            )),
+            method: Some(get_sidecar_info_request()),
         })),
     };
     write_frame_async(&mut client, &request)
@@ -654,38 +568,6 @@ async fn windows_handshake_async(
     };
     let info = sidecar_info_from_response(check_response(resp)?, "get_sidecar_info")?;
     Ok(Some((client, info)))
-}
-
-#[cfg(any(windows, test))]
-async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
-    w: &mut W,
-    frame: &proto::Frame,
-) -> io::Result<()> {
-    w.write_all(&encode_frame(frame)?).await?;
-    w.flush().await
-}
-
-#[cfg(any(windows, test))]
-async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<proto::Frame> {
-    // frame_len rejects an oversize prefix before the vec! below allocates.
-    let len = frame_len(read_varint_async(r).await?)?;
-    let mut data = vec![0u8; len];
-    r.read_exact(&mut data).await?;
-    decode_frame(&data)
-}
-
-#[cfg(any(windows, test))]
-async fn read_varint_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<u64> {
-    let mut x: u64 = 0;
-    let mut s: u32 = 0;
-    let mut buf = [0u8; 1];
-    for _ in 0..MAX_VARINT_BYTES {
-        r.read_exact(&mut buf).await?;
-        if let Some(v) = varint_step(&mut x, &mut s, buf[0]) {
-            return Ok(v);
-        }
-    }
-    Err(varint_overflow())
 }
 
 /// Asks whatever is listening on `endpoint` to shut down, and reports whether it
@@ -739,270 +621,6 @@ fn request_sidecar_shutdown(endpoint: &str) -> bool {
     false
 }
 
-/// A dev sidecar endpoint private to THIS shell process.
-///
-/// The shared per-user endpoint is what lets a dev reload reuse a running sidecar, so
-/// it is the default. But it is only a cache: when it cannot be reclaimed -- a wedged
-/// leftover that ignores a cooperative shutdown, or another user's socket -- the
-/// launch must still succeed. Suffixing our own PID gives a path nothing else holds,
-/// so a fresh sidecar always starts. In LAUNCHER mode a single unkillable orphan then
-/// costs only the reuse optimisation. In SOLO mode it costs more: the orphan also
-/// holds the shared user-data DB's runtime lease, so the fresh sidecar's ConnectSolo
-/// fails against the locked DB until the orphan is stopped by hand (surfaced by the
-/// request_sidecar_shutdown diagnostic, which names the kernel-verified holder pid).
-///
-/// The previous behaviour, aborting the launch, made one leftover from a SIGKILLed
-/// `task test-e2e` run block every subsequent `task dev` until the dev hunted it down
-/// by hand.
-#[cfg(unix)]
-fn private_dev_sidecar_endpoint() -> String {
-    dev_sidecar_runtime_dir()
-        .join(format!(
-            "{}-sidecar-{}.sock",
-            sidecar_identity(),
-            std::process::id()
-        ))
-        .display()
-        .to_string()
-}
-
-#[cfg(unix)]
-/// Refuses a dev sidecar socket answered by anyone but this user.
-///
-/// Everything downstream of the connect trusts the peer on its own word: the shell
-/// adopts whatever answers here as its sidecar if it self-reports a matching protocol
-/// version and binary hash — and a hash is exactly as forgeable as the PID that
-/// `force_kill_sidecar` used to trust before it was deleted for that reason. The
-/// endpoint sits at a predictable path (the shell derives it from
-/// `std::env::temp_dir()`), so "whoever bound it first" is not an authorization.
-///
-/// The Go side hardens the *bind* (see `requirePrivateDir` in
-/// desktop/go/socket_unix.go, which refuses a socket dir it does not own): this is
-/// the same boundary from the connect side, and it must be checked here too, because
-/// an honest sidecar refusing to bind a squatted directory does nothing to stop this
-/// shell from connecting to whatever a squatter bound instead.
-///
-/// `peer_cred` reads the credentials the KERNEL recorded for the peer, so unlike the
-/// hash it is not something the peer can assert. Dev-only, like the endpoint itself:
-/// a bundled build spawns its own child over stdio pipes and never comes here.
-#[cfg(unix)]
-fn require_same_user_peer(stream: &UnixStream, endpoint: &str) -> Result<(), String> {
-    require_peer_uid(
-        socket_peer_uid(stream)?,
-        unsafe { libc::getuid() },
-        endpoint,
-    )
-}
-
-/// The refusal decision itself, split from the socket so it can be tested against a
-/// foreign uid — binding a socket as another user needs root, so the branch that
-/// actually matters here is otherwise reachable only in production.
-#[cfg(unix)]
-fn require_peer_uid(peer_uid: u32, our_uid: u32, endpoint: &str) -> Result<(), String> {
-    if peer_uid != our_uid {
-        return Err(format!(
-            "refusing sidecar at {endpoint}: it is answered by uid {peer_uid}, not {our_uid}; \
-             something else is holding this endpoint"
-        ));
-    }
-    Ok(())
-}
-
-/// Reads the peer's uid from a connected Unix socket.
-///
-/// std's `UnixStream::peer_cred` is still unstable, so this goes to libc. The two
-/// families expose the same fact through different calls: Linux via the `SO_PEERCRED`
-/// socket option, macOS/BSD via `getpeereid(3)`.
-#[cfg(all(unix, target_os = "linux"))]
-fn socket_peer_uid(stream: &UnixStream) -> Result<u32, String> {
-    use std::os::fd::AsRawFd;
-
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: `cred` and `len` are live, correctly sized, and only written by the
-    // kernel on success; the fd is owned by `stream` for the duration of the call.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut cred).cast::<libc::c_void>(),
-            &mut len,
-        )
-    };
-    if rc != 0 {
-        return Err(format!(
-            "read sidecar socket peer credentials: {}",
-            io::Error::last_os_error()
-        ));
-    }
-    Ok(cred.uid)
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn socket_peer_uid(stream: &UnixStream) -> Result<u32, String> {
-    use std::os::fd::AsRawFd;
-
-    let mut uid: libc::uid_t = 0;
-    let mut gid: libc::gid_t = 0;
-    // SAFETY: both out-params are live for the call and only written on success; the
-    // fd is owned by `stream` for the duration.
-    let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-    if rc != 0 {
-        return Err(format!(
-            "read sidecar socket peer credentials: {}",
-            io::Error::last_os_error()
-        ));
-    }
-    Ok(uid)
-}
-
-/// The KERNEL-recorded pid of the socket peer -- the process actually on the
-/// other end, not a pid it reported about itself over the wire. Used only to
-/// make the "an orphan is holding the endpoint" diagnostic actionable
-/// (`request_sidecar_shutdown`); it is NOT an authorization signal and nothing
-/// is killed by it. Linux reads it from the `SO_PEERCRED` ucred whose uid we
-/// already consult; macOS/BSD from `LOCAL_PEERPID`. Returns None on any error
-/// rather than failing the caller: a missing pid only weakens a log line.
-#[cfg(all(unix, target_os = "linux"))]
-fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: as in socket_peer_uid -- kernel writes `cred`/`len` on success; the
-    // fd is owned by `stream` for the call.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut cred).cast::<libc::c_void>(),
-            &mut len,
-        )
-    };
-    if rc != 0 || cred.pid <= 0 {
-        return None;
-    }
-    Some(cred.pid as u32)
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-
-    let mut pid: libc::pid_t = 0;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    // SAFETY: `pid`/`len` are live for the call and only written on success; the fd
-    // is owned by `stream`. LOCAL_PEERPID reports the kernel-recorded peer pid.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_LOCAL,
-            libc::LOCAL_PEERPID,
-            std::ptr::from_mut(&mut pid).cast::<libc::c_void>(),
-            &mut len,
-        )
-    };
-    if rc != 0 || pid <= 0 {
-        return None;
-    }
-    Some(pid as u32)
-}
-
-/// The kernel-verified pid holding `endpoint`, for diagnostics only (see
-/// socket_peer_pid). On unix it opens a throwaway connection and reads the
-/// peer pid; on Windows it does the same through `GetNamedPipeServerProcessId`
-/// on a freshly opened client handle.
-#[cfg(unix)]
-fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
-    let stream = UnixStream::connect(endpoint).ok()?;
-    socket_peer_pid(&stream)
-}
-
-#[cfg(windows)]
-fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
-    use std::os::windows::io::AsRawHandle;
-
-    let client = pipe_runtime().block_on(open_named_pipe_client(endpoint)).ok()?;
-    let client = match client {
-        PipeConnect::Connected(client) => client,
-        // No listener (or every instance busy, which we cannot query) means
-        // no pid to report -- the diagnostic falls back to naming no holder.
-        _ => return None,
-    };
-    let mut pid: u32 = 0;
-    let rc = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut pid) };
-    if rc == 0 || pid == 0 {
-        None
-    } else {
-        Some(pid)
-    }
-}
-
-// The sidecar-IPC layer exists as per-platform twins (unix socket vs Windows
-// named pipe) scattered through this file: connect_sidecar_endpoint,
-// is_sidecar_gone, sidecar_identity, the *_dev_sidecar_endpoint pair, the
-// peer-credential helpers, and cleanup_dev_sidecar_artifacts. Grouping the twins
-// into sidecar_ipc_unix.rs / sidecar_ipc_windows.rs so the two OS
-// implementations are diffable side-by-side is tracked in
-// https://github.com/leapmux/leapmux/issues/296 (distinct from the frame-codec
-// extraction in #282).
-#[cfg(unix)]
-fn connect_sidecar_endpoint(
-    endpoint: &str,
-) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
-    let stream = match UnixStream::connect(endpoint) {
-        Ok(stream) => stream,
-        Err(err)
-            if err.kind() == io::ErrorKind::NotFound
-                || err.kind() == io::ErrorKind::ConnectionRefused =>
-        {
-            return Ok(None);
-        }
-        Err(err) => return Err(format!("connect desktop sidecar socket: {err}")),
-    };
-    require_same_user_peer(&stream, endpoint)?;
-    let reader = stream
-        .try_clone()
-        .map_err(|err| format!("clone sidecar socket: {err}"))?;
-    let writer = stream;
-    writer
-        .set_write_timeout(Some(DEV_SIDECAR_HANDSHAKE_TIMEOUT))
-        .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-    reader
-        .set_read_timeout(Some(DEV_SIDECAR_HANDSHAKE_TIMEOUT))
-        .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
-    Ok(Some((reader, writer)))
-}
-
-// Handshake timeouts must be cleared before streams are handed to the
-// long-lived reader thread; otherwise reads fail with EAGAIN after a few
-// seconds of idle and tear the connection down.
-#[cfg(unix)]
-fn finalize_sidecar_streams(reader: &SidecarReader, writer: &SidecarWriter) -> Result<(), String> {
-    reader
-        .set_read_timeout(None)
-        .map_err(|err| format!("clear sidecar socket read timeout: {err}"))?;
-    writer
-        .set_write_timeout(None)
-        .map_err(|err| format!("clear sidecar socket write timeout: {err}"))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn is_sidecar_gone(endpoint: &str) -> bool {
-    !Path::new(endpoint).exists()
-}
-
 #[cfg(unix)]
 fn fetch_sidecar_info(
     reader: &mut impl Read,
@@ -1011,9 +629,7 @@ fn fetch_sidecar_info(
     let frame = proto::Frame {
         message: Some(proto::frame::Message::Request(proto::Request {
             id: 1,
-            method: Some(proto::request::Method::GetSidecarInfo(
-                proto::GetSidecarInfoRequest {},
-            )),
+            method: Some(get_sidecar_info_request()),
         })),
     };
     write_frame(writer, &frame).map_err(|err| format!("request sidecar info: {err}"))?;
@@ -1023,12 +639,6 @@ fn fetch_sidecar_info(
         _ => return Err("unexpected frame while reading sidecar info".to_string()),
     };
     sidecar_info_from_response(check_response(resp)?, "get_sidecar_info")
-}
-
-#[cfg(unix)]
-fn cleanup_dev_sidecar_artifacts(endpoint: &str, metadata_path: &Path) {
-    let _ = fs::remove_file(endpoint);
-    let _ = fs::remove_file(metadata_path);
 }
 
 fn write_sidecar_metadata(
@@ -1052,62 +662,6 @@ fn write_sidecar_metadata(
     Ok(())
 }
 
-#[cfg(unix)]
-fn restrict_dir_permissions(path: &Path) -> Result<(), String> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|err| format!("set sidecar metadata dir permissions: {err}"))
-}
-
-#[cfg(unix)]
-fn restrict_file_permissions(path: &Path) -> Result<(), String> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|err| format!("set sidecar metadata permissions: {err}"))
-}
-
-#[cfg(windows)]
-fn restrict_dir_permissions(_: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(windows)]
-fn restrict_file_permissions(_: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn dev_sidecar_endpoint() -> String {
-    dev_sidecar_runtime_dir()
-        .join(format!("{}-sidecar.sock", sidecar_identity()))
-        .display()
-        .to_string()
-}
-
-#[cfg(unix)]
-fn dev_sidecar_metadata_path() -> PathBuf {
-    dev_sidecar_runtime_dir().join(format!("{}-sidecar.json", sidecar_identity()))
-}
-
-#[cfg(unix)]
-fn dev_sidecar_runtime_dir() -> PathBuf {
-    std::env::temp_dir().join("leapmux-desktop")
-}
-
-#[cfg(unix)]
-fn sidecar_identity() -> String {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<String> = OnceLock::new();
-    CACHED
-        .get_or_init(|| {
-            std::env::var("USER")
-                .or_else(|_| std::env::var("USERNAME"))
-                .unwrap_or_else(|_| "default".to_string())
-                .chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-                .collect()
-        })
-        .clone()
-}
-
 fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
     let file = fs::File::open(sidecar_path)
         .map_err(|err| format!("read desktop sidecar binary: {err}"))?;
@@ -1125,381 +679,6 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
     }
     let digest = hasher.finalize();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
-}
-
-// --- Windows named-pipe dev-mode sidecar reconnect ---
-//
-// Why tokio's overlapped-I/O client and not a raw CreateFileW/ReadFile/
-// WriteFile wrapper: a named-pipe handle opened without FILE_FLAG_OVERLAPPED
-// serializes all I/O through the FILE_OBJECT lock, even across duplicated
-// handles. A blocked long-lived ReadFile would prevent any concurrent
-// WriteFile from making progress and deadlock the reader/writer threads.
-
-#[cfg(any(windows, test))]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
-#[cfg(windows)]
-use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
-        ERROR_PIPE_BUSY, HANDLE, HLOCAL,
-    },
-    Security::{
-        Authorization::ConvertSidToStringSidW, EqualSid, GetLengthSid, GetTokenInformation,
-        TokenUser, PSID, TOKEN_QUERY, TOKEN_USER,
-    },
-    System::{Pipes::GetNamedPipeServerProcessId, Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-    }},
-};
-
-#[cfg(windows)]
-type SidecarReader = SyncPipeReader;
-#[cfg(windows)]
-type SidecarWriter = SyncPipeWriter;
-
-// `new_multi_thread` with one worker is deliberate: the reader and writer
-// threads both call `block_on` on this runtime, and `current_thread` would
-// serialize them through the runtime mutex (defeating the parallelism the
-// FILE_OBJECT-lock fix exists to enable).
-#[cfg(any(windows, test))]
-fn pipe_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_io()
-            .enable_time()
-            .thread_name("leapmux-named-pipe")
-            .build()
-            .expect("build named-pipe runtime")
-    })
-}
-
-#[cfg(windows)]
-pub struct SyncPipeReader {
-    inner: tokio::io::ReadHalf<NamedPipeClient>,
-}
-
-#[cfg(windows)]
-impl Read for SyncPipeReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        pipe_runtime().block_on(self.inner.read(buf))
-    }
-}
-
-#[cfg(windows)]
-pub struct SyncPipeWriter {
-    inner: tokio::io::WriteHalf<NamedPipeClient>,
-}
-
-#[cfg(windows)]
-impl Write for SyncPipeWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        pipe_runtime().block_on(self.inner.write(buf))
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        pipe_runtime().block_on(self.inner.flush())
-    }
-}
-
-/// Outcome of a named-pipe connect attempt. The THREE states must stay
-/// distinct: a pipe that does not exist (`NotFound`) and a pipe whose every
-/// server instance is momentarily busy (`Busy`) are opposite facts about the
-/// sidecar's liveness -- NotFound means it is gone, Busy means it is alive and
-/// serving -- and collapsing both to "no client" (the old `Ok(None)`) let a
-/// live-but-busy sidecar read as gone during the shutdown poll, so the shell
-/// double-spawned onto an endpoint a zombie still held.
-#[cfg(windows)]
-enum PipeConnect {
-    Connected(NamedPipeClient),
-    NotFound,
-    Busy,
-}
-
-// ERROR_PIPE_BUSY gets a short retry loop; if every instance stays busy across
-// the retries the pipe is alive but saturated, reported as Busy (NOT NotFound).
-// ERROR_FILE_NOT_FOUND is NotFound; any other error is fatal.
-#[cfg(windows)]
-async fn open_named_pipe_client(pipe_name: &str) -> Result<PipeConnect, String> {
-    const MAX_BUSY_RETRIES: u32 = 3;
-    for _ in 0..=MAX_BUSY_RETRIES {
-        match ClientOptions::new().open(pipe_name) {
-            Ok(client) => return Ok(PipeConnect::Connected(client)),
-            Err(err) if err.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => {
-                return Ok(PipeConnect::NotFound);
-            }
-            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-            Err(err) => return Err(format!("open named pipe {pipe_name}: {err}")),
-        }
-    }
-    // Retries exhausted while every instance was busy: alive, not gone.
-    Ok(PipeConnect::Busy)
-}
-
-#[cfg(windows)]
-fn is_sidecar_gone(pipe_name: &str) -> bool {
-    // ONLY NotFound means gone. A Busy pipe is a live sidecar whose instances
-    // are all in use -- reporting it gone here is exactly what let the shell
-    // abandon a healthy-but-busy sidecar mid-shutdown-poll and double-spawn.
-    pipe_runtime().block_on(async {
-        matches!(open_named_pipe_client(pipe_name).await, Ok(PipeConnect::NotFound))
-    })
-}
-
-/// Refuses a dev sidecar named pipe answered by anyone but this user, the
-/// Windows counterpart of the unix `connect_sidecar_endpoint`'s
-/// `require_same_user_peer`. See `require_same_user_pipe_peer` for the
-/// mechanism and the bind-side pair (`userOnlySDDL` in
-/// `backend/locallisten/locallisten_windows.go`) that hardens the *listener*
-/// the same way Unix's `requirePrivateDir` does.
-#[cfg(windows)]
-fn connect_sidecar_endpoint(
-    pipe_name: &str,
-) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
-    let client = match pipe_runtime().block_on(open_named_pipe_client(pipe_name))? {
-        PipeConnect::Connected(client) => client,
-        // Gone: the caller's "try again later / endpoint is free" signal.
-        PipeConnect::NotFound => return Ok(None),
-        // Alive but saturated. NOT free to take -- surfaced as an error so the
-        // bootstrap routes around it onto a private endpoint rather than
-        // colliding on an endpoint a live sidecar still holds.
-        PipeConnect::Busy => {
-            return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
-        }
-    };
-    require_same_user_pipe_peer(&client, pipe_name)?;
-    let (r, w) = tokio::io::split(client);
-    Ok(Some((
-        SyncPipeReader { inner: r },
-        SyncPipeWriter { inner: w },
-    )))
-}
-
-#[cfg(windows)]
-fn cleanup_dev_sidecar_artifacts(_endpoint: &str, metadata_path: &Path) {
-    // Named pipes release themselves when the server closes the listener;
-    // only the metadata file persists on disk.
-    let _ = fs::remove_file(metadata_path);
-}
-
-/// Windows counterpart of the unix private endpoint (see there for why it exists).
-/// Named pipes carry no filesystem path, so the PID goes in the pipe name.
-#[cfg(windows)]
-fn private_dev_sidecar_endpoint() -> Result<String, String> {
-    Ok(format!(
-        "\\\\.\\pipe\\leapmux-desktop-{}-sidecar-{}",
-        sidecar_identity()?,
-        std::process::id()
-    ))
-}
-
-#[cfg(windows)]
-fn dev_sidecar_endpoint() -> Result<String, String> {
-    Ok(format!(
-        "\\\\.\\pipe\\leapmux-desktop-{}-sidecar",
-        sidecar_identity()?
-    ))
-}
-
-#[cfg(windows)]
-fn dev_sidecar_metadata_path() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    dev_sidecar_metadata_path_in(&base)
-}
-
-#[cfg(windows)]
-fn dev_sidecar_metadata_path_in(base: &Path) -> PathBuf {
-    base.join("leapmux-desktop").join("sidecar.json")
-}
-
-#[cfg(windows)]
-fn sanitize_sid_for_pipe(raw: &str) -> String {
-    raw.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-#[cfg(windows)]
-fn sidecar_identity() -> Result<String, String> {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
-    CACHED
-        .get_or_init(|| {
-            current_user_sid()
-                .and_then(|bytes| sid_to_string(&bytes))
-                .map(|raw| sanitize_sid_for_pipe(&raw))
-        })
-        .clone()
-}
-
-/// The current process's user SID, copied into an owned buffer so callers can
-/// hold it past the token handle. Used both to name the per-user dev pipe
-/// (via `sidecar_identity`) and as the comparison point for the connect-side
-/// identity check (`require_same_user_pipe_peer`) -- the two callers that need
-/// to agree on what "us" means go through one place to find out.
-#[cfg(windows)]
-fn current_user_sid() -> Result<Vec<u8>, String> {
-    let mut token: HANDLE = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(format!("open process token: error {}", unsafe { GetLastError() }));
-    }
-    let sid = token_user_sid(token);
-    unsafe { CloseHandle(token) };
-    sid
-}
-
-/// Renders a SID (as raw bytes) into the `S-1-5-...` string form. Wraps the
-/// `ConvertSidToStringSidW` + `LocalFree` pair so neither caller has to.
-#[cfg(windows)]
-fn sid_to_string(sid: &[u8]) -> Result<String, String> {
-    let mut sid_string_ptr: *mut u16 = std::ptr::null_mut();
-    if unsafe { ConvertSidToStringSidW(sid.as_ptr() as PSID, &mut sid_string_ptr) } == 0 {
-        return Err(format!("convert sid to string: error {}", unsafe { GetLastError() }));
-    }
-    let mut len = 0;
-    while unsafe { *sid_string_ptr.add(len) } != 0 {
-        len += 1;
-    }
-    let slice = unsafe { std::slice::from_raw_parts(sid_string_ptr, len) };
-    let sid = String::from_utf16_lossy(slice);
-    unsafe { LocalFree(sid_string_ptr as HLOCAL) };
-    Ok(sid)
-}
-
-/// Queries `TokenUser` out of a token handle and returns the SID it points to,
-/// copied into an owned buffer.
-///
-/// `GetTokenInformation` writes a `TOKEN_USER` whose `User.Sid` points *into*
-/// the same buffer, so the SID borrows from it; copying into a fresh `Vec<u8>`
-/// hands the caller a SID whose lifetime is independent of the token query.
-/// `GetLengthSid` reports the kernel's byte count for a valid SID, so the copy
-/// is exactly sized.
-///
-/// The size-probe call is EXPECTED to fail with ERROR_INSUFFICIENT_BUFFER (that
-/// is how it reports the required size in `needed`). Checking its return
-/// distinguishes that expected failure from a real one: without the check, any
-/// other failure leaves `needed` at 0, the second call runs against an empty
-/// buffer, and the error reported below is the SECOND call's -- masking the
-/// true cause (a bad token handle, a denied query).
-#[cfg(windows)]
-fn token_user_sid(token: HANDLE) -> Result<Vec<u8>, String> {
-    let mut needed: u32 = 0;
-    if unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) } == 0 {
-        let probe_err = unsafe { GetLastError() };
-        if probe_err != ERROR_INSUFFICIENT_BUFFER {
-            return Err(format!("probe token user info size: error {probe_err}"));
-        }
-    }
-    let mut buffer = vec![0u8; needed as usize];
-    let ok = unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr() as *mut _,
-            needed,
-            &mut needed,
-        )
-    };
-    let token_err = if ok == 0 { unsafe { GetLastError() } } else { 0 };
-    if ok == 0 {
-        return Err(format!("get token user info: error {token_err}"));
-    }
-    let user_info = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
-    let sid_ptr = user_info.User.Sid;
-    let len = unsafe { GetLengthSid(sid_ptr) } as usize;
-    if len == 0 {
-        return Err("token user sid: GetLengthSid returned 0".to_string());
-    }
-    let mut sid = vec![0u8; len];
-    unsafe { std::ptr::copy_nonoverlapping(sid_ptr as *const u8, sid.as_mut_ptr(), len) };
-    Ok(sid)
-}
-
-/// Reads the server process's user SID from a connected named-pipe client
-/// handle. The PID is the kernel's report about which process bound this pipe
-/// instance (not a value the peer asserts over the wire), and the SID is read
-/// from that PID's primary token -- so the same chain of trust as Unix's
-/// `SO_PEERCRED` / `getpeereid`: a fact the peer cannot forge.
-///
-/// `PROCESS_QUERY_LIMITED_INFORMATION` is the least-privilege access right
-/// that lets us read another process's token's user; same-user processes hold
-/// it by default, and any failure here fails closed in the caller.
-#[cfg(windows)]
-fn pipe_peer_sid(client: &NamedPipeClient) -> Result<Vec<u8>, String> {
-    use std::os::windows::io::AsRawHandle;
-
-    let mut server_pid: u32 = 0;
-    if unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut server_pid) }
-        == 0
-    {
-        return Err(format!(
-            "query named pipe server pid: error {}",
-            unsafe { GetLastError() }
-        ));
-    }
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, server_pid) };
-    if process.is_null() {
-        return Err(format!(
-            "open server process {server_pid}: error {}",
-            unsafe { GetLastError() }
-        ));
-    }
-    let mut token: HANDLE = std::ptr::null_mut();
-    let token_rc = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
-    unsafe { CloseHandle(process) };
-    if token_rc == 0 {
-        return Err(format!(
-            "open server process token: error {}",
-            unsafe { GetLastError() }
-        ));
-    }
-    let sid = token_user_sid(token);
-    unsafe { CloseHandle(token) };
-    sid
-}
-
-/// The refusal decision itself, split from the pipe so it can be tested
-/// against a foreign SID -- binding a pipe as another user needs admin, so the
-/// branch that actually matters here is otherwise reachable only in production.
-/// Mirrors `require_peer_uid` on Unix.
-#[cfg(windows)]
-fn require_peer_sid(peer: &[u8], ours: &[u8], pipe_name: &str) -> Result<(), String> {
-    // EqualSid is the canonical Win32 SID comparison; it returns FALSE for
-    // unequal SIDs (different lengths or different bytes), so a peer whose SID
-    // differs in any way is a clean refusal rather than a panic.
-    let equal = unsafe { EqualSid(peer.as_ptr() as PSID, ours.as_ptr() as PSID) } != 0;
-    if !equal {
-        return Err(format!(
-            "refusing sidecar at {pipe_name}: it is answered by a different user; \
-             something else is holding this endpoint"
-        ));
-    }
-    Ok(())
-}
-
-/// Refuses a dev sidecar named pipe answered by anyone but this user. Windows
-/// counterpart of Unix's `require_same_user_peer`; see that function for why
-/// the connect side must check this even though the Go side already restricts
-/// the bind to our SID (via `userOnlySDDL` in locallisten_windows.go).
-#[cfg(windows)]
-fn require_same_user_pipe_peer(client: &NamedPipeClient, pipe_name: &str) -> Result<(), String> {
-    let peer_sid = pipe_peer_sid(client)?;
-    let our_sid = current_user_sid()?;
-    require_peer_sid(&peer_sid, &our_sid, pipe_name)
 }
 
 impl DesktopShell {
@@ -1568,12 +747,7 @@ impl DesktopShell {
     }
 
     async fn refresh_state_from_sidecar(&self) -> Result<(), String> {
-        let resp = check_response(
-            self.send_request_async(proto::request::Method::GetSidecarInfo(
-                proto::GetSidecarInfoRequest {},
-            ))
-            .await?,
-        )?;
+        let resp = check_response(self.send_request_async(get_sidecar_info_request()).await?)?;
         let info = sidecar_info_from_response(resp, "get_sidecar_info")?;
         apply_sidecar_info(&self.state, info);
         Ok(())
@@ -2590,7 +1764,8 @@ impl SaveStreamRegistry {
         // picked the name (`open_unique_tmp` skips candidates whose final
         // already exists); a file appearing there mid-stream is a TOCTOU race
         // we accept.
-        let result = std::fs::rename(&tmp_path, &final_path).map_err(|err| format!("rename: {err}"));
+        let result =
+            std::fs::rename(&tmp_path, &final_path).map_err(|err| format!("rename: {err}"));
         if result.is_err() {
             discard_partials(&tmp_path);
         }
@@ -3594,9 +2769,10 @@ fn main() {
 /// A test-only global allocator that records the largest single allocation made
 /// on each thread.
 ///
-/// It exists for `read_frame_async_rejects_oversize_varint_before_allocating`.
-/// That test's contract -- reject an oversize length prefix *without allocating
-/// the payload* -- cannot be pinned by asserting on the returned error: the very
+/// It exists for `frame::tests::read_frame_async_rejects_oversize_varint_before_allocating`
+/// (which reaches it via `crate::alloc_probe::peak_alloc_of`). That test's
+/// contract -- reject an oversize length prefix *without allocating the
+/// payload* -- cannot be pinned by asserting on the returned error: the very
 /// same "frame too large" surfaces whether the `MAX_FRAME_SIZE` check runs
 /// before the payload `vec!` or after it. Only measuring the allocation tells
 /// the two apart, and the difference is the whole point of the check: a peer
@@ -4071,9 +3247,7 @@ mod tests {
         let request = proto::Frame {
             message: Some(proto::frame::Message::Request(proto::Request {
                 id: 42,
-                method: Some(proto::request::Method::GetSidecarInfo(
-                    proto::GetSidecarInfoRequest {},
-                )),
+                method: Some(get_sidecar_info_request()),
             })),
         };
         write_frame(&mut writer, &request).expect("client write");
@@ -4153,8 +3327,7 @@ mod tests {
                 .open(&pipe_name)
                 .expect("open named pipe client")
         });
-        require_same_user_pipe_peer(&client, &pipe_name)
-            .expect("our own pipe is accepted");
+        require_same_user_pipe_peer(&client, &pipe_name).expect("our own pipe is accepted");
     }
 
     // endpoint_holder_pid now reports the kernel-recorded server pid on Windows
@@ -4176,151 +3349,6 @@ mod tests {
     fn endpoint_holder_pid_is_none_for_an_absent_endpoint() {
         let pipe_name = unique_test_pipe_name();
         assert_eq!(endpoint_holder_pid(&pipe_name), None);
-    }
-
-    #[cfg(any(windows, test))]
-    #[test]
-    fn read_frame_async_roundtrips_multibyte_varint_frame() {
-        // A frame whose encoded body exceeds 127 bytes forces the
-        // length-delimited prefix into a multi-byte varint, exercising the
-        // loop in read_varint_async.
-        pipe_runtime().block_on(async {
-            let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
-            let mut info = sidecar_info(
-                proto::SidecarShellMode::Distributed,
-                true,
-                "https://example.invalid/path/to/hub",
-            );
-            info.binary_hash = "x".repeat(200);
-            let frame = proto::Frame {
-                message: Some(proto::frame::Message::Response(proto::Response {
-                    id: 7,
-                    error: String::new(),
-                    result: Some(proto::response::Result::SidecarInfo(info)),
-                })),
-            };
-            assert!(
-                frame.encoded_len() > 127,
-                "test precondition: frame must exceed 1-byte varint range, got {}",
-                frame.encoded_len()
-            );
-
-            write_frame_async(&mut writer, &frame).await.expect("write");
-            drop(writer);
-            let received = read_frame_async(&mut reader).await.expect("read");
-            assert_eq!(received.encoded_len(), frame.encoded_len());
-            match received.message {
-                Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 7),
-                other => panic!("unexpected message: {other:?}"),
-            }
-        });
-    }
-
-    // frame_len and varint_step are the two decisions the sync and async readers
-    // SHARE. The reader tests above reach them only through a socket, and only at
-    // sizes a real frame happens to take -- so the boundary itself (exactly at the
-    // cap vs. one byte over) is asserted here, where it can be stated exactly.
-    #[test]
-    fn frame_len_admits_the_cap_and_refuses_one_byte_past_it() {
-        assert_eq!(frame_len(0).expect("an empty frame is a frame"), 0);
-        // Exactly at the cap is legal: the check is `>`, not `>=`, and a frame of
-        // precisely MAX_FRAME_SIZE must still be readable.
-        assert_eq!(
-            frame_len(MAX_FRAME_SIZE).expect("a frame at the cap is legal"),
-            MAX_FRAME_SIZE as usize
-        );
-
-        let err = frame_len(MAX_FRAME_SIZE + 1).expect_err("one byte past the cap is refused");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(
-            err.to_string().contains("frame too large"),
-            "operators and the sync reader's tests key on this text: {err}"
-        );
-
-        // A bogus varint is the case the cap exists for: u64::MAX must be refused as
-        // a size rather than narrowed by `as usize` into a plausible allocation.
-        frame_len(u64::MAX).expect_err("a bogus length prefix is refused, not truncated");
-    }
-
-    #[test]
-    fn varint_step_terminates_on_a_clear_high_bit_and_accumulates_otherwise() {
-        // Single byte, high bit clear: terminates immediately with its own value.
-        let (mut x, mut s) = (0u64, 0u32);
-        assert_eq!(varint_step(&mut x, &mut s, 0x01), Some(1));
-
-        // Two bytes: the first only accumulates (returns None and advances the
-        // shift), the second terminates and contributes its bits at that shift.
-        // 0xAC 0x02 is protobuf's canonical varint for 300.
-        let (mut x, mut s) = (0u64, 0u32);
-        assert_eq!(varint_step(&mut x, &mut s, 0xAC), None, "high bit set: more bytes needed");
-        assert_eq!(s, 7, "each continuation byte carries 7 payload bits");
-        assert_eq!(varint_step(&mut x, &mut s, 0x02), Some(300));
-    }
-
-    #[cfg(any(windows, test))]
-    #[test]
-    fn read_frame_async_rejects_oversize_varint_before_allocating() {
-        // A length prefix exceeding MAX_FRAME_SIZE must be rejected without
-        // attempting to allocate the payload, so a peer can't make us
-        // allocate gigabytes by sending a bogus varint.
-        //
-        // The error assertions below are necessary but NOT sufficient: the same
-        // error surfaces even if the check runs after the `vec!`. So measure the
-        // allocation too -- that, and only that, pins the ordering that gives
-        // the check its value. `pipe_runtime()` is resolved outside the probe so
-        // one-time runtime construction isn't attributed to the read.
-        let runtime = pipe_runtime();
-        let (_, peak) = alloc_probe::peak_alloc_of(|| {
-            runtime.block_on(async {
-                let (mut writer, mut reader) = tokio::io::duplex(64);
-                let mut buf = Vec::new();
-                let mut v: u64 = MAX_FRAME_SIZE + 1;
-                loop {
-                    let byte = (v & 0x7f) as u8;
-                    v >>= 7;
-                    if v == 0 {
-                        buf.push(byte);
-                        break;
-                    }
-                    buf.push(byte | 0x80);
-                }
-                tokio::io::AsyncWriteExt::write_all(&mut writer, &buf)
-                    .await
-                    .expect("write varint");
-                drop(writer);
-
-                let err = read_frame_async(&mut reader)
-                    .await
-                    .expect_err("oversize frame must error");
-                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string().contains("frame too large"),
-                    "unexpected error message: {err}"
-                );
-            })
-        });
-        assert!(
-            (peak as u64) < MAX_FRAME_SIZE,
-            "read_frame_async allocated {peak} bytes for a rejected {} byte prefix; \
-             the MAX_FRAME_SIZE check must run BEFORE the payload is allocated",
-            MAX_FRAME_SIZE + 1
-        );
-    }
-
-    #[cfg(any(windows, test))]
-    #[test]
-    fn read_frame_async_returns_eof_when_peer_closes() {
-        // The reader thread distinguishes UnexpectedEof from real errors so
-        // a clean peer-close doesn't log a noisy error line. Pin that
-        // contract here.
-        pipe_runtime().block_on(async {
-            let (writer, mut reader) = tokio::io::duplex(64);
-            drop(writer);
-            let err = read_frame_async(&mut reader)
-                .await
-                .expect_err("eof must be reported");
-            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
-        });
     }
 
     #[cfg(windows)]
@@ -4731,11 +3759,7 @@ mod tests {
             for _ in 0..N {
                 let s = sidecar.clone();
                 handles.push(tokio::spawn(async move {
-                    send_sidecar_request(
-                        &s,
-                        proto::request::Method::GetSidecarInfo(proto::GetSidecarInfoRequest {}),
-                    )
-                    .await
+                    send_sidecar_request(&s, get_sidecar_info_request()).await
                 }));
             }
             for h in handles {
@@ -4937,8 +3961,14 @@ mod tests {
             err.contains("write still in progress"),
             "unexpected error: {err}"
         );
-        assert!(!tmp_path.exists(), "the partial tmp is discarded, not left behind");
-        assert!(!final_path.exists(), "no corrupt file is renamed into place");
+        assert!(
+            !tmp_path.exists(),
+            "the partial tmp is discarded, not left behind"
+        );
+        assert!(
+            !final_path.exists(),
+            "no corrupt file is renamed into place"
+        );
         drop(in_flight_clone);
     }
 
@@ -5042,15 +4072,22 @@ mod tests {
         // instead of renaming the corrupted/empty partial onto the final path.
         // Before the discard-on-fail-closed fix this would `Ok(())` and
         // atomically replace `final_path` with the truncated tmp.
-        assert!(!tmp_path.exists(), "the corrupted tmp is discarded, not left");
+        assert!(
+            !tmp_path.exists(),
+            "the corrupted tmp is discarded, not left"
+        );
         let retry = registry.write_chunk(handle.id, b"more");
         assert!(
-            retry.as_ref().is_err_and(|err| err.contains("unknown save handle")),
+            retry
+                .as_ref()
+                .is_err_and(|err| err.contains("unknown save handle")),
             "after the fail-closed discard the handle is gone; got: {retry:?}"
         );
         let commit = registry.commit(handle.id);
         assert!(
-            commit.as_ref().is_err_and(|err| err.contains("unknown save handle")),
+            commit
+                .as_ref()
+                .is_err_and(|err| err.contains("unknown save handle")),
             "commit must refuse a poisoned id instead of renaming the partial; got: {commit:?}"
         );
         assert!(
