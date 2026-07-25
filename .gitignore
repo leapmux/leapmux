@@ -65,6 +65,7 @@ frontend/src/spinners/
 .claude/scheduled_tasks.lock
 .codex/
 .pi/tasks/
+.zcode/plans/
 
 # OS
 .DS_Store

@@ -287,13 +287,48 @@ struct TunnelConfigInput {
 
 // --- Sidecar process ---
 
+/// Locks a mutex, recovering transparently from poisoning.
+///
+/// This is the single policy for the three shallow bookkeeping locks in the
+/// crate -- `PendingMap`, `DesktopShell.state`, and `SaveStreamRegistry.handles`
+/// -- all of which today guard nothing more than HashMap ops, field assignment,
+/// or `Arc::clone`. A panic held across such a guard leaves the guarded state
+/// internally consistent, so returning the (poisoned) guard is sound: the
+/// alternative -- panicking on every subsequent access -- would wedge the shell
+/// permanently over a HashMap allocation edge case.
+///
+/// The per-handle `Arc<Mutex<File>>` in `SaveStreamRegistry::write_chunk` is
+/// deliberately NOT covered here: a panic mid-`write_all` corrupts the save
+/// file, so that lock fails closed (returns an error so the partial is
+/// discarded) rather than recovering silently. See
+/// https://github.com/leapmux/leapmux/issues/277.
+///
+/// Recovery is otherwise silent by design (the point is to keep serving), but
+/// the FIRST recovery across the process emits one stderr line via
+/// `POISON_WARNED` so a degraded shell is at least observable in logs without
+/// spamming on every subsequent access.
+fn recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| {
+        if !POISON_WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "warning: recovered a poisoned mutex; the desktop shell is in a degraded state (see issue #277)"
+            );
+        }
+        e.into_inner()
+    })
+}
+
+/// One-shot latch so `recover` warns about degraded-state operation exactly
+/// once per process rather than on every subsequent access of a poisoned
+/// mutex (which could be thousands of times per second under sustained
+/// degraded operation).
+static POISON_WARNED: AtomicBool = AtomicBool::new(false);
+
 type PendingResponse = oneshot::Sender<Result<proto::Response, String>>;
-// Every `.lock().unwrap()` on this map (and on DesktopShell.state /
-// SaveStreamRegistry.handles below) panics on every subsequent access once a
-// panic-while-holding-the-guard poisons it -- there is no PoisonError handling
-// or parking_lot in this crate. Currently low-severity (all critical sections
-// here are shallow map/field ops), but worth one consistent policy across all
-// production sites rather than an ad-hoc fix per site. See
+// Every production lock on this map (and on DesktopShell.state /
+// SaveStreamRegistry.handles below) goes through `recover()` above, which
+// returns a poisoned guard instead of panicking on re-entry. Sound here because
+// every critical section is a shallow map/field op. See
 // https://github.com/leapmux/leapmux/issues/277.
 type PendingMap = Arc<Mutex<HashMap<u64, PendingResponse>>>;
 
@@ -318,8 +353,9 @@ struct DesktopShell {
     close_in_progress: AtomicBool,
     exit_in_progress: AtomicBool,
     webview_zoom: AtomicU64,
-    // Poisoning wedges every command touching shell state permanently; see the
-    // PendingMap comment above and https://github.com/leapmux/leapmux/issues/277.
+    // Locks recover from poisoning rather than wedging shell state; see the
+    // `recover` helper and PendingMap comment above, and
+    // https://github.com/leapmux/leapmux/issues/277.
     state: Mutex<ShellState>,
 }
 
@@ -343,7 +379,7 @@ fn start_sidecar_reader_thread(
                     if err.kind() != io::ErrorKind::UnexpectedEof {
                         eprintln!("sidecar frame read error: {err}");
                     }
-                    pending.lock().unwrap().clear();
+                    recover(&pending).clear();
                     break;
                 }
             }
@@ -375,7 +411,7 @@ fn start_sidecar_writer_thread(
         }
         // Drop in-flight callers so their oneshot receivers resolve with
         // an error instead of hanging when the peer goes away.
-        pending.lock().unwrap().clear();
+        recover(&pending).clear();
     });
     tx
 }
@@ -1544,7 +1580,7 @@ impl DesktopShell {
     }
 
     fn runtime_state(&self) -> RuntimeState {
-        let state = self.state.lock().unwrap().clone();
+        let state = recover(&self.state).clone();
         RuntimeState {
             shell_mode: state.shell_mode,
             connected: state.connected,
@@ -1603,7 +1639,7 @@ async fn send_sidecar_request(
 ) -> Result<proto::Response, String> {
     let id = sidecar.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = oneshot::channel();
-    sidecar.pending.lock().unwrap().insert(id, tx);
+    recover(&sidecar.pending).insert(id, tx);
 
     let frame = proto::Frame {
         message: Some(proto::frame::Message::Request(proto::Request {
@@ -1612,7 +1648,7 @@ async fn send_sidecar_request(
         })),
     };
     if sidecar.writer_tx.send(frame).is_err() {
-        sidecar.pending.lock().unwrap().remove(&id);
+        recover(&sidecar.pending).remove(&id);
         return Err("desktop sidecar writer disconnected".to_string());
     }
 
@@ -1689,7 +1725,7 @@ fn window_mode_from_proto(mode: proto::WindowMode) -> String {
 
 fn apply_sidecar_info(state: &Mutex<ShellState>, info: proto::SidecarInfo) {
     let shell_mode = shell_mode_from_proto(&info);
-    let mut guard = state.lock().unwrap();
+    let mut guard = recover(state);
     guard.shell_mode = shell_mode;
     guard.connected = info.connected;
     guard.hub_url = info.hub_url;
@@ -1703,7 +1739,7 @@ fn handle_sidecar_frame(app_handle: &AppHandle, pending: &PendingMap, frame: pro
     match message {
         proto::frame::Message::Response(resp) => {
             let id = resp.id;
-            let tx = pending.lock().unwrap().remove(&id);
+            let tx = recover(pending).remove(&id);
             if let Some(tx) = tx {
                 if resp.error.is_empty() {
                     let _ = tx.send(Ok(resp));
@@ -2452,8 +2488,9 @@ struct SaveStreamRegistry {
     /// Starts at 1 so a freshly constructed registry never hands out 0 —
     /// keeps "0 == sentinel" assumptions on the JS side safe.
     next_id: AtomicU64,
-    // Poisoning makes every future download panic, and kills the 60s gc_idle
-    // task permanently on its next tick; see the PendingMap comment above and
+    // Recovers from poisoning via the `recover` helper; the per-handle
+    // `Arc<Mutex<File>>` in `write_chunk` is the exception and fails closed.
+    // See the PendingMap comment above and
     // https://github.com/leapmux/leapmux/issues/277.
     handles: Mutex<HashMap<u64, OpenSaveStream>>,
 }
@@ -2478,7 +2515,7 @@ impl SaveStreamRegistry {
     ) -> SaveStreamHandle {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let path = final_path.to_string_lossy().into_owned();
-        self.handles.lock().unwrap().insert(
+        recover(&self.handles).insert(
             id,
             OpenSaveStream {
                 file: Arc::new(Mutex::new(file)),
@@ -2491,7 +2528,7 @@ impl SaveStreamRegistry {
     }
 
     fn take(&self, id: u64) -> Option<OpenSaveStream> {
-        self.handles.lock().unwrap().remove(&id)
+        recover(&self.handles).remove(&id)
     }
 
     /// Finalize the save: take the handle, ensure no write is still in flight,
@@ -2567,14 +2604,50 @@ impl SaveStreamRegistry {
         // writes targeting different handles can then proceed in
         // parallel.
         let file = {
-            let mut guard = self.handles.lock().unwrap();
+            let mut guard = recover(&self.handles);
             let handle = guard
                 .get_mut(&id)
                 .ok_or_else(|| format!("unknown save handle {id}"))?;
             handle.last_write_at = Instant::now();
             handle.file.clone()
         };
-        let mut guard = file.lock().unwrap();
+        // The per-handle file lock is the one lock in this crate that does NOT
+        // recover from poisoning. Poisoning here means the guard was held
+        // across a panic (realistically: an allocator OOM or a future panicking
+        // op inside the critical section -- `File::write_all` itself returns
+        // `Result` and does not panic on I/O errors), leaving the tmp file in
+        // an indeterminate state.
+        //
+        // Recovering silently and continuing to write would corrupt the save.
+        // But surfacing the error alone is NOT enough either: a panic unwinds
+        // and drops this frame's `Arc` clone, so by the time the caller acts
+        // the registry's clone is again the sole owner. `commit` would then
+        // `take` the handle, `Arc::try_unwrap` would SUCCEED (`try_unwrap`
+        // catches a *live* write clone, not a *panicked* one whose clone has
+        // unwound away), and `rename` would atomically promote the corrupted
+        // -- or, for save-as on a first write, 0-byte -- partial onto the
+        // user's chosen final path, reported as success. In the save-as flow
+        // (`open_tmp_for_write` opens with `truncate`), that silently destroys
+        // the user's original file.
+        //
+        // So discard the handle and its partial on this path: `take` removes
+        // the registry entry (and `commit`/`write_chunk` now find "unknown
+        // save handle {id}" -- commit cannot rename what is gone), and
+        // `discard_stream` drops the poisoned `Arc<Mutex<File>>` and removes
+        // the tmp in the documented Windows-safe order (File dropped before
+        // remove). The caller still gets the error to surface. See
+        // https://github.com/leapmux/leapmux/issues/277.
+        let mut guard = match file.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                if let Some(stream) = self.take(id) {
+                    discard_stream(stream);
+                }
+                return Err(format!(
+                    "save handle {id} write failed: a prior write panicked"
+                ));
+            }
+        };
         guard
             .write_all(bytes)
             .map_err(|err| format!("write: {err}"))
@@ -2584,7 +2657,7 @@ impl SaveStreamRegistry {
     /// the app exit path so an interrupted save doesn't leave junk on
     /// disk.
     fn cleanup_all(&self) {
-        let drained: Vec<_> = self.handles.lock().unwrap().drain().collect();
+        let drained: Vec<_> = recover(&self.handles).drain().collect();
         for (_, stream) in drained {
             discard_stream(stream);
         }
@@ -2610,7 +2683,7 @@ impl SaveStreamRegistry {
     fn gc_idle(&self, max_idle: Duration) {
         let now = Instant::now();
         let stale_ids: Vec<u64> = {
-            let guard = self.handles.lock().unwrap();
+            let guard = recover(&self.handles);
             guard
                 .iter()
                 .filter(|(_, h)| now.duration_since(h.last_write_at) >= max_idle)
@@ -2622,7 +2695,7 @@ impl SaveStreamRegistry {
             // snapshot and take may have refreshed the timestamp. If
             // it has, leave the stream alone.
             let stream = {
-                let mut guard = self.handles.lock().unwrap();
+                let mut guard = recover(&self.handles);
                 match guard.get(&id) {
                     Some(h) if now.duration_since(h.last_write_at) >= max_idle => guard.remove(&id),
                     _ => None,
@@ -2658,7 +2731,7 @@ impl SaveStreamRegistry {
     /// `file_save_open` uses. See https://github.com/leapmux/leapmux/issues/285.
     fn sweep_orphan_tmps(&self, dir: &Path) {
         let live: HashSet<PathBuf> = {
-            let guard = self.handles.lock().unwrap();
+            let guard = recover(&self.handles);
             guard.values().map(|h| h.tmp_path.clone()).collect()
         };
         let entries = match std::fs::read_dir(dir) {
@@ -3050,7 +3123,7 @@ async fn switch_mode(
     let (info, cleanup_errors) = lifecycle_from_response(response)?;
     apply_sidecar_info(&shell.state, info);
 
-    let local_app_url = shell.state.lock().unwrap().local_app_url.clone();
+    let local_app_url = recover(&shell.state).local_app_url.clone();
     let (target_url, cleanup_message) = launcher_url(&local_app_url, &cleanup_errors)?;
     if let Err(err) = window.navigate(target_url) {
         if cleanup_message.is_empty() {
@@ -4867,6 +4940,148 @@ mod tests {
         assert!(!tmp_path.exists(), "the partial tmp is discarded, not left behind");
         assert!(!final_path.exists(), "no corrupt file is renamed into place");
         drop(in_flight_clone);
+    }
+
+    // `recover` is the policy for every shallow bookkeeping lock: a panic held
+    // across the guard must NOT permanently wedge the lock. Poison it once, then
+    // confirm the next `recover` returns a usable guard instead of panicking --
+    // which is the whole reason the helper exists over plain `.lock().unwrap()`.
+    #[test]
+    fn recover_returns_a_usable_guard_after_poisoning() {
+        use std::panic;
+        let m = Mutex::new(0i32);
+        // Poison the mutex: a panic while holding the guard marks it poisoned.
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap();
+            panic!("intentional test panic to poison the mutex");
+        }));
+        assert!(m.is_poisoned(), "precondition: the mutex is poisoned");
+        // After poisoning, `.lock().unwrap()` would itself panic; `recover` must not.
+        let guard = recover(&m);
+        assert_eq!(*guard, 0, "the poisoned guard is still usable");
+    }
+
+    // The FIRST recovery of a poisoned mutex across the process latches
+    // `POISON_WARNED` so the shell's degraded state is observable without
+    // spamming stderr on every subsequent access (which a sustained-degraded
+    // shell would otherwise hit thousands of times per second). Resetting the
+    // latch before poisoning makes this test's assertions deterministic
+    // against whatever other tests have done; the latch is monotonic, so a
+    // racing parallel test setting it does not change the post-condition.
+    #[test]
+    fn recover_warns_about_degraded_state_at_most_once() {
+        use std::panic;
+        POISON_WARNED.store(false, Ordering::Relaxed);
+        let m = Mutex::new(0i32);
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap();
+            panic!("intentional test panic to poison the mutex");
+        }));
+        // First recovery latches the warning. Hold the guard so clippy's
+        // `let_underscore_lock` lint does not flag an immediate drop (and so
+        // the recovery's effect -- driving `recover`'s body -- clearly happens).
+        let _guard1 = recover(&m);
+        assert!(
+            POISON_WARNED.load(Ordering::Relaxed),
+            "the first recovery of a poisoned mutex latches the one-shot warning"
+        );
+        // A second recovery must NOT reset or re-fire -- the latch stays set.
+        drop(_guard1);
+        let _guard2 = recover(&m);
+        assert!(
+            POISON_WARNED.load(Ordering::Relaxed),
+            "the warning latch is one-shot; a second recovery does not reset it"
+        );
+    }
+
+    // The per-handle file lock in `write_chunk` is the ONE lock that does NOT
+    // recover: a panic mid-`write_all` corrupts the file, so the second write
+    // must fail loudly AND discard the partial -- rather than silently continue
+    // writing, and rather than leaving a corrupted partial for `commit` to
+    // rename onto the final path. This test pins BOTH invariants: the write
+    // errors, the handle is discarded so a later `commit` finds "unknown save
+    // handle", and neither the tmp nor an empty final is left behind.
+    #[test]
+    fn write_chunk_fails_loudly_after_the_file_lock_is_poisoned() {
+        let registry = SaveStreamRegistry::new();
+        let (tmp_path, final_path) = save_test_paths();
+        // Panic-safe cleanup: drop the registry's open File BEFORE remove_file
+        // (Windows refuses remove while a handle is open -- the same invariant
+        // `discard_stream` and `commit` enforce in production), and reclaim the
+        // tmp even if an assertion below panics and skips a trailing remove.
+        // `registry` is dropped first by being declared before `tmp`; the
+        // explicit `drop(registry)` makes the ordering load-bearing rather than
+        // accidental.
+        let file = std::fs::File::create(&tmp_path).expect("create tmp");
+        let handle = registry.insert(file, tmp_path.clone(), final_path.clone());
+
+        // Poison the handle's per-file mutex the only way std allows: panic
+        // while holding its guard, in a scope whose guard unwinds and DROPS the
+        // clone. This reproduces the production hazard exactly -- after a
+        // `write_all` panic the panicking frame's `Arc` clone is unwound away,
+        // leaving the registry's clone as sole owner -- so the `commit` refusal
+        // asserted below exercises the real `try_unwrap`-succeeds-after-unwind
+        // path, not the in-flight-clone path the sibling test covers.
+        let poisoned = poison_handle_file_lock(&registry, handle.id);
+        assert!(
+            poisoned,
+            "precondition: the per-handle file lock is poisoned"
+        );
+
+        let err = registry
+            .write_chunk(handle.id, b"more")
+            .expect_err("a poisoned file lock must fail the write, not recover");
+        assert!(
+            err.contains("a prior write panicked"),
+            "unexpected error: {err}"
+        );
+
+        // The fail-closed path discards the handle: the tmp is gone, a retry
+        // finds the handle unknown, and -- the load-bearing assertion -- a
+        // `commit` on the poisoned id refuses (with "unknown save handle")
+        // instead of renaming the corrupted/empty partial onto the final path.
+        // Before the discard-on-fail-closed fix this would `Ok(())` and
+        // atomically replace `final_path` with the truncated tmp.
+        assert!(!tmp_path.exists(), "the corrupted tmp is discarded, not left");
+        let retry = registry.write_chunk(handle.id, b"more");
+        assert!(
+            retry.as_ref().is_err_and(|err| err.contains("unknown save handle")),
+            "after the fail-closed discard the handle is gone; got: {retry:?}"
+        );
+        let commit = registry.commit(handle.id);
+        assert!(
+            commit.as_ref().is_err_and(|err| err.contains("unknown save handle")),
+            "commit must refuse a poisoned id instead of renaming the partial; got: {commit:?}"
+        );
+        assert!(
+            !final_path.exists(),
+            "no corrupted/empty partial is renamed to the final path"
+        );
+        drop(registry);
+        let _ = std::fs::remove_file(&tmp_path);
+        let _ = std::fs::remove_file(&final_path);
+    }
+
+    /// Poison a handle's per-handle `Arc<Mutex<File>>` by panicking while
+    /// holding its guard in a scope that drops the cloned `Arc` on unwind.
+    /// Returns `true` if the mutex is poisoned after the call. Shared between
+    /// the write-fail-closed tests so the poison mechanism stays identical.
+    fn poison_handle_file_lock(registry: &SaveStreamRegistry, id: u64) -> bool {
+        use std::panic;
+        let poisoned = {
+            let file_mutex = {
+                let guard = registry.handles.lock().unwrap();
+                guard.get(&id).unwrap().file.clone()
+            };
+            let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                let _g = file_mutex.lock().unwrap();
+                panic!("intentional test panic to poison the file lock");
+            }));
+            // `file_mutex` drops here as the scope closes -- after the panic,
+            // mirroring `write_chunk`'s local clone unwinding away.
+            file_mutex.is_poisoned()
+        };
+        poisoned
     }
 
     #[test]
