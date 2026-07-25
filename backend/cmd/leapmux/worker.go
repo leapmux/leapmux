@@ -159,6 +159,7 @@ func runWorker(args []string) error {
 		CompositeKey:         compositeKey,
 		EncryptionMode:       encMode,
 		MaxIncompleteChunked: cfg.MaxIncompleteChunked,
+		MaxMessageSize:       cfg.MaxMessageSize,
 		WorkerID:             state.WorkerID,
 		Name:                 cfg.Name,
 		HomeDir:              homeDir,

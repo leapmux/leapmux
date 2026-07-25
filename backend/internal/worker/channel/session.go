@@ -93,12 +93,27 @@ type Manager struct {
 	trySendFn            TrySendFunc                 // Non-blocking send for the receive goroutine
 	dispatcher           *Dispatcher                 // Inner RPC dispatcher
 	closeCallback        CloseCallback               // Called when a channel is closed
-	maxMessageSize       int                         // maximum reassembled message size
+	maxMessageSize       int                         // configured application payload budget (0 resolved to MaxMessageSize)
 	maxIncompleteChunked int                         // maximum in-flight chunked sequences per channel
+	// reassembledOverride, when > 0, forces the per-session reassembled
+	// ceiling (test harness only). Production always derives
+	// MaxReassembledMessageSize(effectivePayload).
+	reassembledOverride int
+	// onNegotiatedMaxMessageSize, when set, is called after a successful
+	// open with the channel id and effective payload budget (min(hub,
+	// worker)). Bootstrap wires agent.ObserveNegotiatedMaxMessageSize so
+	// agent stdout scanners adopt the Hub↔Worker negotiated ceiling.
+	onNegotiatedMaxMessageSize func(channelID string, effectiveMax int)
+	// onReleasedMaxMessageSize, when set, is called from HandleClose so
+	// producers can drop that channel's open ref and recompute.
+	onReleasedMaxMessageSize func(channelID string)
+	// onReleasedAllMaxMessageSizes, when set, is called from CloseAll to
+	// clear every open-channel ref in one shot.
+	onReleasedAllMaxMessageSizes func()
 }
 
 // NewManager creates a new channel Manager.
-// Pass 0 for maxIncompleteChunked to use the default.
+// Pass 0 for maxMessageSize / maxIncompleteChunked to use the defaults.
 //
 // The close callback is wired separately via SetOnChannelClose rather
 // than taken here, because its only real implementation reaches into the
@@ -112,15 +127,10 @@ func NewManager(
 	encryptionMode leapmuxv1.EncryptionMode,
 	sendFn SendFunc,
 	trySendFn TrySendFunc,
+	maxMessageSize int,
 	maxIncompleteChunked int,
 ) *Manager {
-	// The reassembled-message ceiling is a fixed protocol constant shared with
-	// the tunnel client and the browser (channelwire.DefaultMaxMessageSize), not
-	// an operator knob: a worker configured with any other value would reject a
-	// message the other receivers accept, or accept one they reject. Only the
-	// in-flight-chunk cap remains tunable. Reintroducing the knob with
-	// end-to-end propagation is tracked in
-	// https://github.com/leapmux/leapmux/issues/291.
+	maxMessageSize = channelwire.ResolveMaxMessageSize(maxMessageSize)
 	if maxIncompleteChunked <= 0 {
 		maxIncompleteChunked = channelwire.DefaultMaxIncompleteChunked
 	}
@@ -130,7 +140,7 @@ func NewManager(
 		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
 		trySendFn:            trySendFn,
-		maxMessageSize:       channelwire.DefaultMaxMessageSize,
+		maxMessageSize:       maxMessageSize,
 		maxIncompleteChunked: maxIncompleteChunked,
 	}
 }
@@ -149,6 +159,26 @@ func (m *Manager) SetOnChannelClose(cb CloseCallback) {
 	m.closeCallback = cb
 }
 
+// SetOnNegotiatedMaxMessageSize registers a callback invoked with the
+// channel id and effective application payload budget after each
+// successful HandleOpen. Bootstrap wires producer clamps (agent stdout) here.
+func (m *Manager) SetOnNegotiatedMaxMessageSize(cb func(channelID string, effectiveMax int)) {
+	m.onNegotiatedMaxMessageSize = cb
+}
+
+// SetOnReleasedMaxMessageSize registers a callback invoked when a channel
+// session is removed via HandleClose so producers can release that
+// channel's negotiated budget.
+func (m *Manager) SetOnReleasedMaxMessageSize(cb func(channelID string)) {
+	m.onReleasedMaxMessageSize = cb
+}
+
+// SetOnReleasedAllMaxMessageSizes registers a callback invoked from
+// CloseAll to clear every open-channel budget in one shot.
+func (m *Manager) SetOnReleasedAllMaxMessageSizes(cb func()) {
+	m.onReleasedAllMaxMessageSizes = cb
+}
+
 // Dispatcher returns the inner RPC dispatcher.
 func (m *Manager) Dispatcher() *Dispatcher {
 	return m.dispatcher
@@ -163,10 +193,26 @@ func rejectChannelReopen(channelID string) *leapmuxv1.ChannelOpenResponse {
 	slog.Warn("rejecting channel re-open: channel id already active",
 		"channel_id", channelID,
 	)
-	return &leapmuxv1.ChannelOpenResponse{
-		ChannelId: channelID,
-		Error:     "channel id already active",
-	}
+	return channelwire.NewChannelOpenError(
+		channelID,
+		"channel id already active",
+		leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
+	)
+}
+
+// rejectInvalidHubMaxMessageSize logs and builds the structured open reject
+// for an unusable hub max_message_size (overflow or out of bounds).
+func (m *Manager) rejectInvalidHubMaxMessageSize(channelID string, hubMax any, err error) *leapmuxv1.ChannelOpenResponse {
+	slog.Warn("rejecting channel open: hub max_message_size invalid",
+		"channel_id", channelID,
+		"hub_max_message_size", hubMax,
+		"error", err,
+	)
+	return channelwire.NewChannelOpenError(
+		channelID,
+		fmt.Sprintf("invalid hub max_message_size: %v", err),
+		leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE,
+	)
 }
 
 // HandleOpen processes a ChannelOpenRequest from the Hub.
@@ -209,15 +255,35 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		slog.Warn("rejecting channel open: hub named no authenticated user",
 			"channel_id", req.GetChannelId(),
 		)
-		return &leapmuxv1.ChannelOpenResponse{
-			ChannelId: req.GetChannelId(),
-			Error:     "no authenticated user id",
+		return channelwire.NewChannelOpenError(
+			req.GetChannelId(),
+			"no authenticated user id",
+			leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_NO_AUTHENTICATED_USER,
+		)
+	}
+
+	hubMax, err := channelwire.IntFromUint64(req.GetMaxMessageSize())
+	if err != nil {
+		return m.rejectInvalidHubMaxMessageSize(req.GetChannelId(), req.GetMaxMessageSize(), err)
+	}
+	if err := channelwire.ValidateMaxMessageSize(hubMax); err != nil {
+		return m.rejectInvalidHubMaxMessageSize(req.GetChannelId(), hubMax, err)
+	}
+	effectiveMax := channelwire.NegotiatePayloadBudget(hubMax, m.maxMessageSize)
+	maxPayload := effectiveMax
+	reassembledMax := channelwire.MaxReassembledMessageSize(effectiveMax)
+	if m.reassembledOverride > 0 {
+		reassembledMax = m.reassembledOverride
+		// Test harness may force a tiny reassembled gate below the
+		// validated payload floor. Keep MaxPayloadBudget from advertising
+		// a larger producer clamp than the send/reassembly ceiling.
+		if maxPayload > reassembledMax {
+			maxPayload = reassembledMax
 		}
 	}
 
 	var handshakeResp []byte
 	var session *noiseutil.Session
-	var err error
 
 	switch m.encryptionMode {
 	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
@@ -240,10 +306,11 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			"channel_id", req.GetChannelId(),
 			"error", err,
 		)
-		return &leapmuxv1.ChannelOpenResponse{
-			ChannelId: req.GetChannelId(),
-			Error:     fmt.Sprintf("handshake failed: %v", err),
-		}
+		return channelwire.NewChannelOpenError(
+			req.GetChannelId(),
+			fmt.Sprintf("handshake failed: %v", err),
+			leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED,
+		)
 	}
 
 	// Build accessible workspace ID set from the Hub-provided list.
@@ -285,17 +352,24 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			channelID:      req.GetChannelId(),
 			session:        session,
 			sendFn:         m.sendFn,
-			maxMessageSize: m.maxMessageSize,
+			maxPayload:     maxPayload,
+			maxReassembled: reassembledMax,
 			lifetime:       ctx,
 			errorSends:     make(chan errorSend, errorSendQueueSize),
 		},
 		ctx:                    ctx,
 		cancel:                 cancel,
-		reassembly:             newReassembler(m.maxMessageSize, m.maxIncompleteChunked),
+		reassembly:             newReassembler(reassembledMax, m.maxIncompleteChunked),
 		accessibleWorkspaceIDs: awsIDs,
 		lastRekeyAt:            time.Now(),
 	}
 	m.sessions[req.GetChannelId()] = sess
+	// Observe while still holding m.mu so HandleClose cannot Release
+	// (no-op) between insert and Observe and leave an orphan budget that
+	// permanently ratchets the process-wide scanner ceiling down.
+	if m.onNegotiatedMaxMessageSize != nil {
+		m.onNegotiatedMaxMessageSize(req.GetChannelId(), effectiveMax)
+	}
 	m.mu.Unlock()
 	// One drainer per session; it exits when HandleClose/CloseAll cancel
 	// sess.ctx (see channelSender.errorSends).
@@ -305,11 +379,13 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		"channel_id", req.GetChannelId(),
 		"user_id", req.GetUserId(),
 		"encryption_mode", m.encryptionMode,
+		"max_message_size", effectiveMax,
 	)
 
 	return &leapmuxv1.ChannelOpenResponse{
 		ChannelId:        req.GetChannelId(),
 		HandshakePayload: handshakeResp,
+		MaxMessageSize:   uint64(effectiveMax),
 	}
 }
 
@@ -605,10 +681,10 @@ func (m *Manager) reactToReassembly(
 			"channel_id", channelID,
 			"correlation_id", requestID,
 			"size", outcome.size,
-			"max", m.maxMessageSize,
+			"max", sess.sender.maxReassembled,
 		)
 		sess.sender.queueError(requestID, int32(codes.ResourceExhausted),
-			fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, m.maxMessageSize))
+			fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, sess.sender.maxReassembled))
 		return nil, false
 	case reassemblyBuffered:
 		slog.Debug("buffered chunk",
@@ -647,6 +723,10 @@ func (m *Manager) HandleClose(channelID string) {
 		sess.cancel()
 	}
 
+	if ok && m.onReleasedMaxMessageSize != nil {
+		m.onReleasedMaxMessageSize(channelID)
+	}
+
 	if m.closeCallback != nil {
 		m.closeCallback(channelID)
 	}
@@ -674,6 +754,17 @@ func (m *Manager) CloseAll() {
 		cancel()
 	}
 
+	if m.onReleasedAllMaxMessageSizes != nil {
+		m.onReleasedAllMaxMessageSizes()
+	} else if m.onReleasedMaxMessageSize != nil {
+		// Fallback when only the per-channel hook is wired (unit tests).
+		// Production bootstrap always sets onReleasedAllMaxMessageSizes so
+		// agent refcount clears under one lock instead of N times.
+		for _, id := range channels {
+			m.onReleasedMaxMessageSize(id)
+		}
+	}
+
 	if m.closeCallback != nil {
 		for _, id := range channels {
 			m.closeCallback(id)
@@ -688,11 +779,14 @@ func (m *Manager) CloseAll() {
 // multi-chunk message), the Connect send, and the receive-goroutine error
 // queue that drains through the same gate.
 type channelSender struct {
-	gate           channelwire.SendGate // zero value usable
-	channelID      string
-	session        *noiseutil.Session
-	sendFn         SendFunc
-	maxMessageSize int
+	gate      channelwire.SendGate // zero value usable
+	channelID string
+	session   *noiseutil.Session
+	sendFn    SendFunc
+	// maxPayload is the negotiated application payload budget (min(hub, worker)).
+	// maxReassembled is the send/reassembly ceiling (payload + envelope headroom).
+	maxPayload     int
+	maxReassembled int
 	// lifetime is the session's context. It bounds a sender parked on the gate
 	// (or on the connection writer's byte budget) so a torn-down session never
 	// strands one. nil in focused unit tests, which the gate accepts.
@@ -784,9 +878,9 @@ func (s *channelSender) sendEncryptedAfter(requestID uint64, envelope *leapmuxv1
 		return fmt.Errorf("marshal inner message: %w", err)
 	}
 
-	if len(data) > s.maxMessageSize {
+	if len(data) > s.maxReassembled {
 		return fmt.Errorf("message too large: %d > %d: %w",
-			len(data), s.maxMessageSize, ErrMessageRejected)
+			len(data), s.maxReassembled, ErrMessageRejected)
 	}
 
 	return s.gate.Send(context.Background(), s.lifetime, data,
@@ -830,6 +924,12 @@ func (s *channelSender) sendError(requestID uint64, code int32, message string) 
 // ChannelID returns the E2EE channel ID for this sender.
 func (s *channelSender) ChannelID() string {
 	return s.channelID
+}
+
+// MaxPayloadBudget returns the negotiated application payload budget for
+// this channel (min(hub, worker) at open).
+func (s *channelSender) MaxPayloadBudget() int {
+	return s.maxPayload
 }
 
 // sendStream sends an InnerStreamMessage (encrypted) back to the frontend.
@@ -918,4 +1018,9 @@ func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
 
 func (b *boundSender) ChannelID() string {
 	return b.sender.ChannelID()
+}
+
+// MaxPayloadBudget returns the negotiated application payload budget.
+func (b *boundSender) MaxPayloadBudget() int {
+	return b.sender.MaxPayloadBudget()
 }

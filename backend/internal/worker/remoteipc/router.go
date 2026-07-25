@@ -317,7 +317,8 @@ func (c *responseCollector) SendStream(*leapmuxv1.InnerStreamMessage) error {
 	return errors.New("unary call cannot stream")
 }
 
-func (c *responseCollector) ChannelID() string { return c.streamID }
+func (c *responseCollector) ChannelID() string   { return c.streamID }
+func (*responseCollector) MaxPayloadBudget() int { return 0 }
 
 func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
 	c.mu.Lock()
@@ -444,7 +445,8 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	return err
 }
 
-func (c *streamCollector) ChannelID() string { return c.streamID }
+func (c *streamCollector) ChannelID() string   { return c.streamID }
+func (*streamCollector) MaxPayloadBudget() int { return 0 }
 
 // wait blocks until either the handler signals completion (via
 // SendResponse / SendError → finish) or the request context is

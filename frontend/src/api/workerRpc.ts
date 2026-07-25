@@ -228,9 +228,14 @@ class BrowserChannelTransport implements ChannelTransport {
     }
   }
 
-  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }> {
+  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string, maxMessageSize: number }> {
     const resp = await channelRpcClient.openChannel({ workerId, handshakePayload })
-    return { channelId: resp.channelId, handshakePayload: resp.handshakePayload, userId: resp.userId }
+    return {
+      channelId: resp.channelId,
+      handshakePayload: resp.handshakePayload,
+      userId: resp.userId,
+      maxMessageSize: Number(resp.maxMessageSize),
+    }
   }
 
   async closeChannel(channelId: string): Promise<void> {

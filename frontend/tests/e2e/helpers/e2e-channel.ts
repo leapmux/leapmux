@@ -59,7 +59,7 @@ class FetchChannelTransport implements ChannelTransport {
     }
   }
 
-  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }> {
+  async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string, maxMessageSize: number }> {
     const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/OpenChannel`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
@@ -72,8 +72,14 @@ class FetchChannelTransport implements ChannelTransport {
       const body = await resp.text().catch(() => '')
       throw new Error(`OpenChannel failed: ${resp.status} ${body}`)
     }
-    const data = await resp.json() as { channelId: string, handshakePayload: string, userId?: string }
-    return { channelId: data.channelId, handshakePayload: base64ToBytes(data.handshakePayload), userId: data.userId ?? '' }
+    // Protobuf JSON may encode uint64 as a string; Number() matches BrowserChannelTransport.
+    const data = await resp.json() as { channelId: string, handshakePayload: string, userId?: string, maxMessageSize?: number | string }
+    return {
+      channelId: data.channelId,
+      handshakePayload: base64ToBytes(data.handshakePayload),
+      userId: data.userId ?? '',
+      maxMessageSize: Number(data.maxMessageSize),
+    }
   }
 
   async closeChannel(channelId: string): Promise<void> {

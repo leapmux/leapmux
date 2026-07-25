@@ -25,6 +25,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -47,6 +48,7 @@ type Params struct {
 	CompositeKey         *noiseutil.CompositeKeypair
 	EncryptionMode       leapmuxv1.EncryptionMode
 	MaxIncompleteChunked int
+	MaxMessageSize       int
 
 	WorkerID string
 	Name     string
@@ -96,8 +98,12 @@ func Wire(p Params) *Wiring {
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
 	channelMgr := channel.NewManager(
-		p.CompositeKey, p.EncryptionMode, p.Client.Send, p.Client.TrySendOrReset, p.MaxIncompleteChunked,
+		p.CompositeKey, p.EncryptionMode, p.Client.Send, p.Client.TrySendOrReset, p.MaxMessageSize, p.MaxIncompleteChunked,
 	)
+
+	// Raise producer ceilings with the configured payload budget so a
+	// raised max_message_size is not receive-side-only.
+	agent.ConfigureMaxMessageSize(p.MaxMessageSize)
 
 	svc := service.New(service.Config{
 		Channels:            channelMgr,
@@ -114,6 +120,7 @@ func Wire(p Params) *Wiring {
 		APITimeout:          p.APITimeout,
 		UseLoginShell:       p.UseLoginShell,
 		WakeLock:            p.WakeLock,
+		MaxMessageSize:      p.MaxMessageSize,
 	})
 	svc.RestoreState()
 
@@ -124,6 +131,14 @@ func Wire(p Params) *Wiring {
 	channelMgr.SetOnChannelClose(func(channelID string) {
 		svc.Watchers.UnwatchAll(channelID)
 	})
+	// When a channel opens, record its negotiated payload budget on the
+	// agent stdout scanners; release on close so the live ceiling rises
+	// back to the worker configured budget once no channels remain (and
+	// so Hub reject-after-accept teardown undoes an Observe that raced
+	// ahead of registration commit).
+	channelMgr.SetOnNegotiatedMaxMessageSize(agent.ObserveNegotiatedMaxMessageSize)
+	channelMgr.SetOnReleasedMaxMessageSize(agent.ReleaseNegotiatedMaxMessageSize)
+	channelMgr.SetOnReleasedAllMaxMessageSizes(agent.ReleaseAllNegotiatedMaxMessageSizes)
 
 	// Drop pending control_requests on every subprocess exit (graceful
 	// stop, crash, worker tear-down) so request_ids bound to the exited

@@ -81,7 +81,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	hubtestutil.CreateTestAdmin(t, st)
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New()
+	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()

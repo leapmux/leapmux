@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -67,7 +68,8 @@ func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	return nil
 }
 
-func (w *testResponseWriter) ChannelID() string { return w.channelID }
+func (w *testResponseWriter) ChannelID() string   { return w.channelID }
+func (*testResponseWriter) MaxPayloadBudget() int { return 0 }
 
 // testChannelID is the channel id setupTestService's handshake
 // registers; every fresh testResponseWriter in this package shares it
@@ -157,7 +159,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	// SLH-DSA under the race detector otherwise dominates the package runtime.
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0)
+	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0, 0)
 	t.Cleanup(chmgr.CloseAll)
 
 	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
@@ -167,6 +169,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		UserId:                 "user-1",
 		HandshakePayload:       msg1,
 		AccessibleWorkspaceIds: cfg.workspaceIDs,
+		MaxMessageSize:         uint64(channelwire.MaxMessageSize),
 	})
 
 	// Built through service.New, not by hand.

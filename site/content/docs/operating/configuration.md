@@ -196,6 +196,7 @@ The TLS modes:
 | `api_timeout_seconds` | `10` | General API timeout in seconds (`<=0` falls back to 10). |
 | `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
 | `worktree_create_timeout_seconds` | `60` | Worktree creation timeout in seconds (`<=0` falls back to 60). |
+| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Clients derive the reassembled send/receive ceiling as this plus 64 KiB of envelope headroom — the wire field on `OpenChannel` / `OpenChannelResponse` is the payload budget, not the reassembled ceiling. Must be between one Noise plaintext chunk (~64 KiB) and 64 MiB when set. Effective per channel is `min(hub, worker)`. Clients (browser, CLI tunnel) do not configure this — they adopt the payload budget from `OpenChannel`. |
 
 ### Solo and dev extras (worker-scoped)
 
@@ -250,6 +251,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | Config key | Default | Meaning |
 | --- | --- | --- |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
+| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)`; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
 | `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
 | `api_timeout_seconds` | `10` | JSON-RPC request timeout in seconds (`<=0` falls back to 10). |
 

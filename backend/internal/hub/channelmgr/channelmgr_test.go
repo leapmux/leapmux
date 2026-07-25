@@ -25,7 +25,7 @@ func bindChannelConn(t testing.TB, m *Manager, channelID, connID string) bool {
 }
 
 func TestRegisterAndExists(t *testing.T) {
-	m := New()
+	m := New(0)
 	assert.False(t, m.Exists("ch1"))
 
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
@@ -37,7 +37,7 @@ func TestRegisterAndExists(t *testing.T) {
 }
 
 func TestUnregister(t *testing.T) {
-	m := New()
+	m := New(0)
 	cancelled := false
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, func() { cancelled = true })
 
@@ -47,7 +47,7 @@ func TestUnregister(t *testing.T) {
 }
 
 func TestUnregisterByWorker(t *testing.T) {
-	m := New()
+	m := New(0)
 	var cancelledIDs []string
 	var mu sync.Mutex
 
@@ -71,13 +71,13 @@ func TestUnregisterByWorker(t *testing.T) {
 }
 
 func TestGetWorkerIDNonexistent(t *testing.T) {
-	m := New()
+	m := New(0)
 	_, ok := m.GetChannelInfo("nonexistent")
 	assert.False(t, ok)
 }
 
 func TestChannelConnBinding_TargetedRouting(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// Two connections for the same user.
@@ -104,12 +104,12 @@ func TestChannelConnBinding_TargetedRouting(t *testing.T) {
 }
 
 func TestChannelConnBinding_Nonexistent(t *testing.T) {
-	m := New()
+	m := New(0)
 	assert.False(t, bindChannelConn(t, m, "nonexistent", "conn1"))
 }
 
 func TestSendToFrontend_NoConnID(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// Channel without a bound conn — SendToFrontend should return false
@@ -125,7 +125,7 @@ func TestSendToFrontend_NoConnID(t *testing.T) {
 }
 
 func TestSendToFrontend_WithConnID(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	var received []*leapmuxv1.ChannelMessage
@@ -150,7 +150,7 @@ func TestSendToFrontend_WithConnID(t *testing.T) {
 }
 
 func TestSendToFrontendOrdersCloseAfterInFlightMessage(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -195,7 +195,7 @@ func TestSendToFrontendOrdersCloseAfterInFlightMessage(t *testing.T) {
 }
 
 func TestCloseByIDDoesNotBlockUnrelatedManagerOperations(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("blocked", "w1", "u1", AuthInfo{}, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -232,7 +232,7 @@ func TestCloseByIDDoesNotBlockUnrelatedManagerOperations(t *testing.T) {
 }
 
 func TestCloseByIDIfLeavesUnauthorizedChannelOpen(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "owner", AuthInfo{}, nil)
 
 	closed := m.CloseByIDIf("ch1", func(info ChannelInfo) bool {
@@ -244,7 +244,7 @@ func TestCloseByIDIfLeavesUnauthorizedChannelOpen(t *testing.T) {
 }
 
 func TestUseAuthorizedChannelOrdersCloseAfterInFlightOperation(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -295,7 +295,7 @@ func waitOrDeadlock(t *testing.T, msg string, fn func()) {
 }
 
 func TestUseChannelOperationPanicReleasesChannelOpLock(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// A panic in the operation callback (in production, the worker-open
@@ -315,7 +315,7 @@ func TestUseChannelOperationPanicReleasesChannelOpLock(t *testing.T) {
 }
 
 func TestUseChannelAuthorizePanicReleasesManagerLock(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// authorize runs under the manager-wide m.mu; a panic there must not freeze
@@ -337,7 +337,7 @@ func TestUseChannelAuthorizePanicReleasesManagerLock(t *testing.T) {
 }
 
 func TestCloseByIDIfPredicatePanicReleasesLocks(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// The teardown predicate runs under both opMu and m.mu; a panic must leak
@@ -356,7 +356,7 @@ func TestCloseByIDIfPredicatePanicReleasesLocks(t *testing.T) {
 }
 
 func TestSendToFrontendIfAuthorizePanicReleasesLocks(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// The relay authorize predicate runs under opMu + m.mu.RLock; a panic must
@@ -375,7 +375,7 @@ func TestSendToFrontendIfAuthorizePanicReleasesLocks(t *testing.T) {
 }
 
 func TestMultipleConnections_EachChannelTargeted(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("ch2", "w1", "u1", AuthInfo{}, nil)
 
@@ -407,7 +407,7 @@ func TestMultipleConnections_EachChannelTargeted(t *testing.T) {
 }
 
 func TestUnbindUser_KeepsOtherConnection(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	var received1, received2 []*leapmuxv1.ChannelMessage
@@ -433,7 +433,7 @@ func TestUnbindUser_KeepsOtherConnection(t *testing.T) {
 }
 
 func TestUnbindUser_LastConnection(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -456,7 +456,7 @@ func TestUnbindUser_LastConnection(t *testing.T) {
 }
 
 func TestUnbindUser_CallsCancel(t *testing.T) {
-	m := New()
+	m := New(0)
 	cancelled := false
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
 		return nil
@@ -467,7 +467,7 @@ func TestUnbindUser_CallsCancel(t *testing.T) {
 }
 
 func TestUnregisterByWorker_DoesNotCloseUserSender(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	userCancelled := false
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -490,7 +490,7 @@ func TestUnregisterByWorker_DoesNotCloseUserSender(t *testing.T) {
 }
 
 func TestUnregister_SendsCloseNotification(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var received []*leapmuxv1.ChannelMessage
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -511,7 +511,7 @@ func TestUnregister_SendsCloseNotification(t *testing.T) {
 }
 
 func TestUnregister_CloseNotification_NoConnID(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	// Channel without a bound conn — close notification cannot be sent
 	// because we don't know which connection to target. This is acceptable;
@@ -530,7 +530,7 @@ func TestUnregister_CloseNotification_NoConnID(t *testing.T) {
 }
 
 func TestUnbindUserAndCleanup_RemovesBoundAndUnboundChannels(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	m.BindUser("u1", "conn1", noopSender, nil)
 
@@ -564,7 +564,7 @@ func TestUnbindUserAndCleanup_RemovesBoundAndUnboundChannels(t *testing.T) {
 // session would observe `noConns=true` between separate calls and wipe
 // channels that the NEW session is about to use.
 func TestUnbindUserAndCleanup_PreservesUnboundChannelsWhenAnotherConnExists(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	m.BindUser("u1", "old", noopSender, nil)
 	m.BindUser("u1", "new", noopSender, nil)
@@ -582,7 +582,7 @@ func TestUnbindUserAndCleanup_PreservesUnboundChannelsWhenAnotherConnExists(t *t
 }
 
 func TestUnbindUserAndCleanup_UnknownConn(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	removed := m.UnbindUserAndCleanup("u1", "never-bound")
@@ -593,7 +593,7 @@ func TestUnbindUserAndCleanup_UnknownConn(t *testing.T) {
 }
 
 func TestUnbindUserAndCleanup_CallsConnCancel(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	cancelled := false
 	m.BindUser("u1", "conn1", noopSender, func() { cancelled = true })
@@ -618,7 +618,7 @@ func TestUnbindUserAndCleanup_RaceWithConcurrentBind(t *testing.T) {
 	const iterations = 5000
 
 	for i := 0; i < iterations; i++ {
-		m := New()
+		m := New(0)
 		m.BindUser("u1", "old", noopSender, nil)
 
 		var wg sync.WaitGroup
@@ -646,7 +646,7 @@ func TestUnbindUserAndCleanup_RaceWithConcurrentBind(t *testing.T) {
 }
 
 func TestUnbindUserAndCleanup_RechecksConcurrentBindAfterChannelOperation(t *testing.T) {
-	m := New()
+	m := New(0)
 	operationStarted := make(chan struct{})
 	releaseOperation := make(chan struct{})
 	m.BindUser("u1", "old", noopSender, nil)
@@ -681,7 +681,7 @@ func TestUnbindUserAndCleanup_RechecksConcurrentBindAfterChannelOperation(t *tes
 }
 
 func TestUnbindUser_ReturnsNoConns(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
 		return nil
 	}, nil)
@@ -703,7 +703,7 @@ func TestUnbindUser_ReturnsNoConns(t *testing.T) {
 }
 
 func TestUnregisterByWorker_SendsCloseNotifications(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var received []*leapmuxv1.ChannelMessage
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -733,7 +733,7 @@ func TestUnregisterByWorker_SendsCloseNotifications(t *testing.T) {
 }
 
 func TestSendToUser_SingleConnection(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var received []*leapmuxv1.ChannelMessage
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -750,7 +750,7 @@ func TestSendToUser_SingleConnection(t *testing.T) {
 }
 
 func TestSendToUser_MultipleConnections(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var received1, received2 []*leapmuxv1.ChannelMessage
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -771,7 +771,7 @@ func TestSendToUser_MultipleConnections(t *testing.T) {
 }
 
 func TestSendToUser_OtherUserNotAffected(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var receivedU1, receivedU2 []*leapmuxv1.ChannelMessage
 	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
@@ -791,7 +791,7 @@ func TestSendToUser_OtherUserNotAffected(t *testing.T) {
 }
 
 func TestSendToUser_UnknownUser(t *testing.T) {
-	m := New()
+	m := New(0)
 	// Should not panic on unknown user.
 	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("nonexistent", msg)
@@ -804,7 +804,7 @@ func TestSendToUser_UnknownUser(t *testing.T) {
 // channels authenticated by the revoked token go away. Cookie
 // channels and channels held by other bearers are unaffected.
 func TestCloseByBearer_DropsOnlyMatchingChannels(t *testing.T) {
-	m := New()
+	m := New(0)
 	var bearerCancelled, otherCancelled, cookieCancelled bool
 
 	m.RegisterWithAuthInfo("ch-bearer", "w1", "u1", AuthInfo{Credential: auth.APICredential("tok-revoke-me")}, func() { bearerCancelled = true })
@@ -826,7 +826,7 @@ func TestCloseByBearer_DropsOnlyMatchingChannels(t *testing.T) {
 }
 
 func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
-	m := New()
+	m := New(0)
 	var apiCancelled, delegationCancelled bool
 
 	m.RegisterWithAuthInfo("ch-api", "w1", "u1", AuthInfo{
@@ -854,7 +854,7 @@ func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
 // rest. This locks down the routing + predicate plumbing after the delegation
 // policy moved to the service layer.
 func TestAuthorizedChannelIDsForUserWorker_FiltersByRoutingAndPredicate(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("keep", "w1", "u1", AuthInfo{
 		Credential: auth.DelegationCredential("delegation-1", "ws-1", "worker-mint"),
 	}, nil)
@@ -873,7 +873,7 @@ func TestAuthorizedChannelIDsForUserWorker_FiltersByRoutingAndPredicate(t *testi
 
 // A nil predicate returns every same-user, same-worker channel.
 func TestAuthorizedChannelIDsForUserWorker_NilPredicateReturnsAllRouted(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("a", "w1", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("b", "w1", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("other-worker", "w2", "u1", AuthInfo{}, nil)
@@ -887,7 +887,7 @@ func TestAuthorizedChannelIDsForUserWorker_NilPredicateReturnsAllRouted(t *testi
 // a buggy revoke path that passes "" must NOT match every cookie
 // channel (whose credential identity has no bearer row).
 func TestCloseByBearer_EmptyTokenIDIsNoop(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch-cookie", "w1", "u1", AuthInfo{}, nil)
 	closed := m.CloseByBearer(auth.NewBearerRef(auth.BearerKindAPI, ""))
 	assert.Empty(t, closed)
@@ -895,7 +895,7 @@ func TestCloseByBearer_EmptyTokenIDIsNoop(t *testing.T) {
 }
 
 func TestScheduleExpiryReusesTimerAndHonorsRescheduleAndRemoval(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("first", "worker", "user", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("rescheduled", "worker", "user", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("removed", "worker", "user", AuthInfo{}, nil)
@@ -947,7 +947,7 @@ func TestScheduleExpiryReusesTimerAndHonorsRescheduleAndRemoval(t *testing.T) {
 // Without the recover this test crashes the test binary; with it, the manager
 // stays usable.
 func TestExpirySweepRecoversFromCallbackPanic(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("boom", "worker", "user", AuthInfo{}, nil)
 
 	fired := make(chan struct{})
@@ -977,7 +977,7 @@ func TestExpirySweepRecoversFromCallbackPanic(t *testing.T) {
 // credential's remaining channels stop relaying promptly instead of waiting behind
 // the stuck one -- a security window, not just a latency one.
 func TestCloseDoesNotHeadOfLineBlockOnWedgedChannel(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch-wedged", "w", "u1", AuthInfo{}, nil)
 	for _, id := range []string{"ch-a", "ch-b", "ch-c"} {
 		m.RegisterWithAuthInfo(id, "w", "u1", AuthInfo{}, nil)
@@ -1026,7 +1026,7 @@ func TestCloseDoesNotHeadOfLineBlockOnWedgedChannel(t *testing.T) {
 // must not be lost. The recorded extension is carried into ScheduleExpiry so the
 // channel is armed at the extended deadline, not the stale connect-time one.
 func TestScheduleExpiryHonorsRescheduleDuringOpenWindow(t *testing.T) {
-	m := New()
+	m := New(0)
 	now := time.Now()
 	connectExpiry := now.Add(20 * time.Millisecond)
 	extended := now.Add(10 * time.Second)
@@ -1061,7 +1061,7 @@ func TestScheduleExpiryHonorsRescheduleDuringOpenWindow(t *testing.T) {
 // unconditional true that committed a phantom-open for a channel already gone
 // from the manager (and already closed at the worker).
 func TestScheduleExpiryZeroExpiryRejectsRemovedChannel(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("gone", "worker", "user", AuthInfo{
 		Credential: auth.APICredential("tok-1"), // zero CredentialExpiresAt -> never expires
 	}, nil)
@@ -1075,7 +1075,7 @@ func TestScheduleExpiryZeroExpiryRejectsRemovedChannel(t *testing.T) {
 // A live never-expires channel still schedules successfully -- the liveness gate
 // added for the removed case must not reject the healthy one.
 func TestScheduleExpiryZeroExpiryAcceptsLiveChannel(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("live", "worker", "user", AuthInfo{
 		Credential: auth.APICredential("tok-1"),
 	}, nil)
@@ -1093,7 +1093,7 @@ func TestScheduleExpiryZeroExpiryAcceptsLiveChannel(t *testing.T) {
 // drop. Without the guard a live channel would schedule with onExpire == nil and
 // this would return true.
 func TestScheduleExpiryRejectsNilOnExpire(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("live", "worker", "user", AuthInfo{
 		Credential: auth.APICredential("tok-1"),
 	}, nil)
@@ -1111,7 +1111,7 @@ func TestScheduleExpiryRejectsNilOnExpire(t *testing.T) {
 // change, the mid-open carry folded a zero recorded value back to the connect
 // base and tore the channel down at ~20ms.
 func TestScheduleExpiryHonorsZeroClearDuringOpenWindow(t *testing.T) {
-	m := New()
+	m := New(0)
 	connectExpiry := time.Now().Add(20 * time.Millisecond)
 	m.RegisterWithAuthInfo("opening", "worker", "user", AuthInfo{
 		Credential:          auth.APICredential("tok-1"),
@@ -1144,7 +1144,7 @@ func TestScheduleExpiryHonorsZeroClearDuringOpenWindow(t *testing.T) {
 // heap and tear a still-valid channel down early. Mirrors the cache-side
 // RecordBearerExpiry CAS.
 func TestRescheduleExpiryDoesNotRegressScheduledDeadline(t *testing.T) {
-	m := New()
+	m := New(0)
 	now := time.Now()
 	late := now.Add(10 * time.Second)
 	early := now.Add(20 * time.Millisecond)
@@ -1175,7 +1175,7 @@ func TestRescheduleExpiryDoesNotRegressScheduledDeadline(t *testing.T) {
 // A genuine LATER reschedule of an already-scheduled channel still extends it (the
 // monotonic guard must not block a real extension). A clear still disarms it.
 func TestRescheduleExpiryExtendsAndClearsScheduledDeadline(t *testing.T) {
-	m := New()
+	m := New(0)
 	now := time.Now()
 	ref := auth.NewBearerRef(auth.BearerKindAPI, "tok-1")
 	m.RegisterWithAuthInfo("ch", "worker", "user", AuthInfo{
@@ -1204,7 +1204,7 @@ func TestRescheduleExpiryExtendsAndClearsScheduledDeadline(t *testing.T) {
 // invariant-violating state directly and assert the sweep terminates, drops the
 // stray entry, and leaves the channel alive (never expires).
 func TestExpireDueChannelsDropsStrayZeroHeapEntryWithoutSpinning(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch", "worker", "user", AuthInfo{
 		Credential:          auth.APICredential("tok-1"),
 		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(time.Hour)),
@@ -1242,7 +1242,7 @@ func TestExpireDueChannelsDropsStrayZeroHeapEntryWithoutSpinning(t *testing.T) {
 // down under its own opMu concurrently. The old sequential sweep processed the
 // earliest-deadline channel first, so a wedge there blocked every later expiry.
 func TestExpireDueChannelsConcurrent_WedgedChannelDoesNotBlockOthers(t *testing.T) {
-	m := New()
+	m := New(0)
 	// Two live channels. A has the earlier deadline so it is the heap top and is
 	// processed first -- the position that, when wedged, blocks a sequential sweep.
 	m.RegisterWithAuthInfo("A", "w", "u", AuthInfo{Credential: auth.APICredential("ta"), CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(time.Hour))}, nil)
@@ -1289,7 +1289,7 @@ func TestExpireDueChannelsConcurrent_WedgedChannelDoesNotBlockOthers(t *testing.
 // predicate; empty user IDs are ignored and unselected users are untouched. The
 // workspace-scope policy itself is tested in the service layer.
 func TestCloseByUsers_DropsOnlySelectedUsersPassingPredicate(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("u1-first", "w1", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("u1-second", "w2", "u1", AuthInfo{}, nil)
 	m.RegisterWithAuthInfo("u1-matching-delegation", "w1", "u1", AuthInfo{
@@ -1320,7 +1320,7 @@ func TestCloseByUsers_DropsOnlySelectedUsersPassingPredicate(t *testing.T) {
 }
 
 func TestCloseByUserRevocation_DropsOnlyOlderUserGeneration(t *testing.T) {
-	m := New()
+	m := New(0)
 	var oldSessionCancelled, oldCacheCancelled, currentCancelled, otherCancelled bool
 
 	m.RegisterWithAuthInfo("ch-old-session", "w1", "u1", AuthInfo{
@@ -1354,7 +1354,7 @@ func TestCloseByUserRevocation_DropsOnlyOlderUserGeneration(t *testing.T) {
 }
 
 func TestRestampSessionGenerationSparesSurvivingSession(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch-current", "w1", "u1", AuthInfo{
 		Credential: auth.SessionCredential("s-current"), UserAuthGeneration: 0,
 	}, nil)
@@ -1377,7 +1377,7 @@ func TestRestampSessionGenerationSparesSurvivingSession(t *testing.T) {
 }
 
 func TestRescheduleExpiryBySessionExtendsDeadline(t *testing.T) {
-	m := New()
+	m := New(0)
 	expired := make(chan string, 1)
 	m.RegisterWithAuthInfo("ch", "w1", "u1", AuthInfo{Credential: auth.SessionCredential("s1")}, nil)
 	require.True(t, m.ScheduleExpiry("ch", auth.DeadlineAt(time.Now().Add(30*time.Millisecond)), func(cc ClosedChannel) {
@@ -1396,7 +1396,7 @@ func TestRescheduleExpiryBySessionExtendsDeadline(t *testing.T) {
 }
 
 func TestRescheduleExpiryByBearerClearsDeadlineOnZeroExpiry(t *testing.T) {
-	m := New()
+	m := New(0)
 	expired := make(chan string, 1)
 	m.RegisterWithAuthInfo("ch", "w1", "u1", AuthInfo{Credential: auth.APICredential("tok")}, nil)
 	require.True(t, m.ScheduleExpiry("ch", auth.DeadlineAt(time.Now().Add(30*time.Millisecond)), func(cc ClosedChannel) {
@@ -1419,7 +1419,7 @@ func TestRescheduleExpiryByBearerClearsDeadlineOnZeroExpiry(t *testing.T) {
 // user-initiated CloseChannel. Without this, the browser-side store
 // would keep the channel "open" until its own RPC timed out.
 func TestCloseByBearer_NotifiesFrontend(t *testing.T) {
-	m := New()
+	m := New(0)
 
 	var mu sync.Mutex
 	var msgs []*leapmuxv1.ChannelMessage
@@ -1451,7 +1451,7 @@ func TestCloseByBearer_NotifiesFrontend(t *testing.T) {
 // teardowns and (b) still tear down EVERY due channel -- the semaphore caps
 // concurrency, it must not drop work.
 func TestExpireDueChannelsBoundedFanOutClosesAll(t *testing.T) {
-	m := New()
+	m := New(0)
 	const n = channelExpireConcurrency*3 + 5 // comfortably over the bound
 	expired := make(chan string, n)
 	var concurrent, maxConcurrent atomic.Int64
@@ -1502,7 +1502,7 @@ func TestExpireDueChannelsBoundedFanOutClosesAll(t *testing.T) {
 // worker, so it would close the NEW binding -- exactly what
 // UnbindUserAndCleanup's own ConnID check exists to protect.
 func TestChannelInfoCarriesTheCurrentConnID(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	m.BindUser("u1", "conn-old", func(*leapmuxv1.ChannelMessage) error { return nil }, nil)
 
@@ -1523,7 +1523,7 @@ func TestChannelInfoCarriesTheCurrentConnID(t *testing.T) {
 // itself: a close carrying a stale conn id must leave the new binding
 // alone.
 func TestCloseByIDIfSkipsAChannelReboundToAnotherConnection(t *testing.T) {
-	m := New()
+	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	m.BindUser("u1", "conn-new", func(*leapmuxv1.ChannelMessage) error { return nil }, nil)
 

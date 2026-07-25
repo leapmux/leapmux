@@ -13,7 +13,7 @@ import (
 )
 
 func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testing.T) {
-	channels := channelmgr.New()
+	channels := channelmgr.New(0)
 	channels.RegisterWithAuthInfo("channel", "worker", "user", channelmgr.AuthInfo{}, nil)
 	var sent []*leapmuxv1.ConnectResponse
 	conn := &workermgr.Conn{WorkerID: "worker", SendFn: func(msg *leapmuxv1.ConnectResponse) error {
@@ -42,7 +42,7 @@ func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testin
 }
 
 func TestProcessWorkerMessage_RejectsChannelOwnedByAnotherWorker(t *testing.T) {
-	channels := channelmgr.New()
+	channels := channelmgr.New(0)
 	channels.RegisterWithAuthInfo("channel", "owner", "user", channelmgr.AuthInfo{}, nil)
 	conn := &workermgr.Conn{WorkerID: "attacker", SendFn: func(*leapmuxv1.ConnectResponse) error {
 		t.Fatal("attacking worker must not receive a close for another worker's channel")

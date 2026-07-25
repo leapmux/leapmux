@@ -37,40 +37,47 @@ const (
 	// message (MaxCiphertextForChunk - NoiseAEADAuthTagSize).
 	MaxPlaintextPerChunk = MaxCiphertextForChunk - NoiseAEADAuthTagSize
 
-	// MaxInnerPayloadBytes is the largest application payload a sender may
-	// hand to the channel layer: an agent stdout line, a file body, a
-	// terminal snapshot. Producers bound their own input by THIS, not by
-	// DefaultMaxMessageSize, because what the receiver caps is the payload
-	// plus every envelope wrapped around it.
+	// MaxMessageSize is the default operator-facing message size: the
+	// largest application payload a sender may hand to the channel layer
+	// (an agent stdout line, a file body). Hub and Worker operators may
+	// raise or lower this via max_message_size; the effective per-channel
+	// value is min(hub, worker), announced at open. Producers that have a
+	// clamp (agent scanners, ReadFile) bound their own input by THIS, not
+	// by the reassembled ceiling, because what the receiver caps is the
+	// payload plus every envelope wrapped around it.
 	//
-	// When the two were equal, a producer that filled its budget exactly
-	// built an inner message the receiver then refused -- and a refusal
-	// mid-stream has no recovery: the ordered, encrypted stream has no
-	// resync path, so the event was dropped with nothing to tell the
-	// client it had missed anything.
-	MaxInnerPayloadBytes = 16 * 1024 * 1024
+	// When the payload budget and the reassembled ceiling were equal, a
+	// producer that filled its budget exactly built an inner message the
+	// receiver then refused -- and a refusal mid-stream has no recovery:
+	// the ordered, encrypted stream has no resync path, so the event was
+	// dropped with nothing to tell the client it had missed anything.
+	MaxMessageSize = 16 * 1024 * 1024
 
-	// InnerEnvelopeHeadroom is what DefaultMaxMessageSize adds on top of
-	// MaxInnerPayloadBytes to cover the envelopes a payload is wrapped in
-	// before it reaches the wire -- for the widest case, the WatchEvents
-	// fan-out, that is AgentMessage -> AgentEvent -> WatchEventsResponse ->
-	// InnerStreamMessage -> InnerMessage.
+	// InnerEnvelopeHeadroom is what MaxReassembledMessageSize adds on top
+	// of a (configured or default) MaxMessageSize to cover the envelopes a
+	// payload is wrapped in before it reaches the wire -- for the widest
+	// case, the WatchEvents fan-out, that is AgentChatMessage -> AgentEvent
+	// -> WatchEventsResponse -> InnerStreamMessage -> InnerMessage.
 	//
 	// Real overhead there is field tags, varint lengths and a few ids:
-	// hundreds of bytes, not hundreds of kilobytes. A megabyte is
-	// deliberate slack so that adding a field to any of those envelopes
-	// cannot quietly reintroduce the drop.
-	InnerEnvelopeHeadroom = 1024 * 1024
+	// a few kilobytes, not hundreds. 64 KiB is deliberate slack so that
+	// adding a field to any of those envelopes cannot quietly reintroduce
+	// the drop; wire_test.go pins that the widest fan-out stays under
+	// half of this budget.
+	InnerEnvelopeHeadroom = 64 * 1024
 
-	// DefaultMaxMessageSize is the maximum reassembled message size.
-	// It is a fixed protocol constant every receiver (hub relay, worker,
-	// tunnel client, browser) enforces independently -- not an operator knob;
-	// reintroducing one requires propagating the value to every receiver and
-	// is tracked in https://github.com/leapmux/leapmux/issues/291.
-	//
-	// Derived rather than written out so the receiver's cap can never sit
-	// at or below what a producer is allowed to emit.
-	DefaultMaxMessageSize = MaxInnerPayloadBytes + InnerEnvelopeHeadroom
+	// DefaultMaxReassembledMessageSize is the default maximum reassembled
+	// InnerMessage size (MaxMessageSize + InnerEnvelopeHeadroom). Every
+	// receiver (hub relay, worker, tunnel client, browser) enforces the
+	// per-channel reassembled ceiling derived from the negotiated payload
+	// budget -- never a separately configured number.
+	DefaultMaxReassembledMessageSize = MaxMessageSize + InnerEnvelopeHeadroom
+
+	// MaxConfigurableMessageSize is the largest max_message_size an
+	// operator may configure. Caps worst-case per-channel reassembly
+	// memory (max_incomplete_chunked * MaxReassembledMessageSize) without
+	// touching tunnelflow's chunk-bounded windows.
+	MaxConfigurableMessageSize = 64 * 1024 * 1024
 
 	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
 	// sequences per channel before new ones are rejected.
@@ -108,6 +115,85 @@ const (
 	// copy (see PING_METHOD in frontend/src/lib/channel.ts).
 	PingMethod = "Ping"
 )
+
+// ResolveMaxMessageSize maps a configured max_message_size to the effective
+// payload budget. Non-positive values mean "use the protocol default".
+func ResolveMaxMessageSize(n int) int {
+	if n <= 0 {
+		return MaxMessageSize
+	}
+	return n
+}
+
+// MaxReassembledMessageSize returns the receive/send-gate ceiling for a
+// (resolved) payload budget: the budget plus InnerEnvelopeHeadroom.
+func MaxReassembledMessageSize(maxMessageSize int) int {
+	return maxMessageSize + InnerEnvelopeHeadroom
+}
+
+// ValidateMaxMessageSize checks a configured (or negotiated) payload budget.
+// Zero/negative are allowed at config load time (ResolveMaxMessageSize maps
+// them to the default); call this only for strictly positive values, or after
+// resolving. Open-path negotiation always validates the absolute resolved size.
+func ValidateMaxMessageSize(n int) error {
+	if n < MaxPlaintextPerChunk {
+		return fmt.Errorf("max_message_size %d is below the floor of %d (MaxPlaintextPerChunk)", n, MaxPlaintextPerChunk)
+	}
+	if n > MaxConfigurableMessageSize {
+		return fmt.Errorf("max_message_size %d exceeds the ceiling of %d (MaxConfigurableMessageSize)", n, MaxConfigurableMessageSize)
+	}
+	return nil
+}
+
+// ValidateConfiguredMaxMessageSize validates an operator-facing config value.
+// Non-positive means "use the protocol default" and is accepted without
+// bounds checks; positive values must pass ValidateMaxMessageSize.
+func ValidateConfiguredMaxMessageSize(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	return ValidateMaxMessageSize(n)
+}
+
+// IntFromUint64 converts a negotiated wire size to int, rejecting values that
+// cannot be represented on this architecture (mirrors the tunnel client's
+// open-path overflow guard).
+func IntFromUint64(n uint64) (int, error) {
+	maxInt := uint64(^uint(0) >> 1)
+	if n > maxInt {
+		return 0, fmt.Errorf("max_message_size %d overflows int", n)
+	}
+	return int(n), nil
+}
+
+// NegotiatePayloadBudget returns min(hub, worker) for two already-validated
+// (or already-resolved) positive payload budgets. Hub↔Worker open always
+// agrees this value; keep the rule in one place so session and any future
+// verifier cannot drift.
+func NegotiatePayloadBudget(hub, worker int) int {
+	if worker < hub {
+		return worker
+	}
+	return hub
+}
+
+// AdoptWireMaxMessageSize parses a ChannelOpen / OpenChannelResponse
+// max_message_size wire field: reject zero (missing / version skew), overflow,
+// and out-of-bounds values. Callers that need peer-specific ceilings (e.g. hub
+// max) apply those after this returns.
+func AdoptWireMaxMessageSize(wire uint64) (int, error) {
+	if wire == 0 {
+		return 0, fmt.Errorf("no max_message_size")
+	}
+	n, err := IntFromUint64(wire)
+	if err != nil {
+		return 0, err
+	}
+	if err := ValidateMaxMessageSize(n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
 
 // NewErrorResponse is the single constructor for an error InnerRpcResponse, the
 // envelope both Go receivers (the tunnel client's Channel.deliverRPCError and
@@ -287,7 +373,7 @@ func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.Cha
 // subscribers (large initial-bootstrap snapshots can hit several MB on
 // busy orgs).
 //
-// Independent of DefaultMaxMessageSize: org events are plaintext CRDT
+// Independent of DefaultMaxReassembledMessageSize: org events are plaintext CRDT
 // frames on their own socket, not chunked encrypted channel messages, so
 // the two limits answer different questions and are free to diverge.
 const OrgEventsReadLimit = 16 * 1024 * 1024

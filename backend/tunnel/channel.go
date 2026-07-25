@@ -50,6 +50,13 @@ type Channel struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 
+	// maxReassembled is the send/reassembly ceiling derived from the
+	// negotiated OpenChannelResponse.max_message_size payload budget
+	// (channelwire.MaxReassembledMessageSize): payload plus envelope headroom.
+	// Clients never configure this; OpenChannel refuses a missing or
+	// out-of-bounds announcement.
+	maxReassembled int
+
 	// sendGate serializes outbound frames under two permits (one per chunk's
 	// encrypt+write, one across a multi-chunk message) so a small tunnel frame
 	// can overtake a large RPC without abandoning a committed multi-chunk send.
@@ -432,6 +439,16 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 			userID, opts.ExpectedUserID)
 	}
 
+	// Adopt the negotiated payload budget. Clients do not configure this knob:
+	// a missing or out-of-bounds announcement means the peer is too old or
+	// misconfigured, and opening with a guessed default would silently disagree
+	// with the worker's send/reassembly ceiling.
+	maxMessageSize, err := channelwire.AdoptWireMaxMessageSize(openResp.Msg.GetMaxMessageSize())
+	if err != nil {
+		return nil, fmt.Errorf("open channel: hub returned %w", err)
+	}
+	maxReassembled := channelwire.MaxReassembledMessageSize(maxMessageSize)
+
 	// 4. Complete handshake (message 2), with the half that matches the message-1
 	// this handshaker already sent -- no second reading of the encryption mode.
 	session, err := handshaker.finish(hs, openResp.Msg.GetHandshakePayload())
@@ -461,16 +478,17 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 	chCtx, chCancel := context.WithCancel(lifetimeCtx)
 	ch := &Channel{
-		channelID:   channelID,
-		userID:      userID,
-		session:     session,
-		ws:          wsConn,
-		ctx:         chCtx,
-		cancel:      chCancel,
-		pending:     make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:   make(map[uint64]*streamCallback),
-		reassembly:  make(map[uint64]*channelwire.ChunkBuffer),
-		lastRekeyAt: time.Now(),
+		channelID:      channelID,
+		userID:         userID,
+		session:        session,
+		ws:             wsConn,
+		ctx:            chCtx,
+		cancel:         chCancel,
+		maxReassembled: maxReassembled,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
+		lastRekeyAt:    time.Now(),
 	}
 
 	// 6. Start receiving. The Hub already told both ends who the caller is (this
@@ -745,7 +763,7 @@ func (ch *Channel) unregisterRequest(reqID uint64, pending, stream bool) {
 	}
 	// Drop any partial reassembly once the request has no handler left to receive
 	// it: the buffer exists only to feed this request, so outliving it would pin
-	// its bytes (up to DefaultMaxMessageSize) and consume a slot of the
+	// its bytes (up to maxReassembled) and consume a slot of the
 	// incomplete-chunked cap for the channel's whole life.
 	if !ch.hasHandlerLocked(reqID) {
 		ch.dropReassemblyLocked(reqID)
@@ -907,8 +925,8 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 	if err != nil {
 		return fmt.Errorf("marshal inner message: %w", err)
 	}
-	if len(plaintext) > channelwire.DefaultMaxMessageSize {
-		return fmt.Errorf("inner message too large: %d > %d", len(plaintext), channelwire.DefaultMaxMessageSize)
+	if len(plaintext) > ch.maxReassembled {
+		return fmt.Errorf("inner message too large: %d > %d", len(plaintext), ch.maxReassembled)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -970,8 +988,8 @@ const (
 	// reassembleActDeliver: a complete message is ready to dispatch. Exactly one
 	// of assembled (a message that was never chunked, returned as-is) or parts (a
 	// chunked message's pieces in order, for reassemble to JOIN outside the lock)
-	// is set; the join copies up to DefaultMaxMessageSize, and every RPC, stream
-	// and tunnel on this channel contends for ch.mu.
+	// is set; the join copies up to the channel's maxReassembled ceiling, and every
+	// RPC, stream and tunnel on this channel contends for ch.mu.
 	reassembleActDeliver
 )
 
@@ -1012,12 +1030,11 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 	// also unregisters the request. It does not for a stream handler -- a tunnel
 	// Conn's onStreamMessage latches its terminal error but never unregisters -- so
 	// hasHandlerLocked stayed true, the next MORE chunk allocated a fresh buffer,
-	// and the peer could drive re-accumulation to the inner-message ceiling
-	// (channelwire.DefaultMaxMessageSize) indefinitely,
-	// burning allocate-and-discard cycles on the channel's sole receive goroutine
-	// and stalling every other RPC, stream and tunnel multiplexed on it. The entry
-	// is cheap (its parts are released by poison, and it holds no cap slot) and
-	// unregisterRequest reaps it.
+	// and the peer could drive re-accumulation to the channel's maxReassembled
+	// ceiling indefinitely, burning allocate-and-discard cycles on the channel's
+	// sole receive goroutine and stalling every other RPC, stream and tunnel
+	// multiplexed on it. The entry is cheap (its parts are released by poison, and
+	// it holds no cap slot) and unregisterRequest reaps it.
 	if buffering && buf.Poisoned {
 		if !more {
 			ch.dropReassemblyLocked(correlationID)
@@ -1031,12 +1048,12 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 			// inbound chunked message correlates to a request THIS side registered
 			// (recvLoop dispatches no peer-initiated requests), so a first chunk for
 			// an id with no live handler can never be completed: buffering it would
-			// pin up to DefaultMaxMessageSize until the channel died, and four such
-			// orphans would exhaust the cap and permanently reject every subsequent
-			// chunked message on an otherwise healthy channel. Tying the buffer's
-			// lifetime to the registration (created only for a live request here,
-			// dropped by unregisterRequest) keeps the cap a genuine backstop rather
-			// than the only bound.
+			// pin up to maxReassembled until the channel died, and four such orphans
+			// would exhaust the cap and permanently reject every subsequent chunked
+			// message on an otherwise healthy channel. Tying the buffer's lifetime to
+			// the registration (created only for a live request here, dropped by
+			// unregisterRequest) keeps the cap a genuine backstop rather than the
+			// only bound.
 			if !ch.hasHandlerLocked(correlationID) {
 				return reassembleOutcome{action: reassembleActDropUnknownID}
 			}
@@ -1053,25 +1070,25 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 			}
 			buf = ch.startReassemblyLocked(correlationID)
 		}
-		total, breached := buf.AppendChunk(plaintext, channelwire.DefaultMaxMessageSize)
+		total, breached := buf.AppendChunk(plaintext, ch.maxReassembled)
 		if breached {
 			ch.poisonReassemblyLocked(correlationID)
 			return reassembleOutcome{action: reassembleActTooLarge, tooLargeMessage: fmt.Sprintf(
-				"chunked message too large: %d bytes exceeds %d byte limit", total, channelwire.DefaultMaxMessageSize)}
+				"chunked message too large: %d bytes exceeds %d byte limit", total, ch.maxReassembled)}
 		}
 		return reassembleOutcome{action: reassembleActBuffered}
 	}
 
 	// Final chunk, or a message that was never chunked at all.
 	if !buffering {
-		if len(plaintext) > channelwire.DefaultMaxMessageSize {
+		if len(plaintext) > ch.maxReassembled {
 			return reassembleOutcome{action: reassembleActTooLarge, tooLargeMessage: fmt.Sprintf(
-				"message too large: %d bytes exceeds %d byte limit", len(plaintext), channelwire.DefaultMaxMessageSize)}
+				"message too large: %d bytes exceeds %d byte limit", len(plaintext), ch.maxReassembled)}
 		}
 		return reassembleOutcome{action: reassembleActDeliver, assembled: plaintext}
 	}
 
-	_, breached := buf.AppendChunk(plaintext, channelwire.DefaultMaxMessageSize)
+	_, breached := buf.AppendChunk(plaintext, ch.maxReassembled)
 	// buf leaves the buffer map here, but the *ChunkBuffer pointer is carried in
 	// the outcome so reassemble can join it outside the lock -- the slices
 	// AppendChunk filled are still live on the heap, and nothing else still reads
@@ -1079,7 +1096,7 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 	ch.dropReassemblyLocked(correlationID)
 	if breached {
 		return reassembleOutcome{action: reassembleActTooLarge, tooLargeMessage: fmt.Sprintf(
-			"chunked message too large: exceeds %d byte limit", channelwire.DefaultMaxMessageSize)}
+			"chunked message too large: exceeds %d byte limit", ch.maxReassembled)}
 	}
 	return reassembleOutcome{action: reassembleActDeliver, buf: buf}
 }

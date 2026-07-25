@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -45,6 +46,16 @@ func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
 		return
 	}
 	err := broadcastWatchEvent(s.sender, resp)
+	if err == nil {
+		return
+	}
+	// Match live broadcast: keep replaying after a per-message size reject,
+	// but leave a warn so oversized historical events are not silent.
+	if errors.Is(err, channel.ErrMessageRejected) {
+		slog.Warn("catch-up: dropping one oversized event; continuing replay",
+			"error", err)
+		return
+	}
 	if transportDead(err) {
 		s.dead = err
 	}

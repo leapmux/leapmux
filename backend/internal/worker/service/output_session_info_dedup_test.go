@@ -56,7 +56,8 @@ func (m *sessionInfoCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage)
 	return nil
 }
 
-func (m *sessionInfoCapturingWriter) ChannelID() string { return m.channelID }
+func (m *sessionInfoCapturingWriter) ChannelID() string   { return m.channelID }
+func (*sessionInfoCapturingWriter) MaxPayloadBudget() int { return 0 }
 
 func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 	m.mu.Lock()

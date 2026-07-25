@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
@@ -219,4 +220,51 @@ func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 	// Construction must not have left the always-non-nil fields nil.
 	assert.NotNil(t, w.Service.PrivateEvents)
 	assert.NotNil(t, w.Service.FileTabPaths)
+}
+
+func TestWire_PropagatesMaxMessageSize(t *testing.T) {
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, workerdb.Migrate(sqlDB))
+
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	client := hub.New("http://127.0.0.1:0")
+	t.Cleanup(client.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const configured = 2 << 20
+	w := Wire(Params{
+		Ctx:            ctx,
+		Client:         client,
+		DB:             sqlDB,
+		CompositeKey:   key,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+		WorkerID:       "worker-1",
+		Name:           "test",
+		HomeDir:        t.TempDir(),
+		DataDir:        t.TempDir(),
+		MaxMessageSize: configured,
+	})
+	t.Cleanup(w.Service.Shutdown)
+	t.Cleanup(func() { agent.ConfigureMaxMessageSize(0) })
+
+	assert.Equal(t, configured, w.Service.MaxMessageSize,
+		"Wire must carry MaxMessageSize into the service producer ceiling")
+
+	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(key.X25519Public)
+	require.NoError(t, err)
+	resp := w.Service.Channels.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-wired-max",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(4 << 20), // hub larger than worker → worker wins
+	})
+	require.Empty(t, resp.GetError())
+	assert.Equal(t, uint64(configured), resp.GetMaxMessageSize(),
+		"channel manager must negotiate with the wired worker budget")
 }

@@ -34,6 +34,9 @@ type rollbackChannelService struct {
 	closeAuth     string
 	paramsAuth    string
 	openAuth      string
+	// omitMaxMessageSize leaves OpenChannelResponse.max_message_size unset so
+	// tests can assert the client refuses a missing negotiation.
+	omitMaxMessageSize bool
 }
 
 func (s *rollbackChannelService) GetWorkerHandshakeParams(
@@ -56,11 +59,15 @@ func (s *rollbackChannelService) OpenChannel(
 	s.mu.Lock()
 	s.openAuth = req.Header().Get("Authorization")
 	s.mu.Unlock()
-	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
+	resp := &leapmuxv1.OpenChannelResponse{
 		ChannelId:        "registered-channel",
 		HandshakePayload: []byte("invalid-handshake-response"),
 		UserId:           "authenticated-user",
-	}), nil
+	}
+	if !s.omitMaxMessageSize {
+		resp.MaxMessageSize = uint64(channelwire.MaxMessageSize)
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (s *rollbackChannelService) CloseChannel(
@@ -251,6 +258,98 @@ func TestOpenChannelAcceptsMatchingExpectedUserID(t *testing.T) {
 		"a matching identity must pass the check and proceed to the handshake")
 }
 
+func TestOpenChannelRejectsMissingMaxMessageSize(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	service := &rollbackChannelService{publicKey: key.X25519Public, omitMaxMessageSize: true}
+	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+		LifetimeContext: context.Background(),
+	})
+	require.ErrorContains(t, err, "no max_message_size")
+
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	assert.Equal(t, "registered-channel", service.closedChannel,
+		"an open refused for a missing max_message_size must still roll back")
+}
+
+func TestOpenChannelRejectsOutOfBoundsMaxMessageSize(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	stub := &maxMessageSizeStub{
+		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		size:                   1,
+	}
+	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+		LifetimeContext: context.Background(),
+	})
+	require.ErrorContains(t, err, "max_message_size")
+	require.NotContains(t, err.Error(), "handshake2")
+}
+
+func TestOpenChannelRejectsAboveCeilingMaxMessageSize(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	stub := &maxMessageSizeStub{
+		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		size:                   uint64(channelwire.MaxConfigurableMessageSize + 1),
+	}
+	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+		LifetimeContext: context.Background(),
+	})
+	require.ErrorContains(t, err, "max_message_size")
+	require.NotContains(t, err.Error(), "handshake2")
+}
+
+func TestOpenChannelAcceptsNonDefaultNegotiatedMaxMessageSize(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	stub := &maxMessageSizeStub{
+		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		size:                   2 << 20,
+	}
+	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+		LifetimeContext: context.Background(),
+	})
+	// Stub handshake payload cannot finish Noise; reaching handshake2 means
+	// the negotiated size cleared the open-time bounds gate.
+	require.ErrorContains(t, err, "handshake2")
+	require.NotContains(t, err.Error(), "max_message_size")
+}
+
+type maxMessageSizeStub struct {
+	rollbackChannelService
+	size uint64
+}
+
+func (s *maxMessageSizeStub) OpenChannel(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.OpenChannelRequest],
+) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
+	resp, err := s.rollbackChannelService.OpenChannel(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Msg.MaxMessageSize = s.size
+	return resp, nil
+}
+
 // A client with no credential must send no Authorization header at all, rather than
 // an empty or malformed one -- solo/local callers are unauthenticated by design.
 func TestOpenChannelOmitsAuthHeaderWithoutBearer(t *testing.T) {
@@ -395,7 +494,7 @@ func TestConnCloseWriteSendsHalfCloseFlag(t *testing.T) {
 // Framing the caller's buffer verbatim made the in-flight byte ceiling a property
 // of the caller (fine for today's 32 KiB io.Copy, but a bufio.Writer or
 // bytes.Buffer.WriteTo passes megabytes in one call), pinning up to
-// tunnelflow.WriteWindowFrames * DefaultMaxMessageSize on the worker -- and a buffer
+// tunnelflow.WriteWindowFrames * DefaultMaxReassembledMessageSize on the worker -- and a buffer
 // past the channel's inner-message limit failed outright instead of chunking.
 func TestConnWriteSplitsLargeBufferIntoWindowedChunks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1050,11 +1149,12 @@ func newReassemblyTestChannel(t *testing.T) *Channel {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	return &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 }
 
@@ -1062,7 +1162,7 @@ func newReassemblyTestChannel(t *testing.T) *Channel {
 // Reassembly state exists only to feed a registered handler, so once the request
 // is unregistered (its RPC timed out, its caller gave up, its conn closed) the
 // partial can never be completed: leaving it behind pinned up to
-// DefaultMaxMessageSize AND consumed a slot of the incomplete-chunked cap for the
+// DefaultMaxReassembledMessageSize AND consumed a slot of the incomplete-chunked cap for the
 // channel's whole life, so four abandoned partials permanently rejected every
 // subsequent chunked message on an otherwise healthy channel.
 func TestChannelUnregisterDropsPartialReassembly(t *testing.T) {
@@ -1188,11 +1288,12 @@ func newReadTestConn(t *testing.T) *Conn {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	t.Cleanup(cancel)
 	return newConn(ch, "conn-1", "example.test", 1234)
@@ -1475,11 +1576,12 @@ func TestDeliverRPCError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 
 	t.Run("registered handler receives error", func(t *testing.T) {
@@ -1523,11 +1625,12 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 3
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
@@ -1574,11 +1677,12 @@ func TestDeliverRPCErrorFallsBackToStreamHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 7
 	got := make(chan *leapmuxv1.InnerStreamMessage, 1)
@@ -1613,12 +1717,13 @@ func TestReassembleDropsChunksAfterOversizeInsteadOfReBuffering(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		channelID:  "ch-1",
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		channelID:      "ch-1",
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 7
 	// A stream-only handler: the shape that never unregisters on error.
@@ -1631,10 +1736,10 @@ func TestReassembleDropsChunksAfterOversizeInsteadOfReBuffering(t *testing.T) {
 	ch.streamCbs[reqID] = stream
 	t.Cleanup(stream.stop)
 
-	// Drive the message past the ceiling.
+	// Drive the message past the channel's reassembled ceiling.
 	chunk := make([]byte, 1<<20) // 1 MiB
 	more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
-	for range (channelwire.DefaultMaxMessageSize / len(chunk)) + 1 {
+	for range (ch.maxReassembled / len(chunk)) + 1 {
 		payload, complete := ch.reassemble(reqID, more, chunk)
 		require.False(t, complete)
 		require.Nil(t, payload)
@@ -1688,12 +1793,13 @@ func TestReassembleDropsOutOfSpecFlags(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		channelID:  "ch-flags",
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		channelID:      "ch-flags",
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 9
 
@@ -1710,11 +1816,12 @@ func TestReassembleJoinsChunks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 3
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
@@ -1740,11 +1847,12 @@ func TestReassemblePassesThroughUnchunked(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	payload, complete := ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte("solo"))
 	require.True(t, complete)

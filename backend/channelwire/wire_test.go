@@ -3,6 +3,7 @@ package channelwire
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -27,20 +28,29 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 	require.NoError(t, err)
 
 	var limits struct {
-		MaxPlaintextPerChunk    int    `json:"maxPlaintextPerChunk"`
-		MaxMessageSize          int    `json:"maxMessageSize"`
-		MaxIncompleteChunked    int    `json:"maxIncompleteChunked"`
-		PingMethod              string `json:"pingMethod"`
-		SessionKeyMaxAgeMs      int64  `json:"sessionKeyMaxAgeMs"`
-		MinRekeyIntervalMs      int64  `json:"minRekeyIntervalMs"`
-		SessionKeyHardCeilingMs int64  `json:"sessionKeyHardCeilingMs"`
+		MaxPlaintextPerChunk       int    `json:"maxPlaintextPerChunk"`
+		MaxMessageSize             int    `json:"maxMessageSize"`
+		InnerEnvelopeHeadroom      int    `json:"innerEnvelopeHeadroom"`
+		MaxReassembledMessageSize  int    `json:"maxReassembledMessageSize"`
+		MaxConfigurableMessageSize int    `json:"maxConfigurableMessageSize"`
+		MaxIncompleteChunked       int    `json:"maxIncompleteChunked"`
+		PingMethod                 string `json:"pingMethod"`
+		SessionKeyMaxAgeMs         int64  `json:"sessionKeyMaxAgeMs"`
+		MinRekeyIntervalMs         int64  `json:"minRekeyIntervalMs"`
+		SessionKeyHardCeilingMs    int64  `json:"sessionKeyHardCeilingMs"`
 	}
 	require.NoError(t, json.Unmarshal(data, &limits))
 
 	assert.Equal(t, limits.MaxPlaintextPerChunk, MaxPlaintextPerChunk,
 		"MaxPlaintextPerChunk must match the cross-language fixture")
-	assert.Equal(t, limits.MaxMessageSize, DefaultMaxMessageSize,
-		"DefaultMaxMessageSize must match the cross-language fixture")
+	assert.Equal(t, limits.MaxMessageSize, MaxMessageSize,
+		"MaxMessageSize must match the cross-language fixture")
+	assert.Equal(t, limits.InnerEnvelopeHeadroom, InnerEnvelopeHeadroom,
+		"InnerEnvelopeHeadroom must match the cross-language fixture")
+	assert.Equal(t, limits.MaxReassembledMessageSize, DefaultMaxReassembledMessageSize,
+		"DefaultMaxReassembledMessageSize must match the cross-language fixture")
+	assert.Equal(t, limits.MaxConfigurableMessageSize, MaxConfigurableMessageSize,
+		"MaxConfigurableMessageSize must match the cross-language fixture")
 	assert.Equal(t, limits.MaxIncompleteChunked, DefaultMaxIncompleteChunked,
 		"DefaultMaxIncompleteChunked must match the cross-language fixture")
 	assert.Equal(t, limits.PingMethod, PingMethod,
@@ -252,62 +262,155 @@ type assertError string
 
 func (e assertError) Error() string { return string(e) }
 
-// TestMaxMessageSizeExceedsMaxInnerPayload pins the relationship that
-// makes a mid-stream drop impossible rather than merely unlikely.
-//
-// The receiver caps the whole reassembled InnerMessage; a producer caps
-// only the payload it puts inside one. While both numbers were 16 MiB, an
-// agent line that used its full budget produced an envelope a byte or two
-// over the receiver's limit -- and that refusal has no recovery, because
-// the ordered encrypted stream has no resync path and the transport never
-// errors, so nothing trips the client's reconnect.
-// Asserting DefaultMaxMessageSize > MaxInnerPayloadBytes would prove
-// nothing: the former is DEFINED as the latter plus the headroom, so any
-// such comparison reduces to "the headroom is positive" and holds for
-// whatever the constants are edited to. What has to be true is empirical
-// -- that a real envelope wrapped around a maximum-sized payload still
-// fits under the receiver's cap -- so that is what is measured here.
-func TestMaxMessageSizeExceedsMaxInnerPayload(t *testing.T) {
-	maxPayload := make([]byte, MaxInnerPayloadBytes)
-	// The widest envelope a producer can put a max-sized payload in: a
-	// stream frame also carrying an error, which is every field the
-	// payload travels beside.
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_Stream{
-			Stream: &leapmuxv1.InnerStreamMessage{
-				Payload:      maxPayload,
-				End:          true,
-				IsError:      true,
-				ErrorCode:    int32(^uint32(0) >> 1),
-				ErrorMessage: strings.Repeat("e", 1024),
-			},
-		},
-	}
-
-	encoded, err := proto.Marshal(envelope)
-	require.NoError(t, err)
-
-	assert.Greater(t, len(encoded), MaxInnerPayloadBytes,
-		"the envelope must actually cost something, or this proves nothing")
-	assert.LessOrEqual(t, len(encoded), DefaultMaxMessageSize,
-		"a max-sized payload in a real envelope must fit under the receiver's cap; "+
-			"while both numbers were 16 MiB it did not, and the drop had no recovery path")
-}
-
-// TestInnerEnvelopeHeadroomIsNotConsumedByGrowth pins the slack itself,
-// so that adding fields to the envelope shows up here as a shrinking
-// margin long before it becomes a silent mid-stream drop.
-func TestInnerEnvelopeHeadroomIsNotConsumedByGrowth(t *testing.T) {
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_Stream{
-			Stream: &leapmuxv1.InnerStreamMessage{Payload: make([]byte, MaxInnerPayloadBytes)},
-		},
-	}
-	encoded, err := proto.Marshal(envelope)
-	require.NoError(t, err)
-
-	overhead := len(encoded) - MaxInnerPayloadBytes
+// TestWidestEnvelopeFitsUnderHeadroom pins that a max-sized application
+// payload wrapped in the real WatchEvents fan-out
+// (AgentChatMessage -> AgentEvent -> WatchEventsResponse -> InnerStreamMessage
+// -> InnerMessage) still fits under MaxReassembledMessageSize(MaxMessageSize),
+// and that the overhead stays under half of InnerEnvelopeHeadroom so CI
+// reddens long before a mid-stream drop. A tautological
+// DefaultMaxReassembledMessageSize > MaxMessageSize assert would prove nothing.
+func TestWidestEnvelopeFitsUnderHeadroom(t *testing.T) {
+	encoded := widestWatchEventsEnvelope(t, MaxMessageSize)
+	ceiling := MaxReassembledMessageSize(MaxMessageSize)
+	assert.LessOrEqual(t, len(encoded), ceiling,
+		"a max-sized payload in the widest WatchEvents fan-out must fit under the reassembled ceiling; "+
+			"while payload and ceiling were equal it did not, and the drop had no recovery path")
+	overhead := len(encoded) - MaxMessageSize
+	assert.Greater(t, overhead, 0, "the envelope must actually cost something, or this proves nothing")
 	assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
 		"envelope overhead has grown into over half the headroom (%d of %d bytes); "+
 			"raise InnerEnvelopeHeadroom rather than letting it converge", overhead, InnerEnvelopeHeadroom)
+}
+
+// TestInnerRpcEnvelopeFitsUnderHeadroom is the file-read / unary-RPC twin of
+// TestWidestEnvelopeFitsUnderHeadroom: a non-WatchEvents producer must not
+// silently be the wider case.
+func TestInnerRpcEnvelopeFitsUnderHeadroom(t *testing.T) {
+	encoded := widestInnerRpcEnvelope(t, MaxMessageSize)
+	ceiling := MaxReassembledMessageSize(MaxMessageSize)
+	assert.LessOrEqual(t, len(encoded), ceiling)
+	overhead := len(encoded) - MaxMessageSize
+	assert.Greater(t, overhead, 0)
+	assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
+		"InnerRpc envelope overhead has grown into over half the headroom (%d of %d bytes); "+
+			"raise InnerEnvelopeHeadroom rather than letting it converge", overhead, InnerEnvelopeHeadroom)
+}
+
+// TestHeadroomCoversConfiguredMaxMessageSize pins that headroom is enough at
+// non-default payload sizes too -- not only at the 16 MiB default -- so a
+// varint-length growth or nesting change cannot leave larger configs short.
+func TestHeadroomCoversConfiguredMaxMessageSize(t *testing.T) {
+	for _, size := range []int{1024 * 1024, 4 * 1024 * 1024, MaxConfigurableMessageSize} {
+		t.Run(fmt.Sprintf("%d", size), func(t *testing.T) {
+			encoded := widestWatchEventsEnvelope(t, size)
+			assert.LessOrEqual(t, len(encoded), MaxReassembledMessageSize(size),
+				"widest fan-out at payload %d must fit under MaxReassembledMessageSize", size)
+			overhead := len(encoded) - size
+			assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
+				"overhead at payload %d (%d) ate half of headroom %d", size, overhead, InnerEnvelopeHeadroom)
+		})
+	}
+}
+
+func TestResolveAndValidateMaxMessageSize(t *testing.T) {
+	assert.Equal(t, MaxMessageSize, ResolveMaxMessageSize(0))
+	assert.Equal(t, MaxMessageSize, ResolveMaxMessageSize(-1))
+	assert.Equal(t, 32*1024*1024, ResolveMaxMessageSize(32*1024*1024))
+	assert.Equal(t, MaxMessageSize+InnerEnvelopeHeadroom, MaxReassembledMessageSize(MaxMessageSize))
+
+	require.NoError(t, ValidateMaxMessageSize(MaxMessageSize))
+	require.NoError(t, ValidateMaxMessageSize(MaxPlaintextPerChunk))
+	require.NoError(t, ValidateMaxMessageSize(MaxConfigurableMessageSize))
+	assert.Error(t, ValidateMaxMessageSize(MaxPlaintextPerChunk-1))
+	assert.Error(t, ValidateMaxMessageSize(MaxConfigurableMessageSize+1))
+
+	require.NoError(t, ValidateConfiguredMaxMessageSize(0))
+	require.NoError(t, ValidateConfiguredMaxMessageSize(-1))
+	require.NoError(t, ValidateConfiguredMaxMessageSize(MaxMessageSize))
+	assert.Error(t, ValidateConfiguredMaxMessageSize(1))
+
+	got, err := IntFromUint64(uint64(MaxMessageSize))
+	require.NoError(t, err)
+	assert.Equal(t, MaxMessageSize, got)
+	_, err = IntFromUint64(^uint64(0))
+	require.Error(t, err)
+
+	assert.Equal(t, 8*1024*1024, NegotiatePayloadBudget(16*1024*1024, 8*1024*1024))
+	assert.Equal(t, 8*1024*1024, NegotiatePayloadBudget(8*1024*1024, 16*1024*1024))
+	assert.Equal(t, MaxMessageSize, NegotiatePayloadBudget(MaxMessageSize, MaxMessageSize))
+
+	adopted, err := AdoptWireMaxMessageSize(uint64(MaxMessageSize))
+	require.NoError(t, err)
+	assert.Equal(t, MaxMessageSize, adopted)
+	_, err = AdoptWireMaxMessageSize(0)
+	require.ErrorContains(t, err, "no max_message_size")
+	_, err = AdoptWireMaxMessageSize(uint64(MaxPlaintextPerChunk - 1))
+	require.Error(t, err)
+	_, err = AdoptWireMaxMessageSize(uint64(MaxConfigurableMessageSize + 1))
+	require.Error(t, err)
+	_, err = AdoptWireMaxMessageSize(^uint64(0))
+	require.Error(t, err)
+}
+
+func widestWatchEventsEnvelope(t *testing.T, payloadSize int) []byte {
+	t.Helper()
+	agentMsg := &leapmuxv1.AgentChatMessage{
+		Id:                 strings.Repeat("m", 128),
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:            make([]byte, payloadSize),
+		Seq:                int64(^uint64(0) >> 1),
+		CreatedAt:          "2026-07-25T00:00:00.000000000Z",
+		DeliveryError:      strings.Repeat("e", 1024),
+		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Depth:              5,
+		ParentSpanId:       strings.Repeat("p", 128),
+		SpanId:             strings.Repeat("s", 128),
+		SpanType:           "commandExecution" + strings.Repeat("x", 100),
+		SpanColor:          7,
+		SpanLines:          "[" + strings.Repeat(`"abcdefgh",`, 199) + `"abcdefgh"]`,
+		PreviousSeq:        int64(^uint64(0) >> 1),
+		MarkType:           leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED,
+	}
+	watch := &leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
+			AgentEvent: &leapmuxv1.AgentEvent{
+				AgentId: strings.Repeat("a", 128),
+				Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: agentMsg},
+			},
+		},
+	}
+	watchBytes, err := proto.Marshal(watch)
+	require.NoError(t, err)
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Stream{
+			Stream: &leapmuxv1.InnerStreamMessage{
+				Payload:      watchBytes,
+				End:          true,
+				IsError:      true,
+				ErrorCode:    int32(^uint32(0) >> 1),
+				ErrorMessage: strings.Repeat("e", 4096),
+			},
+		},
+	}
+	encoded, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	return encoded
+}
+
+func widestInnerRpcEnvelope(t *testing.T, payloadSize int) []byte {
+	t.Helper()
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{
+			Response: &leapmuxv1.InnerRpcResponse{
+				Payload:      make([]byte, payloadSize),
+				IsError:      true,
+				ErrorMessage: strings.Repeat("e", 4096),
+				ErrorCode:    int32(^uint32(0) >> 1),
+			},
+		},
+	}
+	encoded, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	return encoded
 }

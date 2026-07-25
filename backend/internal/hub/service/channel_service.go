@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -44,7 +45,8 @@ type AuthFreshnessChecker interface {
 	CurrentCredentialExpiry(ctx context.Context, user *auth.UserInfo) auth.CredentialDeadline
 }
 
-// NewChannelService creates a new ChannelService.
+// NewChannelService creates a new ChannelService. The Hub's resolved payload
+// budget is read from channelMgr.MaxMessageSize() at open time.
 func NewChannelService(
 	st store.Store,
 	wMgr *workermgr.Manager,
@@ -192,8 +194,13 @@ func (s *ChannelService) OpenChannel(
 	}
 	// Relay the handshake while holding the channel operation lock. Revocation
 	// teardown waits for this attempt, guaranteeing its close cannot reach the
-	// worker before a later open for the same channel.
-	var resp *leapmuxv1.ConnectRequest
+	// worker before a later open for the same channel. Echo validation and
+	// SetChannelMaxMessageSize also run under opMu so RelayWorkerMessage (which
+	// acquires the same opMu) cannot track w2fe chunks at the hub-default
+	// ceiling before the negotiated per-channel limit is installed.
+	var openResp *leapmuxv1.ChannelOpenResponse
+	var openReject error
+	var effectiveMax int
 	_, channelLive, err := s.channelMgr.UseChannelIf(
 		channelID,
 		func(info channelmgr.ChannelInfo) bool {
@@ -204,18 +211,55 @@ func (s *ChannelService) OpenChannel(
 				return err
 			}
 			openAttempted = true
-			var sendErr error
-			resp, sendErr = s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+			resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
 					ChannelOpen: &leapmuxv1.ChannelOpenRequest{
 						ChannelId:              channelID,
 						UserId:                 user.ID.String(),
 						HandshakePayload:       req.Msg.GetHandshakePayload(),
 						AccessibleWorkspaceIds: accessibleWSIDs,
+						MaxMessageSize:         uint64(s.channelMgr.MaxMessageSize()),
 					},
 				},
 			})
-			return sendErr
+			if sendErr != nil {
+				return sendErr
+			}
+			openResp = resp.GetChannelOpenResp()
+			if openResp == nil {
+				openReject = connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response from worker"))
+				return nil
+			}
+			// Fail closed on structured reject: ErrorCode alone (empty Error) must
+			// not fall through to the success path.
+			if openResp.GetError() != "" || openResp.GetErrorCode() != leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_UNSPECIFIED {
+				msg := openResp.GetError()
+				if msg == "" {
+					msg = openResp.GetErrorCode().String()
+				}
+				code := channelwire.ConnectCodeFromChannelOpenError(openResp.GetErrorCode())
+				openReject = connect.NewError(code, fmt.Errorf("worker rejected channel: %s", msg))
+				return nil
+			}
+			var adoptErr error
+			effectiveMax, adoptErr = channelwire.AdoptWireMaxMessageSize(openResp.GetMaxMessageSize())
+			if adoptErr != nil {
+				if openResp.GetMaxMessageSize() == 0 {
+					openReject = connect.NewError(connect.CodeInternal, fmt.Errorf(
+						"worker echoed no max_message_size (0); upgrade the worker or check Hub↔Worker version skew"))
+				} else {
+					openReject = connect.NewError(connect.CodeInternal, fmt.Errorf("worker echoed invalid max_message_size: %w", adoptErr))
+				}
+				return nil
+			}
+			hubMax := s.channelMgr.MaxMessageSize()
+			if effectiveMax > hubMax {
+				openReject = connect.NewError(connect.CodeInternal, fmt.Errorf(
+					"worker echoed max_message_size %d above hub max %d", effectiveMax, hubMax))
+				return nil
+			}
+			s.channelMgr.SetChannelMaxMessageSize(channelID, effectiveMax)
+			return nil
 		},
 	)
 	if !channelLive {
@@ -230,14 +274,8 @@ func (s *ChannelService) OpenChannel(
 		}
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker handshake failed: %w", err))
 	}
-
-	openResp := resp.GetChannelOpenResp()
-	if openResp == nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response from worker"))
-	}
-
-	if openResp.GetError() != "" {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("worker rejected channel: %s", openResp.GetError()))
+	if openReject != nil {
+		return nil, openReject
 	}
 	if err := s.ensureRegisteredChannelStillAuthorized(user, channelID); err != nil {
 		return nil, err
@@ -272,6 +310,7 @@ func (s *ChannelService) OpenChannel(
 		ChannelId:        channelID,
 		HandshakePayload: openResp.GetHandshakePayload(),
 		UserId:           user.ID.String(),
+		MaxMessageSize:   uint64(effectiveMax),
 	}), nil
 }
 

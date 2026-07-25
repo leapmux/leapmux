@@ -159,7 +159,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// user-supplied worker id without the ownership + delegation-scope check,
 	// and a composition that forgot to supply one would not compile.
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New()
+	cMgr := channelmgr.New(cfg.MaxMessageSize)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	apiTokenPepper := ks.Pepper()

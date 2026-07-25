@@ -114,15 +114,16 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 	}()
 
 	ch = &Channel{
-		channelID:  "send-test",
-		userID:     "user-1",
-		session:    initiatorSession,
-		ws:         client,
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		channelID:      "send-test",
+		userID:         "user-1",
+		session:        initiatorSession,
+		ws:             client,
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	return ch, frameCh
 }
@@ -268,11 +269,12 @@ func TestDeliverResponseDropsOrphanedPartial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &Channel{
-		ctx:        ctx,
-		cancel:     cancel,
-		pending:    make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:  make(map[uint64]*streamCallback),
-		reassembly: make(map[uint64]*channelwire.ChunkBuffer),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 9
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)

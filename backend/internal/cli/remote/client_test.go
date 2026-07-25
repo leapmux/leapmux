@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/remote"
@@ -189,6 +190,7 @@ func (f *fakeChannelHub) OpenChannel(
 		ChannelId:        "ch-1",
 		UserId:           f.openUserID,
 		HandshakePayload: []byte("not-a-real-message2"),
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
 	}), nil
 }
 
