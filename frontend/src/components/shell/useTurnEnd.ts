@@ -1,4 +1,5 @@
 import type { createActiveClientStore } from '~/lib/presence/activeClient'
+import { monotonicNow } from '~/lib/monotonicNow'
 
 /**
  * Builds the debounced turn-end handler that drives:
@@ -45,7 +46,9 @@ export function useTurnEnd(opts: UseTurnEndOpts): (agentId: string, numToolUses?
   if (!turnEndAudio)
     turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
 
-  let lastSoundPlayedAt = 0
+  // undefined = never played. A numeric zero would suppress the first ding
+  // for ~60s after page load because performance.now() starts near 0.
+  let lastSoundPlayedAt: number | undefined
 
   return (agentId: string, numToolUses?: number) => {
     if (opts.isAgentClosing(agentId))
@@ -63,8 +66,8 @@ export function useTurnEnd(opts: UseTurnEndOpts): (agentId: string, numToolUses?
       if (active !== '' && effective !== '' && active !== effective)
         return
     }
-    const now = Date.now()
-    if (now - lastSoundPlayedAt < TURN_END_SOUND_COOLDOWN_MS)
+    const now = monotonicNow()
+    if (lastSoundPlayedAt !== undefined && now - lastSoundPlayedAt < TURN_END_SOUND_COOLDOWN_MS)
       return
     const sound = opts.preferences.turnEndSound()
     if (sound === 'ding-dong') {

@@ -1,3 +1,5 @@
+import { monotonicNow } from './monotonicNow'
+
 /**
  * Swallow the benign "ResizeObserver loop ..." browser error so it can't pop the
  * @solidjs/start dev overlay.
@@ -86,7 +88,7 @@ export function installResizeObserverLoopErrorSuppressor(
     event.stopImmediatePropagation()
     event.preventDefault()
     suppressedCount += 1
-    const now = Date.now()
+    const now = monotonicNow()
     if (now - lastDebugLogAt >= SUPPRESSED_DEBUG_LOG_INTERVAL_MS) {
       lastDebugLogAt = now
       // eslint-disable-next-line no-console -- deliberate dev-only diagnostic; the logger would re-enter the error path this suppressor guards

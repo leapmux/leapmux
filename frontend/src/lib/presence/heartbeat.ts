@@ -1,5 +1,6 @@
 import { onCleanup } from 'solid-js'
 import { orgCRDTClient } from '~/api/clients'
+import { monotonicNow } from '~/lib/monotonicNow'
 
 /**
  * HEARTBEAT_THROTTLE_MS bounds how often input events translate into
@@ -68,15 +69,17 @@ export interface HeartbeatHandle {
  * the client misses its own `PresenceUpdate`.
  */
 export function mountPresenceHeartbeat(opts: HeartbeatOpts): HeartbeatHandle {
-  let lastSent = 0
+  // undefined = never sent. A numeric zero would throttle the first input
+  // for ~5s after page load because performance.now() starts near 0.
+  let lastSent: number | undefined
 
   const send = (immediate = false) => {
     const orgId = opts.orgId()
     const workspaceId = opts.workspaceId() ?? ''
     if (!orgId || !workspaceId)
       return
-    const now = Date.now()
-    if (!immediate && now - lastSent < HEARTBEAT_THROTTLE_MS)
+    const now = monotonicNow()
+    if (!immediate && lastSent !== undefined && now - lastSent < HEARTBEAT_THROTTLE_MS)
       return
     lastSent = now
     const sender = opts.sender ?? defaultSender

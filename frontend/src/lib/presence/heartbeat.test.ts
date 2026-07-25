@@ -3,11 +3,9 @@ import { mountPresenceHeartbeat } from './heartbeat'
 
 describe('mountPresenceHeartbeat', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-    // Make Date.now advance with the fake clock so the throttle logic
-    // observes elapsed time. Without this the throttle never expires
-    // because Date.now stays constant across `vi.advanceTimersByTime`.
-    vi.setSystemTime(new Date(0))
+    // Fake performance so monotonicNow (throttle clock) advances with
+    // vi.advanceTimersByTime — wall Date.now is irrelevant here.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   })
   afterEach(() => {
     vi.useRealTimers()

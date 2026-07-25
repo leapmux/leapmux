@@ -682,7 +682,12 @@ func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
 	c.mu.Unlock()
 	assert.True(t, after.After(before), "lastSendTime must advance on enqueue")
 
-	before = after
+	// Reset before TrySend so the assertion does not depend on wall-clock
+	// ticks between two rapid enqueues (Windows time.Now can share a tick).
+	c.mu.Lock()
+	c.lastSendTime = time.Now().Add(-time.Hour)
+	before = c.lastSendTime
+	c.mu.Unlock()
 	require.True(t, c.TrySend(heartbeatMsg()))
 	c.mu.Lock()
 	after = c.lastSendTime
