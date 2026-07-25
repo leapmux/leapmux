@@ -180,7 +180,7 @@ import {
   RevokeFileTabPathRequestSchema,
   RevokeFileTabPathResponseSchema,
 } from '~/generated/leapmux/v1/workspace_private_pb'
-import { ChannelManager } from '~/lib/channel'
+import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
 
@@ -190,12 +190,15 @@ const log = createLogger('workerRpc')
 
 const channelRpcClient = createClient(ChannelService, transport)
 
-// Module-level callbacks set by the UI layer (AppShell).
-let confirmKeyPinFn: ((workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>) | null = null
+// Module-level TOFU pin store. AppShell registers the mismatch prompt after mount
+// via setConfirmKeyPin; until then mismatches fail closed (reject).
+const keyPinStore = new KeyPinStore({
+  confirmKeyPin: async () => 'reject',
+})
 
 /** Register the key-pin confirmation callback (called by AppShell). */
 export function setConfirmKeyPin(fn: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>): void {
-  confirmKeyPinFn = fn
+  keyPinStore.setConfirmKeyPin(fn)
 }
 
 // The identity this page believes it is authenticated as. Set by AppShell, which
@@ -254,18 +257,12 @@ class BrowserChannelTransport implements ChannelTransport {
     ws.binaryType = 'arraybuffer'
     return ws
   }
-
-  async confirmKeyPin(workerId: string, expectedFingerprint: string, actualFingerprint: string): Promise<KeyPinDecision> {
-    if (!confirmKeyPinFn) {
-      return 'reject'
-    }
-    return confirmKeyPinFn(workerId, expectedFingerprint, actualFingerprint)
-  }
 }
 
 export const channelManager = new ChannelManager(new BrowserChannelTransport(), {
   rpcTimeoutFn: apiLoadingTimeoutMs,
   expectedUserId: () => expectedUserIdFn?.(),
+  keyPins: keyPinStore,
 })
 
 // ---------------------------------------------------------------------------

@@ -117,11 +117,12 @@ func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope De
 		// Evict the dead channel now rather than leaving it referenced until a
 		// later successful open overwrites it: runChannelOpen only writes
 		// c.channels[key] on success, so a persistent open failure would keep the
-		// torn-down *tunnel.Channel pinned in the map. Mirrors the desktop
-		// TunnelManager.getOrOpenChannel, which deletes a closed entry inline --
-		// the two single-flight opener skeletons are structurally duplicated; see
-		// https://github.com/leapmux/leapmux/issues/281 for the dedup assessment
-		// (a full generic opener is likely the wrong trade -- read before acting).
+		// torn-down *tunnel.Channel pinned in the map. Mirrors desktop
+		// channelPool.getOrOpen, which deletes a closed entry inline. The two
+		// single-flight opener skeletons are deliberately duplicated: desktop
+		// owns epoch/revision cancel + eager eviction; this client owns
+		// ExpectedUserID identity pinning + lazy eviction. A shared generic
+		// opener was rejected — see https://github.com/leapmux/leapmux/issues/281.
 		delete(c.channels, key)
 	}
 	// Single-flight: reuse an in-flight open for this key instead of minting a

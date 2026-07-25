@@ -6,10 +6,10 @@
  * Authentication uses session cookies (Cookie header) instead of Bearer tokens.
  */
 
-import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '../../../src/lib/channel'
+import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
 import { EncryptionMode } from '../../../src/generated/leapmux/v1/channel_pb'
-import { ChannelManager } from '../../../src/lib/channel'
+import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'
 
 // ---- Base64 helpers for JSON ↔ bytes conversion ----
@@ -100,11 +100,6 @@ class FetchChannelTransport implements ChannelTransport {
     ws.binaryType = 'arraybuffer'
     return ws
   }
-
-  async confirmKeyPin(_workerId: string, _expectedFingerprint: string, _actualFingerprint: string): Promise<KeyPinDecision> {
-    // Auto-accept key changes in e2e tests (fresh server instances each time).
-    return 'accept'
-  }
 }
 
 /** Create a ChannelManager with a fetch-based transport for e2e tests. */
@@ -120,5 +115,7 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   return new ChannelManager(new FetchChannelTransport(hubUrl, cookie), {
     rpcTimeoutFn: () => 60_000,
     expectedUserId: () => userId,
+    // Auto-accept key changes in e2e tests (fresh server instances each time).
+    keyPins: new KeyPinStore({ confirmKeyPin: async () => 'accept' }),
   })
 }

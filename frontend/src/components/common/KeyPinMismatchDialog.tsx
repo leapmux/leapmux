@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { KeyPinDecision } from '~/lib/channel'
+import type { KeyPinDecision } from '~/lib/keyPinStore'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog } from './Dialog'
 

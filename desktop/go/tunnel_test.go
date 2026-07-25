@@ -331,140 +331,12 @@ func TestTunnelManager_CloseAll(t *testing.T) {
 	assert.Empty(t, m.ListTunnels())
 }
 
-func TestTunnelManager_CanceledLeaderDoesNotCancelChannelForFollower(t *testing.T) {
-	m := NewTunnelManager()
-	defer m.CloseAll()
-	channel, _ := newTestManagedChannel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	openLifetime := make(chan context.Context, 1)
-	var startOnce sync.Once
-	m.openCh = func(
-		ctx context.Context,
-		_, _ string,
-		opts *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		startOnce.Do(func() { close(started) })
-		openLifetime <- opts.LifetimeContext
-		select {
-		case <-release:
-			return channel, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	cfg := TunnelConfig{HubURL: "http://hub", WorkerID: "worker"}
-	leaderCtx, cancelLeader := context.WithCancel(context.Background())
-	leaderResult := make(chan error, 1)
-	go func() {
-		_, err := m.getOrOpenChannel(leaderCtx, m.currentRevision(), cfg)
-		leaderResult <- err
-	}()
-	<-started
-	lifetimeCtx := <-openLifetime
-
-	followerResult := make(chan error, 1)
-	go func() {
-		got, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), cfg)
-		if err == nil {
-			assert.Same(t, channel, got)
-		}
-		followerResult <- err
-	}()
-	time.Sleep(20 * time.Millisecond)
-	cancelLeader()
-
-	require.ErrorIs(t, <-leaderResult, context.Canceled)
-	assert.NoError(t, lifetimeCtx.Err(), "cached channel lifetime inherited the canceled leader")
-	close(release)
-	require.NoError(t, <-followerResult)
-}
-
-func TestTunnelManager_ChannelOpenTimesOutOnStalledHub(t *testing.T) {
-	// A hub that accepts the connection but never completes the handshake must
-	// not wedge the channel open forever (the open runs under the epoch context,
-	// which has no deadline, and the desktop proxy clients carry no timeout).
-	// channelOpenTimeout fences it so the accepted local conn fails fast instead
-	// of hanging until tunnel teardown.
-	prev := channelOpenTimeout
-	channelOpenTimeout = 50 * time.Millisecond
-	defer func() { channelOpenTimeout = prev }()
-
-	m := NewTunnelManager()
-	defer m.CloseAll()
-
-	openReleased := make(chan struct{}, 1)
-	m.openCh = func(
-		ctx context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		<-ctx.Done() // stalled hub: block until the open deadline fences ctx
-		openReleased <- struct{}{}
-		return nil, ctx.Err()
-	}
-
-	start := time.Now()
-	_, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{
-		HubURL: "http://hub", WorkerID: "worker",
-	})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Less(t, time.Since(start), 5*time.Second, "open should fail at the deadline, not hang")
-
-	select {
-	case <-openReleased:
-	case <-time.After(time.Second):
-		t.Fatal("openCh was never released by the open deadline")
-	}
-}
-
-func TestTunnelManager_DoesNotShareChannelsAcrossConnectionIdentity(t *testing.T) {
-	m := NewTunnelManager()
-	defer m.CloseAll()
-	firstChannel, _ := newTestManagedChannel()
-	secondChannel, _ := newTestManagedChannel()
-	thirdChannel, _ := newTestManagedChannel()
-	channels := []*managedChannel{firstChannel, secondChannel, thirdChannel}
-	openCalls := 0
-	m.openCh = func(
-		_ context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		ch := channels[openCalls]
-		openCalls++
-		return ch, nil
-	}
-
-	first, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{
-		HubURL: "http://first-hub", WorkerID: "worker",
-	})
-	require.NoError(t, err)
-	second, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{
-		HubURL: "http://second-hub", WorkerID: "worker",
-	})
-	require.NoError(t, err)
-
-	assert.Same(t, channels[0], first)
-	assert.Same(t, channels[1], second)
-
-	m.SetChannelOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "new-options"})
-	third, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{
-		HubURL: "http://second-hub", WorkerID: "worker",
-	})
-	require.NoError(t, err)
-	assert.Same(t, channels[2], third)
-	assert.Equal(t, 3, openCalls)
-}
-
 func TestTunnelManager_CloseAllFencesInflightTunnelCreation(t *testing.T) {
 	m := NewTunnelManager()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	channel, channelClosed := newTestManagedChannel()
-	m.openCh = func(
+	m.pool.openCh = func(
 		_ context.Context,
 		_, _ string,
 		_ *tunnelpkg.OpenChannelOptions,
@@ -490,42 +362,11 @@ func TestTunnelManager_CloseAllFencesInflightTunnelCreation(t *testing.T) {
 	require.Error(t, <-result)
 	assert.True(t, channelClosed.Load(), "stale channel was not closed")
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	assert.Empty(t, m.channels)
 	assert.Empty(t, m.tunnels)
-}
-
-func TestTunnelManager_RemovesClosedCachedChannel(t *testing.T) {
-	m := NewTunnelManager()
-	defer m.CloseAll()
-	first, _ := newTestManagedChannel()
-	second, _ := newTestManagedChannel()
-	channels := []*managedChannel{first, second}
-	openCalls := 0
-	m.openCh = func(
-		_ context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		ch := channels[openCalls]
-		openCalls++
-		return ch, nil
-	}
-	cfg := TunnelConfig{HubURL: "http://hub", WorkerID: "worker"}
-
-	opened, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), cfg)
-	require.NoError(t, err)
-	opened.close()
-	require.Eventually(t, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return len(m.channels) == 0
-	}, time.Second, time.Millisecond)
-
-	reopened, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), cfg)
-	require.NoError(t, err)
-	assert.Same(t, second, reopened)
-	assert.Equal(t, 2, openCalls)
+	m.mu.Unlock()
+	m.pool.mu.Lock()
+	assert.Empty(t, m.pool.channels)
+	m.pool.mu.Unlock()
 }
 
 func TestTunnelManager_TeardownClosesPortForwardConnections(t *testing.T) {
@@ -911,101 +752,6 @@ func TestTunnelConfig_ValidateAndNormalize(t *testing.T) {
 	})
 }
 
-// A channel whose LIFETIME was cancelled without an explicit Close is dead too, and
-// the manager must treat it as such.
-//
-// tunnel.Channel reports exactly that (see its Closed doc: a shared-transport write
-// failure calls ch.cancel(), and only recvLoop's deferred Close later sets `closed`),
-// so a manager that keyed only on an explicit close would keep handing tunnels a
-// channel whose every dial fails instead of re-resolving a live one. The manager sees
-// both facts through the same handle, which is what makes them impossible to observe
-// out of sync.
-func TestTunnelManager_LiveChannelReResolvesWhenLifetimeCancelled(t *testing.T) {
-	m := NewTunnelManager()
-	defer m.CloseAll()
-
-	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
-	dying := &managedChannel{handle: &fakeChannel{ctx: lifetimeCtx, cancel: cancelLifetime}}
-	fresh, _ := newTestManagedChannel()
-	channels := []*managedChannel{dying, fresh}
-	openCalls := 0
-	m.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		ch := channels[openCalls]
-		openCalls++
-		return ch, nil
-	}
-	const hubURL, workerID = "http://hub", "worker"
-
-	opened, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{HubURL: hubURL, WorkerID: workerID})
-	require.NoError(t, err)
-	require.Same(t, dying, opened)
-
-	// The transport dies: the lifetime ends, but nothing calls Close.
-	cancelLifetime()
-	require.Eventually(t, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return len(m.channels) == 0
-	}, time.Second, time.Millisecond, "a channel whose lifetime ended must be evicted from the cache")
-
-	live, err := m.liveChannel(context.Background(), dying, hubURL, workerID)
-	require.NoError(t, err)
-	assert.Same(t, fresh, live, "a tunnel holding a lifetime-cancelled channel must re-resolve a live one")
-	assert.Equal(t, 2, openCalls)
-}
-
-// liveChannel is the tunnel self-heal path: a tunnel must keep working after its
-// captured E2EE channel dies (worker/hub reconnect), re-resolving a fresh
-// channel instead of rejecting every connection against the dead one.
-func TestTunnelManager_LiveChannelReResolvesWhenClosed(t *testing.T) {
-	m := NewTunnelManager()
-	defer m.CloseAll()
-	first, _ := newTestManagedChannel()
-	second, _ := newTestManagedChannel()
-	channels := []*managedChannel{first, second}
-	openCalls := 0
-	m.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		ch := channels[openCalls]
-		openCalls++
-		return ch, nil
-	}
-	const hubURL, workerID = "http://hub", "worker"
-
-	// Seed the cache with `first`.
-	opened, err := m.getOrOpenChannel(context.Background(), m.currentRevision(), TunnelConfig{HubURL: hubURL, WorkerID: workerID})
-	require.NoError(t, err)
-	require.Same(t, first, opened)
-
-	// While first is alive, liveChannel returns it without re-opening.
-	live, err := m.liveChannel(context.Background(), first, hubURL, workerID)
-	require.NoError(t, err)
-	require.Same(t, first, live)
-	assert.Equal(t, 1, openCalls)
-
-	// Close first (evicts it from the cache); liveChannel must re-resolve.
-	first.close()
-	require.Eventually(t, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return len(m.channels) == 0
-	}, time.Second, time.Millisecond)
-	live, err = m.liveChannel(context.Background(), first, hubURL, workerID)
-	require.NoError(t, err)
-	require.Same(t, second, live)
-	assert.Equal(t, 2, openCalls)
-
-	// A nil captured channel (test injection / no captured channel) is returned
-	// as-is so injected dial seams that ignore the channel keep working.
-	live, err = m.liveChannel(context.Background(), nil, hubURL, workerID)
-	require.NoError(t, err)
-	assert.Nil(t, live)
-}
-
-// TestPortForwardDeliversResponseAfterClientHalfClose is the S4 regression: the
-// previous full-close-on-first-done closed the client's read side as soon as the
-// client half-closed its write side (after the request), truncating the
-// in-flight response. The half-close copy must forward the half-close and still
-// deliver the response.
 func TestPortForwardDeliversResponseAfterClientHalfClose(t *testing.T) {
 	m := NewTunnelManager()
 	defer m.CloseAll()
