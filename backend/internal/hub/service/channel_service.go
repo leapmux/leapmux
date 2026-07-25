@@ -172,7 +172,9 @@ func (s *ChannelService) OpenChannel(
 	// The credential identity is recorded so per-token revoke paths
 	// (CloseChannelsByBearer / CloseChannelsByUserRevocation) can find every
 	// channel an `lmx_…` token authorized.
-	s.channelMgr.RegisterWithAuthInfo(channelID, workerID, user.ID.String(), channelAuthInfo(user), nil)
+	if !s.channelMgr.RegisterWithAuthInfo(channelID, workerID, user.ID.String(), channelAuthInfo(user), nil) {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("channel id collision"))
+	}
 	openAttempted := false
 	registrationCommitted := false
 	defer func() {

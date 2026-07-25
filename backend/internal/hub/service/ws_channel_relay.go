@@ -195,7 +195,9 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			},
 		)
 		if !ok {
-			slog.Debug("channel relay: channel not authorized for user",
+			// ok=false is authorize failure, dead channel, or refuse-to-bind
+			// when the target conn is gone — not authorize-only.
+			slog.Debug("channel relay: channel unavailable for user",
 				"channel_id", channelID, "user_id", user.ID)
 			continue
 		}
