@@ -16,6 +16,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
+import { monotonicNow } from '~/lib/monotonicNow'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 
@@ -186,7 +187,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       terminalId,
       title,
     }).catch(() => {})
-    titleLastSent.set(terminalId, Date.now())
+    titleLastSent.set(terminalId, monotonicNow())
   }
 
   const handleTerminalTitleChange = (terminalId: string, title: string) => {
@@ -197,8 +198,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     if (existing)
       clearTimeout(existing)
 
-    const last = titleLastSent.get(terminalId) ?? 0
-    const elapsed = Date.now() - last
+    // Missing entry = never sent: treat as fully elapsed so the first
+    // update fires immediately (performance.now() starts near 0, so a
+    // `?? 0` sentinel would incorrectly delay early-session titles).
+    const last = titleLastSent.get(terminalId)
+    const elapsed = last === undefined ? TITLE_THROTTLE_MS : monotonicNow() - last
     const delay = Math.max(0, TITLE_THROTTLE_MS - elapsed)
     if (delay === 0) {
       sendTitleToBackend(terminalId, title)

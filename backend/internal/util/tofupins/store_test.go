@@ -294,6 +294,27 @@ func TestStore_VerifyRepeatedMatchesSkipDiskWritesWithinThrottleWindow(t *testin
 		"in-memory LastUsedAt must still advance even when persistence is throttled")
 }
 
+func TestStore_VerifyAfterReopenHonorsPersistedLastUsedAtThrottle(t *testing.T) {
+	// After Open reloads wall-only LastUsedAt from disk, the first Verify
+	// must still honor the throttle against that stamp (wall fallback)
+	// rather than immediately rewriting every pin on process restart.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	s1 := openStore(t, path)
+	require.NoError(t, s1.Verify("w", []byte("x"), []byte("m"), []byte("sl")))
+
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	s2 := openStore(t, path)
+	require.NoError(t, s2.Verify("w", []byte("x"), []byte("m"), []byte("sl")))
+
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, before.ModTime(), after.ModTime(),
+		"reopen+Verify within the throttle window must not rewrite the pin file")
+}
+
 func TestStore_VerifyFlushesLastUsedAtPastThrottleWindow(t *testing.T) {
 	// With a very small throttle (1ns) every subsequent Verify must
 	// rewrite the file because the bump is always past the window.

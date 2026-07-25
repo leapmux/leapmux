@@ -77,6 +77,14 @@ type Store struct {
 	opts Options
 	mu   sync.Mutex
 	pins map[string]Entry
+	// lastBumpAt holds the mono-carrying time.Now() of the most recent
+	// in-memory LastUsedAt bump per worker. Entry.LastUsedAt is wall-only
+	// (UTC for JSON); measuring the persist throttle against those stamps
+	// would strip the monotonic clock and make the hot path sensitive to
+	// NTP steps. After Open, the first Verify for a loaded pin falls back
+	// to Entry.LastUsedAt (wall) so a restart does not immediately rewrite
+	// every recently-used pin.
+	lastBumpAt map[string]time.Time
 }
 
 // Open loads the pin file at opts.Path (creating its parent
@@ -91,7 +99,7 @@ func Open(opts Options) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(opts.Path), opts.DirMode); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
-	s := &Store{opts: opts, pins: map[string]Entry{}}
+	s := &Store{opts: opts, pins: map[string]Entry{}, lastBumpAt: map[string]time.Time{}}
 	data, err := os.ReadFile(opts.Path)
 	if err == nil {
 		var f onDiskFile
@@ -112,10 +120,13 @@ func Open(opts Options) (*Store, error) {
 // an error whose message appends the configured clear-command hint.
 //
 // `LastUsedAt` is bumped in-memory on every successful match but the
-// on-disk JSON is rewritten only when the bump exceeds
-// `lastUsedPersistMinGap` past the previously-persisted value. This
-// keeps the field useful for `pins list` without paying a JSON
-// marshal+rename on every hot-path tunnel handshake.
+// on-disk JSON is rewritten only when the inter-call gap exceeds
+// `LastUsedPersistMinGap`. The gap is measured with a mono-carrying
+// clock (see lastBumpAt); after a process restart the first Verify for
+// a loaded pin falls back to the persisted wall LastUsedAt so a warm
+// restart does not rewrite every pin. This keeps the field useful for
+// `pins list` without paying a JSON marshal+rename on every hot-path
+// tunnel handshake.
 func (s *Store) Verify(workerID string, public, mlkem, slhdsa []byte) error {
 	if workerID == "" {
 		return errors.New("worker_id required")
@@ -126,15 +137,20 @@ func (s *Store) Verify(workerID string, public, mlkem, slhdsa []byte) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UTC()
+	now := time.Now()
+	wall := now.UTC()
 	if existing, ok := s.pins[workerID]; ok {
 		if existing.X25519PublicKey != x || existing.MlkemPublicKey != m || existing.SlhdsaPublicKey != sl {
 			return fmt.Errorf("worker %s key mismatch — %s", workerID, fmt.Sprintf(s.opts.MismatchHintTmpl, workerID))
 		}
-		prevPersisted := existing.LastUsedAt
-		existing.LastUsedAt = now
+		prevBump, hadBump := s.lastBumpAt[workerID]
+		if !hadBump {
+			prevBump = existing.LastUsedAt
+		}
+		existing.LastUsedAt = wall
 		s.pins[workerID] = existing
-		if s.opts.LastUsedPersistMinGap > 0 && now.Sub(prevPersisted) < s.opts.LastUsedPersistMinGap {
+		s.lastBumpAt[workerID] = now
+		if s.opts.LastUsedPersistMinGap > 0 && now.Sub(prevBump) < s.opts.LastUsedPersistMinGap {
 			// Skip on-disk write — the bump is within the throttle
 			// window. Subsequent calls will eventually flush once the
 			// gap is exceeded.
@@ -146,9 +162,10 @@ func (s *Store) Verify(workerID string, public, mlkem, slhdsa []byte) error {
 		X25519PublicKey: x,
 		MlkemPublicKey:  m,
 		SlhdsaPublicKey: sl,
-		FirstSeenAt:     now,
-		LastUsedAt:      now,
+		FirstSeenAt:     wall,
+		LastUsedAt:      wall,
 	}
+	s.lastBumpAt[workerID] = now
 	return s.persistLocked()
 }
 
@@ -161,6 +178,7 @@ func (s *Store) Remove(workerID string) error {
 		return nil
 	}
 	delete(s.pins, workerID)
+	delete(s.lastBumpAt, workerID)
 	return s.persistLocked()
 }
 

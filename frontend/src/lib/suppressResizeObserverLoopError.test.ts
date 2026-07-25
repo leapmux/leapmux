@@ -104,7 +104,8 @@ describe('installresizeobserverlooperrorsuppressor', () => {
     // emits the same message for both); the suppressor keeps that signal observable
     // as at most one console.debug per window, with a count a real loop makes climb.
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
-    const nowSpy = vi.spyOn(Date, 'now')
+    // Rate limit reads monotonicNow → performance.now().
+    const nowSpy = vi.spyOn(performance, 'now')
     nowSpy.mockReturnValue(100_000)
     install()
 

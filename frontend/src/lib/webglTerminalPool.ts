@@ -1,5 +1,6 @@
 import type { TerminalInstance } from './terminal'
 import { createLogger } from './logger'
+import { monotonicNow } from './monotonicNow'
 import { attachWebgl, detachWebgl } from './terminal'
 
 const log = createLogger('webgl-pool')
@@ -78,8 +79,8 @@ export interface WebglTerminalPoolDeps {
   /** Detach the WebGL renderer, reverting the instance to the DOM renderer. */
   detach: (instance: TerminalInstance) => void
   /**
-   * Wall-clock source (ms) for the context-loss decay window. Injected so tests
-   * can drive it deterministically; defaults to Date.now.
+   * Monotonic clock source (ms) for the context-loss decay window. Injected so
+   * tests can drive it deterministically; defaults to monotonicNow.
    */
   now?: () => number
 }
@@ -112,7 +113,7 @@ interface Slot {
   /** Count of browser-forced context losses, for the retry bound. */
   contextLossCount: number
   /**
-   * Wall-clock time (ms) this slot last reached the 'webgl' state, or undefined
+   * Monotonic time (ms) this slot last reached the 'webgl' state, or undefined
    * while on DOM / mid-attach. Used to decay the context-loss budget: a loss
    * that arrives after the context survived CONTEXT_LOSS_BUDGET_RESET_MS resets
    * the count. Cleared by doDetach so a re-attach re-stamps it.
@@ -139,7 +140,7 @@ interface Slot {
  */
 export function createWebglTerminalPool(deps: WebglTerminalPoolDeps): WebglTerminalPool {
   const { capacity, attach, detach } = deps
-  const now = deps.now ?? (() => Date.now())
+  const now = deps.now ?? monotonicNow
 
   // The per-id record for every terminal the pool knows about. A slot is
   // created on the first `acquire` for an id and dropped by `reconcile` once
