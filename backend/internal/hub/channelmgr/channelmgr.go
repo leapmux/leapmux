@@ -146,14 +146,19 @@ type ChannelInfo struct {
 
 // RegisterWithAuthInfo records the full authentication basis for a channel.
 // OpenChannel callers must provide UserAuthGeneration so user-wide revocation
-// can use the persisted credential epoch.
+// can use the persisted credential epoch. Returns false when channelID is
+// already registered, leaving existing state unchanged — callers must treat
+// that as a programming error (production IDs are unique).
 func (m *Manager) RegisterWithAuthInfo(
 	channelID, workerID, userID string,
 	authInfo AuthInfo,
 	cancel context.CancelFunc,
-) {
+) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, exists := m.channels[channelID]; exists {
+		return false
+	}
 	ch := &channel{
 		ChannelID:   channelID,
 		WorkerID:    workerID,
@@ -164,6 +169,7 @@ func (m *Manager) RegisterWithAuthInfo(
 	}
 	m.channels[channelID] = ch
 	m.indexChannel(ch)
+	return true
 }
 
 // indexChannel adds ch to every credential/routing reverse index. Mirror of
@@ -257,16 +263,22 @@ func (m *Manager) unbindLocked(userID, connID string) (*userConn, bool) {
 	return uc, false
 }
 
-// UseAuthorizedChannel binds a relay connection and performs one routed
-// operation while holding the channel's operation lock. Credential teardown
-// waits for the operation to finish before removing the channel and publishing
-// close notifications, so no routed message can cross the revocation boundary.
+// UseAuthorizedChannel authorizes a live channel and performs one routed
+// operation while holding the channel's operation lock. When connID already
+// matches the channel's binding (or both are empty), the steady-state path
+// reuses under RLock without rewriting ConnID. A real first-bind or rebind
+// takes Lock, requires a registered user conn for connID, then writes ConnID.
+// ok=false covers dead/missing channel, failed authorize, and refuse-to-bind
+// when the target conn is gone — callers must not treat it as authorize-only.
+// Credential teardown waits for the operation to finish before removing the
+// channel and publishing close notifications, so no routed message can cross
+// the revocation boundary.
 func (m *Manager) UseAuthorizedChannel(
 	channelID, connID string,
 	authorize func(ChannelInfo) bool,
 	operation func(ChannelInfo) error,
 ) (ChannelInfo, bool, error) {
-	return m.useChannel(channelID, &connID, authorize, operation)
+	return m.useChannel(channelID, bindConn(connID), authorize, operation)
 }
 
 // UseChannelIf performs one operation on a live channel without changing its
@@ -277,7 +289,7 @@ func (m *Manager) UseChannelIf(
 	authorize func(ChannelInfo) bool,
 	operation func(ChannelInfo) error,
 ) (ChannelInfo, bool, error) {
-	return m.useChannel(channelID, nil, authorize, operation)
+	return m.useChannel(channelID, bindNone(), authorize, operation)
 }
 
 // acquireChannelOp looks up a channel and acquires its operation lock (opMu),
@@ -309,7 +321,7 @@ func (m *Manager) channelLiveLocked(channelID string, ch *channel) bool {
 
 func (m *Manager) useChannel(
 	channelID string,
-	bindConnID *string,
+	bind channelBind,
 	authorize func(ChannelInfo) bool,
 	operation func(ChannelInfo) error,
 ) (ChannelInfo, bool, error) {
@@ -325,31 +337,27 @@ func (m *Manager) useChannel(
 	// manager exists to enforce.
 	defer ch.opMu.Unlock()
 
-	// The liveness re-check, authorize callback, and ConnID bind run under m.mu;
-	// scope them to a closure with a deferred Unlock so a panicking authorize
-	// releases the manager-wide lock instead of freezing the whole manager.
-	//
-	// The ConnID re-bind below is the ONLY mutation forcing m.mu.Lock() here --
-	// every reader/writer of ch.ConnID already holds this channel's opMu, so
-	// making ConnID opMu-guarded would let this take m.mu.RLock() instead,
-	// demoting a global write lock taken once per frontend->worker frame to a
-	// read lock. See https://github.com/leapmux/leapmux/issues/279.
-	info, ok := func() (ChannelInfo, bool) {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if !m.channelLiveLocked(channelID, ch) {
-			return ChannelInfo{}, false
+	// ConnID stays m.mu-guarded (GetChannelInfo and Unbind's first pass read it
+	// without opMu). Steady-state frontend->worker frames re-bind the same
+	// ConnID, so peek under RLock and authorize there when unchanged (or
+	// bindModeNone). Upgrade to Lock only for a real first-bind or rebind:
+	// peek only detects needWrite and defers authorize so authorize+bind stay
+	// one critical section. Never write ConnID without a registered user conn
+	// (R→W gap or earlier Unbind). See https://github.com/leapmux/leapmux/issues/279.
+	peek := m.peekBindDecision(channelID, ch, bind, authorize)
+	var info ChannelInfo
+	switch peek.kind {
+	case bindPeekReject:
+		return ChannelInfo{}, false, nil
+	case bindPeekReady:
+		info = peek.info
+	case bindPeekNeedWrite:
+		info, ok = m.bindConnWithWriteLock(channelID, ch, bind.connID, authorize)
+		if !ok {
+			return ChannelInfo{}, false, nil
 		}
-		info := channelInfo(ch)
-		if authorize != nil && !authorize(info) {
-			return ChannelInfo{}, false
-		}
-		if bindConnID != nil {
-			ch.ConnID = *bindConnID
-		}
-		return info, true
-	}()
-	if !ok {
+	default:
+		// Exhaustiveness guard: bindPeekKind is package-private iota.
 		return ChannelInfo{}, false, nil
 	}
 
@@ -988,10 +996,7 @@ func (m *Manager) SendToFrontendIf(msg *leapmuxv1.ChannelMessage, authorize func
 	connID, sender, ok := func() (string, SendFunc, bool) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
-		if !m.channelLiveLocked(msg.GetChannelId(), ch) {
-			return "", nil, false
-		}
-		if authorize != nil && !authorize(channelInfo(ch)) {
+		if _, authOK := m.liveAndAuthorizeLocked(msg.GetChannelId(), ch, authorize); !authOK {
 			return "", nil, false
 		}
 		connID := ch.ConnID
@@ -1083,7 +1088,8 @@ func channelInfo(ch *channel) ChannelInfo {
 }
 
 // getConnSender returns the SendFunc for a specific connection of a user.
-// Must be called while holding m.mu (read or write). Returns nil if not found.
+// Must be called while holding m.mu (read or write). Returns nil if not found
+// or if the registered conn has a nil SendFunc.
 func (m *Manager) getConnSender(userID, connID string) SendFunc {
 	conns := m.userSenders[userID]
 	if conns == nil {

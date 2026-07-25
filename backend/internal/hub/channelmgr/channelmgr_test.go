@@ -19,8 +19,15 @@ var noopSender = func(*leapmuxv1.ChannelMessage) error { return nil }
 func bindChannelConn(t testing.TB, m *Manager, channelID, connID string) bool {
 	t.Helper()
 	// UseAuthorizedChannel with a nil operation binds the conn and reports
-	// liveness, the same atomic check-and-bind the retired BindChannelConnIf did.
+	// liveness. Callers must BindUser the target conn first — first-bind
+	// refuses when the conn is not registered.
 	_, ok, _ := m.UseAuthorizedChannel(channelID, connID, nil, nil)
+	if !ok {
+		if info, exists := m.GetChannelInfo(channelID); exists {
+			t.Fatalf("bindChannelConn(%s, %s) failed; BindUser(%s, %s, ...) must run first (ConnID=%q)",
+				channelID, connID, info.UserID, connID, info.ConnID)
+		}
+	}
 	return ok
 }
 
@@ -28,12 +35,48 @@ func TestRegisterAndExists(t *testing.T) {
 	m := New(0)
 	assert.False(t, m.Exists("ch1"))
 
-	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	require.True(t, m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil))
 	assert.True(t, m.Exists("ch1"))
 	info, ok := m.GetChannelInfo("ch1")
 	require.True(t, ok)
 	assert.Equal(t, "w1", info.WorkerID)
 	assert.Equal(t, "u1", info.UserID)
+}
+
+// TestRegisterWithAuthInfo_RejectsDuplicateID ensures a second register for the
+// same channelID is refused and leaves the original entry (and reverse indexes)
+// untouched — previously an overwrite orphaned the old worker index.
+func TestRegisterWithAuthInfo_RejectsDuplicateID(t *testing.T) {
+	m := New(0)
+	require.True(t, m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil))
+
+	assert.False(t, m.RegisterWithAuthInfo("ch1", "w2", "u2", AuthInfo{}, nil),
+		"duplicate channelID must be rejected")
+
+	info, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "w1", info.WorkerID)
+	assert.Equal(t, "u1", info.UserID)
+
+	assert.Empty(t, m.UnregisterByWorker("w2"), "rejected register must not index the new worker")
+	removed := m.UnregisterByWorker("w1")
+	require.Equal(t, []string{"ch1"}, removed)
+	assert.False(t, m.Exists("ch1"))
+}
+
+// TestRegisterWithAuthInfo_AllowsReuseAfterClose: once CloseByID removes the
+// map entry, the same channelID may be registered again.
+func TestRegisterWithAuthInfo_AllowsReuseAfterClose(t *testing.T) {
+	m := New(0)
+	require.True(t, m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil))
+	m.CloseByID("ch1")
+	assert.False(t, m.Exists("ch1"))
+
+	require.True(t, m.RegisterWithAuthInfo("ch1", "w2", "u2", AuthInfo{}, nil))
+	info, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "w2", info.WorkerID)
+	assert.Equal(t, "u2", info.UserID)
 }
 
 func TestUnregister(t *testing.T) {
@@ -246,6 +289,7 @@ func TestCloseByIDIfLeavesUnauthorizedChannelOpen(t *testing.T) {
 func TestUseAuthorizedChannelOrdersCloseAfterInFlightOperation(t *testing.T) {
 	m := New(0)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	operationDone := make(chan struct{})
@@ -650,12 +694,15 @@ func TestUnbindUserAndCleanup_RechecksConcurrentBindAfterChannelOperation(t *tes
 	operationStarted := make(chan struct{})
 	releaseOperation := make(chan struct{})
 	m.BindUser("u1", "old", noopSender, nil)
+	m.BindUser("u1", "new", noopSender, nil)
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	operationDone := make(chan struct{})
 	go func() {
 		defer close(operationDone)
-		_, found, err := m.UseAuthorizedChannel("ch1", "", nil, func(ChannelInfo) error {
+		// Hold opMu on the Lock bind path (first write of ConnID) so cleanup
+		// can drop "old" while a concurrent BindUser("new") races the recheck.
+		_, found, err := m.UseAuthorizedChannel("ch1", "new", nil, func(ChannelInfo) error {
 			close(operationStarted)
 			<-releaseOperation
 			return nil
@@ -670,14 +717,17 @@ func TestUnbindUserAndCleanup_RechecksConcurrentBindAfterChannelOperation(t *tes
 	require.Eventually(t, func() bool {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
-		return len(m.userSenders["u1"]) == 0
+		_, hasOld := m.userSenders["u1"]["old"]
+		return !hasOld
 	}, time.Second, time.Millisecond)
 
-	m.BindUser("u1", "new", noopSender, nil)
 	close(releaseOperation)
 	<-operationDone
 	require.Empty(t, <-cleanupDone)
 	assert.True(t, m.Exists("ch1"), "a concurrent relay bind must preserve the unbound channel")
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "new", got.ConnID)
 }
 
 func TestUnbindUser_ReturnsNoConns(t *testing.T) {
@@ -1541,4 +1591,459 @@ func TestCloseByIDIfSkipsAChannelReboundToAnotherConnection(t *testing.T) {
 
 	assert.Empty(t, closed, "a stale conn id must not close the rebound channel")
 	assert.True(t, m.Exists("ch1"), "the new binding survives")
+}
+
+// TestUseAuthorizedChannel_SameConnReusePreservesBinding covers the #279
+// steady-state path: after the first bind, a later frame with the same ConnID
+// must succeed and leave the binding unchanged (RLock-only, no write).
+func TestUseAuthorizedChannel_SameConnReusePreservesBinding(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+
+	info, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "conn1", info.ConnID, "first bind must return the newly written ConnID in the snapshot")
+
+	var ops atomic.Int32
+	info, ok, err = m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error {
+			ops.Add(1)
+			return nil
+		})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "conn1", info.ConnID)
+	assert.Equal(t, int32(1), ops.Load(), "RLock reuse path must still run the operation")
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn1", got.ConnID)
+
+	closed := m.CloseByIDIf("ch1", func(info ChannelInfo) bool {
+		return info.ConnID == "conn1"
+	})
+	assert.Len(t, closed, 1)
+}
+
+// TestUseAuthorizedChannel_ReuseAuthorizeHoldsRLockOnly proves the steady-state
+// path authorizes under RLock: a concurrent GetChannelInfo (another reader)
+// must complete while authorize is still inside the critical section. Nested
+// Manager calls inside authorize are forbidden (see liveAndAuthorizeLocked) —
+// under Lock, or under RLock with a waiting writer, they deadlock.
+func TestUseAuthorizedChannel_ReuseAuthorizeHoldsRLockOnly(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	authorizeEntered := make(chan struct{})
+	releaseAuthorize := make(chan struct{})
+	readerDone := make(chan struct{})
+
+	go func() {
+		<-authorizeEntered
+		_, infoOK := m.GetChannelInfo("ch1")
+		assert.True(t, infoOK)
+		close(readerDone)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+			func(ChannelInfo) bool {
+				close(authorizeEntered)
+				<-releaseAuthorize
+				return true
+			},
+			func(ChannelInfo) error { return nil })
+		assert.NoError(t, err)
+		assert.True(t, ok)
+	}()
+
+	waitOrDeadlock(t, "reuse authorize blocked concurrent GetChannelInfo (path took write lock)", func() {
+		<-readerDone
+	})
+	close(releaseAuthorize)
+	waitOrDeadlock(t, "reuse authorize did not finish after reader", func() {
+		<-done
+	})
+}
+
+// TestUseAuthorizedChannel_RebindUpdatesConnID covers the write-lock upgrade:
+// a real ConnID change must update the snapshot and leave stale-conn closes alone.
+func TestUseAuthorizedChannel_RebindUpdatesConnID(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-old", noopSender, nil)
+	m.BindUser("u1", "conn-new", noopSender, nil)
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-old",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	info, ok, err := m.UseAuthorizedChannel("ch1", "conn-new",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "conn-new", info.ConnID)
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn-new", got.ConnID)
+
+	assert.Empty(t, m.CloseByIDIf("ch1", func(info ChannelInfo) bool {
+		return info.ConnID == "conn-old"
+	}), "stale conn must not close the rebound channel")
+	assert.True(t, m.Exists("ch1"))
+}
+
+// TestUseChannelIf_NilBindLeavesConnIDEmpty covers bindModeNone: the RLock
+// path must succeed without ever writing ConnID.
+func TestUseChannelIf_NilBindLeavesConnIDEmpty(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+
+	info, ok, err := m.UseChannelIf("ch1", nil, func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Empty(t, info.ConnID)
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Empty(t, got.ConnID)
+}
+
+// TestUseChannelIf_PreservesExistingConnID: bindModeNone must not clear or
+// rewrite an already-bound ConnID (and must not require hasUserConn).
+func TestUseChannelIf_PreservesExistingConnID(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+	m.UnbindUser("u1", "conn1") // sender gone; bindModeNone must still operate
+
+	info, ok, err := m.UseChannelIf("ch1", nil, func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "conn1", info.ConnID)
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn1", got.ConnID, "UseChannelIf must leave ConnID untouched")
+}
+
+// TestUseAuthorizedChannel_RefuseClearToEmptyString: clearing ConnID via
+// bindModeConn("") is a NeedWrite that refuses when "" is not registered.
+func TestUseAuthorizedChannel_RefuseClearToEmptyString(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn1", got.ConnID, "refuse-to-clear must preserve the prior binding")
+}
+
+// TestUseAuthorizedChannel_RejectDoesNotBindConnID ensures a failing authorize
+// on the first-bind Lock path leaves ConnID empty (authorize runs once under
+// Lock with the ConnID write, not under the RLock needBind peek).
+func TestUseAuthorizedChannel_RejectDoesNotBindConnID(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+
+	var calls atomic.Int32
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool {
+			calls.Add(1)
+			return false
+		},
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int32(1), calls.Load(), "bind-path authorize must run once under Lock")
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Empty(t, got.ConnID, "rejected authorize must not bind ConnID")
+}
+
+// TestUseAuthorizedChannel_RejectOnRebindPreservesPriorConnID covers authorize
+// failing under Lock during a real ConnID change: the prior binding must stay.
+func TestUseAuthorizedChannel_RejectOnRebindPreservesPriorConnID(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-old", noopSender, nil)
+	m.BindUser("u1", "conn-new", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn-old"))
+
+	var calls atomic.Int32
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-new",
+		func(ChannelInfo) bool {
+			calls.Add(1)
+			return false
+		},
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int32(1), calls.Load())
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn-old", got.ConnID, "failed rebind authorize must not clear or overwrite ConnID")
+}
+
+// TestUseAuthorizedChannel_SteadyStateRejectPreservesConnID: once bound, a
+// later authorize failure on the RLock reuse path must leave ConnID intact.
+func TestUseAuthorizedChannel_SteadyStateRejectPreservesConnID(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	var calls atomic.Int32
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool {
+			calls.Add(1)
+			return false
+		},
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int32(1), calls.Load())
+
+	got, ok := m.GetChannelInfo("ch1")
+	require.True(t, ok)
+	assert.Equal(t, "conn1", got.ConnID, "steady-state reject must not clear the binding")
+}
+
+// TestUseAuthorizedChannel_RefuseBindWhenTargetConnGone: if the bind target is
+// no longer a registered user conn (Unbind finished before bind — same outcome
+// as an RUnlock→Lock gap), refuse rather than attaching a dead ConnID while
+// another user conn kept the unbound-channel sweep from closing ch1.
+func TestUseAuthorizedChannel_RefuseBindWhenTargetConnGone(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-dead", noopSender, nil)
+	m.BindUser("u1", "conn-alive", noopSender, nil)
+
+	closed := m.UnbindUserAndCleanup("u1", "conn-dead")
+	assert.Empty(t, closed, "alive conn must keep the unbound channel out of the sweep")
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-dead",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok, "must refuse bind to an unbound conn")
+
+	got, exists := m.GetChannelInfo("ch1")
+	require.True(t, exists)
+	assert.Empty(t, got.ConnID, "must not bind a dead conn")
+}
+
+// TestUseAuthorizedChannel_RefuseReuseWhenBoundConnUnbound: Ready/reuse must
+// reject when ConnID still matches but UnbindUser dropped the registration
+// without cleanup (channel kept alive by another conn).
+func TestUseAuthorizedChannel_RefuseReuseWhenBoundConnUnbound(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	m.BindUser("u1", "conn2", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	assert.False(t, m.UnbindUser("u1", "conn1"), "conn2 keeps the user map alive")
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok, "reuse must refuse a matching but unbound ConnID")
+
+	got, exists := m.GetChannelInfo("ch1")
+	require.True(t, exists)
+	assert.Equal(t, "conn1", got.ConnID, "refuse must not clear the stale binding")
+}
+
+// TestUseAuthorizedChannel_RefuseRebindWhenTargetConnGone: a rebind to a conn
+// that was unbound must fail under Lock and leave the prior ConnID intact.
+func TestUseAuthorizedChannel_RefuseRebindWhenTargetConnGone(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn-old", noopSender, nil)
+	m.BindUser("u1", "conn-gone", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn-old"))
+
+	assert.Empty(t, m.UnbindUserAndCleanup("u1", "conn-gone"))
+
+	_, ok, err := m.UseAuthorizedChannel("ch1", "conn-gone",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	got, exists := m.GetChannelInfo("ch1")
+	require.True(t, exists)
+	assert.Equal(t, "conn-old", got.ConnID, "failed rebind must preserve the prior binding")
+}
+
+// TestUseChannelIf_RejectAuthorizeLeavesChannel: nil-bind peek path must reject
+// under RLock without ever taking the write upgrade. Concurrent GetChannelInfo
+// while authorize runs proves the critical section is still a shared RLock.
+func TestUseChannelIf_RejectAuthorizeLeavesChannel(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+
+	authorizeEntered := make(chan struct{})
+	releaseAuthorize := make(chan struct{})
+	readerDone := make(chan struct{})
+
+	go func() {
+		<-authorizeEntered
+		_, infoOK := m.GetChannelInfo("ch1")
+		assert.True(t, infoOK)
+		close(readerDone)
+	}()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, ok, err := m.UseChannelIf("ch1",
+			func(ChannelInfo) bool {
+				calls.Add(1)
+				close(authorizeEntered)
+				<-releaseAuthorize
+				return false
+			},
+			func(ChannelInfo) error { return nil })
+		assert.NoError(t, err)
+		assert.False(t, ok)
+	}()
+
+	waitOrDeadlock(t, "nil-bind reject took write lock (blocked concurrent GetChannelInfo)", func() {
+		<-readerDone
+	})
+	close(releaseAuthorize)
+	waitOrDeadlock(t, "nil-bind reject did not finish", func() {
+		<-done
+	})
+	assert.Equal(t, int32(1), calls.Load())
+	assert.True(t, m.Exists("ch1"))
+}
+
+// TestUseAuthorizedChannel_AuthorizePanicOnBindLockReleasesLocks ensures a
+// panic in authorize under the Lock bind path still releases m.mu and opMu
+// and leaves ConnID unbound.
+func TestUseAuthorizedChannel_AuthorizePanicOnBindLockReleasesLocks(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+
+	var calls atomic.Int32
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = m.UseAuthorizedChannel("ch1", "conn1",
+			func(ChannelInfo) bool {
+				calls.Add(1)
+				panic("boom on bind authorize")
+			},
+			nil)
+	}()
+	assert.Equal(t, int32(1), calls.Load(), "panic must occur on the Lock bind authorize")
+
+	got, exists := m.GetChannelInfo("ch1")
+	require.True(t, exists)
+	assert.Empty(t, got.ConnID, "panic before ConnID write must leave the channel unbound")
+
+	waitOrDeadlock(t, "Register blocked: bind authorize panic leaked m.mu", func() {
+		m.RegisterWithAuthInfo("ch2", "w2", "u2", AuthInfo{}, nil)
+	})
+	waitOrDeadlock(t, "CloseByID blocked: bind authorize panic leaked opMu", func() {
+		m.CloseByID("ch1")
+	})
+	assert.False(t, m.Exists("ch1"))
+}
+
+// TestUseAuthorizedChannel_AuthorizePanicOnReuseReleasesLocks covers Ready-path
+// authorize panic with a matching ConnID (not only nil-bind UseChannelIf).
+func TestUseAuthorizedChannel_AuthorizePanicOnReuseReleasesLocks(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	var calls atomic.Int32
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = m.UseAuthorizedChannel("ch1", "conn1",
+			func(ChannelInfo) bool {
+				calls.Add(1)
+				panic("boom on reuse authorize")
+			},
+			nil)
+	}()
+	assert.Equal(t, int32(1), calls.Load())
+
+	got, exists := m.GetChannelInfo("ch1")
+	require.True(t, exists)
+	assert.Equal(t, "conn1", got.ConnID, "reuse panic must not clear the binding")
+
+	waitOrDeadlock(t, "Register blocked: reuse authorize panic leaked m.mu", func() {
+		m.RegisterWithAuthInfo("ch2", "w2", "u2", AuthInfo{}, nil)
+	})
+	waitOrDeadlock(t, "CloseByID blocked: reuse authorize panic leaked opMu", func() {
+		m.CloseByID("ch1")
+	})
+}
+
+// TestUseAuthorizedChannel_HasUserConnIgnoresNilSendFn: bind presence keys off
+// registration, not SendFunc — a registered conn with nil sendFn still binds.
+func TestUseAuthorizedChannel_HasUserConnIgnoresNilSendFn(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", nil, nil)
+
+	info, ok, err := m.UseAuthorizedChannel("ch1", "conn1",
+		func(ChannelInfo) bool { return true },
+		func(ChannelInfo) error { return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "conn1", info.ConnID)
+}
+
+// TestSendToFrontendIf_AuthorizeRejectSharesLiveGate: SendToFrontendIf must
+// refuse via the shared liveAndAuthorizeLocked helper (same gate as useChannel).
+func TestSendToFrontendIf_AuthorizeRejectSharesLiveGate(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
+	require.True(t, bindChannelConn(t, m, "ch1", "conn1"))
+
+	var calls atomic.Int32
+	ok := m.SendToFrontendIf(
+		&leapmuxv1.ChannelMessage{ChannelId: "ch1", Ciphertext: []byte("x")},
+		func(ChannelInfo) bool {
+			calls.Add(1)
+			return false
+		},
+	)
+	assert.False(t, ok)
+	assert.Equal(t, int32(1), calls.Load())
+	assert.True(t, m.Exists("ch1"))
 }
