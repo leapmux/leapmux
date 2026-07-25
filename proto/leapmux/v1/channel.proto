@@ -51,6 +51,10 @@ message OpenChannelResponse {
   string channel_id = 1;
   bytes handshake_payload = 2; // Noise_NK handshake message 2
   string user_id = 3; // Authenticated identity the Worker received from the Hub
+  // Negotiated application payload budget (bytes). Effective =
+  // min(hub max_message_size, worker max_message_size). Clients adopt this
+  // and derive the reassembled ceiling as max_message_size + envelope headroom.
+  uint64 max_message_size = 4;
 }
 
 message CloseChannelRequest {
@@ -74,6 +78,9 @@ message ChannelOpenRequest {
   string user_id = 2; // Hub tells Worker who opened the channel
   bytes handshake_payload = 3;
   repeated string accessible_workspace_ids = 4; // Workspaces the user can access
+  // Hub's resolved max_message_size (application payload budget). Worker
+  // takes min(this, its own config) as the effective per-channel budget.
+  uint64 max_message_size = 5;
 }
 
 // Worker -> Hub: response to channel open request.
@@ -81,6 +88,29 @@ message ChannelOpenResponse {
   string channel_id = 1;
   bytes handshake_payload = 2;
   string error = 3;
+  // Effective max_message_size (= min(hub, worker)) when open succeeds.
+  uint64 max_message_size = 4;
+  // Structured reason when error is set. Hub maps known codes via
+  // channelwire.ConnectCodeFromChannelOpenError (e.g. INVALID_MAX_MESSAGE_SIZE
+  // → InvalidArgument, CHANNEL_ALREADY_ACTIVE → FailedPrecondition) so clients
+  // fail fast instead of retrying non-transient rejects as Internal.
+  ChannelOpenErrorCode error_code = 5;
+}
+
+// ChannelOpenErrorCode classifies worker-side ChannelOpenResponse failures.
+// The Hub maps these to Connect statuses via channelwire.ConnectCodeFromChannelOpenError
+// so clients fail fast on non-transient open rejects instead of treating them
+// as Internal (retryable-looking) faults.
+enum ChannelOpenErrorCode {
+  CHANNEL_OPEN_ERROR_CODE_UNSPECIFIED = 0;
+  // Hub announced a missing or out-of-bounds max_message_size (config / version skew).
+  CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE = 1;
+  // Channel id is already active on this Worker; Hub must Close before re-open.
+  CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE = 2;
+  // Hub omitted a usable authenticated user id on ChannelOpenRequest.
+  CHANNEL_OPEN_ERROR_CODE_NO_AUTHENTICATED_USER = 3;
+  // Noise handshake failed (bad payload, key mismatch, crypto error).
+  CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED = 4;
 }
 
 // Hub -> Worker: notification that a channel was closed.

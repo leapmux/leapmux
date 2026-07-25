@@ -25,6 +25,7 @@ type agentMessageCapturingWriter struct {
 func (w *agentMessageCapturingWriter) SendResponse(_ *leapmuxv1.InnerRpcResponse) error { return nil }
 func (w *agentMessageCapturingWriter) SendError(_ int32, _ string) error                { return nil }
 func (w *agentMessageCapturingWriter) ChannelID() string                                { return w.channelID }
+func (*agentMessageCapturingWriter) MaxPayloadBudget() int                              { return 0 }
 func (w *agentMessageCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage) error {
 	resp := &leapmuxv1.WatchEventsResponse{}
 	if err := proto.Unmarshal(s.GetPayload(), resp); err != nil {

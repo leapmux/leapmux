@@ -25,7 +25,7 @@ import {
   SESSION_KEY_HARD_CEILING_MS,
   SESSION_KEY_MAX_AGE_MS,
 } from './channel'
-import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, MAX_INCOMPLETE_CHUNKED } from './reassembler'
+import { DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE, INNER_ENVELOPE_HEADROOM, MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE, MAX_INCOMPLETE_CHUNKED, maxReassembledMessageSize } from './reassembler'
 
 /** Age a channel past SESSION_KEY_MAX_AGE_MS using the monotonic clock. */
 function agePastMaxAge(ch: { lastRekeyAt: number }): void {
@@ -254,7 +254,10 @@ class MockWebSocket {
 
 const sessions = new Map<string, { initiator: Session, responder: Session }>()
 
-function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
+function createMockTransport(
+  mockWs: MockWebSocket,
+  openOpts?: { maxMessageSize?: number | false },
+): ChannelTransport {
   return {
     async getWorkerHandshakeParams(_workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
       // Return dummy keys. The real handshake is bypassed
@@ -276,7 +279,22 @@ function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
       // Since we mock the handshake functions, the actual bytes don't matter.
       // userId is the Hub-authenticated identity, distinct from getUserId() so
       // tests can assert the claim uses the Hub value, not the local one.
-      return { channelId, handshakePayload: new Uint8Array(49904), userId: 'hub-authenticated-user' }
+      // maxMessageSize mirrors production negotiation unless a test asks to omit
+      // it (so ChannelManagerOpts.testPayloadBudget / testReassembledCeiling can
+      // act as the small-limit fallback used by size-gate tests).
+      const result: {
+        channelId: string
+        handshakePayload: Uint8Array
+        userId: string
+        maxMessageSize?: number
+      } = {
+        channelId,
+        handshakePayload: new Uint8Array(49904),
+        userId: 'hub-authenticated-user',
+      }
+      if (openOpts?.maxMessageSize !== false)
+        result.maxMessageSize = openOpts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
+      return result
     },
     async closeChannel(_channelId: string) {},
     createWebSocket(): ChannelSocket {
@@ -548,6 +566,201 @@ describe('channelManager', () => {
       }
       finally {
         omittedMgr.closeAll()
+      }
+    })
+
+    // Clients adopt the negotiated payload budget; they do not guess a default.
+    // A missing announcement (old Hub) or an out-of-bounds one must refuse the
+    // open and roll the Hub registration back — same boundary as an empty user id.
+    it('tells the Hub to close the channel when max_message_size is missing', async () => {
+      const omittedWs = new MockWebSocket()
+      const base = createMockTransport(omittedWs, { maxMessageSize: false })
+      const closed: string[] = []
+      const handshake2 = vi.fn(mockHandshake2)
+      const transport: ChannelTransport = {
+        ...base,
+        async closeChannel(channelId) {
+          closed.push(channelId)
+        },
+      }
+      const omittedMgr = new ChannelManager(transport, {
+        handshake1: mockHandshake1,
+        handshake2,
+      })
+      try {
+        await expect(omittedMgr.openChannel('w1')).rejects.toThrow(/no max_message_size/)
+        expect(closed).toHaveLength(1)
+        // Limits are validated before handshake-2 so a missing announcement
+        // does not pay Noise finish cost (matches Go tunnel ordering).
+        expect(handshake2).not.toHaveBeenCalled()
+      }
+      finally {
+        omittedMgr.closeAll()
+      }
+    })
+
+    it('tells the Hub to close the channel when max_message_size is out of bounds', async () => {
+      const badWs = new MockWebSocket()
+      const base = createMockTransport(badWs, { maxMessageSize: 1 })
+      const closed: string[] = []
+      const transport: ChannelTransport = {
+        ...base,
+        async closeChannel(channelId) {
+          closed.push(channelId)
+        },
+      }
+      const badMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+      try {
+        await expect(badMgr.openChannel('w1')).rejects.toThrow(/max_message_size 1 out of bounds/)
+        expect(closed).toHaveLength(1)
+      }
+      finally {
+        badMgr.closeAll()
+      }
+    })
+
+    it('tells the Hub to close the channel when max_message_size is above the configurable ceiling', async () => {
+      const badWs = new MockWebSocket()
+      const tooLarge = MAX_CONFIGURABLE_MESSAGE_SIZE + 1
+      const base = createMockTransport(badWs, { maxMessageSize: tooLarge })
+      const closed: string[] = []
+      const transport: ChannelTransport = {
+        ...base,
+        async closeChannel(channelId) {
+          closed.push(channelId)
+        },
+      }
+      const badMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+      try {
+        await expect(badMgr.openChannel('w1')).rejects.toThrow(new RegExp(`max_message_size ${tooLarge} out of bounds`))
+        expect(closed).toHaveLength(1)
+      }
+      finally {
+        badMgr.closeAll()
+      }
+    })
+
+    it('tells the Hub to close the channel when max_message_size is zero', async () => {
+      const zeroWs = new MockWebSocket()
+      const base = createMockTransport(zeroWs, { maxMessageSize: 0 })
+      const closed: string[] = []
+      const transport: ChannelTransport = {
+        ...base,
+        async closeChannel(channelId) {
+          closed.push(channelId)
+        },
+      }
+      const zeroMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+      try {
+        await expect(zeroMgr.openChannel('w1')).rejects.toThrow(/no max_message_size/)
+        expect(closed).toHaveLength(1)
+      }
+      finally {
+        zeroMgr.closeAll()
+      }
+    })
+
+    it('adopts negotiated maxMessageSize and derives the reassembled ceiling', async () => {
+      const negotiated = DEFAULT_MAX_MESSAGE_SIZE
+      const channelId = await openTestChannel('w1')
+      const ch = (mgr as any).channels.get(channelId)
+      expect(ch.maxMessageSize).toBe(negotiated)
+      expect(ch.maxReassembledMessageSize).toBe(maxReassembledMessageSize(negotiated))
+      expect(ch.reassembly).toBeTruthy()
+    })
+
+    it('adopts a non-default negotiated maxMessageSize and derives reassembled headroom', async () => {
+      const negotiated = 1 << 20
+      const customWs = new MockWebSocket()
+      const customMgr = new ChannelManager(createMockTransport(customWs, { maxMessageSize: negotiated }), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+      })
+      try {
+        const openPromise = customMgr.openChannel('w1')
+        await flushMicrotasks()
+        customWs.simulateOpen()
+        await flushMicrotasks()
+        simulatePingAccept(customWs)
+        const channelId = await openPromise
+        const ch = (customMgr as any).channels.get(channelId)
+        expect(ch.maxMessageSize).toBe(negotiated)
+        expect(ch.maxReassembledMessageSize).toBe(maxReassembledMessageSize(negotiated))
+        expect(ch.maxReassembledMessageSize).toBe(negotiated + INNER_ENVELOPE_HEADROOM)
+      }
+      finally {
+        customMgr.closeAll()
+      }
+    })
+
+    it('accepts negotiated maxMessageSize exactly at MAX_CHUNK_SIZE', async () => {
+      const floorWs = new MockWebSocket()
+      const floorMgr = new ChannelManager(createMockTransport(floorWs, { maxMessageSize: MAX_CHUNK_SIZE }), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+      })
+      try {
+        const openPromise = floorMgr.openChannel('w1')
+        await flushMicrotasks()
+        floorWs.simulateOpen()
+        await flushMicrotasks()
+        simulatePingAccept(floorWs)
+        const channelId = await openPromise
+        const ch = (floorMgr as any).channels.get(channelId)
+        expect(ch.maxMessageSize).toBe(MAX_CHUNK_SIZE)
+        expect(ch.maxReassembledMessageSize).toBe(maxReassembledMessageSize(MAX_CHUNK_SIZE))
+      }
+      finally {
+        floorMgr.closeAll()
+      }
+    })
+
+    it('derives reassembled headroom from testPayloadBudget when ceiling is omitted', async () => {
+      const payload = 1 << 20
+      const omitWs = new MockWebSocket()
+      const omitMgr = new ChannelManager(createMockTransport(omitWs, { maxMessageSize: false }), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+        testPayloadBudget: payload,
+      })
+      try {
+        const openPromise = omitMgr.openChannel('w1')
+        await flushMicrotasks()
+        omitWs.simulateOpen()
+        await flushMicrotasks()
+        simulatePingAccept(omitWs)
+        const channelId = await openPromise
+        const ch = (omitMgr as any).channels.get(channelId)
+        expect(ch.maxMessageSize).toBe(payload)
+        expect(ch.maxReassembledMessageSize).toBe(maxReassembledMessageSize(payload))
+        expect(ch.maxReassembledMessageSize).toBe(payload + INNER_ENVELOPE_HEADROOM)
+      }
+      finally {
+        omitMgr.closeAll()
+      }
+    })
+
+    it('defaults payload to testReassembledCeiling when only the ceiling is set', async () => {
+      const ceiling = 50
+      const ceilWs = new MockWebSocket()
+      const ceilMgr = new ChannelManager(createMockTransport(ceilWs, { maxMessageSize: false }), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+        testReassembledCeiling: ceiling,
+      })
+      try {
+        const openPromise = ceilMgr.openChannel('w1')
+        await flushMicrotasks()
+        ceilWs.simulateOpen()
+        await flushMicrotasks()
+        simulatePingAccept(ceilWs)
+        const channelId = await openPromise
+        const ch = (ceilMgr as any).channels.get(channelId)
+        expect(ch.maxMessageSize).toBe(ceiling)
+        expect(ch.maxReassembledMessageSize).toBe(ceiling)
+      }
+      finally {
+        ceilMgr.closeAll()
       }
     })
 
@@ -1772,22 +1985,21 @@ describe('channelManager', () => {
     })
 
     it('should reject openChannel if WebSocket times out', async () => {
-      vi.useFakeTimers()
+      // Use a short real timeout rather than fake timers: bun's fake-timer
+      // clock does not reliably fire the ensureWebSocket setTimeout when the
+      // open path has several awaits ahead of it.
+      const timedMgr = new ChannelManager(createMockTransport(mockWs), {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+        idleRekeyIntervalMs: 0,
+        installWakeListener: false,
+        wsOpenTimeoutMs: 50,
+      })
       try {
-        const openPromise = mgr.openChannel('w1')
-        // Flush microtasks so openChannel reaches ensureWebSocket.
-        vi.advanceTimersByTime(0)
-        await flushMicrotasks()
-        // Set up rejection expectation BEFORE advancing timers
-        // to avoid unhandled rejection warning.
-        const expectation = expect(openPromise).rejects.toThrow('WebSocket open timed out after 10s')
-        // Now advance past the 10s WS open timeout.
-        vi.advanceTimersByTime(10_000)
-        await flushMicrotasks()
-        await expectation
+        await expect(timedMgr.openChannel('w1')).rejects.toThrow('WebSocket open timed out after 0s')
       }
       finally {
-        vi.useRealTimers()
+        timedMgr.closeAll()
       }
     })
   })
@@ -1928,10 +2140,11 @@ describe('channelManager', () => {
     it('should drop oversized chunked messages', async () => {
       // Create a manager with a very small max message size.
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
 
       const openPromise = smallMgr.openChannel('w1')
@@ -1967,10 +2180,11 @@ describe('channelManager', () => {
     // moves the bypass to the other framing.
     it('should drop a chunked message whose final chunk exceeds the limit', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
 
       const openPromise = smallMgr.openChannel('w1')
@@ -2020,10 +2234,11 @@ describe('channelManager', () => {
 
     it('should throw on send when plaintext exceeds maxMessageSize', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
 
       const openPromise = smallMgr.openChannel('w1')
@@ -2042,10 +2257,11 @@ describe('channelManager', () => {
 
     it('should reject on final chunk oversize', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
 
       const openPromise = smallMgr.openChannel('w1')
@@ -2074,10 +2290,11 @@ describe('channelManager', () => {
 
     it('should route chunking errors to stream listeners', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
 
       const openPromise = smallMgr.openChannel('w1')
@@ -2138,10 +2355,11 @@ describe('channelManager', () => {
     // unwinding anything it had set up.
     it('leaves no pending entry behind when a payload is too large to send', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
       try {
         const channelId = await openOn(smallMgr)
@@ -2160,10 +2378,11 @@ describe('channelManager', () => {
     // entry would live as long as the channel.
     it('leaves no stream listener behind when a payload is too large to send', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
       try {
         const channelId = await openOn(smallMgr)
@@ -2181,10 +2400,11 @@ describe('channelManager', () => {
     // session never encrypted a byte, so it is still perfectly good.
     it('keeps the channel usable after refusing an oversized payload', async () => {
       sessions.clear()
-      const smallMgr = new ChannelManager(createMockTransport(mockWs), {
+      const smallMgr = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize: 50,
+        testPayloadBudget: 50,
+        testReassembledCeiling: 50,
       })
       try {
         const channelId = await openOn(smallMgr)
@@ -2263,10 +2483,11 @@ describe('channelManager', () => {
 
     async function openSmallMgr(maxMessageSize: number, rpcTimeoutMs?: number): Promise<{ cm: ChannelManager, channelId: string }> {
       sessions.clear()
-      const cm = new ChannelManager(createMockTransport(mockWs), {
+      const cm = new ChannelManager(createMockTransport(mockWs, { maxMessageSize: false }), {
         handshake1: mockHandshake1,
         handshake2: mockHandshake2,
-        maxMessageSize,
+        testPayloadBudget: maxMessageSize,
+        testReassembledCeiling: maxMessageSize,
         ...(rpcTimeoutMs === undefined ? {} : { rpcTimeoutFn: () => rpcTimeoutMs }),
       })
       const openPromise = cm.openChannel('w1')
@@ -2452,7 +2673,7 @@ describe('channelManager', () => {
           const channelId = `ch-classic-${Math.random().toString(36).slice(2, 8)}`
           const pair = createTestSession()
           classicSessions.set(channelId, pair)
-          return { channelId, handshakePayload: new Uint8Array(48), userId: 'hub-authenticated-user' }
+          return { channelId, handshakePayload: new Uint8Array(48), userId: 'hub-authenticated-user', maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE }
         },
         async closeChannel(_channelId: string) {},
         createWebSocket(): ChannelSocket {
@@ -2751,6 +2972,7 @@ function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTran
       handshakePayload: new Uint8Array(48),
       // The Hub always names the authenticated user; openChannel rejects without it.
       userId: 'user-1',
+      maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE,
     }),
     closeChannel: vi.fn().mockResolvedValue(undefined),
     createWebSocket: () => onCreateWs(),
@@ -2772,6 +2994,7 @@ describe('channelManager getOrOpenChannel deduplication', () => {
       handshakePayload: new Uint8Array(48),
       // The Hub always names the authenticated user; openChannel rejects without it.
       userId: 'user-1',
+      maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE,
     }))
 
     const cm = new ChannelManager(transport, {
@@ -2812,6 +3035,7 @@ describe('channelManager getOrOpenChannel deduplication', () => {
       handshakePayload: new Uint8Array(48),
       // The Hub always names the authenticated user; openChannel rejects without it.
       userId: 'user-1',
+      maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE,
     }))
 
     const cm = new ChannelManager(transport, {
@@ -2881,6 +3105,7 @@ function makeCountingTransport(onCreateWs: () => AutoOpenMockWebSocket, userId: 
     channelId: `ch-${++channelCounter}`,
     handshakePayload: new Uint8Array(48),
     userId: userId(),
+    maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE,
   }))
   return transport
 }
@@ -2954,12 +3179,23 @@ describe('channelManager open-time verification', () => {
       const racer = cm.getOrOpenChannel('worker-1')
       await settle()
 
+      // Attach rejection handlers BEFORE delivering the error — bun treats an
+      // unhandled pending.reject as a test failure. Do not wrap the expects in
+      // Promise.all before simulate: that would await the ping timeout first.
+      let openErr: unknown
+      let racerErr: unknown
+      const openDone = open.then(
+        () => { throw new Error('open should have rejected') },
+        (e: unknown) => { openErr = e },
+      )
+      const racerDone = racer.then(
+        () => { throw new Error('racer should have rejected') },
+        (e: unknown) => { racerErr = e },
+      )
       simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
-
-      await Promise.all([
-        expect(open).rejects.toThrow('session is dead'),
-        expect(racer).rejects.toThrow('session is dead'),
-      ])
+      await Promise.all([openDone, racerDone])
+      expect(String(openErr)).toContain('session is dead')
+      expect(String(racerErr)).toContain('session is dead')
       expect(cm.hasOpenChannel('worker-1')).toBe(false)
       expect(cm.isOpen('ch-1')).toBe(false)
       // The Hub-side registration was rolled back.
@@ -2990,11 +3226,20 @@ describe('channelManager open-time verification', () => {
       const streamErr = vi.fn()
       cm.stream('ch-1', 'WatchEvents', new Uint8Array()).onError(streamErr)
 
+      let openErr: unknown
+      let racedErr: unknown
+      const openDone = open.then(
+        () => { throw new Error('open should have rejected') },
+        (e: unknown) => { openErr = e },
+      )
+      const racedDone = raced.then(
+        () => { throw new Error('raced call should have rejected') },
+        (e: unknown) => { racedErr = e },
+      )
       simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
-      await Promise.all([
-        expect(open).rejects.toThrow('session is dead'),
-        expect(raced).rejects.toThrow('session is dead'),
-      ])
+      await Promise.all([openDone, racedDone])
+      expect(String(openErr)).toContain('session is dead')
+      expect(String(racedErr)).toContain('session is dead')
       expect(streamErr).toHaveBeenCalledOnce()
     }
     finally {
@@ -3218,11 +3463,26 @@ describe('channel-wire protocol limits', () => {
       resolve(dirname(fileURLToPath(import.meta.url)), '../../../testdata/channelwire_limits.json'),
       'utf-8',
     ),
-  ) as { maxPlaintextPerChunk: number, maxMessageSize: number, maxIncompleteChunked: number, pingMethod: string, sessionKeyMaxAgeMs: number, minRekeyIntervalMs: number, sessionKeyHardCeilingMs: number }
+  ) as {
+    maxPlaintextPerChunk: number
+    maxMessageSize: number
+    innerEnvelopeHeadroom: number
+    maxReassembledMessageSize: number
+    maxConfigurableMessageSize: number
+    maxIncompleteChunked: number
+    pingMethod: string
+    sessionKeyMaxAgeMs: number
+    minRekeyIntervalMs: number
+    sessionKeyHardCeilingMs: number
+  }
 
   it('match the cross-language fixture the Go side also asserts', () => {
     expect(MAX_CHUNK_SIZE).toBe(limits.maxPlaintextPerChunk)
     expect(DEFAULT_MAX_MESSAGE_SIZE).toBe(limits.maxMessageSize)
+    expect(INNER_ENVELOPE_HEADROOM).toBe(limits.innerEnvelopeHeadroom)
+    expect(DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE).toBe(limits.maxReassembledMessageSize)
+    expect(maxReassembledMessageSize(DEFAULT_MAX_MESSAGE_SIZE)).toBe(DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE)
+    expect(MAX_CONFIGURABLE_MESSAGE_SIZE).toBe(limits.maxConfigurableMessageSize)
     expect(MAX_INCOMPLETE_CHUNKED).toBe(limits.maxIncompleteChunked)
     expect(PING_METHOD).toBe(limits.pingMethod)
     expect(SESSION_KEY_MAX_AGE_MS).toBe(limits.sessionKeyMaxAgeMs)

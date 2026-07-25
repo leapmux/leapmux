@@ -62,7 +62,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	d.Dispatch(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
@@ -106,7 +106,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	// Dispatch should not panic — the panic should be recovered and
@@ -148,7 +148,7 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	d.Dispatch(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
@@ -198,7 +198,7 @@ func TestDispatcher_CtxPropagated(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	parent, cancel := context.WithCancel(context.Background())
@@ -245,7 +245,7 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	parent, cancel := context.WithCancel(context.Background())
@@ -276,7 +276,8 @@ func (s *stubWriter) SendStream(*leapmuxv1.InnerStreamMessage) error {
 	return nil
 }
 
-func (*stubWriter) ChannelID() string { return "" }
+func (*stubWriter) ChannelID() string     { return "" }
+func (*stubWriter) MaxPayloadBudget() int { return 0 }
 
 // TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine pins the
 // happens-before invariant that motivated the RegisterTracked /

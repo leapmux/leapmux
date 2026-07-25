@@ -55,7 +55,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	require.NoError(t, err)
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New()
+	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
 
 	mux := http.NewServeMux()

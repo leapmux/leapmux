@@ -33,6 +33,7 @@ type RunConfig struct {
 	DBCacheSize          int                         // SQLite page cache size (positive = pages, negative = KiB; 0 = default)
 	DBMmapSize           int                         // SQLite memory-mapped I/O size in bytes (0 = disabled)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
+	MaxMessageSize       int                         // Maximum application payload size in bytes (0 = 16 MiB default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 5m default)
 	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
@@ -106,6 +107,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			CompositeKey:         cfg.CompositeKey,
 			EncryptionMode:       cfg.EncryptionMode,
 			MaxIncompleteChunked: cfg.MaxIncompleteChunked,
+			MaxMessageSize:       cfg.MaxMessageSize,
 			WorkerID:             cfg.WorkerID,
 			Name:                 workerName,
 			HomeDir:              homeDir,

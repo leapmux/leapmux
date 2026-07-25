@@ -21,6 +21,10 @@ type ResponseWriter interface {
 	// ChannelID returns the E2EE channel ID for this writer.
 	// Returns "" for non-channel writers (e.g. cleartext RPC-forward).
 	ChannelID() string
+	// MaxPayloadBudget returns the negotiated application payload budget
+	// for this channel (min(hub, worker) at open), or 0 when the writer is
+	// not channel-backed (cleartext IPC / test stubs).
+	MaxPayloadBudget() int
 }
 
 // errorQueuer is implemented by response writers that can hand an error to a

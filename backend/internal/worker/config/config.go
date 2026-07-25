@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -48,6 +49,7 @@ type Config struct {
 	DBCacheSize                int    `koanf:"db_cache_size" json:"db_cache_size"`
 	DBMmapSize                 int    `koanf:"db_mmap_size" json:"db_mmap_size"`
 	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
+	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
 	APITimeoutSeconds          int    `koanf:"api_timeout_seconds" json:"api_timeout_seconds"`
 	LogLevel                   string `koanf:"log_level" json:"log_level"`
@@ -169,6 +171,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
 	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
+	fs.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.Int("api-timeout-seconds", DefaultAPITimeoutSeconds, "JSON-RPC request timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
@@ -186,6 +189,7 @@ func Load(args []string) (*Config, bool, error) {
 		"encryption-mode":               "Worker options",
 		"use-login-shell":               "Worker options",
 		"max-incomplete-chunked":        "Timeout and limit options",
+		"max-message-size":              "Timeout and limit options",
 		"agent-startup-timeout-seconds": "Timeout and limit options",
 		"api-timeout-seconds":           "Timeout and limit options",
 		"db-max-conns":                  "SQLite database options",
@@ -210,6 +214,7 @@ func Load(args []string) (*Config, bool, error) {
 		"db-cache-size":                 "db_cache_size",
 		"db-mmap-size":                  "db_mmap_size",
 		"max-incomplete-chunked":        "max_incomplete_chunked",
+		"max-message-size":              "max_message_size",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
 		"api-timeout-seconds":           "api_timeout_seconds",
 		"log-level":                     "log_level",
@@ -226,6 +231,7 @@ func Load(args []string) (*Config, bool, error) {
 		"db_cache_size":                 0,
 		"db_mmap_size":                  0,
 		"max_incomplete_chunked":        0,
+		"max_message_size":              0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
 		"api_timeout_seconds":           DefaultAPITimeoutSeconds,
 		"log_level":                     defaultLogLevel,
@@ -273,6 +279,9 @@ func (c *Config) Validate() error {
 	// Ensure data dir exists.
 	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
+	}
+	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
+		return err
 	}
 
 	return nil

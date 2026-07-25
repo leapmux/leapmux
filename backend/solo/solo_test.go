@@ -79,6 +79,10 @@ func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 		"0 must be the default so the worker applies channelwire.DefaultMaxIncompleteChunked")
 	assert.Equal(t, "Timeout and limit options", chunked.Category,
 		"it is a limit, not a server option -- the help output groups it accordingly")
+
+	_, hasMaxMessageSizeExtra := byName["max-message-size"]
+	assert.False(t, hasMaxMessageSizeExtra,
+		"max-message-size is a first-class hub flag forwarded into worker.RunConfig, not an Extra")
 }
 
 // TestParseIntReadsTheStringTypedExtras covers the Extras -> RunConfig hop. Extras

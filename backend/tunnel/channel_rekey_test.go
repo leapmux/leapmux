@@ -72,16 +72,17 @@ func pairedRekeyChannel(t *testing.T) (ch *Channel, peerSession *noiseutil.Sessi
 	peerWS.SetReadLimit(channelwire.WSReadLimit)
 
 	ch = &Channel{
-		channelID:   "rekey-test",
-		userID:      "user-1",
-		session:     initiatorSession,
-		ws:          client,
-		ctx:         ctx,
-		cancel:      cancel,
-		pending:     make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
-		streamCbs:   make(map[uint64]*streamCallback),
-		reassembly:  make(map[uint64]*channelwire.ChunkBuffer),
-		lastRekeyAt: time.Now(),
+		channelID:      "rekey-test",
+		userID:         "user-1",
+		session:        initiatorSession,
+		ws:             client,
+		ctx:            ctx,
+		cancel:         cancel,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
+		streamCbs:      make(map[uint64]*streamCallback),
+		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
+		lastRekeyAt:    time.Now(),
 	}
 	go ch.recvLoop()
 	return ch, peerSess, peerWS

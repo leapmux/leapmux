@@ -41,7 +41,8 @@ func (m *mockResponseWriter) SendStream(_ *leapmuxv1.InnerStreamMessage) error {
 	}
 	return nil
 }
-func (m *mockResponseWriter) ChannelID() string { return m.channelID }
+func (m *mockResponseWriter) ChannelID() string   { return m.channelID }
+func (*mockResponseWriter) MaxPayloadBudget() int { return 0 }
 
 func newTestWatcher(channelID string) *mockResponseWriter {
 	return &mockResponseWriter{channelID: channelID}

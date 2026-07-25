@@ -24,9 +24,10 @@ import (
 // Larger directories are truncated to avoid slow transfers and unusable UIs.
 const maxDirEntries = 256
 
-// defaultReadLimit is the max bytes returned by ReadFile in a single response.
-// Kept under 60KB to fit within the Noise spec 65,535-byte transport message limit
-// after accounting for protobuf overhead and the 16-byte AEAD tag.
+// defaultReadLimit is the max bytes returned by ReadFile when the request
+// omits limit (or passes <= 0). Kept near one Noise transport chunk so a
+// default page stays a single chunk after protobuf/AEAD overhead; callers
+// that need more raise limit explicitly up to maxReadLimit.
 const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
 // maxReadLimit caps what a ReadFile request may ask for, whatever it
@@ -34,10 +35,21 @@ const defaultReadLimit int64 = 60 * 1024 // 60 KB
 //
 // It is the same producer ceiling the agent stdout scanners bound
 // themselves by, for the same reason: a response above it is one the
-// receiver refuses, and a refusal on the unary path is silent. Without
-// the clamp the limit field also picks the worker's allocation size, so
-// a single request could ask it to reserve gigabytes.
-const maxReadLimit int64 = channelwire.MaxInnerPayloadBytes
+// receiver refuses, and on the unary path that refusal surfaces as
+// ResourceExhausted. Without the clamp the limit field also picks the
+// worker's allocation size, so a single request could ask it to reserve
+// gigabytes. Uses the tighter of the worker's configured max_message_size
+// and the channel's negotiated payload budget (min(hub, worker)) when the
+// writer is channel-backed.
+func (svc *Service) maxReadLimit(sender channel.ResponseWriter) int64 {
+	configured := channelwire.ResolveMaxMessageSize(svc.MaxMessageSize)
+	if sender != nil {
+		if n := sender.MaxPayloadBudget(); n > 0 && n < configured {
+			return int64(n)
+		}
+	}
+	return int64(configured)
+}
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
@@ -125,8 +137,8 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// cannot report. Truncating is the honest answer: the response
 		// already carries total_size, so a caller reading a large file
 		// pages rather than being told nothing.
-		if limit > maxReadLimit {
-			limit = maxReadLimit
+		if max := svc.maxReadLimit(sender); limit > max {
+			limit = max
 		}
 
 		// meta_only_if_truncated: when the file would be truncated by the

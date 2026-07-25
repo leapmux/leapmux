@@ -382,6 +382,7 @@ func bringUpLocalWorker(
 			DBMmapSize:   hubCfg.Storage.SQLite.MmapSize,
 			// 0 (the default) lets the worker apply channelwire.DefaultMaxIncompleteChunked.
 			MaxIncompleteChunked: parseInt(hubCfg.Extras["max_incomplete_chunked"], 0),
+			MaxMessageSize:       hubCfg.MaxMessageSize,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
 			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),

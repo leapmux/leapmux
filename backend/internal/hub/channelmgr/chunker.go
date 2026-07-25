@@ -31,13 +31,23 @@ type channelChunkState struct {
 // chunked channel messages relayed through the Hub. The Hub cannot decrypt,
 // but estimates plaintext size from ciphertext (ciphertext - 16 bytes auth tag).
 type chunkTracker struct {
-	mu             sync.Mutex
-	maxMessageSize int
+	mu sync.Mutex
+	// defaultReassembledMax is the hub-configured reassembled-message
+	// ceiling used until (and unless) SetChannelMax records a per-channel
+	// negotiated ceiling.
+	defaultReassembledMax int
+	// channelMax holds per-channel reassembled ceilings that are stricter
+	// than defaultReassembledMax (MaxReassembledMessageSize of the effective
+	// payload budget). Equal-to-default negotiations skip the map; Track
+	// falls back to defaultReassembledMax when a channel has no entry.
+	channelMax map[string]int
 	// channels maps channelID -> direction ("fe2w" or "w2fe") -> state
 	channels map[string]map[string]*channelChunkState
 }
 
-// newChunkTracker builds the Hub-side tracker.
+// newChunkTracker builds the Hub-side tracker with the given default
+// reassembled-message ceiling. Per-channel ceilings are applied later via
+// SetChannelMax after open negotiation.
 //
 // There is deliberately no in-flight-sequence COUNT cap here. Track admits a new
 // correlation id only while NO sequence is in progress on that channel+direction,
@@ -46,11 +56,35 @@ type chunkTracker struct {
 // subsumes it. The Worker's and tunnel's reassembly caps, which share
 // channelwire.DefaultMaxIncompleteChunked, DO admit concurrent sequences and so
 // genuinely need the cap -- this reasoning is about the Hub relay only.
-func newChunkTracker(maxMessageSize int) *chunkTracker {
+func newChunkTracker(defaultReassembledMax int) *chunkTracker {
 	return &chunkTracker{
-		maxMessageSize: maxMessageSize,
-		channels:       make(map[string]map[string]*channelChunkState),
+		defaultReassembledMax: defaultReassembledMax,
+		channelMax:            make(map[string]int),
+		channels:              make(map[string]map[string]*channelChunkState),
 	}
+}
+
+// SetChannelMax records the reassembled-message ceiling for channelID.
+// Call with MaxReassembledMessageSize(effectivePayload) after negotiation.
+// When the negotiated ceiling matches the tracker default, no per-channel
+// entry is stored (maxFor already falls back to the default) — and any
+// prior stricter override for that id is cleared.
+func (ct *chunkTracker) SetChannelMax(channelID string, reassembledMax int) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if reassembledMax == ct.defaultReassembledMax {
+		delete(ct.channelMax, channelID)
+		return
+	}
+	ct.channelMax[channelID] = reassembledMax
+}
+
+// maxFor returns the reassembled ceiling for channelID. Caller holds ct.mu.
+func (ct *chunkTracker) maxFor(channelID string) int {
+	if max, ok := ct.channelMax[channelID]; ok {
+		return max
+	}
+	return ct.defaultReassembledMax
 }
 
 // Track validates and tracks a chunk for the given channel+direction.
@@ -149,22 +183,25 @@ func (ct *chunkTracker) accumulate(channelID, direction string, state *channelCh
 		estimated = 0
 	}
 	seq.estimatedPlaintext += estimated
-	if seq.estimatedPlaintext > ct.maxMessageSize {
+	maxSize := ct.maxFor(channelID)
+	if seq.estimatedPlaintext > maxSize {
 		delete(state.sequences, correlationID)
 		if state.inProgressID == correlationID {
 			state.inProgressID = 0
 		}
 		ct.cleanupEmpty(channelID, direction)
-		return fmt.Errorf("chunked message exceeds max size: %d > %d", seq.estimatedPlaintext, ct.maxMessageSize)
+		return fmt.Errorf("chunked message exceeds max size: %d > %d", seq.estimatedPlaintext, maxSize)
 	}
 	return nil
 }
 
-// RemoveChannel removes all tracking state for a channel.
+// RemoveChannel removes all tracking state for a channel, including any
+// per-channel reassembled ceiling.
 func (ct *chunkTracker) RemoveChannel(channelID string) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	delete(ct.channels, channelID)
+	delete(ct.channelMax, channelID)
 }
 
 // cleanupEmpty removes empty state entries. Must be called with ct.mu held.

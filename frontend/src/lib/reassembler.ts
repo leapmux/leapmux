@@ -16,15 +16,25 @@
 export const MAX_CHUNK_SIZE = 65535 - 16
 
 /**
- * Default maximum reassembled message size (17 MiB).
- *
- * Deliberately one MiB above the 16 MiB ceiling any producer is allowed to
- * emit, so the payload plus the envelopes wrapped around it still fits.
- * When the two matched, a producer that filled its budget exactly built a
- * message this side refused -- and a refusal mid-stream has no resync path,
- * so the event vanished with nothing to tell the client it had missed one.
+ * Default operator-facing application payload budget (16 MiB).
+ * The reassembled/send-gate ceiling is this plus INNER_ENVELOPE_HEADROOM.
  */
-export const DEFAULT_MAX_MESSAGE_SIZE = 17 * 1024 * 1024
+export const DEFAULT_MAX_MESSAGE_SIZE = 16 * 1024 * 1024
+
+/** Bytes added on top of a (configured or default) max message size for protobuf envelopes. */
+export const INNER_ENVELOPE_HEADROOM = 64 * 1024
+
+/** Default reassembled InnerMessage ceiling (payload + headroom). */
+export const DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE
+  = DEFAULT_MAX_MESSAGE_SIZE + INNER_ENVELOPE_HEADROOM
+
+/** Largest max_message_size an operator may configure. */
+export const MAX_CONFIGURABLE_MESSAGE_SIZE = 64 * 1024 * 1024
+
+/** Receive/send-gate ceiling for a negotiated or configured payload budget. */
+export function maxReassembledMessageSize(maxMessageSize: number): number {
+  return maxMessageSize + INNER_ENVELOPE_HEADROOM
+}
 
 /** Maximum number of in-flight chunked sequences per channel. */
 export const MAX_INCOMPLETE_CHUNKED = 4
@@ -271,14 +281,13 @@ export class Reassembler {
       if (!hasHandler(correlationId))
         return { kind: 'drop-unknown' }
       // Enforce the reassembled-message ceiling on the single-chunk path too, the
-      // way the Go siblings do (worker chunker.go, tunnel channel.go): the ceiling
-      // is a fixed protocol constant EVERY receiver enforces independently, and
-      // this was the one browser path that leaned on the Hub's per-ciphertext cap
-      // instead. MAX_CHUNK_SIZE bounds a single decrypted chunk far below
-      // maxMessageSize today, so this never fires on legitimate traffic, but
-      // enforcing it here makes the "every receiver enforces independently" claim
-      // literally true and keeps an unbounded plaintext off the consumer if the
-      // upstream cap ever relaxes.
+      // way the Go siblings do (worker chunker.go, tunnel channel.go): every
+      // receiver enforces the per-channel negotiated ceiling (payload + headroom
+      // from OpenChannel), and this was the one browser path that leaned on the
+      // Hub's per-ciphertext cap instead. MAX_CHUNK_SIZE bounds a single decrypted
+      // chunk far below maxMessageSize today, so this never fires on legitimate
+      // traffic, but enforcing it here keeps an unbounded plaintext off the
+      // consumer if the upstream cap ever relaxes.
       if (chunk.length > this.maxMessageSize)
         return { kind: 'too-large', size: chunk.length }
       return { kind: 'deliver', plaintext: chunk }

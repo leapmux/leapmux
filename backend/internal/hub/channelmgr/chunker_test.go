@@ -13,16 +13,94 @@ const (
 	dirFe2w            = "fe2w"
 )
 
-// TestNew_UsesFixedMessageCeiling pins that the Hub's reassembled-message ceiling
-// is the shared protocol constant, not an operator-tunable value. The tunnel
-// client and the browser hardcode channelwire.DefaultMaxMessageSize, so a Hub
-// that accepted any other ceiling would silently reject a message those receivers
-// admit (or vice versa) -- the drift a config knob here once allowed.
-func TestNew_UsesFixedMessageCeiling(t *testing.T) {
-	m := New()
+// TestSetChannelMaxMessageSize_DerivesReassembledCeiling pins that the
+// manager stores MaxReassembledMessageSize(payload), not the bare payload
+// budget, as the ChunkTracker per-channel ceiling when the negotiated
+// ceiling is stricter than the hub default.
+func TestSetChannelMaxMessageSize_DerivesReassembledCeiling(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	const payload = 1 << 20 // 1 MiB — below the 16 MiB hub default
+	m.SetChannelMaxMessageSize("ch1", payload)
+
+	want := channelwire.MaxReassembledMessageSize(payload)
+	m.ChunkTracker.mu.Lock()
+	got := m.ChunkTracker.channelMax["ch1"]
+	m.ChunkTracker.mu.Unlock()
+	assert.Equal(t, want, got)
+}
+
+func TestSetChannelMaxMessageSize_SkipsEntryWhenEqualToDefault(t *testing.T) {
+	m := New(0)
+	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
+	// Negotiated payload equals the hub configured budget → reassembled
+	// ceiling matches the tracker default; no per-channel entry needed.
+	m.SetChannelMaxMessageSize("ch1", m.MaxMessageSize())
+
+	m.ChunkTracker.mu.Lock()
+	_, ok := m.ChunkTracker.channelMax["ch1"]
+	m.ChunkTracker.mu.Unlock()
+	assert.False(t, ok, "equal-to-default ceilings must not populate channelMax")
+}
+
+func TestSetChannelMax_ClearsPriorOverrideWhenRaisedToDefault(t *testing.T) {
+	ct := newChunkTracker(testMaxMessageSize)
+	ct.SetChannelMax("ch1", 1000)
+	ct.SetChannelMax("ch1", testMaxMessageSize)
+
+	ct.mu.Lock()
+	_, ok := ct.channelMax["ch1"]
+	ct.mu.Unlock()
+	assert.False(t, ok, "raising back to the default must drop the override entry")
+}
+
+func TestSetChannelMaxMessageSize_NoopsWhenChannelGone(t *testing.T) {
+	m := New(0)
+	m.SetChannelMaxMessageSize("missing", 1<<20)
+	m.ChunkTracker.mu.Lock()
+	_, ok := m.ChunkTracker.channelMax["missing"]
+	m.ChunkTracker.mu.Unlock()
+	assert.False(t, ok, "must not orphan a channelMax entry for an unregistered channel")
+}
+
+// TestNew_ResolvesMaxMessageSize pins that New(0) uses the protocol default
+// payload budget and the matching DefaultMaxReassembledMessageSize as the
+// ChunkTracker fallback ceiling. Per-channel negotiation may lower the
+// tracker via SetChannelMaxMessageSize after a successful open.
+func TestNew_ResolvesMaxMessageSize(t *testing.T) {
+	m := New(0)
 	require.NotNil(t, m.ChunkTracker)
-	assert.Equal(t, channelwire.DefaultMaxMessageSize, m.ChunkTracker.maxMessageSize,
-		"the Hub relay must enforce the shared message ceiling, not a configurable one")
+	assert.Equal(t, channelwire.MaxMessageSize, m.MaxMessageSize())
+	assert.Equal(t, channelwire.DefaultMaxReassembledMessageSize, m.ChunkTracker.defaultReassembledMax,
+		"ChunkTracker default must be MaxReassembledMessageSize of the hub payload budget")
+}
+
+// TestChunkTracker_PerChannelMax verifies Track uses a channel-specific
+// reassembled ceiling when SetChannelMax has recorded one, falls back to the
+// tracker default otherwise, and that RemoveChannel clears the override.
+func TestChunkTracker_PerChannelMax(t *testing.T) {
+	ct := newChunkTracker(testMaxMessageSize)
+	const channelCeiling = 1000
+	ct.SetChannelMax("ch1", channelCeiling)
+
+	// Fits the default (1 MiB) but exceeds the per-channel ceiling.
+	err := ct.Track("ch1", dirFe2w, 1, validChunkSize(channelCeiling+1), true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds max size")
+
+	// A different channel still uses the tracker default.
+	err = ct.Track("ch2", dirFe2w, 1, validChunkSize(channelCeiling+1), true)
+	require.NoError(t, err)
+
+	ct.RemoveChannel("ch1")
+	ct.mu.Lock()
+	_, hasMax := ct.channelMax["ch1"]
+	ct.mu.Unlock()
+	assert.False(t, hasMax, "RemoveChannel must clear the per-channel max")
+
+	// After removal, ch1 uses the default ceiling again.
+	err = ct.Track("ch1", dirFe2w, 2, validChunkSize(channelCeiling+1), true)
+	require.NoError(t, err)
 }
 
 // validChunkSize returns a ciphertext length that fits within one Noise

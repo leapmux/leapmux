@@ -35,7 +35,7 @@ import { createLogger } from './logger'
 import { monotonicNow } from './monotonicNow'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
-import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, Reassembler } from './reassembler'
+import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE, maxReassembledMessageSize, Reassembler } from './reassembler'
 
 const log = createLogger('channel')
 
@@ -161,7 +161,7 @@ export interface ChannelTransport {
    * trip. Both are needed before every OpenChannel, so they travel together.
    */
   getWorkerHandshakeParams: (workerId: string) => Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }>
-  openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string }>
+  openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string, maxMessageSize?: number }>
   closeChannel: (channelId: string) => Promise<void>
   createWebSocket: () => ChannelSocket
   /** Called when a previously-pinned worker public key changes. */
@@ -195,6 +195,17 @@ interface ActiveChannel {
    * re-handshakes instead of serving under the over-age key.
    */
   userId: string
+  /**
+   * Negotiated application payload budget from OpenChannelResponse.max_message_size.
+   * Clients never configure this; open refuses a missing/out-of-bounds value
+   * (except the test-only ChannelManagerOpts payload/reassembled fallback).
+   */
+  maxMessageSize: number
+  /**
+   * Send/reassembly ceiling: maxReassembledMessageSize(maxMessageSize), or the
+   * test-only testReassembledCeiling when the mock omits negotiation.
+   */
+  maxReassembledMessageSize: number
   pendingRequests: Map<number, PendingRequest>
   streamListeners: Map<number, StreamListener>
   reassembly: Reassembler
@@ -245,7 +256,28 @@ export interface ChannelManagerOpts {
   handshake2?: typeof initiatorHandshake2
   classicHandshake1?: typeof classicHandshake1
   classicHandshake2?: typeof classicHandshake2
-  maxMessageSize?: number
+  /**
+   * Test-only application payload budget used when the transport's openChannel
+   * omits maxMessageSize. Production opens always take the negotiated payload
+   * from the Hub. Pair with testReassembledCeiling, or omit the ceiling to
+   * derive it via maxReassembledMessageSize(testPayloadBudget).
+   */
+  testPayloadBudget?: number
+  /**
+   * Test-only reassembled/send-gate ceiling when openChannel omits
+   * maxMessageSize. If set without testPayloadBudget, the payload budget
+   * defaults to the same value (tiny size-gate tests that need both ceilings
+   * equal). If omitted while testPayloadBudget is set, the ceiling is
+   * derived as maxReassembledMessageSize(payload).
+   */
+  testReassembledCeiling?: number
+  /**
+   * WebSocket open timeout in milliseconds (default 10_000). Tests that
+   * exercise the timeout path pass a small value and use real timers —
+   * bun's fake-timer clock does not reliably fire this setTimeout when the
+   * open path has several awaits ahead of ensureWebSocket.
+   */
+  wsOpenTimeoutMs?: number
   /**
    * Default timeout for individual RPC calls in milliseconds. Resolved
    * lazily on every call so callers (typically ~/api/workerRpc) can forward
@@ -320,7 +352,13 @@ export class ChannelManager {
   private handshake2: typeof initiatorHandshake2
   private classicHS1: typeof classicHandshake1
   private classicHS2: typeof classicHandshake2
-  private maxMessageSize: number
+  /**
+   * Test-only payload / reassembled ceilings when openChannel omits
+   * maxMessageSize. Undefined in production (negotiation is required).
+   */
+  private testPayloadBudget: number | undefined
+  private testReassembledCeiling: number | undefined
+  private wsOpenTimeoutMs: number
   private rpcTimeoutFn: () => number
   private expectedUserIdFn: () => string | undefined
   /** Workers whose keys were rejected by the user during this session. */
@@ -350,7 +388,9 @@ export class ChannelManager {
     this.handshake2 = opts?.handshake2 ?? initiatorHandshake2
     this.classicHS1 = opts?.classicHandshake1 ?? classicHandshake1
     this.classicHS2 = opts?.classicHandshake2 ?? classicHandshake2
-    this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
+    this.testPayloadBudget = opts?.testPayloadBudget
+    this.testReassembledCeiling = opts?.testReassembledCeiling
+    this.wsOpenTimeoutMs = opts?.wsOpenTimeoutMs ?? 10_000
     this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
     this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
     this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? DEFAULT_IDLE_REKEY_INTERVAL_MS
@@ -539,12 +579,11 @@ export class ChannelManager {
     }
 
     try {
-      // Complete the Noise handshake. Verification of the Worker's handshake-2
-      // message throws on tampering or corruption, and the Hub has already
-      // registered the channel, so this sits inside the rollback's coverage — the
-      // Go client covers the same step the same way (handshaker.finish runs under
-      // the rollback defer in backend/tunnel/channel.go).
-      const session = finishHandshake(result.handshakePayload)
+      // Adopt negotiated limits before handshake-2 crypto, matching the Go
+      // tunnel client (backend/tunnel/channel.go validates max_message_size
+      // before handshaker.finish). Missing/out-of-bounds fails closed without
+      // paying ML-KEM/SLH-DSA verify cost.
+      const limits = this.resolveMessageLimits(result)
 
       // Reject a hub that did not name the authenticated user, rather than falling
       // back to a locally-asserted identity: the whole point of binding to the
@@ -569,6 +608,13 @@ export class ChannelManager {
         )
       }
 
+      // Complete the Noise handshake. Verification of the Worker's handshake-2
+      // message throws on tampering or corruption, and the Hub has already
+      // registered the channel, so this sits inside the rollback's coverage — the
+      // Go client covers the same step the same way (handshaker.finish runs under
+      // the rollback defer in backend/tunnel/channel.go).
+      const session = finishHandshake(result.handshakePayload)
+
       // 4. Ensure shared WebSocket is connected.
       await this.ensureWebSocket()
 
@@ -585,9 +631,11 @@ export class ChannelManager {
         workerId,
         session,
         userId: result.userId,
+        maxMessageSize: limits.payload,
+        maxReassembledMessageSize: limits.reassembled,
         pendingRequests: new Map(),
         streamListeners: new Map(),
-        reassembly: new Reassembler(this.maxMessageSize),
+        reassembly: new Reassembler(limits.reassembled),
         nextRequestId: 1,
         state: 'opening',
         lastRekeyAt: monotonicNow(),
@@ -631,6 +679,32 @@ export class ChannelManager {
 
     this.notifyStateChange()
     return result.channelId
+  }
+
+  /**
+   * Resolve the per-channel payload budget and reassembled ceiling from the
+   * OpenChannel response. Production requires a negotiated maxMessageSize in
+   * [MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE]; the test-only
+   * testPayloadBudget / testReassembledCeiling fallback applies only when the
+   * mock omits the field.
+   */
+  private resolveMessageLimits(result: { maxMessageSize?: number }): { payload: number, reassembled: number } {
+    const negotiated = result.maxMessageSize
+    if (negotiated != null && negotiated > 0) {
+      if (negotiated < MAX_CHUNK_SIZE || negotiated > MAX_CONFIGURABLE_MESSAGE_SIZE) {
+        throw new ChannelError(
+          'transport',
+          `open channel: max_message_size ${negotiated} out of bounds [${MAX_CHUNK_SIZE}, ${MAX_CONFIGURABLE_MESSAGE_SIZE}]`,
+        )
+      }
+      return { payload: negotiated, reassembled: maxReassembledMessageSize(negotiated) }
+    }
+    if (this.testPayloadBudget != null || this.testReassembledCeiling != null) {
+      const payload = this.testPayloadBudget ?? this.testReassembledCeiling!
+      const reassembled = this.testReassembledCeiling ?? maxReassembledMessageSize(payload)
+      return { payload, reassembled }
+    }
+    throw new ChannelError('transport', 'open channel: hub returned no max_message_size')
   }
 
   /**
@@ -1303,7 +1377,7 @@ export class ChannelManager {
    * poisoned session left in the pool would be handed to every later caller and fail
    * identically until the hard ceiling. The Go client cancels the same way.
    *
-   * A `client` ChannelError -- today, a payload over maxMessageSize -- is the opposite
+   * A `client` ChannelError -- today, a payload over maxReassembledMessageSize -- is the opposite
    * case: the session never encrypted a byte and is untouched, so tearing the channel
    * down would punish every other caller for one bad call.
    */
@@ -1339,8 +1413,8 @@ export class ChannelManager {
         ws.close()
         this.ws = null
         this.wsPromise = null
-        reject(new ChannelError('transport', 'WebSocket open timed out after 10s'))
-      }, 10_000)
+        reject(new ChannelError('transport', `WebSocket open timed out after ${Math.round(this.wsOpenTimeoutMs / 1000)}s`))
+      }, this.wsOpenTimeoutMs)
 
       const onOpen = () => {
         clearTimeout(timer)
@@ -1411,8 +1485,8 @@ export class ChannelManager {
    * flags=MORE; the final chunk has flags=UNSPECIFIED.
    */
   private sendEncryptedMessage(ch: ActiveChannel, plaintext: Uint8Array, requestId: number): void {
-    if (plaintext.length > this.maxMessageSize) {
-      throw new ChannelError('client', `message too large: ${plaintext.length} > ${this.maxMessageSize}`)
+    if (plaintext.length > ch.maxReassembledMessageSize) {
+      throw new ChannelError('client', `message too large: ${plaintext.length} > ${ch.maxReassembledMessageSize}`)
     }
 
     if (plaintext.length <= MAX_CHUNK_SIZE) {
@@ -1700,7 +1774,7 @@ export class ChannelManager {
         return null
       case 'too-large':
         log.error('Chunked message exceeds max size', { channel_id: ch.channelId, correlation_id: correlationId, size: out.size })
-        this.failReassembly(ch, correlationId, `chunked message too large: ${out.size} bytes exceeds ${this.maxMessageSize} byte limit`)
+        this.failReassembly(ch, correlationId, `chunked message too large: ${out.size} bytes exceeds ${ch.maxReassembledMessageSize} byte limit`)
         return null
     }
   }
@@ -1808,9 +1882,10 @@ export class ChannelManager {
    * A correlation id is either a pending unary or a stream, never both, so clearing
    * both maps is safe and keeps the rule -- a reassembly buffer lives and dies with the
    * request that owns it -- in ONE place instead of at each of the six sites that
-   * retire a request. Left behind, a partial reassembly pins up to maxMessageSize and
-   * holds a slot of the incomplete-chunked cap for the channel's whole life, because
-   * nothing else ever reaps it: the buffer's only reader was the handler just removed.
+   * retire a request. Left behind, a partial reassembly pins up to
+   * maxReassembledMessageSize and holds a slot of the incomplete-chunked cap for
+   * the channel's whole life, because nothing else ever reaps it: the buffer's
+   * only reader was the handler just removed.
    */
   private unregisterRequest(ch: ActiveChannel, correlationId: number): void {
     ch.pendingRequests.delete(correlationId)

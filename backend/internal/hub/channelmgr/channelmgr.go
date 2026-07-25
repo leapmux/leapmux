@@ -73,17 +73,22 @@ type Manager struct {
 	expiries          channelExpiryHeap
 	expiryTimer       *time.Timer
 	ChunkTracker      *chunkTracker // chunk-aware relay enforcement
+	// maxMessageSize is the Hub's resolved application payload budget
+	// (from config max_message_size, or the protocol default). Announced
+	// on ChannelOpenRequest; the effective per-channel budget is
+	// min(this, worker). The ChunkTracker default ceiling is the
+	// corresponding reassembled size; open negotiation may lower it
+	// per channel via SetChannelMaxMessageSize.
+	maxMessageSize int
 }
 
-// New creates a new channel Manager.
-func New() *Manager {
-	// The reassembled-message ceiling is a fixed protocol constant, not an
-	// operator knob: the tunnel client and the browser hardcode
-	// channelwire.DefaultMaxMessageSize, so a Hub configured with any other value
-	// would silently accept a message those receivers then reject (or vice versa),
-	// poisoning an otherwise-healthy channel. One constant, asserted everywhere.
-	// Reintroducing the knob with end-to-end propagation is tracked in
-	// https://github.com/leapmux/leapmux/issues/291.
+// New creates a new channel Manager. maxMessageSize is the configured
+// application payload budget; non-positive values resolve to the protocol
+// default. The ChunkTracker starts with MaxReassembledMessageSize of that
+// budget; successful opens may lower the per-channel ceiling to the
+// negotiated effective size.
+func New(maxMessageSize int) *Manager {
+	payloadMax := channelwire.ResolveMaxMessageSize(maxMessageSize)
 	return &Manager{
 		channels:          make(map[string]*channel),
 		channelsByUser:    make(map[string]map[string]struct{}),
@@ -91,8 +96,31 @@ func New() *Manager {
 		channelsBySession: make(map[string]map[string]struct{}),
 		channelsByBearer:  make(map[auth.BearerRef]map[string]struct{}),
 		userSenders:       make(map[string]map[string]*userConn),
-		ChunkTracker:      newChunkTracker(channelwire.DefaultMaxMessageSize),
+		ChunkTracker:      newChunkTracker(channelwire.MaxReassembledMessageSize(payloadMax)),
+		maxMessageSize:    payloadMax,
 	}
+}
+
+// MaxMessageSize returns the Hub's resolved application payload budget.
+func (m *Manager) MaxMessageSize() int {
+	return m.maxMessageSize
+}
+
+// SetChannelMaxMessageSize sets the ChunkTracker reassembled-message
+// ceiling for channelID from the negotiated effective payload budget
+// (min(hub, worker)). Call after a successful ChannelOpenResponse.
+// When the negotiated ceiling matches the hub default, ChunkTracker
+// stores no per-channel entry. No-ops when the channel is no longer
+// registered, so a concurrent CloseByID cannot leave an orphan
+// channelMax entry after the open path's failed-registration defer
+// tears the channel down.
+func (m *Manager) SetChannelMaxMessageSize(channelID string, effectivePayload int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.channels[channelID]; !ok {
+		return
+	}
+	m.ChunkTracker.SetChannelMax(channelID, channelwire.MaxReassembledMessageSize(effectivePayload))
 }
 
 type AuthInfo struct {

@@ -291,6 +291,11 @@ type Config struct {
 	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+	// MaxMessageSize is the worker's configured application payload budget
+	// (0 = channelwire.MaxMessageSize). Raises agent stdout scanner ceiling
+	// and ReadFile's maxReadLimit; other stream sends still reject at
+	// sendEncrypted when the reassembled frame exceeds the negotiated gate.
+	MaxMessageSize int
 }
 
 // New creates a fully wired Service.

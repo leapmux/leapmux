@@ -203,12 +203,11 @@ func (r *reassembler) accept(requestID uint64, chunk []byte, more bool) reassemb
 		}
 		// Enforce the reassembled-message ceiling on the single-chunk path too,
 		// the way the sibling tunnel receiver does (tunnel.Channel.reassemble):
-		// wire.go states the ceiling is a fixed protocol constant EVERY receiver
-		// enforces independently, and this was the one path that leaned on the
+		// every receiver enforces the per-channel negotiated ceiling (payload
+		// + headroom from open), and this was the one path that leaned on the
 		// Hub's per-ciphertext cap instead. That cap (65535) bounds a decrypted
-		// single chunk well below the reassembly ceiling today, so this never fires on
-		// legitimate traffic, but enforcing it here makes the "every receiver
-		// enforces independently" claim literally true and keeps an unbounded
+		// single chunk well below the reassembly ceiling today, so this never
+		// fires on legitimate traffic, but enforcing it here keeps an unbounded
 		// plaintext off proto.Unmarshal if the upstream cap ever relaxes.
 		if len(chunk) > r.maxMessageSize {
 			return reassemblyOutcome{action: reassemblyTooLarge, size: len(chunk)}

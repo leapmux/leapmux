@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -78,7 +79,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	cfg := testConfig()
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New()
+	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
@@ -326,6 +327,8 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 	case sentMsg := <-sentCh:
 		assert.NotNil(t, sentMsg.GetChannelOpen())
 		assert.Equal(t, []byte("handshake-msg-1"), sentMsg.GetChannelOpen().GetHandshakePayload())
+		assert.Equal(t, uint64(channelwire.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
+			"hub must announce its resolved max_message_size on ChannelOpenRequest")
 	default:
 		require.Fail(t, "expected a message to be sent to worker")
 	}
@@ -401,7 +404,7 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 	}))
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New()
+	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 100 * time.Millisecond })
 	sent := make(chan *leapmuxv1.ConnectResponse, 1)
 	_, _ = wMgr.Register(&workermgr.Conn{
@@ -460,6 +463,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
 							ChannelId:        msg.GetChannelOpen().GetChannelId(),
 							HandshakePayload: []byte("worker-handshake"),
+							MaxMessageSize:   msg.GetChannelOpen().GetMaxMessageSize(),
 						},
 					},
 				})
@@ -515,8 +519,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 			return nil
 		},
 	})
-	channelSvc := service.NewChannelService(
-		env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID: userid.MustNew(env.user.ID), OrgID: env.user.OrgID, Username: env.user.Username,
 	})
@@ -540,6 +543,396 @@ func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 	assert.False(t, env.channels.Exists(open.GetChannelOpen().GetChannelId()))
 }
 
+func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code leapmuxv1.ChannelOpenErrorCode
+		want connect.Code
+	}{
+		{
+			name: "invalid max message size",
+			code: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE,
+			want: connect.CodeInvalidArgument,
+		},
+		{
+			name: "channel already active",
+			code: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
+			want: connect.CodeFailedPrecondition,
+		},
+		{
+			name: "no authenticated user",
+			code: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_NO_AUTHENTICATED_USER,
+			want: connect.CodeInternal,
+		},
+		{
+			name: "handshake failed",
+			code: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED,
+			want: connect.CodeInvalidArgument,
+		},
+		{
+			name: "unspecified stays internal",
+			code: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_UNSPECIFIED,
+			want: connect.CodeInternal,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupDirectOpenChannelEnv(t)
+			env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+			_, _ = env.worker.Register(&workermgr.Conn{
+				WorkerID: env.workerID,
+				SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+					env.sent <- msg
+					if open := msg.GetChannelOpen(); open != nil {
+						env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+							Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+								ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+									ChannelId: open.GetChannelId(),
+									Error:     "worker reject: " + tc.name,
+									ErrorCode: tc.code,
+								},
+							},
+						})
+					}
+					return nil
+				},
+			})
+
+			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+				ID:       userid.MustNew(env.user.ID),
+				OrgID:    env.user.OrgID,
+				Username: env.user.Username,
+			})
+			_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+				WorkerId:         env.workerID,
+				HandshakePayload: []byte("handshake"),
+			}))
+			require.Error(t, err)
+			assert.Equal(t, tc.want, connect.CodeOf(err), "code %v must map via channelwire.ConnectCodeFromChannelOpenError", tc.code)
+		})
+	}
+}
+
+func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
+	// Hub must fail closed when ErrorCode is set even if Error is empty, so a
+	// buggy/hostile worker cannot fall through to the success path.
+	env := setupDirectOpenChannelEnv(t)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId:        open.GetChannelId(),
+							ErrorCode:        leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
+							MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+							HandshakePayload: []byte("should-not-matter"),
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "worker rejected channel")
+	assert.Contains(t, err.Error(), leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE.String(),
+		"empty Error must fall back to the ErrorCode name so the reject is still attributable")
+}
+
+func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
+	// Kept as a focused alias of the table above for the original skew case.
+	env := setupDirectOpenChannelEnv(t)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId: open.GetChannelId(),
+							Error:     "invalid hub max_message_size: below floor",
+							ErrorCode: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE,
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid hub max_message_size")
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"structured INVALID_MAX_MESSAGE_SIZE must map to InvalidArgument, not Internal")
+}
+
+func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
+	env := setupDirectOpenChannelEnv(t)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId: open.GetChannelId(),
+							Error:     "handshake failed: corrupt",
+							// ErrorCode unspecified → Internal (retryable-looking
+							// worker fault, not a client config mistake).
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+}
+
+func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
+	env := setupDirectOpenChannelEnv(t)
+	hubMax := 1 << 20 // 1 MiB — below the protocol default so an oversize echo is visible
+	env.channels = channelmgr.New(hubMax)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId:        open.GetChannelId(),
+							HandshakePayload: []byte("worker-handshake"),
+							// Valid by itself, but above what this hub announced.
+							MaxMessageSize: uint64(hubMax * 2),
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "above hub max")
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"peer echo above hub max is a Hub↔Worker protocol fault, not a client InvalidArgument")
+}
+
+func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		echo uint64
+	}{
+		{name: "zero", echo: 0},
+		{name: "below floor", echo: 1},
+		{name: "above ceiling", echo: uint64(channelwire.MaxConfigurableMessageSize + 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupDirectOpenChannelEnv(t)
+			env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+			_, _ = env.worker.Register(&workermgr.Conn{
+				WorkerID: env.workerID,
+				SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+					env.sent <- msg
+					if open := msg.GetChannelOpen(); open != nil {
+						env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+							Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+								ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+									ChannelId:        open.GetChannelId(),
+									HandshakePayload: []byte("worker-handshake"),
+									MaxMessageSize:   tc.echo,
+								},
+							},
+						})
+					}
+					return nil
+				},
+			})
+
+			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+				ID:       userid.MustNew(env.user.ID),
+				OrgID:    env.user.OrgID,
+				Username: env.user.Username,
+			})
+			_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+				WorkerId:         env.workerID,
+				HandshakePayload: []byte("handshake"),
+			}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "max_message_size")
+			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+				"bad/missing worker echo is a peer/protocol fault, not a client InvalidArgument")
+			if tc.echo == 0 {
+				assert.Contains(t, err.Error(), "version skew")
+			}
+		})
+	}
+}
+
+func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
+	env := setupDirectOpenChannelEnv(t)
+	hubMax := 200_000
+	lowered := 100_000
+	env.channels = channelmgr.New(hubMax)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				assert.Equal(t, uint64(hubMax), open.GetMaxMessageSize(),
+					"hub must announce its configured payload budget")
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId:        open.GetChannelId(),
+							HandshakePayload: []byte("worker-handshake"),
+							MaxMessageSize:   uint64(lowered),
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(lowered), resp.Msg.GetMaxMessageSize())
+	require.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
+
+	// Prove the per-channel tracker ceiling is MaxReassembledMessageSize(lowered):
+	// past the bare payload must still fit (headroom), past the derived ceiling must not
+	// (and must not silently keep the larger hub default).
+	channelID := resp.Msg.GetChannelId()
+	ceiling := channelwire.MaxReassembledMessageSize(lowered)
+	chunkCiphertext := func(plaintext int) int {
+		return plaintext + channelwire.NoiseAEADAuthTagSize
+	}
+	const dir = "fe2w"
+	const piece = 40_000
+
+	trackAccum := func(corr uint64, target int, finalMore bool) error {
+		total := 0
+		for total+piece < target {
+			if err := env.channels.ChunkTracker.Track(channelID, dir, corr, chunkCiphertext(piece), true); err != nil {
+				return err
+			}
+			total += piece
+		}
+		remain := target - total
+		return env.channels.ChunkTracker.Track(channelID, dir, corr, chunkCiphertext(remain), finalMore)
+	}
+
+	require.NoError(t, trackAccum(1, lowered+1, false),
+		"reassembled ceiling must include envelope headroom past the bare payload")
+	err = trackAccum(2, ceiling+1, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds max size")
+}
+
+func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
+	env := setupDirectOpenChannelEnv(t)
+	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
+	_, _ = env.worker.Register(&workermgr.Conn{
+		WorkerID: env.workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			env.sent <- msg
+			if open := msg.GetChannelOpen(); open != nil {
+				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+					Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+							ChannelId:        open.GetChannelId(),
+							HandshakePayload: []byte("worker-handshake"),
+							MaxMessageSize:   open.GetMaxMessageSize(),
+						},
+					},
+				})
+			}
+			return nil
+		},
+	})
+
+	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:       userid.MustNew(env.user.ID),
+		OrgID:    env.user.OrgID,
+		Username: env.user.Username,
+	})
+	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         env.workerID,
+		HandshakePayload: []byte("handshake"),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(channelwire.MaxMessageSize), resp.Msg.GetMaxMessageSize(),
+		"OpenChannelResponse must return the effective payload budget")
+	assert.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
+}
+
 func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
@@ -553,6 +946,7 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 						ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
 							ChannelId:        open.GetChannelId(),
 							HandshakePayload: []byte("worker-handshake"),
+							MaxMessageSize:   open.GetMaxMessageSize(),
 						},
 					},
 				})

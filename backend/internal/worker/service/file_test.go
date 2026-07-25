@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 func TestListDirectory_Truncation(t *testing.T) {
@@ -471,7 +473,8 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 	f, err := os.Create(path)
 	require.NoError(t, err)
 	// Larger than the clamp, so the clamp decides the outcome.
-	const totalSize = int64(maxReadLimit) + (1 << 20)
+	maxRead := svc.maxReadLimit(nil)
+	totalSize := maxRead + (1 << 20)
 	require.NoError(t, f.Truncate(totalSize))
 	require.NoError(t, f.Close())
 
@@ -479,7 +482,7 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 		Path: path,
 		// Far above the ceiling, and above the file: without the clamp
 		// offset+limit exceeds total_size, so nothing looks truncated.
-		Limit:               int64(maxReadLimit) * 4,
+		Limit:               maxRead * 4,
 		MetaOnlyIfTruncated: true,
 	}, w)
 
@@ -492,3 +495,30 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 	assert.Empty(t, resp.GetContent(),
 		"a limit above the producer ceiling must be clamped, which makes this file truncated")
 }
+
+func TestMaxReadLimit_UsesConfiguredMaxMessageSize(t *testing.T) {
+	svc := &Service{Config: Config{MaxMessageSize: 2 << 20}}
+	assert.Equal(t, int64(2<<20), svc.maxReadLimit(nil))
+
+	svc.MaxMessageSize = 0
+	assert.Equal(t, int64(channelwire.MaxMessageSize), svc.maxReadLimit(nil),
+		"0 must resolve to the protocol default payload budget")
+}
+
+func TestMaxReadLimit_UsesNegotiatedChannelBudgetWhenTighter(t *testing.T) {
+	svc := &Service{Config: Config{MaxMessageSize: 4 << 20}}
+	sender := &budgetWriter{budget: 1 << 20}
+	assert.Equal(t, int64(1<<20), svc.maxReadLimit(sender),
+		"channel negotiated budget must clamp below the worker knob")
+	assert.Equal(t, int64(4<<20), svc.maxReadLimit(&budgetWriter{budget: 8 << 20}),
+		"worker knob must win when the channel budget is higher")
+	assert.Equal(t, int64(4<<20), svc.maxReadLimit(&budgetWriter{budget: 0}),
+		"zero budget (non-channel writer) must fall back to the worker knob")
+}
+
+type budgetWriter struct {
+	channel.ResponseWriter
+	budget int
+}
+
+func (w *budgetWriter) MaxPayloadBudget() int { return w.budget }

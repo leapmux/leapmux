@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
@@ -192,6 +193,21 @@ func TestValidate(t *testing.T) {
 		info, err := os.Stat(dataDir)
 		require.NoError(t, err)
 		assert.True(t, info.IsDir())
+	})
+
+	t.Run("max_message_size zero is allowed", func(t *testing.T) {
+		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: 0}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("max_message_size below floor is rejected", func(t *testing.T) {
+		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: 1}
+		assert.Error(t, cfg.Validate())
+	})
+
+	t.Run("max_message_size above ceiling is rejected", func(t *testing.T) {
+		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: channelwire.MaxConfigurableMessageSize + 1}
+		assert.Error(t, cfg.Validate())
 	})
 }
 

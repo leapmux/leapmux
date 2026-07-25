@@ -67,6 +67,7 @@ leapmux solo [flags]
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
 | `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
+| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 | `-api-timeout-seconds` | `10` | General API timeout |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
@@ -123,6 +124,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 | `-api-timeout-seconds` | `10` | General API timeout |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
+| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 
 **Storage options**
 
@@ -176,6 +178,7 @@ leapmux worker -hub https://hub.example.com
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
+| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 | `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
 | `-api-timeout-seconds` | `10` | JSON-RPC request timeout |
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/leapmux/leapmux/channelwire"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -51,6 +52,7 @@ type Config struct {
 	APITimeoutSeconds            int           `koanf:"api_timeout_seconds"`
 	AgentStartupTimeoutSeconds   int           `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int           `koanf:"worktree_create_timeout_seconds"`
+	MaxMessageSize               int           `koanf:"max_message_size"`
 	SecureCookies                bool          `koanf:"secure_cookies"`
 	EncryptionKeyPath            string        `koanf:"encryption_key_path"`
 	Storage                      StorageConfig `koanf:"storage"`
@@ -285,6 +287,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"api-timeout-seconds", "api_timeout_seconds", "Timeout and limit options", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
 		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "Timeout and limit options", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
 		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "Timeout and limit options", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
+		{"max-message-size", "max_message_size", "Timeout and limit options", "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", nil, ptrconv.Ptr(0), nil},
 		// Storage configuration
 		{"storage-type", "storage.type", "Storage common options", "storage backend type (" + validStorageTypes + ")", ptrconv.Ptr(""), nil, nil},
 		// SQLite (default)
@@ -523,6 +526,9 @@ func (c *Config) Validate() error {
 	}
 	if c.EmailVerificationRequired && c.SmtpHost == "" {
 		return fmt.Errorf("smtp_host is required when email_verification_required is true")
+	}
+	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
+		return err
 	}
 
 	return nil

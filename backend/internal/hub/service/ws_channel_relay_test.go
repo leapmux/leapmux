@@ -355,7 +355,7 @@ func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
-	cm := channelmgr.New()
+	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
 	h := NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
 
@@ -383,7 +383,7 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 	_, cache := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
 	t.Cleanup(cache.Stop)
 
-	cm := channelmgr.New()
+	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
 	handler := NewChannelRelayHandler(st, wm, cm, cache, nil, false).
 		WithTokenValidator(tv)
@@ -451,7 +451,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
 
-	cm := channelmgr.New()
+	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
 	unscopedChannelID := id.Generate()
 	scopedChannelID := id.Generate()
@@ -518,13 +518,13 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 	}
 
 	t.Run("empty worker id is a no-op", func(t *testing.T) {
-		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(channelmgr.ChannelInfo{ChannelID: "ch"}, msg("ch"))
 		require.NoError(t, err)
 	})
 
 	t.Run("offline worker is terminal", func(t *testing.T) {
-		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: workermgr.New(workermgr.DenyAllReach()), channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "gone"}, msg("ch"))
 		require.ErrorIs(t, err, errTerminalChannelRelay)
@@ -537,7 +537,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 			got = append(got, m)
 			return nil
 		}})
-		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "w1"}, msg("ch"))
 		require.NoError(t, err)
@@ -551,7 +551,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
 			return errors.New("stream closed")
 		}})
-		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New()}
+		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "w1"}, msg("ch"))
 		require.ErrorIs(t, err, errTerminalChannelRelay)

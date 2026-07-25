@@ -70,13 +70,11 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, maxIncompleteChunked)
-	// The message-size ceiling is no longer a NewManager parameter -- it is a fixed
-	// protocol constant in production (channelwire.DefaultMaxMessageSize). Tests that
-	// exercise the size cap override the field directly, before any session is
-	// created, so both the sender and the reassembler pick it up.
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, maxIncompleteChunked)
+	// Tests that exercise the size cap inject a reassembled ceiling directly
+	// so both the sender and the reassembler pick it up at HandleOpen.
 	if maxMessageSize > 0 {
-		mgr.maxMessageSize = maxMessageSize
+		mgr.reassembledOverride = maxMessageSize
 	}
 	return mgr, ck, sender
 }
@@ -97,16 +95,220 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 		ChannelId:        channelID,
 		UserId:           userID,
 		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
 	})
 	require.Empty(t, resp.GetError(), "handshake should succeed")
 	require.NotEmpty(t, resp.GetHandshakePayload())
 	assert.Equal(t, channelID, resp.GetChannelId())
+	assert.Equal(t, uint64(channelwire.MaxMessageSize), resp.GetMaxMessageSize(),
+		"worker must echo the effective max_message_size")
 
 	// Initiator completes handshake.
 	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, resp.GetHandshakePayload(), slhdsaPub)
 	require.NoError(t, err)
 
 	return initiatorSession
+}
+
+func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	sender := newCollectSender()
+
+	const workerMax = 2 * 1024 * 1024
+	const hubMax = 4 * 1024 * 1024
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-min",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(hubMax),
+	})
+	require.Empty(t, resp.GetError())
+	assert.Equal(t, uint64(workerMax), resp.GetMaxMessageSize(),
+		"effective must be min(hub=%d, worker=%d)", hubMax, workerMax)
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-min"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	assert.Equal(t, channelwire.MaxReassembledMessageSize(workerMax), sess.sender.maxReassembled)
+	assert.Equal(t, workerMax, sess.sender.maxPayload)
+}
+
+func TestHandleOpen_TakesHubWhenHubSmallerThanWorker(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	sender := newCollectSender()
+
+	const workerMax = 4 * 1024 * 1024
+	const hubMax = 2 * 1024 * 1024
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-hub-wins",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(hubMax),
+	})
+	require.Empty(t, resp.GetError())
+	assert.Equal(t, uint64(hubMax), resp.GetMaxMessageSize(),
+		"effective must be min(hub=%d, worker=%d)", hubMax, workerMax)
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-hub-wins"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	want := channelwire.MaxReassembledMessageSize(hubMax)
+	assert.Equal(t, want, sess.sender.maxReassembled)
+	assert.Equal(t, hubMax, sess.sender.maxPayload)
+	assert.Equal(t, want, sess.reassembly.maxMessageSize)
+}
+
+func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	sender := newCollectSender()
+
+	const workerMax = 4 * 1024 * 1024
+	const hubMax = 2 * 1024 * 1024
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+	var seenID string
+	var seen int
+	mgr.SetOnNegotiatedMaxMessageSize(func(channelID string, n int) {
+		seenID = channelID
+		seen = n
+	})
+
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-notify",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(hubMax),
+	})
+	require.Empty(t, resp.GetError())
+	assert.Equal(t, "ch-notify", seenID)
+	assert.Equal(t, hubMax, seen, "callback must receive min(hub, worker)")
+
+	var released string
+	mgr.SetOnReleasedMaxMessageSize(func(channelID string) { released = channelID })
+	mgr.HandleClose("ch-notify")
+	assert.Equal(t, "ch-notify", released)
+}
+
+func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
+	mgr, ck, _ := setupTestManagerWith(t, 100, 0)
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-tiny",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+	})
+	require.Empty(t, resp.GetError())
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-tiny"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	assert.Equal(t, 100, sess.sender.maxReassembled)
+	assert.Equal(t, 100, sess.sender.MaxPayloadBudget(),
+		"MaxPayloadBudget must not exceed a tiny reassembledOverride")
+}
+
+func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
+	mgr, ck, _ := setupTestManager(t)
+	var perID int
+	var allCalls int
+	mgr.SetOnReleasedMaxMessageSize(func(string) { perID++ })
+	mgr.SetOnReleasedAllMaxMessageSizes(func() { allCalls++ })
+
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	for _, id := range []string{"ch-a", "ch-b"} {
+		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+			ChannelId:        id,
+			UserId:           "user-1",
+			HandshakePayload: msg1,
+			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		})
+		require.Empty(t, resp.GetError())
+		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+		require.NoError(t, err)
+	}
+
+	mgr.CloseAll()
+	assert.Equal(t, 1, allCalls, "CloseAll must clear budgets once via the all-callback")
+	assert.Zero(t, perID, "CloseAll must not also walk per-id Release when all-callback is set")
+}
+
+func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
+	mgr, ck, _ := setupTestManager(t)
+	var released []string
+	mgr.SetOnReleasedMaxMessageSize(func(id string) { released = append(released, id) })
+
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	for _, id := range []string{"ch-a", "ch-b"} {
+		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+			ChannelId:        id,
+			UserId:           "user-1",
+			HandshakePayload: msg1,
+			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		})
+		require.Empty(t, resp.GetError())
+		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+		require.NoError(t, err)
+	}
+
+	mgr.CloseAll()
+	assert.ElementsMatch(t, []string{"ch-a", "ch-b"}, released,
+		"CloseAll without the all-callback must Release each open channel id")
+}
+
+func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
+	mgr, ck, _ := setupTestManager(t)
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	t.Run("below floor", func(t *testing.T) {
+		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+			ChannelId:        "ch-bad-max-low",
+			UserId:           "user-1",
+			HandshakePayload: msg1,
+			MaxMessageSize:   1,
+		})
+		assert.NotEmpty(t, resp.GetError())
+		assert.Contains(t, resp.GetError(), "max_message_size")
+		assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE, resp.GetErrorCode())
+		mgr.mu.RLock()
+		_, exists := mgr.sessions["ch-bad-max-low"]
+		mgr.mu.RUnlock()
+		assert.False(t, exists)
+	})
+
+	t.Run("above ceiling", func(t *testing.T) {
+		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+			ChannelId:        "ch-bad-max-high",
+			UserId:           "user-1",
+			HandshakePayload: msg1,
+			MaxMessageSize:   uint64(channelwire.MaxConfigurableMessageSize + 1),
+		})
+		assert.NotEmpty(t, resp.GetError())
+		assert.Contains(t, resp.GetError(), "max_message_size")
+		assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE, resp.GetErrorCode())
+		mgr.mu.RLock()
+		_, exists := mgr.sessions["ch-bad-max-high"]
+		mgr.mu.RUnlock()
+		assert.False(t, exists)
+	})
 }
 
 // sendRequest sends an InnerRpcRequest wrapped in InnerMessage via the encrypted channel.
@@ -254,7 +456,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	require.NoError(t, err)
 	sender := newCollectSender()
 	var closeCallbackCount int
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
 	mgr.SetOnChannelClose(func(id string) {
 		_ = id
 		closeCallbackCount++
@@ -278,9 +480,11 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 		ChannelId:        "ch-reuse",
 		UserId:           "user-1",
 		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
 	})
 	assert.NotEmpty(t, resp.GetError(), "re-open must return an error response")
 	assert.Contains(t, resp.GetError(), "already active")
+	assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE, resp.GetErrorCode())
 
 	// Prior session is intact: ctx still live, still in the map, and the
 	// close callback did NOT fire (rejection doesn't tear down OLD).
@@ -315,6 +519,7 @@ func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
 	})
 	assert.NotEmpty(t, resp.GetError(), "an open naming no user must be refused")
 	assert.Contains(t, resp.GetError(), "no authenticated user id")
+	assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_NO_AUTHENTICATED_USER, resp.GetErrorCode())
 	assert.Equal(t, "ch-anon", resp.GetChannelId())
 
 	mgr.mu.RLock()
@@ -330,8 +535,11 @@ func TestHandleOpen_BadHandshake(t *testing.T) {
 		ChannelId:        "ch-bad",
 		UserId:           "user-1",
 		HandshakePayload: []byte("not a valid handshake message"),
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
 	})
 	assert.NotEmpty(t, resp.GetError())
+	assert.Contains(t, resp.GetError(), "handshake failed")
+	assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED, resp.GetErrorCode())
 	assert.Equal(t, "ch-bad", resp.GetChannelId())
 
 	// Session should not have been registered.
@@ -711,7 +919,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, nil, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, nil, 0, 0)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -1368,7 +1576,7 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	var closedMu sync.Mutex
 	var closedChannels []string
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
 	mgr.SetOnChannelClose(func(channelID string) {
 		closedMu.Lock()
 		closedChannels = append(closedChannels, channelID)
@@ -1554,7 +1762,7 @@ func TestSendEncrypted_OversizedMessageIsRejectedNotFatal(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         collector.send,
-		maxMessageSize: 8, // smaller than any real envelope
+		maxReassembled: 8, // smaller than any real envelope
 	}
 
 	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: []byte("a larger payload than the cap")})
@@ -1576,7 +1784,7 @@ func TestSendEncrypted_WithinCapDoesNotReportRejection(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         collector.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: []byte("ok")})
@@ -1604,16 +1812,16 @@ func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         collector.send,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 	}
 
 	// Exactly the ceiling a producer is allowed to emit.
 	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{
-		Payload: make([]byte, channelwire.MaxInnerPayloadBytes),
+		Payload: make([]byte, channelwire.MaxMessageSize),
 	})
 
 	require.NoError(t, err,
-		"a payload at MaxInnerPayloadBytes must fit once the envelopes are added")
+		"a payload at MaxMessageSize must fit once the envelopes are added")
 	assert.NotEmpty(t, collector.messages(), "and must actually reach the transport")
 }
 
@@ -1649,7 +1857,7 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 		channelID:      "ch-overtake",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
@@ -1738,7 +1946,7 @@ func TestChannelSenderConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
 		channelID:      "ch-more",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
@@ -1776,7 +1984,7 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 		channelID:      "ch-life",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxMessageSize: channelwire.DefaultMaxMessageSize,
+		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
@@ -1832,6 +2040,7 @@ func (w *queueTrackingWriter) SendError(int32, string) error {
 }
 func (w *queueTrackingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error { return nil }
 func (*queueTrackingWriter) ChannelID() string                                { return "" }
+func (*queueTrackingWriter) MaxPayloadBudget() int                            { return 0 }
 func (w *queueTrackingWriter) QueueError(int32, string)                       { w.queued.Add(1) }
 
 // Decrypt-failure CLOSE must go through trySendFn BEFORE HandleClose tears the
@@ -1863,7 +2072,7 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 		order = append(order, "trySend")
 		mu.Unlock()
 		return true
-	}, 0)
+	}, 0, 0)
 	mgr.SetOnChannelClose(func(string) {
 		mu.Lock()
 		order = append(order, "handleClose")

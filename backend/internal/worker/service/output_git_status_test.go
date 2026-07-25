@@ -41,7 +41,8 @@ func (m *agentEventCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage) 
 	}
 	return nil
 }
-func (m *agentEventCapturingWriter) ChannelID() string { return m.channelID }
+func (m *agentEventCapturingWriter) ChannelID() string   { return m.channelID }
+func (*agentEventCapturingWriter) MaxPayloadBudget() int { return 0 }
 
 func (m *agentEventCapturingWriter) lastStatus() *leapmuxv1.AgentStatusChange {
 	m.mu.Lock()
