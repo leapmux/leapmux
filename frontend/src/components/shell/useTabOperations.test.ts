@@ -431,6 +431,30 @@ describe('useTabOperations', () => {
     })
   })
 
+  it('degraded close: error_hint surfaces a warn toast but the close still proceeds', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { tabStore, ops, handleAgentClose } = setup()
+        const tab = tabStore.state.tabs.find(t => t.id === 'agent-a')!
+        // Worker let the close proceed without a prompt only because git
+        // was unavailable — shouldPrompt is false but error_hint is set.
+        // The close must still win (KEEP), and the user must be warned.
+        mockInspectLastTabClose.mockResolvedValueOnce({
+          shouldPrompt: false,
+          errorHint: 'git state unavailable; closed without checking for uncommitted or unpushed changes',
+        })
+
+        await ops.handleTabClose(tab)
+
+        expect(mockShowWarnToast).toHaveBeenCalledWith('git state unavailable; closed without checking for uncommitted or unpushed changes')
+        expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.KEEP)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('rapid double-close dedupes during decide phase', async () => {
     await createRoot(async (dispose) => {
       try {

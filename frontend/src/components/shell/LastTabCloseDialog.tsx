@@ -5,6 +5,7 @@ import { Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
+import { showWarnToast } from '~/components/common/Toast'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
@@ -49,12 +50,22 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   // rejection from inspectLastTabClose would surface a misleading
   // "Failed to push branch" toast (via PushBranchButton's useDialogSubmit
   // onError) and skip the success toast. Treat the refresh as best-effort.
+  //
+  // A degraded refresh (worktree vanished, git broke) returns a response
+  // with shouldPrompt=false + errorHint instead of rejecting. The dialog
+  // stays open so the user still sees the pre-push branch state, but the
+  // post-push safety check was skipped — surface the hint as a warn toast
+  // so the user isn't silently left looking at stale state. Mirrors
+  // useTabOperations.handleTabClose's error_hint handling.
   const refreshStatus = async () => {
     try {
       const updated = await workerRpc.inspectLastTabClose(props.state.workerId, {
         tabType: props.state.tabType,
         tabId: props.state.tabId,
       })
+      if (updated.errorHint) {
+        showWarnToast(updated.errorHint)
+      }
       props.onStatusRefreshed?.(updated)
     }
     catch (err) {

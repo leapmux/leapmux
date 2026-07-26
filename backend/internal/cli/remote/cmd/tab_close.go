@@ -70,6 +70,7 @@ func RunTabClose(rawCtx any, args []string) error {
 		// side worktree state; file tabs skip both the inspect and the
 		// worker-close dispatch (they're path registrations, no PTY).
 		worktreeAction := wt.worktreeAction()
+		var inspectHint string
 		if tt != leapmuxv1.TabType_TAB_TYPE_FILE {
 			inspected, ierr := inspectLastTabCloseBest(ctx, c, got.WorkerID, tt, got.TabID)
 			if ierr != nil {
@@ -93,6 +94,10 @@ func RunTabClose(rawCtx any, args []string) error {
 					}
 				}
 			}
+			// Carry the degraded-close hint into the output so a CLI user
+			// sees the close proceeded without the git-state check (mirrors
+			// the frontend's warn toast on the same field).
+			inspectHint = inspected.GetErrorHint()
 		}
 
 		if err := cc.submitOps([]*leapmuxv1.OrgOp{opTombstoneTab(cc.bs, tt, got.TabID)}); err != nil {
@@ -114,6 +119,9 @@ func RunTabClose(rawCtx any, args []string) error {
 		}
 		if wt != closeWorktreeUnspecified {
 			out["worktree"] = string(wt)
+		}
+		if inspectHint != "" {
+			out["inspect_hint"] = inspectHint
 		}
 		if closeErr != nil {
 			out["worker_close_error"] = closeErr.Error()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -609,16 +610,40 @@ func (t *tabGitContext) commitDir() string {
 	return t.repoRoot
 }
 
+// resolveWorktreeBranchName re-derives the branch a worktree is currently
+// on (an external `git checkout` can drift it off the worktrees.branch_name
+// DB row) via a single rev-parse, falling back to the DB-row name on probe
+// failure. The fallback is safe here because inspectLastTabClose only
+// CARRIES the branch label in its response (as the close's branch_name
+// field, surfaced by the CLI output and the frontend dialog when it opens);
+// nothing destructive keys off it. The mutation helpers
+// (removeWorktreeFromDisk) still refuse the fallback because their
+// `git branch -D <stale>` would touch a real branch. `phase` labels the
+// slog.Warn so the fast- and slow-path probes are distinguishable in logs.
+func resolveWorktreeBranchName(ctx context.Context, wt db.Worktree, phase string) string {
+	branchName := wt.BranchName
+	info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath)
+	if infoErr == nil {
+		return branchOrShortSHA(info)
+	}
+	if !errors.Is(infoErr, errNotGitRepo) {
+		slog.Warn("inspectLastTabClose "+phase+": HEAD probe failed, falling back to DB-row branch name",
+			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", infoErr)
+	}
+	return branchName
+}
+
 func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	trace := func(phase string) { traceTabClosePhase("inspect", tabID, phase) }
 
 	// Fast path: the only reason to run the expensive git subprocesses
 	// (diffStatsForPath, pushStatusForPath) is to populate the dialog.
 	// If the tab count already tells us no dialog will be shown, we can
-	// answer from DB alone and skip every git call below.
+	// answer from the worktree DB row and skip the diff/push forks.
 	//
 	// - Worktree tab with siblings (CountWorktreeTabs > 1) → no prompt.
-	//   Answer entirely from the worktree DB row; don't touch git.
+	//   Answers from the DB row plus a single rev-parse for the branch
+	//   label (resolveWorktreeBranchName); diff/push are skipped.
 	// - Non-worktree tab with other tabs on the same branch (otherTabs
 	//   > 0) → no prompt. We still need the branch name to do the
 	//   sibling count, so loadTabGitContext still runs; but diff/push
@@ -633,35 +658,38 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	}); err == nil {
 		count, countErr := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
 		trace("worktree_count_done")
+		if countErr != nil {
+			// A transient DB error here drops the multi-tab fast path and
+			// falls through to the slow path, which re-derives the close
+			// decision from git (when the worktree dir is reachable) or
+			// short-circuits at the os.Stat check below (when it isn't).
+			// Log so the degradation is observable — every other tolerant
+			// branch in this function logs its fallback.
+			slog.Warn("inspectLastTabClose: CountWorktreeTabs failed; falling through to slow path",
+				"worktree_id", wt.ID, "error", countErr)
+		}
 		if countErr == nil && count > 1 {
 			// Sibling tabs still hold the worktree, so the close will
 			// not prompt. Re-probe HEAD before sending the response:
 			// the worktrees.branch_name row reflects whatever branch
 			// the worktree was created on, but an external `git
 			// checkout` (terminal, IDE, sibling agent) can change it,
-			// and the dialog-less CLI close inspector relies on this
-			// label to render its banner.
+			// and the CLI / frontend surface the returned branch_name
+			// in their close output even on a non-prompting close.
 			//
 			// Fall back to wt.BranchName on ANY queryGitPathInfo
 			// failure (not just errNotGitRepo): inspectLastTabClose's
-			// output is read-only — the response only RENDERS the
-			// branch name in the close-dialog; nothing destructive
-			// keys off it. A transient probe failure (slow disk,
-			// permission flicker, ctx-near-deadline) used to hard-
-			// block the close path with InternalError, leaving the
-			// user with "Worker is unreachable" toasts when a stale
-			// label would have been a far better UX. The mutation
-			// helpers (removeWorktreeFromDisk) STILL refuse the
-			// fallback because their `git branch -D <stale>` would
-			// touch a real branch; the display surface here doesn't.
-			branchName := wt.BranchName
-			info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath)
-			if infoErr == nil {
-				branchName = branchOrShortSHA(info)
-			} else if !errors.Is(infoErr, errNotGitRepo) {
-				slog.Warn("inspectLastTabClose fast-path: HEAD probe failed, falling back to DB-row branch name",
-					"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", infoErr)
-			}
+			// output is read-only — the response only carries the
+			// branch name as a label; nothing destructive keys off
+			// it. A transient probe failure (slow disk, permission
+			// flicker, ctx-near-deadline) used to hard-block the
+			// close path with InternalError, leaving the user with
+			// "Worker is unreachable" toasts when a stale label
+			// would have been a far better UX. The mutation helpers
+			// (removeWorktreeFromDisk) STILL refuse the fallback
+			// because their `git branch -D <stale>` would touch a
+			// real branch; the display surface here doesn't.
+			branchName := resolveWorktreeBranchName(ctx, wt, "fast-path")
 			trace("fast_path_taken")
 			return &leapmuxv1.InspectLastTabCloseResponse{
 				Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
@@ -672,29 +700,42 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 				BranchName:   branchName,
 			}, nil
 		}
+		// Slow path: this is the last tab on the worktree. If the
+		// worktree directory is unreachable — gone (another process, a
+		// manual `git worktree remove`, OS cleanup) OR inaccessible
+		// (EACCES/ENOTDIR on a path component) — there is nothing to
+		// snapshot, so allow the close without a prompt. Any stat error
+		// (not just os.IsNotExist) means `git -C <dir>` cannot run, and
+		// narrowing the check to IsNotExist let EACCES/ENOTDIR fall
+		// through to two deterministically-failing git forks downstream.
+		// This is DELIBERATELY BROADER than removeWorktreeFromDisk's
+		// "already gone" gate (worktree.go: os.IsNotExist → success):
+		// that mutation has already completed its git work by the time
+		// it checks, so IsNotExist is the only "nothing left to do"
+		// signal it needs; this inspect path still has two git forks
+		// ahead of it, so any stat error git cannot survive must short-
+		// circuit. The user is warned via error_hint that the git-state
+		// check was skipped, so real repo trouble is still surfaced
+		// (not just logged server-side).
+		if _, statErr := os.Stat(wt.WorktreePath); statErr != nil {
+			slog.Warn("inspectLastTabClose slow-path: worktree directory unreachable; closing without prompt",
+				"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", statErr)
+			trace("worktree_dir_missing")
+			return &leapmuxv1.InspectLastTabCloseResponse{
+				Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+				RepoRoot:   wt.RepoRoot,
+				BranchName: wt.BranchName,
+				ErrorHint:  "worktree directory is gone or inaccessible; closed without checking for uncommitted changes",
+			}, nil
+		}
 		// The worktree DB row carries RepoRoot / WorktreePath which a
 		// `git checkout` can't change. BranchName, however, can drift
 		// (see comment above), so re-derive it from a single rev-parse
 		// before populating tabCtx. The remaining work skipped vs.
 		// loadTabGitContext is GetWorktreeByPath (DB) and an additional
 		// queryGitPathInfo call's worktree-disposition derivation.
-		//
-		// On probe failure, fall back to wt.BranchName + log: this
-		// path also drives display-side rendering (the prompt dialog
-		// shows the branch label), not destructive action. The
-		// stale-name hazard only matters for mutating helpers
-		// (removeWorktreeFromDisk) which now correctly refuse the
-		// fallback. Hard-blocking the inspect on a transient probe
-		// error used to surface as "Worker unreachable" — a stale
-		// label is the lesser evil.
-		branchName := wt.BranchName
-		info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath)
-		if infoErr == nil {
-			branchName = branchOrShortSHA(info)
-		} else if !errors.Is(infoErr, errNotGitRepo) {
-			slog.Warn("inspectLastTabClose slow-path: HEAD probe failed, falling back to DB-row branch name",
-				"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", infoErr)
-		}
+		// Probe-failure fallback rationale lives on resolveWorktreeBranchName.
+		branchName := resolveWorktreeBranchName(ctx, wt, "slow-path")
 		tabCtx = &tabGitContext{
 			workingDir:   wt.WorktreePath,
 			repoRoot:     wt.RepoRoot,
@@ -710,10 +751,25 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID)
 		trace("git_ctx_done")
 		if err != nil {
-			// If the tab's working directory is not (or no longer) a git repository,
-			// there is nothing to prompt about — allow the tab to close normally.
+			// Non-worktree tab whose working dir is not (or no longer)
+			// readable as a git repository. Per "close always wins" we
+			// proceed without a prompt — but this is a degraded close:
+			// the safety dialog (whose sole determinant is the snapshot
+			// we'd run below) is skipped, so the user would silently lose
+			// the uncommitted/unpushed-work warning. Surface an error_hint
+			// so the frontend warns them, matching the os.Stat and
+			// snapshot-failure degraded branches above/below. (loadTabGitContext
+			// collapses both errNotGitRepo and transient probe failures to
+			// this single error; we can't distinguish here, so the hint
+			// covers both. pushBranch — the other loadTabGitContext caller —
+			// is not close-blocking and still returns this error as-is.)
+			workingDir, _ := svc.getTabWorkingDir(ctx, tabType, tabID)
+			slog.Warn("inspectLastTabClose: loadTabGitContext failed; closing without prompt",
+				"tab_type", tabType, "tab_id", tabID, "working_dir", workingDir, "error", err)
+			trace("git_ctx_failed")
 			return &leapmuxv1.InspectLastTabCloseResponse{
-				Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+				Target:    leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+				ErrorHint: "working directory is not readable as a git repository; closed without checking for uncommitted changes",
 			}, nil
 		}
 		tabCtx = loaded
@@ -732,17 +788,86 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, tabCtx.repoRoot, tabCtx.branchName)
 		trace("branch_count_done")
 		if err != nil {
-			return nil, err
-		}
-		if hasOther {
+			// This sibling-count scan used to hard-block the close
+			// (return nil, err → Internal → "Failed to prepare tab
+			// close"), which was inconsistent with the snapshot probe
+			// right below: a flaky sibling count blocked the close
+			// while a flaky snapshot let it through. Under the "close
+			// always wins" policy, fall through to the snapshot and
+			// let IT decide (the snapshot also degrades gracefully on
+			// its own git failures). The only error this scan surfaces
+			// is a collectTabDirs DB-query failure — per-dir rev-parse
+			// probe errors are dropped inside scan (it returns the
+			// hit/miss verdict, not the error) — so this log fires on
+			// DB trouble, not on a sibling's broken working dir (which
+			// resolves to a clean "no match" and never reaches here).
+			slog.Warn("inspectLastTabClose: sibling-count scan failed; falling through to snapshot",
+				"tab_type", tabType, "tab_id", tabID, "repo_root", tabCtx.repoRoot, "branch", tabCtx.branchName, "error", err)
+		} else if hasOther {
 			trace("fast_path_taken")
 			return resp, nil
 		}
 	}
 
-	snap, err := gatherBranchSnapshot(ctx, tabCtx.commitDir(), tabCtx.branchName)
+	// Fail-fast on a cancelled/deadlined ctx before forking the snapshot's
+	// two git subprocesses: resolveWorktreeBranchName / loadTabGitContext
+	// above log-and-swallow probe errors (including ctx errors) to preserve
+	// "close always wins", so a cancelled ctx would otherwise reach here and
+	// pay for diff+push forks that are guaranteed to fail on the same ctx.
+	// Degrade to a no-prompt response with a hint instead. ctx.Err()==nil
+	// is the normal path and skips this block entirely.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		slog.Warn("inspectLastTabClose: ctx cancelled before snapshot; closing without prompt",
+			"tab_type", tabType, "tab_id", tabID, "error", ctxErr)
+		trace("ctx_cancelled")
+		resp.ErrorHint = "close request was cancelled; closed without checking for uncommitted or unpushed changes"
+		return resp, nil
+	}
+
+	snap, pushErr, err := gatherCloseSnapshot(ctx, tabCtx.commitDir(), tabCtx.branchName)
 	if err != nil {
-		return nil, err
+		// The snapshot populates the confirmation dialog (diff stats,
+		// unpushed commit count) AND, for non-worktree last-tab closes,
+		// is the sole determinant of whether to prompt at all (lines
+		// below: should_prompt is set from snap.hasChanges / Unpushed /
+		// RemoteMissing). If the DIFF half of the snapshot failed here
+		// — corrupt repo, a transient .git/index.lock race, a
+		// dubious-ownership rejection that rev-parse tolerated but
+		// `git status` rejected, a gitReadTimeout deadline on a large
+		// diff, or a vanished working tree that slipped past the os.Stat
+		// check above — we skip the prompt rather than block the close:
+		// the user's ability to close takes priority. But because
+		// skipping can hide real uncommitted work, surface an error_hint
+		// so the frontend warns the user (toast) that the check was
+		// skipped, instead of closing silently. The underlying error is
+		// also slog.Warn'd for server-side observability. (A push-only
+		// failure does NOT reach here: gatherCloseSnapshot keeps the
+		// diff result in that case and returns pushErr separately, so
+		// the uncommitted-work warning survives a flaky origin.)
+		slog.Warn("inspectLastTabClose: git snapshot failed; closing without prompt",
+			"tab_type", tabType, "tab_id", tabID,
+			"commit_dir", tabCtx.commitDir(), "branch", tabCtx.branchName, "error", err)
+		trace("snapshot_failed")
+		// Surface the underlying git diagnostic (gitutil.Output already
+		// folds git's stderr into the error message) so the user can act
+		// on the real cause — e.g. dubious-ownership points at the
+		// `safe.directory` fix. Mirrors GetGitInfo's error_hint pattern.
+		// Cap the length so a noisy multi-line stderr stays toast-readable.
+		detail := truncateGitHint(err.Error(), maxDegradedHintDetail)
+		resp.ErrorHint = "git state unavailable; closed without checking for uncommitted or unpushed changes" + detail
+		return resp, nil
+	}
+	if pushErr != nil {
+		// Diff succeeded but push status failed (e.g. a flaky origin, a
+		// transient `git config` read). The uncommitted-work signal — the
+		// higher-value part of the dialog — is intact, so do NOT degrade
+		// the close: keep the snapshot and let shouldPrompt reflect
+		// hasChanges. Log so the skipped unpushed-commit count is
+		// observable server-side; the dialog simply renders 0 unpushed.
+		slog.Warn("inspectLastTabClose: push-status probe failed; keeping diff-driven snapshot",
+			"tab_type", tabType, "tab_id", tabID,
+			"commit_dir", tabCtx.commitDir(), "branch", tabCtx.branchName, "error", pushErr)
+		trace("push_status_failed")
 	}
 	// Single emission covers both parallel calls completing — their
 	// individual timestamps are no longer meaningful once they race.
@@ -1068,6 +1193,33 @@ type branchSnapshot struct {
 	push          pushStatus
 }
 
+// maxDegradedHintDetail caps how much of the underlying git error is appended
+// to a degraded-close error_hint. gitutil.Output folds git's entire trimmed
+// stderr into the error string, which for some failures (a corrupt index, a
+// multi-ref dubious-ownership dump) can be many lines — a warn toast is the
+// wrong surface for a wall of text. The cap keeps the actionable prefix
+// (e.g. "fatal: detected dubious ownership ...") while letting the full
+// diagnostic live in the slog.Warn above for server-side triage.
+const maxDegradedHintDetail = 160
+
+// truncateGitHint renders the appended-detail suffix for a degraded-close
+// error_hint: `: <detail>` when non-empty and within the cap, `: <truncated>`
+// when over, or "" when there is nothing useful to surface. It trims only the
+// first line of a multi-line git stderr so the hint stays a single toast line.
+func truncateGitHint(detail string, cap int) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	if i := strings.IndexByte(detail, '\n'); i >= 0 {
+		detail = detail[:i]
+	}
+	if len(detail) > cap {
+		detail = detail[:cap-1] + "…"
+	}
+	return ": " + detail
+}
+
 // toProto projects the snapshot onto the shared BranchGitState submessage
 // that both InspectLastTabClose and InspectBranchDeletion responses embed.
 func (s branchSnapshot) toProto(branchName string) *leapmuxv1.BranchGitState {
@@ -1110,6 +1262,51 @@ func gatherBranchSnapshot(ctx context.Context, statsPath, branchName string) (br
 		return snap, err
 	}
 	return snap, nil
+}
+
+// gatherCloseSnapshot is the close-path variant of gatherBranchSnapshot: it
+// runs diff and push concurrently but returns their errors INDEPENDENTLY
+// rather than failing the whole group on either error. The close path's
+// "close always wins, but warn" policy wants the higher-value signal (diff /
+// uncommitted-work) to survive a push-only failure (e.g. a flaky origin),
+// instead of degrading the whole dialog and hiding the uncommitted-work
+// warning along with the unpushed-commit count.
+//
+// Returns:
+//   - snap: always populated up to whichever halves succeeded.
+//   - pushErr: non-nil iff push failed (snap.diff*/hasChanges are valid).
+//   - err: non-nil iff DIFF failed — the caller's hard-degrade trigger,
+//     because a failed diff means the uncommitted-work signal itself is
+//     gone and the close must warn. A push-only failure (err == nil,
+//     pushErr != nil) is recoverable: the caller keeps the diff-driven
+//     snapshot and only logs.
+//
+// gatherBranchSnapshot (used by inspectBranchDeletion, where a dialog is
+// always shown and real errors stay actionable) keeps the all-or-nothing
+// contract; only the close path needs the partial-success semantics.
+func gatherCloseSnapshot(ctx context.Context, statsPath, branchName string) (snap branchSnapshot, pushErr error, err error) {
+	g, gctx := errgroup.WithContext(ctx)
+	var diffErr error
+	g.Go(func() error {
+		a, d, u, hc, e := diffStatsForPath(gctx, statsPath)
+		diffErr = e
+		snap.diffAdded, snap.diffDeleted, snap.diffUntracked, snap.hasChanges = a, d, u, hc
+		return nil
+	})
+	g.Go(func() error {
+		ps, e := pushStatusForPath(gctx, statsPath, branchName)
+		if e != nil {
+			pushErr = fmt.Errorf("failed to inspect push status: %w", e)
+			return nil
+		}
+		snap.push = ps
+		return nil
+	})
+	_ = g.Wait()
+	if diffErr != nil {
+		return snap, pushErr, fmt.Errorf("failed to inspect diff stats: %w", diffErr)
+	}
+	return snap, pushErr, nil
 }
 
 // checkoutBranchInDir runs `git checkout <branch>` (or

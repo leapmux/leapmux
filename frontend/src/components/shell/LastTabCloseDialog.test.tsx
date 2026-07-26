@@ -342,6 +342,29 @@ describe('lastTabCloseDialog', () => {
     expect(onStatusRefreshed).not.toHaveBeenCalled()
   })
 
+  it('post-push degraded refresh: error_hint surfaces a warn toast, parent still notified', async () => {
+    // The push succeeded, but the re-probe hit a degraded state (worktree
+    // vanished mid-push, transient git failure) — inspect returns a
+    // response (not a rejection) with shouldPrompt=false + errorHint. The
+    // dialog stays open showing the pre-push state, but the post-push
+    // safety check was skipped, so the user must be warned (mirrors
+    // useTabOperations.handleTabClose's error_hint handling). The parent
+    // is still notified so it can merge the refreshed (degraded) status.
+    const { showWarnToast } = await import('~/components/common/Toast')
+    const degraded = makeState({ shouldPrompt: false, errorHint: 'git state unavailable; closed without checking for uncommitted or unpushed changes' })
+    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerRpc.inspectLastTabClose).mockResolvedValueOnce(degraded as never)
+    const onStatusRefreshed = vi.fn<(s: InspectLastTabCloseResponse) => void>()
+    renderDialog(makeState({ canPush: true, unpushedCommitCount: 1 }), vi.fn(), onStatusRefreshed)
+    fireEvent.click(screen.getByRole('button', { name: 'Push' }))
+    await waitFor(() => {
+      expect(showWarnToast).toHaveBeenCalledWith('git state unavailable; closed without checking for uncommitted or unpushed changes')
+    })
+    // The refresh resolved (did not reject), so the parent is notified —
+    // unlike the rejection case above, a degraded response is real data.
+    expect(onStatusRefreshed).toHaveBeenCalledWith(degraded)
+  })
+
   it('renders both uncommitted-change and unpushed-commit lines when both apply', () => {
     renderDialog(makeState({
       hasUncommittedChanges: true,
