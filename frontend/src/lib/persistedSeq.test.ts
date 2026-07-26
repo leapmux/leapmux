@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_ORG_EVENTS_RELAY_SEQ, localStorageGet } from './browserStorage'
+import { KEY_CHANNEL_RELAY_SEQ, KEY_ORG_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -51,8 +51,9 @@ describe('createPersistedSeq', () => {
     const first = next()
     const second = next()
 
-    // The mark increments by 1 and is what storage holds.
-    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBeGreaterThan(0)
+    // A fresh install seeds the mark from 0, then ++ on each call, so after two
+    // allocations the persisted mark is exactly 2.
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(2)
     // Consecutive ids from one allocator advance by a constant stride (the low
     // bits are fixed per allocator; the high mark advances by 1).
     expect(second).toBeGreaterThan(first)
@@ -63,6 +64,21 @@ describe('createPersistedSeq', () => {
     // Same low bits across consecutive allocations within one allocator. Modulo,
     // not &, because the id exceeds 32 bits and JS bitwise ops truncate.
     expect(first % stride).toBe(second % stride)
+  })
+
+  // The counter continues from EXACTLY the persisted mark (then +1), not "some
+  // value above it" -- the sidecar's strict-greater owner fence requires the
+  // reload's first id to land above the stale owner, and a value that merely
+  // exceeded the mark by an unspecified amount would not pin that property to
+  // the mark itself.
+  it('continues from exactly the persisted mark on the first call', () => {
+    installCryptoMock()
+    const persistedMark = 42
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, persistedMark)
+    const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+    next()
+    // The persisted mark was honored as-is and advanced by exactly 1.
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(persistedMark + 1)
   })
 
   it('keeps sequences over different keys independent', () => {
@@ -95,11 +111,8 @@ describe('createPersistedSeq', () => {
     // Pre-seed the mark so both allocators read the same starting value,
     // simulating two processes that share localStorage and read the same mark
     // before either has written.
-    const sharedMark = Date.now()
-    const writeShared = () => localStorage.setItem(
-      `leapmux:${KEY_CHANNEL_RELAY_SEQ}`,
-      JSON.stringify({ v: sharedMark, e: Date.now() + 86_400_000 }),
-    )
+    const sharedMark = 1_000_000
+    const writeShared = () => localStorageSet(KEY_CHANNEL_RELAY_SEQ, sharedMark)
     writeShared()
 
     installCryptoMock()
@@ -117,8 +130,9 @@ describe('createPersistedSeq', () => {
     expect(a).not.toBe(b)
     // Both ids are above the shared mark (each process incremented it by 1),
     // and they differ in the low bits -- the per-process differentiator that
-    // breaks the cross-process collision. Modulo (not &) because the id
-    // exceeds 32 bits.
+    // breaks the cross-process collision. The composed id = mark * stride +
+    // random; with mark = sharedMark + 1 it is strictly greater than the mark
+    // for any TAB_BITS >= 1.
     expect(a).toBeGreaterThan(sharedMark)
     expect(b).toBeGreaterThan(sharedMark)
     // Derive the stride from a single allocator's two consecutive ids.
@@ -149,71 +163,86 @@ describe('createPersistedSeq', () => {
     expect(id3).toBeGreaterThan(id1)
   })
 
-  // A NaN reaching the persisted mark (a corrupted or hand-edited storage value,
-  // or any future caller that computes the seed arithmetically) must NOT poison
-  // the sequence: Math.max(epochClock(), NaN) === NaN, and once the mark is NaN
-  // every later mark++ stays NaN for the install's life. The relay owner-fence
-  // (claimId > ownerId) is always false against NaN, so every open would refuse
-  // itself until the key is cleared. Number.isFinite rejects NaN so the seed
-  // falls back to the (epoch-anchored) clock instead.
-  it('rejects a NaN persisted mark and falls back to the clock', () => {
+  // A corrupted persisted value must NOT poison the sequence: mark = NaN; mark++
+  // stays NaN for the install's life, and the relay owner-fence (claimId >
+  // ownerId) is always false against NaN, so every open would refuse itself until
+  // the key was cleared. localStorageGet unwraps the `{v, e}` cell via JSON.parse,
+  // and JSON has no NaN/Infinity literal -- a stored NaN/Infinity surfaces as
+  // `null`, which the `typeof persisted === 'number'` guard rejects. The values
+  // that CAN reach the validation predicate are real numbers that fail
+  // Number.isSafeInteger (negative, fractional, beyond MAX_SAFE_INTEGER) or fail
+  // the composition bound (above MARK_LIMIT); the table below covers each, and the
+  // null/NaN-arrival case is pinned separately. Anything rejected re-seeds from 0.
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['a non-integer beyond MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER + 1],
+    ['above the composition ceiling (MARK_LIMIT + 1)', 2_199_023_255_552],
+  ])('rejects a %s persisted mark and re-seeds from 0', (_label, corrupted) => {
     installCryptoMock()
-    localStorage.setItem(
-      `leapmux:${KEY_CHANNEL_RELAY_SEQ}`,
-      JSON.stringify({ v: Number.NaN, e: Date.now() + 86_400_000 }),
-    )
+    // localStorageSet (not raw setItem): every value here round-trips through
+    // JSON faithfully (none are NaN/Infinity), so the helper is the correct
+    // production path to exercise. The repo's browser-storage rule routes
+    // writes through it, and the {v, e} wrapper it produces is what readDynamic
+    // unwraps on the next read.
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, corrupted)
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()
-    // The NaN was rejected: the id is a finite, positive, exact integer rather
-    // than NaN. (The mark is epoch-anchored, so it is far below the raw wall
-    // clock -- the assertion is finiteness/positivity, not a clock comparison.)
+    // The corrupted value was rejected; the mark starts at 0 and the first id
+    // is exactly 1 * stride + (per-process random low bits).
     expect(Number.isSafeInteger(first)).toBe(true)
     expect(first).toBeGreaterThan(0)
-    // The poisoned value is overwritten with a finite, positive mark on the first call.
-    const persisted = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
-    expect(Number.isFinite(persisted)).toBe(true)
-    expect(persisted!).toBeGreaterThan(0)
+    const mark = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
+    expect(mark).toBe(1)
   })
 
-  // The id must stay under Number.MAX_SAFE_INTEGER so it serializes through
-  // Tauri IPC and the Rust u64 exactly. A mark that would overflow once shifted
-  // into the high bits is re-seeded from the clock.
-  it('keeps ids below Number.MAX_SAFE_INTEGER even with a large persisted mark', () => {
+  // A stored NaN/Infinity (or any value JSON coerces to null) reaches the
+  // allocator as `null`, not as the original value -- JSON has no NaN/Infinity
+  // literal, so JSON.stringify({v: NaN}) writes `{"v":null}`. The allocator must
+  // reject `null` (via `typeof === 'number'`) exactly as it rejects a non-number,
+  // re-seeding from 0. This pins the arrival-as-null reality the JSON path
+  // produces, distinct from the real-number corruptions above.
+  it('rejects a NaN that JSON coerced to null and re-seeds from 0', () => {
     installCryptoMock()
-    // A persisted mark at the very top of the range -- larger than fits under
-    // MAX_SAFE_INTEGER once shifted -- must be re-seeded rather than producing
-    // an overflowing id.
-    const oversized = Number.MAX_SAFE_INTEGER
-    localStorage.setItem(
-      `leapmux:${KEY_CHANNEL_RELAY_SEQ}`,
-      JSON.stringify({ v: oversized, e: Date.now() + 86_400_000 }),
-    )
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.NaN)
+    // Sanity-check the arrival path the test depends on: JSON serialized NaN
+    // to null, so the cell the allocator reads holds null, not NaN. (KEY_*
+    // already carries the `leapmux:` prefix, so read it verbatim.)
+    const raw = localStorage.getItem(KEY_CHANNEL_RELAY_SEQ)
+    expect(raw).toContain('"v":null')
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()
-    expect(first).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER)
     expect(Number.isSafeInteger(first)).toBe(true)
+    expect(first).toBeGreaterThan(0)
+    const persisted = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
+    expect(persisted).toBe(1)
   })
 
-  // The mark is seeded from an app-anchored clock (Date.now() - APP_EPOCH_MS), not
-  // the raw Unix-epoch millisecond. A raw Date.now() (~1.78e12 in 2026) sits close
-  // to MARK_LIMIT (~2.199e12) and crosses it around 2039, after which composed ids
-  // go inexact; the epoch anchoring keeps the mark far below MARK_LIMIT into the
-  // 2090s so the id stays an exact integer.
-  it('anchors the mark to the app epoch, keeping it well clear of the safe-integer ceiling', () => {
+  // The mark is a plain monotonic counter, NOT derived from the wall clock. This
+  // is the whole point of issue #298: a clock-seeded mark carries a finite
+  // horizon (it eventually crosses Number.MAX_SAFE_INTEGER once packed into the
+  // high bits), whereas a counter has no horizon. Pin the invariant so a future
+  // change cannot quietly reintroduce a clock dependency: with the clock mocked
+  // far below a persisted mark, the allocator still honors the persisted mark.
+  // (The allocator itself no longer calls Date.now, so the spy is a regression
+  // guard against re-introducing a clock seed, not a direct exercise of
+  // allocator code -- the `first > persistedMark` assertion is what pins the
+  // behavior, identical to the exact-continuation test above.)
+  it('does not seed from the wall clock', () => {
     installCryptoMock()
-    const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
-    const id = next()
-    const mark = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
-    expect(Number.isFinite(mark)).toBe(true)
-    // Epoch-anchored: the mark is strictly below the raw wall clock (a raw
-    // Date.now() seed would instead sit AT or above it). This is the headroom the
-    // anchoring buys.
-    expect(mark!).toBeGreaterThan(0)
-    expect(mark!).toBeLessThan(Date.now())
-    // MARK_LIMIT = floor(MAX_SAFE_INTEGER / (2^12)); the epoch-anchored mark sits
-    // far below it, so the composed id is exact.
-    const markLimit = Math.floor(Number.MAX_SAFE_INTEGER / 4096)
-    expect(mark!).toBeLessThan(markLimit)
-    expect(Number.isSafeInteger(id)).toBe(true)
+    const persistedMark = 1_000_000
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, persistedMark)
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1)
+    try {
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      const first = next()
+      // The persisted mark is honored (1_000_001 * stride), not the mocked
+      // Date.now()=1: the composed id is far above what a clock seed of 1
+      // could produce, regardless of TAB_BITS.
+      expect(first).toBeGreaterThan(persistedMark)
+    }
+    finally {
+      dateSpy.mockRestore()
+    }
   })
 })

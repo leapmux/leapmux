@@ -1,18 +1,14 @@
-// A persisted, clock-seeded, monotonic id sequence whose ids are also unique
-// across concurrent processes that share a sidecar.
+// A persisted, monotonic id sequence whose ids are also unique across concurrent
+// processes that share a sidecar.
 //
 // Both desktop relays (the channel relay via relayClaim, the org-events relay
 // via useOrgEvents) order their opens and closes by an id the Go sidecar
 // compares, and the sidecar OUTLIVES a webview reload: a per-load counter
 // would restart below the ids the previous page already handed out, and the
 // fresh page's open -- the one that must win -- would be refused by the
-// sidecar's owner fence as superseded. The wall clock alone is not monotonic
-// either: a backward step (NTP, a manual adjustment) between two page loads
-// would seed the fresh page BELOW the stale owner id the sidecar still holds,
-// and every open would refuse itself until the clock caught back up. The
-// persisted high-water mark keeps ids advancing through a regression; the
-// clock is the seed only when the mark is absent (first run, cleared storage)
-// or already behind it.
+// sidecar's owner fence as superseded. The persisted high-water mark keeps ids
+// advancing across reloads instead, so a fresh page's open always supersedes
+// the stale owner the sidecar still holds.
 //
 // Uniqueness across concurrent processes: the high-water mark is the ONLY
 // shared state, persisted to localStorage -- and localStorage is shared by
@@ -30,49 +26,43 @@
 // the per-process random makes the ids globally distinct anyway, which keeps
 // logs and any future shared state unambiguous.
 //
+// The mark is a plain monotonic counter, NOT the wall clock. A clock-seeded
+// mark carries a finite horizon -- the composed id packs mark * 2^TAB_BITS +
+// random into a JS number, which must stay <= Number.MAX_SAFE_INTEGER to
+// round-trip through Tauri IPC and the Rust u64 owner fence exactly, so a
+// clock value eventually crosses the ceiling and silently corrupts the fence.
+// A counter has no such horizon on its natural path: a fresh install starts at 1
+// and advances by one per allocation, leaving ~2^41 headroom (MARK_LIMIT) --
+// centuries at any realistic rate. A corrupted or hand-edited persisted value
+// CAN sit above MARK_LIMIT, so the validation below re-seeds from 0 when it
+// does; this closes the corruption class without reintroducing the clock. (The
+// sidecar's relay ids are uint64 on the wire; the JS-number ceiling is purely a
+// frontend concern.)
+//
 // One allocator serves both relays so a fix to the seeding rule cannot land on
 // one and silently miss the other; each caller keeps its own storage key and
 // therefore its own id space.
 
 import { localStorageGet, localStorageSet } from './browserStorage'
+import { createLogger } from './logger'
+
+const log = createLogger('persistedSeq')
 
 // TAB_BITS is the width of the per-process random low bits. The mark occupies
-// the remaining high bits and must stay below Number.MAX_SAFE_INTEGER once
-// shifted, so the mark's useful range is 2^(53 - TAB_BITS). 12 bits gives
-// 4096 distinct process fingerprints (birthday collision at ~75 concurrent
-// processes on one origin, far beyond any realistic desktop-app fan-out) while
-// leaving 41 bits for the mark -- enough for an epoch-anchored clock value
-// (see APP_EPOCH_MS) into the 2090s.
+// the remaining high bits. 12 bits gives 4096 distinct process fingerprints
+// (birthday collision at ~75 concurrent processes on one origin, far beyond any
+// realistic desktop-app fan-out).
 const TAB_BITS = 12
 const TAB_MASK = (1 << TAB_BITS) - 1
-// MARK_LIMIT is the largest mark that fits under MAX_SAFE_INTEGER once placed
-// in the high bits. Division, not >>, because the mark exceeds 32 bits and JS
-// bitwise ops truncate to Int32. A persisted mark above this (a stale value
-// from a prior scheme, or a corrupted cell) is re-seeded from the clock rather
-// than producing an id that overflows the exact-integer range.
+// MARK_LIMIT is the largest mark whose composed id `mark * (TAB_MASK + 1) +
+// processBits` still round-trips through Tauri IPC / the Rust u64 owner fence as
+// an exact integer (<= Number.MAX_SAFE_INTEGER). It is the composition ceiling,
+// NOT a clock horizon: a counter minted from 0 never approaches it (centuries of
+// headroom), but a corrupted or hand-edited persisted value can sit above it, so
+// the validation below re-seeds from 0 when it does. Coupled to TAB_MASK so a
+// future bump of TAB_BITS cannot silently shrink the mark headroom. Division, not
+// >>, because the operands exceed 32 bits and JS bitwise ops truncate to Int32.
 const MARK_LIMIT = Math.floor(Number.MAX_SAFE_INTEGER / (TAB_MASK + 1))
-
-// APP_EPOCH_MS anchors the mark's clock component to a fixed recent instant rather
-// than the Unix epoch, so `Date.now() - APP_EPOCH_MS` stays far below MARK_LIMIT for
-// decades longer. A raw Date.now() (ms since 1970) crosses MARK_LIMIT (~2.199e12)
-// around 2039 -- after which the overflow re-seed below can no longer bring the mark
-// back under the limit and composed ids go inexact -- whereas the epoch-relative
-// clock does not cross it until ~APP_EPOCH_MS + MARK_LIMIT, i.e. the 2090s. It must
-// never change once shipped (a change would shift every future clock-seeded mark);
-// the persisted high-water mark bridges the transition from any older scheme, since
-// a larger stale value is carried forward by the Math.max below.
-//
-// This is a horizon EXTENSION, not a fix: the 2090s ceiling is still finite. Replacing
-// the JS-number packing with an unbounded id (bigint / u64 end to end) so there is no
-// horizon and no APP_EPOCH_MS to maintain is tracked in
-// https://github.com/leapmux/leapmux/issues/298.
-const APP_EPOCH_MS = 1_735_689_600_000 // 2025-01-01T00:00:00Z
-
-// epochClock is the mark's clock component: milliseconds since APP_EPOCH_MS, floored
-// at 0 so a device clock set before the epoch cannot seed a negative mark.
-function epochClock(): number {
-  return Math.max(0, Date.now() - APP_EPOCH_MS)
-}
 
 // randomLowBits returns a uniformly random integer in [0, 2^TAB_BITS), sourced
 // from the platform CSPRNG when available. window.crypto.getRandomValues is
@@ -89,12 +79,12 @@ function randomLowBits(): number {
 }
 
 /**
- * Returns an allocator for `key`'s persisted monotonic sequence. The seed is
- * computed lazily on the first call (`max(epochClock(), persisted mark)`), and
- * every allocated id is persisted as the new high-water mark. The id carries a
- * per-process random in its low bits so two processes sharing the origin
- * (same localStorage) cannot mint the same id. The key must be registered in
- * browserStorage's TTL tables.
+ * Returns an allocator for `key`'s persisted monotonic sequence. The mark is
+ * seeded lazily from the persisted value on the first call, and every allocated
+ * id is persisted as the new high-water mark. The id carries a per-process
+ * random in its low bits so two processes sharing the origin (same localStorage)
+ * cannot mint the same id. The key must be registered in browserStorage's TTL
+ * tables.
  */
 export function createPersistedSeq(key: string): () => number {
   let mark: number | null = null
@@ -105,38 +95,47 @@ export function createPersistedSeq(key: string): () => number {
   return () => {
     if (mark === null) {
       const persisted = localStorageGet<number>(key)
-      // Number.isFinite rather than `typeof === 'number'`: NaN is typeof
-      // 'number', and once NaN reaches the seed (Math.max(Date.now(), NaN) ===
-      // NaN) every later mark++ stays NaN -- the allocator hands out NaN for
-      // the install's life, and the relay owner-fence (claimId > ownerId) is
-      // always false against NaN, so every open refuses itself until the key is
-      // manually cleared. A corrupted or hand-edited storage value, or any
-      // future caller that computes the seed arithmetically, could land NaN
-      // here; isFinite rejects NaN, Infinity, and non-numbers in one check.
-      // `typeof persisted === 'number'` narrows the number | undefined that
-      // localStorageGet returns to a number, and the isFinite check then rejects
-      // NaN (which is itself typeof 'number') per the hazard above -- so seed is
-      // always a real number and Math.max cannot produce NaN.
-      const seed = typeof persisted === 'number' && Number.isFinite(persisted) ? persisted : 0
-      mark = Math.max(epochClock(), seed)
-      // A persisted mark above MARK_LIMIT would overflow MAX_SAFE_INTEGER once
-      // shifted into the high bits. Re-seed from the epoch clock so the id stays
-      // within the exact-integer range the wire boundary requires. This path
-      // also reclaims the id space after a backward clock step that left a
-      // stale high-water mark above the current clock-derived ceiling.
-      if (mark > MARK_LIMIT) {
-        mark = epochClock()
-      }
+      // The seed must be (a) a real integer, not NaN/Infinity/a non-number, and
+      // (b) within the composition range so the id `mark * stride + processBits`
+      // stays an exact integer under MAX_SAFE_INTEGER. localStorageGet unwraps
+      // the `{v, e}` cell via JSON.parse, so NaN/Infinity cannot actually arrive
+      // (JSON has no such literals -- they surface as null, rejected by `typeof
+      // === 'number'`); but a fractional, negative, or oversized value can. Once
+      // a bad value reaches the mark it poisons the sequence for the install's
+      // life: NaN makes the relay owner-fence (claimId > ownerId) always false,
+      // so every open refuses itself; an oversized mark composes to an inexact
+      // id that corrupts the fence (see MARK_LIMIT). Number.isSafeInteger &&
+      // persisted >= 0 && persisted <= MARK_LIMIT rejects all of these, and the
+      // counter only ever advances forward from a sound base. (Note: `-0`
+      // satisfies all three -- `-0 === 0` -- but `-0 + 1 === 1` advances
+      // forward correctly, and the JSON path cannot deliver it anyway since
+      // JSON.stringify(-0) yields 0.) Anything rejected re-seeds from 0.
+      mark = typeof persisted === 'number'
+        && Number.isSafeInteger(persisted)
+        && persisted >= 0
+        && persisted <= MARK_LIMIT
+        ? persisted
+        : 0
     }
     mark++
     localStorageSet(key, mark)
+    // localStorageSet swallows write errors (e.g. quota exceeded) silently, so
+    // verify the mark landed: within this process the in-memory `mark` is
+    // authoritative and only advances, so the ids minted this session are
+    // correct regardless. The hazard is the NEXT reload, which reads the stale
+    // lower persisted value and could mint an id below the owner the still-live
+    // sidecar holds (the relay then refuses every open as superseded until an
+    // app restart). The old clock-seeded scheme masked this with a clock floor
+    // -- but at the cost of a clock-regression hole (a backward NTP step
+    // between reloads seeded below the stale owner), so re-introducing the
+    // clock is not a fix. Loud-logging makes the rare failure diagnosable.
+    if (localStorageGet<number>(key) !== mark) {
+      log.warn('relay-seq mark did not persist; reload after this session may wedge the relay until restart', { key })
+    }
     // High bits = monotonic mark (reload-safe, shared across processes via
     // localStorage); low bits = per-process random (distinguishes concurrent
     // processes that read the same mark). Multiplication, not <<, because the
-    // mark exceeds 32 bits and JS bitwise ops truncate to Int32. The result fits
-    // under Number.MAX_SAFE_INTEGER while mark <= MARK_LIMIT, which the
-    // epoch-anchored clock keeps true into the 2090s (see APP_EPOCH_MS); a
-    // persisted mark past MARK_LIMIT is reclaimed by the re-seed above.
+    // mark exceeds 32 bits and JS bitwise ops truncate to Int32.
     return mark * (TAB_MASK + 1) + processBits
   }
 }

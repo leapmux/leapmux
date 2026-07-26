@@ -13,12 +13,13 @@
 // makes the check deterministic rather than a narrowed race. The claim is an id
 // rather than the wrapper itself, so a superseded wrapper is not retained.
 //
-// The id sequence is a persisted, clock-seeded high-water mark rather than a
-// counter starting at 0 -- the sidecar's relay owner outlives a webview reload,
-// and a restarted counter would have the fresh page's open (the one that must
-// win) refused by the sidecar's owner fence (`current.owner > relayID`) as
-// superseded, wedging the channel until an app restart. The seeding rule lives
-// in createPersistedSeq, shared with the org-events relay's id sequence.
+// The id sequence is a monotonic counter persisted across reloads, not a
+// counter that resets to 0 on each page load -- the sidecar's relay owner
+// outlives a webview reload, and a reset counter would have the fresh page's
+// open (the one that must win) refused by the sidecar's owner fence
+// (`current.owner > relayID`) as superseded, wedging the channel until an app
+// restart. The seeding rule lives in createPersistedSeq, shared with the
+// org-events relay's id sequence.
 
 import { KEY_CHANNEL_RELAY_SEQ } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'

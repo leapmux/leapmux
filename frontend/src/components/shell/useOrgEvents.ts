@@ -42,10 +42,10 @@ function isTerminalCloseCode(code: number): boolean {
 // sidecar compares them to ignore a close whose relay a later open already replaced,
 // and to ignore an open a later one has superseded. A stale-looking open matters
 // here because the hub only sends OrgMaterialized at subscribe time -- a dropped
-// open means org events silently never bootstrap. The persisted clock-seeded
-// sequence (shared with the channel relay's claim ids -- see createPersistedSeq
-// for the reload/clock-regression rationale) keeps a fresh page's ids above
-// whatever the still-live sidecar already holds.
+// open means org events silently never bootstrap. The persisted monotonic counter
+// (shared with the channel relay's claim ids -- see createPersistedSeq for the
+// reload rationale) keeps a fresh page's ids above whatever the still-live sidecar
+// already holds.
 /** Exported for tests; production code reaches it only through useOrgEvents. */
 export const nextOrgEventsRelayId = createPersistedSeq(KEY_ORG_EVENTS_RELAY_SEQ)
 

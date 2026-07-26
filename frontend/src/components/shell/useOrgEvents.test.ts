@@ -157,6 +157,12 @@ class FakeSocket {
 }
 
 beforeEach(() => {
+  // Clear persisted state so the relay-id allocator tests below start from a
+  // fresh seed (mark = null), independent of whatever the bridge-path tests
+  // above persisted to KEY_ORG_EVENTS_RELAY_SEQ. Without this, the first test
+  // in the nextorgeventsrelayid block reads a non-null mark left by prior
+  // tests and its assertions become order-dependent.
+  localStorage.clear()
   bridge.isTauri = false
   bridge.handlers.clear()
   bridge.registrations.length = 0
@@ -861,12 +867,12 @@ describe('useorgevents (desktop bridge path)', () => {
   })
 })
 
-// The relay ids must stay ordered across webview reloads even when the wall clock
-// steps BACKWARD between two page loads (NTP, a manual adjustment): the sidecar
-// outlives the reload holding the previous page's owner id, and an open seeded
-// below it refuses itself as superseded on every attempt -- org events silently
-// never bootstrap. The persisted high-water mark is what carries the ordering
-// through a clock regression.
+// The relay ids must stay ordered across webview reloads: the sidecar outlives
+// the reload holding the previous page's owner id, and an open seeded below it
+// refuses itself as superseded on every attempt -- org events silently never
+// bootstrap. The persisted high-water mark is what carries the ordering through
+// a reload. The mark is a plain monotonic counter (NOT the wall clock), so the
+// ordering holds regardless of any clock step between page loads.
 describe('nextorgeventsrelayid', () => {
   it('hands out strictly increasing ids and persists the high-water mark', () => {
     const first = nextOrgEventsRelayId()
@@ -884,23 +890,28 @@ describe('nextorgeventsrelayid', () => {
     expect(markAfterSecond).toBeGreaterThan(markAfterFirst!)
   })
 
-  it('keeps ids above the persisted mark when the clock steps backward across a reload', async () => {
-    // The previous page ran with a clock 5 minutes ahead and left its last id as
-    // the persisted mark; the sidecar still holds a relay owned by that id. A
-    // reload re-seeds the module -- simulated with a fresh module registry.
-    const staleOwner = Date.now() + 5 * 60_000
+  it('continues above the persisted mark across a reload', async () => {
+    // The previous page left its last id as the persisted mark; the sidecar
+    // still holds a relay owned by that id. A reload re-seeds the module --
+    // simulated with a fresh module registry -- and must continue above it.
+    const staleOwner = 1_000_000
     localStorageSet(KEY_ORG_EVENTS_RELAY_SEQ, staleOwner)
     vi.resetModules()
     const fresh = await import('./useOrgEvents')
     expect(fresh.nextOrgEventsRelayId()).toBeGreaterThan(staleOwner)
   })
 
-  it('seeds from the clock when it is ahead of the persisted mark', async () => {
+  it('honors a small persisted mark rather than seeding from the clock', async () => {
+    // The mark is a counter, not the clock: a small persisted mark is honored
+    // and the next id advances from it, regardless of the (much larger) wall
+    // clock.
     localStorageSet(KEY_ORG_EVENTS_RELAY_SEQ, 1234)
     vi.resetModules()
     const fresh = await import('./useOrgEvents')
-    const before = Date.now()
     const id = fresh.nextOrgEventsRelayId()
-    expect(id).toBeGreaterThan(before)
+    // The id advances from the persisted mark (1235 * stride), which for any
+    // TAB_BITS >= 1 is far below Date.now() (~1.78e12). A clock-seeded scheme
+    // would instead produce an id above Date.now().
+    expect(id).toBeLessThan(Date.now())
   })
 })
