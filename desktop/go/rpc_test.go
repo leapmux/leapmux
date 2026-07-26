@@ -491,7 +491,7 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 	relay := &ChannelRelay{
 		wsRelay: wsRelay{ws: ws, ctx: relayCtx, cancel: relayCancel, done: make(chan struct{}), emit: app.EmitEvent},
 	}
-	relay.owner = 1 // the wrapper id this relay was installed under
+	relay.stampOwner(1) // the wrapper id this relay was installed under
 	go relay.runReadLoop()
 	app.connection.relay = relay
 
@@ -549,7 +549,7 @@ func TestCloseRelayForUndeliverableEvent_LeavesSuccessorRelayAlone(t *testing.T)
 			emit:   app.EmitEvent,
 		},
 	}
-	successor.owner = 2
+	successor.stampOwner(2)
 	app.lifecycleMu.Lock()
 	app.connection.relay = successor
 	app.lifecycleMu.Unlock()

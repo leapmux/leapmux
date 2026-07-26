@@ -313,7 +313,7 @@ func TestCloseChannelRelayDetachIsPromptUnderLock(t *testing.T) {
 func TestCloseChannelRelayDrainsOffLockWithoutFreezingReaders(t *testing.T) {
 	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "channel-relay")
 	relay := &ChannelRelay{wsRelay: base}
-	relay.owner = 1
+	relay.stampOwner(1)
 	go func() {
 		defer close(readDone)
 		relay.runReadLoop()
@@ -537,7 +537,8 @@ func TestCloseChannelRelayBoundedByDrainTimeout(t *testing.T) {
 	stallRelease := make(chan struct{})
 	t.Cleanup(func() { close(stallRelease) })
 	ws := newStalledEmitRelayWS(t)
-	relay := &ChannelRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), owner: 1, emit: func(*desktoppb.Event) { <-stallRelease }}}
+	relay := &ChannelRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(*desktoppb.Event) { <-stallRelease }}}
+	relay.stampOwner(1)
 	go relay.runReadLoop()
 
 	app := &App{connection: &desktopConnection{relay: relay}}
@@ -660,7 +661,7 @@ func TestApp_CloseChannelRelay_IgnoresStaleOwner(t *testing.T) {
 	relayBefore := app.connection.relay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayBefore, "the relay must be live after B adopted it")
-	require.Equal(t, uint64(2), relayBefore.owner, "adopting the relay must transfer ownership to B")
+	require.Equal(t, uint64(2), relayBefore.ownerNow(), "adopting the relay must transfer ownership to B")
 
 	// A's close arrives late. It must not touch B's relay.
 	require.NoError(t, app.CloseChannelRelay(1), "a stale close is satisfied, not an error")
@@ -706,7 +707,7 @@ func TestApp_CloseChannelRelay_DropsOwnerOnTeardown(t *testing.T) {
 	relay := app.connection.relay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relay, "a stale owner must not close a relay opened after its own")
-	assert.Equal(t, uint64(8), relay.owner, "the fresh relay belongs to the wrapper that opened it")
+	assert.Equal(t, uint64(8), relay.ownerNow(), "the fresh relay belongs to the wrapper that opened it")
 }
 
 // channelRelayTestServer accepts channel-relay WebSockets and holds each open until
@@ -798,7 +799,7 @@ func TestApp_OpenChannelRelay_StaleOpenDoesNotStealFromSuccessor(t *testing.T) {
 	relayBefore := app.connection.relay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayBefore)
-	require.Equal(t, uint64(2), relayBefore.owner)
+	require.Equal(t, uint64(2), relayBefore.ownerNow())
 
 	// Wrapper 1 -- an EARLIER request the sidecar ran late -- must not steal it.
 	require.Error(t, app.OpenChannelRelay(context.Background(), 1),
@@ -809,7 +810,7 @@ func TestApp_OpenChannelRelay_StaleOpenDoesNotStealFromSuccessor(t *testing.T) {
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayAfter, "the successor's relay must survive the stale open")
 	assert.Same(t, relayBefore, relayAfter, "the stale open must not have replaced the relay")
-	assert.Equal(t, uint64(2), relayAfter.owner, "the stale open must not have re-stamped the owner")
+	assert.Equal(t, uint64(2), relayAfter.ownerNow(), "the stale open must not have re-stamped the owner")
 	assert.NoError(t, relayAfter.ctx.Err(), "the surviving relay must still be live")
 }
 
@@ -836,7 +837,7 @@ func TestApp_OpenChannelRelay_ConcurrentOpenDoesNotStealFromSuccessor(t *testing
 	relay2 := app.connection.relay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relay2, "wrapper 2's relay must be installed")
-	require.Equal(t, uint64(2), relay2.owner)
+	require.Equal(t, uint64(2), relay2.ownerNow())
 
 	close(release)
 	require.Error(t, <-open1,
@@ -847,6 +848,6 @@ func TestApp_OpenChannelRelay_ConcurrentOpenDoesNotStealFromSuccessor(t *testing
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayAfter, "the successor's relay must survive the loser's install")
 	assert.Same(t, relay2, relayAfter, "the loser must not have replaced the successor's relay")
-	assert.Equal(t, uint64(2), relayAfter.owner, "the loser must not have re-stamped the owner")
+	assert.Equal(t, uint64(2), relayAfter.ownerNow(), "the loser must not have re-stamped the owner")
 	assert.NoError(t, relayAfter.ctx.Err(), "the surviving relay must still be live")
 }

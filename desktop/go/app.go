@@ -52,18 +52,10 @@ type App struct {
 	// lifecycleMu is released across it rather than held for the whole boot.
 	startSolo  func(context.Context) (*soloRuntime, error)
 	binaryHash string
-	// eventSinkMu/eventSink are a self-contained pub-sub bolted onto App;
-	// extracting them into their own type to shrink App's mutex surface is
-	// tracked in https://github.com/leapmux/leapmux/issues/295.
-	eventSinkMu sync.RWMutex
-	eventSink   func(*desktoppb.Event)
-	// eventSinkForRelay is the relay-aware variant of eventSink: it carries the
-	// owning wrapper id of the relay that emitted the event, so a frame that
-	// cannot be delivered (failFrameForRelay) can close ONLY that relay rather than
-	// whichever relay happens to be installed by the time the close goroutine
-	// runs. Set alongside eventSink by the RPCSession. nil outside a session,
-	// in which case EmitRelayEvent falls back to the generic (non-relay) sink.
-	eventSinkForRelay func(owner uint64, event *desktoppb.Event)
+	// events is the event pub-sub: a generic sink and a relay-aware variant
+	// behind one RWMutex. Extracted into its own type so App's mutex surface is
+	// just the lifecycle/config locks. See event_sink.go and #295.
+	events eventSink
 }
 
 type desktopConnection struct {
@@ -324,7 +316,7 @@ func (a *App) CloseRelayForUndeliverableEvent(emitterOwner uint64, event *deskto
 // log says, and which close event the frontend receives, so those ride as
 // parameters the way wsRelay.emitClose takes its event builder.
 //
-// The ownership gate (getRelay(...).owner == emitterOwner) is the point of the
+// The ownership gate (getRelay(...).ownerNow() == emitterOwner) is the point of the
 // emitterOwner parameter: without it, a close spawned by emitter A's read loop
 // could execute after emitter B's open superseded A and tear down B's relay,
 // forcing B to reconnect for A's fault. The gate makes the close a no-op when
@@ -335,7 +327,7 @@ func (a *App) closeUndeliverableRelay(getRelay func(*desktopConnection) *wsRelay
 	a.lifecycleMu.Lock()
 	var drain <-chan struct{}
 	if a.connection != nil {
-		if relay := getRelay(a.connection); relay != nil && relay.owner == emitterOwner {
+		if relay := getRelay(a.connection); relay != nil && relay.ownerNow() == emitterOwner {
 			drain = closeRelay()
 		}
 	}
@@ -352,10 +344,12 @@ func (a *App) closeUndeliverableRelay(getRelay func(*desktopConnection) *wsRelay
 	a.EmitEvent(closeEvent)
 }
 
+// The five methods below are thin forwarders onto a.events (see event_sink.go);
+// they preserve the call sites in rpc.go, channel_relay.go, orgevents_relay.go,
+// solo.go, and the tests, which keep calling a.SetEventSink / a.EmitEvent / etc.
+
 func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
-	a.eventSinkMu.Lock()
-	defer a.eventSinkMu.Unlock()
-	a.eventSink = sink
+	a.events.Set(sink)
 }
 
 // SetEventSinkForRelay installs the relay-aware sink the RPCSession provides
@@ -363,20 +357,14 @@ func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
 // (via EmitRelayEvent) so a frame that cannot be delivered carries the emitting
 // relay's owner id forward to the close path.
 func (a *App) SetEventSinkForRelay(sink func(owner uint64, event *desktoppb.Event)) {
-	a.eventSinkMu.Lock()
-	defer a.eventSinkMu.Unlock()
-	a.eventSinkForRelay = sink
+	a.events.SetRelay(sink)
 }
 
-// emitForOwner returns a func the relay read loops call in place of a bare
-// EmitEvent, capturing the emitting relay so the owner id at emit time rides
-// alongside the event. The closure reads relay.owner at CALL time rather than
-// capturing its value, because owner is stamped AFTER newWSRelay constructs the
-// relay -- but it is stable for the relay's lifetime once stamped (a supersede
-// replaces connection.relay, not this relay's owner field), so the read loop's
-// emit always reports the id this relay was installed under.
+// emitForOwner is a thin forwarder onto eventSink.forOwner; see that method for
+// why the closure reads relay.owner at call time (via an atomic load against the
+// lifecycleMu-guarded re-stamp an adopt performs) rather than capturing its value.
 func (a *App) emitForOwner(relay *wsRelay) func(*desktoppb.Event) {
-	return func(event *desktoppb.Event) { a.EmitRelayEvent(relay.owner, event) }
+	return a.events.forOwner(relay)
 }
 
 // EmitRelayEvent routes a relay-sourced event through the relay-aware sink when
@@ -386,23 +374,11 @@ func (a *App) emitForOwner(relay *wsRelay) func(*desktoppb.Event) {
 // session without a sink has no shell pipe to deliver an undeliverable frame
 // over in the first place.
 func (a *App) EmitRelayEvent(owner uint64, event *desktoppb.Event) {
-	a.eventSinkMu.RLock()
-	sink := a.eventSinkForRelay
-	a.eventSinkMu.RUnlock()
-	if sink != nil {
-		sink(owner, event)
-		return
-	}
-	a.EmitEvent(event)
+	a.events.EmitRelay(owner, event)
 }
 
 func (a *App) EmitEvent(event *desktoppb.Event) {
-	a.eventSinkMu.RLock()
-	sink := a.eventSink
-	a.eventSinkMu.RUnlock()
-	if sink != nil {
-		sink(event)
-	}
+	a.events.Emit(event)
 }
 
 func (a *App) SidecarInfo() *desktoppb.SidecarInfo {

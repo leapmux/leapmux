@@ -96,7 +96,7 @@ func (a *App) OpenOrgEventsRelay(requestCtx context.Context, relayID uint64, org
 				wsRelay: newWSRelay(ws, ctx, cancel, a.EmitEvent),
 			}
 			// Stamped before the relay is installed, so no close can ever observe it unowned.
-			relay.owner = relayID
+			relay.stampOwner(relayID)
 			// Route the read loop's emits through the relay-aware sink so an
 			// undeliverable frame carries this relay's owner id forward to the close
 			// path (mirrors the channel relay's commit closure).
@@ -115,7 +115,7 @@ func (a *App) OpenOrgEventsRelay(requestCtx context.Context, relayID uint64, org
 // Caller holds lifecycleMu.
 func (a *App) rejectIfSuperseded(connection *desktopConnection, relayID uint64) error {
 	current := connection.orgEventsRelay
-	if current == nil || current.owner <= relayID {
+	if current == nil || current.ownerNow() <= relayID {
 		return nil
 	}
 	return fmt.Errorf("org events relay superseded by a newer open")

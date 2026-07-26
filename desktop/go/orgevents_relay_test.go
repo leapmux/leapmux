@@ -79,7 +79,7 @@ func TestApp_OpenOrgEventsRelay_ConcurrentOpenDoesNotTearDownTheSuccessor(t *tes
 	relayB := app.connection.orgEventsRelay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayB, "B's relay must be installed")
-	require.Equal(t, uint64(2), relayB.owner, "the relay belongs to the attempt that opened it")
+	require.Equal(t, uint64(2), relayB.ownerNow(), "the relay belongs to the attempt that opened it")
 
 	close(release)
 	require.Error(t, <-openA,
