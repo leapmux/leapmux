@@ -136,7 +136,7 @@ func TestOrgEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 		require.Equal(t, orgID, want)
 		mgr = crdt.NewManager(orgID, j, allowAllAuth{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(ctx))
-		mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+		mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 			s.Workspaces[allowedWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: allowedWS, RootNodeId: "root-allowed"}
 			s.Workspaces[siblingWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: siblingWS, RootNodeId: "root-sibling"}
 			s.Nodes["root-allowed"] = &leapmuxv1.NodeRecord{NodeId: "root-allowed"}

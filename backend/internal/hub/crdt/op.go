@@ -203,14 +203,43 @@ type EntityRef struct {
 	WorkspaceID string
 }
 
-// IsTombstoneOp reports whether `op` is one of the three entity-tombstone
-// ops. Tombstone ops strip the registers used to resolve the entity's
-// owning workspace (parent_id / tile_id / workspace_id), so callers that
-// drive visibility transitions need to handle them specially — the
-// post-state workspace can't be recovered from the entity record.
+// isHubOnlyOp reports whether `op` is one of the hub-only ops — ops that
+// clients may never submit and the hub drives exclusively through the internal
+// submit pipeline. The set is: SetWorkspaceRootNode (lifecycle create root
+// assignment), SetWorkspaceRegister (lifecycle create record seed), and
+// TombstoneWorkspace (lifecycle delete record removal). validateSetOnce calls
+// this once at the top so the hub-only policy is enumerable in one place
+// rather than re-stated as a `!internal` arm inside each op's case.
+func isHubOnlyOp(op *leapmuxv1.OrgOp) bool {
+	switch op.GetBody().(type) {
+	case *leapmuxv1.OrgOp_SetWorkspaceRootNode,
+		*leapmuxv1.OrgOp_SetWorkspaceRegister,
+		*leapmuxv1.OrgOp_TombstoneWorkspace:
+		return true
+	}
+	return false
+}
+
+// IsTombstoneOp reports whether `op` is one of the entity-tombstone ops that
+// wipe the registers used to resolve the entity's owning workspace. Tombstone
+// ops wipe those registers (parent_id / tile_id / workspace_id) or — for
+// TombstoneWorkspace — remove the WorkspaceContentsRecord outright, so callers
+// that drive visibility transitions need to handle them specially: the
+// post-state workspace can't be recovered from the entity record, and the
+// broadcast layer must pin the entity to its pre-workspace (validate.go's
+// post-pin) instead of treating it as a becoming-hidden transition.
+//
+// TombstoneWorkspace is included even though it targets the Workspaces map
+// rather than a register-stripping entity: including it makes validate.go's
+// post-pin fire for workspace deletes, so a TombstoneWorkspace op records a
+// stable {Pre: wsID, Post: wsID} transition (no OUT) and is delivered via the
+// Batch frame's EntityKindWorkspaceRoot arm (preVisible || postVisible) —
+// instead of producing a spurious OUT transition that calls removed(), which
+// returns nil because the proto EntityRemoved oneof has no workspace variant
+// (the 0-byte-frame bug the removed() nil-guard patched at the call site).
 func IsTombstoneOp(op *leapmuxv1.OrgOp) bool {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_TombstoneNode, *leapmuxv1.OrgOp_TombstoneTab, *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+	case *leapmuxv1.OrgOp_TombstoneNode, *leapmuxv1.OrgOp_TombstoneTab, *leapmuxv1.OrgOp_TombstoneFloatingWindow, *leapmuxv1.OrgOp_TombstoneWorkspace:
 		return true
 	}
 	return false
@@ -262,6 +291,10 @@ func OpTarget(op *leapmuxv1.OrgOp) EntityRef {
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.TombstoneFloatingWindow.GetWindowId()}
 	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRootNode.GetWorkspaceId()}
+	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRegister.GetWorkspaceId()}
+	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.TombstoneWorkspace.GetWorkspaceId()}
 	}
 	return EntityRef{}
 }

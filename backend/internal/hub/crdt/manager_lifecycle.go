@@ -23,6 +23,19 @@ const (
 	LifecycleOpDelete LifecycleOpType = "delete"
 )
 
+// lifecycleCreateBatchIDPrefix / lifecycleDeleteBatchIDPrefix prefix the fixed
+// BatchId the create/delete seed batches submit under. The fixed id (prefix +
+// workspace id) is the dedup key that makes a re-drained lifecycle batch
+// idempotent within DedupTTL: a second drain of the same row hits the cached
+// committed result instead of re-applying. Naming the prefixes keeps the dedup
+// contract greppable and a typo (which would silently break idempotent re-drain)
+// impossible. ApplyLifecycleCreate's ROOT_IMMUTABLE / TOMBSTONED_TARGET arms
+// rely on these exact ids to recognize a re-drain after DedupTTL expiry.
+const (
+	lifecycleCreateBatchIDPrefix = "lifecycle-create-"
+	lifecycleDeleteBatchIDPrefix = "lifecycle-delete-"
+)
+
 // LifecyclePayload is the body of a single lifecycle_outbox row. The
 // CRDT manager parses this into a batch of internal-origin ops plus
 // an associated event broadcast. Encoded as JSON because it's
@@ -210,20 +223,6 @@ func (m *Manager) applyLifecycleRow(ctx context.Context, row LifecycleOutboxRow,
 
 func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.OrgOp, reader LifecycleOutboxReader) error {
 	wsID := p.WorkspaceID
-	// Add the (workspace_id, root_node_id="") map entry first so the
-	// SetWorkspaceRootNodeOp below has somewhere to land.
-	m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) {
-		if _, exists := state.Workspaces[wsID]; !exists {
-			state.Workspaces[wsID] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: wsID}
-		}
-	})
-
-	rollback := func() {
-		m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, wsID) })
-		// Undo the optimistic filter expansion so a future
-		// CanAccessWorkspace flip can't smuggle stale visibility through.
-		m.contractSubscribersForWorkspace(wsID)
-	}
 
 	// Expand each existing subscriber's Filter to include the new
 	// workspace BEFORE SubmitInternal broadcasts the seed batch.
@@ -233,18 +232,34 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// frontend never learns the workspace's root_node_id, and the
 	// agent tab the user just opened never lands in the CRDT
 	// projection. A read-ACL LOOKUP failure here must not silently drop
-	// the seed: roll back the optimistic add and return WITHOUT consuming
-	// the outbox row so the create retries whenever the outbox is next drained
-	// -- the next lifecycle mutation in this org, not a periodic tick (the fixed
-	// BatchId + idempotent MutateInternal make retry safe).
+	// the seed: contract the (possibly partially) expanded filters and
+	// return WITHOUT consuming the outbox row so the create retries
+	// whenever the outbox is next drained -- the next lifecycle mutation
+	// in this org, not a periodic tick (the fixed BatchId + idempotent
+	// apply make retry safe).
 	if err := m.ExpandSubscribersForWorkspace(ctx, wsID); err != nil {
-		rollback()
+		m.contractSubscribersForWorkspace(wsID)
 		return fmt.Errorf("expand subscribers for workspace %s: %w", wsID, err)
 	}
 
+	// Build the seed batch: SetWorkspaceRegister seeds the
+	// WorkspaceContentsRecord map entry (root_node_id empty) so the
+	// accompanying SetNodeRegister + SetWorkspaceRootNode ops have a
+	// record to land on. Folding all three into one atomic batch means
+	// the workspace record and its root either commit together or not at
+	// all -- no out-of-band m.state mutation, so the manager goroutine
+	// stays the sole writer and its bare map reads stay race-free.
+	seedOps := make([]*leapmuxv1.OrgOp, 0, len(ops)+1)
+	seedOps = append(seedOps, &leapmuxv1.OrgOp{
+		OpId: id.Generate(),
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: wsID},
+		},
+	})
+	seedOps = append(seedOps, ops...)
 	batch := &leapmuxv1.OpBatch{
-		BatchId: "lifecycle-create-" + wsID,
-		Ops:     ops,
+		BatchId: lifecycleCreateBatchIDPrefix + wsID,
+		Ops:     seedOps,
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
 		OrgID:        m.orgID,
@@ -254,27 +269,60 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		OriginClient: m.hubClientID,
 	})
 	if err != nil {
-		rollback()
+		// SubmitInternal surfaces a transient error (e.g. a journal store
+		// fault) before any op applied, so no m.state mutation landed.
+		// Contract the filter expansion so a future CanAccessWorkspace flip
+		// can't smuggle stale visibility through; the row is NOT consumed
+		// and retries on the next drain.
+		m.contractSubscribersForWorkspace(wsID)
 		return err
 	}
-	// A ROOT_IMMUTABLE rejection on re-drain means the seed already landed on a
-	// prior drain whose MarkLifecycleOutboxConsumed then failed (a transient DB
-	// write fault) and whose dedup row has since expired past DedupTTL. The
-	// workspace exists, the root is set, the filter expansion already happened,
-	// and the user may have added tabs in the meantime -- so rolling back would
-	// corrupt CRDT state (delete(state.Workspaces, wsID) while the DB row, root
-	// node, and tabs stay behind) and strand the row in a permanent rejection
-	// loop. Treat ROOT_IMMUTABLE as the idempotent-success signal it is: the
-	// create already happened, so do NOT roll back, consume the row, and
-	// re-broadcast (subscribers either see it as new or dedupe via state).
+	// A re-drained create seed batch can reject for one of two reasons that
+	// BOTH mean "the create already happened on a prior drain whose
+	// MarkLifecycleOutboxConsumed then failed (a transient DB write fault) and
+	// whose dedup row has since expired past DedupTTL":
+	//
+	//  1. ROOT_IMMUTABLE -- the workspace exists with its root set (the create
+	//     landed and has not been deleted). Contracting would drop the workspace
+	//     from live subscribers' filters while the DB row, root node, and any
+	//     tabs the user added stay behind, and re-expanding on the next drain
+	//     pays the ACL lookup again.
+	//  2. TOMBSTONED_TARGET -- the create's SetNodeRegister(root) op hits a root
+	//     node that the delete batch already tombstoned, i.e. the create landed
+	//     AND was since deleted. The workspace record is gone (the delete's
+	//     TombstoneWorkspace op removed it), so re-applying the create would be
+	//     wrong. Without this arm the row rejects on every subsequent drain,
+	//     stalling permanently and (once SubmitLifecycle marks the workspace
+	//     blocked) deferring every later row for the same workspace.
+	//
+	// Both are the idempotent-success signal: the create already happened, so do
+	// NOT contract, consume the row, and re-broadcast (subscribers either see it
+	// as new or dedupe via state). The TOMBSTONED_TARGET arm is scoped to "the
+	// workspace record is currently absent" so it only fires for the
+	// create-then-deleted shape, never masking a genuinely corrupt seed batch.
+	recordAbsent := false
+	m.WithStateRLock(func(state *leapmuxv1.OrgCrdtState) {
+		_, recordAbsent = state.GetWorkspaces()[wsID]
+	})
+	recordAbsent = !recordAbsent
 	for _, r := range results {
 		if rj := r.GetRejected(); rj != nil {
-			if rj.GetReason() == leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE {
+			switch rj.GetReason() {
+			case leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE:
 				m.logger.Warn("lifecycle create re-drained after a prior apply; treating as idempotent",
-					"workspace_id", wsID, "row_id", row.ID)
+					"workspace_id", wsID, "row_id", row.ID, "reason", "ROOT_IMMUTABLE")
 				continue
+			case leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TOMBSTONED_TARGET:
+				if recordAbsent {
+					m.logger.Warn("lifecycle create re-drained after a prior apply + delete; treating as idempotent",
+						"workspace_id", wsID, "row_id", row.ID, "reason", "TOMBSTONED_TARGET (root tombstoned, record absent)")
+					continue
+				}
 			}
-			rollback()
+			// Any other rejection means the seed batch never committed, so no
+			// m.state mutation landed: contract the filter expansion and surface
+			// the error so the row is NOT consumed and retries on the next drain.
+			m.contractSubscribersForWorkspace(wsID)
 			return fmt.Errorf("seed batch rejected: %v", rj.GetReason())
 		}
 	}
@@ -285,7 +333,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// workspace would be invisible in live subscriptions until a reconnect. The
 	// retry the order exists to make reachable is now SAFE because the
 	// ROOT_IMMUTABLE arm above treats a re-seed as idempotent success rather than
-	// the rollback that would corrupt state.
+	// a contraction that would drop live subscribers.
 	m.broadcastWorkspaceCreatedEvent(wsID, p.Title, p.RootNodeID)
 	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
 		return err
@@ -329,46 +377,57 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	m.WithStateRLock(func(state *leapmuxv1.OrgCrdtState) {
 		enumOps = enumerateWorkspaceDeleteOps(state, wsID)
 	})
-	combined := make([]*leapmuxv1.OrgOp, 0, len(ops)+len(enumOps))
+	combined := make([]*leapmuxv1.OrgOp, 0, len(ops)+len(enumOps)+1)
 	combined = append(combined, ops...)
 	combined = append(combined, enumOps...)
-	if len(combined) > 0 {
-		batch := &leapmuxv1.OpBatch{BatchId: "lifecycle-delete-" + p.WorkspaceID, Ops: combined}
-		results, err := m.SubmitInternal(ctx, SubmitInput{
-			OrgID:        m.orgID,
-			Epoch:        m.currentEpoch(),
-			Batches:      []*leapmuxv1.OpBatch{batch},
-			PrincipalID:  HubReservedPrincipal,
-			OriginClient: m.hubClientID,
-		})
-		if err != nil {
-			return err
-		}
-		for _, r := range results {
-			if rj := r.GetRejected(); rj != nil {
-				return fmt.Errorf("delete batch rejected: %v", rj.GetReason())
-			}
+	// Append a TombstoneWorkspaceOp so the WorkspaceContentsRecord map
+	// entry is removed in the same atomic batch as the subtree
+	// tombstones. Folding it into the batch (rather than an out-of-band
+	// MutateInternal after) keeps every m.state mutation on the manager
+	// goroutine: the record and its contents commit or roll back
+	// together, and the manager goroutine's bare m.state reads stay
+	// race-free.
+	combined = append(combined, &leapmuxv1.OrgOp{
+		OpId: id.Generate(),
+		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: p.WorkspaceID},
+		},
+	})
+	batch := &leapmuxv1.OpBatch{BatchId: lifecycleDeleteBatchIDPrefix + p.WorkspaceID, Ops: combined}
+	results, err := m.SubmitInternal(ctx, SubmitInput{
+		OrgID:        m.orgID,
+		Epoch:        m.currentEpoch(),
+		Batches:      []*leapmuxv1.OpBatch{batch},
+		PrincipalID:  HubReservedPrincipal,
+		OriginClient: m.hubClientID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, r := range results {
+		if rj := r.GetRejected(); rj != nil {
+			return fmt.Errorf("delete batch rejected: %v", rj.GetReason())
 		}
 	}
-	m.MutateInternal(func(state *leapmuxv1.OrgCrdtState) { delete(state.Workspaces, p.WorkspaceID) })
 	// Broadcast the deletion and contract subscriber filters BEFORE marking the
 	// outbox row consumed. The in-memory state already reflects the delete (the
-	// tombstone batch above ran and the Workspaces map entry is gone), so the
-	// broadcast describes committed state either way -- but ordering it before
-	// the consume closes a window the old order left open: if MarkLifecycleOutboxConsumed
-	// fails (a transient DB write fault) the row stays pending and the only re-drain
-	// trigger is the next lifecycle RPC in this org, which for a delete that removed
-	// the org's last workspace may not come for a long time. Subscribers would keep
-	// the dead workspace in their Filter and keep routing tabs to it until reconnect.
-	// Broadcasting first means a consume failure delays only the outbox bookkeeping,
-	// not the subscriber-visible event. A successful re-drain re-broadcasts, which
-	// is idempotent on the subscriber side (deleting an already-absent workspace and
-	// re-running the lifecycle-changed refresh).
+	// tombstone batch above committed and the Workspaces map entry is gone), so
+	// the broadcast describes committed state either way -- but ordering it
+	// before the consume closes a window the old order left open: if
+	// MarkLifecycleOutboxConsumed fails (a transient DB write fault) the row
+	// stays pending and the only re-drain trigger is the next lifecycle RPC in
+	// this org, which for a delete that removed the org's last workspace may not
+	// come for a long time. Subscribers would keep the dead workspace in their
+	// Filter and keep routing tabs to it until reconnect. Broadcasting first
+	// means a consume failure delays only the outbox bookkeeping, not the
+	// subscriber-visible event. A successful re-drain re-broadcasts, which is
+	// idempotent on the subscriber side (deleting an already-absent workspace
+	// and re-running the lifecycle-changed refresh).
 	m.BroadcastWorkspaceDeleted(p.WorkspaceID, p.WorkerIDs)
 	// Drop the deleted workspace from every subscriber's Filter so a
 	// long-lived subscription doesn't accumulate dead workspace_ids
-	// across the manager's lifetime. Mirrors the rollback path's
-	// contraction in applyLifecycleCreate.
+	// across the manager's lifetime. Mirrors the contraction on a failed
+	// create in applyLifecycleCreate.
 	m.contractSubscribersForWorkspace(p.WorkspaceID)
 	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
 		return err

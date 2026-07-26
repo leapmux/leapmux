@@ -334,9 +334,14 @@ func preApplyTombstoneCheck(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) st
 	return ""
 }
 
-// validateSetOnce enforces parent_id set-once, root_node_id
-// set-once, and the hub-only gate on SetWorkspaceRootNodeOp.
+// validateSetOnce enforces the set-once rules (parent_id, root_node_id) and the
+// hub-only gate. The hub-only gate is hoisted to the top via isHubOnlyOp so the
+// set of hub-only ops is enumerable in one place; the per-op cases below carry
+// only the set-once rules.
 func validateSetOnce(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp, internal bool) (leapmuxv1.BatchRejectionReason, string) {
+	if isHubOnlyOp(op) && !internal {
+		return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, op.GetOpId()
+	}
 	switch body := op.GetBody().(type) {
 	case *leapmuxv1.OrgOp_SetNodeRegister:
 		setOp := body.SetNodeRegister
@@ -355,9 +360,8 @@ func validateSetOnce(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp, internal 
 			}
 		}
 	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
-		if !internal {
-			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, op.GetOpId()
-		}
+		// SetWorkspaceRegister / TombstoneWorkspace are hub-only (gated above)
+		// and idempotent on apply, so they have no set-once case here.
 		setOp := body.SetWorkspaceRootNode
 		if rec, ok := pre.GetWorkspaces()[setOp.GetWorkspaceId()]; ok && rec.GetRootNodeId() != "" {
 			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, op.GetOpId()

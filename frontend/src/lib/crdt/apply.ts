@@ -20,8 +20,9 @@ import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
 
 /**
  * NewState returns an empty OrgCrdtState seeded with the given org id.
- * Workspaces map is initialized empty; lifecycle paths add entries
- * via manager-internal mutation, not via the op log.
+ * Workspaces map is initialized empty; the lifecycle create/delete paths add
+ * and remove entries via SetWorkspaceRegisterOp / TombstoneWorkspaceOp in the
+ * op log (the same serialized pipeline every other op flows through).
  */
 export function newState(orgId: string): OrgCrdtState {
   return create(OrgCrdtStateSchema, {
@@ -74,6 +75,12 @@ export function applyOp(state: OrgCrdtState, op: OrgOp, canonOverride?: HLC): vo
       break
     case 'setWorkspaceRootNode':
       applySetWorkspaceRootNode(state, body.value.workspaceId, body.value.rootNodeId)
+      break
+    case 'setWorkspaceRegister':
+      applySetWorkspaceRegister(state, body.value.workspaceId)
+      break
+    case 'tombstoneWorkspace':
+      applyTombstoneWorkspace(state, body.value.workspaceId)
       break
   }
 }
@@ -340,14 +347,16 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC }>(
 
 function applySetWorkspaceRootNode(state: OrgCrdtState, workspaceId: string, rootNodeId: string): void {
   // Lazy-create the `WorkspaceContentsRecord` if this client hasn't
-  // seen it yet. The hub seeds an empty record via `MutateInternal`
-  // before broadcasting the seed batch, but that mutation is NOT
-  // itself broadcast — for any subscriber whose initial
-  // `OrgMaterialized` predated the workspace, the
-  // `SetWorkspaceRootNode` op is the FIRST signal that the workspace
-  // exists. Without lazy-create, this op early-returned and
-  // `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap` waited
-  // forever on `state.workspaces[wsID].rootNodeId`, leaving the
+  // seen it yet. The hub's lifecycle create batch seeds the record via a
+  // `SetWorkspaceRegisterOp` in the SAME batch as this op, so a subscriber
+  // that admits the workspace receives both and the record is normally
+  // already present when this runs. This lazy-create is the bootstrap-replay
+  // safety net for op logs written before `SetWorkspaceRegisterOp` existed
+  // (a `SetWorkspaceRootNode` op with no companion register), or for a
+  // subscriber whose initial `OrgMaterialized` predated the workspace and
+  // whose filter misses the seed batch. Either leaves the op with no record
+  // to land on — and `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap`
+  // would wait forever on `state.workspaces[wsID].rootNodeId`, leaving the
   // newly-created workspace tile-less in the UI.
   let rec = state.workspaces[workspaceId]
   if (!rec) {
@@ -356,4 +365,31 @@ function applySetWorkspaceRootNode(state: OrgCrdtState, workspaceId: string, roo
   }
   if (rec.rootNodeId === '')
     rec.rootNodeId = rootNodeId
+}
+
+/**
+ * applySetWorkspaceRegister seeds the WorkspaceContentsRecord map entry for a
+ * workspace (root_node_id empty). Idempotent: a workspace that already exists
+ * is left untouched, so a re-drained create seed batch (after a transient
+ * consume fault) never clobbers a workspace the user has since rooted or
+ * populated. Mirrors backend `applySetWorkspaceRegister`.
+ */
+function applySetWorkspaceRegister(state: OrgCrdtState, workspaceId: string): void {
+  if (!workspaceId)
+    return
+  if (!state.workspaces[workspaceId]) {
+    state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId })
+  }
+}
+
+/**
+ * applyTombstoneWorkspace removes the WorkspaceContentsRecord map entry.
+ * Idempotent: deleting an already-absent workspace is a no-op, so a re-drained
+ * delete batch (after a transient consume fault) is safe. Mirrors backend
+ * `applyTombstoneWorkspace`.
+ */
+function applyTombstoneWorkspace(state: OrgCrdtState, workspaceId: string): void {
+  if (!workspaceId)
+    return
+  delete state.workspaces[workspaceId]
 }

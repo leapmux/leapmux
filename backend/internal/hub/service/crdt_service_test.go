@@ -168,7 +168,7 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	// Force the registry to load the manager up front (so the tests
-	// can pre-seed via MutateInternal / SubmitInternal directly).
+	// can pre-seed via SubmitInternal directly).
 	_, err := registry.Get(context.Background(), orgID)
 	require.NoError(t, err)
 
@@ -176,10 +176,15 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 
 	// Seed a workspace + root so the tests can submit ops that pass
 	// validation. This mirrors what the lifecycle outbox would do in
-	// production after CreateWorkspace.
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
-		s.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1", RootNodeId: ""}
-	})
+	// production after CreateWorkspace: SetWorkspaceRegister seeds the
+	// record in the same atomic batch as the root (no off-goroutine
+	// m.state write).
+	setRegister := &leapmuxv1.OrgOp{
+		OpId: "seed-workspace-register",
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
+			WorkspaceId: "w1",
+		}},
+	}
 	rootKind := &leapmuxv1.OrgOp{
 		OpId: "seed-kind",
 		Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
@@ -195,7 +200,7 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
 		OrgID:   orgID,
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.OrgOp{rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.OrgOp{setRegister, rootKind, rootRegister}}},
 	})
 	require.NoError(t, err)
 

@@ -282,6 +282,123 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 	assert.Equal(t, 0, materializedOrRemoved, "always-visible subscriber must NOT receive a redacted event")
 }
 
+// TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber pins that
+// the workspace membership ops (SetWorkspaceRegister / TombstoneWorkspace) —
+// which replaced the old out-of-band MutateInternal and now flow through the
+// serialized submit pipeline — are broadcast to subscribers that admit the
+// workspace. The EntityKindWorkspaceRoot arm of batchVisibleOpsEvent keeps an
+// op when EITHER pre or post is visible (distinct from the
+// preVisible && postVisible rule for other entities), so a subscriber whose
+// filter contains the workspace must receive both ops as raw batch ops. A
+// regression that dropped these would leave the client's local workspaces map
+// diverged from the hub's (stale record after delete, missing record after
+// create) until reconnect.
+func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 120_000)
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	snapshot, unsub := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
+	defer unsub()
+
+	// Submit the create and delete as SEPARATE batches, mirroring the real
+	// lifecycle (a create batch, then a later delete batch). Within a single
+	// batch a register+tombstone pair would net to no workspaces-map change
+	// and be filtered as not-visible-to-anyone; separate batches each
+	// produce a real pre→post transition the EntityKindWorkspaceRoot arm
+	// keeps (preVisible || postVisible).
+	registerBatch := []*leapmuxv1.OrgOp{{
+		OpId: "ws-reg", Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		},
+	}}
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+	})
+	require.NoError(t, err)
+
+	tombstoneBatch := []*leapmuxv1.OrgOp{{
+		OpId: "ws-del", Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		},
+	}}
+	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+	})
+	require.NoError(t, err)
+
+	// Both ops must reach the admitting subscriber's Batch event stream.
+	var seenRegister, seenTombstone bool
+	for _, evt := range snapshot() {
+		if b := evt.GetBatch(); b != nil {
+			for _, op := range b.GetOps() {
+				switch op.GetBody().(type) {
+				case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+					seenRegister = true
+				case *leapmuxv1.OrgOp_TombstoneWorkspace:
+					seenTombstone = true
+				}
+			}
+		}
+	}
+	assert.True(t, seenRegister, "admitting subscriber must receive the SetWorkspaceRegister op")
+	assert.True(t, seenTombstone, "admitting subscriber must receive the TombstoneWorkspace op")
+}
+
+// TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame is the
+// regression pin for a 0-byte WS frame bug in the broadcast layer.
+//
+// A TombstoneWorkspace op classifies as EntityKindWorkspaceRoot and
+// produces an AffectedEntities transition {Pre: wsID, Post: ""} (the
+// record is removed, and IsTombstoneOp excludes it so the post-pin
+// override does not fire). For a subscriber admitting wsID that is a
+// pre→post OUT transition, so broadcastBatchToSubscriber calls
+// removed(ref). buildEntityRemovedEvent has NO EntityKindWorkspaceRoot
+// arm (the proto EntityRemoved oneof has no workspace variant), so it
+// returns nil. The removed() closure must nil-guard before wrapping
+// (mirroring materialized()) — otherwise NewMarshaledEvent(nil) ships a
+// non-nil wrapper around a nil proto, and proto.Marshal(nil) → []byte{}
+// yields a 0-byte WS frame to every admitting subscriber on every
+// workspace delete.
+//
+// captureSubscriber.send stores evt.Event (the proto pointer), so a
+// 0-byte-frame event shows up as a nil entry in the snapshot. This test
+// asserts no snapshot entry is nil — failing against the unguarded
+// removed() and passing once it nil-guards.
+func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 121_000)
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	snapshot, unsub := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
+	defer unsub()
+
+	// Seed the record so the tombstone has a real pre→post OUT transition.
+	registerBatch := []*leapmuxv1.OrgOp{{
+		OpId: "ws-reg", Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		},
+	}}
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+	})
+	require.NoError(t, err)
+
+	tombstoneBatch := []*leapmuxv1.OrgOp{{
+		OpId: "ws-del", Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		},
+	}}
+	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+	})
+	require.NoError(t, err)
+
+	events := snapshot()
+	require.NotEmpty(t, events, "subscriber should have received the lifecycle batch events")
+	for i, evt := range events {
+		assert.NotNilf(t, evt, "event %d must not be nil — a nil entry is a 0-byte WS frame from an unguarded removed() closure", i)
+	}
+}
+
 // TestBroadcast_NilFilter_SeesAllWorkspaces covers the all-workspaces
 // (nil filter) arm: a subscriber whose Filter.WorkspaceIDs is nil must
 // see raw ops across every workspace, exactly like an explicit
@@ -554,10 +671,12 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
-	// Seed a complete floating window in w1 via MutateInternal — bypasses
+	// Seed a complete floating window in w1 via SeedStateForTest — bypasses
 	// completeness validation, which would otherwise demand all 7 register
-	// writes in the seeding batch.
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	// writes in the seeding batch, and pins hand-picked LWW HLCs the LWW-merge
+	// path would overwrite. SeedStateForTest runs the seed on the manager
+	// goroutine (the sole writer) so it cannot race the goroutine's bare reads.
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Nodes["fwroot"] = &leapmuxv1.NodeRecord{
 			NodeId: "fwroot",
 			Kind:   &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: &leapmuxv1.HLC{Physical: 1, Logical: 0, ClientId: "seed"}},

@@ -364,6 +364,10 @@ function applySpeculative(state: OrgCrdtState, op: OrgOp): void {
  * tombstone ops REPLACE the map slot with a fresh record — those
  * don't need pre-cloning. Similarly setWorkspaceRootNode mutates the
  * workspace record in place, so we pre-clone its slot when present.
+ * setWorkspaceRegister only creates a record when absent (never mutates
+ * an existing one) and tombstoneWorkspace `delete`s the slot — both land
+ * in the shallow-copied `workspaces` map without touching the shared
+ * record, so neither needs a pre-clone (same reasoning as tombstone ops).
  *
  * Mirrors the backend's `CloneStateForBatch` (state.go).
  */

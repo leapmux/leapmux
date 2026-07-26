@@ -231,3 +231,70 @@ func TestCloneStateForBatch_TouchedNodeNotInPreIsHarmless(t *testing.T) {
 	_, leakedToPre := pre.Nodes["fresh"]
 	assert.False(t, leakedToPre, "creating fresh node in working must not leak to pre")
 }
+
+// SetWorkspaceRegisterOp / TombstoneWorkspaceOp write to the Workspaces map,
+// so CloneStateForBatch must treat a lifecycle batch as touching workspaces
+// (deep-cloning that map and leaving the others shared with pre). This pins
+// the entity-kind contract the CloneStateForBatch doc rests on for the
+// workspace-root ops added in the #269 lifecycle-as-ops conversion.
+func TestCloneStateForBatch_WorkspaceOpsCloneWorkspacesMapOnly(t *testing.T) {
+	pre := &leapmuxv1.OrgCrdtState{
+		OrgId: "org-1",
+		Nodes: map[string]*leapmuxv1.NodeRecord{"A": nodeRec("A")},
+		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
+			"w1": {WorkspaceId: "w1", RootNodeId: "root-w1"},
+		},
+		MaxHlc: hlc(10, 0, "seed"),
+	}
+	// A lifecycle delete batch: a node tombstone + the workspace tombstone.
+	batch := []*leapmuxv1.OrgOp{
+		tombstoneNodeOp("root-w1", hlc(20, 0, "hub")),
+		{
+			OpId:         "ws-del",
+			CanonicalHlc: hlc(20, 1, "hub"),
+			Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+			},
+		},
+	}
+	working := crdt.CloneStateForBatch(pre, batch)
+
+	// Apply mutates the working copy only.
+	for _, op := range batch {
+		crdt.Apply(working, op)
+	}
+
+	// pre's workspace record is untouched (deep-cloned, not shared).
+	assert.Contains(t, pre.Workspaces, "w1", "pre.Workspaces[w1] must survive Apply on working")
+	assert.NotContains(t, working.Workspaces, "w1", "working should have removed w1")
+
+	// The Nodes map is also touched (by the tombstone), so it's cloned too;
+	// pre.Nodes["root-w1"] must be tombstone-free.
+	assert.True(t, crdt.HLCIsZero(pre.Nodes["root-w1"].GetTombstoneAt()),
+		"pre.Nodes[root-w1] must not be tombstoned by Apply on working")
+}
+
+// A SetWorkspaceRegisterOp on a brand-new workspace must not leak into pre when
+// Apply runs on the working copy — the symmetric create-side contract.
+func TestCloneStateForBatch_SetWorkspaceRegisterDoesNotLeakToPre(t *testing.T) {
+	pre := &leapmuxv1.OrgCrdtState{
+		OrgId:      "org-1",
+		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{},
+		MaxHlc:     hlc(0, 0, "seed"),
+	}
+	batch := []*leapmuxv1.OrgOp{
+		{
+			OpId:         "ws-reg",
+			CanonicalHlc: hlc(1, 0, "hub"),
+			Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+				SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "fresh"},
+			},
+		},
+	}
+	working := crdt.CloneStateForBatch(pre, batch)
+	for _, op := range batch {
+		crdt.Apply(working, op)
+	}
+	assert.Contains(t, working.Workspaces, "fresh", "Apply must seed the workspace in working")
+	assert.NotContains(t, pre.Workspaces, "fresh", "seeding in working must not leak to pre")
+}
