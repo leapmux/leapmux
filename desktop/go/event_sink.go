@@ -70,11 +70,13 @@ func (s *eventSink) EmitRelay(owner uint64, event *desktoppb.Event) {
 
 // forOwner returns a func the relay read loops call in place of a bare Emit,
 // capturing the emitting relay so the owner id at emit time rides alongside the
-// event. The closure reads relay.owner at CALL time rather than capturing its
-// value, because owner is stamped AFTER newWSRelay constructs the relay -- but
-// it is stable for the relay's lifetime once stamped (a supersede replaces
-// connection.relay, not this relay's owner field), so the read loop's emit
-// always reports the id this relay was installed under.
+// event. The closure reads relay.owner at CALL time (via wsRelay.ownerNow) rather
+// than capturing its value, because owner is stamped AFTER newWSRelay constructs
+// the relay. See wsRelay.owner for the full rationale -- why the load is atomic
+// (the read loop runs lock-free against the lifecycleMu-guarded re-stamp an adopt
+// performs), why a stale read only ever affects which relay an undeliverable frame
+// can close (never delivery itself), and why access is encapsulated behind
+// ownerNow/stampOwner rather than the field being an atomic.Uint64.
 func (s *eventSink) forOwner(relay *wsRelay) func(*desktoppb.Event) {
-	return func(event *desktoppb.Event) { s.EmitRelay(relay.owner, event) }
+	return func(event *desktoppb.Event) { s.EmitRelay(relay.ownerNow(), event) }
 }

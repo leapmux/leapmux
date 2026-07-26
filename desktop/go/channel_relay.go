@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -58,8 +59,41 @@ type wsRelay struct {
 	// It lives on the relay, not on desktopConnection, so ownership is a property of
 	// "a relay has an owner" -- both relays get the same fence (closeIfOwner), and the
 	// id cannot outlive the relay it named.
+	//
+	// owner is read RACE-FREE by the relay read loop's emit closure
+	// (eventSink.forOwner -> EmitRelay(wsRelay.ownerNow)) while that relay is still
+	// running, but re-stamped under lifecycleMu by OpenChannelRelay's adoptLiveRelay
+	// -- the only path that transfers ownership of a LIVE relay.
+	// OpenOrgEventsRelay does not re-stamp: its rejectIfSuperseded only LOADS owner
+	// (to refuse a stale open), and a fresh org-events relay is stamped once at
+	// construction and never mutated again, so the atomic load on its read loop is
+	// defense-in-depth rather than a race guard. The writes (wsRelay.stampOwner) all
+	// happen under lifecycleMu; the only lock-free access is the read loop's ownerNow.
+	// A stale read can observe the immediately-prior owner, which only affects which
+	// relay an undeliverable frame can close -- never delivery itself.
+	//
+	// All reads/writes go through ownerNow/stampOwner, the named accessors below; a
+	// future bare `relay.owner` read bypasses the atomic and races. (atomic.Uint64
+	// would make the field self-protecting, but it carries a noCopy that wsRelay's
+	// value-embedding in ChannelRelay/OrgEventsRelay cannot stomach; standalone
+	// atomic ops behind accessors are safe on every target LeapMux builds for --
+	// macOS/Linux/Windows, all 64-bit.)
 	owner uint64
 }
+
+// ownerNow returns the id of the frontend wrapper this relay was last handed to.
+// It is the ONLY race-free way to read owner: the read loop's emit closure reads
+// it (via eventSink.forOwner) without holding lifecycleMu while an adopt
+// re-stamps it under lifecycleMu (see the owner field doc). Routing every read
+// through this method keeps the atomic load at one site so a future bare
+// `relay.owner` read cannot silently race.
+func (r *wsRelay) ownerNow() uint64 { return atomic.LoadUint64(&r.owner) }
+
+// stampOwner records id as the frontend wrapper this relay was last handed to.
+// Caller holds lifecycleMu for writing; the Store is atomic only so the read
+// loop's lock-free ownerNow stays race-free against it. Routing every write
+// through this method keeps the atomic store at one site.
+func (r *wsRelay) stampOwner(id uint64) { atomic.StoreUint64(&r.owner, id) }
 
 // newWSRelay constructs the shared wsRelay core both ChannelRelay and
 // OrgEventsRelay embed, wiring the per-relay lifetime context + cancel the
@@ -78,7 +112,7 @@ func newWSRelay(ws *websocket.Conn, ctx context.Context, cancel context.CancelFu
 // rule is defined once for every relay (see wsRelay.owner). Caller holds lifecycleMu
 // for writing.
 func closeIfOwner(relay *wsRelay, relayID uint64, closeRelay func() <-chan struct{}) <-chan struct{} {
-	if relay.owner != relayID {
+	if relay.ownerNow() != relayID {
 		// Stale: the relay has already been handed to someone else. Not an error --
 		// the caller's intent, "my relay should be closed", is already satisfied.
 		return nil
@@ -295,8 +329,8 @@ type ChannelRelay struct {
 }
 
 // OpenChannelRelay establishes (or adopts) the channel relay for relayID, the
-// frontend wrapper making the request. See desktopConnection.relayOwner for why the
-// id travels with the request.
+// frontend wrapper making the request. See wsRelay.owner for why the id travels
+// with the request.
 func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error {
 	// Reuse an existing healthy relay -- both before the dial and again at
 	// install, where a concurrent open may have beaten us to it. The sidecar
@@ -316,10 +350,10 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 		if current == nil || current.ctx.Err() != nil {
 			return false, nil
 		}
-		if current.owner > relayID {
+		if current.ownerNow() > relayID {
 			return false, fmt.Errorf("channel relay superseded by a newer open")
 		}
-		current.owner = relayID
+		current.stampOwner(relayID)
 		return true, nil
 	}
 	return a.openRelay(requestCtx, relayOpenSpec{
@@ -335,7 +369,7 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 			// names whoever the frontend last handed the relay to -- which is
 			// exactly who a legitimate close can come from. Stamped before the
 			// relay is installed, so no close can ever observe it unowned.
-			relay.owner = relayID
+			relay.stampOwner(relayID)
 			// Route the read loop's emits through the relay-aware sink so an
 			// undeliverable frame carries this relay's owner id forward to the
 			// close path (the closure reads relay.owner at call time; it is

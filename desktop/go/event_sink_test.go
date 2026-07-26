@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -90,9 +91,47 @@ func TestEventSink_ForOwnerReadsOwnerAtCallTime(t *testing.T) {
 
 	// Stamping owner AFTER forOwner captured the relay must still be observed,
 	// because the closure reads relay.owner when invoked, not when built.
-	relay.owner = 123
+	relay.stampOwner(123)
 	emit(&desktoppb.Event{})
 	if got.Load() != 123 {
 		t.Fatalf("owner after stamp = %d, want 123 (must read at call time)", got.Load())
 	}
+}
+
+// forOwner's closure reads relay.owner (via wsRelay.ownerNow) while an adopt
+// re-stamps it (via wsRelay.stampOwner) -- the concurrent shape of the relay
+// read loop emitting while OpenChannelRelay's adoptLiveRelay transfers
+// ownership under lifecycleMu. Before owner became atomic, the race detector
+// flagged this exact pattern; this test pins it race-free. Run with -race for
+// the meaningful check.
+func TestEventSink_ForOwnerReadsOwnerConcurrentlyWithReStamp(t *testing.T) {
+	var s eventSink
+	s.SetRelay(func(owner uint64, _ *desktoppb.Event) {})
+
+	relay := &wsRelay{}
+	emit := s.forOwner(relay)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	const iterations = 200
+	// Reader: the relay read loop's emit, hitting the lock-free owner load.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			emit(&desktoppb.Event{})
+		}
+	}()
+	// Writer: an adopt re-stamping owner under (simulated) lifecycleMu.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			relay.stampOwner(uint64(i % 8))
+		}
+	}()
+
+	wg.Wait()
+	// No assertion on values -- the contract under test is the absence of a
+	// data race (detected by -race), not a specific interleaving. The worst
+	// case the design accepts is one emit observing the immediately-prior owner.
 }

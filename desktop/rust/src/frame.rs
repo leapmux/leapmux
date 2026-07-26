@@ -195,14 +195,20 @@ mod tests {
     fn read_frame_async_roundtrips_multibyte_varint_frame() {
         test_runtime().block_on(async {
             let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
-            // A Response carrying a 200-byte error string is enough body to push
-            // the length prefix past one byte; the precise message shape is
-            // irrelevant to the varint path under test.
+            // A Response carrying a SidecarInfo whose binary_hash is 200 bytes
+            // pushes the length prefix past one byte AND exercises the
+            // handshake-response shape (the realistic payload this codec
+            // round-trips in production), not just an arbitrary long string.
+            let info = proto::SidecarInfo {
+                protocol_version: "1".to_string(),
+                binary_hash: "x".repeat(200),
+                ..Default::default()
+            };
             let frame = proto::Frame {
                 message: Some(proto::frame::Message::Response(proto::Response {
                     id: 7,
-                    error: "x".repeat(200),
-                    result: None,
+                    result: Some(proto::response::Result::SidecarInfo(info.clone())),
+                    ..Default::default()
                 })),
             };
             assert!(
@@ -216,7 +222,22 @@ mod tests {
             let received = read_frame_async(&mut reader).await.expect("read");
             assert_eq!(received.encoded_len(), frame.encoded_len());
             match received.message {
-                Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 7),
+                Some(proto::frame::Message::Response(r)) => {
+                    assert_eq!(r.id, 7);
+                    // The SidecarInfo payload survives the encode/decode round
+                    // trip intact -- pinning the handshake-response shape, not
+                    // just the varint framing.
+                    let got = r
+                        .result
+                        .as_ref()
+                        .and_then(|res| match res {
+                            proto::response::Result::SidecarInfo(si) => Some(si),
+                            _ => None,
+                        })
+                        .expect("SidecarInfo result survived the round trip");
+                    assert_eq!(got.binary_hash, info.binary_hash);
+                    assert_eq!(got.protocol_version, info.protocol_version);
+                }
                 other => panic!("unexpected message: {other:?}"),
             }
         });

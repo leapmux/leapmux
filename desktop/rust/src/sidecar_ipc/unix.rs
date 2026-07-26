@@ -196,12 +196,22 @@ pub(crate) fn socket_peer_pid(stream: &UnixStream) -> Option<u32> {
 }
 
 /// The kernel-verified pid holding `endpoint`, for diagnostics only (see
-/// socket_peer_pid). On unix it opens a throwaway connection and reads the
-/// peer pid; on Windows it does the same through `GetNamedPipeServerProcessId`
-/// on a freshly opened client handle.
+/// socket_peer_pid). On unix it opens a throwaway connection, confirms the peer
+/// is this user, then reads the peer pid; on Windows it does the same through
+/// `GetNamedPipeServerProcessId` on a freshly opened, SID-checked client handle.
+///
+/// The same-user check mirrors the Windows twin: we only ever want the holder pid
+/// of OUR sidecar, and a foreign-user socket is not that. It runs on the throwaway
+/// stream before the pid is read, so a socket a different user squats on the dev
+/// endpoint reports no holder rather than poisoning the diagnostic with the
+/// squatter's pid. A check failure maps to `None`, identical to "no listener" --
+/// both mean the diagnostic falls back to naming no holder.
 #[cfg(unix)]
 pub(crate) fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
     let stream = UnixStream::connect(endpoint).ok()?;
+    // require_same_user_peer failing means this is not our sidecar -- report no
+    // holder rather than the squatter's pid.
+    require_same_user_peer(&stream, endpoint).ok()?;
     socket_peer_pid(&stream)
 }
 

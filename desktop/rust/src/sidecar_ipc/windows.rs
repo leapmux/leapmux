@@ -26,7 +26,7 @@ use windows_sys::Win32::{
     },
     Security::{
         Authorization::ConvertSidToStringSidW, EqualSid, GetLengthSid, GetTokenInformation,
-        TokenUser, PSID, TOKEN_QUERY, TOKEN_USER,
+        TokenUser, PSID, SECURITY_MAX_SID_SIZE, TOKEN_QUERY, TOKEN_USER,
     },
     System::{
         Pipes::GetNamedPipeServerProcessId,
@@ -93,7 +93,7 @@ impl Write for SyncPipeWriter {
 /// live-but-busy sidecar read as gone during the shutdown poll, so the shell
 /// double-spawned onto an endpoint a zombie still held.
 #[cfg(windows)]
-pub(crate) enum PipeConnect {
+enum PipeConnect {
     Connected(NamedPipeClient),
     NotFound,
     Busy,
@@ -103,7 +103,7 @@ pub(crate) enum PipeConnect {
 // the retries the pipe is alive but saturated, reported as Busy (NOT NotFound).
 // ERROR_FILE_NOT_FOUND is NotFound; any other error is fatal.
 #[cfg(windows)]
-pub(crate) async fn open_named_pipe_client(pipe_name: &str) -> Result<PipeConnect, String> {
+async fn open_named_pipe_client(pipe_name: &str) -> Result<PipeConnect, String> {
     const MAX_BUSY_RETRIES: u32 = 3;
     for _ in 0..=MAX_BUSY_RETRIES {
         match ClientOptions::new().open(pipe_name) {
@@ -141,22 +141,18 @@ pub(crate) fn is_sidecar_gone(pipe_name: &str) -> bool {
 /// mechanism and the bind-side pair (`userOnlySDDL` in
 /// `backend/locallisten/locallisten_windows.go`) that hardens the *listener*
 /// the same way Unix's `requirePrivateDir` does.
+///
+/// Both this and `endpoint_holder_pid` route through `connect_sidecar_endpoint_async`,
+/// the single connect+SID-check core, so the same-user check is structural rather
+/// than a convention each caller must remember.
 #[cfg(windows)]
 pub(crate) fn connect_sidecar_endpoint(
     pipe_name: &str,
 ) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
-    let client = match pipe_runtime().block_on(open_named_pipe_client(pipe_name))? {
-        PipeConnect::Connected(client) => client,
-        // Gone: the caller's "try again later / endpoint is free" signal.
-        PipeConnect::NotFound => return Ok(None),
-        // Alive but saturated. NOT free to take -- surfaced as an error so the
-        // bootstrap routes around it onto a private endpoint rather than
-        // colliding on an endpoint a live sidecar still holds.
-        PipeConnect::Busy => {
-            return Err(format!("named pipe {pipe_name} is busy (sidecar alive)"));
-        }
+    let client = match pipe_runtime().block_on(connect_sidecar_endpoint_async(pipe_name))? {
+        Some(client) => client,
+        None => return Ok(None),
     };
-    require_same_user_pipe_peer(&client, pipe_name)?;
     let (r, w) = tokio::io::split(client);
     Ok(Some((
         SyncPipeReader { inner: r },
@@ -164,23 +160,23 @@ pub(crate) fn connect_sidecar_endpoint(
     )))
 }
 
-/// The async twin of `connect_sidecar_endpoint`, returning the raw
-/// `NamedPipeClient` for callers that need async I/O on the client itself -- the
-/// dev-sidecar handshake (`windows_handshake_async`), which races the
-/// GetSidecarInfo exchange against `tokio::time::timeout` and so cannot use the
-/// sync `SyncPipeReader`/`SyncPipeWriter` pair its sibling returns.
+/// Connects `pipe_name` and verifies the server is this user (the same-user SID
+/// check), returning the raw `NamedPipeClient` for callers that need async I/O
+/// on the client itself -- the dev-sidecar handshake (`windows_handshake_async`),
+/// which races the GetSidecarInfo exchange against `tokio::time::timeout` and so
+/// cannot use the sync `SyncPipeReader`/`SyncPipeWriter` pair its sibling returns.
 ///
-/// This twin exists so the handshake routes through the transport layer instead
-/// of calling `open_named_pipe_client` directly. The point is the same-user SID
-/// check: `require_same_user_pipe_peer` MUST gate every connect that can adopt a
-/// peer as the sidecar, because everything downstream trusts the peer on its own
-/// word (protocol version + binary hash, both forgeable -- see
-/// `require_same_user_pipe_peer`). The sync `connect_sidecar_endpoint` already
-/// enforces it; before this twin existed, the handshake bypassed it, so the
-/// Windows dev-sidecar connect had NO identity check where Unix had one. The
-/// check borrows the client immutably and does no I/O (it reads the kernel-recorded
-/// server pid via `AsRawHandle`), so the returned client is fully usable for the
-/// handshake exchange that follows.
+/// This is the SINGLE connect core both `connect_sidecar_endpoint` (sync, via
+/// `pipe_runtime().block_on`) and `endpoint_holder_pid` route through, so the
+/// same-user SID check gates EVERY connect that can adopt or query a peer.
+/// Everything downstream trusts the peer on its own word (protocol version +
+/// binary hash, both forgeable -- see `require_same_user_pipe_peer`), so the
+/// check MUST be unavoidable; before this core existed, the handshake and the
+/// holder-pid diagnostic both bypassed it, so the Windows dev-sidecar connect
+/// paths had NO identity check where Unix had one. The check borrows the client
+/// immutably and does no I/O (it reads the kernel-recorded server pid via
+/// `AsRawHandle`), so the returned client is fully usable for the exchange that
+/// follows.
 #[cfg(windows)]
 pub(crate) async fn connect_sidecar_endpoint_async(
     pipe_name: &str,
@@ -204,15 +200,14 @@ pub(crate) async fn connect_sidecar_endpoint_async(
 pub(crate) fn endpoint_holder_pid(endpoint: &str) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
 
+    // Route through connect_sidecar_endpoint_async so the same-user SID check
+    // gates this path too: we only ever want the holder pid of OUR sidecar, and
+    // a foreign-user pipe is not that. Gone (NotFound) and busy/unreadable
+    // (Err) both mean no pid to report -- the diagnostic falls back to naming
+    // no holder.
     let client = pipe_runtime()
-        .block_on(open_named_pipe_client(endpoint))
-        .ok()?;
-    let client = match client {
-        PipeConnect::Connected(client) => client,
-        // No listener (or every instance busy, which we cannot query) means
-        // no pid to report -- the diagnostic falls back to naming no holder.
-        _ => return None,
-    };
+        .block_on(connect_sidecar_endpoint_async(endpoint))
+        .ok()??;
     let mut pid: u32 = 0;
     let rc = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut pid) };
     if rc == 0 || pid == 0 {
@@ -303,17 +298,29 @@ pub(crate) fn sidecar_identity() -> Result<String, String> {
 /// (via `sidecar_identity`) and as the comparison point for the connect-side
 /// identity check (`require_same_user_pipe_peer`) -- the two callers that need
 /// to agree on what "us" means go through one place to find out.
+///
+/// The SID is constant for the process's lifetime, so the first successful read
+/// is cached and reused. `require_same_user_pipe_peer` runs on the dev-sidecar
+/// connect path, which the bootstrap polls every 100ms while waiting for the
+/// sidecar to bind (up to `DEV_SIDECAR_CONNECT_TIMEOUT`); an uncached read would
+/// re-open and re-query our own process token on every iteration.
 #[cfg(windows)]
 fn current_user_sid() -> Result<Vec<u8>, String> {
-    let mut token: HANDLE = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(format!("open process token: error {}", unsafe {
-            GetLastError()
-        }));
-    }
-    let sid = token_user_sid(token);
-    unsafe { CloseHandle(token) };
-    sid
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Result<Vec<u8>, String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+                return Err(format!("open process token: error {}", unsafe {
+                    GetLastError()
+                }));
+            }
+            let sid = token_user_sid(token);
+            unsafe { CloseHandle(token) };
+            sid
+        })
+        .clone()
 }
 
 /// Renders a SID (as raw bytes) into the `S-1-5-...` string form. Wraps the
@@ -383,6 +390,18 @@ fn token_user_sid(token: HANDLE) -> Result<Vec<u8>, String> {
     let len = unsafe { GetLengthSid(sid_ptr) } as usize;
     if len == 0 {
         return Err("token user sid: GetLengthSid returned 0".to_string());
+    }
+    // Cap the allocation off the SDK's own SID ceiling. SECURITY_MAX_SID_SIZE (68)
+    // is the maximum byte length of any valid SID the kernel ever produces, so 4x
+    // it is far above any legitimate SID and far below a dangerous allocation.
+    // GetLengthSid reads kernel-recorded data for a valid SID, but this whole chain
+    // is reached on the connect path off a peer-controlled pipe name, so a
+    // malformed/huge length must fail closed rather than drive a multi-GiB vec!.
+    const MAX_SID_BYTES: usize = SECURITY_MAX_SID_SIZE as usize * 4;
+    if len > MAX_SID_BYTES {
+        return Err(format!(
+            "token user sid: GetLengthSid returned {len} bytes (max {MAX_SID_BYTES})"
+        ));
     }
     let mut sid = vec![0u8; len];
     unsafe { std::ptr::copy_nonoverlapping(sid_ptr as *const u8, sid.as_mut_ptr(), len) };
