@@ -838,6 +838,258 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	assert.Equal(t, int64(1), count, "file-tab close must drop the worktree_tabs row")
 }
 
+// setupLastTabOnWorktree creates a fresh repo + linked worktree, registers a
+// single AGENT tab on that worktree (the "last tab" case), and returns the
+// repo + worktree dirs and the agent id. The caller corrupts the worktree
+// (deletes the dir, removes `.git`, etc.) before calling inspectLastTabClose.
+// Collapses the shared arrange harness of the worktree-degraded-close tests,
+// which differ only in the corruption step.
+func setupLastTabOnWorktree(t *testing.T, svc *Service, branch string) (repoDir, wtDir, agentID string) {
+	t.Helper()
+	repoDir = initRepo(t)
+	wtDir = filepath.Join(t.TempDir(), branch+"-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", branch+"-branch", wtDir)
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	agentID = "agent-" + branch
+	createAgentForPath(t, svc, agentID, wtDir)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	return repoDir, wtDir, agentID
+}
+
+// Regression guard: when the last tab on a worktree points at a directory
+// that has been deleted out-of-band (manual `git worktree remove`, another
+// process, OS cleanup), inspectLastTabClose must NOT fail — it must let the
+// tab close without a prompt. Before the fix, the deleted dir made
+// gatherBranchSnapshot's `git -C <gone-dir> diff` exit 128 ("cannot change
+// to '<dir>'"), surfacing as "failed to inspect diff stats" and blocking
+// the close from both the frontend and the CLI.
+func TestInspectLastTabClose_WorktreeDirDeletedClosesWithoutPrompt(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	_, wtDir, agentID := setupLastTabOnWorktree(t, svc, "deleted")
+
+	// Simulate the out-of-band deletion that produced the bug. The DB row
+	// still carries wtDir, but the directory is gone on disk.
+	require.NoError(t, os.RemoveAll(wtDir))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	require.NoError(t, err, "close inspection must not fail when the worktree dir is gone")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"missing worktree dir must not prompt")
+	assert.False(t, resp.GetShouldPrompt())
+	assert.Nil(t, resp.GetGitState(), "no snapshot should run for a missing dir")
+	assert.NotEmpty(t, resp.GetErrorHint(), "a degraded close must surface an error_hint so the user is warned")
+}
+
+// Regression guard for the safety-net branch of the fix: when the worktree
+// directory still exists on disk but git is broken inside it (here: the
+// linked-worktree .git pointer file was removed), inspectLastTabClose must
+// still let the tab close. The os.Stat fast path does NOT fire (dir exists),
+// so gatherBranchSnapshot runs and fails — the fix downgrades that failure
+// from a hard error to a no-prompt response so the close can proceed.
+func TestInspectLastTabClose_WorktreeSnapshotFailureDoesNotBlockClose(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	_, wtDir, agentID := setupLastTabOnWorktree(t, svc, "corrupt")
+
+	// Corrupt git inside the worktree without removing the directory: a
+	// linked worktree's `.git` is a file pointing at the main repo's
+	// worktree admin dir. Removing it makes `git -C wtDir status/diff`
+	// exit 128 ("not a git repository") while os.Stat(wtDir) still
+	// succeeds — exercising the gatherBranchSnapshot failure path.
+	require.NoError(t, os.Remove(filepath.Join(wtDir, ".git")))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	require.NoError(t, err, "close inspection must not fail when git is broken in the worktree")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"broken git must not block the close")
+	assert.False(t, resp.GetShouldPrompt())
+	assert.NotEmpty(t, resp.GetErrorHint(), "a degraded close must surface an error_hint so the user is warned")
+}
+
+// Regression guard for the shared-path tolerance: a NON-worktree tab whose
+// repo is valid enough for queryGitPathInfo's rev-parse probe (so
+// loadTabGitContext succeeds and the shared gatherBranchSnapshot call is
+// reached) but broken enough that the heavier `git status` / `git diff`
+// forks fail. This is the case the commit message's "worktree-only"
+// framing missed: the snapshot tolerance lives on the shared path, so it
+// also governs the non-worktree safety dialog — whose sole purpose is to
+// warn about uncommitted/unpushed changes (should_prompt is decided
+// entirely from the snapshot at the bottom of inspectLastTabClose).
+//
+// The fix's contract: close still wins (no prompt, no error), but an
+// error_hint is populated so the frontend can warn the user that the
+// git-state check was skipped. Pointing HEAD at a bogus SHA splits the two
+// git layers cleanly: rev-parse resolves the ref name and returns the SHA
+// (no object read), while `git diff --shortstat HEAD` / `git status` need
+// to read the commit object and exit 128.
+func TestInspectLastTabClose_NonWorktreeSnapshotFailureDegradesWithHint(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	repoDir := initRepo(t)
+	// A non-worktree agent tab: no worktree DB row, so GetWorktreeForTab
+	// misses and the close path runs through loadTabGitContext.
+	createAgentForPath(t, svc, "agent-broken-head", repoDir)
+
+	// Corrupt HEAD: point the branch ref at a SHA that has no object.
+	// rev-parse still resolves toplevel/git-dir/branch; diff/status fail.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoDir, ".git", "refs", "heads", "main"),
+		[]byte("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n"), 0o644))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-broken-head")
+	require.NoError(t, err, "a snapshot failure on a non-worktree tab must not block the close")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"broken git must not fabricate a prompt target")
+	assert.False(t, resp.GetShouldPrompt(), "broken git must not prompt")
+	assert.NotEmpty(t, resp.GetErrorHint(),
+		"degraded non-worktree close must surface an error_hint — without it the user silently loses the uncommitted-work warning")
+	// The hint must carry git's own diagnostic (here: the bogus-HEAD
+	// "fatal: bad object HEAD"), not just a generic "git state unavailable"
+	// preamble — so the user can act on the real cause rather than guess.
+	// See truncateGitHint / the GetGitInfo error_hint pattern it mirrors.
+	assert.Contains(t, resp.GetErrorHint(), "git state unavailable",
+		"hint must keep its generic preamble so the toast reads as a warning, not a bare error")
+	assert.Contains(t, resp.GetErrorHint(), "bad object HEAD",
+		"hint must append git's diagnostic so the user can act on the underlying cause")
+}
+
+// Regression guard: an unrelated sibling tab with a broken/deleted working
+// directory must not block closing a HEALTHY tab. hasOtherNonWorktreeTabOnBranch's
+// scan DROPS per-dir rev-parse probe errors (it returns the hit/miss verdict,
+// not the error), so a deleted sibling dir resolves to "no match" rather than a
+// hard failure — the close falls through to the CLOSING tab's snapshot, which is
+// the authoritative prompt determinant. This test pins that the close proceeds
+// and the snapshot still drives the prompt on the healthy closing tab.
+//
+// NOTE: this does NOT exercise the `err != nil` fall-through at git.go:768
+// directly, because the only error source scan propagates is the collectTabDirs
+// DB query (a concrete *db.Queries, not injectable here). The deleted-sibling
+// scenario resolves to (false, nil) from hasOther and reaches the snapshot via
+// the `!hasOther` arm — the same path a clean repo with no siblings takes. The
+// guard is therefore on the OUTCOME (close proceeds, snapshot prompts on the
+// dirty closing repo) rather than on the specific error branch.
+func TestInspectLastTabClose_SiblingCountFailureDoesNotBlockClose(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	closingRepo := initRepo(t)
+	run(t, closingRepo, "git", "checkout", "-b", "shared-feature")
+	// A sibling agent whose working dir is deleted out-of-band. Its rev-parse
+	// probe inside hasOtherNonWorktreeTabOnBranch fails, but scan drops that
+	// error and returns (false, nil) — so the close falls through to the
+	// closing tab's snapshot rather than hard-blocking.
+	siblingRepo := initRepo(t)
+	run(t, siblingRepo, "git", "checkout", "-b", "shared-feature")
+	createAgentForPath(t, svc, "agent-closing", closingRepo)
+	createAgentForPath(t, svc, "agent-sibling-gone", siblingRepo)
+	require.NoError(t, os.RemoveAll(siblingRepo))
+
+	// Dirty the closing repo so a successful snapshot WOULD prompt — proving
+	// the snapshot actually ran and drove the decision (rather than a clean
+	// no-op close that would pass regardless of which path was taken).
+	require.NoError(t, os.WriteFile(filepath.Join(closingRepo, "dirty.txt"), []byte("dirty\n"), 0o644))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-closing")
+	require.NoError(t, err, "a sibling's broken working dir must not block closing a healthy tab")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget(),
+		"snapshot on the dirty closing repo must still drive the prompt decision")
+	assert.True(t, resp.GetShouldPrompt(), "dirty closing repo must prompt")
+	assert.Empty(t, resp.GetErrorHint(), "healthy closing repo must not carry a degraded hint")
+}
+
+// Regression guard for the loadTabGitContext-failure degraded branch: a
+// NON-worktree tab whose working dir is not (or is no longer) readable as a
+// git repository must close without a prompt AND surface an error_hint, so
+// the user is warned the uncommitted-work check was skipped. Before the fix
+// this branch returned a bare {Target: NONE} response with no hint — the
+// close proceeded silently, asymmetric with the os.Stat and snapshot-failure
+// degraded branches (which do hint). loadTabGitContext collapses both
+// errNotGitRepo and transient probe failures to one error, so this covers
+// the "agent whose dir was deleted out-of-band" case for a non-worktree tab.
+func TestInspectLastTabClose_NonWorktreeNonRepoDegradesWithHint(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	// A plain temp dir with NO `git init` — queryGitPathInfo returns
+	// errNotGitRepo, so loadTabGitContext fails and the inspect hits the
+	// degraded branch. (No worktree DB row, so GetWorktreeForTab misses
+	// and the close path runs through loadTabGitContext.)
+	nonRepoDir := t.TempDir()
+	createAgentForPath(t, svc, "agent-non-repo", nonRepoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-non-repo")
+	require.NoError(t, err, "a non-repo working dir must not block the close")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"non-repo tab must not fabricate a prompt target")
+	assert.False(t, resp.GetShouldPrompt(), "non-repo tab must not prompt")
+	assert.NotEmpty(t, resp.GetErrorHint(),
+		"degraded non-repo close must surface an error_hint — without it the user silently loses the uncommitted-work warning")
+}
+
+// Regression guard for the partial-snapshot fix: when the DIFF half of the
+// snapshot succeeds but the PUSH half fails (here: a malformed
+// refs/remotes/origin/main ref makes `git show-ref` exit 128 while
+// `git status`/`git diff` still work), the close must NOT degrade — the
+// uncommitted-work signal is intact and should still drive the prompt.
+// Before the fix, gatherBranchSnapshot failed the whole errgroup on either
+// error, so a flaky origin discarded a successful diff and the user lost the
+// uncommitted-work warning along with the unpushed count.
+//
+// Splitter: branch.main.{remote,merge} set + a malformed
+// refs/remotes/origin/main ref → `git show-ref refs/remotes/origin/main`
+// exits 128 (HasRefs propagates a real error) while HEAD is valid so diff
+// and porcelain status succeed.
+func TestInspectLastTabClose_PushOnlyFailureKeepsDiffDrivenPrompt(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	repoDir := initRepo(t)
+	// Configure an upstream so pushStatusForPath reaches the HasRefs probe.
+	run(t, repoDir, "git", "config", "branch.main.remote", "origin")
+	run(t, repoDir, "git", "config", "branch.main.merge", "refs/heads/main")
+	run(t, repoDir, "git", "remote", "add", "origin", "https://example.com/repo.git")
+	// A malformed origin ref: show-ref exits 128 ("bad ref ... (0000...)"),
+	// which HasRefs propagates as an error. HEAD is still valid, so diff
+	// and porcelain status succeed — isolating the failure to push status.
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git", "refs", "remotes", "origin"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoDir, ".git", "refs", "remotes", "origin", "main"),
+		[]byte("0000000000000000000000000000000000000000\n"), 0o644))
+	// Dirty the tree so a successful diff drives shouldPrompt=true — proving
+	// the diff result was kept rather than discarded with the push failure.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-push-broken", repoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-broken")
+	require.NoError(t, err, "a push-only snapshot failure must not block the close")
+	assert.True(t, resp.GetShouldPrompt(),
+		"diff succeeded (dirty tree) — must still prompt despite the push-status failure")
+	assert.NotEmpty(t, resp.GetGitState().GetDiffUntracked(),
+		"diff stats must be populated from the successful diff half")
+	assert.Empty(t, resp.GetErrorHint(),
+		"a push-only failure keeps the diff signal — the close is not degraded, no hint")
+}
+
+// Regression guard for the ctx-cancellation fast-exit: when the caller's ctx
+// is already cancelled by the time the close path reaches the snapshot, the
+// inspect must degrade to a no-prompt response with a hint instead of paying
+// for two git forks (diff + push) that are guaranteed to fail on the same
+// ctx. Before the fix, resolveWorktreeBranchName / loadTabGitContext swallowed
+// the ctx error and let the snapshot fork anyway.
+func TestInspectLastTabClose_CancelledCtxDegradesWithoutSnapshot(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	repoDir := initRepo(t)
+	// Dirty the tree so a successful snapshot WOULD prompt — proving the
+	// ctx fast-exit fired before the snapshot ran (otherwise shouldPrompt
+	// would be true from the dirty tree).
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-cancelled", repoDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately before the call
+
+	resp, err := svc.inspectLastTabClose(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-cancelled")
+	require.NoError(t, err, "a cancelled ctx must not block the close")
+	assert.False(t, resp.GetShouldPrompt(),
+		"cancelled ctx must degrade to no-prompt, not run the snapshot and prompt")
+	assert.Nil(t, resp.GetGitState(), "cancelled ctx must short-circuit before the snapshot populates git_state")
+	assert.NotEmpty(t, resp.GetErrorHint(),
+		"cancelled-ctx degraded close must surface an error_hint so the user knows the check was skipped")
+}
+
 // FILE close with WorktreeAction.REMOVE on the last tab must remove
 // the worktree from disk via closeTabCommon, mirroring the AGENT /
 // TERMINAL last-close pipeline. Regression guard for the original bug
@@ -3002,6 +3254,35 @@ func TestParseDiffShortstat(t *testing.T) {
 			added, deleted := parseDiffShortstat(c.in)
 			assert.Equal(t, c.added, added)
 			assert.Equal(t, c.deleted, deleted)
+		})
+	}
+}
+
+// truncateGitHint renders the appended-detail suffix for a degraded-close
+// error_hint. The table pins its four branches: empty (no suffix), single-
+// line, multi-line (first line only — a toast must stay one line), and
+// over-cap (truncated with an ellipsis so a noisy git stderr doesn't overflow
+// the toast). The cap is exercised at the boundary (exactly cap → unchanged,
+// cap+1 → truncated).
+func TestTruncateGitHint(t *testing.T) {
+	const cap = 160
+	cases := []struct {
+		name   string
+		detail string
+		want   string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   \t\n  ", ""},
+		{"single line", "fatal: bad object HEAD", ": fatal: bad object HEAD"},
+		{"multi-line keeps first only", "fatal: bad object HEAD\nwarning: loquacious second line\nthird", ": fatal: bad object HEAD"},
+		{"trims surrounding whitespace", "  fatal: dubious ownership  ", ": fatal: dubious ownership"},
+		{"exactly cap is unchanged", strings.Repeat("x", cap), ": " + strings.Repeat("x", cap)},
+		{"over cap truncates with ellipsis", strings.Repeat("x", cap+1), ": " + strings.Repeat("x", cap-1) + "…"},
+		{"over cap with multi-line truncates the first line", strings.Repeat("y", cap+5) + "\nsecond", ": " + strings.Repeat("y", cap-1) + "…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, truncateGitHint(c.detail, cap))
 		})
 	}
 }

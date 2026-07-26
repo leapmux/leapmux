@@ -80,6 +80,15 @@ message InspectLastTabCloseResponse {
   // Fresh tag (16) for the BranchGitState bundle. Picking a new number
   // avoids the wire-type-reuse hazard on tag 7 above.
   BranchGitState git_state = 16;
+  // Non-empty when the worker let the close proceed WITHOUT a prompt only
+  // because git was unavailable (worktree dir gone, transient git failure,
+  // corrupt repo). The close still succeeds — should_prompt is false and
+  // the frontend commits the close — but the frontend surfaces this hint
+  // as a warn toast so the user knows the usual uncommitted/unpushed-work
+  // check was skipped. Mirrors GetGitFileStatusResponse.error_hint's role
+  // of turning a generic "Internal error" into an actionable diagnostic.
+  // Empty on a normal (clean or genuinely promptable) close.
+  string error_hint = 17;
 }
 
 message PushBranchRequest {

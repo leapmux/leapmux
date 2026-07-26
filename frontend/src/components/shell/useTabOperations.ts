@@ -432,6 +432,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
           showInfoToast('Worktree will be removed')
         }
       }
+      else if (status.errorHint) {
+        // The worker let the close proceed without a prompt only because
+        // git was unavailable (worktree dir gone, transient git failure,
+        // corrupt repo) — see InspectLastTabCloseResponse.error_hint. The
+        // close still wins (we fall through to commit), but warn the user
+        // that the usual uncommitted/unpushed-work check was skipped, so a
+        // broken repo doesn't silently swallow the safety dialog. The hint
+        // IS the user-facing message (a complete sentence), so it goes in
+        // the toast directly rather than as an error attachment.
+        showWarnToast(status.errorHint)
+      }
     }
     catch (err) {
       if (!isWorkerUnreachable(err)) {
