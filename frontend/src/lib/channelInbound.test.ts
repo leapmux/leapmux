@@ -13,21 +13,33 @@ import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelRpcMux } from './channelRpc'
 import { ChannelSession } from './channelSession'
+import { generateRekeyEphemeral } from './noise-hybrid'
 import { Reassembler } from './reassembler'
 
 function mockSession(): Session {
+  // `satisfies Session` (not `as unknown as`) so a future CipherState method
+  // addition fails to compile here instead of silently diverging the mock.
+  // Each half carries the full CipherStateLike surface; the unused direction's
+  // method is a no-op never called.
+  const noop = () => new Uint8Array()
   return {
     send: {
       encrypt: (pt: Uint8Array) => new Uint8Array(pt),
+      decrypt: noop,
       needsRekey: () => false,
-      rekey: vi.fn(),
+      rekeyWithSecret: vi.fn(),
+      clearPrev: vi.fn(),
+      nonce: () => 0,
     },
     receive: {
+      encrypt: noop,
       decrypt: (ct: Uint8Array) => new Uint8Array(ct),
       needsRekey: () => false,
-      rekey: vi.fn(),
+      rekeyWithSecret: vi.fn(),
+      clearPrev: vi.fn(),
+      nonce: () => 0,
     },
-  } as unknown as Session
+  } satisfies Session
 }
 
 function makeChannel(overrides?: Partial<InboundChannel>): InboundChannel {
@@ -48,6 +60,8 @@ function makeChannel(overrides?: Partial<InboundChannel>): InboundChannel {
     rekeyAbort: null,
     rekeyRequestId: null,
     rekeyChain: Promise.resolve(),
+    workerMlkemPub: new Uint8Array(0),
+    rekeyMaterial: null,
     ...overrides,
   }
 }
@@ -129,15 +143,18 @@ describe('channelInbound', () => {
   it('closes the channel when decrypt fails', () => {
     const ch = makeChannel({
       session: {
-        send: { encrypt: () => new Uint8Array(), needsRekey: () => false, rekey: () => {} },
+        send: { encrypt: () => new Uint8Array(), decrypt: () => new Uint8Array(), needsRekey: () => false, rekeyWithSecret: () => {}, clearPrev: () => {}, nonce: () => 0 },
         receive: {
+          encrypt: () => new Uint8Array(),
           decrypt: () => {
             throw new Error('bad tag')
           },
           needsRekey: () => false,
-          rekey: () => {},
+          rekeyWithSecret: () => {},
+          clearPrev: () => {},
+          nonce: () => 0,
         },
-      } as unknown as Session,
+      } satisfies Session,
     })
     const { inbound, closeChannel } = makeInbound(ch)
     inbound.handleMessage('ch-1', encryptInner(ch, new Uint8Array([1]), 1))
@@ -177,10 +194,17 @@ describe('channelInbound', () => {
 
   it('routes rekeyAck through the session with correlation id', () => {
     const wait = vi.fn()
-    const ch = makeChannel({ rekeyWait: wait, rekeyRequestId: 9 })
+    // Use a real ephemeral so the fresh-DH derivation in handleRekeyOutcome
+    // succeeds (the session itself is a mock; only the routing is under test).
+    const eph = generateRekeyEphemeral()
+    const ch = makeChannel({
+      rekeyWait: wait,
+      rekeyRequestId: 9,
+      rekeyMaterial: { ePriv: eph.privateKey, mlkemSS: null },
+    })
     const { inbound } = makeInbound(ch)
     const envelope = create(InnerMessageSchema, {
-      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, {}) },
+      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, { dhPub: eph.publicKey }) },
     })
     inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 9))
     expect(wait).toHaveBeenCalledWith(true, 0)

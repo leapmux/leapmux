@@ -164,6 +164,10 @@ interface ActiveChannel {
   rekeyRequestId: number | null
   /** Chains concurrent ensureRekeyed callers on this channel. */
   rekeyChain: Promise<void>
+  /** Worker ML-KEM pub retained for rekey encapsulation; empty in classic mode. */
+  workerMlkemPub: Uint8Array
+  /** In-flight rekey initiator material; null when no rekey is in progress. */
+  rekeyMaterial: { ePriv: Uint8Array, mlkemSS: Uint8Array | null } | null
 }
 
 /**
@@ -551,7 +555,7 @@ export class ChannelManager {
       return Promise.reject(abortError(signal, method))
     }
 
-    // Gate every send on the hard ceiling (matches Go ensureRekeyedLocked): a
+    // Gate every send on the hard ceiling (matches Go ensureRekeyed): a
     // reject backoff makes shouldInitiateRekey false even when age is past 70m.
     if (this.session.needsRekeyGate(ch)) {
       return this.session.ensureRekeyed(ch).then(() => {

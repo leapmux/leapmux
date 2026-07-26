@@ -142,7 +142,7 @@ export class ChannelInbound<T extends InboundChannel = InboundChannel> {
         this.deps.rpc.deliverStream(ch, correlationId, envelope.kind.value)
         break
       case 'rekeyAck':
-        this.deps.session.handleRekeyOutcome(ch, true, 0, correlationId)
+        this.deps.session.handleRekeyOutcome(ch, true, 0, correlationId, envelope.kind.value.dhPub)
         break
       case 'rekeyReject': {
         const raw = envelope.kind.value.retryAfterMs

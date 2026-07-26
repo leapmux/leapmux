@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"hash"
 	"sync/atomic"
+	"time"
 
 	"github.com/cloudflare/circl/sign/slhdsa"
 	"golang.org/x/crypto/blake2b"
@@ -33,6 +34,10 @@ const (
 	dhLen        = 32 // X25519 key length
 	keyLen       = 32 // ChaCha20-Poly1305 key length
 
+	// EphemeralPublicKeySize is the size of an X25519 ephemeral public key, as
+	// carried by the in-band rekey's dh_pub field. Equals dhLen.
+	EphemeralPublicKeySize = dhLen
+
 	// MlkemPublicKeySize is the size of an ML-KEM-1024 encapsulation key.
 	MlkemPublicKeySize = 1568
 	// MlkemCiphertextSize is the size of an ML-KEM-1024 ciphertext.
@@ -41,6 +46,20 @@ const (
 	SlhdsaPublicKeySize = 64
 	// SlhdsaSignatureSize is the size of an SLH-DSA-SHAKE-256f signature.
 	SlhdsaSignatureSize = 49856
+
+	// RekeyGraceWindow is how long a previous receive CipherState stays live
+	// for decryption after a successful in-band rekey. This unblocks traffic
+	// during the rekey round trip: the initiator keeps encrypting under the old
+	// send key until the Ack arrives, and frames it emitted just before the
+	// swap can still be in flight on the wire (the Hub relay is FIFO per
+	// channel, but the two directions are independent TCP streams). The
+	// receiver tries the current key, then the previous one within this window.
+	// Each retained key keeps its own nonce counter, so replayed old-key
+	// frames are still rejected; after the window the previous key is zeroed
+	// and an old-key frame fails closed. 10s accommodates a slow or contended
+	// link where straddling frames may queue well beyond the bare RTT. See
+	// issue #321.
+	RekeyGraceWindow = 10 * time.Second
 )
 
 // ---- Composite Keypair ----
@@ -225,9 +244,36 @@ func (ss *symmetricState) hybridSplit(extraKeyMaterial []byte) (*CipherState, *C
 // n is atomic so soft-limit peeks (NeedsRekey / NeedsRekeyEither) can run from a
 // send/idle goroutine while recvLoop Decrypt increments the receive nonce —
 // without an unsynchronized data race on the counter.
+//
+// prev / prevExpiresAt support the rekey grace window: after a successful
+// in-band rekey the previous receive key stays live for RekeyGraceWindow so
+// frames the peer encrypted just before the swap (still in flight on the wire)
+// can still be decrypted. Decrypt tries the current key, then the previous one
+// if it has not expired. Only one previous key is retained; it is zeroed on
+// expiry or on the next rekey.
+//
+// Concurrency: prev / prevExpiresAt are NOT guarded by a mutex. They are safe
+// ONLY because of a load-bearing single-goroutine ownership rule: on BOTH peers,
+// every read of these fields (Decrypt's try-current-then-prev) and every write
+// (rekeyWithSecret via RekeyReceiveWithSecret on Ack/Request, and CipherState.zero
+// via Session.Zero on close) runs on the channel's SINGLE recvLoop goroutine.
+// That makes the receive swap and the prev read serial by construction — no
+// mutex is needed on the read path. (The initiator's handleRekeyAck additionally
+// takes rekeyMu, but that serializes the SEND rotation against concurrent Encrypt
+// in sendInnerRaw, NOT the receive Decrypt against the receive swap.) The nonce
+// counter `n` is the exception: it is atomic because NeedsRekey/Nonce peeks run
+// from OTHER goroutines (send/idle).
+//
+// DO NOT move Decrypt, RekeyReceiveWithSecret, or Session.Zero off the recvLoop,
+// and do not invoke them from a worker pool or a second goroutine — doing so
+// races prev / prevExpiresAt with no compile-time guard, yielding a torn
+// pointer read or use-after-zero (decrypt under an already-wiped key). If such
+// a refactor is unavoidable, add a mutex around the prev swap here first.
 type CipherState struct {
-	k [keyLen]byte
-	n atomic.Uint64
+	k             [keyLen]byte
+	n             atomic.Uint64
+	prev          *CipherState // previous-epoch key retained during the grace window (receive only)
+	prevExpiresAt time.Time    // wall time after which prev must be zeroed; zero time ⇒ none
 }
 
 // Encrypt encrypts plaintext using the cipher key.
@@ -247,8 +293,50 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 	return ct, nil
 }
 
-// Decrypt decrypts ciphertext using the cipher key.
+// Decrypt decrypts ciphertext using the cipher key, falling back to the
+// previous-epoch key if it is still within the grace window. This keeps traffic
+// flowing across the rekey round trip: the peer keeps encrypting under the old
+// send key until it observes the rotation, so a frame it emitted just before
+// the swap may still arrive after we rotated. Each retained key keeps its own
+// nonce counter, so a replayed old-key frame is still rejected.
 func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
+	n := cs.n.Load()
+	if n > HardNonceLimit {
+		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
+	}
+	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
+	if err == nil {
+		cs.n.Add(1)
+		return pt, nil
+	}
+	// Current key failed. Try the previous-epoch key if it is still live. Safe
+	// because Decrypt and the receive rekeyWithSecret both run on the channel's
+	// single recvLoop goroutine (see the CipherState concurrency note); no
+	// concurrent swap can free prev mid-decrypt.
+	prev := cs.prev
+	if prev != nil && !cs.prevExpiresAt.IsZero() {
+		if time.Now().Before(cs.prevExpiresAt) {
+			if pt2, perr := prev.tryDecrypt(ciphertext); perr == nil {
+				return pt2, nil
+			}
+		} else {
+			// The grace window elapsed: retire prev now rather than leave the
+			// still-cryptographically-valid previous-epoch key in the heap. The
+			// window's forward-secrecy promise ("after the window the previous
+			// key is zeroed") is delivered here, not deferred to the next rekey
+			// or to Session.Zero on close — an idle channel that never decrypts
+			// again would otherwise keep prev alive indefinitely.
+			zeroBytes(prev.k[:])
+			cs.prev = nil
+			cs.prevExpiresAt = time.Time{}
+		}
+	}
+	return nil, err
+}
+
+// tryDecrypt decrypts without the prev fallback. Used by Decrypt for prev and
+// by tests that want to assert the current key alone cannot decrypt a frame.
+func (cs *CipherState) tryDecrypt(ciphertext []byte) ([]byte, error) {
 	n := cs.n.Load()
 	if n > HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
@@ -277,22 +365,74 @@ func (cs *CipherState) NeedsRekey() bool {
 	return cs.n.Load() > SoftNonceLimit
 }
 
-// Rekey derives a new cipher key via HKDF(k, zerolen) and resets the nonce to 0.
+// rekeyWithSecret derives a new cipher key that mixes fresh key-agreement
+// entropy into the current key, then swaps it in as the active key.
 //
-// Application-defined REKEY: Noise's default REKEY uses ENCRYPT(k, 2^64-1, ...),
-// which does not match LeapMux's transport AEAD nonce layout (uint32 in bytes
-// 4-7). Resetting n diverges from Noise section 11.3 (which leaves n unchanged)
-// because without a reset the soft/hard nonce limits would stay stuck after the
-// first soft-limit hit and HardNonceLimit would still kill long-lived sessions.
+// When retainPrev is true (the receive direction) the previous key is moved
+// into cs.prev (zeroing any older retained key first) and marked live for
+// RekeyGraceWindow, so in-flight frames encrypted under it can still be
+// decrypted. When retainPrev is false (the send direction, which keeps no
+// grace window) the previous key is zeroed and dropped instead — structurally,
+// not via a follow-up clearPrev the caller must remember. The nonce resets to 0.
 //
-// Forward secrecy: HKDF(k) does not introduce fresh DH entropy. Compromise of
-// the current epoch key lets an attacker derive the next (K' = HKDF(K)). The
-// Hub still never learns keys (E2EE relay); this is about endpoint-key
-// compromise across epochs. Tracked in https://github.com/leapmux/leapmux/issues/321
-func (cs *CipherState) Rekey() {
-	newK, _ := noiseHKDF(cs.k[:], nil)
+// The derivation mirrors the Noise handshake's mixKey → hybridSplit ratchet
+// (noise.go mixKey / hybridSplit), collapsed onto the transport key:
+//
+//	ck1 = HKDF(k, dhSecret)      // fresh X25519 ECDH(e_i, e_r)
+//	ck2 = HKDF(ck1, pqSecret)    // fresh ML-KEM-1024 shared secret (nil in classic mode)
+//	k'  = ck2[0:32]
+//
+// Keyed off this CipherState's own k, so the two transport directions stay
+// distinct (Send and Receive start from different keys and produce different
+// k'). dhSecret must be the raw X25519 shared secret; pqSecret is the raw
+// ML-KEM shared secret, or nil for a classical-only channel. Both inputs are
+// zeroed here.
+//
+// Forward secrecy: because k' mixes fresh DH + ML-KEM entropy, compromise of
+// the current epoch key does NOT let an attacker derive the next. The Hub still
+// never learns keys (E2EE relay); the rekey frames carrying the ephemeral
+// pubkeys / ML-KEM ciphertext ride inside the existing AEAD-encrypted channel,
+// so they are authenticated by the current cipher and need no SLH-DSA
+// signature. See issue #321.
+func (cs *CipherState) rekeyWithSecret(dhSecret, pqSecret []byte, retainPrev bool) {
+	// Stage 1: mix the fresh X25519 ECDH secret into the current key.
+	ck1, _ := noiseHKDF(cs.k[:], dhSecret)
+	// Stage 2: mix the fresh ML-KEM shared secret. pqSecret is nil on a
+	// classical channel, in which case noiseHKDF still runs a second
+	// (degenerate, IKM-less) stage keyed only off ck1 — NOT skipped — so the
+	// derivation stays a uniform two-stage ratchet on both channel kinds. Both
+	// peers call this identically, so classic and PQ both agree on the key.
+	newK, _ := noiseHKDF(ck1[:], pqSecret)
+
+	// Retire any older retained previous key before deciding what to do with
+	// the current one.
+	if cs.prev != nil {
+		zeroBytes(cs.prev.k[:])
+		cs.prev = nil
+		cs.prevExpiresAt = time.Time{}
+	}
+
+	if retainPrev {
+		// Receive direction: promote the current key to prev for the grace
+		// window, then install k'.
+		cs.prev = &CipherState{k: cs.k, n: atomic.Uint64{}}
+		cs.prev.n.Store(cs.n.Load())
+		cs.prevExpiresAt = time.Now().Add(RekeyGraceWindow)
+	} else {
+		// Send direction: it keeps no grace window, so the key we are about to
+		// replace is zeroed rather than retained. Doing this here (instead of
+		// promoting to prev and relying on the caller to clearPrev) makes
+		// "send never holds a previous key" a structural property — a caller
+		// cannot forget the clearPrev and leave a live prev on Send.
+		zeroBytes(cs.k[:])
+	}
+
 	copy(cs.k[:], newK[:keyLen])
 	cs.n.Store(0)
+
+	zeroBytes(ck1[:])
+	zeroBytes(dhSecret)
+	zeroBytes(pqSecret)
 }
 
 // ---- Session ----
@@ -321,16 +461,69 @@ func (s *Session) NeedsRekeyEither() bool {
 	return s.Send.NeedsRekey() || s.Receive.NeedsRekey()
 }
 
-// RekeySend rotates the send CipherState (call after the peer has accepted a
-// rekey and the local send barrier is ready to switch).
-func (s *Session) RekeySend() {
-	s.Send.Rekey()
+// RekeySendWithSecret rotates the send CipherState with fresh DH + (optional)
+// ML-KEM entropy. Call after the peer has accepted a rekey and the local send
+// barrier (rekeyMu / SendGate frame permit) is ready to swap so no concurrent
+// Encrypt observes a half-installed key. The send direction does not retain a
+// previous key — only the receiver needs the grace window — so rekeyWithSecret
+// is called with retainPrev=false, which zeroes the replaced key rather than
+// promoting it to prev.
+func (s *Session) RekeySendWithSecret(dhSecret, pqSecret []byte) {
+	s.Send.rekeyWithSecret(dhSecret, pqSecret, false)
 }
 
-// RekeyReceive rotates the receive CipherState (call after decrypting a peer
-// rekey frame that commits the switch).
-func (s *Session) RekeyReceive() {
-	s.Receive.Rekey()
+// clearPrev zeroes and drops any retained previous-epoch key. Exported for
+// tests and for any future send-direction path that needs to drop a retained
+// prev explicitly; the production send rotation goes through RekeySendWithSecret
+// (retainPrev=false) and never sets prev in the first place.
+func (cs *CipherState) clearPrev() {
+	if cs.prev != nil {
+		zeroBytes(cs.prev.k[:])
+		cs.prev = nil
+	}
+	cs.prevExpiresAt = time.Time{}
+}
+
+// RekeyReceiveWithSecret rotates the receive CipherState with fresh DH +
+// (optional) ML-KEM entropy, retaining the previous key for RekeyGraceWindow so
+// in-flight frames encrypted under it can still be decrypted. Call after
+// decrypting a peer rekey frame that commits the switch, under the same lock
+// that serializes Decrypt (the recvLoop is single-threaded on Go).
+func (s *Session) RekeyReceiveWithSecret(dhSecret, pqSecret []byte) {
+	s.Receive.rekeyWithSecret(dhSecret, pqSecret, true)
+}
+
+// zero wipes the active key and any retained grace-window previous key from
+// this CipherState. Used by Session.Zero on close so transport keys do not
+// linger in the heap after a channel ends — including a channel closed mid
+// grace-window, which would otherwise leave the still-valid previous-epoch key
+// sitting in memory until GC (a forward-secrecy gap the grace window widens).
+func (cs *CipherState) zero() {
+	zeroBytes(cs.k[:])
+	if cs.prev != nil {
+		zeroBytes(cs.prev.k[:])
+		cs.prev = nil
+	}
+	cs.prevExpiresAt = time.Time{}
+}
+
+// Zero wipes both transport directions' active and retained previous-epoch keys
+// so they do not linger in the heap after the channel closes. The grace window
+// (#321) retains a previous receive key for up to RekeyGraceWindow after each
+// rekey; closing the channel in that window must retire it explicitly rather
+// than wait for GC, or a process memory dump in the window recovers a still-
+// cryptographically-valid transport key.
+//
+// Locking contract: the caller MUST serialize Zero against any concurrent
+// Encrypt/Decrypt/rekeyWithSecret on either direction. The tunnel initiator
+// satisfies this from its recvLoop's close defer under rekeyMu (sendInnerRaw
+// holds the same lock around Encrypt). The worker responder does NOT call Zero
+// on close: its dispatcher runs handlers on independent goroutines that Encrypt
+// with no shared lock, so zeroing from HandleClose would race them — the worker
+// relies on GC for its send-direction keys instead.
+func (s *Session) Zero() {
+	s.Send.zero()
+	s.Receive.zero()
 }
 
 // ---- Handshake State (for two-step initiator) ----
@@ -342,6 +535,119 @@ type HandshakeState struct {
 	rs      []byte // remote static public key (X25519)
 	mlkemSS []byte // ML-KEM shared secret
 	mlkemCT []byte // ML-KEM ciphertext (needed for transcript)
+}
+
+// GenerateEphemeralX25519 generates a fresh X25519 ephemeral keypair, the
+// shared generator used by both the Noise handshake and the in-band rekey. The
+// caller must zero the returned private key's bytes when done (Clear / zeroBytes).
+func GenerateEphemeralX25519() (*ecdh.PrivateKey, error) {
+	return ecdh.X25519().GenerateKey(rand.Reader)
+}
+
+// GenerateEphemeralX25519Seed generates a fresh X25519 ephemeral private key as
+// the raw 32-byte seed the CALLER owns and can actually zero. The in-band rekey
+// paths use this (not GenerateEphemeralX25519) because crypto/ecdh's
+// *PrivateKey keeps an internal copy of the scalar that the API gives no way to
+// wipe — Zero(priv.Bytes()) only zeroes a throwaway copy, leaving the real
+// scalar on the heap until GC. Holding the seed directly makes "wipe the
+// ephemeral once both directions have rotated" genuinely true instead of
+// aspirational, which matters: the fresh-DH entropy is the forward-secrecy
+// guarantee of #321. Pair with X25519PublicFromSeed to derive the wire DhPub.
+// The caller must zero the returned seed when done.
+func GenerateEphemeralX25519Seed() ([]byte, error) {
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	return priv.Bytes(), nil
+}
+
+// X25519PublicFromSeed reconstructs the public point from a raw 32-byte seed
+// transiently, returning just the encoded public key. The reconstructed
+// *ecdh.PrivateKey is discarded on return; the caller still owns (and must
+// zero) the seed. Used by the rekey path to fill the RekeyRequest/RekeyAck
+// dh_pub field from a seed held as a caller-owned slice.
+func X25519PublicFromSeed(seed []byte) ([]byte, error) {
+	priv, err := ecdh.X25519().NewPrivateKey(seed)
+	if err != nil {
+		return nil, fmt.Errorf("noise: invalid X25519 seed: %w", err)
+	}
+	return priv.PublicKey().Bytes(), nil
+}
+
+// DH performs an X25519 scalar multiplication between a local private key (raw
+// 32-byte seed) and a remote public key (raw 32-byte point), returning the
+// shared secret. It reconstructs the crypto/ecdh key objects from raw bytes,
+// the same shape every handshake and rekey site uses, so there is one place to
+// get the error handling and key parsing right. The caller must zero the
+// returned secret when done.
+func DH(localPriv, remotePub []byte) ([]byte, error) {
+	pub, err := ecdh.X25519().NewPublicKey(remotePub)
+	if err != nil {
+		return nil, fmt.Errorf("noise: invalid X25519 public key: %w", err)
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(localPriv)
+	if err != nil {
+		return nil, fmt.Errorf("noise: invalid X25519 private key: %w", err)
+	}
+	secret, err := priv.ECDH(pub)
+	if err != nil {
+		return nil, fmt.Errorf("noise: X25519 DH failed: %w", err)
+	}
+	return secret, nil
+}
+
+// RekeyMaterial is the fresh key-agreement output an in-band rekey carries
+// between the two peers. It is the bridge between the wire (the dh_pub /
+// mlkem_ct fields on RekeyRequest / RekeyAck) and CipherState.rekeyWithSecret.
+type RekeyMaterial struct {
+	// LocalEphemeralPriv is this side's fresh X25519 ephemeral private key.
+	// Held only until both directions have rotated, then zeroed.
+	LocalEphemeralPriv []byte
+	// PeerEphemeralPub is the peer's fresh X25519 ephemeral public key.
+	PeerEphemeralPub []byte
+	// PQSharedSecret is the fresh ML-KEM-1024 shared secret (nil in classic mode).
+	PQSharedSecret []byte
+}
+
+// DeriveRekeySecrets computes the (dhSecret, pqSecret) pair both peers feed into
+// CipherState.rekeyWithSecret. dhSecret is the X25519 ECDH of the two fresh
+// ephemerals; pqSecret is the ML-KEM shared secret established out-of-band
+// (encapsulated by the initiator, decapsulated by the responder), or nil for a
+// classical channel. Both inputs come from the same RekeyMaterial on each side,
+// so the two directions mix identical entropy — direction-distinctness comes
+// from each CipherState's own starting key. The caller must zero the returned
+// secrets once both directions have rotated.
+func DeriveRekeySecrets(m RekeyMaterial) (dhSecret, pqSecret []byte, err error) {
+	if len(m.LocalEphemeralPriv) != dhLen {
+		return nil, nil, fmt.Errorf("noise: rekey ephemeral private key wrong size: got %d, want %d", len(m.LocalEphemeralPriv), dhLen)
+	}
+	if len(m.PeerEphemeralPub) != dhLen {
+		return nil, nil, fmt.Errorf("noise: rekey peer ephemeral public key wrong size: got %d, want %d", len(m.PeerEphemeralPub), dhLen)
+	}
+	dhSecret, err = DH(m.LocalEphemeralPriv, m.PeerEphemeralPub)
+	if err != nil {
+		return nil, nil, err
+	}
+	return dhSecret, m.PQSharedSecret, nil
+}
+
+// EncapsulateRekeyPQ encapsulates a fresh ML-KEM-1024 shared secret under the
+// worker's static encapsulation key, returning (sharedSecret, ciphertext). The
+// initiator sends the ciphertext in the RekeyRequest; the responder decapsulates
+// it to recover the same shared secret. Empty mlkemPub returns (nil, nil) so a
+// classical channel skips PQ entropy uniformly. The caller must zero
+// sharedSecret once both directions have rotated.
+func EncapsulateRekeyPQ(mlkemPub []byte) (sharedSecret, ciphertext []byte, err error) {
+	if len(mlkemPub) == 0 {
+		return nil, nil, nil
+	}
+	ek, err := mlkem.NewEncapsulationKey1024(mlkemPub)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: parse ML-KEM encapsulation key: %w", err)
+	}
+	ss, ct := ek.Encapsulate()
+	return ss, ct, nil
 }
 
 // ---- Responder Handshake (Worker) ----
@@ -376,17 +682,9 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 	ss.mixHash(re)
 
 	// es: DH(s, re) — responder's static private with initiator's ephemeral.
-	reKey, err := ecdh.X25519().NewPublicKey(re)
+	dhES, err := DH(compositeKey.X25519Private, re)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid initiator ephemeral key: %w", err)
-	}
-	sPriv, err := ecdh.X25519().NewPrivateKey(compositeKey.X25519Private)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid responder static private key: %w", err)
-	}
-	dhES, err := sPriv.ECDH(reKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: es DH(responder static, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
@@ -404,7 +702,7 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 
 	// Write message 2: <- e, ee
 	// Generate responder ephemeral.
-	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	ePriv, err := GenerateEphemeralX25519()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
 	}
@@ -412,9 +710,9 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 	ss.mixHash(ePub)
 
 	// ee: DH(e, re).
-	dhEE, err := ePriv.ECDH(reKey)
+	dhEE, err := DH(ePriv.Bytes(), re)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: ee DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: ee DH(responder ephemeral, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhEE)
 	zeroBytes(dhEE)
@@ -468,7 +766,7 @@ func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeStat
 
 	// -> e, es
 	// Generate ephemeral keypair.
-	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	ePriv, err := GenerateEphemeralX25519()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
 	}
@@ -476,13 +774,9 @@ func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeStat
 	ss.mixHash(ePub)
 
 	// es: DH(e, rs).
-	rsKey, err := ecdh.X25519().NewPublicKey(remoteX25519Pub)
+	dhES, err := DH(ePriv.Bytes(), remoteX25519Pub)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid remote static public key: %w", err)
-	}
-	dhES, err := ePriv.ECDH(rsKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: es DH(initiator ephemeral, responder static): %w", err)
 	}
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
@@ -537,13 +831,9 @@ func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []
 	ss.mixHash(re)
 
 	// ee: DH(e, re).
-	reKey, err := ecdh.X25519().NewPublicKey(re)
+	dhEE, err := DH(hs.ePriv.Bytes(), re)
 	if err != nil {
-		return nil, fmt.Errorf("noise: invalid responder ephemeral key: %w", err)
-	}
-	dhEE, err := hs.ePriv.ECDH(reKey)
-	if err != nil {
-		return nil, fmt.Errorf("noise: ee DH failed: %w", err)
+		return nil, fmt.Errorf("noise: ee DH(initiator ephemeral, responder ephemeral): %w", err)
 	}
 	ss.mixKey(dhEE)
 	zeroBytes(dhEE)
@@ -592,17 +882,9 @@ func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) 
 	re := message1[:dhLen]
 	ss.mixHash(re)
 
-	reKey, err := ecdh.X25519().NewPublicKey(re)
+	dhES, err := DH(x25519Priv, re)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid initiator ephemeral key: %w", err)
-	}
-	sPriv, err := ecdh.X25519().NewPrivateKey(x25519Priv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid responder static private key: %w", err)
-	}
-	dhES, err := sPriv.ECDH(reKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: es DH(responder static, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
@@ -611,16 +893,16 @@ func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) 
 		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
 	}
 
-	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	ePriv, err := GenerateEphemeralX25519()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
 	}
 	ePub := ePriv.PublicKey().Bytes()
 	ss.mixHash(ePub)
 
-	dhEE, err := ePriv.ECDH(reKey)
+	dhEE, err := DH(ePriv.Bytes(), re)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: ee DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: ee DH(responder ephemeral, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhEE)
 	zeroBytes(dhEE)
@@ -643,20 +925,16 @@ func ClassicalInitiatorHandshake1(remoteX25519Pub []byte) (*HandshakeState, []by
 	ss.mixHash(nil)
 	ss.mixHash(remoteX25519Pub)
 
-	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	ePriv, err := GenerateEphemeralX25519()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
 	}
 	ePub := ePriv.PublicKey().Bytes()
 	ss.mixHash(ePub)
 
-	rsKey, err := ecdh.X25519().NewPublicKey(remoteX25519Pub)
+	dhES, err := DH(ePriv.Bytes(), remoteX25519Pub)
 	if err != nil {
-		return nil, nil, fmt.Errorf("noise: invalid remote static public key: %w", err)
-	}
-	dhES, err := ePriv.ECDH(rsKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+		return nil, nil, fmt.Errorf("noise: es DH(initiator ephemeral, responder static): %w", err)
 	}
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
@@ -685,13 +963,9 @@ func ClassicalInitiatorHandshake2(hs *HandshakeState, message2 []byte) (*Session
 	re := message2[:dhLen]
 	ss.mixHash(re)
 
-	reKey, err := ecdh.X25519().NewPublicKey(re)
+	dhEE, err := DH(hs.ePriv.Bytes(), re)
 	if err != nil {
-		return nil, fmt.Errorf("noise: invalid responder ephemeral key: %w", err)
-	}
-	dhEE, err := hs.ePriv.ECDH(reKey)
-	if err != nil {
-		return nil, fmt.Errorf("noise: ee DH failed: %w", err)
+		return nil, fmt.Errorf("noise: ee DH(initiator ephemeral, responder ephemeral): %w", err)
 	}
 	ss.mixKey(dhEE)
 	zeroBytes(dhEE)
@@ -713,6 +987,13 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// Zero overwrites a byte slice with zeros. It is the exported form of zeroBytes
+// for callers outside the package (channel / tunnel rekey orchestrators) that
+// must wipe fresh DH / ML-KEM secrets once both directions have rotated.
+func Zero(b []byte) {
+	zeroBytes(b)
 }
 
 // clear zeroes the symmetric state's sensitive fields after split/hybridSplit.
