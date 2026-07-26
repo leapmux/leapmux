@@ -190,13 +190,14 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
 
   // Branch-name UX. CreateBranch and CreateWorktree are mutually
   // exclusive radios that both render the same "Branch name" input +
-  // Randomize button. One shared typed signal keeps a user-entered value
-  // alive across a toggle, and one shared random slug is shown when the
-  // input is empty — clicking Randomize swaps the slug, which is visible
-  // in whichever mode is currently active.
-  const [typedBranchName, setTypedBranchName] = createSignal('')
-  const [randomSlug, setRandomSlug] = createSignal(generateSlug(3, { format: 'kebab' }))
-  const branchName = () => typedBranchName() || randomSlug()
+  // Randomize button. One shared signal holds the name (seeded with a
+  // random slug), staying alive across a toggle; Randomize swaps in a
+  // fresh slug, which is visible in whichever mode is currently active.
+  // The literal value is bound directly to the input, so clearing it
+  // leaves the field empty and surfaces the existing "must not be empty"
+  // validation — matching the NewWorkspace title field, rather than
+  // silently snapping back to a stored slug.
+  const [branchName, setBranchName] = createSignal(generateSlug(3, { format: 'kebab' }))
 
   // Branch list for switch-branch and base branch selector. Either driven
   // by the internal `ListGitBranches` fetcher OR seeded from the parent's
@@ -427,7 +428,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   }, { defer: true }))
 
   // Single uni-directional emit point: radio clicks and typed input
-  // changes flow through `setActiveMode` / `setTypedBranchName` / etc.
+  // changes flow through `setActiveMode` / `setBranchName` / etc.
   // → `intentFor` recomputes → this effect fires → parent's `setIntent`
   // lands. Dedup lives at the parent's signal (its `equals: shallowEqual`
   // skips notification for identity-equal intents) so no-op recomputes
@@ -435,8 +436,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   createEffect(() => props.onGitModeChange(intentFor(activeMode())))
 
   const randomizeBranch = () => {
-    setRandomSlug(generateSlug(3, { format: 'kebab' }))
-    setTypedBranchName('')
+    setBranchName(generateSlug(3, { format: 'kebab' }))
   }
 
   const renderDirtyWarning = (mode: GitMode) => (
@@ -478,7 +478,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
         <input
           type="text"
           value={branchName()}
-          onInput={e => setTypedBranchName(e.currentTarget.value)}
+          onInput={e => setBranchName(e.currentTarget.value)}
           placeholder="feature-branch"
         />
         <Show when={branchError()}>
