@@ -6,9 +6,11 @@ import {
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
+  SetWorkspaceRegisterOpSchema,
   SetWorkspaceRootNodeOpSchema,
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
+  TombstoneWorkspaceOpSchema,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
@@ -154,13 +156,16 @@ describe('applyOp', () => {
 
   // Regression pin: when the seed-batch `SetWorkspaceRootNode` op
   // arrives on a subscriber whose `OrgMaterialized` predated the
-  // workspace, `state.workspaces[wsID]` is absent — the hub seeds
-  // the record via `MutateInternal` which is NOT itself broadcast.
-  // The apply layer must lazy-create the record; without this the
-  // op was a silent no-op, `state.workspaces[wsID].rootNodeId` stayed
-  // empty, `seedTabIntoNewWorkspace` timed out, and the new
-  // workspace rendered an empty tile via the layout store's
-  // FALLBACK_LEAF instead of the real root.
+  // workspace, `state.workspaces[wsID]` is absent. The hub's lifecycle
+  // create batch seeds the record via a `SetWorkspaceRegisterOp` in the
+  // same batch, but a subscriber whose filter drops that seed batch (or
+  // a replay where the companion op was compacted away) reaches this op
+  // with no record. The apply layer must lazy-create the record;
+  // without this the op was a silent no-op,
+  // `state.workspaces[wsID].rootNodeId` stayed empty,
+  // `seedTabIntoNewWorkspace` timed out, and the new workspace rendered
+  // an empty tile via the layout store's FALLBACK_LEAF instead of the
+  // real root.
   it('setWorkspaceRootNode lazy-creates the workspace record when absent', () => {
     const state = newState('org')
     expect(state.workspaces.w1).toBeUndefined()
@@ -195,5 +200,81 @@ describe('applyOp', () => {
     }))
     // Set-once semantics: the second register must not overwrite.
     expect(state.workspaces.w1.rootNodeId).toBe('first-root')
+  })
+
+  // setWorkspaceRegister seeds the WorkspaceContentsRecord map entry. It is
+  // the lifecycle create op that now carries workspace-map membership through
+  // the serialized submit pipeline (replacing the old out-of-band
+  // MutateInternal). Mirrors backend `applySetWorkspaceRegister`.
+  it('setWorkspaceRegister seeds an empty workspace record', () => {
+    const state = newState('org')
+    expect(state.workspaces.w1).toBeUndefined()
+    applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'setWorkspaceRegister',
+        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+      },
+    }))
+    expect(state.workspaces.w1).toBeDefined()
+    expect(state.workspaces.w1.workspaceId).toBe('w1')
+    expect(state.workspaces.w1.rootNodeId).toBe('')
+  })
+
+  it('setWorkspaceRegister is idempotent and does not clobber a rooted record', () => {
+    // A re-drained create seed batch (after a transient consume fault) must
+    // not clear an existing root_node_id the user has since populated.
+    const state = newState('org')
+    applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'setWorkspaceRootNode',
+        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
+      },
+    }))
+    applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(20n, 0n, 'hub'),
+      body: {
+        case: 'setWorkspaceRegister',
+        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+      },
+    }))
+    expect(state.workspaces.w1.rootNodeId).toBe('root-w1')
+  })
+
+  // tombstoneWorkspace removes the WorkspaceContentsRecord map entry — the
+  // lifecycle delete op. Without an apply case the client would keep a stale
+  // record after a delete until reconnect; this pins that it removes it.
+  it('tombstoneWorkspace removes the workspace record', () => {
+    const state = newState('org')
+    applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'setWorkspaceRegister',
+        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+      },
+    }))
+    applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(20n, 0n, 'hub'),
+      body: {
+        case: 'tombstoneWorkspace',
+        value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w1' }),
+      },
+    }))
+    expect(state.workspaces.w1).toBeUndefined()
+  })
+
+  it('tombstoneWorkspace is idempotent on an already-absent workspace', () => {
+    // Re-draining a delete batch (after a consume fault) must be a no-op,
+    // not a throw on a missing key.
+    const state = newState('org')
+    expect(() => applyOp(state, create(OrgOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'tombstoneWorkspace',
+        value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w1' }),
+      },
+    }))).not.toThrow()
+    expect(state.workspaces.w1).toBeUndefined()
   })
 })

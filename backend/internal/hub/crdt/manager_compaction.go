@@ -28,12 +28,10 @@ func (m *Manager) tickHousekeeping(ctx context.Context) {
 }
 
 func (m *Manager) maybeAdvanceEpoch(ctx context.Context) {
-	// Hold stateWriteMu across the epoch read-modify-write so a concurrent
-	// MutateInternal (which may write current_epoch from a request goroutine)
-	// cannot race these bare reads or clobber the write below. See the
-	// stateWriteMu field on Manager.
-	m.stateWriteMu.Lock()
-	defer m.stateWriteMu.Unlock()
+	// maybeAdvanceEpoch runs on the manager goroutine (via tickHousekeeping),
+	// which is the sole writer of m.state, so the bare reads below need no
+	// lock beyond m.mu (taken for the final write to exclude the RLock
+	// readers).
 	if m.state.GetEpochStartedAt() == nil {
 		return
 	}

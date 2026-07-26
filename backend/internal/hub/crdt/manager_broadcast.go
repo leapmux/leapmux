@@ -66,6 +66,19 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 	// Pre == "" resolves to nil (IsAllowed("") is false for every filter, so no
 	// subscriber had the entity visible before the batch and the pre && !post
 	// caller condition can never fire for it).
+	//
+	// buildEntityRemovedEvent returns nil for an EntityKind with no Removed arm
+	// (notably EntityKindWorkspaceRoot — the proto EntityRemoved oneof has no
+	// workspace variant). A TombstoneWorkspace op no longer reaches this path:
+	// IsTombstoneOp includes it, so validate.go's post-pin records a stable
+	// {Pre: wsID, Post: wsID} transition (no OUT) and the op is delivered as
+	// the raw op via the Batch frame's EntityKindWorkspaceRoot arm (preVisible
+	// || postVisible). The `event != nil` guard mirrors materialized() below
+	// and is retained as defense-in-depth: if a future change re-introduces an
+	// EntityKindWorkspaceRoot OUT transition, the guard makes buildEntityRemovedEvent's
+	// nil a nil wrapper the caller skips instead of shipping a non-nil
+	// MarshaledEvent around a nil proto that marshals to a 0-byte WS frame
+	// (proto.Marshal(nil) → []byte{}).
 	removedCache := map[EntityRef]*MarshaledEvent{}
 	removed := func(ref EntityRef) *MarshaledEvent {
 		if evt, built := removedCache[ref]; built {
@@ -73,7 +86,9 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 		}
 		var evt *MarshaledEvent
 		if res.AffectedEntities[ref].Pre != "" {
-			evt = NewMarshaledEvent(buildEntityRemovedEvent(ref, atHLC))
+			if event := buildEntityRemovedEvent(ref, atHLC); event != nil {
+				evt = NewMarshaledEvent(event)
+			}
 		}
 		removedCache[ref] = evt
 		return evt
@@ -83,15 +98,13 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 	// subscriber that transitions INTO visibility (!pre && post) -- rare for the
 	// common in-place edit. Build them lazily and memoize (nil results included),
 	// so the clone happens at most once per ref and only when a subscriber needs
-	// it. Re-taking m.mu.RLock per first build is safe: the RLock is mutually
-	// exclusive with every writer of m.state's maps -- the manager goroutine's own
-	// commit swap (m.mu.Lock) and MutateInternal (m.mu.Lock, from the lifecycle-
-	// outbox consumer goroutine) -- so each read sees an un-torn map. And the only
-	// cross-goroutine writer, MutateInternal, mutates only the Workspaces map,
-	// which buildEntityMaterializedEvent never reads (it reads Tabs/Nodes/
-	// FloatingWindows), so per-ref materializations stay mutually consistent even
-	// across a concurrent lifecycle create/delete. buildEntityMaterializedEvent
-	// requires that read lock held.
+	// it. Re-taking m.mu.RLock per first build is safe: the manager goroutine is
+	// the sole writer of m.state, and its commit swap (m.state = working) takes
+	// m.mu.Lock, so each RLock read sees an un-torn map. (Workspace lifecycle
+	// create/delete now flow through SubmitInternal as
+	// SetWorkspaceRegisterOp / TombstoneWorkspaceOp on the manager goroutine,
+	// so there is no cross-goroutine writer of m.state.)
+	// buildEntityMaterializedEvent requires that read lock held.
 	materializedCache := map[EntityRef]*MarshaledEvent{}
 	materialized := func(ref EntityRef) *MarshaledEvent {
 		if evt, built := materializedCache[ref]; built {
@@ -330,8 +343,12 @@ func buildEntityMaterializedEvent(state *leapmuxv1.OrgCrdtState, ref EntityRef, 
 }
 
 // buildEntityRemovedEvent constructs the EntityRemoved wrapper for a
-// ref. Unlike Materialized, this is pure metadata (no state lookup) so
-// it never returns nil except for unrecognised kinds.
+// ref. Unlike Materialized, this is pure metadata (no state lookup).
+// Returns nil for an EntityKind the EntityRemoved oneof has no variant
+// for — EntityKindUnknown, and EntityKindWorkspaceRoot (workspace
+// membership has no per-entity Removed event; a TombstoneWorkspace op's
+// visibility transition is delivered as the raw op in the Batch frame).
+// Callers must nil-guard the result before wrapping (see removed()).
 func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchOrgEvent {
 	switch ref.Kind {
 	case EntityKindTab:

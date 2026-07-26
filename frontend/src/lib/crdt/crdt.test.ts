@@ -126,15 +126,15 @@ describe('crdt apply', () => {
   })
 
   // Regression: pre-fix, `applySetWorkspaceRootNode` early-returned
-  // when `state.workspaces[workspaceId]` was missing. The hub seeds
-  // an empty `WorkspaceContentsRecord` via MutateInternal before
-  // broadcasting the seed batch — but that internal mutation is not
-  // itself part of the broadcast. For any subscriber whose initial
-  // `OrgMaterialized` predated the workspace, the
-  // `SetWorkspaceRootNode` op is the FIRST signal that the workspace
-  // exists. The old early-return left `state.workspaces[wsId]`
-  // undefined, the agent tab seed waited forever for `rootNodeId !=
-  // ''`, and the new workspace appeared tile-less.
+  // when `state.workspaces[workspaceId]` was missing. The hub's
+  // lifecycle create batch seeds the record via a
+  // `SetWorkspaceRegisterOp` in the same batch as this op — but a
+  // subscriber whose filter drops that seed batch (or a replay where
+  // the companion op was compacted away) reaches this op with no
+  // record. The lazy-create is the bootstrap-replay safety net; the old
+  // early-return left `state.workspaces[wsId]` undefined, the agent tab
+  // seed waited forever for `rootNodeId != ''`, and the new workspace
+  // appeared tile-less.
   it('setWorkspaceRootNode lazy-creates the WorkspaceContentsRecord', () => {
     const state = newState('org')
     expect(state.workspaces.w1).toBeUndefined()

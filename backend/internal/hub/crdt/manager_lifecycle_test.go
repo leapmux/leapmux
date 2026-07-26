@@ -164,6 +164,24 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 	consumed := outbox.consumedSnapshot()
 	require.Contains(t, consumed, rowID)
 
+	// The seed batch landed on the journal with a SetWorkspaceRegister op
+	// FIRST (seeding the WorkspaceContentsRecord map entry in the same
+	// atomic batch as the root node + root assignment — no out-of-band
+	// m.state mutation). This is the crux of the #269 fix: workspace
+	// lifecycle create flows through the serialized submit pipeline.
+	var seedBatch *leapmuxv1.OpBatch
+	for _, b := range j.batches {
+		if b.GetBatchId() == "lifecycle-create-w1" {
+			seedBatch = b
+			break
+		}
+	}
+	require.NotNil(t, seedBatch, "lifecycle-create-w1 batch should be committed")
+	require.NotEmpty(t, seedBatch.GetOps())
+	_, isFirstSetWorkspaceRegister := seedBatch.GetOps()[0].GetBody().(*leapmuxv1.OrgOp_SetWorkspaceRegister)
+	assert.True(t, isFirstSetWorkspaceRegister,
+		"seed batch's first op should be SetWorkspaceRegister; got %T", seedBatch.GetOps()[0].GetBody())
+
 	// State has w1 with rootNodeId pointing at root-w1.
 	mat := mgr.Materialized(crdt.SubscriberFilter{})
 	require.Contains(t, mat.GetWorkspaces(), "w1")
@@ -267,6 +285,172 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	assert.Contains(t, mat.GetWorkspaces(), "w1", "the workspace must not be rolled back by a ROOT_IMMUTABLE re-drain")
 	assert.Equal(t, "root-w1", mat.GetWorkspaces()["w1"].GetRootNodeId(), "the root node must survive the re-drain")
 	assert.Contains(t, mat.GetNodes(), "root-w1", "the root node record must survive the re-drain")
+}
+
+// TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent pins the
+// create→delete→(DedupTTL expiry)→re-drain-create path: the re-drained create's
+// SetNodeRegister(root) op hits a root node the delete batch already tombstoned,
+// so the seed batch rejects with TOMBSTONED_TARGET (not ROOT_IMMUTABLE). Without
+// the TOMBSTONED_TARGET idempotent-success arm this rejection stalls the create
+// row permanently (it rejects on every subsequent drain) and, because
+// SubmitLifecycle marks the workspace blocked, defers every later same-workspace
+// row. The create already happened on the prior drain and has since been
+// deleted, so the rejection must be treated as idempotent success: consume the
+// row, do not re-add the workspace.
+func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing.T) {
+	outbox := newControllableOutbox()
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(100_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedOps := []*leapmuxv1.OrgOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "root-w1",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+		}}},
+		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			WorkspaceId: "w1", RootNodeId: "root-w1",
+		}}},
+	}
+	createPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "First", RootNodeID: "root-w1",
+	}, seedOps)
+	require.NoError(t, err)
+
+	// 1. Create W1, then delete it (the delete tombstones root-w1 and removes
+	//    the workspace record in one atomic batch).
+	rowCreate := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+	require.Contains(t, outbox.consumedSnapshot(), rowCreate)
+	deletePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
+	}, nil)
+	require.NoError(t, err)
+	rowDelete := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+	require.Contains(t, outbox.consumedSnapshot(), rowDelete)
+	raw := mgr.State()
+	require.NotContains(t, raw.GetWorkspaces(), "w1", "delete must remove the workspace record")
+	require.False(t, crdt.HLCIsZero(raw.GetNodes()["root-w1"].GetTombstoneAt()), "delete must tombstone root-w1")
+
+	// 2. Simulate DedupTTL expiry: clear the dedup table so the next drain
+	//    re-validates the create seed batch (fixed BatchId) instead of
+	//    short-circuiting on a dedup hit.
+	clockMu.Lock()
+	clockNow := clock
+	clockMu.Unlock()
+	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), time.UnixMilli(clockNow).Add(30*24*time.Hour))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, cleared, int64(1), "dedup rows must be expired to simulate >DedupTTL inactivity")
+
+	// 3. Re-drain the create (its prior consume "failed", leaving it pending).
+	//    The SetNodeRegister(root-w1) op now hits the tombstoned root node, so
+	//    the seed batch rejects with TOMBSTONED_TARGET. This must be treated as
+	//    idempotent success: no error, the row is consumed, the workspace stays
+	//    deleted (not resurrected).
+	rowRedrain := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox),
+		"a re-drained create whose root is tombstoned must be treated as idempotent success, not a permanent rejection")
+	require.Contains(t, outbox.consumedSnapshot(), rowRedrain, "the re-drained create row is consumed (no permanent rejection loop)")
+	raw = mgr.State()
+	require.NotContains(t, raw.GetWorkspaces(), "w1", "the re-drained create must NOT resurrect the deleted workspace")
+}
+
+// TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent is the parity
+// counterpart to TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent: it
+// pins that a delete batch re-drained after DedupTTL expiry (so dedup misses and
+// the batch re-validates) commits cleanly. This must hold because every op
+// enumerateWorkspaceDeleteOps emits is idempotent (TombstoneNode/Tab/FloatingWindow
+// pass preApplyTombstoneCheck's redundant-tombstone allowance; TombstoneWorkspace
+// is a hard delete of a key), so the re-validation sees the already-tombstoned
+// state and re-commits the same idempotent ops. Without this pin a future
+// non-idempotent op added to the delete enumeration would silently break delete
+// re-drain (the row would reject permanently, like the SWEEP-1 create stall).
+func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
+	outbox := newControllableOutbox()
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(100_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	// Create W1 so the delete has something to enumerate.
+	seedOps := []*leapmuxv1.OrgOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "root-w1",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+		}}},
+		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			WorkspaceId: "w1", RootNodeId: "root-w1",
+		}}},
+	}
+	createPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "First", RootNodeID: "root-w1",
+	}, seedOps)
+	require.NoError(t, err)
+	rowCreate := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+	require.Contains(t, outbox.consumedSnapshot(), rowCreate)
+
+	// First delete: commits, consumes the row.
+	deletePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
+	}, nil)
+	require.NoError(t, err)
+	rowDelete := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+	require.Contains(t, outbox.consumedSnapshot(), rowDelete)
+	raw := mgr.State()
+	require.NotContains(t, raw.GetWorkspaces(), "w1", "first delete must remove the workspace record")
+
+	// Simulate DedupTTL expiry: clear the dedup table so the next drain
+	// re-validates the delete batch (fixed BatchId) instead of short-circuiting.
+	clockMu.Lock()
+	clockNow := clock
+	clockMu.Unlock()
+	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), time.UnixMilli(clockNow).Add(30*24*time.Hour))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, cleared, int64(1), "dedup rows must be expired to simulate >DedupTTL inactivity")
+
+	// Re-drain the delete. Every op in the delete batch is idempotent, so the
+	// re-validation sees the already-tombstoned state and re-commits cleanly --
+	// no rejection, the row is consumed.
+	rowRedrain := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox),
+		"a re-drained delete batch whose ops are all idempotent must commit, not reject")
+	require.Contains(t, outbox.consumedSnapshot(), rowRedrain, "the re-drained delete row is consumed (no permanent rejection loop)")
+	raw = mgr.State()
+	require.NotContains(t, raw.GetWorkspaces(), "w1", "the re-drained delete must not resurrect the workspace")
 }
 
 // TestLifecycleCreate_SeedOpsReachExistingSubscriber pins the bug
@@ -659,6 +843,25 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 	outbox.push("org", crdt.LifecycleOpDelete, delPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
+	// The delete batch landed on the journal with a TombstoneWorkspace op
+	// LAST (removing the WorkspaceContentsRecord map entry in the same
+	// atomic batch as the subtree tombstones — no out-of-band m.state
+	// mutation). This is the crux of the #269 fix: workspace lifecycle
+	// delete flows through the serialized submit pipeline.
+	var delBatch *leapmuxv1.OpBatch
+	for _, b := range j.batches {
+		if b.GetBatchId() == "lifecycle-delete-w1" {
+			delBatch = b
+			break
+		}
+	}
+	require.NotNil(t, delBatch, "lifecycle-delete-w1 batch should be committed")
+	require.NotEmpty(t, delBatch.GetOps())
+	lastOp := delBatch.GetOps()[len(delBatch.GetOps())-1]
+	_, isLastTombstoneWorkspace := lastOp.GetBody().(*leapmuxv1.OrgOp_TombstoneWorkspace)
+	assert.True(t, isLastTombstoneWorkspace,
+		"delete batch's last op should be TombstoneWorkspace; got %T", lastOp.GetBody())
+
 	// Workspace map entry removed.
 	mat := mgr.Materialized(crdt.SubscriberFilter{})
 	assert.NotContains(t, mat.GetWorkspaces(), "w1")
@@ -679,6 +882,161 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 	assert.NotContains(t, mat.GetNodes(), "root-w1")
 	assert.NotContains(t, mat.GetNodes(), "leaf-1")
 	assert.NotContains(t, mat.GetTabs(), "tab-1")
+}
+
+// TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp covers the
+// path where a workspace has NO live content (no root node, tabs, or floating
+// windows — only the WorkspaceContentsRecord itself). enumerateWorkspaceDeleteOps
+// returns nil, but the delete batch still submits because the TombstoneWorkspaceOp
+// is always appended — so the batch is a single-op tombstone that removes the
+// record atomically. Pins that this path doesn't skip the batch or panic on an
+// empty combined slice.
+func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
+	outbox := newControllableOutbox()
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(200_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	// Seed w1's WorkspaceContentsRecord with NO root node (empty workspace)
+	// via SubmitInternal SetWorkspaceRegister — the lifecycle-create shape
+	// minus the root, keeping the manager goroutine the sole writer.
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		OrgID: "org",
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-record-w1", Ops: []*leapmuxv1.OrgOp{{
+			OpId: "seed-record-w1",
+			Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
+				WorkspaceId: "w1",
+			}},
+		}}}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "w1")
+
+	delPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
+	}, nil)
+	require.NoError(t, err)
+	outbox.push("org", crdt.LifecycleOpDelete, delPayload)
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+
+	// The delete batch landed as a single TombstoneWorkspace op.
+	var delBatch *leapmuxv1.OpBatch
+	for _, b := range j.batches {
+		if b.GetBatchId() == "lifecycle-delete-w1" {
+			delBatch = b
+			break
+		}
+	}
+	require.NotNil(t, delBatch, "lifecycle-delete-w1 batch should be committed")
+	require.Len(t, delBatch.GetOps(), 1, "empty-workspace delete batch should be a single TombstoneWorkspace op")
+	_, isTombstoneWorkspace := delBatch.GetOps()[0].GetBody().(*leapmuxv1.OrgOp_TombstoneWorkspace)
+	assert.True(t, isTombstoneWorkspace, "the single op should be TombstoneWorkspace")
+
+	// Workspace record is gone.
+	assert.NotContains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "w1")
+}
+
+// TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending
+// covers the SubmitInternal error arm of applyLifecycleCreate: a transient
+// journal commit fault (surfaced by SubmitInternal before any op applied) must
+// (a) propagate as an error, (b) leave the outbox row unconsumed so the next
+// drain retries, and (c) contract the optimistic filter expansion so a later
+// CanAccessWorkspace flip can't smuggle stale visibility through. No m.state
+// mutation lands (the batch never committed), so the workspace record stays
+// absent.
+func TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending(t *testing.T) {
+	outbox := newControllableOutbox()
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(150_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	// Subscriber whose filter does NOT yet admit w1.
+	listener := &captureSubscriber{}
+	listenerSub := &crdt.Subscriber{
+		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"unrelated-ws": true}},
+		Send:   listener.send,
+	}
+	_, unsub := mgr.Subscribe(listenerSub)
+	defer unsub()
+	require.False(t, listenerSub.Filter.IsAllowed("w1"), "precondition: filter excludes w1")
+
+	// Inject a transient commit fault so SubmitInternal fails after
+	// ExpandSubscribersForWorkspace already widened the filter.
+	j.mu.Lock()
+	j.commitErr = errCommitFailed
+	j.mu.Unlock()
+
+	seedOps := []*leapmuxv1.OrgOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "root-w1",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+		}}},
+		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			WorkspaceId: "w1", RootNodeId: "root-w1",
+		}}},
+	}
+	payload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "Fresh", RootNodeID: "root-w1",
+	}, seedOps)
+	require.NoError(t, err)
+	rowID := outbox.push("org", crdt.LifecycleOpCreate, payload)
+
+	drainErr := mgr.SubmitLifecycle(context.Background(), outbox)
+	require.Error(t, drainErr, "transient SubmitInternal failure must surface from SubmitLifecycle")
+
+	// Row NOT consumed — retries on the next drain.
+	require.NotContains(t, outbox.consumedSnapshot(), rowID,
+		"row must stay pending after a transient submit failure")
+
+	// Filter contracted back — no stale visibility leak.
+	assert.False(t, listenerSub.Filter.IsAllowed("w1"),
+		"filter must be contracted after the seed batch failed to commit")
+
+	// No m.state mutation landed — the workspace record is absent.
+	assert.NotContains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "w1",
+		"workspace record must not exist when the seed batch never committed")
+
+	// Clearing the fault and re-draining succeeds: the row is consumed and
+	// the workspace is seeded.
+	j.mu.Lock()
+	j.commitErr = nil
+	j.mu.Unlock()
+	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
+	require.Contains(t, outbox.consumedSnapshot(), rowID, "row consumed after the fault clears")
+	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "w1",
+		"workspace seeded on re-drain after the fault clears")
 }
 
 // TestLifecycleDelete_ThenCreate_NewSeedSucceeds is the regression

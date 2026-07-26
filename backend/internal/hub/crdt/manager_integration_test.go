@@ -37,6 +37,11 @@ func runManager(t *testing.T, orgID string, auth crdt.AuthChecker, nowSeed int64
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
+	// Wait until the goroutine is servicing the loop before returning, so any
+	// subsequent SeedStateForTest routes through the goroutine (the sole writer)
+	// instead of the pre-Start direct-write branch (which would race the
+	// goroutine's bare m.state reads). Mirrors the registry's internal wait.
+	mgr.WaitForStartForTest()
 	t.Cleanup(func() {
 		cancel()
 		mgr.Stop()
@@ -44,19 +49,20 @@ func runManager(t *testing.T, orgID string, auth crdt.AuthChecker, nowSeed int64
 	return mgr, j, cancel
 }
 
-// seedRootInternal seeds the workspace + root node via the lifecycle
-// path (manager-internal mutation + SubmitInternal SetWorkspaceRootNode).
+// seedRootInternal seeds the workspace record + root node via the lifecycle
+// path: a SetWorkspaceRegister op (seeds the WorkspaceContentsRecord) followed
+// by the root-node kind + root-assignment ops, all in one atomic batch — the
+// same shape as the production applyLifecycleCreate seed. Routing the record
+// seed through SubmitInternal keeps the manager goroutine the sole writer of
+// m.state (no off-goroutine MutateInternal write).
 func seedRootInternal(t *testing.T, mgr *crdt.Manager, workspaceID, rootID string) {
 	t.Helper()
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
-		s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+	setRegister := &leapmuxv1.OrgOp{
+		OpId: "seed-workspace-register-" + workspaceID,
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
 			WorkspaceId: workspaceID,
-			RootNodeId:  "",
-		}
-		if s.GetEpochStartedAt() == nil {
-			s.EpochStartedAt = nil
-		}
-	})
+		}},
+	}
 	rootKind := &leapmuxv1.OrgOp{
 		OpId: "seed-root-kind-" + workspaceID,
 		Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
@@ -73,7 +79,7 @@ func seedRootInternal(t *testing.T, mgr *crdt.Manager, workspaceID, rootID strin
 	}
 	results, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
 		OrgID:   "org",
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: []*leapmuxv1.OrgOp{rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: []*leapmuxv1.OrgOp{setRegister, rootKind, rootRegister}}},
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
@@ -102,40 +108,285 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 	}
 }
 
-// The lifecycle-outbox consumer calls MutateInternal (workspace add/delete) on a
-// request goroutine while the manager goroutine reads m.state.Workspaces bare in
-// ValidateBatch -> registeredRoots. Without stateWriteMu serializing the two, a
-// client submit racing a workspace create/delete is a Go-fatal "concurrent map
-// read and map write" that kills the Hub. This hammers both paths; it must run
-// clean (and clean under -race) with the fix.
-func TestManager_MutateInternalRacesClientSubmit(t *testing.T) {
+// TestManager_LifecycleOpsSerializeWithClientSubmit exercises the model that
+// replaced the old out-of-band MutateInternal: workspace lifecycle create/delete
+// now flow through SubmitInternal as SetWorkspaceRegisterOp / TombstoneWorkspaceOp,
+// so the manager goroutine stays the SOLE writer of m.state and its bare
+// Workspaces reads in ValidateBatch -> registeredRoots stay race-free WITHOUT a
+// stateWriteMu across the DB commit.
+//
+// This hammers concurrent client Submit (which iterates m.state.Workspaces bare
+// in ValidateBatch) against the lifecycle-outbox drain (which now mutates
+// Workspaces via internal submit ops). It must run clean -- and clean under
+// -race -- with no "concurrent map read and map write", and the churned
+// workspaces must end absent (every create was paired with a delete).
+func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 	mgr, _, _ := runManager(t, "org", allowAll{}, 900_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
-	const iterations = 1500
+	outbox := newControllableOutbox()
+	const iterations = 400
 	var wg sync.WaitGroup
 	wg.Add(2)
-	// Manager goroutine: each Submit validates against m.state, iterating Workspaces.
+	// Client path: each Submit validates against m.state, iterating Workspaces
+	// bare in registeredRoots. Ops target the stable root1 so they commit.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_, _ = mgr.Submit(context.Background(), crdt.SubmitInput{
+			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
 				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
 					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
 			})
+			// require (not assert): a Submit error returns (nil, err), and the
+			// next line indexes res[0] -- assert continues on failure and would
+			// nil-deref into a panic instead of a clean failure.
+			require.NoError(t, err)
+			require.NotNil(t, res[0].GetCommitted(), "client submit should commit; got %v", res[0])
 		}
 	}()
-	// Request goroutine: in-place workspace add/delete via MutateInternal.
+	// Lifecycle path: stage create+delete rows for fresh workspaces and drain
+	// them through SubmitLifecycle (the production request-goroutine entry).
+	// Every Workspaces mutation here goes through the manager goroutine as an
+	// internal submit op -- never an out-of-band write.
+	var (
+		lifecycleErrMu sync.Mutex
+		lastLifecycle  error
+	)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			id := "churn-" + strconv.Itoa(i)
-			mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+			ws := "churn-" + strconv.Itoa(i)
+			root := "root-" + strconv.Itoa(i)
+			createPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+				OpType: crdt.LifecycleOpCreate, WorkspaceID: ws, RootNodeID: root,
+			}, []*leapmuxv1.OrgOp{
+				{OpId: "seed-kind-" + ws, Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+					NodeId: root, Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+				}}},
+				{OpId: "seed-root-" + ws, Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+					WorkspaceId: ws, RootNodeId: root,
+				}}},
+			})
+			require.NoError(t, err)
+			outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+			deletePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+				OpType: crdt.LifecycleOpDelete, WorkspaceID: ws,
+			}, nil)
+			require.NoError(t, err)
+			outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+			// Drain after each pair so the create lands before the delete
+			// enumerates it (deletion of a not-yet-created workspace would
+			// skip the tombstone batch and leave the record seeded by create).
+			// Capture the error so a permanently-failing lifecycle path fails
+			// the test instead of the assertion below passing tautologically.
+			if err := mgr.SubmitLifecycle(context.Background(), outbox); err != nil {
+				lifecycleErrMu.Lock()
+				lastLifecycle = err
+				lifecycleErrMu.Unlock()
+			}
+		}
+	}()
+	wg.Wait()
+
+	// The lifecycle path must have committed (otherwise the absence of churned
+	// workspaces below would be tautological -- it holds whether the create
+	// committed-then-deleted OR never committed at all). Assert the final drain
+	// succeeded and the outbox is fully consumed.
+	lifecycleErrMu.Lock()
+	require.NoError(t, lastLifecycle, "lifecycle drain must not error (a permanently-failing create/delete would make the workspace-absence assertion below tautological)")
+	lifecycleErrMu.Unlock()
+	pending, err := outbox.ListPendingLifecycleOutbox(context.Background(), "org")
+	require.NoError(t, err)
+	require.Empty(t, pending, "every pushed create+delete row must be consumed (a non-empty outbox means the lifecycle path did not commit)")
+
+	// Every churned workspace was created then deleted; none may remain in
+	// state. The seed workspace w1 must be untouched.
+	state := mgr.Materialized(crdt.SubscriberFilter{})
+	for ws := range state.GetWorkspaces() {
+		if ws == "w1" {
+			continue
+		}
+		t.Fatalf("churned workspace %q still present after paired create/delete", ws)
+	}
+}
+
+// TestManager_SeedStateForTest_RunsOnManagerGoroutine pins the property
+// MutateInternal lacked: a SeedStateForTest write of m.state cannot race a
+// concurrent client Submit's bare m.state reads in ValidateBatch, because the
+// seed runs ON the manager goroutine (the sole writer). Hammer both paths in
+// parallel; under -race this must stay clean (the old off-goroutine
+// MutateInternal was a latent "concurrent map read and map write").
+func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
+	mgr, _, _ := runManager(t, "org", allowAll{}, 800_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	const iterations = 400
+	var wg sync.WaitGroup
+	wg.Add(2)
+	// Client path: each Submit iterates m.state.Workspaces bare in
+	// registeredRoots (no m.mu) on the manager goroutine.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
+					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
+			})
+			// require (not assert): a Submit error returns (nil, err), and the
+			// next line indexes res[0] -- assert continues on failure and would
+			// nil-deref into a panic instead of a clean failure.
+			require.NoError(t, err)
+			require.NotNil(t, res[0].GetCommitted(), "client submit should commit; got %v", res[0])
+		}
+	}()
+	// Seed path: each SeedStateForTest write of m.state.Workspaces runs on the
+	// manager goroutine — serialized with the client submits, never racing them.
+	// The final iteration leaves a sentinel workspace in place (no paired
+	// delete) so the post-condition assertion below is non-tautological: a
+	// buggy seedCh arm that silently dropped fn would leave the sentinel
+	// absent, failing the test, instead of the absence-of-churned check
+	// passing whether or not seeds applied.
+	const sentinel = "seed-sentinel"
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			id := "seed-" + strconv.Itoa(i)
+			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 				s.Workspaces[id] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: id}
 			})
-			mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
+			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
+		}
+		// A final seed with no paired delete: must persist, proving seeds land.
+		mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+			s.Workspaces[sentinel] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: sentinel}
+		})
+	}()
+	wg.Wait()
+
+	// The sentinel proves SeedStateForTest actually applied fn (non-tautological
+	// evidence the seed path committed). w1 (the seeded root) must be untouched;
+	// every other churned seed was paired with a delete.
+	state := mgr.Materialized(crdt.SubscriberFilter{})
+	require.Contains(t, state.GetWorkspaces(), sentinel,
+		"sentinel seed (no paired delete) must persist -- its presence proves SeedStateForTest applied fn, making this assertion non-tautological")
+	require.Contains(t, state.GetWorkspaces(), "w1", "the seeded root w1 must be untouched")
+	for ws := range state.GetWorkspaces() {
+		if ws == "w1" || ws == sentinel {
+			continue
+		}
+		t.Fatalf("seeded workspace %q still present after paired seed/delete", ws)
+	}
+}
+
+// TestManager_SeedStateForTest_PreStart covers the pre-Start branch
+// (started=false): SeedStateForTest runs fn directly under m.mu.Lock, mirroring
+// Bootstrap's no-concurrent-reader assumption. This is the registry-factory
+// shape, where state is seeded before the goroutine launches.
+func TestManager_SeedStateForTest_PreStart(t *testing.T) {
+	j := newFakeJournal()
+	mgr := crdt.NewManager("org", j, allowAll{}, nil, func() time.Time { return time.UnixMilli(1) })
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+
+	// Seed BEFORE Start — the !started branch.
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+		s.Workspaces["pre-w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "pre-w1"}
+	})
+	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "pre-w1",
+		"pre-Start SeedStateForTest must seed the record")
+
+	// Start the goroutine and confirm the seed survived. WaitForStartForTest
+	// ensures the goroutine is servicing the loop before the post-Start seed
+	// below runs, so that seed routes through the goroutine (not the pre-Start
+	// direct-write branch, which would race the just-launched goroutine).
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+	mgr.WaitForStartForTest()
+	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "pre-w1",
+		"pre-Start seed must survive Start")
+
+	// A post-Start seed runs via the goroutine and lands too.
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+		s.Workspaces["post-w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "post-w1"}
+	})
+	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "post-w1",
+		"post-Start SeedStateForTest must seed the record via the goroutine")
+}
+
+// TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace is the regression pin
+// for the FOOTGUNS-6 race: Registry.Get spawns `go Start()` and returns, so
+// without Get waiting on started(), a caller that immediately calls
+// SeedStateForTest could observe started==false (Start hasn't closed it yet) and
+// write m.state on the caller's goroutine while the manager goroutine runs
+// ValidateBatch's bare (lock-free) read of m.state.Workspaces -- a Go-fatal
+// "concurrent map read and map write" (the exact crash this refactor exists to
+// eliminate). Get now waits on started() internally, so the post-Get seed always
+// routes through the goroutine. This test hammers the post-Get seed against a
+// concurrent client submit and must stay clean under -race.
+func TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace(t *testing.T) {
+	j := newFakeJournal()
+	var (
+		clockMu sync.Mutex
+		clock   = int64(700_000)
+	)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock++
+		return time.UnixMilli(clock)
+	}
+	var mgr *crdt.Manager
+	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
+		m := crdt.NewManager("org", j, allowAll{}, nil, now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		mgr = m
+		return m, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	// Get spawns the manager goroutine and returns only once it is servicing
+	// the loop (the internal started() wait).
+	_, err := registry.Get(context.Background(), "org")
+	require.NoError(t, err)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	const iterations = 300
+	var wg sync.WaitGroup
+	wg.Add(2)
+	// Client path: each Submit reads m.state.Workspaces bare in registeredRoots.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
+					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, res[0].GetCommitted(), "client submit should commit; got %v", res[0])
+		}
+	}()
+	// Seed path: post-Get SeedStateForTest must route through the goroutine
+	// (never the pre-Start direct-write branch), so it cannot race the bare
+	// reads the client path is issuing.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			id := "rg-" + strconv.Itoa(i)
+			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+				s.Workspaces[id] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: id}
+			})
+			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
 		}
 	}()
 	wg.Wait()
@@ -224,13 +475,14 @@ func TestManager_RestartReplay(t *testing.T) {
 // renders and the frontend times out at 30s":
 //
 // The workspace's WorkspaceContentsRecord placeholder is added to
-// `state.Workspaces` via non-journaled MutateInternal in
-// applyLifecycleCreate. The seed batch's SetWorkspaceRootNodeOp is
-// journaled and re-applied on Bootstrap replay; but its apply path
-// (applySetWorkspaceRootNode) silently dropped the op when the
-// placeholder was missing. So on Bootstrap-from-empty-snapshot the
-// workspace record vanished and the frontend's awaitWorkspaceBootstrap
-// polled `workspaces[wsID].rootNodeId` forever.
+// `state.Workspaces` by the SetWorkspaceRegisterOp in the lifecycle
+// create seed batch (journaled alongside the SetWorkspaceRootNodeOp).
+// On Bootstrap replay the seed batch re-applies; but applySetWorkspaceRootNode
+// silently dropped the op when the placeholder was missing — so on
+// Bootstrap-from-empty-snapshot (an op log written before
+// SetWorkspaceRegisterOp existed), the workspace record vanished and the
+// frontend's awaitWorkspaceBootstrap polled `workspaces[wsID].rootNodeId`
+// forever.
 //
 // The contract: after restart, the workspace record (and its
 // root_node_id register) MUST survive replay; the projection
@@ -423,7 +675,9 @@ func TestManager_StaleEpoch_Rejected(t *testing.T) {
 	currentEpoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Bump the in-memory epoch by 2 directly; emulates 28 days of advance.
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	// SeedStateForTest (not an op batch — no op writes CurrentEpoch; only
+	// maybeAdvanceEpoch does) routes the write through the manager goroutine.
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.CurrentEpoch = currentEpoch + 2
 	})
 
@@ -1090,8 +1344,9 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 	require.NotNil(t, first[0].GetCommitted())
 
 	// Advance current_epoch by 2; the dedup row's stored epoch is now
-	// `current_epoch - 2`, outside the one-epoch grace window.
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) { s.CurrentEpoch = epoch + 2 })
+	// `current_epoch - 2`, outside the one-epoch grace window. SeedStateForTest
+	// (no op writes CurrentEpoch) routes the write through the manager goroutine.
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { s.CurrentEpoch = epoch + 2 })
 	newEpoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	require.Equal(t, epoch+2, newEpoch)
 

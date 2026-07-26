@@ -105,20 +105,19 @@ type Manager struct {
 
 	mu    sync.RWMutex
 	state *leapmuxv1.OrgCrdtState
-	// stateWriteMu serializes every writer of m.state against each other: the
-	// manager goroutine's read-modify-swap in processSubmit / maybeAdvanceEpoch
-	// and MutateInternal's in-place write from the lifecycle-consumer request
-	// goroutine. The manager goroutine reads m.state's maps BARE (it is normally
-	// the sole writer), so without this an out-of-band MutateInternal add/delete of
-	// a workspace would race those bare reads in ValidateBatch / DiffProjectionForBatch
-	// -- a Go-fatal "concurrent map read and map write" that crashes the Hub -- and
-	// could be clobbered by the commit swap. m.mu still guards the maps against the
-	// RLock readers (Materialized, currentEpoch, broadcast). Lock order: stateWriteMu
-	// is outermost (stateWriteMu -> projection -> m.mu); nothing takes projection or
-	// m.mu and then stateWriteMu, so there is no inversion.
-	stateWriteMu sync.Mutex
-	subscribers  *SubscriberController
-	projection   sync.Mutex
+	// The manager goroutine (Start's select loop) is the SOLE writer of
+	// m.state: every mutation -- including workspace lifecycle create/delete,
+	// which flows through SubmitInternal as SetWorkspaceRegisterOp /
+	// TombstoneWorkspaceOp -- goes through processSubmit / maybeAdvanceEpoch on
+	// that one goroutine. That makes the bare m.state map reads in
+	// ValidateBatch / DiffProjectionForBatch legitimately lock-free.
+	// m.mu (RWMutex) guards m.state only against the RLock readers
+	// (Materialized, currentEpoch, broadcast, WithStateRLock) and the commit
+	// swap (m.state = working). The lone non-production writer is
+	// SeedStateForTest, which also runs on the manager goroutine (via seedCh)
+	// so it cannot race those bare reads; see its doc.
+	subscribers *SubscriberController
+	projection  sync.Mutex
 	// subscribeExpandMu serializes SubscribeWithACL's resolve+register against
 	// ExpandSubscribersForWorkspace's read-ACL-then-apply (workspace create).
 	// Without it, a subscriber that resolved its filter BEFORE a concurrent
@@ -133,15 +132,14 @@ type Manager struct {
 	// goroutine, so without this two mutations in the same org drain
 	// concurrently -- and the per-row apply logic is written against a single
 	// sequential consumer (contractSubscribersForWorkspace's single-key-delete
-	// safety argument, applyLifecycleCreate's optimistic state add, and the
-	// fixed "lifecycle-<op>-<ws>" batch ids all assume a create and a delete of
-	// the same workspace are never in flight at once). It is held across
-	// ListPending too, so a drain that starts while another is in flight
-	// observes the first drain's consume-marks instead of re-listing and
-	// re-applying its rows. Lock order: lifecycleMu is outermost of the
-	// lifecycle path (lifecycleMu -> stateWriteMu / subscribeExpandMu ->
-	// projection -> m.mu); nothing acquires lifecycleMu while holding another
-	// manager lock.
+	// safety argument, applyLifecycleCreate's filter expand + seed batch, and
+	// the fixed "lifecycle-<op>-<ws>" batch ids all assume a create and a
+	// delete of the same workspace are never in flight at once). It is held
+	// across ListPending too, so a drain that starts while another is in
+	// flight observes the first drain's consume-marks instead of re-listing
+	// and re-applying its rows. Lock order: lifecycleMu is outermost of the
+	// lifecycle path (lifecycleMu -> subscribeExpandMu -> projection -> m.mu);
+	// nothing acquires lifecycleMu while holding another manager lock.
 	lifecycleMu sync.Mutex
 	// undecodableLogged tracks lifecycle_outbox row IDs whose decode failure has
 	// already been logged at Error, so a row whose MarkLifecycleOutboxConsumed
@@ -178,8 +176,25 @@ type Manager struct {
 
 	submitCh   chan submitJob
 	internalCh chan submitJob
-	stop       chan struct{}
-	done       chan struct{}
+	// seedCh carries SeedStateForTest closures to the manager goroutine, so
+	// test seeds of m.state run on the sole writer (see seedJob). Unbuffered:
+	// SeedStateForTest blocks until the goroutine services the job, giving the
+	// seed a happens-before edge against any later submit's bare reads.
+	seedCh chan seedJob
+	// startedOnce closes startedChan exactly once, the first time Start runs,
+	// BEFORE the select loop begins servicing jobs. startedChan is the readiness
+	// signal the registry waits on before handing the manager out, so any caller
+	// that observes the manager after Get sees started() as closed and routes its
+	// seed through the goroutine (the sole writer) rather than the pre-Start
+	// direct-write branch -- closing the race the old atomic.Bool left open (Get
+	// spawned `go Start()` and returned before Start had set the flag, so a
+	// post-Get SeedStateForTest could read started==false and write m.state on
+	// the caller's goroutine while the manager goroutine was already doing bare
+	// reads in ValidateBatch).
+	startedOnce sync.Once
+	startedChan chan struct{}
+	stop        chan struct{}
+	done        chan struct{}
 	// stopOnce makes Stop safe to call concurrently: two callers (e.g. the
 	// registry's Shutdown and a test, or SweepIdle racing a manual Stop) would
 	// otherwise both pass the select-default arm and both close(m.stop), the
@@ -327,6 +342,15 @@ type submitResponse struct {
 	err     error
 }
 
+// seedJob carries a SeedStateForTest closure through the manager goroutine.
+// Running the seed on that goroutine makes the write mechanically
+// single-writer: it cannot race the goroutine's bare m.state reads in
+// ValidateBatch / DiffProjectionForBatch. done is closed once fn has run.
+type seedJob struct {
+	fn   func(*leapmuxv1.OrgCrdtState)
+	done chan struct{}
+}
+
 type presenceJob struct {
 	workspaceID string
 	clientID    string
@@ -379,6 +403,8 @@ func NewManager(orgID string, journal Journal, auth AuthChecker, logger *slog.Lo
 		clearGrace:  PresenceClearGrace,
 		submitCh:    make(chan submitJob, 64),
 		internalCh:  make(chan submitJob, 16),
+		seedCh:      make(chan seedJob),
+		startedChan: make(chan struct{}),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
 		subscribers: newSubscriberController(),
@@ -411,7 +437,7 @@ func (m *Manager) Bootstrap(ctx context.Context) error {
 		}
 	}
 	m.clock.Observe(state.GetMaxHlc())
-	m.state = state
+	m.commitState(state)
 	// Stamp activity so a freshly-bootstrapped manager isn't eligible
 	// for immediate eviction. The registry's idle-eviction window
 	// applies from the bootstrap moment onward; without this, a manager
@@ -437,6 +463,13 @@ func (m *Manager) Bootstrap(ctx context.Context) error {
 // deferred wait below ensures the presence loop is fully torn down
 // before the main loop's close(m.done) wakes Stop's waiter.
 func (m *Manager) Start(ctx context.Context) error {
+	// Signal readiness exactly once, before the loop begins servicing jobs.
+	// The registry waits on started() before handing this manager out, so any
+	// caller observing the manager post-Get routes its seed through seedCh (the
+	// sole writer) instead of the pre-Start direct-write branch -- closing the
+	// race the old atomic.Bool left open (Get spawned `go Start()` and returned
+	// before Start had set the flag).
+	m.startedOnce.Do(func() { close(m.startedChan) })
 	defer close(m.done)
 	presenceExited := make(chan struct{})
 	go func() {
@@ -458,10 +491,52 @@ func (m *Manager) Start(ctx context.Context) error {
 			job.respCh <- m.processSubmit(ctx, job)
 		case job := <-m.internalCh:
 			job.respCh <- m.processSubmit(ctx, job)
+		case job := <-m.seedCh:
+			// SeedStateForTest seed: run on this goroutine (the sole writer).
+			// The race-safety against processSubmit / DiffProjectionForBatch
+			// comes from same-goroutine sequencing (these are select cases on
+			// one loop, so the goroutine is never mid-ValidateBatch while
+			// servicing a seed); m.mu.Lock additionally excludes the
+			// cross-goroutine RLock readers (Materialized, currentEpoch,
+			// broadcast) while the maps change. Deferred unlock + close(done)
+			// so a panicking test seed neither leaves m.mu locked for the RLock
+			// readers nor wedges the caller on <-done; the panic itself still
+			// propagates (crashing the goroutine) so a buggy seed is visible,
+			// but Start's defer close(m.done) runs first so Stop's waiter and
+			// the caller's <-done both release.
+			func() {
+				defer func() {
+					m.mu.Unlock()
+					close(job.done)
+				}()
+				m.mu.Lock()
+				job.fn(m.state)
+			}()
 		case <-ticker.C:
 			m.tickHousekeeping(ctx)
 		}
 	}
+}
+
+// started returns a channel that is closed the first time Start runs, before
+// its select loop begins servicing jobs. Callers can wait on it to observe that
+// the manager goroutine is (or was, before a Stop) servicing the loop -- a
+// stronger signal than a bare atomic flag, because the registry waits on it
+// before handing the manager out. The channel is never re-opened, so after Stop
+// it stays closed (callers that need to distinguish "stopped" from "never
+// started" consult done, which Start closes on return).
+func (m *Manager) started() <-chan struct{} {
+	return m.startedChan
+}
+
+// WaitForStartForTest blocks until Start has been called and its select loop is
+// servicing jobs (or Start has returned). Test harnesses that spawn Start in a
+// goroutine and then call SeedStateForTest must wait on this first, otherwise
+// SeedStateForTest's pre-Start branch could run on the test goroutine racing
+// the just-spawned manager goroutine's bare reads. The registry's Get already
+// waits internally, so callers that obtain the manager via Get do not need this.
+func (m *Manager) WaitForStartForTest() {
+	<-m.startedChan
 }
 
 // touchActivity stamps the manager as freshly active. Called on every
@@ -765,12 +840,13 @@ func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitRespon
 		return submitResponse{err: fmt.Errorf("manager %q received submit for org %q", m.orgID, in.OrgID)}
 	}
 
-	// Hold stateWriteMu across this submit's read-modify-write of m.state so an
-	// out-of-band MutateInternal (a lifecycle create/delete on a request goroutine)
-	// cannot interleave with the bare m.state map reads in ValidateBatch /
-	// DiffProjectionForBatch or the commit swap below. See the stateWriteMu field.
-	m.stateWriteMu.Lock()
-	defer m.stateWriteMu.Unlock()
+	// This submit's read-modify-write of m.state runs on the manager goroutine,
+	// which is the sole writer -- so the bare m.state map reads in ValidateBatch
+	// / DiffProjectionForBatch and the commit swap below need no extra lock
+	// beyond m.mu (which guards the RLock readers and the swap itself).
+	// Workspace lifecycle create/delete now flow through SubmitInternal as
+	// SetWorkspaceRegisterOp / TombstoneWorkspaceOp, so no out-of-band writer
+	// remains.
 
 	// 1. epoch_required + stale_epoch (request-level).
 	if !job.internal {
@@ -1012,10 +1088,23 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 		return fmt.Errorf("commit batch: %w", err)
 	}
 
-	m.mu.Lock()
-	m.state = working
-	m.mu.Unlock()
+	m.commitState(working)
 	return nil
+}
+
+// commitState is the SOLE mutator of m.state: it swaps in a new generation
+// under m.mu.Lock, excluding the RLock readers (Materialized, currentEpoch,
+// broadcast, WithStateRLock) for the duration of the pointer swap. Routing
+// every state replacement through this one method makes the single-writer
+// invariant structurally visible -- the only places that assign m.state are
+// Bootstrap (pre-Start, before the goroutine exists) and commit (on the
+// manager goroutine, after a validated batch). A future debug path that tried
+// to assign m.state directly would have to add a third call site here, which
+// is exactly the review checkpoint the invariant needs.
+func (m *Manager) commitState(state *leapmuxv1.OrgCrdtState) {
+	m.mu.Lock()
+	m.state = state
+	m.mu.Unlock()
 }
 
 // State returns a deep clone of the current state. Used by tests +
@@ -1069,29 +1158,58 @@ func (m *Manager) currentEpoch() int64 {
 	return m.state.GetCurrentEpoch()
 }
 
-// MutateInternal lets the lifecycle outbox consumer mutate manager-internal
-// state (workspaces map, current_epoch) from a request goroutine. It takes
-// stateWriteMu — the same lock processSubmit / maybeAdvanceEpoch hold across the
-// manager goroutine's read-modify-write of m.state — so an in-place write here
-// cannot race the manager goroutine's bare m.state reads (a concurrent map
-// read+write) nor be clobbered by the commit swap. m.mu still excludes the RLock
-// readers (Materialized, currentEpoch, broadcast) while the maps change.
+// SeedStateForTest runs fn against m.state as the sole writer, so the write
+// cannot race the manager goroutine's bare m.state reads in ValidateBatch /
+// DiffProjectionForBatch. It is a TEST-ONLY seam for seeds that genuinely
+// cannot be a valid op batch — e.g. bumping CurrentEpoch to exercise a
+// stale-epoch gate (no op writes CurrentEpoch; only maybeAdvanceEpoch does) or
+// constructing a record with hand-picked LWW HLCs that bypass the LWW-merge
+// path. Every workspace-record seed that CAN be an op batch should go through
+// SubmitInternal as a SetWorkspaceRegisterOp, mirroring the production
+// lifecycle create path.
 //
-// Do NOT call this from the manager goroutine itself (inside processSubmit /
-// maybeAdvanceEpoch): those already hold stateWriteMu, so re-taking it would
-// deadlock. maybeCompact -- the other tickHousekeeping arm -- does NOT hold
-// stateWriteMu, but it never races this method: it touches m.state only under
-// m.mu (RLock to clone, Lock to advance the monotonic watermark / prune
-// tombstones), and runs on the same single Start-loop goroutine as
-// processSubmit, so it cannot overlap the manager goroutine's bare m.state
-// reads. The lifecycle-outbox consumer runs on the request goroutine, which is
-// the intended caller.
-func (m *Manager) MutateInternal(fn func(state *leapmuxv1.OrgCrdtState)) {
-	m.stateWriteMu.Lock()
-	defer m.stateWriteMu.Unlock()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	fn(m.state)
+// Once Start has been called, fn runs ON the manager goroutine (via seedCh)
+// under m.mu.Lock — the same goroutine that owns the bare reads, so there is
+// no cross-goroutine write to race them. The registry waits on started()
+// before handing the manager out, so any caller that observes the manager via
+// Get routes its seed through the goroutine (closing the race an off-goroutine
+// pre-Start write would otherwise open). Before Start has been called (the
+// registry-factory shape, where the seed runs inside the factory closure
+// before Get spawns the goroutine), fn runs directly under m.mu.Lock,
+// mirroring Bootstrap's no-concurrent-reader assumption.
+//
+// fn MUST NOT call back into Submit / SubmitInternal / SeedStateForTest: those
+// channel sends would be made from the manager goroutine that is supposed to
+// receive on them, deadlocking the sole consumer.
+//
+// After Stop, the goroutine has exited and the seedCh send falls through to
+// <-m.done, so a post-Stop SeedStateForTest returns without running fn (it
+// cannot race, but it also cannot seed) rather than wedging the caller.
+//
+// Test-only: production state writes flow exclusively through SubmitInternal.
+func (m *Manager) SeedStateForTest(fn func(state *leapmuxv1.OrgCrdtState)) {
+	select {
+	case <-m.startedChan:
+		// Start has been called: route through the manager goroutine (the sole
+		// writer). The select on m.done returns if the goroutine has since
+		// exited (Stop) instead of wedging the caller on the unbuffered seedCh.
+		done := make(chan struct{})
+		select {
+		case m.seedCh <- seedJob{fn: fn, done: done}:
+			<-done
+		case <-m.done:
+		}
+	default:
+		// Start has not been called: no manager goroutine exists to race, so
+		// run fn directly under m.mu (mirrors Bootstrap). Safe only from the
+		// registry-factory shape, where this runs inside the factory closure
+		// before Get spawns Start; a direct caller that spawned `go Start()`
+		// and then reached this branch would race the goroutine it just
+		// launched -- route through the registry instead.
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		fn(m.state)
+	}
 }
 
 func rejectAll(batches []*leapmuxv1.OpBatch, reason leapmuxv1.BatchRejectionReason, opID string) submitResponse {

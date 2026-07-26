@@ -177,6 +177,81 @@ func TestValidate_HubOnlyOp_RejectsClient(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 }
 
+// SetWorkspaceRegisterOp / TombstoneWorkspaceOp are the lifecycle create/delete
+// ops that now carry workspace-map membership through the serialized pipeline.
+// Both must be rejected as HUB_ONLY_OP when a client sends them (only the
+// internal lifecycle path may submit them) and accepted under internal=true.
+func TestValidate_SetWorkspaceRegister_HubOnlyGate(t *testing.T) {
+	pre := crdt.NewState("org")
+	op := &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "ws-reg", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		},
+	}
+	// Client path (internal=false): rejected as hub-only.
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
+
+	// Internal path (internal=true): accepted.
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "hub", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason)
+	require.NotNil(t, working)
+	assert.Contains(t, working.GetWorkspaces(), "w1", "internal SetWorkspaceRegisterOp should seed the record")
+}
+
+func TestValidate_TombstoneWorkspace_HubOnlyGate(t *testing.T) {
+	// Seed a workspace record with NO live root node, so removing the
+	// record alone doesn't orphan anything (the lifecycle delete path
+	// always pairs TombstoneWorkspace with the subtree tombstones; this
+	// isolates the hub-only gate from the completeness check).
+	pre := crdt.NewState("org")
+	pre.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1"}
+	op := &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "ws-del", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		},
+	}
+	// Client path (internal=false): rejected as hub-only.
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
+
+	// Internal path (internal=true): accepted, record removed.
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "hub", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason)
+	require.NotNil(t, working)
+	assert.NotContains(t, working.GetWorkspaces(), "w1", "internal TombstoneWorkspaceOp should remove the record")
+}
+
+// TestValidate_HubOnlyOps_RejectEveryClientArm pins that EVERY hub-only op
+// body is rejected as HUB_ONLY_OP on the client path. The hub-only gate is
+// the access boundary that keeps clients from seeding/removing workspace
+// records or re-assigning roots directly; this table-driven guard fails if
+// a future hub-only op is added to the proto without a matching arm in
+// validateSetOnce (it would slip through as UNSPECIFIED on the client path).
+func TestValidate_HubOnlyOps_RejectEveryClientArm(t *testing.T) {
+	hlc := hlcAt(10, 0, "a")
+	hubOnlyOps := map[string]*leapmuxv1.OrgOp{
+		"SetWorkspaceRootNode": {OrgId: "org", OpId: "root", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{
+			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1"},
+		}},
+		"SetWorkspaceRegister": {OrgId: "org", OpId: "reg", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		}},
+		"TombstoneWorkspace": {OrgId: "org", OpId: "del", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		}},
+	}
+	for name, op := range hubOnlyOps {
+		t.Run(name, func(t *testing.T) {
+			res, _ := crdt.ValidateBatch(context.Background(), crdt.NewState("org"), []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+			assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason,
+				"client-sent %s must be rejected as hub-only", name)
+		})
+	}
+}
+
 func TestValidate_TabIDCollisionAcrossTypes(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	// First op claims tab_id=X under TAB_TYPE_AGENT.

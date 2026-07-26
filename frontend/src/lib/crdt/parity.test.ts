@@ -9,6 +9,7 @@ import {
   NodeRecordSchema,
 
   TabRecordSchema,
+  WorkspaceContentsRecordSchema,
 } from '~/generated/leapmux/v1/org_crdt_pb'
 import {
 
@@ -16,7 +17,9 @@ import {
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
+  SetWorkspaceRegisterOpSchema,
   TombstoneTabOpSchema,
+  TombstoneWorkspaceOpSchema,
 } from '~/generated/leapmux/v1/org_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
@@ -26,6 +29,9 @@ import { applyOp, newState } from './apply'
  * canonicalizeState helper: sort each map's keys, marshal each entry
  * with deterministic binary proto, concatenate. The hex output is
  * suitable for byte-equal comparison between independent runs.
+ *
+ * Covers the workspaces map (section 04) just like the backend helper, so
+ * SetWorkspaceRegister / TombstoneWorkspace convergence is observable.
  */
 function canonicalize(state: OrgCrdtState): string {
   const parts: string[] = []
@@ -41,6 +47,10 @@ function canonicalize(state: OrgCrdtState): string {
   parts.push('|03:')
   for (const k of Object.keys(state.floatingWindows).sort()) {
     parts.push(`${k}=${bytesToHex(toBinary(FloatingWindowRecordSchema, state.floatingWindows[k]))};`)
+  }
+  parts.push('|04:')
+  for (const k of Object.keys(state.workspaces).sort()) {
+    parts.push(`${k}=${bytesToHex(toBinary(WorkspaceContentsRecordSchema, state.workspaces[k]))};`)
   }
   return parts.join('')
 }
@@ -173,5 +183,38 @@ describe('parity', () => {
       }) },
     })
     expect(canonicalize(applyAll([posOp]))).toBe(canonicalize(applyAll([negOp])))
+  })
+
+  // Workspace lifecycle create/delete now flow through the op log as
+  // SetWorkspaceRegister / TombstoneWorkspace. Workspace IDs are fresh
+  // nanoids per CreateWorkspace and soft-deleted IDs are never recycled,
+  // so a register and a tombstone for the SAME workspace id never co-occur
+  // in a real op log — the commuting case is independent workspaces, which
+  // this pins: permuting creates/deletes of distinct workspaces converges.
+  it('workspace register/tombstone ops on distinct ids converge under any permutation', () => {
+    const ops: OrgOp[] = [
+      create(OrgOpSchema, {
+        canonicalHlc: hlc(10n, 0n, 'hub'),
+        body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }) },
+      }),
+      create(OrgOpSchema, {
+        canonicalHlc: hlc(20n, 0n, 'hub'),
+        body: { case: 'tombstoneWorkspace', value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w2' }) },
+      }),
+      create(OrgOpSchema, {
+        canonicalHlc: hlc(30n, 0n, 'hub'),
+        body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w3' }) },
+      }),
+    ]
+    const baseline = canonicalize(applyAll(ops))
+    for (let i = 0; i < 50; i++) {
+      const got = canonicalize(applyAll(shuffle(ops, i)))
+      expect(got).toBe(baseline)
+    }
+    // w1 and w3 seeded, w2 tombstoned (was never created) — final state.
+    const final = applyAll(ops).workspaces
+    expect(final.w1).toBeDefined()
+    expect(final.w2).toBeUndefined()
+    expect(final.w3).toBeDefined()
   })
 })

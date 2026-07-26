@@ -119,6 +119,21 @@ func (r *Registry) Get(ctx context.Context, orgID string) (*Manager, error) {
 			r.logger.Error("manager exited", "org_id", orgID, "err", err)
 		}
 	}()
+	// Wait until the goroutine has started servicing the select loop before
+	// handing the manager out. SeedStateForTest's post-Start branch routes a
+	// seed through seedCh, which only the manager goroutine drains -- without
+	// this wait, Get would return with the goroutine spawned but not yet
+	// servicing, and a caller that won the race to read started()==closed
+	// (set inside Start) could route through seedCh before the receiver
+	// existed. The wait also guarantees any caller observing the manager
+	// post-Get sees started() closed, so its SeedStateForTest takes the
+	// goroutine-routed branch instead of the pre-Start direct-write branch
+	// (which would race the goroutine's bare m.state reads).
+	select {
+	case <-m.started():
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return m, nil
 }
 

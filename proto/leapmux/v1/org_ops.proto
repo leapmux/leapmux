@@ -40,6 +40,8 @@ message OrgOp {
     SetFloatingWindowRegisterOp set_floating_window_register  = 14;
     TombstoneFloatingWindowOp   tombstone_floating_window     = 15;
     SetWorkspaceRootNodeOp      set_workspace_root_node       = 16;
+    SetWorkspaceRegisterOp      set_workspace_register        = 17;
+    TombstoneWorkspaceOp        tombstone_workspace           = 18;
   }
 }
 
@@ -105,6 +107,28 @@ message TombstoneFloatingWindowOp { string window_id = 1; }
 message SetWorkspaceRootNodeOp {
   string workspace_id = 1;
   string root_node_id = 2;
+}
+
+// SetWorkspaceRegisterOp seeds the WorkspaceContentsRecord map entry for a
+// freshly created workspace (root_node_id empty). Hub-only — submitted
+// exclusively via the internal lifecycle create path (the first op in the
+// create seed batch, so the record exists when the accompanying
+// SetWorkspaceRootNodeOp applies); rejected as hub_only_op when sent by a
+// client. Idempotent: re-applying on a workspace that already exists is a
+// no-op (it never overwrites an existing record, so a rooted workspace is
+// never clobbered).
+message SetWorkspaceRegisterOp {
+  string workspace_id = 1;
+}
+
+// TombstoneWorkspaceOp removes the WorkspaceContentsRecord map entry for a
+// deleted workspace. Hub-only — submitted exclusively via the internal
+// lifecycle delete path (appended to the workspace's tombstone batch, so
+// the record is removed in the same atomic batch as its contents);
+// rejected as hub_only_op when sent by a client. Idempotent: deleting an
+// already-absent workspace is a no-op.
+message TombstoneWorkspaceOp {
+  string workspace_id = 1;
 }
 
 // SubmitOpsRequest groups one or more atomic OpBatches in a single

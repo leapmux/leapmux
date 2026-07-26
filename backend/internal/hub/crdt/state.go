@@ -72,8 +72,10 @@ func PruneTombstonesAtOrBelow(state *leapmuxv1.OrgCrdtState, watermark *leapmuxv
 }
 
 // NewState returns an empty OrgCrdtState seeded with the given org id.
-// The workspaces map is initialized empty; lifecycle paths add entries
-// via manager-internal mutation, not via the op log.
+// The workspaces map is initialized empty; the lifecycle create/delete
+// paths add and remove entries via SetWorkspaceRegisterOp /
+// TombstoneWorkspaceOp in the op log (the same serialized pipeline every
+// other op flows through).
 func NewState(orgID string) *leapmuxv1.OrgCrdtState {
 	return &leapmuxv1.OrgCrdtState{
 		OrgId:           orgID,
@@ -123,6 +125,10 @@ func Apply(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) {
 		applyTombstoneFloatingWindow(state, body.TombstoneFloatingWindow, canon)
 	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
 		applySetWorkspaceRootNode(state, body.SetWorkspaceRootNode)
+	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+		applySetWorkspaceRegister(state, body.SetWorkspaceRegister)
+	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+		applyTombstoneWorkspace(state, body.TombstoneWorkspace)
 	}
 }
 
@@ -362,11 +368,18 @@ func applySetWorkspaceRootNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetW
 	wsID := op.GetWorkspaceId()
 	rec, ok := state.Workspaces[wsID]
 	if !ok {
-		// Live-session path: the lifecycle outbox seeds an empty entry
-		// via MutateInternal before submitting this op. Bootstrap-replay
-		// path: that MutateInternal is non-journaled, so on restart the
-		// op arrives with no placeholder; we must create the record here
-		// or `state.Workspaces[wsID]` stays absent and the subscriber's
+		// Live-session path: the lifecycle create batch seeds the record
+		// via a SetWorkspaceRegisterOp in the SAME batch as this op, so
+		// `rec` is normally already present when this runs. This lazy
+		// create is the bootstrap-replay safety net for op logs written
+		// before SetWorkspaceRegisterOp existed: on restart such a log is
+		// replayed against a state blob, and a SetWorkspaceRootNode op
+		// with no companion register would arrive with no placeholder.
+		// (Compaction can't strand the op this way — SetWorkspaceRegister
+		// and SetWorkspaceRootNode share one atomic batch, and compaction
+		// drops whole batches, never single ops; PruneTombstonesAtOrBelow
+		// never touches the Workspaces map.) Without creating the record
+		// here, `state.Workspaces[wsID]` stays absent and the subscriber's
 		// projection never surfaces the workspace's root_node_id (the
 		// frontend's awaitWorkspaceBootstrap then polls forever and
 		// surfaces the 30s "Workspace load timed out" toast).
@@ -382,6 +395,33 @@ func applySetWorkspaceRootNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetW
 	if rec.GetRootNodeId() == "" {
 		rec.RootNodeId = op.GetRootNodeId()
 	}
+}
+
+// applySetWorkspaceRegister seeds the WorkspaceContentsRecord map entry
+// for a workspace (root_node_id empty). Idempotent: a workspace that
+// already exists is left untouched, so a re-drained create seed batch
+// (after a transient consume fault) never clobbers a workspace the user
+// has since rooted or populated. The accompanying SetWorkspaceRootNodeOp
+// in the same batch fills root_node_id.
+func applySetWorkspaceRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetWorkspaceRegisterOp) {
+	wsID := op.GetWorkspaceId()
+	if wsID == "" {
+		return
+	}
+	if _, exists := state.Workspaces[wsID]; !exists {
+		state.Workspaces[wsID] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: wsID}
+	}
+}
+
+// applyTombstoneWorkspace removes the WorkspaceContentsRecord map entry.
+// Idempotent: deleting an already-absent workspace is a no-op, so a
+// re-drained delete batch (after a transient consume fault) is safe.
+func applyTombstoneWorkspace(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneWorkspaceOp) {
+	wsID := op.GetWorkspaceId()
+	if wsID == "" {
+		return
+	}
+	delete(state.Workspaces, wsID)
 }
 
 // CloneState returns a deep copy of an OrgCrdtState. Used by paths

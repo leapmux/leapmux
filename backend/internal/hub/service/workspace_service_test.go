@@ -373,7 +373,7 @@ func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
 	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
 
 	env := setupLocateTileEnv(t, orgID)
-	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
 		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
 	})
@@ -412,7 +412,7 @@ func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
 
 	env := setupLocateTileEnv(t, orgID)
-	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
 		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
 		s.Nodes["mid-1"] = &leapmuxv1.NodeRecord{NodeId: "mid-1", ParentId: "root-1"}
@@ -440,7 +440,7 @@ func TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound(t *testing.T)
 	forbiddenWS := storetest.SeedWorkspace(t, st, orgID, user.ID, "Forbidden")
 
 	env := setupLocateTileEnv(t, orgID)
-	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Workspaces[forbiddenWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: forbiddenWS, RootNodeId: "root-forbidden"}
 		s.Nodes["root-forbidden"] = &leapmuxv1.NodeRecord{NodeId: "root-forbidden"}
 	})
@@ -482,7 +482,7 @@ func TestWorkspaceService_LocateTile_DelegationUsesPinnedWorkspaceOrg(t *testing
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 	_, err := registry.Get(context.Background(), agentOrgID)
 	require.NoError(t, err)
-	mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Workspaces[pinned] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: pinned, RootNodeId: "root-pinned"}
 		s.Nodes["root-pinned"] = &leapmuxv1.NodeRecord{NodeId: "root-pinned"}
 	})
@@ -513,7 +513,7 @@ func TestWorkspaceService_LocateTile_ForeignWorkspaceTileIsNotFound(t *testing.T
 	secretWS := storetest.SeedWorkspace(t, st, ownerOrg, owner.ID, "Secret")
 
 	registry, managers := newMultiOrgRegistry(t, homeOrg, ownerOrg)
-	managers[ownerOrg].MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+	managers[ownerOrg].SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
 		s.Workspaces[secretWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: secretWS, RootNodeId: "root-secret"}
 		s.Nodes["root-secret"] = &leapmuxv1.NodeRecord{NodeId: "root-secret"}
 	})
@@ -561,7 +561,7 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 }
 
 // locateTileEnv bundles a registry-backed manager so each LocateTile
-// test can seed the in-memory state via MutateInternal without
+// test can seed the in-memory state via SeedStateForTest without
 // driving real lifecycle events through the journal.
 type locateTileEnv struct {
 	mgr      *crdt.Manager
@@ -616,7 +616,7 @@ func TestWorkspaceService_LocateTile_TransientOrgErrorWithNoMatchIsRetryable(t *
 
 // newMultiOrgRegistry builds a CRDT registry that lazily serves an independent
 // (memory-journal, allow-all-auth) manager per allowed org, and eagerly creates
-// each so tests can MutateInternal state before the RPC. Returns the registry and
+// each so tests can SeedStateForTest state before the RPC. Returns the registry and
 // the orgID -> Manager map. Any org not in orgIDs is rejected by the factory, so a
 // test that walks an unexpected org fails loudly rather than silently.
 func newMultiOrgRegistry(t *testing.T, orgIDs ...string) (*crdt.Registry, map[string]*crdt.Manager) {

@@ -205,6 +205,10 @@ func opKindName(op *leapmuxv1.OrgOp) string {
 		return "tombstone_floating_window"
 	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
 		return "set_workspace_root_node"
+	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+		return "set_workspace_register"
+	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+		return "tombstone_workspace"
 	}
 	return "unknown"
 }

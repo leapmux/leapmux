@@ -136,6 +136,64 @@ func TestApply_ParentIdSetOnce(t *testing.T) {
 	assert.Equal(t, "P1", state.Nodes["n1"].GetParentId())
 }
 
+func TestApply_SetWorkspaceRegister_SeedsEmptyRecord(t *testing.T) {
+	state := crdt.NewState("org")
+	crdt.Apply(state, &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "seed-w1", CanonicalHlc: hlcAt(1, 0, "hub"),
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		},
+	})
+	rec, ok := state.Workspaces["w1"]
+	require.True(t, ok, "workspace record should be seeded")
+	assert.Equal(t, "w1", rec.GetWorkspaceId())
+	assert.Empty(t, rec.GetRootNodeId(), "root_node_id should start empty")
+}
+
+func TestApply_SetWorkspaceRegister_IdempotentDoesNotClobberRootedRecord(t *testing.T) {
+	// A rooted workspace (root_node_id already set by SetWorkspaceRootNodeOp
+	// or seeded directly) must NOT be clobbered by a re-drained create seed
+	// whose SetWorkspaceRegisterOp re-applies after a transient consume fault.
+	state := crdt.NewState("org")
+	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{
+		WorkspaceId: "w1", RootNodeId: "root1",
+	}
+	crdt.Apply(state, &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "reseed-w1", CanonicalHlc: hlcAt(2, 0, "hub"),
+		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		},
+	})
+	assert.Equal(t, "root1", state.Workspaces["w1"].GetRootNodeId(),
+		"a re-applied SetWorkspaceRegisterOp must not clear an existing root_node_id")
+}
+
+func TestApply_TombstoneWorkspace_RemovesRecord(t *testing.T) {
+	state := crdt.NewState("org")
+	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1", RootNodeId: "root1"}
+	crdt.Apply(state, &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
+		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		},
+	})
+	_, ok := state.Workspaces["w1"]
+	assert.False(t, ok, "workspace record should be removed")
+}
+
+func TestApply_TombstoneWorkspace_IdempotentOnAbsent(t *testing.T) {
+	// Deleting a workspace whose record is already gone (re-drain after a
+	// consume fault) must be a no-op, not a panic.
+	state := crdt.NewState("org")
+	crdt.Apply(state, &leapmuxv1.OrgOp{
+		OrgId: "org", OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
+		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+		},
+	})
+	assert.Empty(t, state.Workspaces)
+}
+
 func TestApply_NegativeZeroNormalization(t *testing.T) {
 	state := crdt.NewState("org")
 	// math.Copysign(0, -1) is the only portable way to construct
