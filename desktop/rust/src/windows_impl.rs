@@ -94,14 +94,14 @@ mod tests {
     use crate::frame::{
         get_sidecar_info_request, read_frame, read_frame_async, write_frame, write_frame_async,
     };
+    use crate::sidecar::write_sidecar_metadata;
     use crate::sidecar_ipc::{
         connect_sidecar_endpoint, dev_sidecar_endpoint, dev_sidecar_metadata_path_in,
         endpoint_holder_pid, is_sidecar_gone, require_peer_sid, require_same_user_pipe_peer,
         sanitize_sid_for_pipe, sidecar_identity,
     };
     use crate::tests::sidecar_info;
-    use crate::{SIDECAR_PROTOCOL_VERSION};
-    use crate::sidecar::write_sidecar_metadata;
+    use crate::SIDECAR_PROTOCOL_VERSION;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
