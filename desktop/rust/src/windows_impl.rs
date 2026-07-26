@@ -13,11 +13,12 @@ use tokio::net::windows::named_pipe::NamedPipeClient;
 use crate::frame::{read_frame_async, write_frame_async};
 use crate::proto;
 use crate::sidecar_ipc::{
-    connect_sidecar_endpoint_async, pipe_runtime, SyncPipeReader, SyncPipeWriter,
+    connect_sidecar_endpoint_async, pipe_runtime, SidecarReader, SidecarWriter, SyncPipeReader,
+    SyncPipeWriter,
 };
 use crate::{
-    check_response, get_sidecar_info_request, sidecar_info_from_response, SidecarReader,
-    SidecarWriter, DEV_SIDECAR_HANDSHAKE_TIMEOUT,
+    check_response, get_sidecar_info_request, sidecar_info_from_response,
+    DEV_SIDECAR_HANDSHAKE_TIMEOUT,
 };
 
 /// The Windows twin of the unix `connect_and_handshake_dev_sidecar`. Runs the
@@ -99,7 +100,8 @@ mod tests {
         sanitize_sid_for_pipe, sidecar_identity,
     };
     use crate::tests::sidecar_info;
-    use crate::{write_sidecar_metadata, SIDECAR_PROTOCOL_VERSION};
+    use crate::{SIDECAR_PROTOCOL_VERSION};
+    use crate::sidecar::write_sidecar_metadata;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
