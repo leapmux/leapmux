@@ -312,6 +312,28 @@ var remoteCloseLockBudget = 5 * time.Second
 // remoteCloseSendBudget bounds the best-effort CloseTunnelConn send itself.
 var remoteCloseSendBudget = 5 * time.Second
 
+// remoteCloseSendAttempts is the max number of SendRPCNoWait attempts
+// sendCloseTunnelConn makes for a single close. A transient failure (a momentarily
+// full send window, a brief WebSocket write hiccup with the channel still alive)
+// used to permanently drop the close, leaking the worker-side conn until channel
+// death (or, for a half-closed conn, until the worker's idle reaper). A bounded
+// retry -- gated on the channel still being alive, so it does not spin against a
+// dead channel -- recovers the common transient-loss case in ~RTT. It is a var so
+// tests can shorten it. Matches Conn.CloseWrite's "leave closeWriteSent false so a
+// caller can retry after a transient failure" contract, internalized here because
+// sendCloseTunnelConn is fire-and-forget with no caller to retry it.
+//
+// The loop ALWAYS makes at least one attempt (the first send runs before the
+// attempt-count guard), so a value <= 1 means "send once, do not retry" rather
+// than "send nothing"; the close is best-effort and the worker's idle reaper is
+// the ultimate bound, so suppressing it entirely is never the intent.
+var remoteCloseSendAttempts = 3
+
+// remoteCloseSendBackoff is the delay between CloseTunnelConn send attempts. Short
+// on purpose: the transient losses this recovers (a briefly-full send window)
+// clear in well under a round-trip. var so tests can shorten it.
+var remoteCloseSendBackoff = 50 * time.Millisecond
+
 // sendRemoteClose tells the worker to tear down its half of the conn.
 //
 // It tries to order the close after every prior write by reading the write
@@ -348,29 +370,73 @@ func (tc *Conn) readWriteSeqForClose() (seq uint64, ok bool) {
 // sendCloseTunnelConn marshals and sends CloseTunnelConn. forceful reports that
 // the close could not be ordered (writeMu timed out), for logging only -- the
 // wire message is the same shape, just with seq 0 so the worker force-closes.
+//
+// Retries transient send failures up to remoteCloseSendAttempts, gated on the
+// channel still being alive: a SendRPCNoWait failure while the channel is live is
+// transient (a momentarily-full send window, a brief WebSocket write hiccup) and
+// a retry recovers it, but a failure because the channel closed is permanent and
+// retrying would just spin. A dropped close leaks the worker-side conn -- until
+// channel death, or, for a half-closed conn, until the worker's idle reaper
+// (halfCloseIdleTimeout) -- so the retry shrinks the common transient-loss leak
+// window to ~RTT instead of the reaper's 60s. Attempts and backoff stay inside
+// remoteCloseSendBudget via the per-call context timeout.
 func (tc *Conn) sendCloseTunnelConn(seq uint64, forceful bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteCloseSendBudget)
 	defer cancel()
+	// Capture the tuning vars at call start, like the half-close sweeper does, so a
+	// test restoring them in cleanup cannot race a per-iteration global read. (Go
+	// runs non-parallel tests sequentially, so this is latent today, but matching
+	// the sweeper's discipline keeps the two global-var-driven loops in the diff
+	// consistent.)
+	attempts := remoteCloseSendAttempts
+	backoff := remoteCloseSendBackoff
 	payload, err := proto.Marshal(&leapmuxv1.CloseTunnelConnRequest{ConnId: tc.connID, Seq: seq})
 	if err != nil {
 		slog.Warn("tunnel conn close not sent: marshal failed",
 			"conn_id", tc.connID, "error", err)
 		return
 	}
-	// Log rather than discard: a dropped close leaks the worker-side conn, and a
-	// silent drop leaves nothing to diagnose it with. There is no retry -- the conn
-	// is already gone locally, and the channel's own death reaps the worker side.
-	// Bounding the leak with a per-conn idle reaper is tracked in
-	// https://github.com/leapmux/leapmux/issues/318.
-	if _, err := tc.ch.SendRPCNoWait(ctx, "CloseTunnelConn", payload, RPCHandlers{}); err != nil {
-		if forceful {
-			slog.Warn("tunnel conn forceful close not sent",
-				"conn_id", tc.connID, "error", err)
-		} else {
-			slog.Warn("tunnel conn graceful close not sent",
-				"conn_id", tc.connID, "error", err)
+	var lastErr error
+	attempt := 0
+	mode := "graceful"
+	if forceful {
+		mode = "forceful"
+	}
+sendLoop:
+	for {
+		attempt++
+		_, err := tc.ch.SendRPCNoWait(ctx, "CloseTunnelConn", payload, RPCHandlers{})
+		if err == nil {
+			return // delivered
+		}
+		lastErr = err
+		// Stop retrying once the budget is exhausted or the channel is gone. A
+		// closed channel makes every subsequent send fail, so retrying would spin
+		// to the attempt limit for nothing. The FIRST attempt always runs (even
+		// against a closing channel) because the worker side of a canceled open
+		// may still need tearing down and SendRPCNoWait queues/drains where it can.
+		if ctx.Err() != nil || tc.ch.Context().Err() != nil {
+			break
+		}
+		if attempt >= attempts {
+			break
+		}
+		// Transient failure on a live channel: back off and retry. The budget ctx
+		// bounds the total wait, so a slow backoff just exits sooner.
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			break sendLoop
+		case <-timer.C:
 		}
 	}
+	// Log rather than silently drop: a dropped close leaks the worker-side conn
+	// (until channel death, or the worker's idle reaper for a half-closed conn),
+	// and a silent drop leaves nothing to diagnose it with. The mode and the last
+	// error identify whether the graceful/forceful variant failed and why.
+	slog.Warn("tunnel conn close not sent",
+		"conn_id", tc.connID, "mode", mode, "attempts", attempt, "error", lastErr)
 }
 
 // unregister detaches the conn from its channel: it drops the channel's handlers
