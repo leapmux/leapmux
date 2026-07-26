@@ -391,3 +391,98 @@ describe('gitOptions activeMode ownership', () => {
     expect(screen.getByLabelText('Use current state')).toBeInTheDocument()
   })
 })
+
+describe('gitOptions branch name field', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(workerRpc.listGitBranches).mockResolvedValue({
+      $typeName: 'leapmux.v1.ListGitBranchesResponse',
+      branches: [],
+      currentBranch: 'main',
+    })
+    vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue({
+      $typeName: 'leapmux.v1.ListGitWorktreesResponse',
+      worktrees: [],
+    })
+  })
+
+  // Regression guard for the `|| randomSlug()` fallback that used to live
+  // in the derived branchName() accessor: clearing the seeded random name
+  // snapped the displayed value back to the stored slug, so the field
+  // could never be empty and the "must not be empty" validation never
+  // fired. The single-signal model now binds the literal value to the
+  // input (matching the NewWorkspace title field), so an empty input
+  // stays empty and surfaces the validation error instead of resetting.
+  it('keeps the field empty and shows an error when the default name is cleared', async () => {
+    const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[GitMode.CreateBranch]}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+
+    const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
+    // Seeded with a non-empty random slug.
+    expect(input.value).not.toBe('')
+
+    // Clear the field. The fix removes the `|| randomSlug()` fallback, so
+    // the value must stay empty rather than snapping back to the slug.
+    fireEvent.input(input, { target: { value: '' } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(input.value).toBe('')
+
+    // The existing validateBranchName('') error is now reachable and must
+    // render the message below the field (same UX as the NewWorkspace
+    // title field).
+    expect(screen.getByText('Branch name must not be empty')).toBeInTheDocument()
+  })
+
+  // The single-signal refactor changed Randomize from "swap the stored
+  // slug AND clear the typed value" to "replace the field's value". The
+  // observable difference is the post-clear case: after the user empties
+  // the field, Randomize must repopulate it with a fresh slug (and clear
+  // the now-stale empty-name error) rather than leaving it blank because
+  // the empty typed value kept winning the old `||` fallback.
+  it('repopulates the field with a fresh random name on Randomize after clearing', async () => {
+    const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[GitMode.CreateBranch]}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+
+    const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
+    fireEvent.input(input, { target: { value: '' } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(input.value).toBe('')
+
+    // Randomize must write a fresh slug back into the single signal,
+    // displacing the empty value and clearing the validation error. The
+    // button's `title` surfaces as an aria-label via Tooltip.
+    fireEvent.click(screen.getByLabelText('Generate random name'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(input.value).not.toBe('')
+    expect(screen.queryByText('Branch name must not be empty')).not.toBeInTheDocument()
+  })
+})
