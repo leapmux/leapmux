@@ -271,7 +271,13 @@ func TestTunnelReadLoopClosesIdleTargetWithChannelContext(t *testing.T) {
 // worker, shared across every channel session).
 func TestTunnelReadLoopHalfCloseEvictsOnLifetimeCancel(t *testing.T) {
 	manager := newTunnelManager()
+	// The half-close EOF branch arms the idle reaper (markHalfClosed -> the
+	// sweeper goroutine), so stop it at cleanup -- otherwise a ticker + goroutine
+	// leak into later tests. The shortened knobs are not needed here (the lifetime
+	// watcher reaps immediately), but Stop() is.
+	t.Cleanup(manager.Stop)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	target, peer := net.Pipe()
 	const connID = "half-closed-target"
 	tc := newTunnelConn(manager, connID, target, newTestWriter(), ctx)
@@ -294,12 +300,571 @@ func TestTunnelReadLoopHalfCloseEvictsOnLifetimeCancel(t *testing.T) {
 	require.False(t, tc.closed.Load(), "the half-close path must not close the conn")
 
 	// Session death: cancelling the lifetime context must evict the conn via the
-	// per-conn watcher, not merely close its socket.
+	// per-conn watcher, not merely close its socket. This path runs IMMEDIATELY on
+	// cancellation -- the idle reaper is a second, time-bounded reclaimer, not a
+	// replacement for it; sweepHalfClosed only reconciles entries whose conns this
+	// watcher already closed on the next tick.
 	cancel()
 	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
 		"a half-closed conn must be evicted on lifetime cancellation, not leaked")
 	assert.True(t, tc.closed.Load())
 	_ = target.Close()
+}
+
+// withShortHalfCloseReaper shortens the idle-reaper knobs for a test and restores
+// them on cleanup, mirroring the staleCancelMarkerTTL pattern. It also stops the
+// manager's sweeper goroutine at cleanup so a self-stopping-but-in-flight sweeper
+// from one test does not leak into the next. Returns the (shortened) idle timeout.
+func withShortHalfCloseReaper(t *testing.T, manager *tunnelManager) time.Duration {
+	t.Helper()
+	idleOrig, sweepOrig := halfCloseIdleTimeout, halfCloseSweepInterval
+	halfCloseIdleTimeout = 60 * time.Millisecond
+	halfCloseSweepInterval = 15 * time.Millisecond
+	t.Cleanup(func() {
+		halfCloseIdleTimeout, halfCloseSweepInterval = idleOrig, sweepOrig
+		if manager != nil {
+			manager.Stop()
+		}
+	})
+	return halfCloseIdleTimeout
+}
+
+// halfCloseTarget drives a target conn into the half-closed state the reaper
+// targets: the worker's read loop reads io.EOF, relays it, returns, and arms the
+// idle reaper. It returns when the read loop has exited. It is for the basic
+// reap-on-idle tests that send NO further writes after the half-close -- the peer
+// is FULLY closed (net.Pipe cannot half-close; a full close still delivers io.EOF
+// to the worker's read side, which is the signal the half-close branch keys on).
+// Tests that need to keep draining the upload direction after the half-close must
+// use a TCP pair (net.Listen + CloseWrite) instead -- see
+// TestTunnelHalfCloseReaper_WriteActivityResetsClock.
+func halfCloseTarget(t *testing.T, manager *tunnelManager, connID, ctxKey string) (
+	workerConn, peerConn net.Conn, tc *tunnelConn, cancel context.CancelFunc,
+) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	worker, peer := net.Pipe()
+	// net.Pipe cannot half-close; for the basic reap tests (no writes after) a
+	// full peer close delivers io.EOF to the worker read, which is the signal the
+	// half-close branch keys on. Tests that need to keep draining writes use a
+	// TCP pair instead (see TestTunnelHalfCloseReaper_WriteActivityResetsClock).
+	tc = newTunnelConn(manager, connID, worker, newTestWriter(), ctx)
+	require.True(t, manager.beginOpen(connID, func() {}))
+	require.True(t, manager.store(connID, tc))
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); tunnelReadLoop(manager, connID, tc) }()
+	_ = peer.Close()
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("read loop did not exit on target half-close")
+	}
+	return worker, peer, tc, cancel
+}
+
+// TestTunnelHalfCloseReaper_ReclaimsOnIdle covers the primary acceptance: a
+// half-closed conn whose client CloseTunnelConn is LOST is reclaimed within the
+// idle deadline WITHOUT waiting for channel death. Before #318 such a conn
+// lingered in the worker-lifetime m.conns map for the channel's lifetime (hours
+// for a pooled SSH/port-forward session); the idle reaper bounds that leak.
+func TestTunnelHalfCloseReaper_ReclaimsOnIdle(t *testing.T) {
+	manager := newTunnelManager()
+	withShortHalfCloseReaper(t, manager)
+	const connID = "half-closed-idle"
+	workerConn, _, tc, cancel := halfCloseTarget(t, manager, connID, connID)
+	defer cancel()
+	t.Cleanup(func() { _ = workerConn.Close() })
+
+	// Precondition: the half-close path parked the conn (registered, not closed)
+	// and armed the reaper.
+	require.NotNil(t, manager.get(connID), "a half-closed conn must stay registered for the client's remaining writes")
+	require.False(t, tc.closed.Load(), "the half-close path must not close the conn")
+
+	// No further writes -> the reaper closes and evicts within the idle window.
+	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+		"a half-closed conn with a lost CloseTunnelConn must be reaped within the idle deadline, not leaked until channel death")
+	assert.True(t, tc.closed.Load(), "the reaper must close the conn it reaps")
+}
+
+// TestTunnelHalfCloseReaper_WriteActivityResetsClock covers the second
+// acceptance: an ACTIVE upload (writes still progressing) is not reaped
+// mid-transfer. writeData bumps the conn's activity clock on each successful
+// write, so a progressing upload outruns the reaper; once the writes stop, the
+// clock expires and the reaper reclaims the conn.
+//
+// It uses a TCP loopback pair (not net.Pipe) so the peer can half-close its write
+// side -- delivering io.EOF to the worker's read loop -- while keeping its read
+// side open to drain the worker's writes, which is exactly the target-half-close
+// shape the reaper is built for.
+func TestTunnelHalfCloseReaper_WriteActivityResetsClock(t *testing.T) {
+	manager := newTunnelManager()
+	idle := withShortHalfCloseReaper(t, manager)
+	const connID = "half-closed-active"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	peerAccept := make(chan net.Conn, 1)
+	go func() {
+		c, aerr := ln.Accept()
+		if aerr == nil {
+			peerAccept <- c
+		}
+	}()
+	workerConn, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = workerConn.Close() })
+	peer := <-peerAccept
+	require.NotNil(t, peer)
+	t.Cleanup(func() { _ = peer.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tc := newTunnelConn(manager, connID, workerConn, newTestWriter(), ctx)
+	require.True(t, manager.beginOpen(connID, func() {}))
+	require.True(t, manager.store(connID, tc))
+
+	// Peer half-closes its WRITE side -> worker reads io.EOF -> read loop relays
+	// EOF, returns, arms the reaper. The peer's read side stays open.
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); tunnelReadLoop(manager, connID, tc) }()
+	require.NoError(t, peer.(*net.TCPConn).CloseWrite())
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("read loop did not exit on target half-close")
+	}
+	require.False(t, tc.closed.Load(), "precondition: the half-close path must not close the conn")
+
+	// Drain the peer's read side on a goroutine so the worker's writes do not
+	// block on a full pipe. The writes below keep the upload direction live.
+	peerDone := make(chan struct{})
+	go func() { defer close(peerDone); _, _ = io.Copy(io.Discard, peer) }()
+
+	// Keep writing well past the idle deadline. Each write bumps lastActivity, so
+	// the reaper must NOT reclaim the conn while the upload progresses.
+	deadline := time.Now().Add(idle * 5)
+	var seq uint64
+	for time.Now().Before(deadline) {
+		if err := tc.writeData(ctx, seq, []byte("x"), false); err != nil {
+			t.Fatalf("writeData failed mid-upload at seq %d: %v", seq, err)
+		}
+		seq++
+		// The conn surviving THIS long proves writes reset the clock: the idle
+		// window elapsed ~5x over while writes were progressing.
+		require.NotNil(t, manager.get(connID),
+			"an active upload must not be reaped mid-transfer (reaped at seq %d)", seq)
+		// Sleep a fraction of the idle window between writes to let a reaper tick
+		// (or several) land; if the clock were not reset, the conn would be gone.
+		time.Sleep(halfCloseSweepInterval)
+	}
+
+	// Stop writing. Now the clock expires and the reaper reclaims the conn.
+	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+		"a half-closed conn must be reaped once writes stop and the idle window elapses")
+	assert.True(t, tc.closed.Load())
+	cancel()
+	<-peerDone
+}
+
+// TestTunnelHalfCloseReaper_ChannelTeardownStillReapsImmediately re-asserts the
+// third acceptance on top of TestTunnelReadLoopHalfCloseEvictsOnLifetimeCancel:
+// channel teardown (lifetime-context cancellation) evicts a parked half-closed
+// conn IMMEDIATELY via the per-conn watcher -- far faster than the idle deadline
+// -- so the reaper is an addition to, not a replacement for, session-death
+// reclamation.
+//
+// The idle window here is widened deliberately (vs withShortHalfCloseReaper's 60ms)
+// so the "teardown beat the idle window" timing assertion has headroom: the
+// lifetime watcher fires on context.AfterFunc (scheduler latency) and
+// AssertEventually polls every ~10ms, so a 60ms margin is flake-prone under CI
+// load. 250ms keeps the assertion decisive (the reaper cannot have run: a conn
+// parked at mark time is not idle-reapable for the full window) while leaving
+// comfortable room for scheduler + poll jitter.
+func TestTunnelHalfCloseReaper_ChannelTeardownStillReapsImmediately(t *testing.T) {
+	manager := newTunnelManager()
+	// Override to a wider idle window with generous headroom for the timing check.
+	origIdle, origInterval := halfCloseIdleTimeout, halfCloseSweepInterval
+	halfCloseIdleTimeout = 250 * time.Millisecond
+	halfCloseSweepInterval = 50 * time.Millisecond
+	t.Cleanup(func() { halfCloseIdleTimeout, halfCloseSweepInterval = origIdle, origInterval })
+	t.Cleanup(manager.Stop)
+	const connID = "half-closed-teardown"
+	workerConn, _, tc, cancel := halfCloseTarget(t, manager, connID, connID)
+	t.Cleanup(func() { _ = workerConn.Close() })
+
+	require.NotNil(t, manager.get(connID), "precondition: conn parked half-closed")
+	start := time.Now()
+	cancel() // session death
+	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+		"channel teardown must evict a half-closed conn immediately, not wait for the idle reaper")
+	assert.True(t, tc.closed.Load())
+	// The conn was parked at mark time, so it is not idle-reapable until a full
+	// idle window elapses. Asserting teardown finished well inside that window
+	// proves the lifetime watcher (not the reaper) reclaimed it.
+	assert.Less(t, time.Since(start), halfCloseIdleTimeout,
+		"teardown must reclaim via the lifetime watcher, faster than the idle deadline")
+}
+
+// TestTunnelHalfCloseReaper_ReapsSequentialHalfCloses pins that the sweeper, once
+// running, keeps reaping: after the first half-close is reaped, a SUBSEQUENT
+// half-close on a different conn is also reaped within the idle window. The
+// sweeper runs until Stop (it does not self-stop on an empty set), so this holds
+// structurally; the test exists so a regression that stops the sweeper when the
+// set drains (or otherwise fails to keep it alive) would let the second conn leak.
+// The two conns use DISTINCT ids (conn_id collision is astronomically unlikely
+// with nanoid-generated ids), so the case under test is sequential reaps, not
+// conn_id reuse.
+func TestTunnelHalfCloseReaper_ReapsSequentialHalfCloses(t *testing.T) {
+	manager := newTunnelManager()
+	withShortHalfCloseReaper(t, manager)
+
+	for _, connID := range []string{"half-closed-A", "half-closed-B"} {
+		workerConn, _, _, cancel := halfCloseTarget(t, manager, connID, connID)
+		t.Cleanup(cancel)
+		t.Cleanup(func() { _ = workerConn.Close() })
+		require.NotNil(t, manager.get(connID), "conn %q parked half-closed", connID)
+		testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+			"half-closed conn %q must be reaped within the idle window", connID)
+	}
+}
+
+// TestTunnelHalfCloseReaper_ReconcilesOutOfBandClose pins that a half-closed conn
+// fully closed OUT-OF-BAND (here, by the lifetime watcher firing mid-park) has its
+// halfClosed tracker entry dropped PROMPTLY by closeAndRemove's clearHalfClosed,
+// without waiting for the sweeper's next tick and without the sweeper re-closing an
+// already-closed conn. close() is idempotent, but the prompt drop keeps the
+// halfClosed map from pinning a closed conn's *tunnelConn until the next tick.
+func TestTunnelHalfCloseReaper_ReconcilesOutOfBandClose(t *testing.T) {
+	manager := newTunnelManager()
+	withShortHalfCloseReaper(t, manager)
+	const connID = "half-closed-reconcile"
+	workerConn, _, tc, cancel := halfCloseTarget(t, manager, connID, connID)
+	t.Cleanup(func() { _ = workerConn.Close() })
+
+	require.NotNil(t, manager.get(connID), "precondition: conn parked half-closed")
+	// The conn is now in m.halfClosed (markHalfClosed) with a non-nil tracker.
+	require.NotNil(t, tc.halfCloseTrack.Load(), "precondition: half-close tracker armed")
+
+	// Out-of-band full close via the lifetime watcher: closeAndRemove closes the
+	// conn, evicts from m.conns, AND (since this diff) drops the halfClosed entry.
+	cancel()
+	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+		"out-of-band close must evict from m.conns")
+	require.True(t, tc.closed.Load(), "precondition: conn fully closed out-of-band")
+
+	// closeAndRemove's clearHalfClosed must have dropped the tracker entry
+	// already -- without waiting for the sweeper's next tick. Assert it directly
+	// (the map is empty, the tracker pointer is nil) rather than via a sweep, so a
+	// regression that removes the opportunistic cleanup fails here, not silently.
+	manager.mu.Lock()
+	_, present := manager.halfClosed[connID]
+	manager.mu.Unlock()
+	assert.False(t, present, "clearHalfClosed must drop the halfClosed entry on out-of-band close")
+	assert.Nil(t, tc.halfCloseTrack.Load(), "clearHalfClosed must clear the conn's tracker pointer")
+}
+
+// TestRegisterAll_SetsTunnelManagerAndStopStopsSweeper covers the
+// Shutdown->svc.tunnels.Stop() wiring added for this change, in two parts the
+// full Shutdown path (which needs terminal/agent subsystems not relevant here)
+// would obscure: (1) RegisterAll sets svc.tunnels, so Shutdown's nil-guarded
+// `svc.tunnels.Stop()` branch is reachable; (2) that Stop on an armed manager
+// actually joins the sweeper goroutine. Together they pin that an orderly
+// Shutdown reaps the sweeper rather than orphaning it.
+func TestRegisterAll_SetsTunnelManagerAndStopStopsSweeper(t *testing.T) {
+	sqlDB := newServiceTestDB(t)
+	svc := newMinimalService(t, sqlDB)
+	d := channel.NewDispatcher()
+	RegisterAll(d, svc)
+
+	// (1) The wiring: RegisterAll assigns the worker-singleton tunnel manager.
+	tunnels := svc.tunnels.Load()
+	require.NotNil(t, tunnels, "RegisterAll must set svc.tunnels so Shutdown can Stop it")
+
+	// (2) The behavior Shutdown relies on: Stop() on an armed manager joins the
+	// sweeper goroutine. Arm it by parking a half-closed conn via the shared
+	// halfCloseTarget helper (it drives the manager's read loop to EOF -> arm).
+	const connID = "shutdown-reaper"
+	target, _, _, _ := halfCloseTarget(t, tunnels, connID, connID)
+	t.Cleanup(func() { _ = target.Close() })
+
+	tunnels.mu.Lock()
+	doneCh := tunnels.sweeper.done
+	startedBefore := tunnels.sweeper.started
+	tunnels.mu.Unlock()
+	require.True(t, startedBefore && doneCh != nil, "precondition: sweeper armed by the half-close")
+
+	tunnels.Stop() // the exact call Service.Shutdown makes
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tunnels.Stop() did not join the sweeper goroutine")
+	}
+	tunnels.mu.Lock()
+	startedAfter := tunnels.sweeper.started
+	stopped := tunnels.sweeper.stopped
+	tunnels.mu.Unlock()
+	assert.False(t, startedAfter, "Stop must clear sweeper.started")
+	assert.True(t, stopped, "Stop must mark the sweeper stopped so it cannot restart")
+}
+
+// TestRegisterAllReassignmentStopsPriorManager pins that re-registering handlers
+// does not orphan the prior tunnel manager's reaper goroutine: a second RegisterAll
+// (a future reconnect/re-registration flow) must Stop the prior manager before
+// reassigning svc.tunnels. Without the Stop, the prior manager's sweeper goroutine
+// (if armed) leaks for the process lifetime -- the exact leak the reaper exists to
+// prevent. RegisterAll on a manager whose sweeper never started (the common case
+// for test re-registration) is a no-op Stop, so this stays behavior-preserving.
+func TestRegisterAllReassignmentStopsPriorManager(t *testing.T) {
+	sqlDB := newServiceTestDB(t)
+	svc := newMinimalService(t, sqlDB)
+	d := channel.NewDispatcher()
+	RegisterAll(d, svc)
+	prior := svc.tunnels.Load()
+	require.NotNil(t, prior)
+
+	// Arm the prior manager's sweeper so a leaked one would be observable.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	target, peer := net.Pipe()
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	const connID = "prior-reaper"
+	tc := newTunnelConn(prior, connID, target, newTestWriter(), ctx)
+	require.True(t, prior.beginOpen(connID, func() {}))
+	require.True(t, prior.store(connID, tc))
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); tunnelReadLoop(prior, connID, tc) }()
+	_ = peer.Close()
+	<-loopDone
+	prior.mu.Lock()
+	doneCh := prior.sweeper.done
+	prior.mu.Unlock()
+	require.NotNil(t, doneCh, "precondition: prior manager's sweeper armed")
+
+	// Re-register. The prior manager must be Stopped (its sweeper joined) and
+	// svc.tunnels replaced with a fresh manager.
+	RegisterAll(d, svc)
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("re-registration did not Stop the prior tunnel manager's sweeper (orphaned goroutine)")
+	}
+	require.NotSame(t, prior, svc.tunnels.Load(), "re-registration must replace svc.tunnels with a fresh manager")
+	// The prior manager is now stopped: ensureRunning is a permanent no-op.
+	prior.mu.Lock()
+	stopped := prior.sweeper.stopped
+	prior.mu.Unlock()
+	assert.True(t, stopped, "the prior manager's sweeper must be marked stopped")
+}
+
+// TestTunnelStopDoesNotDeadlockVsSweep is a regression test for a deadlock where
+// Stop held m.mu while waiting on the sweeper's done channel, but an in-flight
+// sweep needed m.mu to observe the stop and exit. It hammers Stop() against an
+// armed, fast-ticking sweeper; a regression that rejoins under m.mu hangs the
+// test. Found by deep-review and confirmed under -race.
+func TestTunnelStopDoesNotDeadlockVsSweep(t *testing.T) {
+	orig := halfCloseSweepInterval
+	halfCloseSweepInterval = time.Millisecond
+	t.Cleanup(func() { halfCloseSweepInterval = orig })
+
+	for i := 0; i < 500; i++ {
+		manager := newTunnelManager()
+		manager.mu.Lock()
+		manager.sweeper.ensureRunning(manager)
+		manager.mu.Unlock()
+		// Let at least one tick land so the sweeper is likely mid-sweep.
+		time.Sleep(2 * time.Millisecond)
+		done := make(chan struct{})
+		go func() { manager.Stop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("Stop() deadlocked on iteration %d (Stop held m.mu across <-done while the sweeper blocked on m.mu)", i)
+		}
+	}
+}
+
+// TestTunnelSweepReapsUnderLockWithoutDeadlock pins that sweepHalfClosed reaps
+// inline under m.mu -- closing and evicting each reaped conn while holding the
+// lock -- without self-deadlocking against the conn's lifetime-cancellation
+// AfterFunc callback. That callback (closeAndRemove -> clearHalfClosed) re-takes
+// m.mu, so a sweep that held m.mu across a clearHalfClosed call would deadlock;
+// the sweep instead detaches the tracker via detachHalfClosedLocked (which
+// expects the caller to hold m.mu) and calls tc.close()+removeIf directly,
+// neither of which re-enters m.mu. tc.close()'s stopCtxWatch() is
+// context.AfterFunc's stop func, which does NOT block on an in-flight callback
+// (verified), so holding m.mu across it is safe: a concurrent callback simply
+// blocks on m.mu until the sweep releases it, then proceeds -- no cycle.
+//
+// This races a sweep against a lifetime-context cancellation (which fires the
+// callback) and asserts both finish; a regression that routes the sweep's reap
+// through clearAndRemove (re-entering m.mu) hangs here.
+func TestTunnelSweepReapsUnderLockWithoutDeadlock(t *testing.T) {
+	origInterval, origIdle := halfCloseSweepInterval, halfCloseIdleTimeout
+	halfCloseSweepInterval = 5 * time.Millisecond
+	halfCloseIdleTimeout = 5 * time.Millisecond
+	t.Cleanup(func() { halfCloseSweepInterval, halfCloseIdleTimeout = origInterval, origIdle })
+
+	for i := 0; i < 200; i++ {
+		manager := newTunnelManager()
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		target, peer := net.Pipe()
+		t.Cleanup(func() { _ = peer.Close() })
+		t.Cleanup(func() { _ = target.Close() })
+		tc := newTunnelConn(manager, "dlq", target, newTestWriter(), ctx)
+		require.True(t, manager.beginOpen("dlq", func() {}))
+		require.True(t, manager.store("dlq", tc))
+		manager.markHalfClosed("dlq", tc)
+
+		// Race: cancel the lifetime ctx (fires the AfterFunc -> closeAndRemove ->
+		// clearHalfClosed, which needs m.mu) concurrent with a sweeper tick
+		// reaping the same conn under m.mu.
+		go cancel()
+
+		// Drive one synchronous sweep on the test goroutine so the reap-under-lock
+		// path is exercised deterministically, not just via the ticker.
+		sweepDone := make(chan struct{})
+		go func() {
+			manager.sweepHalfClosed(time.Now(), halfCloseIdleTimeout)
+			close(sweepDone)
+		}()
+
+		// Stop joins the sweeper goroutine; if anything self-deadlocked on m.mu,
+		// Stop (which also needs m.mu via stopLocked) hangs.
+		stopDone := make(chan struct{})
+		go func() { manager.Stop(); close(stopDone) }()
+		select {
+		case <-sweepDone:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("sweep did not complete on iteration %d (reap-under-lock self-deadlocked)", i)
+		}
+		select {
+		case <-stopDone:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("Stop hung on iteration %d (sweep held m.mu across a re-entrant clearHalfClosed/closeAndRemove)", i)
+		}
+	}
+}
+
+// TestTunnelClientCloseDropsHalfClosedTracker pins the fix for the gap where the
+// client CloseTunnelConn path (closeConn -> cancel -> tc.close) did NOT call
+// clearHalfClosed, leaving a stale halfClosed entry pinning the dead tc until the
+// sweeper's next tick. Now closeConn clears the tracker, so the entry is gone
+// immediately -- without waiting for a sweep.
+func TestTunnelClientCloseDropsHalfClosedTracker(t *testing.T) {
+	manager := newTunnelManager()
+	// DO NOT shorten the idle window: the fix is that the entry is gone BEFORE any
+	// sweep tick could fire. A long idle window makes a lingering entry
+	// (the regression) detectable: the test would block on the assertion.
+	origIdle, origInterval := halfCloseIdleTimeout, halfCloseSweepInterval
+	halfCloseIdleTimeout = 10 * time.Second
+	halfCloseSweepInterval = 10 * time.Second
+	t.Cleanup(func() { halfCloseIdleTimeout, halfCloseSweepInterval = origIdle, origInterval })
+	t.Cleanup(manager.Stop)
+
+	const connID = "half-closed-client"
+	target, peer, tc, cancel := halfCloseTarget(t, manager, connID, connID)
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	t.Cleanup(cancel)
+	require.NotNil(t, tc.halfCloseTrack.Load(), "precondition: half-close tracker armed")
+
+	// Simulate the client CloseTunnelConn's teardown: cancel (evict from conns) +
+	// tc.close() + clearHalfClosed. This mirrors closeConn exactly.
+	evicted := manager.cancel(connID)
+	require.NotNil(t, evicted)
+	evicted.close()
+	manager.clearHalfClosed(connID, evicted)
+
+	// The tracker entry must be gone IMMEDIATELY (no sweep has run -- the idle
+	// window is 10s). Before the fix this assertion failed: the entry lingered.
+	manager.mu.Lock()
+	_, present := manager.halfClosed[connID]
+	manager.mu.Unlock()
+	assert.False(t, present, "client close must drop the halfClosed entry via clearHalfClosed, not wait for a sweep")
+	assert.Nil(t, tc.halfCloseTrack.Load(), "client close must clear the conn's tracker pointer")
+}
+
+// TestTunnelClearHalfClosedIsNoOpForNeverMarkedConn pins the lock-free fast path
+// in clearHalfClosed: a conn that was never marked half-closed has a nil tracker,
+// so clearHalfClosed must short-circuit on a single atomic load without touching
+// m.mu (and without leaving anything in m.halfClosed). Most conns never half-close,
+// so this is the close hot path; a regression that drops the fast path takes m.mu
+// on every full close.
+func TestTunnelClearHalfClosedIsNoOpForNeverMarkedConn(t *testing.T) {
+	manager := newTunnelManager()
+	t.Cleanup(manager.Stop)
+	const connID = "never-marked"
+	tc := &tunnelConn{}
+
+	// The conn was never markHalfClosed'd, so its tracker is nil and it is not in
+	// m.halfClosed.
+	require.Nil(t, tc.halfCloseTrack.Load())
+
+	// clearHalfClosed must be a harmless no-op that changes no state.
+	assert.NotPanics(t, func() { manager.clearHalfClosed(connID, tc) })
+
+	manager.mu.Lock()
+	_, present := manager.halfClosed[connID]
+	manager.mu.Unlock()
+	assert.False(t, present, "a clear on a never-marked conn must not insert into m.halfClosed")
+	assert.Nil(t, tc.halfCloseTrack.Load(), "the conn's tracker stays nil")
+}
+
+// TestTunnelSweepDetachesTrackerAndMapTogether pins the detach invariant
+// detachHalfClosedLocked owns: when the sweeper reaps a conn, BOTH the
+// m.halfClosed map slot AND the conn's halfCloseTrack pointer are cleared in the
+// same step (the conn is then closed+evicted under the same lock). A regression
+// that clears one without the other orphans either a dangling map entry (pinning
+// tc) or a stale tracker pointer (so writeData keeps bumping a dead entry).
+func TestTunnelSweepDetachesTrackerAndMapTogether(t *testing.T) {
+	manager := newTunnelManager()
+	withShortHalfCloseReaper(t, manager)
+	const connID = "sweep-detach"
+	workerConn, _, tc, cancel := halfCloseTarget(t, manager, connID, connID)
+	defer cancel()
+	t.Cleanup(func() { _ = workerConn.Close() })
+	require.NotNil(t, tc.halfCloseTrack.Load(), "precondition: half-close tracker armed")
+
+	// Drive one sweep with a zero idle window so the conn is reaped immediately,
+	// then assert the detach was total (map slot gone, pointer nil, conn closed).
+	manager.sweepHalfClosed(time.Now(), 0)
+
+	manager.mu.Lock()
+	_, present := manager.halfClosed[connID]
+	manager.mu.Unlock()
+	assert.False(t, present, "sweep must delete the reaped conn's halfClosed entry")
+	assert.Nil(t, tc.halfCloseTrack.Load(), "sweep must clear the reaped conn's tracker pointer")
+	assert.True(t, tc.closed.Load(), "sweep must close the reaped conn")
+	assert.Nil(t, manager.get(connID), "sweep must evict the reaped conn from m.conns")
+}
+
+// TestTunnelMarkHalfClosedClearsStaleEntry pins markHalfClosed's pointer-identity
+// guard: if a stale halfClosed entry for the same conn_id survived (the prior conn
+// was never cleared before this mark, e.g. by a buggy/hostile client reusing a
+// conn_id), marking a NEW conn clears the old conn's tracker pointer so its
+// writeData stops bumping a dead entry.
+func TestTunnelMarkHalfClosedClearsStaleEntry(t *testing.T) {
+	manager := newTunnelManager()
+	t.Cleanup(manager.Stop)
+	const connID = "reuse-id"
+	// Bare tunnelConns suffice: markHalfClosed touches only the halfCloseTrack
+	// pointer and the map entry, never read-side state like closed/gate/credit.
+	old := &tunnelConn{}
+	fresh := &tunnelConn{}
+
+	manager.markHalfClosed(connID, old)
+	require.Same(t, old, old.halfCloseTrack.Load().tc, "precondition: old conn's tracker set")
+
+	manager.markHalfClosed(connID, fresh)
+
+	assert.Nil(t, old.halfCloseTrack.Load(), "markHalfClosed must clear a stale entry's tracker pointer")
+	manager.mu.Lock()
+	entry := manager.halfClosed[connID]
+	manager.mu.Unlock()
+	require.NotNil(t, entry)
+	assert.Same(t, fresh, entry.tc, "the map must point at the fresh conn after a reuse-mark")
 }
 
 // writeGate.waitTurn must NAK a provably-illegitimate seq -- a duplicate/replay behind

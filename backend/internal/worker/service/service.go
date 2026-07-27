@@ -126,6 +126,25 @@ type Service struct {
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
 
+	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
+	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
+	// teardown hygiene. registerAllClassified stops any prior manager before
+	// reassigning this field, so a re-registration (production reconnect, or a
+	// test that re-runs RegisterAll to inspect the gate map on a throwaway
+	// dispatcher) cannot orphan the prior manager's reaper goroutine -- its Stop
+	// would otherwise never be called, the exact leak the reaper exists to
+	// prevent.
+	//
+	// It is an atomic.Pointer (not a plain field) for the same reason
+	// registeredBy is: the connect loop / a reconnect can re-run RegisterAll on
+	// one goroutine while a signal-driven Shutdown reads it on another, with no
+	// lock ordering them in code. The bootstrap sequence makes that race latent
+	// today, but a plain field would be a data race under -race and a torn/nil
+	// read under a future reconnect-during-shutdown; atomic.Load/Store make the
+	// access safe by construction rather than by convention. nil in tests that
+	// never call RegisterAll; Shutdown's nil guard covers those.
+	tunnels atomic.Pointer[tunnelManager]
+
 	// agentCleanups / terminalCleanups hold per-tab cleanup callbacks
 	// registered by spawn*RemoteIPC and fired on close (or before a
 	// restart mints a new token). Same shape, two embeddings keep the
@@ -441,6 +460,13 @@ func (svc *Service) Shutdown() {
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
 	svc.Cleanup.Wait()
 
+	// Stop the tunnel idle reaper goroutine. The worker process is exiting, so
+	// correctness does not depend on it, but stopping it keeps the goroutine
+	// count tidy for an orderly shutdown and for tests that call Shutdown.
+	if t := svc.tunnels.Load(); t != nil {
+		t.Stop()
+	}
+
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
 		// Already-exited terminals were persisted with their real exit
 		// code by makeTerminalExitFn; don't clobber it with the shutdown
@@ -730,7 +756,20 @@ func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]meth
 	registerCleanupHandlers(r, svc)
 	registerTabMoveHandlers(r, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
-	registerTunnelHandlers(ownerOnly)
+	tunnels := registerTunnelHandlers(ownerOnly)
+	// Swap in the new manager and Stop the prior one it displaced. A
+	// re-registration (a future reconnect flow, or a test re-running RegisterAll
+	// on a throwaway dispatcher) would otherwise orphan the prior manager's
+	// reaper goroutine -- its Stop would never be called, the exact leak the
+	// reaper exists to prevent. Stopping the displaced manager makes "no orphaned
+	// sweeper" an invariant rather than a convention. Stop is a no-op on a manager
+	// whose sweeper never started (the common case for re-registration before any
+	// half-close). The Swap is atomic so a concurrent Shutdown.Load sees either
+	// the prior or the new manager, never a torn pointer -- the same reason
+	// registeredBy is an atomic.Pointer.
+	if prior := svc.tunnels.Swap(tunnels); prior != nil {
+		prior.Stop()
+	}
 	return r.gates, r.shapes
 }
 

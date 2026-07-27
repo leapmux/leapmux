@@ -383,6 +383,114 @@ func TestSendRemoteCloseForcefulWhenWriteMuHeld(t *testing.T) {
 		"the forceful close carries seq 0 so the worker force-closes without waiting on a flush")
 }
 
+// failNTimesThenSucceedRecorder is a tunnelRPCChannel fake whose SendRPCNoWait
+// fails the first failN CloseTunnelConn sends then succeeds, recording every
+// attempt's seq. It models a transient send failure (a briefly-full send window)
+// on a channel that is still live -- the case a bounded close retry recovers.
+type failNTimesThenSucceedRecorder struct {
+	ctx     context.Context
+	mu      sync.Mutex
+	closes  []uint64
+	failN   int
+	failedN int
+}
+
+func (f *failNTimesThenSucceedRecorder) Context() context.Context { return f.ctx }
+func (*failNTimesThenSucceedRecorder) UnregisterPending(uint64)   {}
+func (*failNTimesThenSucceedRecorder) UnregisterStream(uint64)    {}
+func (f *failNTimesThenSucceedRecorder) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
+	if method != "CloseTunnelConn" {
+		return 1, nil
+	}
+	var r leapmuxv1.CloseTunnelConnRequest
+	if err := proto.Unmarshal(payload, &r); err == nil {
+		f.mu.Lock()
+		f.closes = append(f.closes, r.GetSeq())
+		f.mu.Unlock()
+	}
+	f.mu.Lock()
+	f.failedN++
+	failed := f.failedN <= f.failN
+	f.mu.Unlock()
+	if failed {
+		return 0, errors.New("transient send failure (full send window)")
+	}
+	return 1, nil
+}
+
+func (f *failNTimesThenSucceedRecorder) recorded() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uint64, len(f.closes))
+	copy(out, f.closes)
+	return out
+}
+
+// sendCloseTunnelConn retries transient send failures on a live channel, so a
+// briefly-full send window that used to permanently drop the close (leaking the
+// worker-side conn) now recovers once the window drains. This test pins that the
+// second attempt succeeds and the close is delivered -- the regression a
+// no-retry implementation would fail.
+func TestSendCloseTunnelConnRetriesTransientFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := &failNTimesThenSucceedRecorder{ctx: ctx, failN: 1} // first send fails, second succeeds
+	tc := newConn(ch, "conn-retry", "example.test", 443)
+	// Shorten the backoff so the retry is immediate; restore on cleanup.
+	prevBackoff := remoteCloseSendBackoff
+	remoteCloseSendBackoff = time.Millisecond
+	t.Cleanup(func() { remoteCloseSendBackoff = prevBackoff })
+
+	tc.sendCloseTunnelConn(7, false)
+
+	closes := ch.recorded()
+	require.Len(t, closes, 2, "a transient failure on a live channel must be retried until it succeeds")
+	assert.Equal(t, []uint64{7, 7}, closes, "both attempts carry the same close seq")
+}
+
+// A closed channel makes every send fail permanently, so sendCloseTunnelConn
+// must NOT retry against one -- it makes ONE attempt (the worker side of a
+// canceled open may still need tearing down, and SendRPCNoWait drains where it
+// can) and then stops rather than spinning to the attempt limit. This test pins
+// that exactly one attempt runs against a dead channel, not remoteCloseSendAttempts.
+func TestSendCloseTunnelConnDoesNotRetryDeadChannel(t *testing.T) {
+	deadCtx, cancel := context.WithCancel(context.Background())
+	cancel() // channel is dead before the close is sent
+	ch := &failNTimesThenSucceedRecorder{ctx: deadCtx, failN: remoteCloseSendAttempts + 1}
+	tc := newConn(ch, "conn-dead", "example.test", 443)
+
+	tc.sendCloseTunnelConn(9, false)
+
+	closes := ch.recorded()
+	require.Len(t, closes, 1, "a dead channel gets exactly one close attempt, not a retry storm")
+	assert.Equal(t, uint64(9), closes[0])
+}
+
+// A LIVE channel whose sends keep failing must run exactly remoteCloseSendAttempts
+// attempts and then stop (not spin forever, not over-retry). This pins the
+// attempt-limit cap -- a regression that drops the cap check, off-by-ones it, or
+// lets the budget alone bound a much larger attempt count would fail here. Uses a
+// short backoff so the test does not wait the production 50ms x attempts.
+func TestSendCloseTunnelConnCapsAttemptsOnPersistentlyFailingLiveChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	// failN well beyond the cap so the cap, not recovery, ends the loop.
+	ch := &failNTimesThenSucceedRecorder{ctx: ctx, failN: remoteCloseSendAttempts + 5}
+	tc := newConn(ch, "conn-cap", "example.test", 443)
+	prevBackoff := remoteCloseSendBackoff
+	remoteCloseSendBackoff = time.Millisecond
+	t.Cleanup(func() { remoteCloseSendBackoff = prevBackoff })
+
+	tc.sendCloseTunnelConn(11, false)
+
+	closes := ch.recorded()
+	require.Len(t, closes, remoteCloseSendAttempts,
+		"a persistently-failing live channel must run exactly remoteCloseSendAttempts attempts")
+	for _, seq := range closes {
+		assert.Equal(t, uint64(11), seq, "every attempt carries the same close seq")
+	}
+}
+
 // The ack loop must grant exactly one send-window slot per ack. Under-granting
 // permanently shrinks the window; over-granting would admit more outstanding
 // frames than WriteWindowFrames.
