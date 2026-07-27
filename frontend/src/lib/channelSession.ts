@@ -22,8 +22,14 @@ import { frameBytes } from './channelFraming'
 import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'
 import { monotonicNow } from './monotonicNow'
-import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2 } from './noise'
-import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
+import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, DH_LEN } from './noise'
+import {
+  deriveRekeySecrets,
+  encapsulateRekeyPQ,
+  generateRekeyEphemeral,
+  initiatorHandshake1,
+  initiatorHandshake2,
+} from './noise-hybrid'
 import { MAX_CHUNK_SIZE } from './reassembler'
 
 const log = createLogger('channel')
@@ -87,6 +93,21 @@ export interface SessionChannel {
   rekeyAbort: (() => void) | null
   rekeyRequestId: number | null
   rekeyChain: Promise<void>
+  /**
+   * Worker's static ML-KEM-1024 encapsulation key, retained from
+   * getWorkerHandshakeParams so an in-band rekey can encapsulate a fresh PQ
+   * ciphertext without a second round trip. Empty on classic-mode channels;
+   * its length is the single source of truth for "is this a PQ channel" in the
+   * rekey path (encapsulateRekeyPQ short-circuits on length === 0).
+   */
+  workerMlkemPub: Uint8Array
+  /**
+   * Initiator-side fresh key-agreement material for one in-flight rekey: the
+   * local ephemeral private key and the ML-KEM shared secret. Set when the
+   * RekeyRequest is sent, consumed when the matching Ack arrives. Null outside
+   * an in-flight rekey.
+   */
+  rekeyMaterial: { ePriv: Uint8Array, mlkemSS: Uint8Array | null } | null
 }
 
 export interface ChannelSessionDeps {
@@ -269,6 +290,17 @@ export class ChannelSession {
         ch.rekeyClear = null
         ch.rekeyAbort = null
         ch.rekeyRequestId = null
+        // Wipe the in-flight fresh key-agreement material. The success path
+        // zeroes it in handleRekeyOutcome before resolving; the timeout and
+        // channel-close paths reach here instead, and must not leave the fresh
+        // X25519 ephemeral / ML-KEM shared secret lingering in the heap.
+        const pending = ch.rekeyMaterial
+        ch.rekeyMaterial = null
+        if (pending !== null) {
+          pending.ePriv.fill(0)
+          if (pending.mlkemSS !== null)
+            pending.mlkemSS.fill(0)
+        }
       }
       /* eslint-enable ts/no-use-before-define */
       ch.rekeyClear = clearRekeySlot
@@ -283,16 +315,42 @@ export class ChannelSession {
     })
     ch.rekeyRequestId = requestId
 
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'rekeyRequest', value: create(RekeyRequestSchema, {}) },
-    })
+    // Generate the initiator's fresh ephemeral and (for PQ channels) encapsulate
+    // a fresh ML-KEM shared secret under the worker's static key, build the
+    // RekeyRequest, and put it on the wire. All three steps run inside one try
+    // so a throw (a malformed retained workerMlkemPub making encapsulate fail,
+    // or a send failure) tears down the waiter/timer just installed above and
+    // wipes the fresh material — otherwise the 10s timer would fire on a
+    // channel whose rekey never reached the wire and the ephemeral would leak.
+    let eph: { privateKey: Uint8Array, publicKey: Uint8Array } | null = null
+    let mlkemSS: Uint8Array | null = null
     try {
+      eph = generateRekeyEphemeral()
+      const encapsulated = encapsulateRekeyPQ(ch.workerMlkemPub)
+      mlkemSS = encapsulated.sharedSecret
+      ch.rekeyMaterial = { ePriv: eph.privateKey, mlkemSS }
+
+      const envelope = create(InnerMessageSchema, {
+        kind: {
+          case: 'rekeyRequest',
+          value: create(RekeyRequestSchema, {
+            dhPub: eph.publicKey,
+            mlkemCt: encapsulated.cipherText ?? new Uint8Array(0),
+          }),
+        },
+      })
       this.sendEncryptedMessage(ch, toBinary(InnerMessageSchema, envelope), requestId)
     }
     catch (err) {
       // Drop the waiter/timer without rejecting `outcome` — we throw so callers
-      // see the send failure, not a synthetic "channel closed".
+      // see the failure, not a synthetic "channel closed". clearRekeySlot also
+      // wipes rekeyMaterial; the locals are zeroed here in case generation
+      // failed before the material was stashed.
       ch.rekeyClear?.()
+      if (eph !== null)
+        eph.privateKey.fill(0)
+      if (mlkemSS !== null)
+        mlkemSS.fill(0)
       this.deps.onSendFailure(ch, err)
       throw err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
     }
@@ -321,7 +379,7 @@ export class ChannelSession {
     ch.rekeyAbort?.()
   }
 
-  handleRekeyOutcome(ch: SessionChannel, accepted: boolean, retryAfterMs = 0, correlationId?: number): void {
+  handleRekeyOutcome(ch: SessionChannel, accepted: boolean, retryAfterMs = 0, correlationId?: number, responderPub?: Uint8Array): void {
     if (!ch.rekeyWait) {
       log.warn('rekey outcome with no in-flight request', { channel_id: ch.channelId, accepted })
       return
@@ -337,9 +395,60 @@ export class ChannelSession {
       })
       return
     }
+    const rm = ch.rekeyMaterial
+    ch.rekeyMaterial = null
+    // Every exit path below must wipe the fresh key-agreement material — the
+    // forward-secrecy guarantee of #321 depends on the ephemeral not lingering
+    // in the heap past the rekey it was generated for. clearRekeySlot (which
+    // fires on timeout / channel close) reads ch.rekeyMaterial, which we just
+    // nulled, so it cannot reach these bytes; the local `rm` is the only live
+    // reference. Mirrors Go's resolveRekey, which zeroes unconditionally on
+    // every resolution (accept / reject / terminal failure).
+    const wipe = (): void => {
+      if (rm === null)
+        return
+      rm.ePriv.fill(0)
+      if (rm.mlkemSS !== null)
+        rm.mlkemSS.fill(0)
+    }
     if (accepted) {
-      ch.session.send.rekey()
-      ch.session.receive.rekey()
+      // Combine the responder's Ack ephemeral with the stashed local ephemeral
+      // to complete the fresh-DH agreement, then rotate both directions. Each
+      // direction needs its own secret copies: rekeyWithSecret zeroes its
+      // inputs, and both must mix identical entropy.
+      if (rm === null || responderPub === undefined || responderPub.length !== DH_LEN) {
+        log.error('rekey ack missing local material or valid responder ephemeral; closing channel', {
+          channel_id: ch.channelId,
+          responder_pub_len: responderPub?.length ?? -1,
+        })
+        wipe()
+        // Funnel teardown through rekeyAbort (the close/teardown path) rather
+        // than hand-nulling rekeyWait: rekeyAbort → clearRekeySlot clears the
+        // 10s timer + nulls rekeyWait/rekeyClear/rekeyAbort/rekeyRequestId AND
+        // rejects the outcome promise ensureRekeyed is awaiting. Hand-nulling
+        // rekeyWait left the timer armed and the slot half-cleared, relying on
+        // the closeChannel → abortRekey call below to finish the job — an
+        // invisible cross-method contract no test pinned. clearRekeySlot is
+        // idempotent, so the abortRekey that closeChannel fires next is a no-op.
+        ch.rekeyAbort?.()
+        void this.deps.closeChannel(ch.channelId)
+        return
+      }
+      const { dhSecret, pqSecret } = deriveRekeySecrets(rm.ePriv, responderPub, rm.mlkemSS)
+      const dhForRecv = dhSecret.slice()
+      const pqForRecv = pqSecret !== null ? pqSecret.slice() : null
+      // retainPrev=false for send (it keeps no grace window — the replaced key
+      // is zeroed structurally, no follow-up clearPrev to remember); true for
+      // receive (retains prev so in-flight old-key frames still decrypt).
+      ch.session.send.rekeyWithSecret(dhSecret, pqSecret, false)
+      ch.session.receive.rekeyWithSecret(dhForRecv, pqForRecv, true)
+      wipe()
+    }
+    else {
+      // Reject: keys are unchanged, but the fresh ephemeral + ML-KEM shared
+      // secret generated for this attempt must still be wiped — otherwise they
+      // linger until GC, weakening the forward-secrecy property on every Reject.
+      wipe()
     }
     const wait = ch.rekeyWait
     wait(accepted, retryAfterMs)

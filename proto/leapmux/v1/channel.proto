@@ -189,13 +189,32 @@ message InnerMessage {
   }
 }
 
-// RekeyRequest asks the peer to rotate receive keys after this frame; the
-// initiator holds its send barrier until RekeyAck or RekeyReject.
-message RekeyRequest {}
+// RekeyRequest asks the peer to rotate receive keys after this frame. The
+// initiator keeps encrypting under the current key until RekeyAck or
+// RekeyReject arrives (the send barrier is released across the round trip, not
+// held across it), so traffic keeps flowing during the rekey. dh_pub and
+// mlkem_ct carry the initiator's fresh ephemeral X25519 public key and
+// ML-KEM-1024 ciphertext (encapsulated under the worker's static ML-KEM key),
+// so the next epoch mixes fresh DH + PQ entropy instead of HKDF(k) alone.
+// mlkem_ct is empty on classical-mode channels. The whole frame rides inside
+// the AEAD-encrypted InnerMessage, so the key material is authenticated by the
+// current cipher and needs no separate signature.
+message RekeyRequest {
+  // Fresh X25519 ephemeral public key (32 bytes).
+  bytes dh_pub = 1;
+  // ML-KEM-1024 ciphertext encapsulated under the worker's static ML-KEM key
+  // (1568 bytes); empty in classical mode.
+  bytes mlkem_ct = 2;
+}
 
 // RekeyAck commits the rekey: sender has rotated receive, will rotate send
-// after this frame; receiver rotates both directions on receipt.
-message RekeyAck {}
+// after this frame; receiver rotates both directions on receipt. dh_pub carries
+// the responder's fresh ephemeral X25519 public key, which the initiator pairs
+// with its own ephemeral private key to complete the DH agreement.
+message RekeyAck {
+  // Fresh X25519 ephemeral public key (32 bytes).
+  bytes dh_pub = 1;
+}
 
 // RekeyReject refuses the rekey (rate limit). Neither side rotates CipherState.
 // retry_after_ms is how long the initiator should wait before an age-only retry;

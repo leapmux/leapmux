@@ -14,6 +14,7 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 import { hmac } from '@noble/hashes/hmac.js'
+import { monotonicNow } from './monotonicNow'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 
@@ -23,6 +24,8 @@ const SOFT_NONCE_LIMIT = 2 ** 31 - 1
 const HARD_NONCE_LIMIT = 2 ** 32 - 1
 /** Noise spec transport message size limit minus auth tag. */
 const MAX_PLAINTEXT_SIZE = 65535 - 16
+/** X25519 ephemeral public key size (bytes), as carried by rekey dh_pub. */
+export const DH_LEN = 32
 
 // ---- Low-level crypto primitives ----
 
@@ -161,10 +164,21 @@ export class SymmetricState {
   }
 }
 
+/**
+ * How long a previous receive key stays live after a rekey (ms). 10s
+ * accommodates a slow or contended link where straddling frames may queue well
+ * beyond the bare RTT.
+ */
+const REKEY_GRACE_WINDOW_MS = 10_000
+
 /** CipherState for post-handshake encryption/decryption. */
 export class CipherState {
   private k: Uint8Array
   private n: number
+  /** Previous-epoch key retained during the rekey grace window (receive only). */
+  private prev: CipherState | null = null
+  /** Monotonic deadline (ms, monotonicNow timeline) after which `prev` must be dropped; 0 ⇒ none. */
+  private prevExpiresAt = 0
 
   constructor(key: Uint8Array) {
     this.k = key
@@ -187,9 +201,39 @@ export class CipherState {
     if (this.n > HARD_NONCE_LIMIT) {
       throw new Error('noise: nonce overflow (hard limit)')
     }
-    const pt = decrypt(this.k, this.n, new Uint8Array(0), ciphertext)
-    this.n++
-    return pt
+    try {
+      const pt = decrypt(this.k, this.n, new Uint8Array(0), ciphertext)
+      this.n++
+      return pt
+    }
+    catch (err) {
+      // Current key failed: try the previous-epoch key if it is still live, so
+      // a frame the peer encrypted just before the swap still decrypts.
+      if (this.prev !== null && this.prevExpiresAt !== 0) {
+        if (monotonicNow() < this.prevExpiresAt) {
+          // Let the prev attempt throw on its own; if it also fails, surface
+          // the CURRENT key's error (the one that actually matters for the
+          // active epoch) rather than swallowing it for prev's — mirrors Go's
+          // Decrypt, which returns the captured `err` on prev failure.
+          try {
+            return this.prev.decrypt(ciphertext)
+          }
+          catch {
+            throw err
+          }
+        }
+        else {
+          // Grace window elapsed: retire prev now so the still-valid
+          // previous-epoch key does not linger in the heap. Delivers the
+          // window's forward-secrecy promise here, not on the next rekey /
+          // close (an idle channel would otherwise keep prev alive).
+          this.prev.k.fill(0)
+          this.prev = null
+          this.prevExpiresAt = 0
+        }
+      }
+      throw err
+    }
   }
 
   /** Returns true if the nonce has exceeded the soft limit and re-keying is recommended. */
@@ -198,20 +242,70 @@ export class CipherState {
   }
 
   /**
-   * Derive a new cipher key via HKDF(k, zerolen) and reset the nonce to 0.
+   * Derive a new cipher key that mixes fresh key-agreement entropy into the
+   * current key, then swap it in. The previous key is retained for the grace
+   * window so in-flight frames encrypted under it still decrypt. The nonce
+   * resets to 0.
    *
-   * Application-defined REKEY (not Noise's default ENCRYPT(k, 2^64-1, ...)),
-   * matching the Go implementation. Resetting n diverges from Noise §11.3
-   * because LeapMux's transport AEAD nonce is a uint32 in bytes 4–7.
+   * Derivation (mirrors the Noise handshake's mixKey → hybridSplit ratchet):
    *
-   * Forward secrecy: HKDF(k) does not introduce fresh DH entropy — compromise
-   * of the current key can derive the next. Hub still never learns keys.
-   * See https://github.com/leapmux/leapmux/issues/321
+   *   ck1 = HKDF(k, dhSecret)      // fresh X25519 ECDH(e_i, e_r)
+   *   k'  = HKDF(ck1, pqSecret)    // fresh ML-KEM shared secret (empty in classic)
+   *
+   * When retainPrev is true (the receive direction) the previous key is moved
+   * into prev and marked live for the grace window. When false (the send
+   * direction, which keeps no grace window) the replaced key is zeroed and
+   * dropped instead — structurally, not via a follow-up clearPrev the caller
+   * must remember.
+   *
+   * Forward secrecy: because k' mixes fresh DH + ML-KEM entropy, compromise of
+   * the current epoch key does NOT let an attacker derive the next. The rekey
+   * frames ride inside the AEAD-encrypted channel, so the ephemeral pubkeys /
+   * ML-KEM ciphertext need no signature. See issue #321.
+   *
+   * Resetting n diverges from Noise §11.3 because LeapMux's transport AEAD
+   * nonce is a uint32 in bytes 4–7. Matching the Go implementation.
    */
-  rekey(): void {
-    const [newK] = hkdf(this.k, new Uint8Array(0))
+  rekeyWithSecret(dhSecret: Uint8Array, pqSecret: Uint8Array | null, retainPrev: boolean): void {
+    const [ck1] = hkdf(this.k, dhSecret)
+    // pqSecret is null on a classical channel; hkdf still runs a second
+    // (degenerate, IKM-less) stage keyed only off ck1 — NOT skipped — so the
+    // derivation stays a uniform two-stage ratchet on both channel kinds and
+    // matches Go's rekeyWithSecret. pqSecret ?? empty is equivalent to null
+    // here because hmac of empty bytes == hmac of nothing.
+    const [newK] = hkdf(ck1, pqSecret ?? new Uint8Array(0))
+    if (this.prev !== null) {
+      this.prev.k.fill(0)
+      this.prev = null
+    }
+    if (retainPrev) {
+      // Receive direction: promote the current key to prev for the grace window.
+      this.prev = new CipherState(this.k)
+      this.prev.n = this.n
+      this.prevExpiresAt = monotonicNow() + REKEY_GRACE_WINDOW_MS
+    }
+    else {
+      // Send direction: it keeps no grace window, so the replaced key is zeroed
+      // rather than retained. Doing this here (instead of promoting to prev and
+      // relying on the caller to clearPrev) makes "send never holds a previous
+      // key" a structural property — a caller cannot forget the clearPrev.
+      this.k.fill(0)
+    }
     this.k = newK.slice(0, 32)
     this.n = 0
+    ck1.fill(0)
+    dhSecret.fill(0)
+    if (pqSecret !== null)
+      pqSecret.fill(0)
+  }
+
+  /** Drop the retained previous key immediately (send direction; tests). */
+  clearPrev(): void {
+    if (this.prev !== null) {
+      this.prev.k.fill(0)
+      this.prev = null
+    }
+    this.prevExpiresAt = 0
   }
 
   /** Current nonce (for tests and rekey policy). */
@@ -220,10 +314,27 @@ export class CipherState {
   }
 }
 
+/**
+ * CipherStateLike is the public method surface of CipherState. Session and its
+ * consumers reference this structural shape (not the CipherState class) so a
+ * test double can `satisfies Session` without faking the class's private key
+ * fields — and a future method addition to CipherState that the mock forgets
+ * fails to compile here instead of silently diverging. CipherState the class
+ * satisfies this interface by construction.
+ */
+export interface CipherStateLike {
+  encrypt: (plaintext: Uint8Array) => Uint8Array
+  decrypt: (ciphertext: Uint8Array) => Uint8Array
+  needsRekey: () => boolean
+  rekeyWithSecret: (dhSecret: Uint8Array, pqSecret: Uint8Array | null, retainPrev: boolean) => void
+  clearPrev: () => void
+  nonce: () => number
+}
+
 /** Session holds the send and receive cipher states after a completed handshake. */
 export interface Session {
-  send: CipherState
-  receive: CipherState
+  send: CipherStateLike
+  receive: CipherStateLike
 }
 
 /** HandshakeState holds intermediate state between handshake messages. */

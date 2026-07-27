@@ -20,6 +20,7 @@ import {
 } from './channel'
 import { frameBytes, unframeBytes } from './channelFraming'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
+import { generateRekeyEphemeral } from './noise-hybrid'
 import { DEFAULT_MAX_MESSAGE_SIZE } from './reassembler'
 
 /** Accepting TOFU store for tests that pin on first use / accept key rotation. */
@@ -82,16 +83,23 @@ class TestCipherState {
     return false
   }
 
-  rekey(): void {
-    // Application-defined REKEY matching production CipherState: new key from
-    // a deterministic tweak so tests stay decryptable without full HKDF, then
-    // reset nonce. Pair sessions both rekey the same mirrored keys.
+  /**
+   * Test double for the fresh-DH rekey: ignore the secrets (the test harness
+   * uses deterministic tweaked keys so paired sessions stay in sync without
+   * real HKDF) and apply the same deterministic key tweak the old rekey() did.
+   * Both directions of a paired session call this with mirrored keys, so they
+   * produce matching new keys.
+   */
+  rekeyWithSecret(_dhSecret: Uint8Array, _pqSecret: Uint8Array | null, _retainPrev: boolean): void {
     const next = new Uint8Array(this.k)
     for (let i = 0; i < next.length; i++)
       next[i] = (next[i] + 1) & 0xFF
     this.k = next
     this.n = 0
   }
+
+  /** No-op for the test double (production retains a prev key for the grace window). */
+  clearPrev(): void {}
 
   nonce(): number {
     return this.n
@@ -105,8 +113,8 @@ export function createTestSession(): { initiator: Session, responder: Session } 
   key1[0] = 1 // Different keys for send/receive
   key2[0] = 2
   return {
-    initiator: { send: new TestCipherState(key1), receive: new TestCipherState(key2) } as unknown as Session,
-    responder: { send: new TestCipherState(key2), receive: new TestCipherState(key1) } as unknown as Session,
+    initiator: { send: new TestCipherState(key1), receive: new TestCipherState(key2) } satisfies Session,
+    responder: { send: new TestCipherState(key2), receive: new TestCipherState(key1) } satisfies Session,
   }
 }
 
@@ -390,18 +398,24 @@ export class ChannelManagerTestHarness {
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
   }
 
-  /** Answer an in-band RekeyRequest the way the worker does (Receive.Rekey → Ack → Send.Rekey). */
+  /** Answer an in-band RekeyRequest the way the worker does (Receive.rekeyWithSecret → Ack → Send.rekeyWithSecret). */
   simulateRekeyAck(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
     expect(inner.kind.case).toBe('rekeyRequest')
-    pair.responder.receive.rekey()
+    // Fresh-DH rekey: the test double ignores the secret bytes, but production
+    // derives them from the request's dhPub + a responder ephemeral. Use a real
+    // responder ephemeral pubkey in the Ack so the initiator's production DH
+    // derivation (over real X25519) succeeds.
+    const responderEph = generateRekeyEphemeral()
+    const placeholderSecret = new Uint8Array(32)
+    pair.responder.receive.rekeyWithSecret(placeholderSecret, null, true)
     const envelope = create(InnerMessageSchema, {
-      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, {}) },
+      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, { dhPub: responderEph.publicKey }) },
     })
     const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
-    pair.responder.send.rekey()
+    pair.responder.send.rekeyWithSecret(placeholderSecret, null, false)
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
   }
 
@@ -584,22 +598,26 @@ export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: stri
 }
 
 export function makeMockSession(): Session {
+  // `satisfies Session` (not `as unknown as`) so a future CipherState method
+  // addition fails to compile here instead of silently diverging the mock.
   return {
     send: {
       encrypt: (pt: Uint8Array) => pt,
       decrypt: (ct: Uint8Array) => ct,
       needsRekey: () => false,
-      rekey: () => {},
+      rekeyWithSecret: () => {},
+      clearPrev: () => {},
       nonce: () => 0,
     },
     receive: {
       encrypt: (pt: Uint8Array) => pt,
       decrypt: (ct: Uint8Array) => ct,
       needsRekey: () => false,
-      rekey: () => {},
+      rekeyWithSecret: () => {},
+      clearPrev: () => {},
       nonce: () => 0,
     },
-  } as Session
+  } satisfies Session
 }
 
 export function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTransport {

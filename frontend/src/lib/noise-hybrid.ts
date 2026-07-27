@@ -96,6 +96,52 @@ export function clearHandshakeState(state: HybridHandshakeState): void {
 }
 
 /**
+ * Generate a fresh X25519 ephemeral keypair for an in-band rekey. Shared by the
+ * rekey path (and mirroring the handshake's ephemeral generation). The caller
+ * must zero the private key when done.
+ */
+export function generateRekeyEphemeral(): { privateKey: Uint8Array, publicKey: Uint8Array } {
+  const privateKey = x25519.utils.randomSecretKey()
+  const publicKey = x25519.getPublicKey(privateKey)
+  return { privateKey, publicKey }
+}
+
+/**
+ * Encapsulate a fresh ML-KEM-1024 shared secret under the worker's static
+ * encapsulation key, for an in-band rekey. Empty mlkemPub returns null/null so a
+ * classic channel skips PQ entropy uniformly. The caller must zero sharedSecret
+ * once both directions have rotated.
+ */
+export function encapsulateRekeyPQ(mlkemPub: Uint8Array): { sharedSecret: Uint8Array | null, cipherText: Uint8Array | null } {
+  if (mlkemPub.length === 0) {
+    return { sharedSecret: null, cipherText: null }
+  }
+  const { cipherText, sharedSecret } = ml_kem1024.encapsulate(mlkemPub)
+  return { sharedSecret, cipherText }
+}
+
+/**
+ * Derive the (dhSecret, pqSecret) pair both peers feed into
+ * CipherState.rekeyWithSecret. dhSecret is the X25519 ECDH of the two fresh
+ * ephemerals; pqSecret is the ML-KEM shared secret (null in classic mode). The
+ * caller must zero the returned dhSecret once both directions have rotated.
+ */
+export function deriveRekeySecrets(
+  localEphemeralPriv: Uint8Array,
+  peerEphemeralPub: Uint8Array,
+  pqSharedSecret: Uint8Array | null,
+): { dhSecret: Uint8Array, pqSecret: Uint8Array | null } {
+  if (localEphemeralPriv.length !== DH_LEN) {
+    throw new Error(`noise: rekey ephemeral private key wrong size (${localEphemeralPriv.length} !== ${DH_LEN})`)
+  }
+  if (peerEphemeralPub.length !== DH_LEN) {
+    throw new Error(`noise: rekey peer ephemeral public key wrong size (${peerEphemeralPub.length} !== ${DH_LEN})`)
+  }
+  const dhSecret = x25519.getSharedSecret(localEphemeralPriv, peerEphemeralPub)
+  return { dhSecret, pqSecret: pqSharedSecret }
+}
+
+/**
  * initiatorHandshake2 completes the hybrid handshake by processing
  * the responder's message2 and verifying the SLH-DSA transcript signature.
  *

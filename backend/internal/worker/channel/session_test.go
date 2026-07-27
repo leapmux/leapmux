@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"crypto/ecdh"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,6 +109,89 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 	require.NoError(t, err)
 
 	return initiatorSession
+}
+
+// rekeyInitiator is the initiator-side state of one in-band rekey, mirroring
+// tunnel.Channel: a fresh ephemeral private key plus the ML-KEM shared secret
+// encapsulated under the worker's static key. Pass to initiatorStartRekey /
+// initiatorApplyAck to drive the worker's handleRekeyRequest in tests.
+type rekeyInitiator struct {
+	ephemeral *ecdh.PrivateKey
+	pqShared  []byte
+}
+
+// initiatorStartRekey builds a fresh-DH + ML-KEM RekeyRequest the way
+// tunnel.Channel.initiateRekey does, returning the request envelope and the
+// initiator material to combine with the responder's Ack.
+func initiatorStartRekey(t *testing.T, workerMlkemPub []byte) (*leapmuxv1.InnerMessage, *rekeyInitiator) {
+	t.Helper()
+	eph, err := noiseutil.GenerateEphemeralX25519()
+	require.NoError(t, err)
+	pq, ct, err := noiseutil.EncapsulateRekeyPQ(workerMlkemPub)
+	require.NoError(t, err)
+	return &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
+			DhPub:   eph.PublicKey().Bytes(),
+			MlkemCt: ct,
+		}},
+	}, &rekeyInitiator{ephemeral: eph, pqShared: pq}
+}
+
+// initiatorApplyAck combines the responder's Ack ephemeral with the initiator's
+// stashed material and rotates both initiator directions, mirroring
+// tunnel.Channel.handleRekeyAck.
+func initiatorApplyAck(t *testing.T, init *noiseutil.Session, ri *rekeyInitiator, responderPub []byte) {
+	t.Helper()
+	dh, pq, err := noiseutil.DeriveRekeySecrets(noiseutil.RekeyMaterial{
+		LocalEphemeralPriv: ri.ephemeral.Bytes(),
+		PeerEphemeralPub:   responderPub,
+		PQSharedSecret:     ri.pqShared,
+	})
+	require.NoError(t, err)
+	// Give each side its own copy: DeriveRekeySecrets returns slices backed by
+	// fresh buffers, but rekeyWithSecret zeroes them — pass copies so the second
+	// call sees intact bytes.
+	dh2 := append([]byte(nil), dh...)
+	pq2 := append([]byte(nil), pq...)
+	init.RekeySendWithSecret(dh, pq)
+	init.RekeyReceiveWithSecret(dh2, pq2)
+}
+
+// performClassicalHandshake runs a classical (X25519-only) Noise_NK handshake
+// against a classic-mode Manager, returning the initiator session. Used to
+// exercise the classic branch of handleRekeyRequest (which skips ML-KEM and
+// runs the single-stage HKDF rekey).
+func performClassicalHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, channelID, userID string) *noiseutil.Session {
+	t.Helper()
+	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        channelID,
+		UserId:           userID,
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+	})
+	require.Empty(t, resp.GetError(), "classical handshake should succeed")
+	require.NotEmpty(t, resp.GetHandshakePayload())
+	initiator, err := noiseutil.ClassicalInitiatorHandshake2(hs, resp.GetHandshakePayload())
+	require.NoError(t, err)
+	return initiator
+}
+
+// initiatorStartClassicalRekey builds a fresh-DH RekeyRequest with NO ML-KEM
+// ciphertext, the way a classical-mode tunnel.Channel does (workerMlkemPub is
+// nil → EncapsulateRekeyPQ returns nil). Mirrors initiatorStartRekey for the
+// classic path.
+func initiatorStartClassicalRekey(t *testing.T) (*leapmuxv1.InnerMessage, *rekeyInitiator) {
+	t.Helper()
+	eph, err := noiseutil.GenerateEphemeralX25519()
+	require.NoError(t, err)
+	return &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
+			DhPub:   eph.PublicKey().Bytes(),
+			MlkemCt: nil,
+		}},
+	}, &rekeyInitiator{ephemeral: eph, pqShared: nil}
 }
 
 func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
@@ -2102,11 +2186,12 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	mgr.mu.RUnlock()
 	require.NotNil(t, sess)
 
-	sendRekey := func(corr uint64) {
+	// sendRekey builds a fresh-DH + ML-KEM RekeyRequest the way the tunnel
+	// initiator does, and returns the initiator material to combine with the
+	// Ack's responder ephemeral.
+	sendRekey := func(corr uint64) *rekeyInitiator {
 		t.Helper()
-		envelope := &leapmuxv1.InnerMessage{
-			Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
-		}
+		envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 		pt, err := proto.Marshal(envelope)
 		require.NoError(t, err)
 		ct, err := initiator.Encrypt(pt)
@@ -2117,9 +2202,10 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 			Ciphertext:      ct,
 			CorrelationId:   corr,
 		})
+		return ri
 	}
 
-	decryptOutcome := func(msg *leapmuxv1.ConnectRequest) (kind string, retryAfterMs int64) {
+	decryptOutcome := func(msg *leapmuxv1.ConnectRequest) (kind string, retryAfterMs int64, responderPub []byte) {
 		t.Helper()
 		chMsg := msg.GetChannelMessageResp()
 		require.NotNil(t, chMsg)
@@ -2129,14 +2215,14 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 		require.NoError(t, proto.Unmarshal(pt, &envelope))
 		switch k := envelope.GetKind().(type) {
 		case *leapmuxv1.InnerMessage_RekeyAck:
-			return "ack", 0
+			return "ack", 0, k.RekeyAck.GetDhPub()
 		case *leapmuxv1.InnerMessage_RekeyReject:
 			ms := k.RekeyReject.GetRetryAfterMs()
 			assert.Greater(t, ms, int64(0), "age-only Reject must advertise retry_after_ms")
-			return "reject", ms
+			return "reject", ms, nil
 		default:
 			t.Fatalf("unexpected kind %T", envelope.GetKind())
-			return "", 0
+			return "", 0, nil
 		}
 	}
 
@@ -2146,7 +2232,7 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	msgsBefore := len(sender.messages())
 	sendRekey(100)
 	msgs := sender.waitForMessages(msgsBefore + 1)
-	kind, retryMs := decryptOutcome(msgs[len(msgs)-1])
+	kind, retryMs, _ := decryptOutcome(msgs[len(msgs)-1])
 	assert.Equal(t, "reject", kind)
 	assert.InDelta(t, channelwire.MinRekeyInterval.Milliseconds(), retryMs,
 		float64(2*time.Second.Milliseconds()),
@@ -2157,13 +2243,12 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	// Age past MinRekeyInterval → Ack and both sides can continue.
 	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
 	msgsBefore = len(sender.messages())
-	sendRekey(101)
+	ri := sendRekey(101)
 	msgs = sender.waitForMessages(msgsBefore + 1)
-	kind, _ = decryptOutcome(msgs[len(msgs)-1])
+	kind, _, responderPub := decryptOutcome(msgs[len(msgs)-1])
 	assert.Equal(t, "ack", kind)
 	// Initiator applies Ack the way tunnel.Channel does.
-	initiator.RekeySend()
-	initiator.RekeyReceive()
+	initiatorApplyAck(t, initiator, ri, responderPub)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 	assert.Equal(t, uint64(0), initiator.Send.Nonce())
@@ -2191,6 +2276,146 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	assert.Equal(t, []byte("after-rekey"), innerResp.GetPayload())
 }
 
+// TestHandleMessage_RekeyBadEphemeralCancels covers the worker's fail-closed
+// validation: a RekeyRequest whose dh_pub is not a 32-byte X25519 point must
+// cancel the session and send no Ack/Reject, rather than rotating onto a
+// derivation the peer could predict. The fresh-DH agreement is what closes the
+// #321 forward-secrecy gap, so a peer that did not run it must not advance keys.
+func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+	initiator := performHandshake(t, mgr, kp, "ch-badpub", "user-badpub")
+
+	const channelID = "ch-badpub"
+	mgr.mu.RLock()
+	sess := mgr.sessions[channelID]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+
+	// Build a RekeyRequest with a too-short dh_pub the way a non-compliant
+	// initiator would.
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
+			DhPub: []byte("too-short"),
+		}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       channelID,
+		Ciphertext:      ct,
+		CorrelationId:   200,
+	})
+
+	// sess.cancel() fires synchronously: the session's lifetime context is done.
+	require.Error(t, sess.ctx.Err(), "bad ephemeral must cancel the session lifetime")
+	// No Ack/Reject was sent: the worker fails closed silently.
+	assert.Equal(t, msgsBefore, len(sender.messages()), "bad ephemeral must send no response")
+}
+
+// TestHandleMessage_RekeyBadMlkemCtCancels covers the PQ-channel validation: a
+// RekeyRequest on a post-quantum channel whose mlkem_ct is not the 1568-byte
+// ML-KEM-1024 ciphertext must cancel the session rather than decapsulating
+// garbage. (This test's harness uses the default POST_QUANTUM manager.)
+func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
+	mgr, kp, _ := setupTestManager(t)
+	// setupTestManager's sender isn't needed — assert via the session lifetime.
+	initiator := performHandshake(t, mgr, kp, "ch-badct", "user-badct")
+
+	const channelID = "ch-badct"
+	mgr.mu.RLock()
+	sess := mgr.sessions[channelID]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+
+	// A valid-sized ephemeral so the dh_pub check passes, but a garbage mlkem_ct.
+	eph, err := noiseutil.GenerateEphemeralX25519()
+	require.NoError(t, err)
+	envelope := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
+			DhPub:   eph.PublicKey().Bytes(),
+			MlkemCt: []byte("not-a-valid-mlkem-ciphertext"),
+		}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       channelID,
+		Ciphertext:      ct,
+		CorrelationId:   201,
+	})
+
+	require.Error(t, sess.ctx.Err(), "bad mlkem_ct must cancel the session lifetime")
+}
+
+// TestHandleMessage_RekeyClassicChannel exercises the CLASSIC branch of
+// handleRekeyRequest: a classical (X25519-only) channel sends a RekeyRequest
+// with no mlkem_ct, the worker skips ML-KEM decapsulation and rotates onto the
+// single-stage HKDF(k, dh) derivation, and both peers' post-rekey traffic
+// round-trips. This is the only test covering the classic path — every other
+// rekey test uses the default POST_QUANTUM manager — so it pins the
+// pqSecret==nil agreement between the Go worker and a classic initiator.
+func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	sender := newCollectSender()
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, sender.send, sender.trySend, 0, 0)
+
+	const channelID = "ch-classic-rekey"
+	initiator := performClassicalHandshake(t, mgr, ck, channelID, "user-classic")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions[channelID]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+
+	envelope, ri := initiatorStartClassicalRekey(t)
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ct, err := initiator.Encrypt(pt)
+	require.NoError(t, err)
+	msgsBefore := len(sender.messages())
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       channelID,
+		Ciphertext:      ct,
+		CorrelationId:   300,
+	})
+
+	msgs := sender.waitForMessages(msgsBefore + 1)
+	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, chMsg)
+	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	require.NoError(t, err)
+	var resp leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plain, &resp))
+	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	require.True(t, ok, "classic rekey must Ack, got %T", resp.GetKind())
+
+	// Both sides rotate onto the single-stage HKDF(k, dh) derivation.
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
+	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
+	assert.Equal(t, uint64(0), initiator.Send.Nonce())
+	assert.Equal(t, uint64(0), initiator.Receive.Nonce())
+
+	// Post-rekey traffic round-trips both directions under the new classic key.
+	respPt, err := sess.Session.Encrypt([]byte("classic-after"))
+	require.NoError(t, err)
+	respDec, err := initiator.Decrypt(respPt)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("classic-after"), respDec)
+}
+
 func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey-soft", "user-rekey-soft")
@@ -2206,9 +2431,7 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 	initiator.Send.SetNonceForTest(noiseutil.SoftNonceLimit)
 	sess.Session.Receive.SetNonceForTest(noiseutil.SoftNonceLimit)
 
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
-	}
+	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
 	ct, err := initiator.Encrypt(pt)
@@ -2228,11 +2451,10 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
-	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok, "soft-nonce rekey inside MinRekeyInterval must Ack, got %T", resp.GetKind())
 
-	initiator.RekeySend()
-	initiator.RekeyReceive()
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 }
@@ -2255,9 +2477,7 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 	assert.False(t, sess.Session.Receive.NeedsRekey())
 	assert.True(t, sess.Session.Send.NeedsRekey())
 
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
-	}
+	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
 	ct, err := initiator.Encrypt(pt)
@@ -2277,12 +2497,11 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
-	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok, "Send soft-nonce via peek must Ack inside MinRekeyInterval, got %T", resp.GetKind())
 	assert.False(t, sess.Session.Receive.NeedsRekey(), "Receive must still be under soft after the Request")
 
-	initiator.RekeySend()
-	initiator.RekeyReceive()
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 }
@@ -2316,9 +2535,7 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 		t.Fatal("failed to occupy frame permit")
 	}
 
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
-	}
+	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
 	ct, err := initiator.Encrypt(pt)
@@ -2359,8 +2576,9 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
-	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok)
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce(), "RekeySend runs under the same frame as Ack")
 }
 
@@ -2400,9 +2618,7 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	echo(1, "before")
 
 	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{}},
-	}
+	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
 	ct, err := initiator.Encrypt(pt)
@@ -2421,10 +2637,9 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
-	_, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
+	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok)
-	initiator.RekeySend()
-	initiator.RekeyReceive()
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
 
 	for i := 0; i < 8; i++ {
 		echo(uint64(10+i), "after-"+string(rune('a'+i)))

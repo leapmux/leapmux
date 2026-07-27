@@ -279,33 +279,140 @@ describe('cipherState limits', () => {
     expect(cs.needsRekey()).toBe(false)
   })
 
-  it('rekey should change the key, reset nonce, and reject old ciphertext', () => {
+  it('rekeyWithSecret should change the key, reset nonce, and decrypt new traffic', () => {
     const key = new Uint8Array(32)
     for (let i = 0; i < 32; i++) key[i] = i + 1
     const cs = new CipherState(key)
-    const ctOld = cs.encrypt(new TextEncoder().encode('before'))
+    const peer = new CipherState(key)
+    cs.encrypt(new TextEncoder().encode('before')) // advance nonce
     expect(cs.nonce()).toBe(1)
 
-    cs.rekey()
+    // A fresh 32-byte DH secret shared by both sides.
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+
+    // Each side needs its own copy: rekeyWithSecret zeroes its input.
+    const dhPeer = dh.slice()
+    cs.rekeyWithSecret(dh, null, true)
+    peer.rekeyWithSecret(dhPeer, null, true)
     expect(cs.nonce()).toBe(0)
-    expect(() => cs.decrypt(ctOld)).toThrow()
 
     const ctNew = cs.encrypt(new TextEncoder().encode('after'))
-    const peerKey = new Uint8Array(32)
-    for (let i = 0; i < 32; i++) peerKey[i] = i + 1
-    const peer = new CipherState(peerKey)
-    peer.rekey()
     expect(new TextDecoder().decode(peer.decrypt(ctNew))).toBe('after')
   })
 
-  it('rekey should match the Go HKDF interop vector', () => {
+  it('rekeyWithSecret should match the Go fresh-DH interop vector', () => {
+    // Fixed vector shared with backend/internal/noise/noise_test.go so Go and TS
+    // stay on the same fresh-DH rekey derivation:
+    //   ck1 = HKDF(k, dhSecret); k' = HKDF(ck1, nil)[0:32]
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    const cs = new CipherState(key)
+    cs.encrypt(new TextEncoder().encode('x'))
+    cs.rekeyWithSecret(dh, null, true)
+    const ct = cs.encrypt(new TextEncoder().encode('hello-rekey'))
+    const hex = Array.from(ct, b => b.toString(16).padStart(2, '0')).join('')
+    expect(hex).toBe('2c0f3a3f9a452bfe1bdfec4bf4fcfc412c28dc17be6865a3048d46')
+  })
+
+  it('grace window: an old-key straddling frame decrypts via prev after rekey', () => {
+    // Mirrors Go's TestCipherStateRekey straddle assertion: after the receiver
+    // rotates, a frame the peer encrypted under the OLD key (still in flight on
+    // the wire) must decrypt via the retained previous key within the window.
     const key = new Uint8Array(32)
     for (let i = 0; i < 32; i++) key[i] = i + 1
     const cs = new CipherState(key)
-    cs.encrypt(new TextEncoder().encode('x'))
-    cs.rekey()
-    const ct = cs.encrypt(new TextEncoder().encode('hello-rekey'))
-    const hex = Array.from(ct, b => b.toString(16).padStart(2, '0')).join('')
-    expect(hex).toBe('a65694004d00816424626539afa175fb55106807e2c4af79c2c464')
+    const oldKey = new CipherState(key) // peer keeps the pre-rekey key
+
+    // Both sides at nonce 0; rotate cs, then the straddling frame is at nonce 0.
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    cs.rekeyWithSecret(dh, null, true)
+
+    const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
+    const pt = cs.decrypt(ctStraddle)
+    expect(new TextDecoder().decode(pt)).toBe('straddle')
+  })
+
+  it('grace window: after expiry, an old-key frame fails closed', () => {
+    // Mirrors Go's TestCipherStateRekeyGraceWindowExpiry: once prevExpiresAt is
+    // in the past, an old-key frame must NOT decrypt (fail closed), proving the
+    // previous key is genuinely retired at window expiry.
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const oldKey = new CipherState(key)
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    cs.rekeyWithSecret(dh, null, true)
+
+    // Force expiry by rewinding the deadline into the past.
+    // @ts-expect-error accessing private field to simulate clock advance
+    cs.prevExpiresAt = -1
+    const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
+    expect(() => cs.decrypt(ctStraddle)).toThrow()
+  })
+
+  it('clearPrev drops the retained previous key so an old-key frame fails', () => {
+    // clearPrev is the explicit "drop the retained prev" method (exported for
+    // tests and any future send path that needs it). The production send
+    // rotation goes through rekeyWithSecret(..., false) and never sets prev in
+    // the first place (see the next test); this pins clearPrev itself.
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const oldKey = new CipherState(key)
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    cs.rekeyWithSecret(dh, null, true)
+    cs.clearPrev()
+
+    const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
+    expect(() => cs.decrypt(ctStraddle)).toThrow()
+  })
+
+  it('rekeyWithSecret(retainPrev=false) keeps no previous key (send direction)', () => {
+    // The send direction keeps no grace window. retainPrev=false must zero the
+    // replaced key and NOT retain a prev — structurally, so a caller cannot
+    // forget a clearPrev. An old-key frame must fail immediately after the
+    // rotation, and prev must be null.
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const oldKey = new CipherState(key)
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    cs.rekeyWithSecret(dh, null, false)
+
+    // @ts-expect-error accessing private field to assert no prev was retained
+    expect(cs.prev).toBeNull()
+    const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
+    expect(() => cs.decrypt(ctStraddle)).toThrow()
+  })
+
+  it('grace window: an expired prev is zeroed on the next decrypt (not left in the heap)', () => {
+    // SCAN-3: when the grace window elapses, the next Decrypt must retire prev
+    // (zero it and drop the reference) rather than just skip it — otherwise an
+    // idle channel leaves the still-valid previous-epoch key in the heap until
+    // the next rekey or close, widening the forward-secrecy surface the window
+    // introduced.
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const oldKey = new CipherState(key) // peer view, still on the old key
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    cs.rekeyWithSecret(dh, null, true)
+    // @ts-expect-error accessing private field to force the deadline into the past
+    cs.prevExpiresAt = -1
+
+    // A straddling old-key frame: current key fails, prev is expired, so the
+    // decrypt must retire prev (zero + drop) and then fail closed.
+    const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
+    expect(() => cs.decrypt(ctStraddle)).toThrow()
+    // @ts-expect-error accessing private field to assert prev was retired on expiry
+    expect(cs.prev).toBeNull()
   })
 })

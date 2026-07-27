@@ -12,7 +12,7 @@ import type { ChannelSession } from './channelSession'
 import type { KeyPinStore } from './keyPinStore'
 import type { Session } from './noise'
 import type { WorkerKeyBundle } from './workerKeyBundle'
-import type { EncryptionMode } from '~/generated/leapmux/v1/channel_pb'
+import { EncryptionMode } from '~/generated/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { formatErrorMessage } from './errors'
 import { KeyPinRejectedError } from './keyPinStore'
@@ -46,6 +46,10 @@ export interface OpeningChannel {
   rekeyAbort: (() => void) | null
   rekeyRequestId: number | null
   rekeyChain: Promise<void>
+  /** Worker ML-KEM pub retained for rekey encapsulation; empty in classic mode. */
+  workerMlkemPub: Uint8Array
+  /** In-flight rekey initiator material; null when no rekey is in progress. */
+  rekeyMaterial: { ePriv: Uint8Array, mlkemSS: Uint8Array | null } | null
 }
 
 export interface ChannelOpenDeps<T extends OpeningChannel> {
@@ -188,6 +192,12 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         rekeyAbort: null,
         rekeyRequestId: null,
         rekeyChain: Promise.resolve(),
+        // Retain the worker's static ML-KEM key so a later in-band rekey can
+        // encapsulate a fresh PQ ciphertext without a second
+        // getWorkerHandshakeParams round trip. Empty in classic mode; its length
+        // is the single source of truth for PQ-ness in the rekey path.
+        workerMlkemPub: mode === EncryptionMode.CLASSIC ? new Uint8Array(0) : keyBundle.mlkemPublicKey,
+        rekeyMaterial: null,
       } as T
 
       this.deps.pool.set(result.channelId, channel)

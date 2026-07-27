@@ -9,24 +9,37 @@ import {
   SESSION_KEY_MAX_AGE_MS,
 
 } from './channelSession'
+import { generateRekeyEphemeral } from './noise-hybrid'
 import { MAX_CHUNK_SIZE } from './reassembler'
 
 function mockCipher(sendNeeds = false, recvNeeds = false) {
   const encrypt = vi.fn((pt: Uint8Array) => new Uint8Array(pt))
   const decrypt = vi.fn((ct: Uint8Array) => new Uint8Array(ct))
-  const rekey = vi.fn()
+  // Separate mocks per direction so tests can assert the send-vs-recv asymmetry
+  // (e.g. clearPrev is called on send only). `satisfies Session` (not
+  // `as unknown as`) so a future CipherState method addition fails to compile
+  // here instead of silently diverging the mock from production. Each half
+  // carries the full CipherStateLike surface; the direction under test uses the
+  // real mock, the unused direction's method is a no-op never called.
+  const noop = vi.fn()
   return {
     send: {
       encrypt,
+      decrypt: noop,
       needsRekey: () => sendNeeds,
-      rekey,
+      rekeyWithSecret: vi.fn(),
+      clearPrev: vi.fn(),
+      nonce: () => 0,
     },
     receive: {
+      encrypt: noop,
       decrypt,
       needsRekey: () => recvNeeds,
-      rekey,
+      rekeyWithSecret: vi.fn(),
+      clearPrev: vi.fn(),
+      nonce: () => 0,
     },
-  } as unknown as Session
+  } satisfies Session
 }
 
 function makeChannel(overrides?: Partial<SessionChannel> & { session?: Session }): SessionChannel {
@@ -43,6 +56,8 @@ function makeChannel(overrides?: Partial<SessionChannel> & { session?: Session }
     rekeyAbort: null,
     rekeyRequestId: null,
     rekeyChain: Promise.resolve(),
+    workerMlkemPub: new Uint8Array(0),
+    rekeyMaterial: null,
     ...overrides,
   }
 }
@@ -253,10 +268,24 @@ describe('channelSession', () => {
     const ch = makeChannel({ session: cipher })
     const wait = vi.fn()
     ch.rekeyWait = wait
+    // Use a real ephemeral so the DH derivation (over real X25519) succeeds.
+    const eph = generateRekeyEphemeral()
+    ch.rekeyMaterial = { ePriv: eph.privateKey, mlkemSS: null }
     const session = new ChannelSession(emptyDeps())
-    session.handleRekeyOutcome(ch, true)
-    expect(cipher.send.rekey).toHaveBeenCalled()
-    expect(cipher.receive.rekey).toHaveBeenCalled()
+    session.handleRekeyOutcome(ch, true, 0, undefined, eph.publicKey)
+    expect((cipher.send.rekeyWithSecret as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
+    expect((cipher.receive.rekeyWithSecret as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
+    // The send direction keeps no grace window. It is expressed structurally
+    // now via rekeyWithSecret(..., false) (which zeroes the replaced key rather
+    // than retaining it), NOT via a follow-up clearPrev the caller must
+    // remember. Pin both halves: send rotates with retainPrev=false, and
+    // neither direction calls clearPrev (the production path no longer needs
+    // it). A future edit that re-introduces a clearPrev call — or passes the
+    // wrong retainPrev — fails here.
+    expect((cipher.send.rekeyWithSecret as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(expect.any(Uint8Array), null, false)
+    expect((cipher.receive.rekeyWithSecret as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(expect.any(Uint8Array), null, true)
+    expect((cipher.send.clearPrev as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+    expect((cipher.receive.clearPrev as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
     expect(wait).toHaveBeenCalledWith(true, 0)
   })
 
@@ -264,6 +293,67 @@ describe('channelSession', () => {
     const session = new ChannelSession(emptyDeps())
     // Must not throw.
     session.handleRekeyOutcome(makeChannel(), false, 1000)
+  })
+
+  it('handleRekeyOutcome zeroes the fresh secrets on reject', () => {
+    // Pins the F-1 forward-secrecy fix: a RekeyReject must still wipe the
+    // in-flight fresh X25519 ephemeral + ML-KEM shared secret, not leave them
+    // lingering in the heap until GC. Pre-fix, handleRekeyOutcome nulled
+    // ch.rekeyMaterial before the if(accepted) branch, so only the accept-success
+    // path filled the bytes — the reject path leaked the very secrets whose
+    // freshness is #321's guarantee. clearRekeySlot can't reach them (it reads
+    // the already-nulled field), so the wipe must happen in this function.
+    const cipher = mockCipher()
+    const ch = makeChannel({ session: cipher })
+    const wait = vi.fn()
+    ch.rekeyWait = wait
+    const ePriv = generateRekeyEphemeral().privateKey.slice() // owned copy we can re-read
+    const mlkemSS = new Uint8Array(32).fill(0xAB)
+    ch.rekeyMaterial = { ePriv, mlkemSS }
+    const session = new ChannelSession(emptyDeps())
+    session.handleRekeyOutcome(ch, false, 500)
+    expect(wait).toHaveBeenCalledWith(false, 500)
+    expect(ch.rekeyMaterial).toBeNull()
+    // The fresh secrets must be wiped on the reject path.
+    expect(Array.from(ePriv).every(b => b === 0)).toBe(true)
+    expect(Array.from(mlkemSS).every(b => b === 0)).toBe(true)
+    // Reject must not rotate keys.
+    expect((cipher.send.rekeyWithSecret as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+  })
+
+  it('handleRekeyOutcome zeroes the fresh secrets on accept-with-bad-responder-pub', () => {
+    // Pins the F-1 fail-closed branch: an Ack whose responder ephemeral is the
+    // wrong size must close the channel AND wipe the fresh secrets — this is
+    // the attacker-controlled-Ack path, so leaking here would be the worst
+    // instance of the bug.
+    const cipher = mockCipher()
+    const ch = makeChannel({ session: cipher })
+    const wait = vi.fn()
+    ch.rekeyWait = wait
+    ch.rekeyRequestId = 9
+    // ensureRekeyed installs rekeyAbort (the close/teardown funnel) whenever it
+    // arms a waiter; mirror that here so the bad-pub path's rekeyAbort?.() call
+    // has a real target. The funnel (not a hand-null of rekeyWait) is what
+    // clears the timer + slot and rejects the outcome promise.
+    const rekeyAbort = vi.fn()
+    ch.rekeyAbort = rekeyAbort
+    const ePriv = generateRekeyEphemeral().privateKey.slice()
+    const mlkemSS = new Uint8Array(32).fill(0xCD)
+    ch.rekeyMaterial = { ePriv, mlkemSS }
+    const closeChannel = vi.fn(async () => {})
+    const session = new ChannelSession({
+      sendToWire: () => {},
+      closeChannel,
+      onSendFailure: () => {},
+    })
+    session.handleRekeyOutcome(ch, true, 0, 9, new Uint8Array(7)) // wrong-size dh_pub
+    expect(closeChannel).toHaveBeenCalledWith('ch-1')
+    // The teardown funnels through rekeyAbort (clearRekeySlot + reject) rather
+    // than hand-nulling rekeyWait — pinning that the bad-pub path does not
+    // bypass the single cleanup funnel.
+    expect(rekeyAbort).toHaveBeenCalledTimes(1)
+    expect(Array.from(ePriv).every(b => b === 0)).toBe(true)
+    expect(Array.from(mlkemSS).every(b => b === 0)).toBe(true)
   })
 
   it('ensureRekeyed closes past hard ceiling', async () => {
@@ -419,7 +509,7 @@ describe('channelSession', () => {
       rekeyRequestId: 7,
     })
     session.handleRekeyOutcome(ch, true, 0, 99)
-    expect(cipher.send.rekey).not.toHaveBeenCalled()
+    expect((cipher.send.rekeyWithSecret as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
     expect(wait).not.toHaveBeenCalled()
     expect(ch.rekeyWait).toBe(wait)
   })
