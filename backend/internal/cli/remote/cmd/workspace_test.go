@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -129,4 +130,37 @@ func TestRunWorkspaceCleanupFanout_ContextPropagates(t *testing.T) {
 		return &leapmuxv1.CleanupWorkspaceResponse{}, nil
 	}
 	_, _ = runWorkspaceCleanupFanout(parent, "ws-1", []string{"w1"}, caller)
+}
+
+// TestRunWorkspaceList_InsideWorkerSpawn is the end-to-end regression
+// test for `leapmux remote workspace list` run from inside a
+// worker-spawned agent. The spawn injects LEAPMUX_REMOTE_USER_ID into
+// every agent process (see remoteipc/server.go); the command must
+// ignore it and issue exactly one hub call. It used to bind the value
+// to a --user-id flag whose resolver leg called the (now-deleted)
+// hub GetUser RPC -- which the agent's delegation bearer may not
+// invoke -- aborting an otherwise-legal ListWorkspaces with
+// `resolve_failed`.
+func TestRunWorkspaceList_InsideWorkerSpawn(t *testing.T) {
+	// No worker.* call, so the spawn needs no local dispatcher.
+	hub := &recordingHub{}
+	startSpawnIPC(t, hub, nil)
+	// The worker injects this into every spawned agent (see
+	// remoteipc.EnvVars).
+	t.Setenv("LEAPMUX_REMOTE_USER_ID", "u-spawn")
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunWorkspaceList(fakeCmdCtx{}, nil))
+	})
+
+	var env struct {
+		Data  []map[string]any `json:"data"`
+		Error map[string]any   `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.Nil(t, env.Error, "workspace list must succeed inside a worker spawn")
+	require.Len(t, env.Data, 1)
+	assert.Equal(t, "ws-1", env.Data[0]["id"])
+	assert.Equal(t, []string{"ListWorkspaces"}, hub.called(),
+		"a session-scoped list must cost exactly one hub call; no entity-id env var may add another")
 }

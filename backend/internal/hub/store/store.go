@@ -15,7 +15,6 @@ import (
 
 // Store is the top-level storage abstraction for the Hub.
 type Store interface {
-	Orgs() OrgStore
 	Users() UserStore
 	Sessions() SessionStore
 	Workers() WorkerStore
@@ -23,9 +22,9 @@ type Store interface {
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
-	OrgOpBatches() OrgOpBatchesStore
-	OrgState() OrgStateStore
-	OrgRecentBatchIDs() OrgRecentBatchIDStore
+	UserOpBatches() UserOpBatchesStore
+	UserState() UserStateStore
+	UserRecentBatchIDs() UserRecentBatchIDStore
 	LifecycleOutbox() LifecycleOutboxStore
 	WorkspaceSections() WorkspaceSectionStore
 	WorkspaceSectionItems() WorkspaceSectionItemStore
@@ -74,29 +73,6 @@ type Migrator interface {
 	MigrateTo(ctx context.Context, version int64) error
 }
 
-// OrgStore manages personal organizations: exactly one per user, created
-// with the account, soft-deleted with it. The org's name mirrors the username
-// and is renamed ONLY by userStore.UpdateProfile's paired RenameUserPersonalOrg
-// query (in the same transaction as the user rename), so there is no standalone
-// org-rename method on this interface: exposing one would let a store-level
-// caller rename an org without its user and desync the /o/ slug -- the exact
-// stale-slug bug the pairing exists to prevent.
-type OrgStore interface {
-	Create(ctx context.Context, p CreateOrgParams) error
-	GetByID(ctx context.Context, id string) (*Org, error)
-	// GetByIDIncludeDeleted returns the org row even when soft-deleted. It is
-	// how the cross-dialect cleanup suite tells a hard-deleted org (gone) from a
-	// soft-deleted one (present) -- GetByID reports NotFound for both -- mirroring
-	// the same method on UserStore and WorkerStore.
-	GetByIDIncludeDeleted(ctx context.Context, id string) (*Org, error)
-	// SoftDelete soft-deletes an org directly. This is NOT the production path:
-	// a personal org is soft-deleted only as part of deleting its user, via
-	// userStore.Delete's transactional SoftDeleteUserPersonalOrg (see
-	// DeleteUserWithPersonalOrg). This standalone method exercises the org
-	// soft-delete SQL across dialects and seeds cleanup-sweep fixtures.
-	SoftDelete(ctx context.Context, id string) error
-}
-
 type UserStore interface {
 	Create(ctx context.Context, p CreateUserParams) error
 	GetByID(ctx context.Context, id string) (*User, error)
@@ -128,12 +104,7 @@ type UserStore interface {
 	PromotePendingEmail(ctx context.Context, id string) error
 	ClearPendingEmail(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
-	// Delete soft-deletes the user AND its personal org (the org whose id is the
-	// user's org_id) in the same call. The pairing is mechanical rather than
-	// caller-remembered: leaving the org behind would keep its name occupying the
-	// partial unique index idx_orgs_name and fail a later re-signup of the freed
-	// username. Since every user has exactly one personal org (name mirroring the
-	// username), soft-deleting that org is always correct.
+	// Delete soft-deletes the user.
 	Delete(ctx context.Context, id string) error
 	// RevokeUserTokens advances the user's tokens_revoked_at marker
 	// plus auth_generation epoch and emits a durable user-token
@@ -259,11 +230,11 @@ type WorkspaceStore interface {
 	// ListByIDs returns the non-deleted workspace rows whose id is in
 	// `ids`. Missing or deleted ids are silently dropped from the
 	// result. Empty `ids` returns nil with no DB call. The CLI's
-	// requested-workspace paths (`tab list`, `/ws/orgevents`
+	// requested-workspace paths (`tab list`, `/ws/userevents`
 	// subscribe) use this to verify a batch of refs in a single query.
 	ListByIDs(ctx context.Context, ids []string) ([]Workspace, error)
-	// ListAccessible returns every non-deleted workspace the user owns
-	// within the given org, newest first.
+	// ListAccessible returns every non-deleted workspace the user owns,
+	// newest first.
 	ListAccessible(ctx context.Context, p ListAccessibleWorkspacesParams) ([]Workspace, error)
 	Rename(ctx context.Context, p RenameWorkspaceParams) (int64, error)
 	SoftDelete(ctx context.Context, p SoftDeleteWorkspaceParams) (int64, error)
@@ -271,8 +242,8 @@ type WorkspaceStore interface {
 }
 
 // WorkspaceTabIndexStore is the materialized derived view of every
-// non-tombstoned tab in the org doc. The CRDT manager keeps it in
-// sync with OrgCrdtState; UI / worker reconciliation consume it via
+// non-tombstoned tab in the user doc. The CRDT manager keeps it in
+// sync with UserCrdtState; UI / worker reconciliation consume it via
 // _rendered (UI) or _owned (worker reconciliation).
 type WorkspaceTabIndexStore interface {
 	UpsertOwned(ctx context.Context, p UpsertOwnedTabParams) error
@@ -282,70 +253,88 @@ type WorkspaceTabIndexStore interface {
 	// operation as a whole is not atomic across chunks — callers that
 	// need atomicity must run inside a transaction.
 	BulkUpsertOwned(ctx context.Context, rows []UpsertOwnedTabParams) error
-	DeleteOwned(ctx context.Context, orgID, tabID string) error
 	// BulkDeleteOwned deletes every row identified by `keys` as a
 	// single bulk delete. Empty slice is a no-op. Same chunking /
 	// atomicity notes as BulkUpsertOwned.
+	//
+	// A key with a zero/blank owner is SKIPPED rather than refusing the
+	// whole call (store.FilterTabIndexKeys): the bad key is one of many, so
+	// refusing would silently drop the deletes queued for its valid
+	// neighbours. Skipped is not silent -- every dialect logs the drop count
+	// at WARN, because reaching a zero owner means an upstream tenancy
+	// invariant broke.
 	BulkDeleteOwned(ctx context.Context, keys []TabIndexKey) error
-	DeleteOwnedByOrg(ctx context.Context, orgID string) error
-	ListOwnedByWorkspace(ctx context.Context, workspaceID string) ([]WorkspaceTabRow, error)
-	ListOwnedByWorker(ctx context.Context, workerID string) ([]WorkspaceTabRow, error)
-	ListDistinctWorkersByWorkspace(ctx context.Context, workspaceID string) ([]string, error)
+	// ListOwnedByWorker returns p.UserID's owned tabs hosted by p.WorkerID.
+	// The result is authoritative ONLY for that owner: the worker's orphan
+	// reconciler infers "absent here means orphaned" from it, so a response
+	// must declare the owner it covers (see leapmuxv1.
+	// ListOwnedTabsForWorkerResponse.owner_user_id) rather than let a
+	// narrower scope read as a wider absence. A zero UserID returns nil.
+	ListOwnedByWorker(ctx context.Context, p ListOwnedTabsByWorkerParams) ([]WorkspaceTabRow, error)
+	// ListDistinctWorkersByWorkspace returns the distinct worker ids that
+	// p.UserID's tabs in p.WorkspaceID are hosted on. A zero UserID returns
+	// nil. Owner-scoped because the projection drops the owner column, so a
+	// caller cannot filter a foreign worker back out of the result.
+	ListDistinctWorkersByWorkspace(ctx context.Context, p ListDistinctWorkersByWorkspaceParams) ([]string, error)
 	// GetOwned returns the single workspace_tab_owned row identified
-	// by (workspace_id, tab_type, tab_id), or ErrNotFound. The
-	// indexed point-lookup mirrors GetRendered and lets the
-	// delegation handler's mint-time propagation wait poll a single
-	// row instead of materializing every owned tab in the workspace.
+	// by (user_id, workspace_id, tab_id), or ErrNotFound. The indexed
+	// point-lookup mirrors GetRendered and lets the delegation
+	// handler's mint-time propagation wait poll a single row instead
+	// of materializing every owned tab in the workspace. A zero
+	// p.UserID is ErrNotFound: it is an ownership gate, so it must
+	// never bind a blank owner (see OwnerFilter).
 	GetOwned(ctx context.Context, p GetOwnedTabParams) (*WorkspaceTabRow, error)
 
 	UpsertRendered(ctx context.Context, p UpsertRenderedTabParams) error
 	// BulkUpsertRendered is the rendered-view counterpart to
 	// BulkUpsertOwned.
 	BulkUpsertRendered(ctx context.Context, rows []UpsertRenderedTabParams) error
-	DeleteRendered(ctx context.Context, orgID, tabID string) error
 	// BulkDeleteRendered is the rendered-view counterpart to
 	// BulkDeleteOwned.
 	BulkDeleteRendered(ctx context.Context, keys []TabIndexKey) error
-	DeleteRenderedByOrg(ctx context.Context, orgID string) error
-	ListRenderedByWorkspace(ctx context.Context, workspaceID string) ([]WorkspaceTabRow, error)
-	// ListRenderedByWorkspaceIDs returns rendered tabs across every
-	// workspace_id in `workspaceIDs`. The result is ordered by
+	// ListRenderedByWorkspaceIDs returns p.UserID's rendered tabs across
+	// every workspace_id in `p.WorkspaceIDs`. The result is ordered by
 	// (workspace_id, position) so callers iterating the slice get a
 	// stable per-workspace grouping without a secondary sort. Empty
-	// `workspaceIDs` returns nil with no DB call.
-	ListRenderedByWorkspaceIDs(ctx context.Context, workspaceIDs []string) ([]WorkspaceTabRow, error)
+	// `p.WorkspaceIDs` returns nil with no DB call, and so does a zero
+	// p.UserID: it is an ownership gate, so it must never bind a blank
+	// owner (see userid.OwnerFilter).
+	ListRenderedByWorkspaceIDs(ctx context.Context, p ListRenderedTabsByWorkspaceIDsParams) ([]WorkspaceTabRow, error)
+	// GetRendered returns the single workspace_tab_rendered row identified
+	// by (user_id, workspace_id, tab_type, tab_id), or ErrNotFound. A zero
+	// p.UserID is ErrNotFound, for the same reason as GetOwned.
 	GetRendered(ctx context.Context, p GetRenderedTabParams) (*WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
 	// (tab_type, tab_id) across every workspace the user owns.
 	// Returns ErrNotFound when no owned workspace contains the tab.
 	// Backs WorkspaceService.LocateTab so the CLI can resolve a tab's
-	// full context (org / workspace / tile / worker) from just the id.
+	// full context (user / workspace / tile / worker) from just the id.
 	LocateAccessibleRendered(ctx context.Context, p LocateAccessibleRenderedTabParams) (*WorkspaceTabRow, error)
 }
 
-// OrgOpBatchesStore manages the CRDT op-batch journal.
-type OrgOpBatchesStore interface {
-	Insert(ctx context.Context, p InsertOrgOpBatchParams) error
+// UserOpBatchesStore manages the CRDT op-batch journal.
+type UserOpBatchesStore interface {
+	Insert(ctx context.Context, p InsertUserOpBatchParams) error
 	// ListAfter pages through batches strictly after the given HLC
 	// cursor. `limit` caps the per-call row count so a far-behind
 	// subscriber cannot OOM the broadcaster; pass a large value
 	// (CRDTBatchPageLimit) for "drain everything available now".
-	ListAfter(ctx context.Context, p ListOrgOpBatchesAfterParams) ([]OrgOpBatchRow, error)
-	DeleteThrough(ctx context.Context, p DeleteOrgOpBatchesThroughParams) error
-	Count(ctx context.Context, orgID string) (int64, error)
+	ListAfter(ctx context.Context, p ListUserOpBatchesAfterParams) ([]UserOpBatchRow, error)
+	DeleteThrough(ctx context.Context, p DeleteUserOpBatchesThroughParams) error
+	Count(ctx context.Context, userID userid.UserID) (int64, error)
 }
 
-// OrgStateStore manages the per-org materialized state blob.
-type OrgStateStore interface {
-	Get(ctx context.Context, orgID string) (*OrgStateRow, error)
-	Upsert(ctx context.Context, p UpsertOrgStateParams) error
-	AdvanceEpoch(ctx context.Context, p AdvanceOrgEpochParams) error
+// UserStateStore manages the per-user materialized state blob.
+type UserStateStore interface {
+	Get(ctx context.Context, userID userid.UserID) (*UserStateRow, error)
+	Upsert(ctx context.Context, p UpsertUserStateParams) error
+	AdvanceEpoch(ctx context.Context, p AdvanceUserEpochParams) error
 }
 
-// OrgRecentBatchIDStore manages the dedup table.
-type OrgRecentBatchIDStore interface {
-	Get(ctx context.Context, orgID, batchID string) (*OrgRecentBatchIDRow, error)
-	Insert(ctx context.Context, p InsertOrgRecentBatchIDParams) error
+// UserRecentBatchIDStore manages the dedup table.
+type UserRecentBatchIDStore interface {
+	Get(ctx context.Context, userID userid.UserID, batchID string) (*UserRecentBatchIDRow, error)
+	Insert(ctx context.Context, p InsertUserRecentBatchIDParams) error
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
 }
 
@@ -367,8 +356,8 @@ const CRDTBatchPageLimit = 1024
 
 // ListPendingLifecycleOutboxParams pages a ListPending call.
 type ListPendingLifecycleOutboxParams struct {
-	OrgID string
-	Limit int32
+	UserID userid.UserID
+	Limit  int32
 }
 
 // APITokenStore manages durable bearer tokens (CLI / future external).
@@ -586,7 +575,6 @@ type CleanupStore interface {
 	// pending_email_expires_at is older than cutoff. Frees up index slots
 	// and ensures stale codes don't leak into future lookups.
 	ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error)
-	HardDeleteOrgsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredOAuthStates(ctx context.Context) (int64, error)
 	DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error)
 	DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error)
@@ -603,7 +591,6 @@ type CleanupStore interface {
 type TestEntity string
 
 const (
-	EntityOrgs                   TestEntity = "orgs"
 	EntityUsers                  TestEntity = "users"
 	EntitySessions               TestEntity = "user_sessions"
 	EntityWorkers                TestEntity = "workers"
@@ -616,7 +603,6 @@ const (
 // validEntities is the set of known TestEntity values, used by
 // ValidateEntity to prevent SQL injection in test helpers.
 var validEntities = map[TestEntity]bool{
-	EntityOrgs:                   true,
 	EntityUsers:                  true,
 	EntitySessions:               true,
 	EntityWorkers:                true,
@@ -652,6 +638,18 @@ type TestHelper interface {
 
 	// SetRevocationEventRevokedAt writes an exact revocation_events.revoked_at timestamp.
 	SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error
+
+	// ListAllOwnedTabs returns every workspace_tab_owned row, unfiltered by
+	// owner, ordered by (user_id, tab_id).
+	//
+	// This is test-only ON PURPOSE and must never gain a production caller:
+	// every production read of that table binds user_id, because
+	// (workspace_id, tab_id) is not a key (see GetOwnedTabParams). The suite
+	// still needs an owner-blind view to assert what a write or delete left
+	// behind for an owner it cannot name -- notably the blank-owner rows the
+	// FilterTabIndexKeys guard exists to protect, which no owner-scoped read
+	// can observe.
+	ListAllOwnedTabs(ctx context.Context) ([]WorkspaceTabRow, error)
 
 	// TruncateAll deletes all data from all tables, preserving the schema.
 	// Metadata tables (e.g. goose_db_version, schema_version, meta) are

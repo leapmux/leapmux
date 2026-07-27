@@ -164,7 +164,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			remoteEnvs, err := svc.spawnRemoteIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
 				return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
 					UserID:        userID,
-					OrgID:         r.GetOrgId(),
 					WorkspaceID:   r.GetWorkspaceId(),
 					WorkerID:      svc.WorkerID,
 					TabID:         agentID,
@@ -241,7 +240,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// ctx is intentionally not threaded — using it would cancel the
 	// cleanup partway through if the user clicked away.
 	registerAgentGatedByIDTracked(d, "CloseAgent",
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.CloseAgentRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, userID userid.UserID, r *leapmuxv1.CloseAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
 			// Tracked via dispatcher RegisterTracked above so a concurrent
@@ -254,6 +253,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			result := svc.closeTabCommon(
 				leapmuxv1.TabType_TAB_TYPE_AGENT,
 				agentID,
+				userID.String(),
 				r.GetWorktreeAction(),
 				func() {
 					svc.AgentStartup.cancelAndClear(agentID)
@@ -986,7 +986,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// the access set has landed, or a panic -- is dropped on arrival and
 	// the subscription hangs with no error to retry from.
 	registerWorkspaceGatedStream(d, "WatchWorkspacePrivateEvents",
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.WatchWorkspacePrivateEventsRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, caller userid.UserID, r *leapmuxv1.WatchWorkspacePrivateEventsRequest, sender channel.ResponseWriter) {
 			workspaceID := r.GetWorkspaceId()
 			if svc.PrivateEvents == nil {
 				return
@@ -998,7 +998,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					if svc.FileTabPaths == nil {
 						return nil
 					}
-					snapshot, err := svc.FileTabPaths.SnapshotForWorkspace(bgCtx(), wsID)
+					snapshot, err := svc.FileTabPaths.SnapshotForWorkspace(bgCtx(), caller, wsID)
 					if err != nil {
 						return nil
 					}
@@ -1019,9 +1019,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// GetFileTabPath from a sibling client would see a stale "not found".
 	// Dispatcher ctx is intentionally not threaded.
 	registerWorkspaceGated(d, "RegisterFileTabPath",
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.RegisterFileTabPathRequest, sender channel.ResponseWriter) {
-			if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetFilePath() == "" {
-				sendInvalidArgument(sender, "tab_id, org_id, file_path are required")
+		func(_ context.Context, userID userid.UserID, r *leapmuxv1.RegisterFileTabPathRequest, sender channel.ResponseWriter) {
+			if r.GetTabId() == "" || r.GetFilePath() == "" {
+				sendInvalidArgument(sender, "tab_id, file_path are required")
 				return
 			}
 			if svc.FileTabPaths == nil {
@@ -1029,7 +1029,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
-				OrgID: r.GetOrgId(), TabID: r.GetTabId(),
+				UserID: userID.String(), TabID: r.GetTabId(),
 				WorkspaceID: r.GetWorkspaceId(), FilePath: r.GetFilePath(),
 			}); err != nil {
 				sendInternalError(sender, err.Error())
@@ -1042,21 +1042,21 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the store lookup to fail-fast on disconnect.
 	// gateInBody, probe-enforced
-	registerInBodyGated(d, "GetFileTabPath", func(ctx context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGated(d, "GetFileTabPath", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
-		if r.GetTabId() == "" || r.GetOrgId() == "" {
-			sendInvalidArgument(sender, "tab_id and org_id are required")
+		if r.GetTabId() == "" {
+			sendInvalidArgument(sender, "tab_id is required")
 			return
 		}
 		if svc.FileTabPaths == nil {
 			sendInternalError(sender, "file tab path store unavailable")
 			return
 		}
-		wsID, path, err := svc.FileTabPaths.Get(ctx, r.GetOrgId(), r.GetTabId())
+		wsID, path, err := svc.FileTabPaths.Get(ctx, userID.String(), r.GetTabId())
 		if err != nil {
 			if errors.Is(err, ErrFileTabPathNotFound) {
 				sendNotFoundError(sender, "file tab path not found")
@@ -1083,14 +1083,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// survive past the user's intended revocation. Dispatcher ctx is
 	// intentionally not threaded.
 	// gateInBody, probe-enforced
-	registerInBodyGatedTracked(d, "RevokeFileTabPath", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGatedTracked(d, "RevokeFileTabPath", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.RevokeFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
-		if r.GetTabId() == "" || r.GetOrgId() == "" {
-			sendInvalidArgument(sender, "tab_id and org_id are required")
+		if r.GetTabId() == "" {
+			sendInvalidArgument(sender, "tab_id is required")
 			return
 		}
 		if svc.FileTabPaths == nil {
@@ -1099,7 +1099,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		}
 		// Workspace auth check uses the tab's currently-stored
 		// workspace_id (rollback path: the CRDT tab may not exist yet).
-		wsID, _, getErr := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		wsID, _, getErr := svc.FileTabPaths.Get(bgCtx(), userID.String(), r.GetTabId())
 		if getErr != nil {
 			if errors.Is(getErr, ErrFileTabPathNotFound) {
 				// Already revoked — idempotent success.
@@ -1115,7 +1115,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// Drive the shared closeTabCommon flow so the worktree-tab link
 		// (and any user-requested `git worktree remove`) is handled
 		// identically to CloseAgent / CloseTerminal.
-		result := svc.closeFileTabCommon(r.GetOrgId(), r.GetTabId(), r.GetWorktreeAction())
+		result := svc.closeFileTabCommon(userID.String(), r.GetTabId(), r.GetWorktreeAction())
 		sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{Result: result})
 	})
 
@@ -1125,14 +1125,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// missing path row even though the CRDT moved the tab. Dispatcher ctx
 	// is intentionally not threaded.
 	// gateInBody, probe-enforced
-	registerInBodyGated(d, "RelocateFileTabPath", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerInBodyGated(d, "RelocateFileTabPath", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.RelocateFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
-		if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetNewWorkspaceId() == "" {
-			sendInvalidArgument(sender, "tab_id, org_id, new_workspace_id are required")
+		if r.GetTabId() == "" || r.GetNewWorkspaceId() == "" {
+			sendInvalidArgument(sender, "tab_id, new_workspace_id are required")
 			return
 		}
 		if svc.FileTabPaths == nil {
@@ -1142,7 +1142,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// Auth: caller must have access to BOTH the current and the
 		// destination workspaces (mirrors the CRDT's cross-workspace
 		// move auth rule).
-		wsID, _, err := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		wsID, _, err := svc.FileTabPaths.Get(bgCtx(), userID.String(), r.GetTabId())
 		if err != nil {
 			if errors.Is(err, ErrFileTabPathNotFound) {
 				sendNotFoundError(sender, "file tab path not found")
@@ -1157,7 +1157,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		if !svc.requireAccessibleWorkspace(sender, r.GetNewWorkspaceId()) {
 			return
 		}
-		if err := svc.FileTabPaths.Relocate(bgCtx(), r.GetOrgId(), r.GetTabId(), r.GetNewWorkspaceId()); err != nil {
+		if err := svc.FileTabPaths.Relocate(bgCtx(), userID.String(), r.GetTabId(), r.GetNewWorkspaceId()); err != nil {
 			sendInternalError(sender, err.Error())
 			return
 		}

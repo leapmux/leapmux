@@ -26,13 +26,13 @@ test.describe('Chat Pagination & Scroll', () => {
 
     // Thinking indicator may flash briefly for fast responses; tolerate that.
     const thinking = page.locator('[data-testid="thinking-indicator"]')
-    await expect(thinking).toBeVisible({ timeout: 30_000 }).catch(() => {})
+    await expect(thinking).toBeVisible().catch(() => {})
 
     // Wait for the assistant bubble to land.
-    await expect(firstAssistantBubble(page)).toBeVisible({ timeout: 60_000 })
+    await expect(firstAssistantBubble(page)).toBeVisible()
 
     // After the turn completes, the thinking indicator should be gone.
-    await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible()
     await expect(thinking).not.toBeVisible()
 
     // Each rendered message wrapper carries a positive data-seq from the

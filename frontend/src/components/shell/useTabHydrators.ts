@@ -10,7 +10,7 @@ import { protoToAgentTabFields, protoToTerminalTabFields, tabKey } from '~/store
  * Per-tab-type hydration of CRDT-projected tabs that arrived without
  * their worker-side metadata (path / agent record / terminal title).
  * The hub strips file paths and agent/terminal payloads from the
- * org-events stream — those live behind E2EE on the worker. Without
+ * userevents stream — those live behind E2EE on the worker. Without
  * these hydrators a tab opened by another client (or by the
  * `leapmux remote tab open` CLI) renders as a bare CRDT row until the
  * user clicks it.
@@ -24,7 +24,6 @@ import { protoToAgentTabFields, protoToTerminalTabFields, tabKey } from '~/store
 export interface UseTabHydratorsOpts {
   tabStore: ReturnType<typeof createTabStore>
   fileTabPaths: ReturnType<typeof createFileTabPathsStore>
-  getOrgId: () => string | null | undefined
 }
 
 export function useTabHydrators(opts: UseTabHydratorsOpts): void {
@@ -32,7 +31,6 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
 
   interface BaseSpec {
     predicate: (tab: Tab) => boolean
-    precondition?: () => boolean
   }
   /** Per-tab fetch. One RPC per candidate. */
   interface PerTabSpec extends BaseSpec {
@@ -149,8 +147,6 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     }
 
     createEffect(() => {
-      if (spec.precondition && !spec.precondition())
-        return
       const { candidates } = matches()
       if (spec.kind === 'batched') {
         // Group by workerId so one RPC hydrates N same-worker tabs.
@@ -185,13 +181,13 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // GetFileTabPath so the title renders without a perceptible delay.
   createTabHydration({
     kind: 'per-tab',
-    precondition: () => Boolean(opts.getOrgId()),
     predicate: tab => tab.type === TabType.FILE && !tab.filePath && Boolean(tab.workerId) && !opts.fileTabPaths.pathFor(tab.id),
     fetch: async (tab) => {
-      const orgId = opts.getOrgId()
-      if (!orgId || !tab.workerId)
+      // The predicate already requires a non-empty workerId; this
+      // re-check narrows the optional field for TypeScript.
+      if (!tab.workerId)
         return
-      const resp = await getFileTabPath(tab.workerId, { orgId, tabId: tab.id })
+      const resp = await getFileTabPath(tab.workerId, { tabId: tab.id })
       opts.fileTabPaths.register(tab.id, resp.workspaceId, resp.filePath)
       opts.tabStore.updateTab(TabType.FILE, tab.id, { filePath: resp.filePath })
     },

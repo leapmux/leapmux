@@ -32,8 +32,8 @@ export interface WorkerDialogContextOptions {
  * state lives next door in `useGitModeState`; `useWorkerDialog` composes
  * the two as siblings so each concern stays independently testable.
  *
- * Org and worker-info access are NOT exposed via the returned object:
- * dialogs call `useOrg()` directly (they're already inside a Solid
+ * Auth and worker-info access are NOT exposed via the returned object:
+ * dialogs use auth/workspace context directly (they're already inside a Solid
  * component scope) and read the {@link workerInfoStore} singleton
  * directly when they need worker metadata beyond `getHomeDir()`. The
  * single convenience kept here is `getHomeDir()`, bound to the

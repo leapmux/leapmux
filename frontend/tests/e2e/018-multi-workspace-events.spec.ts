@@ -24,15 +24,15 @@ async function preloadWorkspace(page: Page, workspaceId: string, thenSwitchTo: s
 
 test.describe('Multi-Workspace Events', () => {
   test('non-active workspace agent status reflected in sidebar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Events Active', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Events Inactive', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Events Active')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Events Inactive')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -53,16 +53,16 @@ test.describe('Multi-Workspace Events', () => {
   })
 
   test('switching to previously expanded workspace shows correct tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch From', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch To', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch From')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch To')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2) // ws2 has 2 agents
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -94,17 +94,17 @@ test.describe('Multi-Workspace Events', () => {
   })
 
   test('multiple workspaces with agents all appear in sidebar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events A', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events B', adminOrgId)
-    const ws3 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events C', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events A')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events B')
+    const ws3 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Events C')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws3)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 

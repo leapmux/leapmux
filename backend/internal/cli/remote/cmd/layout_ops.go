@@ -12,81 +12,80 @@ import (
 // layoutOps.ts shape so frontend + CLI emit the same op shapes for
 // the same intents.
 
-// envelope returns a fresh OrgOp with org id, op id, origin client,
+// envelope returns a fresh CrdtOp with op id, origin client,
 // and client HLC populated. Callers attach `Body` directly because
 // the oneof wrapper interface is package-private to the generated
 // proto package.
-func envelope(bs *CRDTBootstrap) *leapmuxv1.OrgOp {
-	return &leapmuxv1.OrgOp{
-		OrgId:          bs.OrgID,
+func envelope(bs *CRDTBootstrap) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
 		OpId:           id.Generate(),
 		OriginClientId: bs.OriginClient,
 		ClientHlc:      bs.Clock.Tick(nowMillis()),
 	}
 }
 
-// newSetNodeRegisterOp allocates the OrgOp wrapper + SetNodeRegisterOp
+// newSetNodeRegisterOp allocates the CrdtOp wrapper + SetNodeRegisterOp
 // inner record and links them. Callers set inner.Field to the desired
 // variant. The proto generator makes the Field interface
 // package-private, so per-register helpers can't share a single
 // "set field" parameter type; this constructor + per-register Field
 // assignment is the shortest form that doesn't require reflection.
-func newSetNodeRegisterOp(bs *CRDTBootstrap, nodeID string) (*leapmuxv1.OrgOp, *leapmuxv1.SetNodeRegisterOp) {
+func newSetNodeRegisterOp(bs *CRDTBootstrap, nodeID string) (*leapmuxv1.CrdtOp, *leapmuxv1.SetNodeRegisterOp) {
 	op := envelope(bs)
 	inner := &leapmuxv1.SetNodeRegisterOp{NodeId: nodeID}
-	op.Body = &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: inner}
+	op.Body = &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: inner}
 	return op, inner
 }
 
-func opSetNodeKind(bs *CRDTBootstrap, nodeID string, kind leapmuxv1.NodeKind) *leapmuxv1.OrgOp {
+func opSetNodeKind(bs *CRDTBootstrap, nodeID string, kind leapmuxv1.NodeKind) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Kind{Kind: kind}
 	return op
 }
 
-func opSetNodeParentID(bs *CRDTBootstrap, nodeID, parentID string) *leapmuxv1.OrgOp {
+func opSetNodeParentID(bs *CRDTBootstrap, nodeID, parentID string) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: parentID}
 	return op
 }
 
-func opSetNodePosition(bs *CRDTBootstrap, nodeID, position string) *leapmuxv1.OrgOp {
+func opSetNodePosition(bs *CRDTBootstrap, nodeID, position string) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Position{Position: position}
 	return op
 }
 
-func opSetNodeDirection(bs *CRDTBootstrap, nodeID string, dir leapmuxv1.SplitDirection) *leapmuxv1.OrgOp {
+func opSetNodeDirection(bs *CRDTBootstrap, nodeID string, dir leapmuxv1.SplitDirection) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Direction{Direction: dir}
 	return op
 }
 
-func opSetNodeRatios(bs *CRDTBootstrap, nodeID string, ratios []float64) *leapmuxv1.OrgOp {
+func opSetNodeRatios(bs *CRDTBootstrap, nodeID string, ratios []float64) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Ratios{Ratios: &leapmuxv1.DoubleList{Values: ratios}}
 	return op
 }
 
-func opSetNodeRows(bs *CRDTBootstrap, nodeID string, rows uint32) *leapmuxv1.OrgOp {
+func opSetNodeRows(bs *CRDTBootstrap, nodeID string, rows uint32) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Rows{Rows: rows}
 	return op
 }
 
-func opSetNodeCols(bs *CRDTBootstrap, nodeID string, cols uint32) *leapmuxv1.OrgOp {
+func opSetNodeCols(bs *CRDTBootstrap, nodeID string, cols uint32) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_Cols{Cols: cols}
 	return op
 }
 
-func opSetNodeRowRatios(bs *CRDTBootstrap, nodeID string, values []float64) *leapmuxv1.OrgOp {
+func opSetNodeRowRatios(bs *CRDTBootstrap, nodeID string, values []float64) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_RowRatios{RowRatios: &leapmuxv1.DoubleList{Values: values}}
 	return op
 }
 
-func opSetNodeColRatios(bs *CRDTBootstrap, nodeID string, values []float64) *leapmuxv1.OrgOp {
+func opSetNodeColRatios(bs *CRDTBootstrap, nodeID string, values []float64) *leapmuxv1.CrdtOp {
 	op, inner := newSetNodeRegisterOp(bs, nodeID)
 	inner.Field = &leapmuxv1.SetNodeRegisterOp_ColRatios{ColRatios: &leapmuxv1.DoubleList{Values: values}}
 	return op
@@ -108,11 +107,11 @@ func kindLabel(k leapmuxv1.NodeKind) string {
 
 // buildTreeJSON projects the live subtree rooted at nodeID into a
 // nested JSON shape suitable for `tile list` / `layout get`.
-func buildTreeJSON(state *leapmuxv1.OrgMaterialized, nodeID string) any {
+func buildTreeJSON(state *leapmuxv1.UserMaterialized, nodeID string) any {
 	return buildTreeJSONWith(state, crdt.LiveChildrenByParent(state), nodeID)
 }
 
-func buildTreeJSONWith(state *leapmuxv1.OrgMaterialized, children map[string][]string, nodeID string) any {
+func buildTreeJSONWith(state *leapmuxv1.UserMaterialized, children map[string][]string, nodeID string) any {
 	if nodeID == "" {
 		return nil
 	}
@@ -152,7 +151,7 @@ func buildTreeJSONWith(state *leapmuxv1.OrgMaterialized, children map[string][]s
 // visited in (position, node_id) order so the result matches the
 // frontend's render-time leaf ordering. Returns "" when rootNodeID is
 // empty, tombstoned, missing, or has no reachable live leaf.
-func firstLiveLeaf(state *leapmuxv1.OrgMaterialized, rootNodeID string) string {
+func firstLiveLeaf(state *leapmuxv1.UserMaterialized, rootNodeID string) string {
 	if rootNodeID == "" {
 		return ""
 	}

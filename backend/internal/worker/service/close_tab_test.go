@@ -289,6 +289,7 @@ func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabRes
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,
+		"",
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 		func() {},
 		func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
@@ -395,7 +396,7 @@ func TestRemoveWorktreeIfLastReference_RowRemovedUnderLock_SkipsDiskRemoval(t *t
 	require.NoError(t, fx.svc.Queries.DeleteWorktree(context.Background(), fx.wtID))
 
 	result := &leapmuxv1.CloseTabResult{}
-	fx.svc.removeWorktreeIfLastReference(result, &stale, leapmuxv1.TabType_TAB_TYPE_AGENT, fx.tabID)
+	fx.svc.removeWorktreeIfLastReference(result, &stale, leapmuxv1.TabType_TAB_TYPE_AGENT, fx.tabID, "")
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.GetWorktreeRemoval(),
 		"an already-removed row reports the terminal REMOVED state")
@@ -518,7 +519,7 @@ func TestEnsureTrackedWorktree_BackfillsExistingFileTab(t *testing.T) {
 	filePath := filepath.Join(wtDir, "file.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("x"), 0o644))
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       "adopt-file-tab",
 		WorkspaceID: "ws-1",
 		FilePath:    filePath,

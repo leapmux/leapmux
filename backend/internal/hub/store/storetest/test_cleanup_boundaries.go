@@ -49,10 +49,9 @@ func assertBoundarySweep(t *testing.T, cutoff time.Time, sweep func(time.Time) (
 // strictly-older row, keeps the exact-cutoff row, and keeps newer rows, even
 // when all of them share the same second. The coarse multi-day gaps in
 // testCleanup are exactly the shape that let a mixed-layout cutoff bind (which
-// missed every same-day row on SQLite) ship green. Sweeps whose compared
-// operand is not caller-controllable through the store API (the users/orgs
-// hard-deletes, whose FK gating testCleanup covers) share the same compare
-// shape and are represented here by the workspace/worker twins.
+// missed every same-day row on SQLite) ship green. The users hard-delete is
+// pinned here too (its FK gating is testCleanup's job), since its predicate is
+// hand-written per dialect rather than shared with the workspace/worker twins.
 //
 // Where a table has no unfiltered GetByID to enumerate survivors, a second
 // sweep with a far-future cutoff pins the survivor count instead: it must
@@ -60,10 +59,9 @@ func assertBoundarySweep(t *testing.T, cutoff time.Time, sweep func(time.Time) (
 func (s *Suite) testCleanupBoundaries(t *testing.T) {
 	t.Run("delegation token expiry sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "boundary-ws")
+		wsID := SeedWorkspace(t, st, user.ID, "boundary-ws")
 		cutoff := boundaryCutoff()
 
 		create := func(expiresAt time.Time) string {
@@ -103,10 +101,9 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("revoked token sweeps are strict at the stored revoke instant", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "boundary-ws")
+		wsID := SeedWorkspace(t, st, user.ID, "boundary-ws")
 
 		// revoked_at is written DB-side (NOW/strftime), so read the stored
 		// instant back and place cutoffs exactly on and just past it: the
@@ -161,8 +158,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("cli authorization code expiry sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		cutoff := boundaryCutoff()
 
 		for _, c := range []struct {
@@ -213,8 +209,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("registration key expiry sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		cutoff := boundaryCutoff()
 
 		SeedRegistrationKey(t, st, user.ID, cutoff.Add(-time.Millisecond))
@@ -228,14 +223,13 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("workspace soft-delete sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		cutoff := boundaryCutoff()
 
 		for i, deletedAt := range []time.Time{
 			cutoff.Add(-time.Millisecond), cutoff, cutoff.Add(time.Millisecond),
 		} {
-			wsID := SeedWorkspace(t, st, orgID, user.ID, "boundary-ws")
+			wsID := SeedWorkspace(t, st, user.ID, "boundary-ws")
 			_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 				ID:          wsID,
 				OwnerUserID: userid.MustNew(user.ID),
@@ -251,8 +245,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("worker soft-delete sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		cutoff := boundaryCutoff()
 
 		for _, deletedAt := range []time.Time{
@@ -268,15 +261,38 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		})
 	})
 
+	// The users sweep is hand-written per dialect (`u.deleted_at <
+	// sqlc.arg(cutoff)` on SQLite, `u.deleted_at < $1` on Postgres,
+	// `users.deleted_at < ?` on MySQL), so a `<` -> `<=` slip in ONE dialect is
+	// invisible to testCleanup, whose users case plants a 48h-old row against a
+	// 24h cutoff. Each fixture user is seeded FK-free (no workspace, no worker),
+	// so the NOT EXISTS gates in HardDeleteUsersBefore never mask the boundary
+	// by skipping a row for the wrong reason.
+	t.Run("user soft-delete sweep is millisecond-exact", func(t *testing.T) {
+		st := s.NewStore(t)
+		cutoff := boundaryCutoff()
+
+		for i, deletedAt := range []time.Time{
+			cutoff.Add(-time.Millisecond), cutoff, cutoff.Add(time.Millisecond),
+		} {
+			user := SeedUser(t, st, "boundary-del-user-"+string(rune('a'+i)))
+			require.NoError(t, st.Users().Delete(ctx, user.ID))
+			require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, user.ID, deletedAt))
+		}
+
+		assertBoundarySweep(t, cutoff, func(c time.Time) (int64, error) {
+			return st.Cleanup().HardDeleteUsersBefore(ctx, c)
+		})
+	})
+
 	t.Run("stale pending email sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
 		cutoff := boundaryCutoff()
 
 		for i, expiresAt := range []time.Time{
 			cutoff.Add(-time.Millisecond), cutoff, cutoff.Add(time.Millisecond),
 		} {
-			user := SeedUser(t, st, orgID, "boundary-email-user-"+string(rune('a'+i)))
+			user := SeedUser(t, st, "boundary-email-user-"+string(rune('a'+i)))
 			expiry := expiresAt
 			require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 				ID:                    user.ID,
@@ -293,18 +309,18 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("lifecycle outbox consumed-before sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
+		user := SeedUser(t, st, "boundary-outbox-user")
 		cutoff := boundaryCutoff()
 
 		insert := func() int64 {
 			require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
-				OrgID:   orgID,
+				UserID:  userid.MustNew(user.ID),
 				OpType:  "create",
 				Payload: []byte("payload"),
 			}))
 			pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{
-				OrgID: orgID,
-				Limit: 100,
+				UserID: userid.MustNew(user.ID),
+				Limit:  100,
 			})
 			require.NoError(t, err)
 			require.NotEmpty(t, pending)
@@ -324,7 +340,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		assertBoundarySweep(t, cutoff, func(c time.Time) (int64, error) {
 			return st.LifecycleOutbox().DeleteConsumedBefore(ctx, c)
 		})
-		pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{OrgID: orgID, Limit: 100})
+		pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{UserID: userid.MustNew(user.ID), Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, pending, 1)
 		assert.Equal(t, unconsumedID, pending[0].ID)
@@ -332,13 +348,12 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 	t.Run("recent batch id expiry sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "boundary-org")
-		user := SeedUser(t, st, orgID, "boundary-user")
+		user := SeedUser(t, st, "boundary-user")
 		cutoff := boundaryCutoff()
 
 		insert := func(batchID string, expiresAt time.Time) {
-			require.NoError(t, st.OrgRecentBatchIDs().Insert(ctx, store.InsertOrgRecentBatchIDParams{
-				OrgID:               orgID,
+			require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
+				UserID:              userid.MustNew(user.ID),
 				BatchID:             batchID,
 				BodyHash:            []byte("hash"),
 				PrincipalID:         user.ID,
@@ -354,14 +369,14 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		insert("batch-at-cutoff", cutoff)
 		insert("batch-live", cutoff.Add(time.Millisecond))
 
-		deleted, err := st.OrgRecentBatchIDs().DeleteExpired(ctx, cutoff)
+		deleted, err := st.UserRecentBatchIDs().DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, deleted)
 
-		_, err = st.OrgRecentBatchIDs().Get(ctx, orgID, "batch-expired")
+		_, err = st.UserRecentBatchIDs().Get(ctx, userid.MustNew(user.ID), "batch-expired")
 		assert.ErrorIs(t, err, store.ErrNotFound)
 		for _, keep := range []string{"batch-at-cutoff", "batch-live"} {
-			_, err := st.OrgRecentBatchIDs().Get(ctx, orgID, keep)
+			_, err := st.UserRecentBatchIDs().Get(ctx, userid.MustNew(user.ID), keep)
 			assert.NoError(t, err)
 		}
 	})

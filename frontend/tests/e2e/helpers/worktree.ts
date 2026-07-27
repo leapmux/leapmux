@@ -61,10 +61,10 @@ export async function waitForPathDeleted(path: string, timeoutMs = 10_000, inter
 }
 
 /**
- * Wait for the org landing page to be ready (sidebar sections loaded).
- * Unlike waitForWorkspaceReady, this works on non-workspace routes like /o/admin.
+ * Wait for the app home to be ready (sidebar sections loaded).
+ * Unlike waitForWorkspaceReady, this works on non-workspace routes like /.
  */
-export async function waitForOrgPageReady(page: Page) {
+export async function waitForAppPageReady(page: Page) {
   await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 }
 
@@ -103,11 +103,10 @@ export async function createWorkspaceWithWorktreeViaAPI(
   token: string,
   workerId: string,
   title: string,
-  orgId: string,
   workingDir: string,
   worktreeBranch: string,
 ): Promise<string> {
-  const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title, orgId)
+  const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title)
   await openAgentViaAPI(hubUrl, token, workerId, workspaceId, workingDir, {
     createWorktree: true,
     worktreeBranch,
@@ -143,7 +142,6 @@ export async function closeTerminalViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-  orgId: string,
   terminalId: string,
   worktreeAction: WorktreeAction = WorktreeAction.KEEP,
 ): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
@@ -153,7 +151,7 @@ export async function closeTerminalViaAPI(
     'CloseTerminal',
     CloseTerminalRequestSchema,
     CloseTerminalResponseSchema,
-    { workspaceId, orgId, terminalId, worktreeAction },
+    { workspaceId, terminalId, worktreeAction },
   )
   const result = resp.result
   return {
@@ -204,13 +202,12 @@ export async function waitForAgentsViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-  orgId: string,
   timeoutMs = 15_000,
   intervalMs = 200,
 ): Promise<Array<{ id: string, workingDir: string }>> {
   const deadline = Date.now() + timeoutMs
   while (true) {
-    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId, orgId)
+    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
     if (agents.length > 0) {
       return agents
     }
@@ -231,13 +228,12 @@ export async function listAgentsViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-  orgId: string,
 ): Promise<Array<{ id: string, workingDir: string }>> {
   // Get tab IDs from the hub's ListTabs endpoint.
   const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
     headers: authedHeaders(token),
-    body: JSON.stringify({ orgId, workspaceId }),
+    body: JSON.stringify({ workspaceIds: [workspaceId] }),
   })
   if (!tabsRes.ok) {
     throw new Error(`ListTabs failed: ${tabsRes.status}`)

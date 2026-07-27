@@ -81,7 +81,6 @@ message WhoamiResponse {
   TabType tab_type = 6;    // matches the rest of the protos
   // Effective scope of the bearer.
   RemoteScope scope = 7;
-  string org_id = 8;       // user's org for the spawn context
 }
 
 message RemoteScope {

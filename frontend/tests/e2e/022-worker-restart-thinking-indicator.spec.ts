@@ -5,12 +5,12 @@ import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as t
 test.describe('Worker Restart Thinking Indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Thinking Indicator Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Thinking Indicator Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor
@@ -33,7 +33,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await waitForWorkerOffline(hubUrl, adminToken)
 
       // Thinking indicator should disappear (agent status becomes INACTIVE)
-      await expect(thinkingIndicator).not.toBeVisible({ timeout: 30_000 })
+      await expect(thinkingIndicator).not.toBeVisible()
 
       // Interrupt button should also disappear
       const interruptButton = page.locator('[data-testid="interrupt-button"]')
@@ -47,12 +47,12 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
   test('should resume agent after worker restart and new message', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Resume Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Resume Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -71,7 +71,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
             return true
         }
         return false
-      }, ASSISTANT_BUBBLE_SELECTOR, { timeout: 60_000 })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Stop the worker
       await stopWorker()
@@ -120,7 +120,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
             return true
         }
         return false
-      }, ASSISTANT_BUBBLE_SELECTOR, { timeout: 60_000 })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Verify that the thinking indicator was shown at some point during
       // the turn, even if only briefly before streaming began.

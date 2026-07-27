@@ -11,7 +11,6 @@ import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
 import { ShellSelect } from '~/components/shell/ShellSelect'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
-import { useOrg } from '~/context/OrgContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
@@ -69,7 +68,6 @@ interface ChangeBranchDialogProps {
 }
 
 export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) => {
-  const org = useOrg()
   /* eslint-disable solid/reactivity -- initial-mount snapshot; the dialog is opened against a fixed (workerId, gitToplevel) and stays on them */
   const { submitting, error, setError, formHandler } = useDialogSubmit()
   const worker = createWorkerDialogContext({
@@ -106,7 +104,6 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     () => {
       if (gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.TERMINAL) {
         return {
-          orgId: org.orgId(),
           workspaceId: props.workspaceId,
           workerId: props.workerId,
         }
@@ -152,7 +149,6 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
 
   const dispatchMode = async (): Promise<void> => {
     const baseArgs = {
-      orgId: org.orgId(),
       workerId: props.workerId,
       path: props.gitToplevel,
     }
@@ -213,7 +209,6 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         }
         const resp = await workerRpc.openTerminal(props.workerId, {
           ...worktreeArgs,
-          orgId: org.orgId(),
           cols: DEFAULT_TERMINAL_COLS,
           rows: DEFAULT_TERMINAL_ROWS,
           shell: shell(),

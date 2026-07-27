@@ -34,12 +34,12 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
         .filter({ hasText: ARITHMETIC_ANSWER })
         .first(),
-    ).toBeVisible({ timeout: 60_000 })
+    ).toBeVisible()
 
     // Wait for the ContextUsageGrid trigger to appear
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
-    await expect(contextGrid).toBeVisible({ timeout: 60_000 })
+    await expect(contextGrid).toBeVisible()
 
     // Open the popover by clicking the trigger
     await infoTrigger.click()
@@ -118,7 +118,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
         .filter({ hasText: ARITHMETIC_ANSWER })
         .first(),
-    ).toBeVisible({ timeout: 60_000 })
+    ).toBeVisible()
 
     // Wait for the ContextUsageGrid trigger to appear and stabilize.
     // After the agent responds, several async events may arrive (session ID,
@@ -127,7 +127,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // that all status updates have been applied.
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
-    await expect(contextGrid).toBeVisible({ timeout: 60_000 })
+    await expect(contextGrid).toBeVisible()
 
     // Wait for the agent-info-trigger to be stable (no re-renders) by
     // checking that it stays visible for a brief period.

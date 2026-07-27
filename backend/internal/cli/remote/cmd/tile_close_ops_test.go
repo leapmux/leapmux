@@ -14,27 +14,26 @@ import (
 // a state, an origin client id, and an HLC clock seeded from zero.
 // Tests don't need a real epoch / max_hlc because every op is built
 // in-process and inspected, not submitted.
-func testBootstrap(state *leapmuxv1.OrgMaterialized) *CRDTBootstrap {
+func testBootstrap(state *leapmuxv1.UserMaterialized) *CRDTBootstrap {
 	const origin = "tile-close-test"
 	return &CRDTBootstrap{
-		OrgID:        "org-1",
 		State:        state,
 		Clock:        crdt.NewClock(origin),
 		OriginClient: origin,
 	}
 }
 
-// opCase summarises an OrgOp into a single string ("kind:nodeId" or
+// opCase summarises an CrdtOp into a single string ("kind:nodeId" or
 // "field:tab-id:value") so tests can assert against an order-independent
 // set without unpacking the oneof at every assertion. Mirrors the
 // frontend's `opCases` helper in `layout.store.crdt.test.ts`.
-func opCase(op *leapmuxv1.OrgOp) string {
+func opCase(op *leapmuxv1.CrdtOp) string {
 	switch v := op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_TombstoneNode:
+	case *leapmuxv1.CrdtOp_TombstoneNode:
 		return "tombstoneNode:" + v.TombstoneNode.GetNodeId()
-	case *leapmuxv1.OrgOp_TombstoneTab:
+	case *leapmuxv1.CrdtOp_TombstoneTab:
 		return "tombstoneTab:" + v.TombstoneTab.GetTabId()
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		r := v.SetNodeRegister
 		nodeID := r.GetNodeId()
 		switch f := r.GetField().(type) {
@@ -43,7 +42,7 @@ func opCase(op *leapmuxv1.OrgOp) string {
 		default:
 			return "setNodeRegister:" + nodeID
 		}
-	case *leapmuxv1.OrgOp_SetTabRegister:
+	case *leapmuxv1.CrdtOp_SetTabRegister:
 		r := v.SetTabRegister
 		tabID := r.GetTabId()
 		switch f := r.GetField().(type) {
@@ -58,7 +57,7 @@ func opCase(op *leapmuxv1.OrgOp) string {
 	return "unknown"
 }
 
-func opCases(ops []*leapmuxv1.OrgOp) []string {
+func opCases(ops []*leapmuxv1.CrdtOp) []string {
 	out := make([]string, 0, len(ops))
 	for _, op := range ops {
 		out = append(out, opCase(op))

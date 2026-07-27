@@ -125,12 +125,12 @@ test.describe('Quote and Mention', () => {
   })
 
   test('AtSign mention button in DirectoryTree context menu', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Mention Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Mention Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Ensure an agent tab exists and the editor is ready
@@ -167,12 +167,12 @@ test.describe('Quote and Mention', () => {
   })
 
   test('AtSign mention button in file view toolbar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Mention Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Mention Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Ensure an agent tab exists and click it to populate MRU
@@ -216,12 +216,12 @@ test.describe('Quote and Mention', () => {
   })
 
   test('file view mention preserves existing editor draft', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Mention Preserve Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Mention Preserve Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Ensure an agent tab exists and click it to populate MRU
@@ -265,12 +265,12 @@ test.describe('Quote and Mention', () => {
   })
 
   test('multiple tree mentions are space-separated', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Mention Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Mention Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Ensure an agent tab exists and the editor is ready
@@ -314,12 +314,12 @@ test.describe('Quote and Mention', () => {
   })
 
   test('text selection quote in file view inserts with file path and line numbers', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Quote Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Quote Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Ensure an agent tab exists and click it to populate MRU

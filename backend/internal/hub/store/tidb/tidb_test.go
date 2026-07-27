@@ -59,6 +59,22 @@ func TestTiDBStore(t *testing.T) {
 	require.NoError(t, err)
 	_, err = rootDB.ExecContext(ctx, "SET GLOBAL tidb_enable_foreign_key = ON")
 	require.NoError(t, err)
+	// TiDB defaults this OFF, which makes every CHECK in the shared mysql
+	// schema a no-op. Set it before migrating so the suite exercises the same
+	// constraints the other five backends enforce.
+	_, err = rootDB.ExecContext(ctx, "SET GLOBAL tidb_enable_check_constraint = ON")
+	require.NoError(t, err)
+
+	// Assert it actually took. The variable is silently accepted on versions
+	// that do not support it, so without this the storetest suite would run
+	// green against a backend enforcing none of the schema's CHECK constraints
+	// -- which is exactly the state this whole block exists to leave behind.
+	// A blank users.id, a non-positive op_count, and the singleton-row guards
+	// all rest on it.
+	var checkEnabled string
+	require.NoError(t, rootDB.QueryRowContext(ctx, "SELECT @@GLOBAL.tidb_enable_check_constraint").Scan(&checkEnabled))
+	require.Contains(t, []string{"ON", "1"}, checkEnabled,
+		"CHECK constraints must be enforced on TiDB, or the shared mysql schema's invariants hold only by application discipline here")
 
 	dsn := fmt.Sprintf("root@tcp(%s:%s)/leapmux_test?parseTime=true", host, port.Port())
 

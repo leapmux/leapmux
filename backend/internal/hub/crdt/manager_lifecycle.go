@@ -46,12 +46,12 @@ type LifecyclePayload struct {
 	Title       string          `json:"title,omitempty"`
 	NewTitle    string          `json:"new_title,omitempty"`
 	RootNodeID  string          `json:"root_node_id,omitempty"`
-	OpBytes     [][]byte        `json:"op_bytes,omitempty"` // each is proto.Marshal(OrgOp)
+	OpBytes     [][]byte        `json:"op_bytes,omitempty"` // each is proto.Marshal(CrdtOp)
 	WorkerIDs   []string        `json:"worker_ids,omitempty"`
 }
 
 // EncodeLifecyclePayload returns the bytes for a lifecycle_outbox.payload.
-func EncodeLifecyclePayload(p LifecyclePayload, ops []*leapmuxv1.OrgOp) ([]byte, error) {
+func EncodeLifecyclePayload(p LifecyclePayload, ops []*leapmuxv1.CrdtOp) ([]byte, error) {
 	for _, op := range ops {
 		bytes, err := proto.Marshal(op)
 		if err != nil {
@@ -63,14 +63,14 @@ func EncodeLifecyclePayload(p LifecyclePayload, ops []*leapmuxv1.OrgOp) ([]byte,
 }
 
 // DecodeLifecyclePayload parses a lifecycle_outbox.payload row.
-func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.OrgOp, error) {
+func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
 	var p LifecyclePayload
 	if err := json.Unmarshal(data, &p); err != nil {
 		return p, nil, fmt.Errorf("decode lifecycle payload: %w", err)
 	}
-	ops := make([]*leapmuxv1.OrgOp, 0, len(p.OpBytes))
+	ops := make([]*leapmuxv1.CrdtOp, 0, len(p.OpBytes))
 	for _, b := range p.OpBytes {
-		op := &leapmuxv1.OrgOp{}
+		op := &leapmuxv1.CrdtOp{}
 		if err := proto.Unmarshal(b, op); err != nil {
 			return p, nil, fmt.Errorf("unmarshal op: %w", err)
 		}
@@ -79,12 +79,12 @@ func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.OrgOp, 
 	return p, ops, nil
 }
 
-// SubmitLifecycle drains the lifecycle_outbox for this manager's org
+// SubmitLifecycle drains the lifecycle_outbox for this manager's user
 // and applies each row inside its own transaction.
 //
 // lifecycleMu makes the drain single-consumer by construction. Each
 // lifecycle RPC calls this post-commit on its own request goroutine, so
-// two mutations in the same org would otherwise drain concurrently: the
+// two mutations for the same user would otherwise drain concurrently: the
 // second drain's ListPending could return a still-pending create row
 // beside its own delete row, and re-applying that create against the
 // first drain's in-flight processing can re-add the workspace to
@@ -110,7 +110,7 @@ func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.OrgOp, 
 func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxReader) error {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
-	rows, err := reader.ListPendingLifecycleOutbox(ctx, m.orgID)
+	rows, err := reader.ListPendingLifecycleOutbox(ctx, m.owner.String())
 	if err != nil {
 		return fmt.Errorf("list outbox: %w", err)
 	}
@@ -122,7 +122,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			// Decode is a pure function of row.Payload, so this failure is
 			// permanent: retrying it can never succeed, and leaving the row
 			// pending would re-fault and re-log on EVERY future drain for the
-			// org's lifetime while occupying a ListPendingLifecycleOutbox slot
+			// user's lifetime while occupying a ListPendingLifecycleOutbox slot
 			// (enough corrupt rows would clog the page and starve healthy rows
 			// behind it). Consume it after one Error log instead. The row cannot
 			// be scoped to a workspace either way, so consuming changes nothing
@@ -134,7 +134,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			// (a transient DB write fault), the row stays pending and the next
 			// drain re-decodes it. Re-logging the SAME corrupt row at Error on
 			// every drain would amplify one bad row into permanent log noise for
-			// the org's life, so log Error only the first time and Warn on the
+			// the user's life, so log Error only the first time and Warn on the
 			// repeats the caller can do nothing about. Entries are cleared once
 			// the row is successfully consumed, so the set stays bounded by the
 			// number of currently-stuck corrupt rows.
@@ -162,7 +162,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			// An apply failure is most often transient (a create whose read-ACL
 			// lookup faulted), so the row is NOT consumed -- it retries on the next
 			// drain. But re-logging the SAME failing row at Error on every drain
-			// would amplify one stuck row into permanent log noise for the org's
+			// would amplify one stuck row into permanent log noise for the user's
 			// life (the only drain trigger is the next lifecycle RPC), exactly the
 			// amplification the decode-failure path's undecodableLogged exists to
 			// prevent. Dedupe the same way: Error on the first sighting, Warn on
@@ -190,7 +190,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 // of id and at Warn on every repeat, recording id in *seen so a fault that
 // persists across drains (the only drain trigger is the next lifecycle RPC) is not
 // re-logged at Error every time -- amplifying one stuck row into permanent log
-// noise for the org's life. seen is lazily allocated (nil until the first fault);
+// noise for the user's life. seen is lazily allocated (nil until the first fault);
 // each caller clears the entry once its row stops faulting, so the set stays
 // bounded by the rows currently stuck. Shared by the undecodable-row and
 // apply-failure paths, whose surrounding consume-vs-retry logic differs but whose
@@ -208,7 +208,7 @@ func (m *Manager) logRowFaultOnce(seen *map[int64]bool, id int64, errMsg, warnMs
 	}
 }
 
-func (m *Manager) applyLifecycleRow(ctx context.Context, row LifecycleOutboxRow, payload LifecyclePayload, ops []*leapmuxv1.OrgOp, reader LifecycleOutboxReader) error {
+func (m *Manager) applyLifecycleRow(ctx context.Context, row LifecycleOutboxRow, payload LifecyclePayload, ops []*leapmuxv1.CrdtOp, reader LifecycleOutboxReader) error {
 	switch payload.OpType {
 	case LifecycleOpCreate:
 		return m.applyLifecycleCreate(ctx, row, payload, ops, reader)
@@ -221,7 +221,7 @@ func (m *Manager) applyLifecycleRow(ctx context.Context, row LifecycleOutboxRow,
 	}
 }
 
-func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.OrgOp, reader LifecycleOutboxReader) error {
+func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.CrdtOp, reader LifecycleOutboxReader) error {
 	wsID := p.WorkspaceID
 
 	// Expand each existing subscriber's Filter to include the new
@@ -235,7 +235,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// the seed: contract the (possibly partially) expanded filters and
 	// return WITHOUT consuming the outbox row so the create retries
 	// whenever the outbox is next drained -- the next lifecycle mutation
-	// in this org, not a periodic tick (the fixed BatchId + idempotent
+	// for this user, not a periodic tick (the fixed BatchId + idempotent
 	// apply make retry safe).
 	if err := m.ExpandSubscribersForWorkspace(ctx, wsID); err != nil {
 		m.contractSubscribersForWorkspace(wsID)
@@ -249,10 +249,10 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// the workspace record and its root either commit together or not at
 	// all -- no out-of-band m.state mutation, so the manager goroutine
 	// stays the sole writer and its bare map reads stay race-free.
-	seedOps := make([]*leapmuxv1.OrgOp, 0, len(ops)+1)
-	seedOps = append(seedOps, &leapmuxv1.OrgOp{
+	seedOps := make([]*leapmuxv1.CrdtOp, 0, len(ops)+1)
+	seedOps = append(seedOps, &leapmuxv1.CrdtOp{
 		OpId: id.Generate(),
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: wsID},
 		},
 	})
@@ -262,7 +262,6 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		Ops:     seedOps,
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-		OrgID:        m.orgID,
 		Epoch:        m.currentEpoch(),
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
@@ -301,7 +300,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// workspace record is currently absent" so it only fires for the
 	// create-then-deleted shape, never masking a genuinely corrupt seed batch.
 	recordAbsent := false
-	m.WithStateRLock(func(state *leapmuxv1.OrgCrdtState) {
+	m.WithStateRLock(func(state *leapmuxv1.UserCrdtState) {
 		_, recordAbsent = state.GetWorkspaces()[wsID]
 	})
 	recordAbsent = !recordAbsent
@@ -347,7 +346,7 @@ func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxR
 	// crash or a hard cancel lands in would leave the row consumed -- so no later
 	// drain retries it -- while no subscriber ever saw the Rename event. The DB
 	// title is already updated, but every live subscriber keeps the stale title
-	// until a reconnect whose OrgMaterialized carries no title. Rename is
+	// until a reconnect whose UserMaterialized carries no title. Rename is
 	// idempotent on retry (re-broadcasting the same title is a no-op for
 	// subscribers, and no seed batch re-validates), so broadcasting first costs
 	// nothing on the retry path the order exists to make reachable.
@@ -358,7 +357,7 @@ func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxR
 	return nil
 }
 
-func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.OrgOp, reader LifecycleOutboxReader) error {
+func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.CrdtOp, reader LifecycleOutboxReader) error {
 	// The workspace_service writes the outbox row with no ops — the
 	// manager owns the in-memory enumeration so we capture EVERY live
 	// entity even ones projection repair has hidden. Without this the
@@ -373,11 +372,11 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// goroutine would race with the manager goroutine's writes under
 	// m.mu.Lock(); cloning via m.State() would allocate a multi-MB copy
 	// of every workspace just to enumerate one.
-	var enumOps []*leapmuxv1.OrgOp
-	m.WithStateRLock(func(state *leapmuxv1.OrgCrdtState) {
+	var enumOps []*leapmuxv1.CrdtOp
+	m.WithStateRLock(func(state *leapmuxv1.UserCrdtState) {
 		enumOps = enumerateWorkspaceDeleteOps(state, wsID)
 	})
-	combined := make([]*leapmuxv1.OrgOp, 0, len(ops)+len(enumOps)+1)
+	combined := make([]*leapmuxv1.CrdtOp, 0, len(ops)+len(enumOps)+1)
 	combined = append(combined, ops...)
 	combined = append(combined, enumOps...)
 	// Append a TombstoneWorkspaceOp so the WorkspaceContentsRecord map
@@ -387,15 +386,14 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// goroutine: the record and its contents commit or roll back
 	// together, and the manager goroutine's bare m.state reads stay
 	// race-free.
-	combined = append(combined, &leapmuxv1.OrgOp{
+	combined = append(combined, &leapmuxv1.CrdtOp{
 		OpId: id.Generate(),
-		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+		Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: p.WorkspaceID},
 		},
 	})
 	batch := &leapmuxv1.OpBatch{BatchId: lifecycleDeleteBatchIDPrefix + p.WorkspaceID, Ops: combined}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-		OrgID:        m.orgID,
 		Epoch:        m.currentEpoch(),
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
@@ -415,8 +413,8 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// the broadcast describes committed state either way -- but ordering it
 	// before the consume closes a window the old order left open: if
 	// MarkLifecycleOutboxConsumed fails (a transient DB write fault) the row
-	// stays pending and the only re-drain trigger is the next lifecycle RPC in
-	// this org, which for a delete that removed the org's last workspace may not
+	// stays pending and the only re-drain trigger is the next lifecycle RPC for
+	// this user, which for a delete that removed the user's last workspace may not
 	// come for a long time. Subscribers would keep the dead workspace in their
 	// Filter and keep routing tabs to it until reconnect. Broadcasting first
 	// means a consume failure delays only the outbox bookkeeping, not the
@@ -444,7 +442,7 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 // last). Order matters for parent-before-child invariants surfaced by
 // projection repair; the validator's apply step is order-agnostic but
 // keeping a deterministic order keeps the parity tests reproducible.
-func enumerateWorkspaceDeleteOps(state *leapmuxv1.OrgCrdtState, wsID string) []*leapmuxv1.OrgOp {
+func enumerateWorkspaceDeleteOps(state *leapmuxv1.UserCrdtState, wsID string) []*leapmuxv1.CrdtOp {
 	if state == nil || wsID == "" {
 		return nil
 	}
@@ -454,10 +452,10 @@ func enumerateWorkspaceDeleteOps(state *leapmuxv1.OrgCrdtState, wsID string) []*
 	}
 	// Build the live parent→children adjacency once and reuse it for
 	// every collectSubtreeTombstones call below. Without this, each
-	// floating window's subtree walk re-scans every node in the org —
+	// floating window's subtree walk re-scans every node in the user doc —
 	// O(N·W) for a workspace with W floating windows.
 	children := BuildLiveChildrenIndex(state)
-	var out []*leapmuxv1.OrgOp
+	var out []*leapmuxv1.CrdtOp
 
 	// Membership set: every live node reachable from the workspace's
 	// main-layout root plus every floating-window subtree owned by this
@@ -489,9 +487,9 @@ func enumerateWorkspaceDeleteOps(state *leapmuxv1.OrgCrdtState, wsID string) []*
 		if !nodesInWorkspace[tab.GetTileId().GetValue()] {
 			continue
 		}
-		out = append(out, &leapmuxv1.OrgOp{
+		out = append(out, &leapmuxv1.CrdtOp{
 			OpId: id.Generate(),
-			Body: &leapmuxv1.OrgOp_TombstoneTab{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{
 				TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: tab.GetTabType(), TabId: tabID},
 			},
 		})
@@ -514,9 +512,9 @@ func enumerateWorkspaceDeleteOps(state *leapmuxv1.OrgCrdtState, wsID string) []*
 			subtreeOps := collectSubtreeTombstones(state, rootID, children)
 			out = append(out, subtreeOps...)
 		}
-		out = append(out, &leapmuxv1.OrgOp{
+		out = append(out, &leapmuxv1.CrdtOp{
 			OpId: id.Generate(),
-			Body: &leapmuxv1.OrgOp_TombstoneFloatingWindow{
+			Body: &leapmuxv1.CrdtOp_TombstoneFloatingWindow{
 				TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{WindowId: winID},
 			},
 		})
@@ -561,7 +559,7 @@ func collectSubtreeIDs(children map[string][]string, rootID string, out map[stri
 // `children` is the prebuilt live parent→children adjacency (passed
 // in so the caller can amortize its construction across multiple
 // subtree walks).
-func collectSubtreeTombstones(state *leapmuxv1.OrgCrdtState, rootID string, children map[string][]string) []*leapmuxv1.OrgOp {
+func collectSubtreeTombstones(state *leapmuxv1.UserCrdtState, rootID string, children map[string][]string) []*leapmuxv1.CrdtOp {
 	if rootID == "" {
 		return nil
 	}
@@ -570,11 +568,11 @@ func collectSubtreeTombstones(state *leapmuxv1.OrgCrdtState, rootID string, chil
 		return nil
 	}
 	order := subtreePostOrder(children, rootID)
-	ops := make([]*leapmuxv1.OrgOp, 0, len(order))
+	ops := make([]*leapmuxv1.CrdtOp, 0, len(order))
 	for _, nodeID := range order {
-		ops = append(ops, &leapmuxv1.OrgOp{
+		ops = append(ops, &leapmuxv1.CrdtOp{
 			OpId: id.Generate(),
-			Body: &leapmuxv1.OrgOp_TombstoneNode{
+			Body: &leapmuxv1.CrdtOp_TombstoneNode{
 				TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: nodeID},
 			},
 		})

@@ -71,7 +71,7 @@ describe('relayClaim', () => {
   // BELOW the owner the sidecar still holds, and the sidecar's fence
   // (`current.owner > relayID`) would reject the fresh page's legitimate open of the
   // still-live relay as superseded, wedging the channel. The persisted high-water
-  // mark keeps ids monotonic across the reload (mirrors nextOrgEventsRelayId).
+  // mark keeps ids monotonic across the reload (mirrors nextUserEventsRelayId).
   it('mints ids above the previous page load across a reload', async () => {
     // A session that reconnected at least once advances the mark past its seed.
     const first = relayClaim.claim()

@@ -420,11 +420,8 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	// Seed a workspace owned by the user so the delegation's
 	// workspace_id is meaningful for downstream scope checks.
 	workspaceID := id.Generate()
-	user, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       user.OrgID,
 		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
@@ -443,7 +440,7 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
 	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
 
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"delegation bearers must not authenticate account-level procedures")
@@ -467,11 +464,8 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 		SlhdsaPublicKey: []byte("rev-slhdsa"),
 	}))
 	workspaceID := id.Generate()
-	user, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       user.OrgID,
 		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
@@ -486,7 +480,7 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 		SecretHash:  tv.HashSecret(secret),
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}))
-	_, err = st.DelegationTokens().Revoke(context.Background(), tokenID)
+	_, err := st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -514,11 +508,8 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 		SlhdsaPublicKey: []byte("exp-slhdsa"),
 	}))
 	workspaceID := id.Generate()
-	user, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       user.OrgID,
 		OwnerUserID: userid.MustNew(userID),
 		Title:       "ws",
 	}))
@@ -537,7 +528,7 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
 	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
 
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

@@ -25,7 +25,7 @@ import { fanOutTabsToWorkers } from './workspaceTabHydration'
 const log = createLogger('restore')
 
 /**
- * Resolve once the OrgCRDT bootstrap has delivered the given workspace's
+ * Resolve once the UserCRDT bootstrap has delivered the given workspace's
  * root NodeRecord into `speculativeState`. Without this gate the UI would
  * flip to the layout-store's placeholder fallback (`FALLBACK_LEAF`) before
  * the WS round-trip lands and the user (or an E2E test) could click on
@@ -275,7 +275,7 @@ function restoreActiveAndFocusedTab(
 
 interface UseWorkspaceRestoreOpts {
   getActiveWorkspaceId: () => string | null | undefined
-  getOrgId: () => string | undefined
+  getUserId: () => string | undefined
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore?: FloatingWindowStoreType
@@ -295,7 +295,7 @@ interface UseWorkspaceRestoreOpts {
 export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
   const {
     getActiveWorkspaceId,
-    getOrgId,
+    getUserId,
     tabStore,
     layoutStore,
     registry,
@@ -335,8 +335,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
   onCleanup(() => terminalHydrationRetry.cancelAll())
 
-  createEffect(on([getActiveWorkspaceId, getOrgId], ([activeId, currentOrgId]) => {
-    if (!activeId || !currentOrgId)
+  createEffect(on([getActiveWorkspaceId, getUserId], ([activeId, currentUserId]) => {
+    if (!activeId || !currentUserId)
       return
 
     const gen = ++loadGeneration
@@ -392,7 +392,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     tabStore.clear()
 
     // Fetch tabs and layout from hub (single call, no worker needed).
-    const tabsLoaded = listTabsForWorkspace(currentOrgId, activeId)
+    const tabsLoaded = listTabsForWorkspace(activeId)
       .catch(() => null)
 
     // Kick off lazy loads for sibling workspaces whose sidebar rows the user
@@ -408,7 +408,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     }
 
     // The layout store reads the per-workspace projection of
-    // `OrgCrdtState` via a createMemo over `bridge.speculativeState()`.
+    // `UserCrdtState` via a createMemo over `bridge.speculativeState()`.
     // We can't flip `workspaceLoading=false` until that bootstrap
     // arrives, otherwise the layout-store's `FALLBACK_LEAF` paints a
     // synthetic tile whose action handlers are no-ops (the store's
@@ -495,7 +495,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         // Layout / floating-windows hydration is fully driven by the
         // CRDT projection now. The store's `state.root` is a memo over
         // `bridge.speculativeState()`; it auto-updates when the
-        // WatchOrg bootstrap lands. There's no imperative "initial
+        // WatchUser bootstrap lands. There's no imperative "initial
         // tile" path to seed here — the workspace's seed root was
         // created by the hub's lifecycle outbox during
         // `CreateWorkspace`, and `awaitWorkspaceBootstrap` above held
@@ -505,7 +505,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         const allFloatingTileIds = opts.floatingWindowStore?.getAllTileIds() ?? []
         // `preExistingKeys`: tabs already inserted by the live CRDT-
         // projection reconciler (`AppShell`'s effect on
-        // `pendingVersion`), which fires as soon as the `/ws/orgevents`
+        // `pendingVersion`), which fires as soon as the `/ws/userevents`
         // bootstrap lands and beats this slow path on a fresh page
         // load. The reconciler only knows CRDT-driven fields
         // (`tile_id`, `position`, `worker_id`); the hydration phases
@@ -536,7 +536,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           tabStore.sortByPositions(posMap)
         }
 
-        // FILE tab restore: tabs themselves live in `OrgCrdtState.tabs`
+        // FILE tab restore: tabs themselves live in `UserCrdtState.tabs`
         // (presentation registers only) and their paths live on the
         // worker's `worker_file_tabs` table behind E2EE. On workspace
         // load, the CRDT projection delivers each FILE TabRecord and the

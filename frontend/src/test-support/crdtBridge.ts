@@ -6,7 +6,7 @@ import {
   NodeKind,
   NodeRecordSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 
 /**
@@ -29,18 +29,18 @@ export interface TestBridgeHandle {
   pending: PendingOpsManager
   clock: HLCClock
   rootTileId: string
-  orgId: string
+  userId: string
   workspaceId: string
   /** Manually unwire — ordinarily the test framework's afterEach handles this. */
   dispose: () => void
 }
 
 export function installTestBridge(opts?: {
-  orgId?: string
+  userId?: string
   workspaceId?: string
   rootTileId?: string
 }): TestBridgeHandle {
-  const orgId = opts?.orgId ?? 'org-test'
+  const userId = opts?.userId ?? 'user-test'
   const workspaceId = opts?.workspaceId ?? 'ws-test'
   const rootTileId = opts?.rootTileId ?? 'main-tile'
   const ownClient = 'test-client'
@@ -49,7 +49,7 @@ export function installTestBridge(opts?: {
   // the manager mutates state in place. Mirrors AppShell's wiring.
   const [version, setVersion] = createSignal(0)
   const bumpVersion = () => setVersion(v => v + 1)
-  const pending = new PendingOpsManager(orgId, clock, bumpVersion)
+  const pending = new PendingOpsManager(userId, clock, bumpVersion)
   // Seed: workspace contents record + a LEAF root node. The
   // projection's `registeredRoots` lookup will then find the
   // workspace's root and the projected tree will be a single LEAF.
@@ -67,7 +67,6 @@ export function installTestBridge(opts?: {
   })
   pending.recomputeSpeculative()
   setCRDTBridge({
-    orgId: () => orgId,
     workspaceId: () => workspaceId,
     enqueue: (batch) => {
       pending.submit(batch)
@@ -86,7 +85,7 @@ export function installTestBridge(opts?: {
     pending,
     clock,
     rootTileId,
-    orgId,
+    userId,
     workspaceId,
     dispose: () => setCRDTBridge(null),
   }

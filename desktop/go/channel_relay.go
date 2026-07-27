@@ -22,13 +22,13 @@ const (
 	relayDialTimeout = 10 * time.Second
 )
 
-// relayDrainTimeout bounds closeChannelRelay/closeOrgEventsRelay's wait for the
+// relayDrainTimeout bounds closeChannelRelay/closeUserEventsRelay's wait for the
 // read loop to exit. The loop's in-flight emit can block on a full shell pipe;
 // bounding the wait prevents a permanently stalled peer from deadlocking every
 // lifecycle operation behind lifecycleMu. It is a var so tests can shorten it.
 var relayDrainTimeout time.Duration = 5 * time.Second
 
-// wsRelay is the shared lifecycle core of the channel and org-events relays: a
+// wsRelay is the shared lifecycle core of the channel and userevents relays: a
 // single WebSocket bound to a lifetime context, a done channel closed when the
 // read loop exits, and a bounded shutdown that does not wedge lifecycleMu when
 // the peer stops draining the shell pipe. Subtypes embed it and supply their
@@ -48,7 +48,7 @@ type wsRelay struct {
 	// B. Closing then tears down the relay B just took -- and because shutdown cancels
 	// the relay context before the read loop can emit, no close event ever reaches the
 	// frontend: the channel relay sits at readyState OPEN forever with every send
-	// failing, and the org-events page sits bootstrapped on a dead relay with nothing
+	// failing, and the userevents page sits bootstrapped on a dead relay with nothing
 	// reopening it until a reload.
 	//
 	// Comparing the id makes a stale close a no-op regardless of how the goroutines
@@ -64,8 +64,8 @@ type wsRelay struct {
 	// (eventSink.forOwner -> EmitRelay(wsRelay.ownerNow)) while that relay is still
 	// running, but re-stamped under lifecycleMu by OpenChannelRelay's adoptLiveRelay
 	// -- the only path that transfers ownership of a LIVE relay.
-	// OpenOrgEventsRelay does not re-stamp: its rejectIfSuperseded only LOADS owner
-	// (to refuse a stale open), and a fresh org-events relay is stamped once at
+	// OpenUserEventsRelay does not re-stamp: its rejectIfSuperseded only LOADS owner
+	// (to refuse a stale open), and a fresh userevents relay is stamped once at
 	// construction and never mutated again, so the atomic load on its read loop is
 	// defense-in-depth rather than a race guard. The writes (wsRelay.stampOwner) all
 	// happen under lifecycleMu; the only lock-free access is the read loop's ownerNow.
@@ -75,7 +75,7 @@ type wsRelay struct {
 	// All reads/writes go through ownerNow/stampOwner, the named accessors below; a
 	// future bare `relay.owner` read bypasses the atomic and races. (atomic.Uint64
 	// would make the field self-protecting, but it carries a noCopy that wsRelay's
-	// value-embedding in ChannelRelay/OrgEventsRelay cannot stomach; standalone
+	// value-embedding in ChannelRelay/UserEventsRelay cannot stomach; standalone
 	// atomic ops behind accessors are safe on every target LeapMux builds for --
 	// macOS/Linux/Windows, all 64-bit.)
 	owner uint64
@@ -96,7 +96,7 @@ func (r *wsRelay) ownerNow() uint64 { return atomic.LoadUint64(&r.owner) }
 func (r *wsRelay) stampOwner(id uint64) { atomic.StoreUint64(&r.owner, id) }
 
 // newWSRelay constructs the shared wsRelay core both ChannelRelay and
-// OrgEventsRelay embed, wiring the per-relay lifetime context + cancel the
+// UserEventsRelay embed, wiring the per-relay lifetime context + cancel the
 // dial-and-install core obtained and the done channel the read loop closes on
 // exit. Centralising the literal keeps the five-field initialization (and the
 // make(chan struct{}) the done channel needs) at one site, so a sixth field or
@@ -208,7 +208,7 @@ type relayOpenSpec struct {
 	commit func(connection *desktopConnection, ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc)
 }
 
-// openRelay is the shared open sequence of the channel and org-events relays.
+// openRelay is the shared open sequence of the channel and userevents relays.
 // The scaffolding it owns is exactly the part whose invariants are easy to fix
 // in one relay and silently miss in the other:
 //
@@ -295,7 +295,7 @@ func (a *App) openRelay(requestCtx context.Context, spec relayOpenSpec) error {
 }
 
 // dialChannelRelay opens the channel WebSocket. A package var (mirroring
-// dialOrgEvents) so tests can hold a dial open and drive the adopt-vs-supersede
+// dialUserEvents) so tests can hold a dial open and drive the adopt-vs-supersede
 // fence deterministically -- the concurrent-open window is otherwise a race no
 // test could pin down.
 var dialChannelRelay = func(ctx context.Context, proxy *HubProxy) (*websocket.Conn, error) {
@@ -341,7 +341,7 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 	// Adopting it makes this caller the owner ONLY when this open is at least as
 	// new as the relay's current owner: a stale open (an earlier wrapper whose
 	// request the sidecar ran late) must abandon itself rather than stealing
-	// ownership back -- the same fence OpenOrgEventsRelay's rejectIfSuperseded
+	// ownership back -- the same fence OpenUserEventsRelay's rejectIfSuperseded
 	// applies. Without it a slow open from wrapper 1 re-stamps owner=1 after
 	// wrapper 2 already committed, and wrapper 1's later Close then tears the
 	// relay down out from under the active wrapper 2.
@@ -454,7 +454,7 @@ func (a *App) CloseChannelRelay(relayID uint64) error {
 }
 
 // closeRelayIfOwner is the shared body of CloseChannelRelay and
-// CloseOrgEventsRelay: begin an operation, detach the relay under lifecycleMu
+// CloseUserEventsRelay: begin an operation, detach the relay under lifecycleMu
 // only while relayID still owns it, then drain OUTSIDE the write lock -- the
 // detach (cancel + force-close) is fast and safe under the lock, but the read
 // loop's wedged emit can take up to relayDrainTimeout to unblock, and waiting

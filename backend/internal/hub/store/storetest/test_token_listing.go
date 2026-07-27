@@ -59,9 +59,8 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all joins owner and pages through", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "alice")
-		bob := SeedUser(t, st, orgID, "bob")
+		alice := SeedUser(t, st, "alice")
+		bob := SeedUser(t, st, "bob")
 		t1 := seedAPITokenForList(t, st, alice.ID, "cli", "alice-cli")
 		t2 := seedAPITokenForList(t, st, bob.ID, "cli", "bob-cli")
 		t3 := seedAPITokenForList(t, st, bob.ID, "integration", "bot")
@@ -96,8 +95,7 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all client_type filter", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		user := SeedUser(t, st, orgID, "filter-user")
+		user := SeedUser(t, st, "filter-user")
 		seedAPITokenForList(t, st, user.ID, "cli", "a")
 		seedAPITokenForList(t, st, user.ID, "integration", "b")
 
@@ -109,8 +107,7 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all client_type filter composes with pagination", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		user := SeedUser(t, st, orgID, "filter-page-user")
+		user := SeedUser(t, st, "filter-page-user")
 		c1 := seedAPITokenForList(t, st, user.ID, "cli", "c1")
 		i1 := seedAPITokenForList(t, st, user.ID, "integration", "i1")
 		c2 := seedAPITokenForList(t, st, user.ID, "cli", "c2")
@@ -141,9 +138,8 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all filters by user and paginates", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "byuser-alice")
-		bob := SeedUser(t, st, orgID, "byuser-bob")
+		alice := SeedUser(t, st, "byuser-alice")
+		bob := SeedUser(t, st, "byuser-bob")
 		a1 := seedAPITokenForList(t, st, alice.ID, "cli", "a1")
 		b1 := seedAPITokenForList(t, st, bob.ID, "cli", "b1")
 		a2 := seedAPITokenForList(t, st, alice.ID, "cli", "a2")
@@ -173,10 +169,9 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("delegation tokens list all filters by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "del-byuser-alice")
-		bob := SeedUser(t, st, orgID, "del-byuser-bob")
-		ws := SeedWorkspace(t, st, orgID, alice.ID, "ws")
+		alice := SeedUser(t, st, "del-byuser-alice")
+		bob := SeedUser(t, st, "del-byuser-bob")
+		ws := SeedWorkspace(t, st, alice.ID, "ws")
 		d1 := seedDelegationTokenForList(t, st, alice.ID, ws)
 		_ = seedDelegationTokenForList(t, st, bob.ID, ws)
 		d3 := seedDelegationTokenForList(t, st, alice.ID, ws)
@@ -193,8 +188,7 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all surfaces soft-deleted owner as (deleted)", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		dead := SeedUser(t, st, orgID, "dead-owner")
+		dead := SeedUser(t, st, "dead-owner")
 		token := seedAPITokenForList(t, st, dead.ID, "cli", "dead-cli")
 
 		// Soft-delete the owner; the token row survives (no ON DELETE CASCADE
@@ -218,10 +212,9 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("delegation tokens list all joins owner", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "del-alice")
-		bob := SeedUser(t, st, orgID, "del-bob")
-		ws := SeedWorkspace(t, st, orgID, alice.ID, "ws")
+		alice := SeedUser(t, st, "del-alice")
+		bob := SeedUser(t, st, "del-bob")
+		ws := SeedWorkspace(t, st, alice.ID, "ws")
 		d1 := seedDelegationTokenForList(t, st, alice.ID, ws)
 		d2 := seedDelegationTokenForList(t, st, bob.ID, ws)
 
@@ -237,10 +230,9 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("delegation tokens list all pages through and surfaces (deleted) owner", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "del-page-alice")
-		bob := SeedUser(t, st, orgID, "del-page-bob")
-		ws := SeedWorkspace(t, st, orgID, alice.ID, "ws")
+		alice := SeedUser(t, st, "del-page-alice")
+		bob := SeedUser(t, st, "del-page-bob")
+		ws := SeedWorkspace(t, st, alice.ID, "ws")
 		d1 := seedDelegationTokenForList(t, st, alice.ID, ws)
 		d2 := seedDelegationTokenForList(t, st, bob.ID, ws)
 		d3 := seedDelegationTokenForList(t, st, alice.ID, ws)
@@ -276,9 +268,8 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("api tokens list all include revoked forensics opt-in", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "rev-alice")
-		bob := SeedUser(t, st, orgID, "rev-bob")
+		alice := SeedUser(t, st, "rev-alice")
+		bob := SeedUser(t, st, "rev-bob")
 		a1 := seedAPITokenForList(t, st, alice.ID, "cli", "a1")
 		a2 := seedAPITokenForList(t, st, alice.ID, "cli", "a2")
 		b1 := seedAPITokenForList(t, st, bob.ID, "cli", "b1")
@@ -349,10 +340,9 @@ func (s *Suite) testTokenListing(t *testing.T) {
 
 	t.Run("delegation tokens list all include revoked forensics opt-in", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tok-org")
-		alice := SeedUser(t, st, orgID, "del-rev-alice")
-		bob := SeedUser(t, st, orgID, "del-rev-bob")
-		ws := SeedWorkspace(t, st, orgID, alice.ID, "ws")
+		alice := SeedUser(t, st, "del-rev-alice")
+		bob := SeedUser(t, st, "del-rev-bob")
+		ws := SeedWorkspace(t, st, alice.ID, "ws")
 		d1 := seedDelegationTokenForList(t, st, alice.ID, ws)
 		d2 := seedDelegationTokenForList(t, st, alice.ID, ws)
 		d3 := seedDelegationTokenForList(t, st, bob.ID, ws)

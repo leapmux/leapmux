@@ -25,7 +25,7 @@ codexTest.describe('Codex Approvals', () => {
 
     // The control banner should NOT appear in bypass mode.
     const banner = page.locator('[data-testid="control-banner"]')
-    await expect(banner).not.toBeVisible({ timeout: 3000 })
+    await expect(banner).not.toBeVisible()
   })
 
   codexTest('agent writes files without approval in bypass mode', async ({ authenticatedCodexWorkspace, page }) => {
@@ -35,6 +35,6 @@ codexTest.describe('Codex Approvals', () => {
 
     // Should have completed without approval prompt.
     const banner = page.locator('[data-testid="control-banner"]')
-    await expect(banner).not.toBeVisible({ timeout: 3000 })
+    await expect(banner).not.toBeVisible()
   })
 })

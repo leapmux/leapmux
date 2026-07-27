@@ -19,9 +19,10 @@ service WorkspacePrivateService {
   rpc WatchWorkspacePrivateEvents(WatchWorkspacePrivateEventsRequest)
       returns (stream WorkspacePrivateEvent);
 
-  // RegisterFileTabPath persists (org_id, workspace_id, tab_id, path)
-  // on the worker. Path is plaintext on the wire — this RPC must
-  // travel via E2EE. Emits FileTabPathRegistered.
+  // RegisterFileTabPath persists (workspace_id, tab_id, path) on the
+  // worker (user is implied by the authenticated principal). Path is
+  // plaintext on the wire — this RPC must travel via E2EE. Emits
+  // FileTabPathRegistered.
   rpc RegisterFileTabPath(RegisterFileTabPathRequest) returns (RegisterFileTabPathResponse);
 
   // GetFileTabPath returns the worker-stored path for a tab. Used by
@@ -79,17 +80,15 @@ message FileTabPathRevoked {
 // --- File-tab path RPC payloads ---
 
 message RegisterFileTabPathRequest {
-  string org_id       = 1;
-  string workspace_id = 2;
-  string tab_id       = 3;
-  string file_path    = 4;
+  string workspace_id = 1;
+  string tab_id       = 2;
+  string file_path    = 3;
 }
 
 message RegisterFileTabPathResponse {}
 
 message GetFileTabPathRequest {
-  string org_id = 1;
-  string tab_id = 2;
+  string tab_id = 1;
 }
 
 message GetFileTabPathResponse {
@@ -98,13 +97,12 @@ message GetFileTabPathResponse {
 }
 
 message RevokeFileTabPathRequest {
-  string org_id = 1;
-  string tab_id = 2;
+  string tab_id = 1;
   // Worktree disposition chosen by the user when the file tab was the
   // last tab on a tracked worktree. UNSPECIFIED / KEEP leaves the
   // worktree in place; REMOVE asks the worker to `git worktree remove`
   // once no other tabs reference it. Mirrors CloseAgentRequest.
-  WorktreeAction worktree_action = 3;
+  WorktreeAction worktree_action = 2;
 }
 
 // RevokeFileTabPathResponse reports the outcome of the close. See
@@ -115,9 +113,8 @@ message RevokeFileTabPathResponse {
 }
 
 message RelocateFileTabPathRequest {
-  string org_id           = 1;
-  string tab_id           = 2;
-  string new_workspace_id = 3;
+  string tab_id           = 1;
+  string new_workspace_id = 2;
 }
 
 message RelocateFileTabPathResponse {}

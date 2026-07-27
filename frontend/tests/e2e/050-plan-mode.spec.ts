@@ -91,11 +91,11 @@ test.describe('Plan Mode', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
     // Verify context_cleared notification appears in the chat.
-    await expect(page.locator('text=Context cleared')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('text=Context cleared')).toBeVisible()
 
     // Verify Plan File is shown in the popover (plan_execution fires on clear context).
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible({ timeout: 30_000 })
+    await expect(infoTrigger).toBeVisible()
     await infoTrigger.click()
     const popover = page.locator('[data-testid="agent-info-popover"]')
     await expect(popover).toBeVisible()

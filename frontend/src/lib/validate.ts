@@ -138,7 +138,7 @@ export function validatePassword(password: string): string | null {
 const SLUG_PATTERN = /^[a-z0-9-]+$/
 
 /**
- * Sanitizes and validates a GitHub-style slug (username or organization name).
+ * Sanitizes and validates a GitHub-style slug (username).
  * Trims whitespace and lowercases, then validates.
  * Rules: 1-32 chars, lowercase alphanumeric and hyphens only,
  * no leading/trailing hyphens, no consecutive hyphens.

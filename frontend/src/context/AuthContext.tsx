@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { User } from '~/generated/leapmux/v1/auth_pb'
 import { create } from '@bufbuild/protobuf'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { createContext, createEffect, createSignal, on, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
@@ -17,6 +18,24 @@ export interface AuthState {
   user: () => User | null
   loading: () => boolean
   error: () => string | null
+  /**
+   * Set when bootstrap failed for a reason OTHER than "no session" -- i.e.
+   * either `loadSystemInfo` could not reach the hub, or the session restore
+   * failed with something other than Unauthenticated. Distinct from `error`,
+   * which LoginPage renders as a *login* failure.
+   *
+   * Without this, a transport failure is indistinguishable from an expired
+   * cookie: in solo mode (where there is no login to fall back to) the guard
+   * would show its loading fallback forever. And a failed `loadSystemInfo`
+   * leaves `isSoloMode()` at its fabricated `false`, so a solo user whose
+   * session restore then SUCCEEDS is shown a "Log out" button that strands
+   * them on a login form no credentials can satisfy. Both are unrecoverable
+   * and silent; recording the failure here makes the guard show a retry
+   * panel instead.
+   */
+  bootstrapError: () => string | null
+  /** Retry the bootstrap session-restore after a `bootstrapError`. */
+  retryBootstrap: () => Promise<void>
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   setAuth: (user: User) => void
@@ -30,6 +49,7 @@ export const AuthProvider: ParentComponent = (props) => {
   const [user, setUser] = createSignal<User | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
+  const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
 
   /**
    * Drop every pooled E2EE channel on an identity change.
@@ -77,20 +97,70 @@ export const AuthProvider: ParentComponent = (props) => {
       setUser(null)
   })
 
-  onMount(async () => {
-    await loadSystemInfo()
-
-    // Try to restore session from cookie (both solo and multi-user modes).
+  /**
+   * Restore the session from the cookie (both solo and multi-user modes).
+   *
+   * Unauthenticated is the ordinary "no session yet" answer and stays silent —
+   * the guard routes those to `/login` (or, on a fresh install, `/setup`).
+   * Any OTHER failure means the hub is unreachable or erroring, which no
+   * amount of logging in fixes, so it is recorded and surfaced rather than
+   * swallowed. The two were previously indistinguishable; see
+   * `AuthState.bootstrapError`.
+   */
+  const restoreSession = async () => {
     try {
       const resp = await authClient.getCurrentUser({})
       setUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
     }
-    catch {
-      // No valid session — user needs to log in.
+    catch (err) {
+      if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
+        setUser(null)
+      }
+      else {
+        const msg = formatErrorMessage(err)
+        log.warn('session restore failed', { error: msg })
+        setBootstrapError(msg)
+      }
     }
+  }
+
+  /**
+   * The whole bootstrap sequence, and the sole owner of `bootstrapError`.
+   *
+   * System info comes FIRST and is a hard prerequisite: every downstream
+   * decision (solo vs. multi-user, setup-required) reads module getters that
+   * are fabricated defaults until it succeeds. Continuing to the session
+   * restore on a failed load is how a solo user ends up looking like a
+   * multi-user one -- the restore succeeds (a solo hub authenticates every
+   * procedure), nothing is recorded, and the app offers a "Log out" that
+   * strands them at /login. So a failed load aborts here with a
+   * `bootstrapError` for the guard's retry panel to render.
+   */
+  const bootstrap = async () => {
+    setBootstrapError(null)
+    try {
+      await loadSystemInfo()
+    }
+    catch (err) {
+      const msg = formatErrorMessage(err)
+      log.warn('system info load failed', { error: msg })
+      setBootstrapError(msg)
+      return
+    }
+    await restoreSession()
+  }
+
+  onMount(async () => {
+    await bootstrap()
     setLoading(false)
   })
+
+  const retryBootstrap = async () => {
+    setLoading(true)
+    await bootstrap()
+    setLoading(false)
+  }
 
   const login = async (username: string, password: string) => {
     setError(null)
@@ -153,6 +223,8 @@ export const AuthProvider: ParentComponent = (props) => {
     logout,
     setAuth,
     refreshUser,
+    bootstrapError,
+    retryBootstrap,
     isAuthenticated: () => user() !== null,
   }
 

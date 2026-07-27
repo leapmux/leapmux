@@ -1752,8 +1752,6 @@ func postForm(targetURL string, form url.Values, cookies ...*http.Cookie) (*http
 
 func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceID string) {
 	t.Helper()
-	u, err := env.store.Users().GetByID(context.Background(), env.userID)
-	require.NoError(t, err)
 	workerID = id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
@@ -1766,52 +1764,85 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 	workspaceID = id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       u.OrgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws",
 	}))
 	return workerID, workspaceID
 }
 
-// A grant row naming no user must be REFUSED, not panic the token endpoint.
+// blankGrantCodeStore hands the authorization-code exchange a grant row whose
+// user_id is blank.
 //
-// cli_authorization_codes.user_id is a column, so a blank one is corrupt data
-// rather than a programmer error -- and this endpoint is unauthenticated, so a
-// panic there is reachable by anyone holding the code. The device-code sibling
-// has always refused a blank user_id (postTouchPollOAuthError answers
-// authorization_pending); this path had no such guard, so the id went straight
-// into the mint.
+// cli_authorization_codes.user_id is a plain column, so a blank one is corrupt
+// data rather than a programmer error -- and unlike every other mint site in
+// the hub, /auth/cli/token is UNAUTHENTICATED: anyone holding the code reaches
+// it. Injecting the row is the only way to exercise the guard now that the
+// store API refuses to create a blank-id user.
+type blankGrantCodeStore struct {
+	store.Store
+	codes store.CLIAuthorizationCodeStore
+}
+
+func (s blankGrantCodeStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
+	return s.codes
+}
+
+type blankGrantCodes struct {
+	store.CLIAuthorizationCodeStore
+	row *store.CLIAuthorizationCode
+}
+
+func (s blankGrantCodes) GetActive(context.Context, string) (*store.CLIAuthorizationCode, error) {
+	return s.row, nil
+}
+
+// TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic pins the mint
+// guard in handleTokenAuthorizationCode.
+//
+// PKCE verification is set up to SUCCEED here, so the request gets all the way
+// past the checks that would otherwise mask the guard: only the blank user_id
+// can produce the invalid_grant. Fold that mint into MustNew and this becomes a
+// panic inside an unauthenticated HTTP handler -- a torn connection for the
+// caller, and in a shared process it takes the request goroutine with it.
 func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.T) {
-	env := setupAPIAuth(t)
-	ctx := context.Background()
-	verifier, challenge := pkceVerifierAndChallenge()
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
 
-	// SQLite accepts "" as a TEXT primary key, so a blank-id user -- and a
-	// grant row referencing it -- inserts cleanly.
-	realUser, err := env.store.Users().GetByID(ctx, env.userID)
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: "", OrgID: realUser.OrgID, Username: "blank-grant-user",
-		PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
-	}))
-	code := id.Generate()
-	require.NoError(t, env.store.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
-		Code: code, UserID: userid.UserID{}, CodeChallenge: challenge,
-		DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
-	}))
+	_, sc := auth.NewInterceptor(st, nil, false, false)
+	t.Cleanup(sc.Stop)
 
-	resp, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
+	verifier, challenge := pkceVerifierAndChallenge()
+	wrapped := blankGrantCodeStore{
+		Store: st,
+		codes: blankGrantCodes{
+			CLIAuthorizationCodeStore: st.CLIAuthorizationCodes(),
+			row: &store.CLIAuthorizationCode{
+				Code: "grant-code", UserID: "", CodeChallenge: challenge,
+				DeviceName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
+			},
+		},
+	}
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	closer := &recordingBearerCloser{}
+	service.NewAPIAuthHandler(wrapped, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), srv.URL).
+		RegisterRoutes(mux)
+
+	resp, err := http.PostForm(srv.URL+"/auth/cli/token", url.Values{
 		"grant_type":    {service.GrantTypeAuthorizationCode},
-		"code":          {code},
+		"code":          {"grant-code"},
 		"code_verifier": {verifier},
 	})
-	require.NoError(t, err, "the handler must answer, not tear the connection")
+	require.NoError(t, err, "the handler answers rather than tearing down the connection")
 	defer func() { _ = resp.Body.Close() }()
 
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	var body map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&body)
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
-		"an unusable grant is a client error, not a server fault")
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "invalid_grant", body["error"],
-		"and it fails closed in the same shape as an expired code")
+		"a blank grant user_id reads as an unusable grant, not an internal error")
 }

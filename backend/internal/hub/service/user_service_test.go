@@ -34,7 +34,6 @@ type userTestEnv struct {
 	client leapmuxv1connect.UserServiceClient
 	store  store.Store
 	token  string
-	orgID  string
 	userID string
 }
 
@@ -67,14 +66,11 @@ func setupUserTest(t *testing.T) *userTestEnv {
 		connect.WithGRPC(),
 	)
 
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "testuser"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test User",
@@ -89,7 +85,6 @@ func setupUserTest(t *testing.T) *userTestEnv {
 		client: client,
 		store:  st,
 		token:  token,
-		orgID:  orgID,
 		userID: userID,
 	}
 }
@@ -125,14 +120,11 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 		connect.WithGRPC(),
 	)
 
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "testuser"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test User",
@@ -147,7 +139,6 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 		client: client,
 		store:  st,
 		token:  token,
-		orgID:  orgID,
 		userID: userID,
 	}
 }
@@ -163,50 +154,21 @@ func TestUserService_UpdateProfile(t *testing.T) {
 
 	assert.Equal(t, "newname", resp.Msg.GetUsername())
 	assert.Equal(t, "New Display", resp.Msg.GetDisplayName())
-	assert.Equal(t, "newname", resp.Msg.GetOrgName(), "should rename personal org")
 
 	// Verify the database was actually updated.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "newname", user.Username)
-
-	current, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: env.userID,
-	}, env.token))
-	require.NoError(t, err)
-	assert.Equal(t, "newname", current.Msg.GetUsername(), "profile mutation must invalidate cached auth context")
-}
-
-func TestUserService_UpdateProfileRollsBackWhenOrgRenameFails(t *testing.T) {
-	env := setupUserTest(t)
-	require.NoError(t, env.store.Orgs().Create(context.Background(), store.CreateOrgParams{
-		ID: id.Generate(), Name: "conflicting-org",
-	}))
-
-	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
-		Username: "conflicting-org", DisplayName: "Changed",
-	}, env.token))
-	require.Error(t, err)
-
-	user, userErr := env.store.Users().GetByID(context.Background(), env.userID)
-	require.NoError(t, userErr)
-	assert.Equal(t, "testuser", user.Username)
-	org, orgErr := env.store.Orgs().GetByID(context.Background(), env.orgID)
-	require.NoError(t, orgErr)
-	assert.Equal(t, "testuser", org.Name)
 }
 
 func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
 	env := setupUserTest(t)
 
-	resp, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
 		Username:    "testuser",
 		DisplayName: "Updated Display",
 	}, env.token))
 	require.NoError(t, err)
-
-	// OrgName should be empty since username didn't change.
-	assert.Empty(t, resp.Msg.GetOrgName(), "username unchanged")
 
 	// The display-name update must still persist...
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
@@ -229,7 +191,6 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
-		OrgID:        env.orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
@@ -460,72 +421,6 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 	assert.Equal(t, "preserved@example.com", user.Email)
 }
 
-// --- UpdateProfile: username rename renames the personal org ---
-
-// TestUpdateProfile_UsernameRenameRenamesPersonalOrg pins the personal-org
-// rename that rides on a username change: the org's name (== the URL slug)
-// must follow the new username. Regression guard for the silent no-op the
-// old `is_personal = 0` SQL guard caused -- the rename transaction called
-// Orgs().UpdateName on the personal org, and the guard filtered it out, so
-// the slug went stale after every username change.
-func TestUpdateProfile_UsernameRenameRenamesPersonalOrg(t *testing.T) {
-	env := setupUserTest(t)
-
-	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
-		Username:    "renameduser",
-		DisplayName: "Renamed User",
-	}, env.token))
-	require.NoError(t, err)
-
-	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
-	require.NoError(t, err)
-	assert.Equal(t, "renameduser", org.Name, "the personal org must be renamed with the username")
-}
-
-// TestUpdateProfile_RenameToTakenUsernameLeavesUserAndOrgUntouched pins the
-// atomicity of the rename transaction: when the new username is already
-// taken, the whole rename fails as "already taken" and NEITHER the user row
-// NOR the personal-org row changes -- the org name can never drift from the
-// username via a half-applied rename.
-func TestUpdateProfile_RenameToTakenUsernameLeavesUserAndOrgUntouched(t *testing.T) {
-	env := setupUserTest(t)
-
-	// A second user whose username the test user will collide with.
-	hubtestutil.CreateTestUser(t, env.store, "takenname", "p")
-
-	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
-		Username:    "takenname",
-		DisplayName: "Collider",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "already taken")
-
-	user, err := env.store.Users().GetByID(context.Background(), env.userID)
-	require.NoError(t, err)
-	assert.Equal(t, "testuser", user.Username, "a failed rename must not change the username")
-
-	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
-	require.NoError(t, err)
-	assert.Equal(t, "testuser", org.Name, "a failed rename must not change the org name")
-}
-
-// TestUpdateProfile_DisplayNameOnlyKeepsOrgName is the complement: a
-// display-name-only edit (username unchanged) must not touch the org row.
-func TestUpdateProfile_DisplayNameOnlyKeepsOrgName(t *testing.T) {
-	env := setupUserTest(t)
-
-	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
-		Username:    "testuser",
-		DisplayName: "Just A New Display Name",
-	}, env.token))
-	require.NoError(t, err)
-
-	org, err := env.store.Orgs().GetByID(context.Background(), env.orgID)
-	require.NoError(t, err)
-	assert.Equal(t, "testuser", org.Name, "a display-name-only edit must not rename the org")
-}
-
 // --- RequestEmailChange: admin immediate change with email_verified ---
 
 func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
@@ -554,14 +449,10 @@ func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
 func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
 	client, st, _ := setupVerificationUserTestServer(t, false)
 
-	adminUser, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
-
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        adminUser.OrgID,
 		Username:     "plainuser",
 		PasswordHash: hash,
 		DisplayName:  "Plain User",
@@ -600,7 +491,6 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
-		OrgID:        env.orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
@@ -667,14 +557,10 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	client, st, adminToken := setupVerificationUserTestServer(t, true)
 
 	// Create a non-admin user.
-	adminUser, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
-
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
-	err = st.Users().Create(context.Background(), store.CreateUserParams{
+	err := st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        adminUser.OrgID,
 		Username:     "verifyuser",
 		PasswordHash: hash,
 		DisplayName:  "Verify User",
@@ -912,18 +798,16 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 
 	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
 
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "resender"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "resender", PasswordHash: hash,
+		ID: userID, Username: "resender", PasswordHash: hash,
 		DisplayName: "Resender", PasswordSet: true,
 	})
 	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass")
 	require.NoError(t, err)
 
-	return &userTestEnv{client: client, store: st, token: token, orgID: orgID, userID: userID}, rec
+	return &userTestEnv{client: client, store: st, token: token, userID: userID}, rec
 }
 
 func TestResendVerificationEmail_RequiresAuth(t *testing.T) {
@@ -1011,7 +895,6 @@ func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
-		OrgID:        env.orgID,
 		Username:     "claimer",
 		PasswordHash: hash,
 		DisplayName:  "Claimer",
@@ -1056,7 +939,6 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	attackerHash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           attackerID,
-		OrgID:        env.orgID,
 		Username:     "attacker",
 		PasswordHash: attackerHash,
 		DisplayName:  "Attacker",
@@ -1138,12 +1020,10 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
 
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "testuser"}))
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "testuser", PasswordHash: hash,
+		ID: userID, Username: "testuser", PasswordHash: hash,
 		DisplayName: "Test User", PasswordSet: true,
 	}))
 
@@ -1333,124 +1213,4 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-// TestUserService_GetUser_Self pins the self-lookup happy path: a
-// caller resolving their own id always succeeds and returns
-// (id, org, username) without consulting the cross-tenant gate.
-// The `leapmux remote` CLI's universal resolver leans on this for
-// `--user-id $LEAPMUX_REMOTE_USER_ID` derivations.
-func TestUserService_GetUser_Self(t *testing.T) {
-	env := setupUserTest(t)
-
-	resp, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: env.userID,
-	}, env.token))
-	require.NoError(t, err)
-	assert.Equal(t, env.userID, resp.Msg.GetUserId())
-	assert.Equal(t, env.orgID, resp.Msg.GetOrgId())
-	assert.Equal(t, "testuser", resp.Msg.GetUsername())
-}
-
-// TestUserService_GetUser_SameOrg confirms a caller can resolve a
-// peer in their own org. This is the bread-and-butter path for the
-// resolver — it's how a script that knows only a teammate's user_id
-// gets their org_id for downstream RPCs.
-func TestUserService_GetUser_SameOrg(t *testing.T) {
-	env := setupUserTest(t)
-	peerID := id.Generate()
-	hash, _ := password.Hash("testpass")
-	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           peerID,
-		OrgID:        env.orgID,
-		Username:     "peer",
-		PasswordHash: hash,
-		DisplayName:  "Peer",
-		PasswordSet:  true,
-	})
-
-	resp, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: peerID,
-	}, env.token))
-	require.NoError(t, err)
-	assert.Equal(t, peerID, resp.Msg.GetUserId())
-	assert.Equal(t, env.orgID, resp.Msg.GetOrgId())
-	assert.Equal(t, "peer", resp.Msg.GetUsername())
-}
-
-// TestUserService_GetUser_CrossOrgCollapsesToNotFound is the tenancy
-// guard. A caller asking for a user in another org gets NotFound
-// (not PermissionDenied) so we don't leak the existence of accounts
-// across tenants. Returning Denied would let an attacker enumerate
-// the user table by probing for id collisions.
-func TestUserService_GetUser_CrossOrgCollapsesToNotFound(t *testing.T) {
-	env := setupUserTest(t)
-	// User in a different org.
-	otherOrg := id.Generate()
-	otherUser := id.Generate()
-	hash, _ := password.Hash("testpass")
-	require.NoError(t, env.store.Orgs().Create(context.Background(), store.CreateOrgParams{ID: otherOrg, Name: "otherorg"}))
-	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           otherUser,
-		OrgID:        otherOrg,
-		Username:     "outsider",
-		PasswordHash: hash,
-		DisplayName:  "Outsider",
-		PasswordSet:  true,
-	}))
-
-	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: otherUser,
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
-		"cross-tenant lookup must collapse to NotFound rather than leak existence as PermissionDenied")
-}
-
-// TestUserService_GetUser_RejectsEmptyID covers the invalid-args
-// branch. Empty user_id hard-fails before any DB query, so scripts
-// that pass `$LEAPMUX_REMOTE_USER_ID` from an unset env get a
-// crisp error instead of an unfiltered table scan.
-func TestUserService_GetUser_RejectsEmptyID(t *testing.T) {
-	env := setupUserTest(t)
-	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: "",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-}
-
-// TestUserService_GetUser_NotFoundForUnknown covers the "user_id
-// looks valid but no row exists" case. With cross-org collapsing
-// to NotFound, the only behavioural difference between "user
-// exists in another org" and "user does not exist" is what the
-// admin sees in logs — both surface as NotFound to the client.
-func TestUserService_GetUser_NotFoundForUnknown(t *testing.T) {
-	env := setupUserTest(t)
-	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
-		UserId: id.Generate(),
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-// GetUser's self-lookup branch compares caller.ID.Matches(target), and the only
-// reason a zero caller cannot self-match a blank target is the empty-target
-// refusal above it.
-//
-// That prologue is the load-bearing layer -- Matches is defence in depth behind
-// it -- so this pins the prologue. Without it, a caller whose id is blank and a
-// request naming no user would take the self branch together and be handed a
-// profile for nobody, reported as the caller's own.
-func TestGetUserRejectsEmptyTargetBeforeSelfMatch(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	svc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: userid.UserID{}, OrgID: "org-1", Username: "blank",
-	})
-
-	_, err := svc.GetUser(ctx, connect.NewRequest(&leapmuxv1.GetUserRequest{UserId: ""}))
-	require.Error(t, err, "an empty target must be refused before the self-match")
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
-		"and refused as a malformed request, not answered as a self-lookup")
 }

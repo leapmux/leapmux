@@ -42,22 +42,21 @@ export function detectACPSkipReason(config: ACPFixtureConfig): string | null {
 }
 
 export async function createACPWorkspace(
-  leapmuxServer: { hubUrl: string, adminToken: string, adminOrgId: string, workerId: string },
+  leapmuxServer: { hubUrl: string, adminToken: string, workerId: string },
   config: ACPFixtureConfig,
   use: (fixture: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
-  const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+  const { hubUrl, adminToken, workerId } = leapmuxServer
   const workspaceId = await createWorkspaceViaAPI(
     hubUrl,
     adminToken,
     `${config.workspacePrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    adminOrgId,
   )
   await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
     agentProvider: config.agentProvider,
     model: config.model,
   })
-  const workspaceUrl = `/o/admin/workspace/${workspaceId}`
+  const workspaceUrl = `/workspace/${workspaceId}`
 
   await use({ workspaceId, workspaceUrl })
 

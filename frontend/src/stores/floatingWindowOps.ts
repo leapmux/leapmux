@@ -1,6 +1,6 @@
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import type { CRDTBridge } from '~/lib/crdt'
-import { NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
   ctxFromBridge,
   generateId,
@@ -56,15 +56,13 @@ export function emitAddFloatingWindow(
   geometry: { x: number, y: number, width: number, height: number, opacity?: number },
 ): { windowId: string, rootTileId: string } | null {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return null
   const wsId = bridge.workspaceId()
   if (!wsId)
     return null
   const windowId = generateId()
   const rootTileId = generateId()
   const opacity = geometry.opacity ?? 1
-  const ops: OrgOp[] = [
+  const ops: CrdtOp[] = [
     // Root node first (kind=LEAF; parent_id stays "" by default —
     // the validator's paired-creation rule allows this because the
     // same batch creates a window referencing it).
@@ -93,7 +91,7 @@ export function emitRemoveFloatingWindow(bridge: CRDTBridge, windowId: string): 
     if (!fw || !hlcIsZero(fw.tombstoneAt))
       return
     const rootId = fw.rootNodeId
-    const ops: OrgOp[] = rootId !== ''
+    const ops: CrdtOp[] = rootId !== ''
       ? buildCloseSubtreeOps(ctx, state, rootId, { tombstoneRoot: true })
       : []
     ops.push(tombstoneFloatingWindow(ctx, windowId))
@@ -104,8 +102,6 @@ export function emitRemoveFloatingWindow(bridge: CRDTBridge, windowId: string): 
 /** Single-op write: window x register. */
 export function emitUpdatePosition(bridge: CRDTBridge, windowId: string, x: number, y: number): void {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return
   bridge.enqueue(newBatch([
     setFloatingX(ctx, windowId, x),
     setFloatingY(ctx, windowId, y),
@@ -122,8 +118,6 @@ export function emitUpdateGeometry(
   height: number,
 ): void {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return
   bridge.enqueue(newBatch([
     setFloatingX(ctx, windowId, x),
     setFloatingY(ctx, windowId, y),
@@ -135,8 +129,6 @@ export function emitUpdateGeometry(
 /** Single-op write: window opacity register. */
 export function emitUpdateOpacity(bridge: CRDTBridge, windowId: string, opacity: number): void {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return
   bridge.enqueue(newBatch([setFloatingOpacity(ctx, windowId, opacity)]))
 }
 

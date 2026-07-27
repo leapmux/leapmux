@@ -54,18 +54,9 @@ func SearchLikePattern(query *string) *string {
 
 // --- Domain model types (backend-agnostic) ---
 
-// Org represents a user's personal organization.
-type Org struct {
-	ID        string
-	Name      string
-	CreatedAt time.Time
-	DeletedAt *time.Time
-}
-
 // User represents a user account.
 type User struct {
 	ID                    string
-	OrgID                 string
 	Username              string
 	PasswordHash          string
 	DisplayName           string
@@ -109,7 +100,6 @@ func (s UserSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s
 // SessionWithUser is the result of ValidateSessionWithUser (JOIN).
 type SessionWithUser struct {
 	UserID         string
-	OrgID          string
 	Username       string
 	IsAdmin        bool
 	EmailVerified  bool
@@ -225,7 +215,6 @@ type WorkerRegistrationKeyWithCreator struct {
 // Workspace represents a hub-owned workspace.
 type Workspace struct {
 	ID          string
-	OrgID       string
 	OwnerUserID string
 	Title       string
 	IsDeleted   bool
@@ -238,7 +227,7 @@ type Workspace struct {
 // distinction is *which* table they came from. Worker reconciliation
 // reads from `_owned`; UI reads from `_rendered`.
 type WorkspaceTabRow struct {
-	OrgID       string
+	UserID      string
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
@@ -247,9 +236,9 @@ type WorkspaceTabRow struct {
 	Position    string
 }
 
-// OrgOpBatchRow is a single row of the CRDT op-batch journal.
-type OrgOpBatchRow struct {
-	OrgID        string
+// UserOpBatchRow is a single row of the CRDT op-batch journal.
+type UserOpBatchRow struct {
+	UserID       string
 	PhysicalMs   int64
 	Logical      int64
 	LastLogical  int64
@@ -263,18 +252,18 @@ type OrgOpBatchRow struct {
 	CommittedAt  time.Time
 }
 
-// OrgStateRow is the materialized OrgCrdtState blob.
-type OrgStateRow struct {
-	OrgID          string
+// UserStateRow is the materialized UserCrdtState blob.
+type UserStateRow struct {
+	UserID         string
 	StatePayload   []byte
 	CurrentEpoch   int64
 	EpochStartedAt time.Time
 	UpdatedAt      time.Time
 }
 
-// OrgRecentBatchIDRow is a dedup-table row.
-type OrgRecentBatchIDRow struct {
-	OrgID               string
+// UserRecentBatchIDRow is a dedup-table row.
+type UserRecentBatchIDRow struct {
+	UserID              string
 	BatchID             string
 	BodyHash            []byte
 	PrincipalID         string
@@ -289,7 +278,7 @@ type OrgRecentBatchIDRow struct {
 // LifecycleOutboxRow is the persisted outbox payload.
 type LifecycleOutboxRow struct {
 	ID         int64
-	OrgID      string
+	UserID     string
 	OpType     string
 	Payload    []byte
 	EnqueuedAt time.Time
@@ -383,14 +372,8 @@ type PendingOAuthSignup struct {
 
 // --- Parameter types for create/update operations ---
 
-type CreateOrgParams struct {
-	ID   string
-	Name string
-}
-
 type CreateUserParams struct {
 	ID            string
-	OrgID         string
 	Username      string
 	PasswordHash  string
 	DisplayName   string
@@ -400,20 +383,48 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
-// Validate enforces the same "username is always a routable slug" store-level
-// invariant on the CREATE path that UpdateUserProfileParams.Validate enforces on
-// rename. A user's username is created in the same transaction as its personal
-// org and mirrored into orgs.name (CreateUserWithOrg / bootstrap), and it lands
-// in the /o/{slug} URL space -- so a store-level caller that never routes through
-// the service's SanitizeSlug (an admin seed, a sync tool, a test) must not be able
-// to blank or corrupt the user row and its mirrored slug together. Validates the
-// EXACT value the store persists -- NormalizeUsername(p.Username), which lowercases
-// but does not trim -- against SanitizeSlug, so mixed case is accepted (the store
-// lowercases it) while whitespace-only, "a b", or "Bad Name!" is refused before any
-// query runs. Mirrors UpdateUserProfileParams.Validate; the service create paths
-// already SanitizeSlug upstream, so this is a no-op for legitimate input.
+// Validate enforces two store-level invariants on the CREATE path.
+//
+// The id must be one an ownership predicate could later bind. users.id is the
+// parent key every owner-keyed child row hangs off, and SQLite accepts "" as a
+// TEXT primary key -- so a blank-id user is what makes a blank-OWNER tab or
+// CRDT row satisfy `user_id REFERENCES users(id)` and become storable. No
+// predicate can then name that row: binding "" matches every blank-owner row
+// rather than none, which is the fail-open userid.OwnerFilter exists to refuse.
+// Checking through userid.New rather than a local `p.ID == ""` is what keeps
+// the two ends from drifting -- the id create accepts is by construction
+// exactly the id a predicate can bind.
+//
+// This closes the store API as a route to that shape; it does not make the
+// shape unrepresentable in the database, which still permits a blank TEXT key
+// through raw SQL. The bind guards stay load-bearing for that reason.
+//
+// The username must be a routable slug -- see validateUsernameSlug, which
+// create and rename share so the rule cannot drift between them.
 func (p CreateUserParams) Validate() error {
-	stored := NormalizeUsername(p.Username)
+	if _, ok := userid.New(p.ID); !ok {
+		return ErrInvalidArgument
+	}
+	return validateUsernameSlug(p.Username)
+}
+
+// validateUsernameSlug enforces "a stored username is always a routable slug",
+// the one rule CreateUserParams.Validate and UpdateUserProfileParams.Validate
+// both apply. A store-level caller that never routes through the service's
+// SanitizeSlug (an admin seed, a sync tool, a test) must not be able to blank
+// or corrupt users.username, and a value that is creatable but not renameable
+// (or the reverse) would be a bug in itself -- so the two share one body rather
+// than two independently-worded copies of it.
+//
+// Validates the EXACT value the store persists -- NormalizeUsername(username),
+// which lowercases but does not trim -- against SanitizeSlug. Mixed case is
+// therefore accepted (the store lowercases it, as NormalizeUsername's contract
+// promises), while whitespace-only, "a b", or "Bad Name!" is refused before any
+// query runs. Surrounding whitespace is refused too: the stored value would
+// keep it, and SanitizeSlug's trimmed output would then disagree with what is
+// written.
+func validateUsernameSlug(username string) error {
+	stored := NormalizeUsername(username)
 	if cleaned, err := validate.SanitizeSlug("username", stored); err != nil || cleaned != stored {
 		return ErrInvalidArgument
 	}
@@ -426,26 +437,12 @@ type UpdateUserProfileParams struct {
 	DisplayName string
 }
 
-// Validate enforces the store-level invariants on a profile update. The username
-// mirrors the personal-org name under a partial unique index (RenameUserPersonalOrg
-// runs in the same transaction), and it lands in the /o/{slug} URL space -- so the
-// store refuses anything the service layer (validate.SanitizeSlug) would, making
-// "username is always a routable slug" a property of the store rather than a step
-// each caller must repeat. It validates the EXACT value the store persists --
-// NormalizeUsername(p.Username), which lowercases but does not trim -- against
-// SanitizeSlug: a whitespace-only or non-slug username ("  ", "Bad Name!", "a b")
-// passes a bare non-empty check yet corrupts both users.username and the mirrored
-// orgs.name. Mixed case is accepted (the store lowercases it, as its
-// NormalizeUsername contract promises); surrounding whitespace is not, since the
-// stored value keeps it and SanitizeSlug's trimmed output would then disagree with
-// what is written. The guard runs before any query so a bad input cannot partially
-// apply (the user row updated, the org not).
+// Validate enforces the store-level invariants on a profile update: the store
+// refuses anything the service layer would, making "username is always a
+// routable slug" a property of the store rather than a step each caller must
+// repeat. Shares validateUsernameSlug with create.
 func (p UpdateUserProfileParams) Validate() error {
-	stored := NormalizeUsername(p.Username)
-	if cleaned, err := validate.SanitizeSlug("username", stored); err != nil || cleaned != stored {
-		return ErrInvalidArgument
-	}
-	return nil
+	return validateUsernameSlug(p.Username)
 }
 
 type UpdateUserPasswordParams struct {
@@ -627,14 +624,12 @@ type ListRegistrationKeysAdminParams struct {
 
 type CreateWorkspaceParams struct {
 	ID          string
-	OrgID       string
 	OwnerUserID userid.UserID
 	Title       string
 }
 
 type ListAccessibleWorkspacesParams struct {
 	UserID userid.UserID
-	OrgID  string
 }
 
 type RenameWorkspaceParams struct {
@@ -653,8 +648,16 @@ type SoftDeleteWorkspaceParams struct {
 // carry identical column sets — alias rather than two parallel structs
 // so the bulk-upsert helpers can take either type without an extra
 // copy pass.
+//
+// UserID is userid.UserID like every other owner field on a *Params struct in
+// this file: the value is minted once at the store call (hub/service's
+// crdtJournal.CommitBatch mints the committing tenant and hands it to
+// txTabIndexWriter), not per row inside the bulk loop. The row STRUCTS above
+// (WorkspaceTabRow, UserOpBatchRow, ...) stay string-keyed -- their user_id is
+// a column read back out of the database, and typing it would force a mint at
+// the read boundary on data the process never vouched for.
 type UpsertOwnedTabParams struct {
-	OrgID       string
+	UserID      userid.UserID
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
@@ -669,41 +672,89 @@ type UpsertOwnedTabParams struct {
 // directly.
 type UpsertRenderedTabParams = UpsertOwnedTabParams
 
+// GetRenderedTabParams identifies a single rendered-tab row.
+//
+// UserID is the tenancy axis and is REQUIRED, for the reason spelled out on
+// GetOwnedTabParams: workspace_tab_rendered has the same (user_id, tab_id) key
+// and the same plain workspace_id FK, so any user's row may name any existing
+// workspace and tab ids are unique only within one user. Verifying that the
+// CALLER owns the workspace does not establish that the ROW does.
 type GetRenderedTabParams struct {
+	UserID      userid.UserID
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
 }
 
+// ListRenderedTabsByWorkspaceIDsParams scopes the rendered-tab listing to one
+// owner across a set of workspaces. See GetRenderedTabParams for why the
+// workspace set alone is not a tenancy scope.
+type ListRenderedTabsByWorkspaceIDsParams struct {
+	UserID       userid.UserID
+	WorkspaceIDs []string
+}
+
 // GetOwnedTabParams identifies a single owned-tab row.
-// (workspace_id, tab_id) is sufficient: workspace_tab_owned is keyed
-// on (org_id, tab_id), workspace_id is determined by org_id, and
-// tab_id is globally unique within an org (the CRDT mints fresh ids
-// per tab), so the pair lookups one row at most.
+//
+// UserID is the tenancy axis and is REQUIRED: workspace_tab_owned is keyed on
+// (user_id, tab_id), and no schema constraint ties a row's user_id to
+// owner(workspace_id) -- the workspace_id column is a plain FK to
+// workspaces(id), so any user's row may name any existing workspace. Tab ids
+// are client-minted and unique only within one user (a FILE tab id is
+// `file-<millis>-<counter>` from a per-module-load counter, so two clients
+// collide readily), which makes (workspace_id, tab_id) a non-key: an
+// owner-blind :one returns whichever tenant's row the index visited first.
+//
+// WorkspaceID stays as a redundant sanity predicate -- it pins the row to the
+// workspace the caller thinks it is acting in -- but it is NOT the tenancy
+// axis and never was.
 type GetOwnedTabParams struct {
+	UserID      userid.UserID
 	WorkspaceID string
 	TabID       string
 }
 
+// ListOwnedTabsByWorkerParams scopes the worker-reconciliation snapshot to one
+// worker AND one owner. See GetOwnedTabParams for why worker_id alone is not a
+// tenancy scope: nothing in the schema ties a row's user_id to the registrant
+// of the worker it names.
+type ListOwnedTabsByWorkerParams struct {
+	UserID   userid.UserID
+	WorkerID string
+}
+
+// ListDistinctWorkersByWorkspaceParams scopes the worker fan-out of a
+// workspace deletion to one owner. The DISTINCT worker_id projection carries no
+// owner column, so unlike the row-returning reads the caller cannot filter what
+// an owner-blind query over-selects -- the predicate has to be in the query.
+type ListDistinctWorkersByWorkspaceParams struct {
+	UserID      userid.UserID
+	WorkspaceID string
+}
+
 // TabIndexKey identifies a single row in workspace_tab_owned or
-// workspace_tab_rendered for bulk-delete by (org_id, tab_id).
+// workspace_tab_rendered for bulk-delete by (user_id, tab_id).
+//
+// A zero UserID is representable (Go cannot forbid userid.UserID{}) and is how
+// an unminted CRDT key arrives here; FilterTabIndexKeys drops those rather than
+// binding them, so one unusable key never cancels its neighbours' deletes.
 type TabIndexKey struct {
-	OrgID string
-	TabID string
+	UserID userid.UserID
+	TabID  string
 }
 
 // LocateAccessibleRenderedTabParams identifies a rendered tab without
 // pre-scoping by workspace; the impl applies the user's accessibility
-// filter so the lookup is safe across orgs.
+// filter so the lookup is safe across users.
 type LocateAccessibleRenderedTabParams struct {
 	UserID  userid.UserID
 	TabType leapmuxv1.TabType
 	TabID   string
 }
 
-// InsertOrgOpBatchParams writes a single row to org_op_batches.
-type InsertOrgOpBatchParams struct {
-	OrgID        string
+// InsertUserOpBatchParams writes a single row to user_op_batches.
+type InsertUserOpBatchParams struct {
+	UserID       userid.UserID
 	PhysicalMs   int64
 	Logical      int64
 	LastLogical  int64
@@ -716,8 +767,8 @@ type InsertOrgOpBatchParams struct {
 	Epoch        int64
 }
 
-type ListOrgOpBatchesAfterParams struct {
-	OrgID             string
+type ListUserOpBatchesAfterParams struct {
+	UserID            userid.UserID
 	AfterPhysicalMs   int64
 	AfterLogical      int64
 	AfterOriginClient string
@@ -727,31 +778,31 @@ type ListOrgOpBatchesAfterParams struct {
 	Limit int32
 }
 
-type DeleteOrgOpBatchesThroughParams struct {
-	OrgID               string
+type DeleteUserOpBatchesThroughParams struct {
+	UserID              userid.UserID
 	ThroughPhysicalMs   int64
 	ThroughLogical      int64
 	ThroughOriginClient string
 }
 
-// UpsertOrgStateParams writes a fresh state blob.
-type UpsertOrgStateParams struct {
-	OrgID          string
+// UpsertUserStateParams writes a fresh state blob.
+type UpsertUserStateParams struct {
+	UserID         userid.UserID
 	StatePayload   []byte
 	CurrentEpoch   int64
 	EpochStartedAt time.Time
 	UpdatedAt      time.Time
 }
 
-type AdvanceOrgEpochParams struct {
-	OrgID          string
+type AdvanceUserEpochParams struct {
+	UserID         userid.UserID
 	Epoch          int64
 	EpochStartedAt time.Time
 	UpdatedAt      time.Time
 }
 
-type InsertOrgRecentBatchIDParams struct {
-	OrgID               string
+type InsertUserRecentBatchIDParams struct {
+	UserID              userid.UserID
 	BatchID             string
 	BodyHash            []byte
 	PrincipalID         string
@@ -764,7 +815,7 @@ type InsertOrgRecentBatchIDParams struct {
 }
 
 type InsertLifecycleOutboxParams struct {
-	OrgID   string
+	UserID  userid.UserID
 	OpType  string
 	Payload []byte
 }

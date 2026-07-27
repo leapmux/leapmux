@@ -67,7 +67,7 @@ export const KEY_MRU_AGENT_PROVIDERS = 'leapmux:mru-agent-providers'
 export const KEY_KEY_PINS = 'leapmux:key-pins'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'leapmux:directory-selector-show-hidden'
 export const KEY_PREFERRED_EDITOR = 'leapmux:preferred-editor'
-export const KEY_ORG_EVENTS_RELAY_SEQ = 'leapmux:org-events-relay-seq'
+export const KEY_USER_EVENTS_RELAY_SEQ = 'leapmux:user-events-relay-seq'
 export const KEY_CHANNEL_RELAY_SEQ = 'leapmux:channel-relay-seq'
 
 /** Dynamic key prefixes — single source of truth for all consumers. */
@@ -115,13 +115,13 @@ export const EXACT_KEY_TTLS: ReadonlyMap<string, number> = new Map([
   [KEY_KEY_PINS, YEAR_MS],
   [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, YEAR_MS],
   [KEY_PREFERRED_EDITOR, YEAR_MS],
-  // High-water mark for the desktop org-events relay ids (see useOrgEvents). A
+  // High-water mark for the desktop userevents relay ids (see useUserEvents). A
   // monotonic counter that must keep advancing across webview reloads so the sidecar
   // never sees a fresh page's open as superseded; year-lived like the other exact
   // singletons, and the on-read refresh keeps it alive as long as the app is used.
-  [KEY_ORG_EVENTS_RELAY_SEQ, YEAR_MS],
+  [KEY_USER_EVENTS_RELAY_SEQ, YEAR_MS],
   // High-water mark for the desktop channel relay ids (see relayClaim). Same
-  // rationale as the org-events mark: the sidecar's relay owner outlives a webview
+  // rationale as the userevents mark: the sidecar's relay owner outlives a webview
   // reload, so a per-load counter would restart below the ids it already handed out
   // and the fresh page's legitimate open would be refused as superseded.
   [KEY_CHANNEL_RELAY_SEQ, YEAR_MS],

@@ -1,5 +1,5 @@
 -- name: InsertLifecycleOutbox :exec
-INSERT INTO lifecycle_outbox (org_id, op_type, payload)
+INSERT INTO lifecycle_outbox (user_id, op_type, payload)
 VALUES (?, ?, ?);
 
 -- name: ListPendingLifecycleOutbox :many
@@ -7,7 +7,7 @@ VALUES (?, ?, ?);
 -- iterate to drain. `limit` is required (use a large value to
 -- effectively disable paging).
 SELECT * FROM lifecycle_outbox
-WHERE org_id = ? AND consumed_at IS NULL
+WHERE user_id = ? AND consumed_at IS NULL
 ORDER BY id
 LIMIT ?;
 

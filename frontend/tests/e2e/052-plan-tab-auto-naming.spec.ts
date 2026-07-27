@@ -30,7 +30,7 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     // "Never execute this plan." in the plan content and finishes quickly.
     // The "Executing plan" text may appear too briefly to catch, so just
     // wait for the thinking indicator to disappear.
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 120_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
 
     // ── Step 4: Manually rename the tab ──
     await agentTab.dblclick()

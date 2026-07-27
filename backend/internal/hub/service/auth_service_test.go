@@ -257,14 +257,10 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	client, st := setupAuthTestServer(t, testConfigWithSignup())
 
 	// Create a user with that email directly in the DB.
-	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emailuser"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
-		OrgID:        orgID,
 		Username:     "emailuser",
 		PasswordHash: hash,
 		DisplayName:  "Email User",
@@ -291,15 +287,11 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 
 	// Create two users, both with pending_email = "shared@example.com".
 	for _, username := range []string{"user-a", "user-b"} {
-		orgID := id.Generate()
-		err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: username + "-org"})
-		require.NoError(t, err)
 		hash, err := password.Hash("testpass")
 		require.NoError(t, err)
 		userID := id.Generate()
 		err = st.Users().Create(ctx, store.CreateUserParams{
 			ID:           userID,
-			OrgID:        orgID,
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  username,
@@ -353,15 +345,11 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	ctx := context.Background()
 
 	// User A sets pending_email = "race@example.com" (unverified).
-	orgID := id.Generate()
-	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "racer-org"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userAID := id.Generate()
 	err = st.Users().Create(ctx, store.CreateUserParams{
 		ID:           userAID,
-		OrgID:        orgID,
 		Username:     "racer",
 		PasswordHash: hash,
 		DisplayName:  "Racer",
@@ -463,13 +451,10 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create a user with email_verified=0 directly via DB.
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "unverified"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "unverified",
 		PasswordHash: hash,
 		DisplayName:  "Unverified User",
@@ -511,13 +496,10 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 	userClient, _, st := setupVerificationGatingTestServer(t, false)
 
 	// Create an unverified user.
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "nogate"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "nogate",
 		PasswordHash: hash,
 		DisplayName:  "No Gate User",
@@ -605,16 +587,12 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 
 func createTestUserWithPendingEmail(t *testing.T, st store.Store, username, pendingEmail, token string, expiresAt *time.Time) string {
 	t.Helper()
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 
-	err = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: username})
-	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  username,
@@ -647,13 +625,10 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	_, authClient, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "logoutgating"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "logoutgating",
 		PasswordHash: hash,
 		DisplayName:  "Logout Gating",
@@ -679,13 +654,10 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emailchangegate"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "emailchangegate",
 		PasswordHash: hash,
 		DisplayName:  "Email Change Gating",

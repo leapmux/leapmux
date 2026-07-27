@@ -37,7 +37,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 	var shell, shellStartDir string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&tabType, "type", "", "type of the new tab to open: agent | terminal | file (required; distinct from --tab-type, which classifies the anchor --tab-id)")
 	pos := bindPositionFlags(fs, "place the new tab")
 	fs.StringVar(&filePath, "path", "", "absolute file path (--type=file only; registered worker-side over E2EE)")
@@ -81,8 +81,8 @@ func RunTabOpen(rawCtx any, args []string) error {
 	// The resolver pulls workspace_id / tile_id / worker_id from any
 	// sufficient subset of {--tab-id (parent), --workspace-id, --tile-id,
 	// --worker-id} plus the LEAPMUX_REMOTE_TAB_ID env-var spawn anchor.
-	// LocateTile fills (workspace_id, org_id) when only --tile-id is
-	// given; LocateTab fills the spawning tab's full context (workspace,
+	// LocateTile fills workspace_id when only --tile-id is given;
+	// LocateTab fills the spawning tab's full context (workspace,
 	// tile, worker) when only --tab-id is given.
 	got, err := runResolve(ctx, c, resolve.Need{WorkspaceID: true}, in)
 	if err != nil {
@@ -100,24 +100,39 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
 			return err
 		}
-		resolvedProvider, err := resolveProvider(ctx, c, workerID, provider, callInnerRPCBest)
-		if err != nil {
+		// `tab open --type=agent` issues up to four inner-RPCs against the SAME
+		// worker: ListAvailableProviders (only when --provider is omitted),
+		// OpenAgent, the optional initial SendAgentMessage, and a rollback
+		// CloseAgent on CRDT failure. Hoisting one Noise_NK channel over the
+		// whole sequence pays the handshake once instead of per call.
+		var result *openAgentResult
+		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
+			resolvedProvider, err := resolveProvider(ctx, provider, w.Call)
+			if err != nil {
+				return err
+			}
+			result, err = openAgentAndAddTab(ctx, c, w, openAgentArgs{
+				WorkspaceID:    workspaceID,
+				WorkerID:       workerID,
+				TileID:         tileID,
+				Provider:       resolvedProvider,
+				Model:          model,
+				Effort:         effort,
+				Title:          title,
+				PermissionMode: permissionMode,
+				WorkingDir:     workingDir,
+				InitialMessage: initialMessage,
+				Position:       spec,
+			})
 			return err
-		}
-		result, err := openAgentAndAddTab(ctx, c, openAgentArgs{
-			WorkspaceID:    workspaceID,
-			WorkerID:       workerID,
-			TileID:         tileID,
-			Provider:       resolvedProvider,
-			Model:          model,
-			Effort:         effort,
-			Title:          title,
-			PermissionMode: permissionMode,
-			WorkingDir:     workingDir,
-			InitialMessage: initialMessage,
-			Position:       spec,
-		})
-		if err != nil {
+		}); err != nil {
+			// The body's errors are already JSON envelopes (resolveProvider and
+			// openAgentAndAddTab emit their own); only withWorkerChannel's own
+			// open/validation failures arrive raw and still need emitting.
+			var coded *codedRPCError
+			if errors.As(err, &coded) {
+				return remote.EmitErrorWith(coded.Code, coded.Cause)
+			}
 			return err
 		}
 		out := tabOpenEnvelope(result.Agent.GetId(), tabType, workspaceID, workerID, result.TileID, result.Position)
@@ -133,16 +148,28 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
 			return err
 		}
-		result, err := openTerminalAndAddTab(ctx, c, openTerminalArgs{
-			WorkspaceID:   workspaceID,
-			WorkerID:      workerID,
-			TileID:        tileID,
-			WorkingDir:    workingDir,
-			Shell:         shell,
-			ShellStartDir: shellStartDir,
-			Position:      spec,
-		})
-		if err != nil {
+		// Same hoist as the agent branch: OpenTerminal and its rollback
+		// CloseTerminal target one worker, so one handshake covers both.
+		var result *openTerminalResult
+		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
+			var err error
+			result, err = openTerminalAndAddTab(ctx, c, w, openTerminalArgs{
+				WorkspaceID:   workspaceID,
+				WorkerID:      workerID,
+				TileID:        tileID,
+				WorkingDir:    workingDir,
+				Shell:         shell,
+				ShellStartDir: shellStartDir,
+				Position:      spec,
+			})
+			return err
+		}); err != nil {
+			// The body's errors are already JSON envelopes; only
+			// withWorkerChannel's own open/validation failures arrive raw.
+			var coded *codedRPCError
+			if errors.As(err, &coded) {
+				return remote.EmitErrorWith(coded.Code, coded.Cause)
+			}
 			return err
 		}
 		return remote.EmitData(tabOpenEnvelope(result.TerminalID, tabType, workspaceID, workerID, result.TileID, result.Position))
@@ -167,10 +194,8 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := preflightTile(cc.bs.State, workspaceID, resolvedTileID); err != nil {
 			return err
 		}
-		if workerID != "" {
-			if err := preflightWorker(cc.ctx, cc.c, workerID); err != nil {
-				return err
-			}
+		if err := maybePreflightWorker(cc.ctx, cc.c, workerID); err != nil {
+			return err
 		}
 		tabID := id.Generate()
 		if workerID == "" {
@@ -180,10 +205,10 @@ func RunTabOpen(rawCtx any, args []string) error {
 					errors.New("no worker hosts this workspace yet; pass --worker-id explicitly"))
 			}
 		}
-		if err := registerFileTabPath(cc.ctx, cc.c, workerID, cc.bs.OrgID, workspaceID, tabID, filePath); err != nil {
+		if err := registerFileTabPath(cc.ctx, cc.c, workerID, workspaceID, tabID, filePath); err != nil {
 			return remote.EmitErrorWith("worker_register_failed", err)
 		}
-		ops := []*leapmuxv1.OrgOp{
+		ops := []*leapmuxv1.CrdtOp{
 			opSetTabTileID(cc.bs, tt, tabID, resolvedTileID),
 			opSetTabPosition(cc.bs, tt, tabID, resolvedPos),
 			opSetTabWorkerID(cc.bs, tt, tabID, workerID),
@@ -224,9 +249,8 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 // inner-RPC over E2EE so the file path stays off the hub. The
 // returned response is empty on success; any worker-side error is
 // surfaced as a wrapped codedRPCError.
-func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, orgID, workspaceID, tabID, filePath string) error {
+func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, workspaceID, tabID, filePath string) error {
 	req := &leapmuxv1.RegisterFileTabPathRequest{
-		OrgId:       orgID,
 		WorkspaceId: workspaceID,
 		TabId:       tabID,
 		FilePath:    filePath,
@@ -237,11 +261,11 @@ func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, orgID,
 
 // findWorkerForWorkspaceInState returns the first worker_id hosting a
 // live tab in the given workspace, reading from the already-bootstrapped
-// OrgMaterialized state. Used by `tab open --type=file` when the caller
+// UserMaterialized state. Used by `tab open --type=file` when the caller
 // doesn't pass --worker-id explicitly — a workspace that has at least
 // one live tab tells us which worker owns its filesystem context.
 // Returns "" when no live worker is on file.
-func findWorkerForWorkspaceInState(state *leapmuxv1.OrgMaterialized, workspaceID string) string {
+func findWorkerForWorkspaceInState(state *leapmuxv1.UserMaterialized, workspaceID string) string {
 	for _, t := range state.GetTabs() {
 		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
 			continue

@@ -130,7 +130,7 @@ func TestMakeGridMigration_PreservesTabOrder(t *testing.T) {
 	// invariant).
 	tabs := crdt.TabsOnTile(state, "T")
 	dest := "cell-0-0"
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 	for i, tref := range tabs {
 		ops = append(ops, opSetTabTileID(bs, tref.TabType, tref.TabID, dest))
 		ops = append(ops, opSetTabPosition(bs, tref.TabType, tref.TabID, lexorankAt(i)))
@@ -143,7 +143,7 @@ func TestMakeGridMigration_PreservesTabOrder(t *testing.T) {
 	}
 	assignments := []assignment{}
 	for _, op := range ops {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetTabRegister)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetTabRegister)
 		if !ok {
 			continue
 		}
@@ -194,7 +194,7 @@ func TestInverseSplitMigration_PreservesSiblingTabOrder(t *testing.T) {
 	posOrder := []string{}
 	posValues := []string{}
 	for _, op := range ops {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetTabRegister)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetTabRegister)
 		if !ok {
 			continue
 		}

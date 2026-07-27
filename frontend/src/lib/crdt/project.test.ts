@@ -4,13 +4,13 @@ import {
   HLCSchema,
   NodeKind,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import {
-  OrgOpSchema,
+  CrdtOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
   TombstoneNodeOpSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { SplitDirection, TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 import { project } from './project'
@@ -20,44 +20,44 @@ function hlc(p: bigint, l: bigint, c: string) {
 }
 
 function setNodeKindOp(nodeId: string, kind: NodeKind, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'kind', value: kind } }) },
   })
 }
 function setNodeParentOp(nodeId: string, parentId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'parentId', value: parentId } }) },
   })
 }
 function setNodeDirOp(nodeId: string, direction: SplitDirection, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'direction', value: direction } }) },
   })
 }
 function setNodePosOp(nodeId: string, position: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'position', value: position } }) },
   })
 }
 function tombstoneNodeOp(nodeId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
   })
 }
 function setTabTileOp(tabId: string, tileId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field: { case: 'tileId', value: tileId } }) },
   })
 }
 
 function seedRoot(workspaceId: string, rootId: string) {
-  const state = newState('org')
+  const state = newState('user')
   state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId, rootNodeId: rootId })
   applyOp(state, setNodeKindOp(rootId, NodeKind.LEAF, 1n, 0n, 'seed'))
   return state

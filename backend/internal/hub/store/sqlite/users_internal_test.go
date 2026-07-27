@@ -26,8 +26,7 @@ import (
 func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 	st, db := newSessionTestStore(t)
 	ctx := context.Background()
-	orgID := storetest.SeedOrg(t, st, "pending-canonical-org")
-	user := storetest.SeedUser(t, st, orgID, "pending-canonical-user")
+	user := storetest.SeedUser(t, st, "pending-canonical-user")
 
 	// Millisecond-aligned, same UTC day as "now" (matching the session
 	// canonical-layout pins): strftime ROUNDS sub-millisecond digits while
@@ -66,8 +65,7 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 func TestClearStalePendingEmailsSweepsLockoutRowSameDay(t *testing.T) {
 	st, _ := newSessionTestStore(t)
 	ctx := context.Background()
-	orgID := storetest.SeedOrg(t, st, "lockout-sweep-org")
-	user := storetest.SeedUser(t, st, orgID, "lockout-sweep-user")
+	user := storetest.SeedUser(t, st, "lockout-sweep-user")
 
 	expiry := time.Now().UTC().Add(24 * time.Hour)
 	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{

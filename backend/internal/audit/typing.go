@@ -18,7 +18,7 @@ package audit
 // That bar is checked, not trusted: TestRepoInvariants requires each exempted
 // site to pass an identifier that an earlier `if x == "" { return ... }` in the
 // same function refuses. An exemption whose recorded reason is prose and whose
-// code has no guard fails, the same way store.OwnerFilter's ok result has to
+// code has no guard fails, the same way userid.OwnerFilter's ok result has to
 // gate a return rather than merely be called.
 //
 // This rule exists because the class recurred twice in one change: three mint

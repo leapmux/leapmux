@@ -284,7 +284,7 @@ func (s *WorkerManagementService) ListWorkers(
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
 	for i := range page.Rows {
-		protoWorkers[i] = s.workerToProto(&page.Rows[i], user.OrgID)
+		protoWorkers[i] = s.workerToProto(&page.Rows[i])
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListWorkersResponse{
@@ -317,7 +317,7 @@ func (s *WorkerManagementService) GetWorker(
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkerResponse{
-		Worker: s.workerToProto(worker, user.OrgID),
+		Worker: s.workerToProto(worker),
 	}), nil
 }
 
@@ -376,13 +376,11 @@ func (s *WorkerManagementService) DeregisterWorker(
 }
 
 // workerToProto converts a store.Worker into the wire-side Worker
-// message. orgID is the caller's org — workers are owned by a single
-// user, that user has one org, and every Workers().Get* /
-// ListByUserID call upstream is already filtered by the caller's
-// user_id, so the caller's org is the worker's org. Passing it as a
-// parameter (rather than joining users.org_id at the SQL layer)
-// avoids a per-worker round-trip in ListWorkers.
-func (s *WorkerManagementService) workerToProto(b *store.Worker, orgID string) *leapmuxv1.Worker {
+// message. Workers are owned by a single user, and every
+// Workers().Get* / ListByUserID call upstream is already filtered by
+// the caller's user_id, so the owner is implied by the query and
+// needs no per-worker round-trip.
+func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
 	lastSeen := ""
 	if b.LastSeenAt != nil {
 		lastSeen = timefmt.Format(*b.LastSeenAt)
@@ -390,7 +388,6 @@ func (s *WorkerManagementService) workerToProto(b *store.Worker, orgID string) *
 
 	return &leapmuxv1.Worker{
 		Id:             b.ID,
-		OrgId:          orgID,
 		Online:         s.workerMgr.OnlineForTrustedPath(b.ID),
 		CreatedAt:      timefmt.Format(b.CreatedAt),
 		LastSeenAt:     lastSeen,

@@ -138,12 +138,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		}
 	}
 
-	// Users().UpdateProfile is self-transactional: it pairs UpdateUserProfile
-	// with RenameUserPersonalOrg in one store transaction, so a username change
-	// can never leave the /o/ slug stale -- and a future store-level caller
-	// that changes the username cannot reintroduce the bug by skipping this
-	// service method. No outer transaction is needed here; it would wrap a
-	// single already-atomic statement.
+	// Users().UpdateProfile updates username/display name atomically.
 	if err := s.store.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
 		Username:    newUsername,
 		DisplayName: displayName,
@@ -173,18 +168,12 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		s.lifecycle.UserInfoInvalidated(user.ID)
 	}
 
-	resp := &leapmuxv1.UpdateProfileResponse{
+	return connect.NewResponse(&leapmuxv1.UpdateProfileResponse{
 		Username:     newUsername,
 		DisplayName:  displayName,
 		Email:        user.Email,
 		PendingEmail: user.PendingEmail,
-	}
-
-	if usernameChanged {
-		resp.OrgName = newUsername
-	}
-
-	return connect.NewResponse(resp), nil
+	}), nil
 }
 
 func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.RequestEmailChangeRequest]) (*connect.Response[leapmuxv1.RequestEmailChangeResponse], error) {
@@ -214,7 +203,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	// Check that no other user has this email.
 	if err := CheckEmailAvailable(ctx, s.store, newEmail, user.ID); err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		return nil, AvailabilityConnectError(err)
 	}
 
 	// Immediate change with no verification round-trip: an admin edit is
@@ -314,13 +303,8 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	// that hit /verify-email.
 	s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 
-	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
 	return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
-		User: userToProtoWithOrgName(updatedUser, org.Name),
+		User: userToProto(updatedUser),
 	}), nil
 }
 
@@ -552,47 +536,6 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 		ApiTimeoutSeconds:            int32(s.cfg.APITimeout().Seconds()),
 		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout().Seconds()),
 		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout().Seconds()),
-	}), nil
-}
-
-// GetUser resolves a minimal user record (id, org_id, username) for
-// the caller or for another member of the caller's org. The
-// `leapmux remote` CLI universal resolver uses this to derive
-// org_id from user_id when scripts pass `--user-id`. Cross-org
-// lookups collapse to NotFound rather than PermissionDenied so we
-// don't leak the existence of users in other orgs.
-func (s *UserService) GetUser(ctx context.Context, req *connect.Request[leapmuxv1.GetUserRequest]) (*connect.Response[leapmuxv1.GetUserResponse], error) {
-	caller, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	target := req.Msg.GetUserId()
-	if target == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
-	}
-	// Self-lookups skip the org check (no cross-tenant concern).
-	if caller.ID.Matches(target) {
-		return connect.NewResponse(&leapmuxv1.GetUserResponse{
-			UserId:   caller.ID.String(),
-			OrgId:    caller.OrgID,
-			Username: caller.Username,
-		}), nil
-	}
-	u, err := s.store.Users().GetByID(ctx, target)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
-	}
-	if u.OrgID != caller.OrgID {
-		// Cross-tenant: collapse to NotFound rather than leaking existence.
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
-	}
-	return connect.NewResponse(&leapmuxv1.GetUserResponse{
-		UserId:   u.ID,
-		OrgId:    u.OrgID,
-		Username: u.Username,
 	}), nil
 }
 

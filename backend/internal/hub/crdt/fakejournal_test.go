@@ -17,7 +17,7 @@ import (
 // mutex.
 type fakeJournal struct {
 	mu       sync.Mutex
-	state    *leapmuxv1.OrgCrdtState
+	state    *leapmuxv1.UserCrdtState
 	stateRaw bool // true once Upsert has happened (compaction)
 
 	batches   []*leapmuxv1.OpBatch
@@ -37,15 +37,26 @@ func newFakeJournal() *fakeJournal {
 	}
 }
 
-func (f *fakeJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.OrgCrdtState, []*leapmuxv1.OpBatch, error) {
+func (f *fakeJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.UserCrdtState, []*leapmuxv1.OpBatch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var state *leapmuxv1.OrgCrdtState
+	var state *leapmuxv1.UserCrdtState
 	if f.state != nil {
 		state = crdt.CloneState(f.state)
 	}
 	tail := append([]*leapmuxv1.OpBatch(nil), f.batches...)
 	return state, tail, nil
+}
+
+// seedState installs a compacted state payload, as if a previous compaction had
+// written it. LoadState ignores the userID it is handed (the fake holds exactly
+// one tenant's rows), which is what lets a test hand a manager a payload naming
+// somebody else.
+func (f *fakeJournal) seedState(state *leapmuxv1.UserCrdtState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.state = state
+	f.stateRaw = true
 }
 
 func (f *fakeJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
@@ -55,7 +66,19 @@ func (f *fakeJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 		return f.commitErr
 	}
 	f.batches = append(f.batches, c.Batch)
-	f.dedup[c.DedupRow.BatchID] = c.DedupRow
+	// The dedup TABLE row is the commit envelope's context plus the batch's own
+	// fields; crdt.CommitBatch states the former once, so reassemble it here
+	// the way the real journal adapter does when it writes the row.
+	f.dedup[c.Dedup.BatchID] = crdt.RecentBatchRecord{
+		UserID:            c.UserID,
+		BatchID:           c.Dedup.BatchID,
+		BodyHash:          c.Dedup.BodyHash,
+		PrincipalID:       c.PrincipalID,
+		CanonicalFirstHLC: c.Dedup.CanonicalFirstHLC,
+		OpCount:           c.Dedup.OpCount,
+		Epoch:             c.Epoch,
+		ExpiresAt:         c.Dedup.ExpiresAt,
+	}
 	for _, row := range c.IndexDiff.OwnedUpserts {
 		f.indexRows[row.TabID] = row
 	}

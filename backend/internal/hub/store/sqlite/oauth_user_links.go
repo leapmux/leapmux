@@ -48,10 +48,10 @@ func (s *oauthUserLinkStore) Get(ctx context.Context, p store.GetOAuthUserLinkPa
 }
 
 func (s *oauthUserLinkStore) ListByUser(ctx context.Context, userID userid.UserID) ([]store.OAuthUserLink, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListOAuthUserLinksByUser(ctx, owner)
@@ -62,13 +62,13 @@ func (s *oauthUserLinkStore) ListByUser(ctx context.Context, userID userid.UserI
 }
 
 func (s *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUserLinkParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteOAuthUserLink(ctx, gendb.DeleteOAuthUserLinkParams{

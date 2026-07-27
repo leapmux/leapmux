@@ -29,8 +29,6 @@ func RunTerminalSend(rawCtx any, args []string) error {
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:      true,
-		HideUser:     true,
 		FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 	})
 	fs.StringVar(&dataStr, "data", "", "bytes to write to the PTY (or use --stdin for binary input)")
@@ -56,7 +54,6 @@ func RunTerminalSend(rawCtx any, args []string) error {
 			return err
 		}
 		req := &leapmuxv1.SendInputRequest{
-			OrgId:       got.OrgID,
 			WorkspaceId: got.WorkspaceID,
 			TerminalId:  got.TabID,
 			Data:        payload,
@@ -88,8 +85,6 @@ func RunTerminalGet(rawCtx any, args []string) error {
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:      true,
-		HideUser:     true,
 		FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 	})
 	fs.BoolVar(&screenOnly, "screen", false, "print the PTY's retained-window bytes directly to stdout (no JSON envelope); ANSI escapes render naturally in a terminal")
@@ -149,19 +144,18 @@ func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
 	}
 }
 
-// RunTerminalShells lists the shells installed on a worker. Resolver
-// pulls --worker-id from any universal input (--tab-id, --workspace-id,
-// ...); the response carries the worker's $SHELL default alongside the
-// full shells list so callers can render a picker.
+// RunTerminalShells lists the shells installed on a worker. The worker
+// comes from --worker-id (or $LEAPMUX_REMOTE_WORKER_ID), or from
+// --tab-id via the resolver's LocateTab derivation -- --workspace-id
+// and --tile-id can't name a worker, since a workspace may span
+// several. The response carries the worker's $SHELL default alongside
+// the full shells list so callers can render a picker.
 func RunTerminalShells(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:  true,
-		HideUser: true,
-	})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -170,7 +164,6 @@ func RunTerminalShells(rawCtx any, args []string) error {
 			return err
 		}
 		req := &leapmuxv1.ListAvailableShellsRequest{
-			OrgId:       got.OrgID,
 			WorkspaceId: got.WorkspaceID,
 			WorkerId:    got.WorkerID,
 		}
@@ -192,7 +185,6 @@ func RunTerminalShells(rawCtx any, args []string) error {
 // channel so live clients see the new title.
 func renameTerminalTab(ctx context.Context, c *remote.Client, got resolve.Resolved, title string) error {
 	req := &leapmuxv1.UpdateTerminalTitleRequest{
-		OrgId:       got.OrgID,
 		WorkspaceId: got.WorkspaceID,
 		TerminalId:  got.TabID,
 		Title:       title,

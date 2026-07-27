@@ -20,7 +20,7 @@ interface SignupFormProps {
    * setup flow. Defaults to false for public signup paths.
    */
   allowAdminUsername?: boolean
-  onSuccess: (resp: SignUpResponse, username: string) => void
+  onSuccess: (resp: SignUpResponse) => void
 }
 
 export const SignupForm: Component<SignupFormProps> = (props) => {
@@ -67,7 +67,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         displayName: sanitizedDisplayName,
         email: email(),
       })
-      props.onSuccess(resp, slug)
+      props.onSuccess(resp)
     }
     catch (e) {
       setError(formatErrorMessage(e, props.errorPrefix ?? 'Sign up failed'))

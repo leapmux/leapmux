@@ -12,11 +12,11 @@ import (
 // workspace_tab_rendered, served by the (still-extant) WorkspaceService
 // ListTabs / GetTab RPCs.
 
-// RunTabList enumerates rendered tabs. Org filter comes from
-// --org-id, --workspace-id, or any flag the resolver can derive
-// org_id from (e.g. --tab-id, --worker-id). When --workspace-id is
-// supplied, ListTabs scopes to that one workspace; otherwise it
-// returns every tab in the resolved org.
+// RunTabList enumerates rendered tabs. Tabs are always scoped to the
+// authenticated session's own user, so no user id is resolved or
+// sent. When --workspace-id is supplied (directly, or derived from
+// --tab-id / --tile-id), ListTabs scopes to that one workspace;
+// otherwise it returns every tab the caller owns.
 //
 // --tab-type, unlike on `tab get` / `tab close` / `tab rename`, is an
 // OUTPUT filter, not a resolver constraint. A user inside a terminal
@@ -30,7 +30,7 @@ func RunTabList(rawCtx any, args []string) error {
 	var hub, filterType string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideUser: true, HideTabType: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideTabType: true})
 	fs.StringVar(&filterType, "tab-type", "", `filter output by tab type ("agent" | "terminal" | "file"; default: no filter)`)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
@@ -43,8 +43,8 @@ func RunTabList(rawCtx any, args []string) error {
 			return remote.EmitError("invalid_request", `--tab-type must be "agent", "terminal", or "file"`)
 		}
 	}
-	return resolveAndEmit(hub, resolve.Need{OrgID: true}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
-		req := &leapmuxv1.ListTabsRequest{OrgId: got.OrgID}
+	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
+		req := &leapmuxv1.ListTabsRequest{}
 		if got.WorkspaceID != "" {
 			req.WorkspaceIds = []string{got.WorkspaceID}
 		}
@@ -66,7 +66,7 @@ func RunTabGet(rawCtx any, args []string) error {
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}

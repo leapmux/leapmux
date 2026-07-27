@@ -24,10 +24,7 @@ func RunTabRename(rawCtx any, args []string) error {
 	var hub, title string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:  true,
-		HideUser: true,
-	})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&title, "title", "", "new title (required)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err

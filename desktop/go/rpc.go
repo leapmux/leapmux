@@ -256,7 +256,7 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 		Message: &desktoppb.Frame_Event{Event: event},
 	}
 	// Validate once and route past WriteFrame's re-validation: event frames are
-	// the relay hot path (every ChannelMessage and OrgEventsMessage rides one),
+	// the relay hot path (every ChannelMessage and UserEventsMessage rides one),
 	// and WriteFrame would walk the frame with proto.Size a second time before
 	// the marshal sizes it again -- the same double walk writeResponse already
 	// avoids via writeFrameUnchecked. An event that busts the budget takes the
@@ -287,7 +287,7 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 // A relay stream is ORDERED and its consumer cannot detect, let alone tolerate, a
 // gap: `channel:message` carries Noise ciphertext whose implicit nonce counter
 // advances per message, so ONE dropped frame permanently desyncs every subsequent
-// decrypt, and `orgevents:message` carries CRDT ops with no gap detection. Logging
+// decrypt, and `userevents:message` carries CRDT ops with no gap detection. Logging
 // and carrying on converts a delivery failure into silent, unbounded corruption on a
 // relay that still reports healthy -- leaving the frame budget's headroom as the only
 // thing between the app and that corruption.
@@ -495,16 +495,15 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 	case *desktoppb.Request_CloseChannelRelay:
 		s.writeErrOrOK(id, s.app.CloseChannelRelay(m.CloseChannelRelay.GetRelayId()))
 
-	case *desktoppb.Request_OpenOrgEventsRelay:
-		s.writeErrOrOK(id, s.app.OpenOrgEventsRelay(
+	case *desktoppb.Request_OpenUserEventsRelay:
+		s.writeErrOrOK(id, s.app.OpenUserEventsRelay(
 			ctx,
-			m.OpenOrgEventsRelay.GetRelayId(),
-			m.OpenOrgEventsRelay.GetOrgId(),
-			m.OpenOrgEventsRelay.GetWorkspaceIds(),
+			m.OpenUserEventsRelay.GetRelayId(),
+			m.OpenUserEventsRelay.GetWorkspaceIds(),
 		))
 
-	case *desktoppb.Request_CloseOrgEventsRelay:
-		s.writeErrOrOK(id, s.app.CloseOrgEventsRelay(m.CloseOrgEventsRelay.GetRelayId()))
+	case *desktoppb.Request_CloseUserEventsRelay:
+		s.writeErrOrOK(id, s.app.CloseUserEventsRelay(m.CloseUserEventsRelay.GetRelayId()))
 
 	case *desktoppb.Request_SwitchMode:
 		outcome, err := s.app.SwitchMode()

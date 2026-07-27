@@ -95,7 +95,6 @@ function setup(getScrollState: () => SavedViewportScroll | undefined = DEFAULT_S
     focusEditor: vi.fn(),
     getScrollState,
     setFileTreePath: vi.fn(),
-    getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',
     registry: {
       findContaining: () => undefined,
@@ -131,7 +130,6 @@ describe('useTabOperations', () => {
           const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
           expect(workerId).toBe('w-1')
           expect((req as { filePath: string }).filePath).toBe('/tmp/myfile.go')
-          expect((req as { orgId: string }).orgId).toBe('org-test')
           expect((req as { workspaceId: string }).workspaceId).toBe('ws-test')
         }
         finally {
@@ -165,7 +163,6 @@ describe('useTabOperations', () => {
           const [workerId, req] = mockRevokeFileTabPath.mock.calls[0]
           expect(workerId).toBe('w-1')
           expect((req as { tabId: string }).tabId).toBe('file-1')
-          expect((req as { orgId: string }).orgId).toBe('org-test')
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
         }
         finally {
@@ -623,7 +620,6 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: registryStub,
       })
@@ -681,7 +677,6 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: registryStub,
       })
@@ -736,7 +731,6 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: registryStub,
       })
@@ -752,7 +746,6 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       expect(mockRevokeFileTabPath.mock.calls[0][0]).toBe('w-other')
       expect(mockRevokeFileTabPath.mock.calls[0][1]).toMatchObject({
         tabId: 'file-cross',
-        orgId: 'org-test',
         worktreeAction: WorktreeAction.KEEP,
       })
       expect(removedTabs).toEqual([{ wsId: 'ws-other', tabId: 'file-cross' }])
@@ -807,7 +800,6 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-test',
         registry: {
           findContaining: () => undefined,
@@ -850,7 +842,6 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-test',
         registry: {
           findContaining: () => undefined,
@@ -900,7 +891,6 @@ function setupWithFloatingWindow() {
     focusEditor: vi.fn(),
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
-    getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',
     registry: {
       findContaining: () => undefined,
@@ -1214,7 +1204,6 @@ describe('useTabOperations.closeTabWithAction', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: {
           findContaining: () => ({ workspaceId: 'ws-other', tabs: [crossTab] } as never),
@@ -1262,7 +1251,6 @@ describe('useTabOperations.closeTabWithAction', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: {
           findContaining: () => ({ workspaceId: 'ws-other', tabs: [crossTab] } as never),
@@ -1277,7 +1265,6 @@ describe('useTabOperations.closeTabWithAction', () => {
         terminalId: 'term-cross',
         workspaceId: 'ws-other',
         worktreeAction: WorktreeAction.REMOVE,
-        orgId: 'org-test',
       })
       expect(removedTabs).toEqual([{ wsId: 'ws-other', tabId: 'term-cross' }])
       dispose()
@@ -1310,7 +1297,6 @@ describe('useTabOperations.closeTabWithAction', () => {
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
-        getOrgId: () => 'org-test',
         getActiveWorkspaceId: () => 'ws-active',
         registry: {
           findContaining: () => ({ workspaceId: 'ws-other', tabs: [crossTab] } as never),
@@ -1322,7 +1308,6 @@ describe('useTabOperations.closeTabWithAction', () => {
       expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
       expect(mockRevokeFileTabPath.mock.calls[0][0]).toBe('w-cross')
       expect(mockRevokeFileTabPath.mock.calls[0][1]).toMatchObject({
-        orgId: 'org-test',
         tabId: 'file-cross',
       })
       expect(removedTabs).toEqual([{ wsId: 'ws-other', tabId: 'file-cross' }])
@@ -1358,7 +1343,6 @@ function setupForFocusMigration() {
     focusEditor: vi.fn(),
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
-    getOrgId: () => 'org-test',
     getActiveWorkspaceId: () => 'ws-test',
     registry: {
       findContaining: () => undefined,

@@ -5,6 +5,17 @@ interface WorkspaceStoreState {
   workspaces: Workspace[]
   loading: boolean
   error: string | null
+  /**
+   * Whether a load has ever COMPLETED (successfully or not).
+   *
+   * `loading` alone cannot express "never asked": it starts false, and the
+   * loader only flips it inside onMount, which Solid defers past the first
+   * render. So `{ loading: false, workspaces: [] }` is the initial state AND
+   * the genuine "you own nothing" state, and consumers that read it as the
+   * latter render a dead-end 404 for a workspace the user owns. See
+   * isWorkspaceNotFound.
+   */
+  loaded: boolean
 }
 
 export function createWorkspaceStore() {
@@ -12,6 +23,7 @@ export function createWorkspaceStore() {
     workspaces: [],
     loading: false,
     error: null,
+    loaded: false,
   })
 
   return {
@@ -23,6 +35,11 @@ export function createWorkspaceStore() {
 
     setLoading(loading: boolean) {
       setState('loading', loading)
+    },
+
+    /** Marks that a load attempt has completed; never goes back to false. */
+    markLoaded() {
+      setState('loaded', true)
     },
 
     setError(error: string | null) {

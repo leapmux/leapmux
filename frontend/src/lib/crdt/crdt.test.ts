@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
-import { OrgOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/leapmux/v1/org_ops_pb'
+import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
+import { CrdtOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, HLCClock, hlcCmp, hlcIsZero, newState, project, projectWorkspace } from '~/lib/crdt'
 
@@ -10,7 +10,7 @@ function hlc(physical: bigint, logical: bigint, clientId: string) {
 }
 
 function setNodeKind(nodeId: string, kind: NodeKind, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `set-${nodeId}-kind`,
     canonicalHlc: atHlc,
     body: {
@@ -24,7 +24,7 @@ function setNodeKind(nodeId: string, kind: NodeKind, atHlc: ReturnType<typeof hl
 }
 
 function setNodePosition(nodeId: string, position: string, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `set-${nodeId}-pos-${position}`,
     canonicalHlc: atHlc,
     body: {
@@ -38,7 +38,7 @@ function setNodePosition(nodeId: string, position: string, atHlc: ReturnType<typ
 }
 
 function setNodeParentId(nodeId: string, parentId: string, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `set-${nodeId}-parent`,
     canonicalHlc: atHlc,
     body: {
@@ -52,7 +52,7 @@ function setNodeParentId(nodeId: string, parentId: string, atHlc: ReturnType<typ
 }
 
 function tombstoneNode(nodeId: string, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `tomb-${nodeId}`,
     canonicalHlc: atHlc,
     body: {
@@ -63,7 +63,7 @@ function tombstoneNode(nodeId: string, atHlc: ReturnType<typeof hlc>) {
 }
 
 function setTabTileId(tabId: string, tileId: string, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `set-${tabId}-tile`,
     canonicalHlc: atHlc,
     body: {
@@ -78,7 +78,7 @@ function setTabTileId(tabId: string, tileId: string, atHlc: ReturnType<typeof hl
 }
 
 function setWorkspaceRootNode(workspaceId: string, rootNodeId: string, atHlc: ReturnType<typeof hlc>) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     opId: `set-ws-root-${workspaceId}`,
     canonicalHlc: atHlc,
     body: {
@@ -90,21 +90,21 @@ function setWorkspaceRootNode(workspaceId: string, rootNodeId: string, atHlc: Re
 
 describe('crdt apply', () => {
   it('lww: higher hlc wins', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
     applyOp(state, setNodePosition('n1', 'B', hlc(20n, 0n, 'b')))
     expect(state.nodes.n1.position?.value).toBe('B')
   })
 
   it('lww: lower hlc drops', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePosition('n1', 'B', hlc(20n, 0n, 'b')))
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
     expect(state.nodes.n1.position?.value).toBe('B')
   })
 
   it('tombstone clears non-tombstone registers', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
     applyOp(state, tombstoneNode('n1', hlc(20n, 0n, 'a')))
     expect(state.nodes.n1.position).toBeUndefined()
@@ -112,14 +112,14 @@ describe('crdt apply', () => {
   })
 
   it('set after tombstone (later HLC) drops', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, tombstoneNode('n1', hlc(20n, 0n, 'a')))
     applyOp(state, setNodePosition('n1', 'X', hlc(30n, 0n, 'a')))
     expect(state.nodes.n1.position).toBeUndefined()
   })
 
   it('parent_id is set-once', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodeParentId('n1', 'P1', hlc(10n, 0n, 'a')))
     applyOp(state, setNodeParentId('n1', 'P2', hlc(20n, 0n, 'b')))
     expect(state.nodes.n1.parentId).toBe('P1')
@@ -136,7 +136,7 @@ describe('crdt apply', () => {
   // seed waited forever for `rootNodeId != ''`, and the new workspace
   // appeared tile-less.
   it('setWorkspaceRootNode lazy-creates the WorkspaceContentsRecord', () => {
-    const state = newState('org')
+    const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
     applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
     expect(state.workspaces.w1).toBeDefined()
@@ -146,15 +146,15 @@ describe('crdt apply', () => {
   // The op is set-once: re-applying with a different root id must not
   // overwrite an already-seeded record.
   it('setWorkspaceRootNode is set-once on the rootNodeId slot', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
     applyOp(state, setWorkspaceRootNode('w1', 'root2', hlc(2n, 0n, 'a')))
     expect(state.workspaces.w1.rootNodeId).toBe('root1')
   })
 
   it('-0.0 normalizes to +0.0 on double registers', () => {
-    const state = newState('org')
-    const op = create(OrgOpSchema, {
+    const state = newState('user')
+    const op = create(CrdtOpSchema, {
       opId: 'fw-x',
       canonicalHlc: hlc(10n, 0n, 'a'),
       body: {
@@ -202,7 +202,7 @@ describe('crdt hlc', () => {
 
 describe('crdt project', () => {
   it('skips tombstoned nodes from main tree', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))
     applyOp(state, setNodeKind('child', NodeKind.LEAF, hlc(2n, 0n, 'a')))
@@ -215,7 +215,7 @@ describe('crdt project', () => {
   })
 
   it('drops tabs whose tile_id resolves to nothing', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))
     // Tab points at a non-existent tile.
@@ -226,7 +226,7 @@ describe('crdt project', () => {
   })
 
   it('renders single-child SPLIT as the surviving child with split nodeId preserved', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     applyOp(state, setNodeKind('root1', NodeKind.SPLIT, hlc(1n, 0n, 'a')))
     applyOp(state, setNodeKind('child', NodeKind.LEAF, hlc(2n, 0n, 'a')))
@@ -251,7 +251,7 @@ describe('crdt project', () => {
   // skips tombstoned windows with `if !HLCIsZero(fw.GetTombstoneAt()) continue`;
   // the two implementations must agree on this guard.
   it('renders a tab whose tile is a LIVE floating window root', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'mainRoot' } as never
     applyOp(state, setNodeKind('mainRoot', NodeKind.LEAF, hlc(1n, 0n, 'a')))
     // Floating window with its own LEAF root, both live.
@@ -279,7 +279,7 @@ describe('crdt project', () => {
   // window must NOT render. (The fix mustn't simply flip the guard
   // without the !== '' check; this test covers the negative case too.)
   it('drops tabs whose tile is a TOMBSTONED floating window root', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'mainRoot' } as never
     applyOp(state, setNodeKind('mainRoot', NodeKind.LEAF, hlc(1n, 0n, 'a')))
     applyOp(state, setNodeKind('fwRoot', NodeKind.LEAF, hlc(2n, 0n, 'a')))
@@ -302,7 +302,7 @@ describe('crdt project', () => {
   // out window). resolveTileWorkspace must walk parent_id up to the
   // floating-window root and find it registered.
   it('renders a tab whose tile descends from a live floating window root', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'mainRoot' } as never
     applyOp(state, setNodeKind('mainRoot', NodeKind.LEAF, hlc(1n, 0n, 'a')))
     // Floating window with a SPLIT root and a LEAF child.
@@ -329,7 +329,7 @@ describe('crdt project', () => {
 
 describe('crdt projectWorkspace', () => {
   it('returns the same WorkspaceProjection shape as project() for the named workspace', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     state.workspaces.w2 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w2', rootNodeId: 'root2' } as never
     applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))
@@ -343,12 +343,12 @@ describe('crdt projectWorkspace', () => {
   })
 
   it('returns undefined for unknown workspace_id', () => {
-    const state = newState('org')
+    const state = newState('user')
     expect(projectWorkspace(state, 'no-such')).toBeUndefined()
   })
 
   it('includes only floating windows that belong to the named workspace', () => {
-    const state = newState('org')
+    const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     state.workspaces.w2 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w2', rootNodeId: 'root2' } as never
     applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))

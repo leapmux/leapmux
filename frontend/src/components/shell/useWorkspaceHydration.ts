@@ -11,7 +11,6 @@ const log = createLogger('useWorkspaceHydration')
 
 export interface UseWorkspaceHydrationArgs {
   registry: ReturnType<typeof createWorkspaceStoreRegistry>
-  getOrgId: () => string | undefined
 }
 
 /**
@@ -28,7 +27,7 @@ export interface UseWorkspaceHydrationArgs {
  * retry on the next user interaction.
  */
 export function useWorkspaceHydration(args: UseWorkspaceHydrationArgs): { expand: (workspaceId: string) => void } {
-  const { registry, getOrgId } = args
+  const { registry } = args
   const tabsLoadInflight = createInflightCache<string, void>()
 
   const expand = (workspaceId: string): void => {
@@ -37,13 +36,10 @@ export function useWorkspaceHydration(args: UseWorkspaceHydrationArgs): { expand
       return
     if (tabsLoadInflight.has(workspaceId))
       return
-    const currentOrgId = getOrgId()
-    if (!currentOrgId)
-      return
 
     void tabsLoadInflight.run(workspaceId, async () => {
       try {
-        const tabsResp = await listTabsForWorkspace(currentOrgId, workspaceId)
+        const tabsResp = await listTabsForWorkspace(workspaceId)
         const { agents, terminalsByWorker } = await fanOutTabsToWorkers(tabsResp.tabs)
         const anyTerminalFetchFailed = terminalsByWorker.some(r => r.terminals === null)
 

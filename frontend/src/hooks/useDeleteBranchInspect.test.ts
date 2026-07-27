@@ -5,10 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
-
 vi.mock('~/api/workerRpc', () => ({
   inspectBranchDeletion: vi.fn(),
 }))

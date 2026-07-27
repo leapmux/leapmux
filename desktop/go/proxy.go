@@ -48,7 +48,7 @@ func newLocalProxy(listenURL string) (*HubProxy, error) {
 	// WS client too: coder/websocket's Dial FOLLOWS redirect responses during the
 	// upgrade (it wraps the client's CheckRedirect and follows when none is set),
 	// so a wsClient without the pin would let a hub-side off-origin 3xx on
-	// /ws/channel or /ws/orgevents lead the CORS-free desktop process off the hub
+	// /ws/channel or /ws/userevents lead the CORS-free desktop process off the hub
 	// origin -- the exact redirect-escape the HTTP-path pin exists to close.
 	return &HubProxy{
 		client: &http.Client{
@@ -127,11 +127,11 @@ func (p *HubProxy) resolvedBase() (*url.URL, error) {
 }
 
 // requireWSClient fails closed when the proxy has no pinned WebSocket client,
-// returning label ("channel relay" / "org events relay") in the message so the
-// failing dial names itself. websocket.Dial and OpenOrgEventsWSWithHeader both
+// returning label ("channel relay" / "userevents relay") in the message so the
+// failing dial names itself. websocket.Dial and OpenUserEventsWSWithHeader both
 // fall back to http.DefaultClient when the client is nil, and that client carries
 // neither the cookie jar nor pinRedirectsToOrigin -- so a hub-side off-origin 3xx
-// on /ws/channel or /ws/orgevents would lead the CORS-free desktop process
+// on /ws/channel or /ws/userevents would lead the CORS-free desktop process
 // off-origin, the exact redirect-escape the pin closes. Both production proxy
 // constructors set wsClient; a future one that forgets it must break loudly at
 // the dial, not silently dial unpinned. Routing both dials through this one guard

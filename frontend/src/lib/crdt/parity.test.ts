@@ -1,5 +1,5 @@
-import type { OrgCrdtState } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
@@ -10,17 +10,17 @@ import {
 
   TabRecordSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import {
 
-  OrgOpSchema,
+  CrdtOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
   SetWorkspaceRegisterOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
@@ -33,7 +33,7 @@ import { applyOp, newState } from './apply'
  * Covers the workspaces map (section 04) just like the backend helper, so
  * SetWorkspaceRegister / TombstoneWorkspace convergence is observable.
  */
-function canonicalize(state: OrgCrdtState): string {
+function canonicalize(state: UserCrdtState): string {
   const parts: string[] = []
 
   parts.push('01:')
@@ -64,8 +64,8 @@ function bytesToHex(bytes: Uint8Array): string {
   return out
 }
 
-function applyAll(ops: OrgOp[]): OrgCrdtState {
-  const state = newState('org')
+function applyAll(ops: CrdtOp[]): UserCrdtState {
+  const state = newState('user')
   for (const op of ops) applyOp(state, op)
   return state
 }
@@ -96,9 +96,9 @@ function hlc(p: bigint, l: bigint, c: string) {
 
 describe('parity', () => {
   it('many shuffled permutations of a heterogeneous op log converge byte-equal', () => {
-    const ops: OrgOp[] = [
+    const ops: CrdtOp[] = [
       // Two clients add two tabs concurrently.
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 0n, 'a'),
         body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
           tabType: TabType.AGENT,
@@ -106,7 +106,7 @@ describe('parity', () => {
           field: { case: 'tileId', value: 'root' },
         }) },
       }),
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 1n, 'a'),
         body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
           tabType: TabType.AGENT,
@@ -114,7 +114,7 @@ describe('parity', () => {
           field: { case: 'workerId', value: 'w1' },
         }) },
       }),
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(11n, 0n, 'b'),
         body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
           tabType: TabType.TERMINAL,
@@ -123,12 +123,12 @@ describe('parity', () => {
         }) },
       }),
       // Tombstone tA at higher HLC.
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(50n, 0n, 'a'),
         body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId: 'tA' }) },
       }),
       // Late SetTab on tA — must drop (remove-wins).
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(60n, 0n, 'a'),
         body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
           tabType: TabType.AGENT,
@@ -137,7 +137,7 @@ describe('parity', () => {
         }) },
       }),
       // Floating window with an opacity that includes -0.0 (canonicalized).
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(70n, 0n, 'a'),
         body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
           windowId: 'fw1',
@@ -145,14 +145,14 @@ describe('parity', () => {
         }) },
       }),
       // Concurrent ratio writes on a node.
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(80n, 0n, 'a'),
         body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, {
           nodeId: 'split1',
           field: { case: 'ratios', value: { $typeName: 'leapmux.v1.DoubleList', values: [0.6, 0.4] } as never },
         }) },
       }),
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(81n, 0n, 'b'),
         body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, {
           nodeId: 'split1',
@@ -168,14 +168,14 @@ describe('parity', () => {
   })
 
   it('-0.0 produces byte-equal canonical output as +0.0', () => {
-    const posOp = create(OrgOpSchema, {
+    const posOp = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'a'),
       body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
         windowId: 'fw',
         field: { case: 'opacity', value: 0.0 },
       }) },
     })
-    const negOp = create(OrgOpSchema, {
+    const negOp = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'a'),
       body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
         windowId: 'fw',
@@ -192,16 +192,16 @@ describe('parity', () => {
   // in a real op log — the commuting case is independent workspaces, which
   // this pins: permuting creates/deletes of distinct workspaces converges.
   it('workspace register/tombstone ops on distinct ids converge under any permutation', () => {
-    const ops: OrgOp[] = [
-      create(OrgOpSchema, {
+    const ops: CrdtOp[] = [
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 0n, 'hub'),
         body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }) },
       }),
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(20n, 0n, 'hub'),
         body: { case: 'tombstoneWorkspace', value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w2' }) },
       }),
-      create(OrgOpSchema, {
+      create(CrdtOpSchema, {
         canonicalHlc: hlc(30n, 0n, 'hub'),
         body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w3' }) },
       }),

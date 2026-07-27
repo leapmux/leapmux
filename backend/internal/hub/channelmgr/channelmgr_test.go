@@ -363,7 +363,7 @@ func TestUseChannelAuthorizePanicReleasesManagerLock(t *testing.T) {
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 
 	// authorize runs under the manager-wide m.mu; a panic there must not freeze
-	// every other manager operation for the whole org.
+	// every other manager operation for every channel.
 	func() {
 		defer func() { _ = recover() }()
 		_, _, _ = m.UseChannelIf("ch1", func(ChannelInfo) bool {
@@ -2046,4 +2046,32 @@ func TestSendToFrontendIf_AuthorizeRejectSharesLiveGate(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, int32(1), calls.Load())
 	assert.True(t, m.Exists("ch1"))
+}
+
+// TestUnbindUserAndCleanup_BlankUserClosesNothing pins the fail-closed
+// direction of the owner predicate.
+//
+// The comparison used to be a raw `ch.UserID != userID`, which treats
+// blank-vs-blank as a MATCH -- so a blank caller id would have selected every
+// blank-owner channel in the manager for teardown. Matches never matches a
+// blank, so an unidentifiable caller closes nothing. This is a destructive
+// sweep; the safe answer to "who is this?" is "nobody's channels".
+func TestUnbindUserAndCleanup_BlankUserClosesNothing(t *testing.T) {
+	m := New(0)
+
+	m.BindUser("", "conn1", noopSender, nil)
+	m.RegisterWithAuthInfo("ch_blank_owner", "w1", "", AuthInfo{}, nil)
+	bindChannelConn(t, m, "ch_blank_owner", "conn1")
+
+	removed := m.UnbindUserAndCleanup("", "conn1")
+	assert.Empty(t, removed, "a blank user id must close nothing at all")
+	assert.True(t, m.Exists("ch_blank_owner"), "the blank-owner channel survives")
+
+	// Control: a real owner still closes its own channel, so the assertion
+	// above means "refused" rather than "this fixture closes nothing".
+	m.BindUser("u1", "conn2", noopSender, nil)
+	m.RegisterWithAuthInfo("ch_owned", "w1", "u1", AuthInfo{}, nil)
+	bindChannelConn(t, m, "ch_owned", "conn2")
+	removed = m.UnbindUserAndCleanup("u1", "conn2")
+	assert.NotEmpty(t, removed, "control: the owning id still unbinds its channel")
 }

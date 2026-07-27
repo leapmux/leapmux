@@ -14,8 +14,8 @@ import (
 // root_node_id is wired up correctly. Used as the starting point
 // for projection tests so we don't have to set up the workspace
 // every time.
-func seedWorkspaceWithRoot(workspaceID, rootID string) *leapmuxv1.OrgCrdtState {
-	state := crdt.NewState("org")
+func seedWorkspaceWithRoot(workspaceID, rootID string) *leapmuxv1.UserCrdtState {
+	state := crdt.NewState("user-1")
 	state.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
 		WorkspaceId: workspaceID,
 		RootNodeId:  rootID,

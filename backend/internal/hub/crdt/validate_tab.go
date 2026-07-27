@@ -9,16 +9,16 @@ import (
 // validateTabIDCrossTabTypes ensures every op targeting a given
 // tab_id agrees on tab_type, both inside the batch and against any
 // pre-existing TabRecord.
-func validateTabIDCrossTabTypes(pre *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp) (leapmuxv1.BatchRejectionReason, string) {
+func validateTabIDCrossTabTypes(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) (leapmuxv1.BatchRejectionReason, string) {
 	seen := map[string]leapmuxv1.TabType{}
 	for _, op := range batch {
 		var tabID string
 		var tabType leapmuxv1.TabType
 		switch body := op.GetBody().(type) {
-		case *leapmuxv1.OrgOp_SetTabRegister:
+		case *leapmuxv1.CrdtOp_SetTabRegister:
 			tabID = body.SetTabRegister.GetTabId()
 			tabType = body.SetTabRegister.GetTabType()
-		case *leapmuxv1.OrgOp_TombstoneTab:
+		case *leapmuxv1.CrdtOp_TombstoneTab:
 			tabID = body.TombstoneTab.GetTabId()
 			tabType = body.TombstoneTab.GetTabType()
 		default:
@@ -54,7 +54,7 @@ func validateTabIDCrossTabTypes(pre *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.
 // affected subtree can span any number of pre-existing tabs and a
 // precise scoping would re-create most of the per-batch cost we're
 // trying to avoid.
-func tabPlacementCheck(working *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp) string {
+func tabPlacementCheck(working *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) string {
 	roots := registeredRoots(working)
 	if batchHasStructuralOp(batch) {
 		for _, t := range working.GetTabs() {
@@ -85,7 +85,7 @@ func tabPlacementCheck(working *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp
 
 // checkTabPlacement runs the placement invariant against a single
 // tab. Returns the tab id on failure, "" on success.
-func checkTabPlacement(state *leapmuxv1.OrgCrdtState, t *leapmuxv1.TabRecord, roots rootSet) string {
+func checkTabPlacement(state *leapmuxv1.UserCrdtState, t *leapmuxv1.TabRecord, roots rootSet) string {
 	if !HLCIsZero(t.GetTombstoneAt()) {
 		return ""
 	}
@@ -104,14 +104,14 @@ func checkTabPlacement(state *leapmuxv1.OrgCrdtState, t *leapmuxv1.TabRecord, ro
 // could rewire which root a pre-existing tab's tile chain terminates
 // at, or could change whether the tile leaf is still a leaf. See
 // tabPlacementCheck for the rationale.
-func batchHasStructuralOp(batch []*leapmuxv1.OrgOp) bool {
+func batchHasStructuralOp(batch []*leapmuxv1.CrdtOp) bool {
 	for _, op := range batch {
 		switch body := op.GetBody().(type) {
-		case *leapmuxv1.OrgOp_TombstoneNode,
-			*leapmuxv1.OrgOp_TombstoneFloatingWindow,
-			*leapmuxv1.OrgOp_SetWorkspaceRootNode:
+		case *leapmuxv1.CrdtOp_TombstoneNode,
+			*leapmuxv1.CrdtOp_TombstoneFloatingWindow,
+			*leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 			return true
-		case *leapmuxv1.OrgOp_SetNodeRegister:
+		case *leapmuxv1.CrdtOp_SetNodeRegister:
 			// Only Kind flips can transition a leaf into a non-leaf.
 			// parent_id is set-once so it can't re-route an existing
 			// chain. position/direction/ratios/etc. don't affect
@@ -119,7 +119,7 @@ func batchHasStructuralOp(batch []*leapmuxv1.OrgOp) bool {
 			if _, isKind := body.SetNodeRegister.GetField().(*leapmuxv1.SetNodeRegisterOp_Kind); isKind {
 				return true
 			}
-		case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+		case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 			// workspace_id move + root_node_id assignment both affect
 			// which tiles end up reachable.
 			switch body.SetFloatingWindowRegister.GetField().(type) {
@@ -141,9 +141,9 @@ func batchHasStructuralOp(batch []*leapmuxv1.OrgOp) bool {
 // produce a tab that points at a non-existent worker. The CLI
 // preflight catches this earlier with a friendlier message; this
 // is the defense-in-depth catch for trustless / future writers.
-func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.OrgOp, principalID, orgID string, auth AuthChecker) (leapmuxv1.BatchRejectionReason, string, error) {
+func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.CrdtOp, principalID string, auth AuthChecker) (leapmuxv1.BatchRejectionReason, string, error) {
 	for _, op := range batch {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetTabRegister)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetTabRegister)
 		if !ok {
 			continue
 		}
@@ -155,7 +155,7 @@ func validateWorkerRefs(ctx context.Context, batch []*leapmuxv1.OrgOp, principal
 		if workerID == "" {
 			continue
 		}
-		allowed, err := auth.CanUseWorker(ctx, orgID, workerID, principalID)
+		allowed, err := auth.CanUseWorker(ctx, workerID, principalID)
 		if err != nil {
 			// Transient worker-lookup failure: surface it as retryable rather than
 			// rejecting the op as an invalid worker ref.

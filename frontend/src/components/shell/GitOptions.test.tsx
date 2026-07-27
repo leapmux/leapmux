@@ -227,10 +227,6 @@ describe('indexBranches', () => {
 // ChangeBranchDialog integration tests cover the radio-click path but
 // can't observe the seed-only nature of the prop read.
 
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
-
 vi.mock('~/api/workerRpc', () => ({
   listGitBranches: vi.fn(),
   listGitWorktrees: vi.fn(),

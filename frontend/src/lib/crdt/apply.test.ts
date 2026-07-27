@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
-  OrgOpSchema,
+  CrdtOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
@@ -11,7 +11,7 @@ import {
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
@@ -20,7 +20,7 @@ function hlc(physical: bigint, logical: bigint, clientId: string) {
 }
 
 function setNodeKindOp(nodeId: string, kind: NodeKind, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
@@ -30,7 +30,7 @@ function setNodeKindOp(nodeId: string, kind: NodeKind, p: bigint, l: bigint, c: 
 }
 
 function setNodePositionOp(nodeId: string, position: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
@@ -40,7 +40,7 @@ function setNodePositionOp(nodeId: string, position: string, p: bigint, l: bigin
 }
 
 function setNodeParentOp(nodeId: string, parentId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
@@ -50,14 +50,14 @@ function setNodeParentOp(nodeId: string, parentId: string, p: bigint, l: bigint,
 }
 
 function tombstoneNodeOp(nodeId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
   })
 }
 
 function setTabTileIdOp(tabId: string, tileId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setTabRegister',
@@ -67,14 +67,14 @@ function setTabTileIdOp(tabId: string, tileId: string, p: bigint, l: bigint, c: 
 }
 
 function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }) },
   })
 }
 
 function setFloatingXOp(windowId: string, x: number, p: bigint, l: bigint, c: string) {
-  return create(OrgOpSchema, {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setFloatingWindowRegister',
@@ -85,7 +85,7 @@ function setFloatingXOp(windowId: string, x: number, p: bigint, l: bigint, c: st
 
 describe('applyOp', () => {
   it('writes a fresh register and is idempotent on re-application', () => {
-    const state = newState('org')
+    const state = newState('user')
     const op = setNodeKindOp('n1', NodeKind.LEAF, 10n, 0n, 'a')
     applyOp(state, op)
     expect(state.nodes.n1.kind?.value).toBe(NodeKind.LEAF)
@@ -94,28 +94,28 @@ describe('applyOp', () => {
   })
 
   it('higher HLC wins LWW', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
     applyOp(state, setNodePositionOp('n1', 'B', 20n, 0n, 'b'))
     expect(state.nodes.n1.position?.value).toBe('B')
   })
 
   it('lower HLC drops on existing register', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'B', 20n, 0n, 'b'))
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
     expect(state.nodes.n1.position?.value).toBe('B')
   })
 
   it('parent_id is set-once at the apply layer', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodeParentOp('n1', 'P1', 10n, 0n, 'a'))
     applyOp(state, setNodeParentOp('n1', 'P2', 20n, 0n, 'b'))
     expect(state.nodes.n1.parentId).toBe('P1')
   })
 
   it('tombstone clears registers and drops later sets', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneNodeOp('n1', 20n, 0n, 'a'))
     expect(state.nodes.n1.position).toBeUndefined()
@@ -124,28 +124,28 @@ describe('applyOp', () => {
   })
 
   it('a Set with HLC older than the existing tombstone drops too', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, tombstoneNodeOp('n1', 30n, 0n, 'a'))
     applyOp(state, setNodePositionOp('n1', 'X', 20n, 0n, 'a'))
     expect(state.nodes.n1.position).toBeUndefined()
   })
 
   it('tab tile_id LWW', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, setTabTileIdOp('t1', 'B', 20n, 0n, 'b'))
     expect(state.tabs.t1.tileId?.value).toBe('B')
   })
 
   it('tab tombstone clears registers', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
     expect(state.tabs.t1.tileId).toBeUndefined()
   })
 
   it('-0.0 normalizes to +0.0 on double registers', () => {
-    const state = newState('org')
+    const state = newState('user')
     applyOp(state, setFloatingXOp('w1', -0, 10n, 0n, 'a'))
     const x = state.floatingWindows.w1.x?.value
     // Object.is distinguishes -0 from +0; the apply layer must
@@ -155,7 +155,7 @@ describe('applyOp', () => {
   })
 
   // Regression pin: when the seed-batch `SetWorkspaceRootNode` op
-  // arrives on a subscriber whose `OrgMaterialized` predated the
+  // arrives on a subscriber whose `UserMaterialized` predated the
   // workspace, `state.workspaces[wsID]` is absent. The hub's lifecycle
   // create batch seeds the record via a `SetWorkspaceRegisterOp` in the
   // same batch, but a subscriber whose filter drops that seed batch (or
@@ -167,9 +167,9 @@ describe('applyOp', () => {
   // an empty tile via the layout store's FALLBACK_LEAF instead of the
   // real root.
   it('setWorkspaceRootNode lazy-creates the workspace record when absent', () => {
-    const state = newState('org')
+    const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
-    const op = create(OrgOpSchema, {
+    const op = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRootNode',
@@ -183,15 +183,15 @@ describe('applyOp', () => {
   })
 
   it('setWorkspaceRootNode preserves an already-set rootNodeId (set-once)', () => {
-    const state = newState('org')
-    applyOp(state, create(OrgOpSchema, {
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRootNode',
         value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'first-root' }),
       },
     }))
-    applyOp(state, create(OrgOpSchema, {
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(20n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRootNode',
@@ -207,9 +207,9 @@ describe('applyOp', () => {
   // the serialized submit pipeline (replacing the old out-of-band
   // MutateInternal). Mirrors backend `applySetWorkspaceRegister`.
   it('setWorkspaceRegister seeds an empty workspace record', () => {
-    const state = newState('org')
+    const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
-    applyOp(state, create(OrgOpSchema, {
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRegister',
@@ -224,15 +224,15 @@ describe('applyOp', () => {
   it('setWorkspaceRegister is idempotent and does not clobber a rooted record', () => {
     // A re-drained create seed batch (after a transient consume fault) must
     // not clear an existing root_node_id the user has since populated.
-    const state = newState('org')
-    applyOp(state, create(OrgOpSchema, {
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRootNode',
         value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
       },
     }))
-    applyOp(state, create(OrgOpSchema, {
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(20n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRegister',
@@ -246,15 +246,15 @@ describe('applyOp', () => {
   // lifecycle delete op. Without an apply case the client would keep a stale
   // record after a delete until reconnect; this pins that it removes it.
   it('tombstoneWorkspace removes the workspace record', () => {
-    const state = newState('org')
-    applyOp(state, create(OrgOpSchema, {
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'setWorkspaceRegister',
         value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
       },
     }))
-    applyOp(state, create(OrgOpSchema, {
+    applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(20n, 0n, 'hub'),
       body: {
         case: 'tombstoneWorkspace',
@@ -267,8 +267,8 @@ describe('applyOp', () => {
   it('tombstoneWorkspace is idempotent on an already-absent workspace', () => {
     // Re-draining a delete batch (after a consume fault) must be a no-op,
     // not a throw on a missing key.
-    const state = newState('org')
-    expect(() => applyOp(state, create(OrgOpSchema, {
+    const state = newState('user')
+    expect(() => applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
         case: 'tombstoneWorkspace',

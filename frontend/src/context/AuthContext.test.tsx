@@ -1,6 +1,7 @@
 import type { AuthState } from './AuthContext'
 /// <reference types="vitest/globals" />
 import type { User } from '~/generated/leapmux/v1/auth_pb'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -36,9 +37,10 @@ vi.mock('~/api/platformBridge', () => ({
   },
 }))
 
+const mockLoadSystemInfo = vi.fn<() => Promise<void>>(() => Promise.resolve())
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
-  loadSystemInfo: () => Promise.resolve(),
+  loadSystemInfo: () => mockLoadSystemInfo(),
 }))
 
 function TestConsumer() {
@@ -47,6 +49,7 @@ function TestConsumer() {
     <div>
       <span data-testid="authenticated">{auth.isAuthenticated() ? 'yes' : 'no'}</span>
       <span data-testid="username">{auth.user()?.username ?? 'none'}</span>
+      <span data-testid="bootstrap-error">{auth.bootstrapError() ?? 'none'}</span>
     </div>
   )
 }
@@ -78,11 +81,12 @@ function renderWithAuthCapture(): { auth: () => AuthState } {
 describe('authContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockLoadSystemInfo.mockResolvedValue(undefined)
   })
 
   it('restores session from cookie on mount when getCurrentUser succeeds', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'testuser', orgId: 'o1', isAdmin: false },
+      user: { id: 'u1', username: 'testuser', isAdmin: false },
     })
 
     renderWithAuth()
@@ -93,8 +97,18 @@ describe('authContext', () => {
     expect(screen.getByTestId('username')).toHaveTextContent('testuser')
   })
 
-  it('stays unauthenticated when getCurrentUser fails (expired/no cookie)', async () => {
-    mockGetCurrentUser.mockRejectedValue(new Error('unauthenticated'))
+  // The two ways bootstrap can fail must stay distinguishable. An expired or
+  // absent cookie is the ordinary answer and stays silent; anything else means
+  // the hub is unreachable, which no amount of logging in fixes.
+  //
+  // This case previously rejected with a bare `new Error('unauthenticated')`,
+  // which is NOT a ConnectError -- so it exercised the transport-failure path
+  // while claiming to cover the expired-cookie one. Both leave `authenticated`
+  // at 'no', so the assertion could not tell them apart.
+  it('stays silently unauthenticated when the session cookie is expired or absent', async () => {
+    mockGetCurrentUser.mockRejectedValue(
+      new ConnectError('unauthenticated', Code.Unauthenticated),
+    )
 
     renderWithAuth()
 
@@ -102,13 +116,95 @@ describe('authContext', () => {
       expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
     })
     expect(screen.getByTestId('username')).toHaveTextContent('none')
+    expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('none')
+  })
+
+  it('records a bootstrap error when the hub is unreachable', async () => {
+    // Not an Unauthenticated code: the session may well be valid and we simply
+    // could not ask. Silently treating this as "logged out" is what left solo
+    // mode spinning forever with nothing to click.
+    mockGetCurrentUser.mockRejectedValue(
+      new ConnectError('connection refused', Code.Unavailable),
+    )
+
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('bootstrap-error')).not.toHaveTextContent('none')
+    })
+    expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('connection refused')
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
+  })
+
+  // System info is a hard prerequisite, not a best-effort nicety: its module
+  // getters are fabricated defaults until it succeeds. Swallowing the failure
+  // leaves `isSoloMode()` at `false` while the session restore SUCCEEDS on a
+  // solo hub (which authenticates every procedure), so the app renders as
+  // multi-user and offers a "Log out" that strands the user at a login form
+  // no credentials can satisfy. Bootstrap must stop and report instead.
+  it('records a bootstrap error when system info cannot be loaded', async () => {
+    mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'solo', isAdmin: false },
+    })
+
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('not connected')
+    })
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+  })
+
+  it('retryBootstrap recovers from a system-info failure', async () => {
+    mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
+    const { auth } = renderWithAuthCapture()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('not connected')
+    })
+
+    mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'recovered', isAdmin: false },
+    })
+    await auth().retryBootstrap()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('yes')
+    })
+    expect(screen.getByTestId('username')).toHaveTextContent('recovered')
+    expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('none')
+  })
+
+  it('retryBootstrap re-attempts and clears the error on recovery', async () => {
+    mockGetCurrentUser.mockRejectedValue(
+      new ConnectError('connection refused', Code.Unavailable),
+    )
+    const { auth } = renderWithAuthCapture()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('connection refused')
+    })
+
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'recovered', isAdmin: false },
+    })
+    await auth().retryBootstrap()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('yes')
+    })
+    expect(screen.getByTestId('username')).toHaveTextContent('recovered')
+    expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('none')
   })
 
   it('works after oauth callback redirect (page loads with cookie)', async () => {
     // Simulate: user just returned from OAuth callback with a valid session cookie.
     // AuthContext.onMount calls getCurrentUser, which succeeds because the cookie is set.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u2', username: 'oauth-user', orgId: 'o2', isAdmin: false, oauthProviders: ['Google'] },
+      user: { id: 'u2', username: 'oauth-user', isAdmin: false, oauthProviders: ['Google'] },
     })
 
     renderWithAuth()
@@ -126,14 +222,14 @@ describe('authContext', () => {
     // eagerly rather than left to the lazy per-request identity check -- and the
     // desktop sidecar's tunnels (which carry no identity of their own) must be
     // reset so they cannot keep relaying under the old user.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
     mockResetTunnels.mockResolvedValue(undefined)
 
-    mockLogin.mockResolvedValue({ user: { id: 'u2', username: 'bob', orgId: 'o2', isAdmin: false } })
+    mockLogin.mockResolvedValue({ user: { id: 'u2', username: 'bob', isAdmin: false } })
     await auth().login('bob', 'pw')
 
     expect(mockCloseAll).toHaveBeenCalledOnce()
@@ -144,13 +240,13 @@ describe('authContext', () => {
   it('does not drop pooled channels when re-authenticating as the same user', async () => {
     // Re-login as the SAME identity (a session refresh) is not a transition, so
     // the pooled channels -- already correct for this user -- must be kept.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
 
-    mockLogin.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockLogin.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     await auth().login('alice', 'pw')
 
     expect(mockCloseAll).not.toHaveBeenCalled()
@@ -158,7 +254,7 @@ describe('authContext', () => {
   })
 
   it('drops pooled channels and resets sidecar tunnels on logout', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
@@ -178,14 +274,14 @@ describe('authContext', () => {
     // account creation, but a future impersonation seed or server-side session swap
     // that changes the id must release too; the old imperative wiring only released
     // at login/logout/auth-error and would have leaked the previous user's channels.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
     mockResetTunnels.mockResolvedValue(undefined)
 
-    auth().setAuth({ id: 'u2', username: 'bob', orgId: 'o2', isAdmin: false } as unknown as User)
+    auth().setAuth({ id: 'u2', username: 'bob', isAdmin: false } as unknown as User)
 
     await vi.waitFor(() => expect(mockCloseAll).toHaveBeenCalledOnce())
     expect(mockResetTunnels).toHaveBeenCalledOnce()
@@ -195,7 +291,7 @@ describe('authContext', () => {
   it('does not drop pooled channels on the initial session restore', async () => {
     // null -> first-user is not an identity SWAP: there is nothing pooled to release,
     // and a spurious resetTunnels must not fire on a fresh page load.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     renderWithAuth()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -207,7 +303,7 @@ describe('authContext', () => {
     // resetTunnels is best-effort: a rejected sidecar RPC (e.g. the sidecar is
     // restarting) must be logged, not break the logout flow or surface as an
     // unhandled rejection.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', orgId: 'o1', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockResetTunnels.mockRejectedValueOnce(new Error('sidecar gone'))

@@ -10,7 +10,6 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
-  getAdminOrgId,
   getWorkerId,
   openAgentViaAPI,
   signUpViaAPI,
@@ -18,7 +17,7 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './helpers/api'
-import { closeAllOrgEventsSubscriptions } from './helpers/crdt'
+import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
@@ -26,7 +25,6 @@ import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 export interface ServerInfo {
   hubUrl: string
   adminToken: string
-  adminOrgId: string
   workerId: string
   newuserToken: string
   serverProc: ChildProcess
@@ -80,20 +78,19 @@ export const test = base.extend<
     // as a username only when no users exist yet; after this, `admin` is
     // reserved for public signup.
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
-    const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
     const workerId = await getWorkerId(hubUrl, adminToken)
 
     // Create newuser for sharing tests
     const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
 
-    await use({ hubUrl, adminToken, adminOrgId, workerId, newuserToken, serverProc: proc, dataDir })
+    await use({ hubUrl, adminToken, workerId, newuserToken, serverProc: proc, dataDir })
 
-    // Close any OrgEvents subscriptions this worker opened. Per-worker
+    // Close any UserEvents subscriptions this worker opened. Per-worker
     // cleanup matters because the singleton cache is keyed by
-    // (hubUrl, orgId, cookie) and the next worker spawns a NEW dev
+    // (hubUrl, cookie) and the next worker spawns a NEW dev
     // instance on a different port; leaving WS sockets dangling would
     // leak file descriptors across the test session.
-    await closeAllOrgEventsSubscriptions()
+    await closeAllUserEventsSubscriptions()
 
     // Teardown: kill process, clean up data dir
     proc.kill('SIGTERM')
@@ -136,17 +133,16 @@ export const test = base.extend<
 
   // Workspace fixture: creates workspace via API + opens initial agent, provides ID and URL
   workspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      adminOrgId,
     )
     // Open an initial agent — workspace creation on the hub no longer
     // auto-creates one (that was the old worker behavior).
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const workspaceUrl = `/o/admin/workspace/${workspaceId}`
+    const workspaceUrl = `/workspace/${workspaceId}`
 
     await use({ workspaceId, workspaceUrl })
 

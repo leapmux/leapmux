@@ -9,7 +9,6 @@ import (
 
 func TestAllTestEntitiesAreInSQLTruncateOrder(t *testing.T) {
 	entities := []store.TestEntity{
-		store.EntityOrgs,
 		store.EntityUsers,
 		store.EntitySessions,
 		store.EntityWorkers,

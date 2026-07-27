@@ -107,7 +107,7 @@ test.describe('Terminal', () => {
     // alt-screen mode before replay.
     await expect(async () => {
       expect(await getBufferType()).toBe('alternate')
-    }).toPass({ timeout: 30_000 })
+    }).toPass()
   })
 
   test('should restore terminal screen content after page refresh', async ({ page, authenticatedWorkspace }) => {

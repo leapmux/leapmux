@@ -25,13 +25,13 @@ type blockingReadChecker struct {
 	once    sync.Once
 }
 
-func (*blockingReadChecker) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (*blockingReadChecker) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (*blockingReadChecker) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) {
+func (*blockingReadChecker) CanUseWorker(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (b *blockingReadChecker) CanAccessWorkspaceForUsers(_ context.Context, _, _ string, userIDs []string) (map[string]bool, error) {
+func (b *blockingReadChecker) CanAccessWorkspaceForUsers(_ context.Context, _ string, userIDs []string) (map[string]bool, error) {
 	if b.armed.Load() {
 		b.once.Do(func() { close(b.reached) })
 		<-b.release
@@ -45,14 +45,14 @@ func (b *blockingReadChecker) CanAccessWorkspaceForUsers(_ context.Context, _, _
 
 // TestSubscribeWithACL_SerializesWithExpand pins the resolve-then-register
 // TOCTOU fix: SubscribeWithACL holds subscribeExpandMu across resolve+register,
-// so a concurrent workspace-create expansion of the same org must block behind
+// so a concurrent workspace-create expansion for the same user must block behind
 // it. Once the subscriber is registered (with a pre-create filter that does
 // not admit w1) the now-unblocked expand visits it and adds w1 -- without the
 // serialization the expand could run entirely in the resolve/register gap,
 // miss the not-yet-registered subscriber, and the subscriber would never see
 // the new workspace until reconnect.
 func TestSubscribeWithACL_SerializesWithExpand(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 230_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 230_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	reached := make(chan struct{})
@@ -111,7 +111,7 @@ func TestSubscribeWithACL_SerializesWithExpand(t *testing.T) {
 // than racing it.
 func TestExpandSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 	checker := &blockingReadChecker{reached: make(chan struct{}), release: make(chan struct{})}
-	mgr, _, _ := runManager(t, "org", checker, 220_000)
+	mgr, _, _ := runManager(t, "user-1", checker, 220_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	// R is registered with a filter that does not admit w1 -- an expand candidate.
@@ -174,7 +174,7 @@ func TestExpandSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 // would keep W as a stale filter key no pass ever removes. So a contract must
 // block behind an in-flight SubscribeWithACL that is parked in resolve.
 func TestContractSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 210_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 210_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	reached := make(chan struct{})
@@ -231,7 +231,7 @@ func TestContractSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 // is returned WITHOUT registering the subscriber (no unsub handle, no snapshot),
 // so the caller can reject the connection before streaming.
 func TestSubscribeWithACL_ResolveErrorLeavesUnregistered(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 240_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 240_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	capR := &captureSubscriber{}

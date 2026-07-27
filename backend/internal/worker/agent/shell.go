@@ -257,7 +257,7 @@ func posixEnvCondition() string {
 
 // nuEnvCondition builds a Nushell conditional expression that checks
 // whether any third-party provider env var is set.
-// e.g. `($env | get -i VAR1 | default ”) != ” or ...`
+// e.g. `($env | get -i VAR1 | default "") != "" or ...`
 func nuEnvCondition() string {
 	parts := make([]string, len(thirdPartyProviderEnvVars))
 	for i, v := range thirdPartyProviderEnvVars {

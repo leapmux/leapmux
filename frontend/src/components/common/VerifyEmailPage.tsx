@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
-import { orgHomePath } from '~/lib/orgRoutes'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -60,8 +59,7 @@ export const VerifyEmailPage: Component = () => {
       // Refresh auth so EmailVerified flips in the cached user.
       if (resp.user)
         auth.setAuth(resp.user)
-      const slug = resp.user?.username ?? auth.user()?.username
-      navigate(slug ? orgHomePath(slug) : '/', { replace: true })
+      navigate('/', { replace: true })
     }
     catch (e) {
       setError(`${e}`)

@@ -46,19 +46,19 @@ type EntityWorkspaceTransition struct {
 // cancellation. Tests typically pass `context.Background()`.
 func ValidateBatch(
 	ctx context.Context,
-	pre *leapmuxv1.OrgCrdtState,
-	batch []*leapmuxv1.OrgOp,
+	pre *leapmuxv1.UserCrdtState,
+	batch []*leapmuxv1.CrdtOp,
 	internal bool,
 	principalID string,
 	auth AuthChecker,
-) (ValidationResult, *leapmuxv1.OrgCrdtState) {
+) (ValidationResult, *leapmuxv1.UserCrdtState) {
 	result := ValidationResult{
 		AffectedEntities: map[EntityRef]EntityWorkspaceTransition{},
 	}
 	// Memoize per-batch auth lookups. Each predicate is backed by a DB
 	// fetch (workspaces / workers); a batch with N ops
 	// touching the same workspace would otherwise issue N round-trips on
-	// the manager goroutine, blocking every other submitter for the org.
+	// the manager goroutine, blocking every other submitter for the user.
 	if !internal {
 		auth = &memoAuthChecker{inner: auth}
 	}
@@ -101,8 +101,8 @@ func ValidateBatch(
 
 	// Pre/post workspace resolution is bounded to the EntityRefs the
 	// batch actually touches. The full workspaceForEntities walk used
-	// to scan every node, tab, and window in the org twice per batch;
-	// for a batch that touches one tile in a large org that's enormous
+	// to scan every node, tab, and window in the user doc twice per batch;
+	// for a batch that touches one tile in a large user doc that's enormous
 	// overkill.
 	//
 	// `resolved` carries one entry per batch op alongside its target
@@ -194,7 +194,7 @@ func ValidateBatch(
 	// 10. Auth check per op (skipped under internal=true).
 	if !internal {
 		for _, r := range resolved {
-			reason, opID, err := authCheck(ctx, r.op, r.preW, r.postW, principalID, pre.GetOrgId(), auth)
+			reason, opID, err := authCheck(ctx, r.op, r.preW, r.postW, principalID, auth)
 			if err != nil {
 				result.Err = err
 				return result, nil
@@ -214,7 +214,7 @@ func ValidateBatch(
 	// the "clear" case (file tabs that haven't picked a worker yet,
 	// or explicit unassignment).
 	if !internal {
-		reason, opID, err := validateWorkerRefs(ctx, batch, principalID, pre.GetOrgId(), auth)
+		reason, opID, err := validateWorkerRefs(ctx, batch, principalID, auth)
 		if err != nil {
 			result.Err = err
 			return result, nil
@@ -260,7 +260,7 @@ func ValidateBatch(
 		// validator currently bounds non-root descendants to zero,
 		// but tabs and the window's root NodeRecord still need
 		// transitive entries.
-		body, ok := r.op.GetBody().(*leapmuxv1.OrgOp_SetFloatingWindowRegister)
+		body, ok := r.op.GetBody().(*leapmuxv1.CrdtOp_SetFloatingWindowRegister)
 		if !ok {
 			continue
 		}
@@ -311,9 +311,9 @@ func ValidateBatch(
 // targets an already-tombstoned entity in `pre`. Redundant tombstones
 // (`Tombstone…` on something already tombstoned) are allowed; only Set
 // ops on tombstoned entities are rejected.
-func preApplyTombstoneCheck(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) string {
+func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) string {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_TombstoneNode, *leapmuxv1.OrgOp_TombstoneTab, *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+	case *leapmuxv1.CrdtOp_TombstoneNode, *leapmuxv1.CrdtOp_TombstoneTab, *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		return ""
 	}
 	ref := OpTarget(op)
@@ -338,12 +338,12 @@ func preApplyTombstoneCheck(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) st
 // hub-only gate. The hub-only gate is hoisted to the top via isHubOnlyOp so the
 // set of hub-only ops is enumerable in one place; the per-op cases below carry
 // only the set-once rules.
-func validateSetOnce(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp, internal bool) (leapmuxv1.BatchRejectionReason, string) {
+func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, internal bool) (leapmuxv1.BatchRejectionReason, string) {
 	if isHubOnlyOp(op) && !internal {
 		return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, op.GetOpId()
 	}
 	switch body := op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		setOp := body.SetNodeRegister
 		if _, ok := setOp.GetField().(*leapmuxv1.SetNodeRegisterOp_ParentId); ok {
 			// parent_id is set-once: any write to a node already present
@@ -352,14 +352,14 @@ func validateSetOnce(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp, internal 
 				return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_PARENT_IMMUTABLE, op.GetOpId()
 			}
 		}
-	case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		setOp := body.SetFloatingWindowRegister
 		if _, ok := setOp.GetField().(*leapmuxv1.SetFloatingWindowRegisterOp_RootNodeId); ok {
 			if _, exists := pre.GetFloatingWindows()[setOp.GetWindowId()]; exists {
 				return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, op.GetOpId()
 			}
 		}
-	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 		// SetWorkspaceRegister / TombstoneWorkspace are hub-only (gated above)
 		// and idempotent on apply, so they have no set-once case here.
 		setOp := body.SetWorkspaceRootNode
@@ -371,9 +371,9 @@ func validateSetOnce(pre *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp, internal 
 }
 
 // valueDomainCheck rejects NaN/±∞/out-of-range values.
-func valueDomainCheck(op *leapmuxv1.OrgOp) (leapmuxv1.BatchRejectionReason, string) {
+func valueDomainCheck(op *leapmuxv1.CrdtOp) (leapmuxv1.BatchRejectionReason, string) {
 	switch body := op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		setOp := body.SetNodeRegister
 		switch field := setOp.GetField().(type) {
 		case *leapmuxv1.SetNodeRegisterOp_Ratios:
@@ -397,7 +397,7 @@ func valueDomainCheck(op *leapmuxv1.OrgOp) (leapmuxv1.BatchRejectionReason, stri
 				return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, op.GetOpId()
 			}
 		}
-	case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		setOp := body.SetFloatingWindowRegister
 		switch field := setOp.GetField().(type) {
 		case *leapmuxv1.SetFloatingWindowRegisterOp_X:
@@ -450,7 +450,7 @@ func validRatios(values []float64) bool {
 // roots map (workspace + floating-window roots), reused from the
 // caller's `registeredRoots(state)` precomputation so the parentless-
 // node case doesn't re-scan workspaces+floating-windows per node.
-func completenessCheck(state *leapmuxv1.OrgCrdtState, roots rootSet) string {
+func completenessCheck(state *leapmuxv1.UserCrdtState, roots rootSet) string {
 	for id, t := range state.GetTabs() {
 		if !HLCIsZero(t.GetTombstoneAt()) {
 			continue

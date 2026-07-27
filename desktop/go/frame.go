@@ -11,12 +11,12 @@ import (
 )
 
 // maxFrameSize bounds a single desktop RPC frame. It must exceed the largest
-// payload the sidecar relays -- an org-events OrgMaterialized bootstrap up to
-// channelwire.OrgEventsReadLimit -- PLUS its Frame/Event proto envelope, so a
+// payload the sidecar relays -- a userevents UserMaterialized bootstrap up to
+// channelwire.UserEventsReadLimit -- PLUS its Frame/Event proto envelope, so a
 // full-size bootstrap is forwarded rather than silently dropped by
 // validateFrameSize. The 4 MiB margin covers the envelope with generous
 // headroom. MAX_FRAME_SIZE in desktop/rust/src/main.rs must stay in sync.
-const maxFrameSize = channelwire.OrgEventsReadLimit + 4*1024*1024 // 20 MiB
+const maxFrameSize = channelwire.UserEventsReadLimit + 4*1024*1024 // 20 MiB
 
 func WriteFrame(w io.Writer, frame *desktoppb.Frame) error {
 	if err := validateFrameSize(frame); err != nil {

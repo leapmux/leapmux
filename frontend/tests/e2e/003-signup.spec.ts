@@ -7,8 +7,8 @@ test.describe('Sign Up', () => {
     // created in global setup or other test runs
     const username = `signup-${Date.now()}`
     await signUpViaUI(page, username, 'password123', 'Signup Test User', 'signup@test.com')
-    // Should redirect to personal org after signup
-    await expect(page).toHaveURL(new RegExp(`/o/${username}`))
+    // Should redirect to app home after signup
+    await expect(page).toHaveURL('/')
   })
 
   test('should show error for reserved username', async ({ page }) => {

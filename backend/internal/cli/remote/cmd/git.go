@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/cli/remote/resolve"
-	"github.com/leapmux/leapmux/tunnel"
 )
 
 // workingDirEnv returns the spawning tab's working directory as
@@ -52,23 +50,19 @@ func RunGitStatus(rawCtx any, args []string) error {
 		// so the handshake cost is paid once.
 		var infoResp leapmuxv1.GetGitInfoResponse
 		var fileResp leapmuxv1.GetGitFileStatusResponse
-		if err := withWorkerChannel(ctx, c, got.WorkerID, func(ch *tunnel.Channel) error {
-			if err := callInnerRPCOnChannelMarshal(ctx, ch, c, got.WorkerID, "GetGitInfo", &leapmuxv1.GetGitInfoRequest{
+		if err := withWorkerChannel(ctx, c, got.WorkerID, func(w workerCall) error {
+			if err := w.Call(ctx, "GetGitInfo", &leapmuxv1.GetGitInfoRequest{
 				WorkerId: got.WorkerID,
 				Path:     f.Path,
 			}, &infoResp); err != nil {
 				return err
 			}
-			return callInnerRPCOnChannelMarshal(ctx, ch, c, got.WorkerID, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+			return w.Call(ctx, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
 				WorkerId: got.WorkerID,
 				Path:     f.Path,
 			}, &fileResp)
 		}); err != nil {
-			var coded *codedRPCError
-			if errors.As(err, &coded) {
-				return remote.EmitErrorWith(coded.Code, coded.Cause)
-			}
-			return remote.EmitErrorWith("rpc_failed", err)
+			return emitInnerRPCError(err)
 		}
 		return remote.EmitData(map[string]any{
 			"info":  &infoResp,

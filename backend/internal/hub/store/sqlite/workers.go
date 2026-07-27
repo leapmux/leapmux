@@ -67,10 +67,10 @@ func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams
 }
 
 func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) (store.Page[store.Worker], error) {
-	owner, ok := store.OwnerFilter(p.RegisteredBy)
+	owner, ok := userid.OwnerFilter(p.RegisteredBy)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.Worker]{}, nil
 	}
 	return queryPage(ctx, p.Limit,
@@ -142,10 +142,10 @@ func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerP
 }
 
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.RegisteredBy)
+	owner, ok := userid.OwnerFilter(p.RegisteredBy)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	return rowsAffected(s.conn.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
@@ -163,7 +163,7 @@ func (s *workerStore) MarkDeleted(ctx context.Context, id string) error {
 }
 
 func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy userid.UserID) error {
-	owner, ok := store.OwnerFilter(registeredBy)
+	owner, ok := userid.OwnerFilter(registeredBy)
 	if !ok {
 		// Binding "" here would address every blank-registrant row for
 		// deletion; reporting success having deleted nothing is no better.

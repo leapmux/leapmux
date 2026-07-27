@@ -3,15 +3,15 @@
  *
  * The Go integration tests already prove every broadcast path the
  * spec touches at the protocol level (delegation tokens,
- * `OrgCRDT.WatchOrg` fan-out, `SubmitOps` broadcast, channel
+ * `UserCRDT /ws/userevents` fan-out, `SubmitOps` broadcast, channel
  * teardown). What they cannot exercise is the live wire-up: a real
  * frontend bundle running against a real hub, observing CLI-driven
  * mutations propagate into the DOM.
  *
  * The exercised signal is: `agent open` via the CLI → worker spawns
  * the agent → CRDT `SetTabRegister` batch submitted to the hub →
- * canonical-HLC-tagged op broadcast on `/ws/orgevents` →
- * `useOrgEvents` feeds it into `pendingOps.consumeRemote` → tab.store
+ * canonical-HLC-tagged op broadcast on `/ws/userevents` →
+ * `useUserEvents` feeds it into `pendingOps.consumeRemote` → tab.store
  * projects the new tab → tab element appears in the DOM with the
  * agent's `tab_id` rendered as `data-tab-id`.
  *
@@ -48,21 +48,21 @@ function devModeTokenSource(server: ServerInfo): { hubUrl: string, adminToken: s
 
 test.describe('remote CLI live broadcast', () => {
   test('single browser observes CLI-driven agent open', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-${Date.now()}`, adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-${Date.now()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page, 60_000)
       await waitForAgentTabs(page, 1)
 
       // Drive the CLI from outside the browser. The hub broadcasts a
-      // canonical-HLC-tagged `OrgOp` on `/ws/orgevents` describing the
-      // new tab; the live frontend's `useOrgEvents` feeds it into
+      // canonical-HLC-tagged `CrdtOp` on `/ws/userevents` describing the
+      // new tab; the live frontend's `useUserEvents` feeds it into
       // `pendingOps.consumeRemote` and the projection-driven
       // `tabStore` renders the new tab — that's the wire-up under
       // test here.
@@ -76,10 +76,10 @@ test.describe('remote CLI live broadcast', () => {
   })
 
   test('two browsers viewing the same workspace both reflect the broadcast', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-2br-${Date.now()}`, adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-2br-${Date.now()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     // Two browser contexts simulate a user logged in on two devices
@@ -93,8 +93,8 @@ test.describe('remote CLI live broadcast', () => {
       await loginViaToken(pageA, adminToken)
       await loginViaToken(pageB, adminToken)
       await Promise.all([
-        pageA.goto(`/o/admin/workspace/${workspaceId}`),
-        pageB.goto(`/o/admin/workspace/${workspaceId}`),
+        pageA.goto(`/workspace/${workspaceId}`),
+        pageB.goto(`/workspace/${workspaceId}`),
       ])
       await Promise.all([waitForWorkspaceReady(pageA, 60_000), waitForWorkspaceReady(pageB, 60_000)])
       await Promise.all([waitForAgentTabs(pageA, 1), waitForAgentTabs(pageB, 1)])

@@ -6,12 +6,12 @@ test.describe('Message Delivery Error', () => {
   test('should show delivery error when worker is offline and retry on reconnect', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delivery Error Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delivery Error Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor
@@ -67,12 +67,12 @@ test.describe('Message Delivery Error', () => {
 
   test('should persist delivery error across page refresh', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Error Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Error Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -124,12 +124,12 @@ test.describe('Message Delivery Error', () => {
   test('should delete failed message', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delete Error Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delete Error Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')

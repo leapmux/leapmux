@@ -43,12 +43,6 @@ func TestRun_SoloMode(t *testing.T) {
 	assert.Equal(t, usernames.Solo, user.Username)
 	assert.True(t, user.IsAdmin)
 	assert.Empty(t, user.PasswordHash)
-
-	// The personal org is created alongside the user and carries the
-	// username as its name.
-	org, err := st.Orgs().GetByID(ctx, user.OrgID)
-	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, org.Name)
 }
 
 func TestRun_Idempotent(t *testing.T) {

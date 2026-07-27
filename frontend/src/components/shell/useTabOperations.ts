@@ -39,8 +39,6 @@ interface UseTabOperationsOpts {
   focusEditor: () => void
   getScrollState: () => SavedViewportScroll | undefined
   setFileTreePath: (path: string) => void
-  /** Org id used for file-tab E2EE worker RPCs. */
-  getOrgId: () => string | undefined
   /** Active workspace id used for file-tab E2EE worker RPCs. */
   getActiveWorkspaceId: () => string | undefined
   /**
@@ -67,7 +65,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     focusEditor,
     getScrollState,
     setFileTreePath,
-    getOrgId,
     getActiveWorkspaceId,
     registry,
   } = opts
@@ -209,19 +206,18 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * so the three tab types follow the same pattern (sync local
    * cleanup + fire-and-forget worker RPC + toast on failure). The
    * worker drives the unified closeTabCommon flow on its side; the
-   * revoke is keyed by (orgId, tabId), so unlike closeTerminal it needs
-   * no workspaceId.
+   * revoke is keyed by tabId, so unlike closeTerminal it needs no
+   * workspaceId.
    */
   const handleFileClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
-    const orgId = getOrgId()
-    if (!orgId || !workerId) {
-      // No worker/org to send the revoke to. A REMOVE therefore can't
+    if (!workerId) {
+      // No worker to send the revoke to. A REMOVE therefore can't
       // reach the worktree — surface it rather than letting the caller
       // assume removal happened.
       warnWorktreeUnreachable(worktreeAction)
       return Promise.resolve(undefined)
     }
-    return awaitCloseResult(workerRpc.revokeFileTabPath(workerId, { orgId, tabId, worktreeAction }), 'Failed to close file')
+    return awaitCloseResult(workerRpc.revokeFileTabPath(workerId, { tabId, worktreeAction }), 'Failed to close file')
   }
 
   /**
@@ -258,10 +254,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
           closeResult = awaitCloseResult(workerRpc.closeAgent(workerId, { agentId: tab.id, worktreeAction }), 'Failed to close agent')
         }
         else if (tab.type === TabType.TERMINAL) {
-          const orgId = getOrgId() ?? ''
           closeResult = awaitCloseResult(
             workerRpc.closeTerminal(workerId, {
-              orgId,
               workspaceId: crossWorkspaceWsId,
               terminalId: tab.id,
               worktreeAction,
@@ -415,9 +409,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // with a NotFound-class connect error. Without the carve-out
     // below the user gets a "Failed to prepare tab close" toast and
     // the tab stays put — there's no way to clean up a stale row.
-    // The CLI's `agent close` / `terminal close` does the same
-    // fallback (`isWorkerUnreachable` in cmd/preflight.go); keep
-    // these two predicates in sync.
+    // The CLI's `tab close` does the same fallback (`isWorkerUnreachable` in
+    // cmd/preflight.go); keep these two predicates in sync. Note the CLI's half
+    // additionally depends on remoteipc.relayError preserving the upstream
+    // connect code -- this side always talks to the hub directly, so it sees
+    // the real code either way, which is why the CLI's copy could silently
+    // stop matching while this one kept working.
     let worktreeAction: WorktreeAction = WorktreeAction.KEEP
     try {
       const workerId = tab.workerId ?? ''
@@ -515,16 +512,14 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
 
     // E2EE worker-side path registration. The hub never sees the
-    // path; the worker persists `(org_id, tab_id, workspace_id,
-    // file_path)` and emits FileTabPathRegistered on the workspace's
-    // private-event stream so peer clients populate their local
-    // fileTabPaths cache. Fire-and-forget — failure here doesn't
-    // unmount the locally-added tab; the user can retry by re-opening.
-    const orgId = getOrgId()
+    // path; the worker persists `(tab_id, workspace_id, file_path)`
+    // and emits FileTabPathRegistered on the workspace's private-event
+    // stream so peer clients populate their local fileTabPaths cache.
+    // Fire-and-forget — failure here doesn't unmount the locally-added
+    // tab; the user can retry by re-opening.
     const wsId = getActiveWorkspaceId()
-    if (orgId && wsId) {
+    if (wsId) {
       workerRpc.registerFileTabPath(ctx.workerId, {
-        orgId,
         workspaceId: wsId,
         tabId,
         filePath: path,

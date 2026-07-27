@@ -100,7 +100,6 @@ type HubBridge interface {
 // shape so the listen/acquire/cleanup wiring is in one place.
 type spawnCommon struct {
 	UserID        userid.UserID
-	OrgID         string
 	WorkspaceID   string
 	WorkerID      string
 	TabID         string
@@ -121,7 +120,6 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 	token := MintToken()
 	tokenInfo := TokenInfo{
 		UserID:        sc.UserID,
-		OrgID:         sc.OrgID,
 		WorkspaceID:   sc.WorkspaceID,
 		WorkerID:      sc.WorkerID,
 		TabID:         sc.TabID,
@@ -150,7 +148,6 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), error) {
 	return f.spawn(SocketKindAgent, "agent_id", spawnCommon{
 		UserID:        info.UserID,
-		OrgID:         info.OrgID,
 		WorkspaceID:   info.WorkspaceID,
 		WorkerID:      info.WorkerID,
 		TabID:         info.TabID,
@@ -164,7 +161,6 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, func(), error) {
 	return f.spawn(SocketKindTerminal, "terminal_id", spawnCommon{
 		UserID:      info.UserID,
-		OrgID:       info.OrgID,
 		WorkspaceID: info.WorkspaceID,
 		WorkerID:    info.WorkerID,
 		TabID:       info.TabID,

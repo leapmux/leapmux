@@ -11,30 +11,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// validUsernames / invalidUsernames are shared by the create and rename tests
+// because both route through validateUsernameSlug: one rule, one table, so a
+// new edge case is added once instead of drifting between two copies.
+var validUsernames = []string{"alice", "bob-1", "a", "user-name-2", "MixedCase", "Alice", "solo"}
+
+var invalidUsernames = map[string]string{
+	"empty":               "",
+	"whitespace only":     "   ",
+	"leading/trailing ws": " alice ",
+	"space inside":        "a b",
+	"punctuation":         "Bad Name!",
+	"leading hyphen":      "-alice",
+	"consecutive hyphen":  "a--b",
+}
+
 // UpdateUserProfileParams.Validate is the store-level guard that keeps a username
-// (mirrored into the personal-org name and the /o/{slug} URL space) a routable slug.
-// It must reject anything the service layer's validate.SanitizeSlug would, not merely
-// an empty-after-lowercase value: a whitespace-only or non-slug username passes a bare
-// NormalizeUsername yet corrupts orgs.name.
+// a routable slug. It must reject anything the service layer's validate.SanitizeSlug
+// would, not merely an empty-after-lowercase value.
 func TestUpdateUserProfileParams_Validate(t *testing.T) {
 	// Mixed case is accepted: the store lowercases it (NormalizeUsername), so the
 	// stored value is a clean slug.
-	valid := []string{"alice", "bob-1", "a", "user-name-2", "Alice"}
-	for _, name := range valid {
+	for _, name := range validUsernames {
 		require.NoError(t, UpdateUserProfileParams{ID: "u1", Username: name}.Validate(),
 			"a well-formed slug %q must validate", name)
 	}
 
-	invalid := map[string]string{
-		"empty":               "",
-		"whitespace only":     "   ",
-		"leading/trailing ws": "  alice  ",
-		"space inside":        "bad name",
-		"punctuation":         "Bad Name!",
-		"leading hyphen":      "-alice",
-		"consecutive hyphen":  "a--b",
-	}
-	for label, name := range invalid {
+	for label, name := range invalidUsernames {
 		err := UpdateUserProfileParams{ID: "u1", Username: name}.Validate()
 		require.ErrorIs(t, err, ErrInvalidArgument, "%s (%q) must be rejected as an invalid slug", label, name)
 	}
@@ -46,31 +49,42 @@ func TestUpdateUserProfileParams_Validate(t *testing.T) {
 }
 
 // TestCreateUserParams_Validate mirrors the UpdateUserProfileParams.Validate
-// coverage on the CREATE path: a user's username is created in the same
-// transaction as its personal org and mirrored into orgs.name, so the store must
-// refuse a non-slug username on create the same way it does on rename, closing the
-// asymmetry where only the rename path guarded the /o/{slug} mirror.
+// coverage on the CREATE path: the store must refuse a non-slug username on create
+// the same way it does on rename.
 func TestCreateUserParams_Validate(t *testing.T) {
 	// Mixed case is accepted (the store lowercases it); the rest are routable slugs.
-	valid := []string{"alice", "bob-1", "a", "user-name-2", "MixedCase", "solo"}
-	for _, name := range valid {
-		require.NoError(t, CreateUserParams{ID: "u1", OrgID: "o1", Username: name}.Validate(),
+	for _, name := range validUsernames {
+		require.NoError(t, CreateUserParams{ID: "u1", Username: name}.Validate(),
 			"a well-formed slug %q must validate on create", name)
 	}
 
-	invalid := map[string]string{
-		"empty":               "",
-		"whitespace only":     "   ",
-		"leading/trailing ws": "  alice  ",
-		"space inside":        "bad name",
-		"punctuation":         "Bad Name!",
-		"leading hyphen":      "-alice",
-		"consecutive hyphen":  "a--b",
-	}
-	for label, name := range invalid {
-		err := CreateUserParams{ID: "u1", OrgID: "o1", Username: name}.Validate()
+	for label, name := range invalidUsernames {
+		err := CreateUserParams{ID: "u1", Username: name}.Validate()
 		require.ErrorIs(t, err, ErrInvalidArgument, "%s (%q) must be rejected as an invalid slug on create", label, name)
 	}
+}
+
+// TestCreateUserParams_ValidateRejectsBlankID pins the create path's other
+// invariant, and the one with the wider blast radius: users.id is the parent
+// key every owner-keyed child row hangs off, so a blank one is the single
+// thing that makes a blank-OWNER row storable at all. SQLite accepts "" as a
+// TEXT primary key, so `user_id REFERENCES users(id)` admits a blank-owner tab
+// or CRDT row the moment a blank-id parent exists -- and no ownership
+// predicate can name it, because binding "" matches every blank-owner row
+// rather than none (see userid.OwnerFilter).
+//
+// Routing the check through userid.New rather than a local `== ""` is what
+// keeps the two halves from drifting: the id the store will accept on create
+// is by construction exactly the id an ownership predicate can later bind.
+func TestCreateUserParams_ValidateRejectsBlankID(t *testing.T) {
+	err := CreateUserParams{ID: "", Username: "alice"}.Validate()
+	require.ErrorIs(t, err, ErrInvalidArgument,
+		"a blank id is the parent key that makes every blank-owner child row storable; create must refuse it")
+
+	// The username is valid in both cases above and below, so this pins the ID
+	// check specifically rather than passing for the wrong reason.
+	require.NoError(t, CreateUserParams{ID: "u1", Username: "alice"}.Validate(),
+		"a well-formed id and username must still validate")
 }
 
 // TestSearchLikePattern pins the one site that builds the admin-search LIKE

@@ -26,8 +26,7 @@ const pendingEmailExpiry = 30 * time.Minute
 // the success probability of a remote brute-force at 5/31^6 ≈ 5e-9.
 const maxVerificationAttempts = 5
 
-// CreateUserParams holds the parameters for creating a new user together
-// with its personal org.
+// CreateUserParams holds the parameters for creating a new user.
 type CreateUserParams struct {
 	Username      string
 	PasswordHash  string
@@ -38,43 +37,25 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
-// CreateUserWithOrg creates a personal org and its user atomically within a
-// transaction. It returns the created user row.
-func CreateUserWithOrg(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
-	orgID := id.Generate()
+// CreateUser creates a user. It returns the created user row.
+func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
 	userID := id.Generate()
 
-	err := st.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:   orgID,
-			Name: p.Username,
-		}); err != nil {
-			return fmt.Errorf("create org: %w", store.NewConflictError(err, store.ConflictEntityOrg))
-		}
-
-		if err := tx.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			OrgID:         orgID,
-			Username:      p.Username,
-			PasswordHash:  p.PasswordHash,
-			DisplayName:   p.DisplayName,
-			Email:         p.Email,
-			EmailVerified: p.EmailVerified,
-			PasswordSet:   p.PasswordSet,
-			IsAdmin:       p.IsAdmin,
-		}); err != nil {
-			return fmt.Errorf("create user: %w", store.NewConflictError(err, store.ConflictEntityUser))
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	if err := st.Users().Create(ctx, store.CreateUserParams{
+		ID:            userID,
+		Username:      p.Username,
+		PasswordHash:  p.PasswordHash,
+		DisplayName:   p.DisplayName,
+		Email:         p.Email,
+		EmailVerified: p.EmailVerified,
+		PasswordSet:   p.PasswordSet,
+		IsAdmin:       p.IsAdmin,
+	}); err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
 	}
 
 	createdUser := &store.User{
 		ID:            userID,
-		OrgID:         orgID,
 		Username:      p.Username,
 		DisplayName:   p.DisplayName,
 		Email:         p.Email,
@@ -120,21 +101,66 @@ func CheckEmailAvailable(ctx context.Context, st store.Store, email, excludeUser
 		return fmt.Errorf("check email: %w", err)
 	}
 	if taken {
-		return fmt.Errorf("email address is already in use")
+		return &FieldTakenError{Field: "email", Value: email}
 	}
 	return nil
 }
 
-// checkUsernameAvailable checks that no other user has the given username.
-func checkUsernameAvailable(ctx context.Context, st store.Store, username string) error {
+// CheckUsernameAvailable checks that no other user has the given username. A
+// blank username is skipped: `admin user update --email` changes only the
+// email, so an unchanged (unsupplied) username must not be reported as a cause.
+func CheckUsernameAvailable(ctx context.Context, st store.Store, username string) error {
+	if username == "" {
+		return nil
+	}
 	taken, err := st.Users().ExistsByUsername(ctx, username)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return fmt.Errorf("check username: %w", err)
 	}
 	if taken {
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+		return &FieldTakenError{Field: "username", Value: username}
 	}
 	return nil
+}
+
+// FieldTakenError names the field a create/update collided on, so each caller
+// can render it in its own idiom: a connect AlreadyExists for RPC callers, a
+// plain sentence for the admin CLI.
+//
+// It replaces three separate implementations of one uniqueness rule -- this
+// pair plus the admin CLI's own copy -- which had drifted on blank handling and
+// on wording, and duplicated friendlyConstraintError's message strings besides.
+type FieldTakenError struct {
+	Field string
+	Value string
+}
+
+func (e *FieldTakenError) Error() string {
+	switch e.Field {
+	case "username":
+		return fmt.Sprintf("username %q is already taken", e.Value)
+	case "email":
+		return fmt.Sprintf("email %q is already in use", e.Value)
+	default:
+		return fmt.Sprintf("%s %q is already in use", e.Field, e.Value)
+	}
+}
+
+// AvailabilityConnectError maps an availability failure onto a connect code.
+//
+// A collision is AlreadyExists; ANYTHING ELSE is Internal. Call sites used to
+// wrap CheckEmailAvailable's result in AlreadyExists unconditionally, which
+// reported a transient store failure ("check email: ...") to the client as a
+// taken address -- a retryable fault rendered as a permanent one.
+func AvailabilityConnectError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var taken *FieldTakenError
+	if errors.As(err, &taken) {
+		return connect.NewError(connect.CodeAlreadyExists, taken)
+	}
+	return connect.NewError(connect.CodeInternal, err)
 }
 
 // verifyPendingEmailToken validates the verification code submitted by

@@ -34,34 +34,31 @@ func originClientID() string {
 	return cliOriginClientID
 }
 
-// CRDTBootstrap is the snapshot a one-shot WatchOrg subscribe returns.
-// Holds the canonical state needed to build subsequent op batches
-// (epoch + max_hlc seed for the local clock).
+// CRDTBootstrap is the snapshot one unary GetMaterialized call
+// returns. Holds the canonical state needed to build subsequent op
+// batches (epoch + max_hlc seed for the local clock).
 type CRDTBootstrap struct {
-	OrgID        string
-	State        *leapmuxv1.OrgMaterialized
+	State        *leapmuxv1.UserMaterialized
 	Epoch        int64
 	Clock        *crdt.Clock
 	OriginClient string
 }
 
-// crdtBootstrap opens a one-shot `/ws/orgevents` subscription, reads
-// the initial `OrgMaterialized` event, and tears the connection down.
-// Works for both hub-bound clients (`--hub <url>` opens the WS
-// directly via the bearer token) and worker-spawned local-IPC
-// clients (the worker's `RemoteIPCService.StreamInner` route opens
-// the upstream WS using the agent's per-(user, workspace) delegation
-// bearer; see `internal/worker/remoteipc/hub_stream.go`).
-func crdtBootstrap(ctx context.Context, c *remote.Client, orgID string, workspaceIDs []string) (*CRDTBootstrap, error) {
-	if orgID == "" {
-		return nil, errors.New("crdt bootstrap: org_id required")
-	}
-	var initial *leapmuxv1.OrgMaterialized
+// crdtBootstrap fetches the `UserMaterialized` snapshot with a single
+// unary `GetMaterialized` call -- no subscription is opened. Works for
+// both hub-bound clients (`--hub <url>` calls the hub directly with
+// the bearer token) and worker-spawned local-IPC clients (the
+// worker's `RemoteIPCService.CallInner` route proxies the same unary
+// RPC using the agent's per-(user, workspace) delegation bearer).
+// Tenancy is the authenticated session, implied by the bearer -- no
+// user_id is sent on the wire.
+func crdtBootstrap(ctx context.Context, c *remote.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
+	var initial *leapmuxv1.UserMaterialized
 	var err error
 	if c.IsLocal() {
-		initial, err = crdtBootstrapLocal(ctx, c, orgID, workspaceIDs)
+		initial, err = crdtBootstrapLocal(ctx, c, workspaceIDs)
 	} else {
-		initial, err = crdtBootstrapHub(ctx, c, orgID, workspaceIDs)
+		initial, err = crdtBootstrapHub(ctx, c, workspaceIDs)
 	}
 	if err != nil {
 		return nil, err
@@ -72,7 +69,6 @@ func crdtBootstrap(ctx context.Context, c *remote.Client, orgID string, workspac
 	clock := crdt.NewClock(originClientID())
 	clock.Observe(initial.GetMaxHlc())
 	return &CRDTBootstrap{
-		OrgID:        orgID,
 		State:        initial,
 		Epoch:        initial.GetCurrentEpoch(),
 		Clock:        clock,
@@ -80,11 +76,11 @@ func crdtBootstrap(ctx context.Context, c *remote.Client, orgID string, workspac
 	}, nil
 }
 
-func crdtBootstrapHub(ctx context.Context, c *remote.Client, orgID string, workspaceIDs []string) (*leapmuxv1.OrgMaterialized, error) {
+func crdtBootstrapHub(ctx context.Context, c *remote.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
 	// One-shot snapshot via the unary GetMaterialized RPC. Avoids the
 	// WS handshake + first-event-await dance the streaming
-	// `/ws/orgevents` path requires per CLI invocation.
-	req := &leapmuxv1.GetMaterializedRequest{OrgId: orgID, WorkspaceIds: workspaceIDs}
+	// `/ws/userevents` path requires per CLI invocation.
+	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	var resp leapmuxv1.GetMaterializedResponse
 	if err := hubCallUnary(ctx, c, "GetMaterialized", "", req, &resp); err != nil {
 		return nil, err
@@ -92,11 +88,11 @@ func crdtBootstrapHub(ctx context.Context, c *remote.Client, orgID string, works
 	return resp.GetState(), nil
 }
 
-func crdtBootstrapLocal(ctx context.Context, c *remote.Client, orgID string, workspaceIDs []string) (*leapmuxv1.OrgMaterialized, error) {
+func crdtBootstrapLocal(ctx context.Context, c *remote.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
 	// Local-IPC path routes through the worker's RemoteIPC tunnel,
 	// which proxies to the hub's unary GetMaterialized for the same
 	// one-shot semantics as the remote path.
-	req := &leapmuxv1.GetMaterializedRequest{OrgId: orgID, WorkspaceIds: workspaceIDs}
+	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal getmaterialized: %w", err)
@@ -108,7 +104,11 @@ func crdtBootstrapLocal(ctx context.Context, c *remote.Client, orgID string, wor
 	if len(workspaceIDs) > 0 {
 		innerReq.WorkspaceId = workspaceIDs[0]
 	}
-	innerResp, err := c.RemoteIPCService().CallInner(ctx, connect.NewRequest(innerReq))
+	ipc, err := c.RemoteIPCService()
+	if err != nil {
+		return nil, err
+	}
+	innerResp, err := ipc.CallInner(ctx, connect.NewRequest(innerReq))
 	if err != nil {
 		return nil, fmt.Errorf("crdt bootstrap (local IPC): %w", err)
 	}
@@ -122,28 +122,27 @@ func crdtBootstrapLocal(ctx context.Context, c *remote.Client, orgID string, wor
 	return resp.GetState(), nil
 }
 
-// streamWatchOrgLocal opens a hub.WatchOrg StreamInner against the
+// streamWatchUserLocal opens a hub.WatchUser StreamInner against the
 // agent's local-IPC peer and drives `onEvent` for every decoded
-// `WatchOrgEvent`. `onEvent` returns (stop=true, _) to terminate the
+// `WatchUserEvent`. `onEvent` returns (stop=true, _) to terminate the
 // loop after the current event (e.g. once the initial frame lands)
 // or (_, err) to propagate an error. The stream is closed when
-// streamWatchOrgLocal returns. Shared between the bootstrap reader
-// (which stops on the initial frame) and `events --local` (which
-// stays open until ctx cancellation).
-func streamWatchOrgLocal(
+// streamWatchUserLocal returns. Sole caller is `events --local`
+// (runEventsLocal), which stays open until ctx cancellation; the
+// bootstrap path uses the unary GetMaterialized instead.
+func streamWatchUserLocal(
 	ctx context.Context,
 	c *remote.Client,
-	orgID string,
 	workspaceIDs []string,
-	onEvent func(*leapmuxv1.WatchOrgEvent) (stop bool, err error),
+	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
 ) error {
-	req := &leapmuxv1.WatchOrgRequest{OrgId: orgID, WorkspaceIds: workspaceIDs}
+	req := &leapmuxv1.WatchUserRequest{WorkspaceIds: workspaceIDs}
 	payload, err := proto.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshal watchorg: %w", err)
+		return fmt.Errorf("marshal watchuser: %w", err)
 	}
 	streamReq := &leapmuxv1.StreamInnerRequest{
-		Method:          "hub.WatchOrg",
+		Method:          "hub.WatchUser",
 		Payload:         payload,
 		ClientRequestId: id.Generate(),
 	}
@@ -152,7 +151,11 @@ func streamWatchOrgLocal(
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := c.RemoteIPCService().StreamInner(streamCtx, connect.NewRequest(streamReq))
+	ipcStream, err := c.RemoteIPCService()
+	if err != nil {
+		return err
+	}
+	stream, err := ipcStream.StreamInner(streamCtx, connect.NewRequest(streamReq))
 	if err != nil {
 		return err
 	}
@@ -165,9 +168,9 @@ func streamWatchOrgLocal(
 		if len(env.GetPayload()) == 0 {
 			continue
 		}
-		var evt leapmuxv1.WatchOrgEvent
+		var evt leapmuxv1.WatchUserEvent
 		if err := proto.Unmarshal(env.GetPayload(), &evt); err != nil {
-			return fmt.Errorf("decode watchorg event: %w", err)
+			return fmt.Errorf("decode WatchUser event: %w", err)
 		}
 		stop, err := onEvent(&evt)
 		if err != nil {
@@ -195,7 +198,6 @@ func crdtSubmitBatch(
 		return nil, errors.New("crdt submit: bootstrap is nil")
 	}
 	req := &leapmuxv1.SubmitOpsRequest{
-		OrgId:   bs.OrgID,
 		Epoch:   bs.Epoch,
 		Batches: []*leapmuxv1.OpBatch{batch},
 	}
@@ -224,49 +226,38 @@ type crdtCall struct {
 }
 
 // openCRDTCall runs the standard CRDT-mutation preamble: requireClient
-// → rpcDeadline → resolveOrgID → crdtBootstrap. Errors are wrapped into
-// the matching `remote.EmitError*` envelope so callers can `return err`
-// directly without re-classifying.
+// → rpcDeadline → crdtBootstrap. Errors are wrapped into the matching
+// `remote.EmitError*` envelope so callers can `return err` directly
+// without re-classifying. Tenancy is the authenticated session, so no
+// user-id resolution is needed.
 func openCRDTCall(hub, workspaceID string) (*crdtCall, error) {
 	c, err := requireClient(hub)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := rpcDeadline(context.Background())
-	orgID, err := resolveOrgID(ctx, c, workspaceID)
-	if err != nil {
-		cancel()
-		return nil, remote.EmitErrorWith("resolve_failed", err)
-	}
-	return finishOpenCRDTCall(ctx, cancel, c, orgID, workspaceID)
+	return finishOpenCRDTCall(ctx, cancel, c, workspaceID)
 }
 
-// openCRDTCallFromResolved skips the GetWorkspace round-trip when the
-// caller already ran the universal resolver (`runResolve` →
-// resolve.Resolved.OrgID). Handlers chain this after `runResolve(..,
-// Need{WorkspaceID: true}, ..)` so the workspace lookup happens exactly
-// once per command, regardless of how many openCRDTCall* call sites
-// flow through.
+// openCRDTCallFromResolved is openCRDTCall for handlers that already
+// ran the universal resolver (`runResolve` → resolve.Resolved): it
+// takes the workspace id from the Resolved struct and rejects an
+// unresolved one up front, instead of trusting a raw flag value.
+// Handlers chain it after `runResolve(.., Need{WorkspaceID: true}, ..)`.
 func openCRDTCallFromResolved(hub string, got resolve.Resolved) (*crdtCall, error) {
 	if got.WorkspaceID == "" {
 		return nil, remote.EmitError("invalid_request", "workspace_id required")
-	}
-	if got.OrgID == "" {
-		// The resolver returned a workspace without surfacing its
-		// org; fall back to the unresolved path so we don't carry a
-		// silent inconsistency forward.
-		return openCRDTCall(hub, got.WorkspaceID)
 	}
 	c, err := requireClient(hub)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := rpcDeadline(context.Background())
-	return finishOpenCRDTCall(ctx, cancel, c, got.OrgID, got.WorkspaceID)
+	return finishOpenCRDTCall(ctx, cancel, c, got.WorkspaceID)
 }
 
-func finishOpenCRDTCall(ctx context.Context, cancel context.CancelFunc, c *remote.Client, orgID, workspaceID string) (*crdtCall, error) {
-	bs, err := crdtBootstrap(ctx, c, orgID, []string{workspaceID})
+func finishOpenCRDTCall(ctx context.Context, cancel context.CancelFunc, c *remote.Client, workspaceID string) (*crdtCall, error) {
+	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
 	if err != nil {
 		cancel()
 		return nil, remote.EmitErrorWith("crdt_bootstrap_failed", err)
@@ -286,7 +277,7 @@ func (cc *crdtCall) close() {
 // submitOps wraps ops in a fresh OpBatch, submits via the appropriate
 // transport, and unwraps the per-batch rejection into an EmitError*
 // envelope. Returns nil on commit.
-func (cc *crdtCall) submitOps(ops []*leapmuxv1.OrgOp) error {
+func (cc *crdtCall) submitOps(ops []*leapmuxv1.CrdtOp) error {
 	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
 	if err != nil {
 		return remote.EmitErrorWith("rpc_failed", err)
@@ -305,7 +296,7 @@ func (cc *crdtCall) submitOps(ops []*leapmuxv1.OrgOp) error {
 // rejection reason -- e.g. `layout set` retrying TAB_PLACEMENT_INVALID
 // after re-bootstrapping the snapshot -- use this instead of
 // submitOps so the envelope isn't emitted prematurely.
-func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.OrgOp) (bool, leapmuxv1.BatchRejectionReason, error) {
+func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.BatchRejectionReason, error) {
 	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
 	if err != nil {
 		return false, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, err
@@ -337,30 +328,8 @@ func crdtBatchError(res *leapmuxv1.BatchResult) error {
 }
 
 // crdtNewBatch wraps ops in a fresh OpBatch with a client-minted batch_id.
-func crdtNewBatch(ops []*leapmuxv1.OrgOp) *leapmuxv1.OpBatch {
+func crdtNewBatch(ops []*leapmuxv1.CrdtOp) *leapmuxv1.OpBatch {
 	return &leapmuxv1.OpBatch{BatchId: id.Generate(), Ops: ops}
-}
-
-// tombstoneCRDTTab is the convenience wrapper used by `agent close`,
-// `terminal close`, and the `tab close` CLI: bootstraps a one-shot
-// CRDT subscription, submits a single TombstoneTab op, and returns
-// the per-batch error (or nil on commit). The caller has already
-// done the worker-side close; we only need the CRDT half.
-func tombstoneCRDTTab(ctx context.Context, c *remote.Client, workspaceID string, tabType leapmuxv1.TabType, tabID string) error {
-	orgID, err := resolveOrgID(ctx, c, workspaceID)
-	if err != nil {
-		return fmt.Errorf("resolve org_id: %w", err)
-	}
-	bs, err := crdtBootstrap(ctx, c, orgID, []string{workspaceID})
-	if err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	op := opTombstoneTab(bs, tabType, tabID)
-	res, err := crdtSubmitBatch(ctx, c, bs, workspaceID, crdtNewBatch([]*leapmuxv1.OrgOp{op}))
-	if err != nil {
-		return fmt.Errorf("submit: %w", err)
-	}
-	return crdtBatchError(res)
 }
 
 // nowMillis is the wall-clock helper Clock.Tick takes.
@@ -368,7 +337,7 @@ func nowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-// op-builder helpers — each returns a single-register-write OrgOp
+// op-builder helpers — each returns a single-register-write CrdtOp
 // stamped with a fresh advisory client_hlc from `bs.Clock`. The hub
 // reassigns canonical HLCs on commit; client_hlc is just a hint.
 //
@@ -376,60 +345,60 @@ func nowMillis() int64 {
 // makes the oneof `Field` interface package-private, so per-register
 // helpers can't share a single "set field" parameter type. Instead
 // they share the envelope-allocation core via newSetTabRegisterOp
-// (returns both the wrapper OrgOp and the inner record), letting each
+// (returns both the wrapper CrdtOp and the inner record), letting each
 // helper drop to one line of variant-specific assignment.
 
-func opTombstoneTab(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) *leapmuxv1.OrgOp {
+func opTombstoneTab(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) *leapmuxv1.CrdtOp {
 	op := envelope(bs)
-	op.Body = &leapmuxv1.OrgOp_TombstoneTab{
+	op.Body = &leapmuxv1.CrdtOp_TombstoneTab{
 		TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: tabType, TabId: tabID},
 	}
 	return op
 }
 
-func opTombstoneNode(bs *CRDTBootstrap, nodeID string) *leapmuxv1.OrgOp {
+func opTombstoneNode(bs *CRDTBootstrap, nodeID string) *leapmuxv1.CrdtOp {
 	op := envelope(bs)
-	op.Body = &leapmuxv1.OrgOp_TombstoneNode{
+	op.Body = &leapmuxv1.CrdtOp_TombstoneNode{
 		TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: nodeID},
 	}
 	return op
 }
 
-// newSetTabRegisterOp allocates the OrgOp wrapper + SetTabRegisterOp
+// newSetTabRegisterOp allocates the CrdtOp wrapper + SetTabRegisterOp
 // inner record and links them. Callers set inner.Field to the desired
 // variant. Used by every opSetTab* helper below.
-func newSetTabRegisterOp(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.OrgOp, *leapmuxv1.SetTabRegisterOp) {
+func newSetTabRegisterOp(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.CrdtOp, *leapmuxv1.SetTabRegisterOp) {
 	op := envelope(bs)
 	inner := &leapmuxv1.SetTabRegisterOp{TabType: tabType, TabId: tabID}
-	op.Body = &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: inner}
+	op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: inner}
 	return op, inner
 }
 
-func opSetTabTileID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, tileID string) *leapmuxv1.OrgOp {
+func opSetTabTileID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, tileID string) *leapmuxv1.CrdtOp {
 	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
 	inner.Field = &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID}
 	return op
 }
 
-func opSetTabPosition(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, position string) *leapmuxv1.OrgOp {
+func opSetTabPosition(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, position string) *leapmuxv1.CrdtOp {
 	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
 	inner.Field = &leapmuxv1.SetTabRegisterOp_Position{Position: position}
 	return op
 }
 
-func opSetTabWorkerID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, workerID string) *leapmuxv1.OrgOp {
+func opSetTabWorkerID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, workerID string) *leapmuxv1.CrdtOp {
 	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
 	inner.Field = &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID}
 	return op
 }
 
-func opSetTabDisplayMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.OrgOp {
+func opSetTabDisplayMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.CrdtOp {
 	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
 	inner.Field = &leapmuxv1.SetTabRegisterOp_DisplayMode{DisplayMode: mode}
 	return op
 }
 
-func opSetTabFileViewMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.OrgOp {
+func opSetTabFileViewMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.CrdtOp {
 	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
 	inner.Field = &leapmuxv1.SetTabRegisterOp_FileViewMode{FileViewMode: mode}
 	return op

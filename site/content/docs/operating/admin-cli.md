@@ -107,7 +107,7 @@ Columns: `ID  USERNAME  DISPLAY_NAME  EMAIL  ADMIN  CREATED`. Empty: `No users f
 
 ### `user get`
 
-Prints labeled fields: `ID`, `Org ID`, `Username`, `Display name`, `Email`, `Email verified` (yes/no), `Password set` (yes/no), `Admin` (yes/no), `Created at`, `Updated at`.
+Prints labeled fields: `ID`, `Username`, `Display name`, `Email`, `Email verified` (yes/no), `Password set` (yes/no), `Admin` (yes/no), `Created at`, `Updated at`.
 
 ```bash
 leapmux admin user get --username alice
@@ -115,7 +115,7 @@ leapmux admin user get --username alice
 
 ### `user create`
 
-Create a user together with their personal org.
+Create a user.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -157,7 +157,7 @@ leapmux admin user update --username alice --email alice@newcorp.com --email-ver
 | `--id` / `--username` | Lookup. |
 | `--force` | Required to delete an admin user. |
 
-Deleting an admin without `--force` errors: `user %q is an admin; pass --force to confirm deletion`. In a single transaction the command marks the user's Workers deleted, soft-deletes their workspaces, deletes their sessions, **revokes all the user's credentials** (API tokens + delegation tokens), deletes the user, and soft-deletes the personal org. On success: `Deleted user "alice" (id: ...) and personal org ...`.
+Deleting an admin without `--force` errors: `user %q is an admin; pass --force to confirm deletion`. In a single transaction the command marks the user's Workers deleted, soft-deletes their workspaces, deletes their sessions, **revokes all the user's credentials** (API tokens + delegation tokens), and deletes the user. On success: `Deleted user "alice" (id: ...)`.
 
 ```bash
 leapmux admin user delete --username bob
@@ -560,7 +560,7 @@ The minting Worker may also revoke it in-process via its own endpoint for zero-l
 
 ## Common recipes
 
-**Create an org with an owner.** Creating a user automatically provisions their personal org with them as owner — see [`user create`](#user-create).
+**Create a user.** See [`user create`](#user-create).
 
 **Reset a user's password (and kick existing sessions).** See [`user reset-password`](#user-reset-password).
 

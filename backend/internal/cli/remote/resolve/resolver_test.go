@@ -3,6 +3,7 @@ package resolve_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,10 +22,8 @@ import (
 // actually needs).
 type stubDeps struct {
 	locateTab     func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error)
-	getWorkspace  func(ctx context.Context, workspaceID string) (string, string, error)
-	getWorker     func(ctx context.Context, workerID string) (string, string, error)
-	locateTile    func(ctx context.Context, tileID string) (string, string, error)
-	getUser       func(ctx context.Context, userID string) (string, error)
+	getWorkspace  func(ctx context.Context, workspaceID string) error
+	locateTile    func(ctx context.Context, tileID string) (string, error)
 	getWorkingDir func(ctx context.Context, workerID string, tabType leapmuxv1.TabType, tabID string) (string, error)
 }
 
@@ -32,9 +31,7 @@ func (s stubDeps) toDeps() resolve.Deps {
 	return resolve.Deps{
 		LocateTab:     s.locateTab,
 		GetWorkspace:  s.getWorkspace,
-		GetWorker:     s.getWorker,
 		LocateTile:    s.locateTile,
-		GetUser:       s.getUser,
 		GetWorkingDir: s.getWorkingDir,
 	}
 }
@@ -66,87 +63,102 @@ func TestResolve_TabID_DerivesWorkspaceTileWorker(t *testing.T) {
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
 }
 
-// TestResolve_WorkspaceID_DerivesOrgAndOwner pins the workspace
-// fan-out. Scripts that already know the workspace id (laptop CLI
-// after `workspace list`) shouldn't have to pass --org-id;
-// GetWorkspace fills it.
-func TestResolve_WorkspaceID_DerivesOrgAndOwner(t *testing.T) {
+// TestResolve_WorkspaceID_ChecksExistence pins the workspace leg:
+// --workspace-id derives nothing, but it must still be validated so a
+// typo fails here with a clear error instead of landing downstream as
+// an empty CRDT projection.
+func TestResolve_WorkspaceID_ChecksExistence(t *testing.T) {
+	called := false
 	deps := stubDeps{
-		getWorkspace: func(_ context.Context, workspaceID string) (string, string, error) {
+		getWorkspace: func(_ context.Context, workspaceID string) error {
+			called = true
 			assert.Equal(t, "ws-1", workspaceID)
-			return "org-1", "user-alice", nil
+			return nil
 		},
 	}.toDeps()
 
 	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{OrgID: true, UserID: true},
+		resolve.Need{WorkspaceID: true},
 		resolve.Inputs{WorkspaceID: "ws-1"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "org-1", got.OrgID)
-	assert.Equal(t, "user-alice", got.UserID)
+	assert.True(t, called, "a supplied --workspace-id must be checked against the hub")
+	assert.Equal(t, "ws-1", got.WorkspaceID)
 }
 
-// TestResolve_WorkerID_DerivesUserAndOrg pins the worker-side
-// fan-out enabled by the new Worker.org_id field. Pre-Phase-2,
-// --worker-id couldn't derive org_id; this test guards against a
-// regression that would force the user back to also passing
-// --org-id when they only know the worker.
-func TestResolve_WorkerID_DerivesUserAndOrg(t *testing.T) {
+// TestResolve_WorkspaceID_NotFound is the miss half of the same leg:
+// an unknown workspace fails the whole resolve rather than passing the
+// unchecked flag value through.
+func TestResolve_WorkspaceID_NotFound(t *testing.T) {
 	deps := stubDeps{
-		getWorker: func(_ context.Context, workerID string) (string, string, error) {
-			assert.Equal(t, "worker-A", workerID)
-			return "user-alice", "org-1", nil
+		getWorkspace: func(_ context.Context, _ string) error {
+			return errors.New("not found")
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{WorkspaceID: true},
+		resolve.Inputs{WorkspaceID: "ws-missing"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get workspace ws-missing")
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// TestResolve_WorkerID_CostsNoRPC is the deliberate anti-twin of
+// TestResolve_WorkspaceID_ChecksExistence: --worker-id passes straight
+// through, unconfirmed and free.
+//
+// The workspace axis keeps its existence check because nothing
+// downstream catches a bogus workspace id (GetMaterialized answers with
+// an empty projection, not an error). The worker axis has no such gap
+// -- and a confirmation RPC there is actively harmful, because every
+// worker-spawned agent inherits $LEAPMUX_REMOTE_WORKER_ID and the only
+// RPCs that could serve the check (GetWorker / ListWorkers) are
+// intentionally off the hub's delegation-bearer allowlist. The leg
+// that used to be here failed every agent-issued command with
+// `resolve_failed: get worker ...: permission_denied`.
+func TestResolve_WorkerID_CostsNoRPC(t *testing.T) {
+	// Every dep panics: reaching any of them on a bare --worker-id
+	// input is the regression.
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (leapmuxv1.TabType, string, string, string, error) {
+			panic("--worker-id must not trigger LocateTab")
+		},
+		getWorkspace: func(context.Context, string) error {
+			panic("--worker-id must not trigger GetWorkspace")
+		},
+		locateTile: func(context.Context, string) (string, error) {
+			panic("--worker-id must not trigger LocateTile")
 		},
 	}.toDeps()
 
 	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{UserID: true, OrgID: true},
+		resolve.Need{WorkerID: true},
 		resolve.Inputs{WorkerID: "worker-A"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "user-alice", got.UserID)
-	assert.Equal(t, "org-1", got.OrgID)
+	assert.Equal(t, "worker-A", got.WorkerID)
 }
 
-// TestResolve_TileID_DerivesWorkspaceAndOrg pins the global tile
-// lookup enabled by LocateTile. A script that knows only a tile id
-// (e.g., from a layout_changed event) can ask the resolver for the
-// owning workspace + org without standing up a CRDT bootstrap of
-// its own.
-func TestResolve_TileID_DerivesWorkspaceAndOrg(t *testing.T) {
+// TestResolve_TileID_DerivesWorkspace pins the global tile lookup
+// enabled by LocateTile. A script that knows only a tile id (e.g.,
+// from a layout_changed event) can ask the resolver for the owning
+// workspace without standing up a CRDT bootstrap of its own.
+func TestResolve_TileID_DerivesWorkspace(t *testing.T) {
 	deps := stubDeps{
-		locateTile: func(_ context.Context, tileID string) (string, string, error) {
+		locateTile: func(_ context.Context, tileID string) (string, error) {
 			assert.Equal(t, "tile-1", tileID)
-			return "ws-1", "org-1", nil
+			return "ws-1", nil
 		},
 	}.toDeps()
 
 	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{WorkspaceID: true, OrgID: true},
+		resolve.Need{WorkspaceID: true},
 		resolve.Inputs{TileID: "tile-1"},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "ws-1", got.WorkspaceID)
-	assert.Equal(t, "org-1", got.OrgID)
-}
-
-// TestResolve_UserID_DerivesOrg pins the user→org edge enabled by
-// the new GetUser RPC. With --user-id alone, --org-id is filled.
-func TestResolve_UserID_DerivesOrg(t *testing.T) {
-	deps := stubDeps{
-		getUser: func(_ context.Context, userID string) (string, error) {
-			assert.Equal(t, "user-alice", userID)
-			return "org-1", nil
-		},
-	}.toDeps()
-
-	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{OrgID: true},
-		resolve.Inputs{UserID: "user-alice"},
-	)
-	require.NoError(t, err)
-	assert.Equal(t, "org-1", got.OrgID)
 }
 
 // TestResolve_ConflictBetweenTabAndWorkspace catches the canonical
@@ -159,8 +171,8 @@ func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
 			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-A", "tile-1", "worker-A", nil
 		},
-		getWorkspace: func(_ context.Context, _ string) (string, string, error) {
-			return "org-1", "user-alice", nil
+		getWorkspace: func(_ context.Context, _ string) error {
+			return nil
 		},
 	}.toDeps()
 
@@ -183,34 +195,6 @@ func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 	assert.Contains(t, re.Message, "--workspace-id")
 }
 
-// TestResolve_ConflictBetweenWorkerAndUser catches a different
-// shape of contradiction: --worker-id resolves to user X, but the
-// caller also passed --user-id=Y. Surfacing this catches the
-// "borrowed someone else's worker id" failure mode where a script
-// picks the wrong worker for the wrong user.
-func TestResolve_ConflictBetweenWorkerAndUser(t *testing.T) {
-	deps := stubDeps{
-		getWorker: func(_ context.Context, _ string) (string, string, error) {
-			return "user-alice", "org-1", nil
-		},
-		getUser: func(_ context.Context, _ string) (string, error) {
-			return "org-1", nil
-		},
-	}.toDeps()
-
-	_, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{UserID: true},
-		resolve.Inputs{WorkerID: "worker-A", UserID: "user-bob"},
-	)
-	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
-	assert.Contains(t, re.Message, "user_id")
-	assert.Contains(t, re.Message, "user-alice")
-	assert.Contains(t, re.Message, "user-bob")
-}
-
 // TestResolve_AgreementAcrossSourcesIsOK is the inverse of the
 // conflict tests: every multi-source field that *agrees* must
 // pass through cleanly. Without this coverage a conflict-detection
@@ -221,13 +205,13 @@ func TestResolve_AgreementAcrossSourcesIsOK(t *testing.T) {
 		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
 			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
 		},
-		getWorkspace: func(_ context.Context, _ string) (string, string, error) {
-			return "org-1", "user-alice", nil
+		getWorkspace: func(_ context.Context, _ string) error {
+			return nil
 		},
 	}.toDeps()
 
 	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{WorkspaceID: true, OrgID: true},
+		resolve.Need{WorkspaceID: true},
 		resolve.Inputs{
 			TabID:        "tab-1",
 			WorkspaceID:  "ws-1", // agrees with the LocateTab derivation
@@ -236,7 +220,6 @@ func TestResolve_AgreementAcrossSourcesIsOK(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "ws-1", got.WorkspaceID)
-	assert.Equal(t, "org-1", got.OrgID)
 }
 
 // TestResolve_MissingRequiredSurfacesAllFields confirms a single
@@ -244,7 +227,7 @@ func TestResolve_AgreementAcrossSourcesIsOK(t *testing.T) {
 // shouldn't have to fix-and-retry one flag at a time.
 func TestResolve_MissingRequiredSurfacesAllFields(t *testing.T) {
 	_, err := resolve.Resolve(context.Background(), resolve.Deps{},
-		resolve.Need{WorkspaceID: true, WorkerID: true, OrgID: true},
+		resolve.Need{WorkspaceID: true, TileID: true, WorkerID: true},
 		resolve.Inputs{},
 	)
 	require.Error(t, err)
@@ -252,8 +235,10 @@ func TestResolve_MissingRequiredSurfacesAllFields(t *testing.T) {
 	require.ErrorAs(t, err, &re)
 	assert.Equal(t, "invalid_request", re.Code)
 	assert.Contains(t, re.Message, "--workspace-id")
+	assert.Contains(t, re.Message, "--tile-id")
 	assert.Contains(t, re.Message, "--worker-id")
-	assert.Contains(t, re.Message, "--org-id")
+	assert.NotContains(t, re.Message, "--user-id",
+		"a user id is never required: the hub derives the tenant from the session")
 }
 
 // TestResolve_TabIDWithoutTypeIsAllowed pins the wildcard contract:
@@ -408,12 +393,11 @@ func TestResolve_RpcErrorPropagates(t *testing.T) {
 // missing inputs, but happy-path data passes through.
 func TestResolve_NoDerivations_ReturnsSeededInputs(t *testing.T) {
 	got, err := resolve.Resolve(context.Background(), resolve.Deps{},
-		resolve.Need{WorkspaceID: true, OrgID: true},
-		resolve.Inputs{WorkspaceID: "ws-1", OrgID: "org-1"},
+		resolve.Need{WorkspaceID: true},
+		resolve.Inputs{WorkspaceID: "ws-1"},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "ws-1", got.WorkspaceID)
-	assert.Equal(t, "org-1", got.OrgID)
 }
 
 // TestResolve_TrimsWhitespaceOnInputs catches a class of input bugs
@@ -447,9 +431,9 @@ func TestResolve_ExplicitFlagBeatsEnvDerivation(t *testing.T) {
 		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
 			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-A", nil
 		},
-		locateTile: func(_ context.Context, tileID string) (string, string, error) {
+		locateTile: func(_ context.Context, tileID string) (string, error) {
 			assert.Equal(t, "tile-X", tileID, "LocateTile must be called with the explicit --tile-id")
-			return "ws-1", "org-1", nil
+			return "ws-1", nil
 		},
 	}.toDeps()
 
@@ -505,8 +489,8 @@ func TestResolve_ExplicitInputShadowsEnvOnlyForConflictingField(t *testing.T) {
 		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
 			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-from-env-tab", nil
 		},
-		locateTile: func(_ context.Context, _ string) (string, string, error) {
-			return "ws-1", "org-1", nil
+		locateTile: func(_ context.Context, _ string) (string, error) {
+			return "ws-1", nil
 		},
 	}.toDeps()
 	got, err := resolve.Resolve(context.Background(), deps,
@@ -522,4 +506,74 @@ func TestResolve_ExplicitInputShadowsEnvOnlyForConflictingField(t *testing.T) {
 	assert.Equal(t, "ws-1", got.WorkspaceID)
 	assert.Equal(t, "worker-from-env-tab", got.WorkerID,
 		"non-conflicting derivations from the env tab survive even when its tile_id was shadowed")
+}
+
+// TestResolve_NoNeedsWithNoInputs pins the invocation shape the three
+// session-scoped commands rely on: `workspace create --title X`,
+// `events`, and `tab list` all run with no entity flags at all, from a
+// laptop where no LEAPMUX_REMOTE_*_ID env var is set. They must resolve
+// cleanly rather than being rejected for a missing id.
+//
+// This is a regression guard. These commands used to declare
+// Need{UserID: true} even though no hub RPC takes a user id any more
+// (the session implies the tenant) -- so a flag-less invocation failed
+// with "missing required ID(s): --user-id", and the commands that hid
+// the flag left the operator no way to satisfy the requirement at all.
+func TestResolve_NoNeedsWithNoInputs(t *testing.T) {
+	deps := stubDeps{}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{},
+		resolve.Inputs{},
+	)
+	require.NoError(t, err, "a flag-less, session-scoped command must resolve without any entity id")
+	assert.Empty(t, got.WorkspaceID)
+}
+
+// TestResolve_HasNoUserIDAxis is a structural guard against
+// reintroducing the user-id axis anywhere in the resolver's surface.
+// The hub derives the tenant from the session: no RPC takes a user id.
+// The one that did (UserService.GetUser) was self-only, echoed the
+// caller's own session, and was not callable by a worker-spawned
+// agent's delegation bearer -- so a --user-id input could only turn a
+// legal command into `resolve_failed` (which is exactly what
+// `workspace list` inside a spawn used to do, since the worker injects
+// $LEAPMUX_REMOTE_USER_ID into every agent). It has since been deleted.
+func TestResolve_HasNoUserIDAxis(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		typ   reflect.Type
+		field string
+	}{
+		{"Need", reflect.TypeOf(resolve.Need{}), "UserID"},
+		{"Inputs", reflect.TypeOf(resolve.Inputs{}), "UserID"},
+		{"Inputs", reflect.TypeOf(resolve.Inputs{}), "ExplicitUserID"},
+		{"Resolved", reflect.TypeOf(resolve.Resolved{}), "UserID"},
+		{"Deps", reflect.TypeOf(resolve.Deps{}), "GetUser"},
+		{"FlagOptions", reflect.TypeOf(resolve.FlagOptions{}), "HideUser"},
+	} {
+		_, found := tc.typ.FieldByName(tc.field)
+		assert.False(t, found, "%s must not carry a %s field", tc.name, tc.field)
+	}
+}
+
+// TestResolve_HasNoWorkerExistenceCheck is the same structural guard
+// one axis over. --worker-id itself stays (it is a required output for
+// most commands and LocateTab derives it); what must not come back is
+// a dep that CONFIRMS it against the hub.
+//
+// Both procedures that could implement such a dep --
+// WorkerManagementService's GetWorker and ListWorkers -- are
+// deliberately absent from `auth.delegationAllowedProcedures`, and
+// widening that allowlist is not the fix: a leaked worker delegation
+// token would gain the ability to enumerate the user's whole fleet.
+// Since the worker injects $LEAPMUX_REMOTE_WORKER_ID into every agent
+// it spawns, a resolver leg on this axis fires on essentially every
+// agent-issued command and can only fail it.
+func TestResolve_HasNoWorkerExistenceCheck(t *testing.T) {
+	depsType := reflect.TypeOf(resolve.Deps{})
+	for _, name := range []string{"GetWorker", "ListWorkers"} {
+		_, found := depsType.FieldByName(name)
+		assert.False(t, found, "Deps must not carry a %s field", name)
+	}
 }

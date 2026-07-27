@@ -273,7 +273,11 @@ func (c *Client) markEnqueued() {
 // ListOwnedTabsForWorker calls the hub's WorkerReconcilerService.
 // Authenticated by the worker's auth token (last seen on Connect).
 // Returns nil + error if Connect hasn't been called yet.
-func (c *Client) ListOwnedTabsForWorker(ctx context.Context) ([]*leapmuxv1.OwnedTab, error) {
+//
+// The whole response is returned, not just its tabs: the list is scoped to one
+// owner (the worker's registrant) and the caller's orphan reap is only valid
+// for that owner, so OwnerUserId has to travel with the rows it qualifies.
+func (c *Client) ListOwnedTabsForWorker(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 	c.mu.Lock()
 	token := c.authToken
 	c.mu.Unlock()
@@ -286,7 +290,7 @@ func (c *Client) ListOwnedTabsForWorker(ctx context.Context) ([]*leapmuxv1.Owned
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetTabs(), nil
+	return resp.Msg, nil
 }
 
 // Connect establishes the bidirectional streaming connection to the Hub.

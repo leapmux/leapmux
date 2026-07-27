@@ -19,7 +19,7 @@ import (
 // marshals each entry with proto.MarshalOptions{Deterministic: true}.
 // The hashes match across permutations IFF the state is invariant
 // under op order — that's the property the parity test asserts.
-func canonicalize(t *testing.T, state *leapmuxv1.OrgCrdtState) []byte {
+func canonicalize(t *testing.T, state *leapmuxv1.UserCrdtState) []byte {
 	t.Helper()
 	var sb strings.Builder
 	marshaler := proto.MarshalOptions{Deterministic: true}
@@ -69,9 +69,9 @@ func canonicalize(t *testing.T, state *leapmuxv1.OrgCrdtState) []byte {
 }
 
 // applyAll applies an op stream to a fresh state.
-func applyAll(t *testing.T, ops []*leapmuxv1.OrgOp) *leapmuxv1.OrgCrdtState {
+func applyAll(t *testing.T, ops []*leapmuxv1.CrdtOp) *leapmuxv1.UserCrdtState {
 	t.Helper()
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	for _, op := range ops {
 		crdt.Apply(state, op)
 	}
@@ -81,14 +81,14 @@ func applyAll(t *testing.T, ops []*leapmuxv1.OrgOp) *leapmuxv1.OrgCrdtState {
 // shuffleOps returns a fresh slice with `ops` permuted using the
 // supplied seed. Each op is cloned so per-permutation Apply calls
 // don't share mutable state through the proto map fields.
-func shuffleOps(seed int64, ops []*leapmuxv1.OrgOp) []*leapmuxv1.OrgOp {
+func shuffleOps(seed int64, ops []*leapmuxv1.CrdtOp) []*leapmuxv1.CrdtOp {
 	r := rand.New(rand.NewSource(seed))
-	out := make([]*leapmuxv1.OrgOp, len(ops))
+	out := make([]*leapmuxv1.CrdtOp, len(ops))
 	copy(out, ops)
 	r.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
-	cloned := make([]*leapmuxv1.OrgOp, len(out))
+	cloned := make([]*leapmuxv1.CrdtOp, len(out))
 	for i, op := range out {
-		cloned[i] = proto.Clone(op).(*leapmuxv1.OrgOp)
+		cloned[i] = proto.Clone(op).(*leapmuxv1.CrdtOp)
 	}
 	return cloned
 }
@@ -97,7 +97,7 @@ func shuffleOps(seed int64, ops []*leapmuxv1.OrgOp) []*leapmuxv1.OrgOp {
 // a validated op log produces byte-equal canonicalized state. This
 // is the headline CRDT property.
 func TestCommute_PermutedSetsConverge(t *testing.T) {
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "A"}}, hlcAt(10, 0, "a")),
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "B"}}, hlcAt(20, 0, "b")),
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n2", Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}}, hlcAt(15, 0, "a")),
@@ -120,25 +120,25 @@ func TestCommute_PermutedSetsConverge(t *testing.T) {
 func TestCommute_TombstonePairs(t *testing.T) {
 	cases := []struct {
 		name string
-		ops  []*leapmuxv1.OrgOp
+		ops  []*leapmuxv1.CrdtOp
 	}{
 		{
 			name: "node set then tombstone",
-			ops: []*leapmuxv1.OrgOp{
+			ops: []*leapmuxv1.CrdtOp{
 				stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "A"}}, hlcAt(5, 0, "a")),
 				stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "n1"}, hlcAt(10, 0, "a")),
 			},
 		},
 		{
 			name: "tab set then tombstone",
-			ops: []*leapmuxv1.OrgOp{
+			ops: []*leapmuxv1.CrdtOp{
 				stamped(&leapmuxv1.SetTabRegisterOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1", Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "n2"}}, hlcAt(5, 0, "a")),
 				stamped(&leapmuxv1.TombstoneTabOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}, hlcAt(10, 0, "a")),
 			},
 		},
 		{
 			name: "floating window set then tombstone",
-			ops: []*leapmuxv1.OrgOp{
+			ops: []*leapmuxv1.CrdtOp{
 				stamped(&leapmuxv1.SetFloatingWindowRegisterOp{WindowId: "w1", Field: &leapmuxv1.SetFloatingWindowRegisterOp_X{X: 0.5}}, hlcAt(5, 0, "a")),
 				stamped(&leapmuxv1.TombstoneFloatingWindowOp{WindowId: "w1"}, hlcAt(10, 0, "a")),
 			},
@@ -147,7 +147,7 @@ func TestCommute_TombstonePairs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := canonicalize(t, applyAll(t, tc.ops))
-			reversed := []*leapmuxv1.OrgOp{tc.ops[1], tc.ops[0]}
+			reversed := []*leapmuxv1.CrdtOp{tc.ops[1], tc.ops[0]}
 			b := canonicalize(t, applyAll(t, reversed))
 			assert.Equal(t, string(a), string(b), "remove-wins must be order-independent")
 		})
@@ -161,8 +161,8 @@ func TestCommute_ConcurrentSetsAtSameHLC(t *testing.T) {
 	a := stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "from-a"}}, hlcAt(10, 0, "alpha"))
 	b := stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "from-b"}}, hlcAt(10, 0, "bravo"))
 
-	state1 := applyAll(t, []*leapmuxv1.OrgOp{a, b})
-	state2 := applyAll(t, []*leapmuxv1.OrgOp{b, a})
+	state1 := applyAll(t, []*leapmuxv1.CrdtOp{a, b})
+	state2 := applyAll(t, []*leapmuxv1.CrdtOp{b, a})
 	assert.Equal(t, "from-b", state1.GetNodes()["n1"].GetPosition().GetValue(), "client_id=bravo should win the tie-break")
 	assert.Equal(t, "from-b", state2.GetNodes()["n1"].GetPosition().GetValue())
 }

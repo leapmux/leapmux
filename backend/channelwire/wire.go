@@ -233,25 +233,29 @@ func HTTPToWS(rawURL string) string {
 	return rawURL
 }
 
-// OrgEventsURL builds the per-org WebSocket URL the hub serves at
-// /ws/orgevents. baseURL is an http(s) URL; it is rewritten to ws(s)
+// UserEventsURL builds the per-user WebSocket URL the hub serves at
+// /ws/userevents. baseURL is an http(s) URL; it is rewritten to ws(s)
 // via HTTPToWS. workspaceIDs is optional — when non-empty it scopes the
-// subscription to those workspaces. Used by every client that opens the
-// org-events feed (desktop relay, remote CLI, worker-side relay) so the
-// query-string shape stays consistent.
-func OrgEventsURL(baseURL, orgID string, workspaceIDs []string) string {
+// subscription to those workspaces. The authenticated session implies
+// the user; no user_id query parameter is required. Used by every
+// client that opens the user-events feed (desktop relay, remote CLI,
+// worker-side relay) so the query-string shape stays consistent.
+func UserEventsURL(baseURL string, workspaceIDs []string) string {
 	q := url.Values{}
-	q.Set("org_id", orgID)
 	if len(workspaceIDs) > 0 {
 		q.Set("workspace_ids", strings.Join(workspaceIDs, ","))
 	}
-	return HTTPToWS(baseURL) + "/ws/orgevents?" + q.Encode()
+	qs := q.Encode()
+	if qs == "" {
+		return HTTPToWS(baseURL) + "/ws/userevents"
+	}
+	return HTTPToWS(baseURL) + "/ws/userevents?" + qs
 }
 
 // WriteFramedBytes writes a length-prefixed binary frame to a
 // WebSocket. Wire format: [4 bytes big-endian length][payload].
 // The shared wire format used by /ws/channel (ChannelMessage) and
-// /ws/orgevents (MarshaledEvent / WatchOrgEvent); routing both
+// /ws/userevents (MarshaledEvent / WatchUserEvent); routing both
 // writers through one helper keeps the framing spec in one place.
 func WriteFramedBytes(ctx context.Context, ws *websocket.Conn, payload []byte) error {
 	buf := make([]byte, 4+len(payload))
@@ -369,18 +373,18 @@ func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.Cha
 	return msg, nil
 }
 
-// OrgEventsReadLimit is the per-message read budget for /ws/orgevents
+// UserEventsReadLimit is the per-message read budget for /ws/userevents
 // subscribers (large initial-bootstrap snapshots can hit several MB on
-// busy orgs).
+// busy accounts).
 //
-// Independent of DefaultMaxReassembledMessageSize: org events are plaintext CRDT
+// Independent of DefaultMaxReassembledMessageSize: user events are plaintext CRDT
 // frames on their own socket, not chunked encrypted channel messages, so
 // the two limits answer different questions and are free to diverge.
-const OrgEventsReadLimit = 16 * 1024 * 1024
+const UserEventsReadLimit = 16 * 1024 * 1024
 
-// OpenOrgEventsWS dials /ws/orgevents on `hubURL` with the supplied
+// OpenUserEventsWS dials /ws/userevents on `hubURL` with the supplied
 // bearer + workspace scope and returns the resulting WebSocket. Used
-// by the worker's WatchOrg relay, the CLI's hub-bound client, and the desktop
+// by the worker's WatchUser relay, the CLI's hub-bound client, and the desktop
 // sidecar so the dial + subprotocol + read-limit
 // triple lives in one place. Caller owns the returned WS and must
 // Close it.
@@ -388,38 +392,38 @@ const OrgEventsReadLimit = 16 * 1024 * 1024
 // `bearer` is added as "Authorization: Bearer <bearer>". `httpClient`
 // may be nil; pass one when the caller's transport requires
 // unix/npipe dialers or shared HTTP/2 settings.
-func OpenOrgEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer, orgID string, workspaceIDs []string) (*websocket.Conn, error) {
+func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer string, workspaceIDs []string) (*websocket.Conn, error) {
 	header := http.Header{}
 	if bearer != "" {
 		header.Set("Authorization", "Bearer "+bearer)
 	}
-	return OpenOrgEventsWSWithHeader(ctx, httpClient, hubURL, header, orgID, workspaceIDs)
+	return OpenUserEventsWSWithHeader(ctx, httpClient, hubURL, header, workspaceIDs)
 }
 
-// OpenOrgEventsWSWithHeader is OpenOrgEventsWS for callers whose authentication
+// OpenUserEventsWSWithHeader is OpenUserEventsWS for callers whose authentication
 // is already represented by HTTP headers, such as the desktop cookie jar.
-func OpenOrgEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, orgID string, workspaceIDs []string) (*websocket.Conn, error) {
+func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string) (*websocket.Conn, error) {
 	opts := &websocket.DialOptions{
-		Subprotocols: []string{"orgevents-relay"},
+		Subprotocols: []string{"userevents-relay"},
 		HTTPHeader:   header.Clone(),
 	}
 	if httpClient != nil {
 		opts.HTTPClient = httpClient
 	}
-	ws, _, err := websocket.Dial(ctx, OrgEventsURL(hubURL, orgID, workspaceIDs), opts)
+	ws, _, err := websocket.Dial(ctx, UserEventsURL(hubURL, workspaceIDs), opts)
 	if err != nil {
-		return nil, fmt.Errorf("dial /ws/orgevents: %w", err)
+		return nil, fmt.Errorf("dial /ws/userevents: %w", err)
 	}
-	ws.SetReadLimit(OrgEventsReadLimit)
+	ws.SetReadLimit(UserEventsReadLimit)
 	return ws, nil
 }
 
-// IsOrgEventsCloseError reports whether `err` from ReadFramedBytes
+// IsUserEventsCloseError reports whether `err` from ReadFramedBytes
 // represents a recoverable stream termination the caller can reconnect from:
 // context cancellation, EOF, or a WebSocket close with a recoverable code
 // (see isRecoverableCloseCode). Lets callers map those to a clean
 // `(nil, io.EOF)` / `nil` return without repeating the type-assertion dance.
-func IsOrgEventsCloseError(err error) bool {
+func IsUserEventsCloseError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -439,7 +443,7 @@ func IsOrgEventsCloseError(err error) bool {
 // (GoingAway), or a transient intermediary signal an HTTP server/load balancer
 // in front of the Hub emits during a restart (ServiceRestart / TryAgainLater)
 // -- versus a terminal protocol/policy failure (ProtocolError, PolicyViolation,
-// InternalError, ...). Both IsOrgEventsCloseError (the CLI/worker
+// InternalError, ...). Both IsUserEventsCloseError (the CLI/worker
 // collapse-to-clean path) and WebSocketCloseDetails (the desktop relay's
 // wasClean flag) route through it, so a future recoverable code is a one-line
 // change that applies everywhere instead of an allowlist that must be updated
@@ -453,7 +457,7 @@ func isRecoverableCloseCode(code websocket.StatusCode) bool {
 		// A close frame carrying NO status code, which coder/websocket surfaces as
 		// StatusNoStatusRcvd. The Hub never sends it (the library rejects 1005 on the
 		// send side), so it means an intermediary -- an nginx proxy_pass on the WS
-		// upgrade, an ALB/ingress, a corporate proxy -- ended an idle /ws/orgevents
+		// upgrade, an ALB/ingress, a corporate proxy -- ended an idle /ws/userevents
 		// with a bare close frame. That is a routine event on a long-lived stream and
 		// says nothing terminal about the Hub, so it must not surface to the CLI as a
 		// hard error where the same proxy dropping TCP outright (io.EOF, handled
@@ -478,28 +482,28 @@ func WebSocketCloseDetails(err error) (code uint32, reason string, wasClean bool
 	return uint32(websocket.StatusAbnormalClosure), err.Error(), false
 }
 
-// RunOrgEventsReadLoop reads frames from `ws` and feeds each one to
+// RunUserEventsReadLoop reads frames from `ws` and feeds each one to
 // `onFrame` until the connection closes or onFrame returns an error.
 // Whether to strip the 4-byte length prefix is the caller's call:
 // pass `stripPrefix=true` (typical worker path: downstream consumers
 // expect raw protos) or `false` (desktop relay path: frontend's
 // length-prefix parser handles the framing).
 //
-// Returns nil on clean close (IsOrgEventsCloseError). Other read /
+// Returns nil on clean close (IsUserEventsCloseError). Other read /
 // frame errors bubble up.
-func RunOrgEventsReadLoop(ctx context.Context, ws *websocket.Conn, stripPrefix bool, onFrame func(payload []byte) error) error {
-	err := ReadOrgEventsFrames(ctx, ws, stripPrefix, onFrame)
-	if IsOrgEventsCloseError(err) {
+func RunUserEventsReadLoop(ctx context.Context, ws *websocket.Conn, stripPrefix bool, onFrame func(payload []byte) error) error {
+	err := ReadUserEventsFrames(ctx, ws, stripPrefix, onFrame)
+	if IsUserEventsCloseError(err) {
 		return nil
 	}
 	return err
 }
 
-// ReadOrgEventsFrames has the same framing behavior as
-// RunOrgEventsReadLoop, but preserves the terminal WebSocket close error. Relay
+// ReadUserEventsFrames has the same framing behavior as
+// RunUserEventsReadLoop, but preserves the terminal WebSocket close error. Relay
 // adapters use it when they must forward the peer's exact close code and
 // reason rather than collapsing a clean close to nil.
-func ReadOrgEventsFrames(ctx context.Context, ws *websocket.Conn, stripPrefix bool, onFrame func(payload []byte) error) error {
+func ReadUserEventsFrames(ctx context.Context, ws *websocket.Conn, stripPrefix bool, onFrame func(payload []byte) error) error {
 	for {
 		var payload []byte
 		var err error

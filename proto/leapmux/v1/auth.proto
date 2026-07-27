@@ -64,16 +64,14 @@ message SignUpResponse {
 
 message User {
   string id = 1;
-  string org_id = 2;
-  string username = 3;
-  string display_name = 4;
-  bool is_admin = 5;
-  string email = 6;
-  bool email_verified = 7;
-  string org_name = 8;
-  string pending_email = 9;
-  repeated LinkedOAuthProvider oauth_providers = 10;
-  bool password_set = 11;
+  string username = 2;
+  string display_name = 3;
+  bool is_admin = 4;
+  string email = 5;
+  bool email_verified = 6;
+  string pending_email = 7;
+  repeated LinkedOAuthProvider oauth_providers = 8;
+  bool password_set = 9;
 }
 
 message LinkedOAuthProvider {

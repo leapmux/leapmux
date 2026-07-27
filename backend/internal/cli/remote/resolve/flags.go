@@ -8,8 +8,9 @@ import (
 )
 
 // FlagOptions tunes which subset of entity flags BindEntityFlags
-// registers. Handlers that don't accept a particular flag (e.g., the
-// `tab list` command never needs --user-id) can suppress it. The
+// registers. Handlers that repurpose a flag for their own semantics
+// (e.g., `tab list`, where --tab-type is an output filter rather than
+// a resolver constraint) can suppress the resolver's binding. The
 // goal is one declaration site per command — the entity flag set is
 // uniform, not hand-rolled per handler.
 //
@@ -19,16 +20,15 @@ import (
 // then passes the same FixedTabType through to resolve.Inputs.
 type FlagOptions struct {
 	// Hide* suppresses the corresponding flag registration. Use this
-	// for commands that don't need a particular ID (e.g., set
-	// HideUser=true on `tab open`, which never operates on a
-	// specific user).
+	// for commands that must own the flag themselves (e.g., set
+	// HideTile=true on `tab move`, which takes its destination via
+	// --target-tile-id and must not let --tile-id double as a
+	// derivation source for the move's source workspace).
 	HideTab       bool
 	HideTabType   bool
 	HideTile      bool
 	HideWorkspace bool
 	HideWorker    bool
-	HideOrg       bool
-	HideUser      bool
 
 	// FixedTabType records that the command path implies a tab type;
 	// the helper still binds the flag (so the user gets an error
@@ -39,14 +39,19 @@ type FlagOptions struct {
 }
 
 // BindEntityFlags registers the universal entity-ID flag set on fs
-// and stores the parsed values into in. Each flag's default is
-// sourced from the matching LEAPMUX_REMOTE_*_ID env var (or the
-// LEAPMUX_REMOTE_TAB_ID + _TAB_TYPE pair) so worker-spawned
-// invocations inherit the spawn's context without user input.
+// and stores the parsed values into in.
+//
+// Two flags take an env-var default so worker-spawned invocations inherit the
+// spawn's context without user input: `--worker-id` from
+// LEAPMUX_REMOTE_WORKER_ID, and `--tab-id` from LEAPMUX_REMOTE_TAB_ID (gated on
+// the _TAB_TYPE pair, below). The others are flag-only. A spawn also exports
+// LEAPMUX_REMOTE_WORKSPACE_ID / _TILE_ID / _USER_ID, but nothing defaults from
+// them -- workspace and tile are derived from the tab id, and there is no
+// user-id axis at all (see Resolve).
 //
 // `--tab-id` env-var fallback is gated: when FixedTabType is set
 // (agent / terminal subgroup), the env-var default fires only if
-// LEAPMUX_REMOTE_TAB_TYPE matches. This prevents `agent close`
+// LEAPMUX_REMOTE_TAB_TYPE matches. This prevents `tab close --type=agent`
 // from auto-targeting the terminal you're running inside.
 func BindEntityFlags(fs *flag.FlagSet, in *Inputs, opts FlagOptions) {
 	if !opts.HideTab {
@@ -70,12 +75,6 @@ func BindEntityFlags(fs *flag.FlagSet, in *Inputs, opts FlagOptions) {
 	}
 	if !opts.HideWorker {
 		fs.StringVar(&in.WorkerID, "worker-id", os.Getenv("LEAPMUX_REMOTE_WORKER_ID"), "worker id (defaults to $LEAPMUX_REMOTE_WORKER_ID; derivable from --tab-id)")
-	}
-	if !opts.HideOrg {
-		fs.StringVar(&in.OrgID, "org-id", os.Getenv("LEAPMUX_REMOTE_ORG_ID"), "org id (defaults to $LEAPMUX_REMOTE_ORG_ID; derivable from any other entity flag)")
-	}
-	if !opts.HideUser {
-		fs.StringVar(&in.UserID, "user-id", os.Getenv("LEAPMUX_REMOTE_USER_ID"), "user id (defaults to $LEAPMUX_REMOTE_USER_ID; derivable from --tab-id / --workspace-id / --worker-id)")
 	}
 	in.FixedTabType = opts.FixedTabType
 	// Recording the FlagSet here lets Resolve mark Inputs.Explicit*

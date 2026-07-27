@@ -54,7 +54,6 @@ const userKey contextKey = iota
 // hit happens just before the watcher evicts and sweeps current channels.
 type UserInfo struct {
 	ID                  userid.UserID
-	OrgID               string
 	Username            string
 	IsAdmin             bool
 	Email               string
@@ -153,7 +152,6 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 	}
 	return &UserInfo{
 		ID:                 id,
-		OrgID:              user.OrgID,
 		Username:           user.Username,
 		IsAdmin:            user.IsAdmin,
 		AuthenticatedAt:    time.Now().UTC(),
@@ -305,7 +303,6 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	return &UserInfo{
 		ID:                  id,
 		Credential:          SessionCredential(token),
-		OrgID:               row.OrgID,
 		Username:            row.Username,
 		IsAdmin:             row.IsAdmin,
 		Email:               row.Email,
@@ -314,15 +311,4 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		CredentialExpiresAt: DeadlineAt(row.ExpiresAt.UTC()),
 		UserAuthGeneration:  row.AuthGeneration,
 	}, nil
-}
-
-// ResolveOrgID determines the effective org ID for a request. Every user
-// belongs to exactly one (personal) org, so an empty requestedOrgID
-// resolves to it and any other value must match it — anything else is
-// NotFound, mirroring how an unknown org id read.
-func ResolveOrgID(user *UserInfo, requestedOrgID string) (string, error) {
-	if requestedOrgID == "" || requestedOrgID == user.OrgID {
-		return user.OrgID, nil
-	}
-	return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("not a member of this organization"))
 }

@@ -78,25 +78,12 @@ func pageThroughByOne[T store.PageCursorer](t *testing.T, fetch func(cursor stri
 	return seen
 }
 
-// SeedOrg creates an org and returns its ID.
-func SeedOrg(t *testing.T, st store.Store, name string) string {
-	t.Helper()
-	orgID := id.Generate()
-	err := st.Orgs().Create(ctx, store.CreateOrgParams{
-		ID:   orgID,
-		Name: name,
-	})
-	require.NoError(t, err)
-	return orgID
-}
-
-// SeedUser creates a user in the given org and returns the fetched user.
-func SeedUser(t *testing.T, st store.Store, orgID, username string) *store.User {
+// SeedUser creates a user and returns the fetched user.
+func SeedUser(t *testing.T, st store.Store, username string) *store.User {
 	t.Helper()
 	userID := id.Generate()
 	err := st.Users().Create(ctx, store.CreateUserParams{
 		ID:            userID,
-		OrgID:         orgID,
 		Username:      username,
 		PasswordHash:  "hash-" + username,
 		DisplayName:   "Display " + username,
@@ -169,12 +156,11 @@ func SeedOAuthProvider(t *testing.T, st store.Store, name string) *store.OAuthPr
 }
 
 // SeedWorkspace creates a workspace and returns its ID.
-func SeedWorkspace(t *testing.T, st store.Store, orgID, ownerID, title string) string {
+func SeedWorkspace(t *testing.T, st store.Store, ownerID, title string) string {
 	t.Helper()
 	wsID := id.Generate()
 	err := st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsID,
-		OrgID:       orgID,
 		OwnerUserID: userid.MustNew(ownerID),
 		Title:       title,
 	})

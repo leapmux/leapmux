@@ -410,7 +410,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		traceTabClosePhase("inspect", r.GetTabId(), "handler_begin")
 		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 		defer cancel()
-		resp, err := svc.inspectLastTabClose(ctx, r.GetTabType(), r.GetTabId())
+		resp, err := svc.inspectLastTabClose(ctx, r.GetTabType(), r.GetTabId(), userID.String())
 		if err != nil {
 			slog.Error("inspect last tab close failed", "tab_type", r.GetTabType(), "tab_id", r.GetTabId(), "error", err)
 			traceTabClosePhase("inspect", r.GetTabId(), "handler_error")
@@ -633,7 +633,12 @@ func resolveWorktreeBranchName(ctx context.Context, wt db.Worktree, phase string
 	return branchName
 }
 
-func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
+// userID scopes the worktree_tabs lookup below to the tab's owner: FILE links
+// are keyed by (tab_type, tab_id, user_id), so an owner-blind read could resolve
+// a different user's identically-named file tab and answer with the wrong
+// worktree. worktreeTabUserID normalizes AGENT/TERMINAL back to the "" those
+// links were written with.
+func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	trace := func(phase string) { traceTabClosePhase("inspect", tabID, phase) }
 
 	// Fast path: the only reason to run the expensive git subprocesses
@@ -655,6 +660,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	if wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
 		TabType: tabType,
 		TabID:   tabID,
+		UserID:  worktreeTabUserID(tabType, userID),
 	}); err == nil {
 		count, countErr := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
 		trace("worktree_count_done")

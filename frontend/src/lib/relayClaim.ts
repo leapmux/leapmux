@@ -19,7 +19,7 @@
 // open (the one that must win) refused by the sidecar's owner fence
 // (`current.owner > relayID`) as superseded, wedging the channel until an app
 // restart. The seeding rule lives in createPersistedSeq, shared with the
-// org-events relay's id sequence.
+// userevents relay's id sequence.
 
 import { KEY_CHANNEL_RELAY_SEQ } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'

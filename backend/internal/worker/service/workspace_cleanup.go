@@ -39,7 +39,10 @@ func handleCleanupWorkspace(svc *Service) func(_ context.Context, _ userid.UserI
 			svc.Output.CleanupAgent(row)
 			_ = svc.Queries.CloseAgent(bgCtx(), row)
 
-			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
+			// AGENT/TERMINAL worktree_tabs links carry user_id '' (their ids are
+			// globally unique), so the owner axis is not needed here --
+			// worktreeTabUserID maps both types to '' regardless.
+			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_AGENT, row, "")
 		}
 
 		// 2. Close all agents (including already-closed ones) for consistency.
@@ -56,7 +59,7 @@ func handleCleanupWorkspace(svc *Service) func(_ context.Context, _ userid.UserI
 		}
 		for _, ts := range terminals {
 			svc.Terminals.RemoveTerminal(ts.ID)
-			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID)
+			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID, "")
 		}
 
 		// 4. Soft-delete active terminals for the workspace.

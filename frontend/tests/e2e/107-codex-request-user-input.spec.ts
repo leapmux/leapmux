@@ -21,7 +21,7 @@ codexTest.describe('Codex requestUserInput', () => {
 
     // Wait for the control banner to appear.
     const banner = page.locator('[data-testid="control-banner"]')
-    await expect(banner).toBeVisible({ timeout: 120_000 })
+    await expect(banner).toBeVisible()
 
     // Click the Allow button (Codex uses decision-based buttons).
     const decisionAllowBtn = page.locator('[data-testid="control-decision-accept"]')

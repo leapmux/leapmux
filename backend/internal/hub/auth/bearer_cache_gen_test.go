@@ -72,7 +72,7 @@ func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessi
 
 func validSessionRow(userID, username string) *store.SessionWithUser {
 	return &store.SessionWithUser{
-		UserID: userID, OrgID: "org", Username: username,
+		UserID: userID, Username: username,
 		CreatedAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Hour),
 	}
 }
@@ -272,7 +272,7 @@ func TestSweepCachesOnce_RefreshBetweenScanAndDeleteSurvives(t *testing.T) {
 func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 	oldExpiry := time.Now().Add(time.Minute).UTC()
 	sessions := &touchRecordingSessionStore{row: &store.SessionWithUser{
-		UserID: "user", OrgID: "org", Username: "user",
+		UserID: "user", Username: "user",
 		CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: oldExpiry,
 	}}
 	a := &authInterceptor{
@@ -301,7 +301,7 @@ func TestZeroRowTouchDoesNotExtendSessionExpiry(t *testing.T) {
 	oldExpiry := time.Now().Add(time.Minute).UTC()
 	sessions := &touchRecordingSessionStore{
 		row: &store.SessionWithUser{
-			UserID: "user", OrgID: "org", Username: "user",
+			UserID: "user", Username: "user",
 			CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: oldExpiry,
 		},
 		touchMissed: true,
@@ -354,7 +354,7 @@ func TestUnrelatedBearerEvictionDoesNotReloadWarmCacheEntry(t *testing.T) {
 	api := &countingAPITokenStore{rows: make(map[string]*store.APIToken)}
 	base := bearerValidationOverrideStore{
 		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", OrgID: "org", Username: "user"}},
+		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
 	}
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
@@ -424,7 +424,7 @@ func TestBearerRevocationDuringValidationRejectsResult(t *testing.T) {
 	}
 	base := bearerValidationOverrideStore{
 		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", OrgID: "org", Username: "user"}},
+		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
 	}
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
@@ -460,7 +460,7 @@ func TestBearerSingleflightFollowerDoesNotInheritLeaderCancellation(t *testing.T
 	}
 	base := bearerValidationOverrideStore{
 		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", OrgID: "org", Username: "user"}},
+		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
 	}
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
@@ -508,7 +508,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 	}
 	base := bearerValidationOverrideStore{
 		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", OrgID: "org", Username: "user"}},
+		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
 	}
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
@@ -913,9 +913,9 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 		leapmuxv1connect.WorkspaceServiceGetTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
-		leapmuxv1connect.OrgCRDTSubmitOpsProcedure,
-		leapmuxv1connect.OrgCRDTGetMaterializedProcedure,
-		leapmuxv1connect.OrgCRDTUpdatePresenceProcedure,
+		leapmuxv1connect.UserCRDTSubmitOpsProcedure,
+		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
+		leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
 	}
 	for _, procedure := range allowed {
 		assert.True(t, delegationAllowedProcedures[procedure], "%s must be callable by scoped delegation bearers", procedure)
@@ -923,7 +923,6 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 
 	denied := []string{
 		leapmuxv1connect.AuthServiceGetCurrentUserProcedure,
-		leapmuxv1connect.UserServiceGetUserProcedure,
 		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
 		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
 		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
@@ -1244,4 +1243,71 @@ func TestStaleCredentialCacheSweepSerializesWithValidation(t *testing.T) {
 	<-done
 	_, exists := state.sessions.Load("session")
 	require.False(t, exists)
+}
+
+// TestBlankUserIDEvictionEvictsNothingAndBumpsNoGeneration is the EvictByUserID
+// half of TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration above.
+//
+// It exists because that sibling's protection did not extend one function over:
+// deleting EvictByUserID's `userID == ""` prologue left the ENTIRE backend suite
+// green, while the identical deletion on RevokeUserAuthContextAtGeneration
+// failed immediately. That is precisely the regression class the
+// identityComparisonSites table calls out, reproduced in the one eviction
+// entrypoint neither net could see -- EvictByUserID takes a bare `userID
+// string`, so hub/auth's own fixture net (which keys on a userid.UserID or
+// *UserInfo parameter) skips it, and it performs no Matches call, so the
+// repo-wide identity rule skips it too.
+//
+// Polarity note, the same one the sibling carries: Matches is tuned for GRANT
+// semantics, where false means "not authorized". On an eviction path false means
+// "do not evict", so a blank id reaching the map lookups below would skip every
+// cached entry and report an eviction that evicted nothing. Typing the parameter
+// would NOT fix that on its own -- userid.UserID{} is constructible and unwraps
+// to "" -- so an explicit blank refusal is mandatory here regardless of spelling.
+func TestBlankUserIDEvictionEvictsNothingAndBumpsNoGeneration(t *testing.T) {
+	newFixture := func() (*authState, *AuthContextRegistry, bearerCacheKeyParts) {
+		state := &authState{}
+		sc := &AuthContextRegistry{state: state}
+		user := &UserInfo{ID: userid.MustNew("user"), Credential: SessionCredential("sess"), UserAuthGeneration: 4}
+		state.sessions.Store("sess", cachedSession{user: user})
+		inner := &sync.Map{}
+		inner.Store("sess", struct{}{})
+		state.userSessions.Store("user", inner)
+		bearer := bearerCacheKey(BearerKindAPI, "tok", []byte("secret"))
+		bearerSession := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("tok"), UserAuthGeneration: 4}}
+		state.bearers.Store(bearer, bearerSession)
+		state.indexBearerCacheEntry(bearer, bearerSession)
+		return state, sc, bearer
+	}
+
+	t.Run("blank id changes nothing", func(t *testing.T) {
+		state, sc, bearer := newFixture()
+		before := state.revocationGen.Load()
+
+		sc.EvictByUserID("")
+
+		assert.Equal(t, before, state.revocationGen.Load(),
+			"a blank id must not bump the revocation generation: it evicts nobody while invalidating every warm cache entry")
+		_, marked := state.userInvalidations.Load("")
+		assert.False(t, marked, "a blank id must not record a user-invalidation mark")
+		_, sessionExists := state.sessions.Load("sess")
+		_, bearerExists := state.bearers.Load(bearer)
+		assert.True(t, sessionExists, "a blank id must not disturb a real user's cached session")
+		assert.True(t, bearerExists, "a blank id must not disturb a real user's cached bearer")
+	})
+
+	// Control: the same fixture, evicted by the id that owns it. Without this,
+	// the case above would also pass against a fixture nothing could ever evict.
+	t.Run("control: the owning id evicts", func(t *testing.T) {
+		state, sc, bearer := newFixture()
+		before := state.revocationGen.Load()
+
+		sc.EvictByUserID("user")
+
+		assert.Greater(t, state.revocationGen.Load(), before)
+		_, sessionExists := state.sessions.Load("sess")
+		_, bearerExists := state.bearers.Load(bearer)
+		assert.False(t, sessionExists, "control: the owner's cached session is evicted")
+		assert.False(t, bearerExists, "control: the owner's cached bearer is evicted")
+	})
 }

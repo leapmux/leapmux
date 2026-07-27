@@ -14,12 +14,11 @@ describe('mountPresenceHeartbeat', () => {
   it('does NOT fire on module mount — pingNow is the stream-mount entry point', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })
     // The hub's PresenceUpdate broadcast only reaches subscribers, so
-    // a heartbeat sent before /ws/orgevents is connected races the
+    // a heartbeat sent before /ws/userevents is connected races the
     // broadcast and the client misses its own active-client signal.
     expect(sender).not.toHaveBeenCalled()
     hb.stop()
@@ -28,20 +27,18 @@ describe('mountPresenceHeartbeat', () => {
   it('pingNow fires an immediate heartbeat', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })
     hb.pingNow()
     expect(sender).toHaveBeenCalledTimes(1)
-    expect(sender).toHaveBeenCalledWith('org', 'w1')
+    expect(sender).toHaveBeenCalledWith('w1')
     hb.stop()
   })
 
   it('pingNow does not fire when workspace is empty', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => null,
       sender,
     })
@@ -53,7 +50,6 @@ describe('mountPresenceHeartbeat', () => {
   it('input events fire a throttled heartbeat', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })
@@ -76,7 +72,6 @@ describe('mountPresenceHeartbeat', () => {
   it('visibility change to visible fires immediately, bypassing throttle', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })
@@ -91,7 +86,6 @@ describe('mountPresenceHeartbeat', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })
@@ -106,7 +100,6 @@ describe('mountPresenceHeartbeat', () => {
   it('returned stop unbinds listeners', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
-      orgId: () => 'org',
       workspaceId: () => 'w1',
       sender,
     })

@@ -1,6 +1,6 @@
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import type { CRDTBridge } from '~/lib/crdt'
-import { NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import { SplitDirection } from '~/generated/leapmux/v1/workspace_pb'
 import {
   ctxFromBridge,
@@ -73,7 +73,7 @@ export function emitSplitTile(
     const dir = direction === 'horizontal' ? SplitDirection.HORIZONTAL : SplitDirection.VERTICAL
     const posA = first()
     const posB = after(posA)
-    const ops: OrgOp[] = [
+    const ops: CrdtOp[] = [
       setNodeKind(ctx, parentTileId, NodeKind.SPLIT),
       setNodeDirection(ctx, parentTileId, dir),
       setNodeRatios(ctx, parentTileId, [0.5, 0.5]),
@@ -110,7 +110,7 @@ export function emitMakeGrid(
   return withBridgeAndState(bridge, (ctx, state) => {
     const tabs = liveTabsOnTile(state, parentTileId)
     const cellIds: string[] = []
-    const ops: OrgOp[] = [
+    const ops: CrdtOp[] = [
       setNodeKind(ctx, parentTileId, NodeKind.GRID),
       setNodeRows(ctx, parentTileId, rows),
       setNodeCols(ctx, parentTileId, cols),
@@ -158,13 +158,12 @@ export function emitCloseTile(bridge: CRDTBridge, tileId: string): void {
 
 /**
  * Emit an update-ratios op batch — single SetNodeRegister on the
- * SPLIT node's ratios slot. Returns true iff the bridge accepted the
- * batch (the bridge always accepts; false here means "no bridge").
+ * SPLIT node's ratios slot. Always returns true: a wired bridge always
+ * accepts. Callers get their `false` from `withBridge`'s fallback, which
+ * is the only "no bridge" answer there is.
  */
 export function emitUpdateRatios(bridge: CRDTBridge, splitId: string, ratios: number[]): boolean {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return false
   bridge.enqueue(newBatch([setNodeRatios(ctx, splitId, ratios)]))
   return true
 }
@@ -181,8 +180,6 @@ export function emitUpdateGridRatios(
   ratios: number[],
 ): boolean {
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return false
   const op = axis === 'row'
     ? setNodeRowRatios(ctx, gridId, ratios)
     : setNodeColRatios(ctx, gridId, ratios)

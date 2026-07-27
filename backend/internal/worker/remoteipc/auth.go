@@ -27,7 +27,6 @@ type TokenInfo struct {
 	// string projections belong at its readers -- the Whoami proto field, the
 	// LEAPMUX_REMOTE_USER_ID env var, the local stream-id segment -- not here.
 	UserID            userid.UserID
-	OrgID             string // The user's org. Stable for the lifetime of the spawn — workspaces don't move between orgs.
 	WorkspaceID       string
 	WorkerID          string            // The spawning worker.
 	TabID             string            // The spawned tab (agent or terminal). Anchor for LocateTab-based derivations.
@@ -41,9 +40,18 @@ type TokenInfo struct {
 	// agent creation and don't change. Workspace id and tile id are
 	// intentionally NOT here: they're derivable from the stable tab id
 	// via a single hub LocateTab call, so there's no env var to go
-	// stale on tab move / cross-workspace move. Org id IS in here
-	// (and emitted as LEAPMUX_REMOTE_ORG_ID) because workspaces don't
-	// migrate between orgs, so it's safe and avoids a round-trip.
+	// stale on tab move / cross-workspace move. UserID above is the one
+	// identity that IS baked in (emitted as LEAPMUX_REMOTE_USER_ID): it
+	// is the spawn's own authenticated principal, fixed when the process
+	// is launched rather than looked up from a row, so there is nothing
+	// for it to drift against.
+	//
+	// It is INFORMATIONAL only -- no CLI flag defaults from it, and no
+	// code reads it. There is deliberately no user-id axis in the
+	// resolver (see cli/remote/resolve.Resolve): the tenant is implied by
+	// the authenticated session, so no hub RPC takes one. It is shipped
+	// because the LEAPMUX_REMOTE_*_ID env contract is documented surface
+	// that agent scripts read to learn who they are running as.
 	WorkingDir    string
 	AgentProvider string // Empty for terminals.
 }

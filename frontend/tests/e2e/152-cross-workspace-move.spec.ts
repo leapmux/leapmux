@@ -27,22 +27,22 @@ import { gotoWorkspace } from './helpers/ui'
  *   1. Each workspace's projection is independent — a layout edit in
  *      W1 does not reach a client viewing W2.
  *   2. The lifecycle event for a freshly-created workspace propagates
- *      to all org-wide subscribers via the `/ws/orgevents` stream.
+ *      to all userevents subscribers via the `/ws/userevents` stream.
  */
 
 test.describe('Cross-workspace projection isolation', () => {
   test('a layout edit in W1 does not reach a client viewing W2', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W1', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W2', adminOrgId)
+    const { hubUrl, adminToken } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W1')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W2')
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
     const pageA = await ctxA.newPage()
     const pageB = await ctxB.newPage()
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, `/o/admin/workspace/${ws1}`),
-        gotoWorkspace(pageB, adminToken, `/o/admin/workspace/${ws2}`),
+        gotoWorkspace(pageA, adminToken, `/workspace/${ws1}`),
+        gotoWorkspace(pageB, adminToken, `/workspace/${ws2}`),
       ])
 
       // Both workspaces start with one tile.
@@ -67,20 +67,20 @@ test.describe('Cross-workspace projection isolation', () => {
     }
   })
 
-  test('a workspace created in one client appears in another client subscribed to the org', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const seedWs = await createWorkspaceViaAPI(hubUrl, adminToken, 'seed', adminOrgId)
+  test('a workspace created in one client appears in another client subscribed to userevents', async ({ browser, leapmuxServer }) => {
+    const { hubUrl, adminToken } = leapmuxServer
+    const seedWs = await createWorkspaceViaAPI(hubUrl, adminToken, 'seed')
     const ctx = await browser.newContext({ baseURL: hubUrl })
     const page = await ctx.newPage()
     try {
-      await gotoWorkspace(page, adminToken, `/o/admin/workspace/${seedWs}`)
+      await gotoWorkspace(page, adminToken, `/workspace/${seedWs}`)
 
-      // Create a sibling workspace via the hub API; the org-wide WS
+      // Create a sibling workspace via the hub API; the userevents WS
       // stream should deliver `WorkspaceCreated` and the sidebar
       // should pick it up. The sidebar's row is keyed off the
-      // workspace registry, which the OrgCRDT lifecycle events feed.
-      const newWsTitle = 'sibling-via-org-stream'
-      const newWsId = await createWorkspaceViaAPI(hubUrl, adminToken, newWsTitle, adminOrgId)
+      // workspace registry, which the UserCRDT lifecycle events feed.
+      const newWsTitle = 'sibling-via-userevents-stream'
+      const newWsId = await createWorkspaceViaAPI(hubUrl, adminToken, newWsTitle)
       try {
         // The workspace switcher / sidebar surfaces titles in both
         // the left and right sidebars; match either. Strict-mode

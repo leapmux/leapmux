@@ -75,7 +75,9 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 	require.True(t, c.IsLocal(), "client should be local when LEAPMUX_REMOTE_SOCK is set")
 	assert.Equal(t, sockURL, c.HubURL, "HubURL preserves the socket URL for display and IsLocal()")
 
-	resp, err := c.RemoteIPCService().Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	ipc, err := c.RemoteIPCService()
+	require.NoError(t, err)
+	resp, err := ipc.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)
 	assert.Equal(t, "u-1", resp.Msg.GetUserId())
 	assert.Equal(t, "worker-A", resp.Msg.GetWorkerId())
@@ -92,7 +94,7 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 // `X-Leapmux-Token` header and the IPC server's withAuth middleware
 // rejects the request with HTTP 401 — surfaced as
 // "unauthenticated: HTTP status 401 Unauthorized" in the CLI. CRDT
-// bootstrap (`hub.WatchOrg`) is the production path that exposed it
+// bootstrap (`hub.WatchUser`) is the production path that exposed it
 // (`leapmux remote tile list` fails on bootstrap), so we exercise
 // StreamInner directly here.
 func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
@@ -133,7 +135,9 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	c, err := remote.NewClientFromEnv("")
 	require.NoError(t, err)
 
-	stream, err := c.RemoteIPCService().StreamInner(
+	ipc, err := c.RemoteIPCService()
+	require.NoError(t, err)
+	stream, err := ipc.StreamInner(
 		context.Background(),
 		connect.NewRequest(&leapmuxv1.StreamInnerRequest{
 			Method:          "worker.NoSuchMethod",

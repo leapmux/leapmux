@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,9 +24,9 @@ func TestRegistry_SweepIdle_StopsAndReboots(t *testing.T) {
 
 	journal := newFakeJournal()
 
-	factory := func(_ context.Context, orgID string) (*crdt.Manager, error) {
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
 		factoryCalls.Add(1)
-		mgr := crdt.NewManager(orgID, journal, allowAll{}, nil, time.Now)
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(context.Background()))
 		return mgr, nil
 	}
@@ -32,7 +34,7 @@ func TestRegistry_SweepIdle_StopsAndReboots(t *testing.T) {
 	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(10*time.Millisecond))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	mgr1, err := registry.Get(context.Background(), "org-1")
+	mgr1, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	require.NotNil(t, mgr1)
 	require.Equal(t, int32(1), factoryCalls.Load())
@@ -40,7 +42,7 @@ func TestRegistry_SweepIdle_StopsAndReboots(t *testing.T) {
 	// While the manager is "fresh" (activity just stamped during
 	// Bootstrap), SweepIdle is a no-op.
 	registry.SweepIdle()
-	mgr1Again, err := registry.Get(context.Background(), "org-1")
+	mgr1Again, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	assert.Same(t, mgr1, mgr1Again, "fresh manager survives a sweep")
 	assert.Equal(t, int32(1), factoryCalls.Load())
@@ -51,7 +53,7 @@ func TestRegistry_SweepIdle_StopsAndReboots(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 	registry.SweepIdle()
 
-	mgr2, err := registry.Get(context.Background(), "org-1")
+	mgr2, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	assert.NotSame(t, mgr1, mgr2, "idle manager was evicted; Get re-bootstrapped")
 	assert.Equal(t, int32(2), factoryCalls.Load())
@@ -71,9 +73,9 @@ func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
 	var factoryCalls atomic.Int32
 	journal := newFakeJournal()
 
-	factory := func(_ context.Context, orgID string) (*crdt.Manager, error) {
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
 		factoryCalls.Add(1)
-		mgr := crdt.NewManager(orgID, journal, allowAll{}, nil, time.Now)
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(context.Background()))
 		return mgr, nil
 	}
@@ -81,7 +83,7 @@ func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
 	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(10*time.Millisecond))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	mgr1, err := registry.Get(context.Background(), "org-1")
+	mgr1, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	require.Equal(t, int32(1), factoryCalls.Load())
 
@@ -89,7 +91,7 @@ func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 
 	// A Get of the stale manager must refresh its activity...
-	mgr1Again, err := registry.Get(context.Background(), "org-1")
+	mgr1Again, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	require.Same(t, mgr1, mgr1Again, "the stale manager is still the one returned")
 	require.Equal(t, int32(1), factoryCalls.Load(), "Get must not re-bootstrap a still-present manager")
@@ -98,7 +100,7 @@ func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
 	// evicting the manager the caller just received.
 	registry.SweepIdle()
 
-	mgr1Third, err := registry.Get(context.Background(), "org-1")
+	mgr1Third, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	assert.Same(t, mgr1, mgr1Third, "a manager a recent Get returned must survive the next sweep")
 	assert.Equal(t, int32(1), factoryCalls.Load(), "no eviction, so no re-bootstrap")
@@ -110,8 +112,8 @@ func TestRegistry_Get_RefreshesActivityAgainstSweep(t *testing.T) {
 func TestRegistry_SweepIdle_KeepsManagersWithSubscribers(t *testing.T) {
 	journal := newFakeJournal()
 
-	factory := func(_ context.Context, orgID string) (*crdt.Manager, error) {
-		mgr := crdt.NewManager(orgID, journal, allowAll{}, nil, time.Now)
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(context.Background()))
 		return mgr, nil
 	}
@@ -119,7 +121,7 @@ func TestRegistry_SweepIdle_KeepsManagersWithSubscribers(t *testing.T) {
 	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(10*time.Millisecond))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	mgr, err := registry.Get(context.Background(), "org-attached")
+	mgr, err := registry.Get(context.Background(), "user-attached")
 	require.NoError(t, err)
 
 	// Attach a subscriber so hasLiveAttachments returns true regardless
@@ -135,7 +137,7 @@ func TestRegistry_SweepIdle_KeepsManagersWithSubscribers(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 	registry.SweepIdle()
 
-	mgrAgain, err := registry.Get(context.Background(), "org-attached")
+	mgrAgain, err := registry.Get(context.Background(), "user-attached")
 	require.NoError(t, err)
 	assert.Same(t, mgr, mgrAgain, "attached manager is not evicted")
 }
@@ -146,8 +148,8 @@ func TestRegistry_SweepIdle_KeepsManagersWithSubscribers(t *testing.T) {
 func TestRegistry_DisabledJanitor_KeepsManagersForever(t *testing.T) {
 	journal := newFakeJournal()
 
-	factory := func(_ context.Context, orgID string) (*crdt.Manager, error) {
-		mgr := crdt.NewManager(orgID, journal, allowAll{}, nil, time.Now)
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(context.Background()))
 		return mgr, nil
 	}
@@ -155,9 +157,9 @@ func TestRegistry_DisabledJanitor_KeepsManagersForever(t *testing.T) {
 	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	mgr1, err := registry.Get(context.Background(), "org-x")
+	mgr1, err := registry.Get(context.Background(), "user-x")
 	require.NoError(t, err)
-	mgr2, err := registry.Get(context.Background(), "org-x")
+	mgr2, err := registry.Get(context.Background(), "user-x")
 	require.NoError(t, err)
 	assert.Same(t, mgr1, mgr2, "managers are stable across Get when janitor is disabled")
 }

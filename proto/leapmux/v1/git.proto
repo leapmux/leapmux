@@ -5,9 +5,8 @@ import "leapmux/v1/common.proto";
 import "leapmux/v1/workspace.proto";
 
 message GetGitInfoRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
+  string worker_id = 1;
+  string path = 2;
 }
 
 message GetGitInfoResponse {
@@ -99,9 +98,8 @@ message PushBranchRequest {
 message PushBranchResponse {}
 
 message GetGitFileStatusRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;       // Working directory (worker resolves to repo root)
+  string worker_id = 1;
+  string path = 2;       // Working directory (worker resolves to repo root)
 }
 
 message GetGitFileStatusResponse {
@@ -150,10 +148,9 @@ enum GitFileRef {
 }
 
 message ReadGitFileRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;       // Absolute path to the file
-  GitFileRef ref = 4;
+  string worker_id = 1;
+  string path = 2;       // Absolute path to the file
+  GitFileRef ref = 3;
 }
 
 message ReadGitFileResponse {
@@ -163,9 +160,8 @@ message ReadGitFileResponse {
 }
 
 message ListGitBranchesRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
+  string worker_id = 1;
+  string path = 2;
 }
 
 message GitBranchEntry {
@@ -185,9 +181,8 @@ message GitWorktreeEntry {
 }
 
 message ListGitWorktreesRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
+  string worker_id = 1;
+  string path = 2;
 }
 
 message ListGitWorktreesResponse {
@@ -199,15 +194,14 @@ message ListGitWorktreesResponse {
 // Always returns full info (no fast-path skip), since callers always
 // want to see it.
 message InspectBranchDeletionRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;             // working directory of the branch group
+  string worker_id = 1;
+  string path = 2;             // working directory of the branch group
   // Optional branch label the caller already knows (from the branch
   // group row that opened the dialog). When set, the worker skips its
   // own queryGitPathInfo rev-parse fork and uses this name directly,
   // saving one round trip per dialog open. The diff/push probes still
   // run against `path` regardless. Pass empty to fall back to a probe.
-  string branch_name_hint = 4;
+  string branch_name_hint = 3;
 }
 
 message InspectBranchDeletionResponse {
@@ -238,9 +232,8 @@ message InspectBranchDeletionResponse {
 // fetch so the dialog pays one round trip and one shared queryGitPathInfo
 // for everything.
 message InspectBranchChangeRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;             // working directory of the branch group
+  string worker_id = 1;
+  string path = 2;             // working directory of the branch group
 }
 
 message InspectBranchChangeResponse {
@@ -271,10 +264,9 @@ message InspectBranchChangeResponse {
 // --track <remote>` for remote-tracking refs (e.g. "origin/foo") when no
 // matching local branch already exists.
 message CheckoutBranchRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
-  string branch = 4;          // local name; remote refs prefixed e.g. "origin/foo"
+  string worker_id = 1;
+  string path = 2;
+  string branch = 3;          // local name; remote refs prefixed e.g. "origin/foo"
 }
 
 message CheckoutBranchResponse {}
@@ -282,11 +274,10 @@ message CheckoutBranchResponse {}
 // CreateBranch creates a new branch off a base and checks it out in the
 // working directory (`git checkout -b <new_branch> [<base_branch>]`).
 message CreateBranchRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
-  string new_branch = 4;
-  string base_branch = 5;     // empty = HEAD
+  string worker_id = 1;
+  string path = 2;
+  string new_branch = 3;
+  string base_branch = 4;     // empty = HEAD
 }
 
 message CreateBranchResponse {}
@@ -296,11 +287,10 @@ message CreateBranchResponse {}
 // `git branch -D <branch_to_delete>`. If the delete fails, the worker
 // attempts to restore the original branch before returning the error.
 message DeleteBranchRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
-  string branch_to_delete = 4;
-  string switch_to_branch = 5;
+  string worker_id = 1;
+  string path = 2;
+  string branch_to_delete = 3;
+  string switch_to_branch = 4;
 }
 
 message DeleteBranchResponse {}

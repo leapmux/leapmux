@@ -36,7 +36,6 @@ import { join } from 'node:path'
 import process from 'node:process'
 import {
   authedHeaders,
-  getAdminOrgId,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
@@ -62,7 +61,6 @@ export interface MultiWorkerHarness {
   hubDataDir: string
   hubProc: ChildProcess
   adminToken: string
-  adminOrgId: string
   /** Workers in the order they were spawned. Always at least one. */
   workers: HarnessWorker[]
   /** Spawn an additional worker registered to the same hub. */
@@ -113,9 +111,8 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
   await waitForServer(hubUrl)
 
   // Bootstrap the admin user. signUpViaAPI returns the session
-  // cookie, which is what authedHeaders / getAdminOrgId expect.
+  // cookie, which is what authedHeaders expects.
   const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
-  const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
 
   // Track every spawned process so cleanup catches partial-init
   // failures.
@@ -212,7 +209,6 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     hubDataDir,
     hubProc,
     adminToken,
-    adminOrgId,
     workers,
     addWorker: spawnWorker,
     stop,

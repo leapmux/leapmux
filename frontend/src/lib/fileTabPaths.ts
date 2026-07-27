@@ -46,7 +46,7 @@ export function createFileTabPathsStore() {
       setByTabId(next)
     },
 
-    /** Drop every entry (workspace switch / org switch). */
+    /** Drop every entry (workspace switch / logout). */
     clear(): void {
       setByTabId(new Map())
     },

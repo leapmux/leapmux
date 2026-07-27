@@ -30,7 +30,7 @@ codexTest.describe('Codex Basic Chat', () => {
     // The thinking indicator should appear while the agent is processing.
     const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
     // Wait for it to appear (may be very brief for fast responses).
-    await expect(thinkingIndicator).toBeVisible({ timeout: 30_000 }).catch(() => {
+    await expect(thinkingIndicator).toBeVisible().catch(() => {
       // Fast responses may complete before we can observe the indicator — acceptable.
     })
 

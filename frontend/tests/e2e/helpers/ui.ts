@@ -37,7 +37,7 @@ export async function sendMessage(page: Page, text: string) {
 /** Wait for the control request banner to appear and return a scoped locator. */
 export async function waitForControlBanner(page: Page) {
   const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible({ timeout: 60_000 })
+  await expect(banner).toBeVisible()
   return banner
 }
 
@@ -109,7 +109,7 @@ export async function openPreferencesDialog(page: Page) {
 
 /**
  * Login via the UI form. Navigates to /login, fills credentials,
- * and waits for redirect to the personal org page.
+ * and waits for redirect to the app home.
  */
 export async function loginViaUI(page: Page, username = 'admin', password = 'admin123') {
   await page.goto('/login')
@@ -117,12 +117,19 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
 
-  // After login, user is redirected to /o/${username}.
+  // After login the user lands on `/` -- but only momentarily when the account
+  // owns a workspace: AppShell's auto-activate effect immediately replaces the
+  // URL with /workspace/{id}. Matching `/` EXACTLY would therefore be a race
+  // that passes today only because the fixtures used here own nothing yet, so
+  // accept either landing spot. (The pre-flat-routes version matched
+  // `/o/{username}` as a substring, which tolerated the redirect for free.)
+  //
   // If a transient error occurs (e.g. hub DB not yet ready after restart), retry.
   // Each attempt waits 10s, for a total of 30s matching the original timeout.
+  const loggedInURL = /\/(?:workspace\/[^/]+)?$/
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await expect(page).toHaveURL(new RegExp(`/o/${username}`))
+      await expect(page).toHaveURL(loggedInURL)
       await page.waitForLoadState('networkidle')
       return // success
     }
@@ -145,7 +152,6 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
 
 /**
  * Navigate to the registration page and approve the worker.
- * Org selector defaults to the personal org.
  */
 export async function approveWorkerViaUI(page: Page, token: string, name: string) {
   await page.goto(`/register/${token}`)
@@ -258,15 +264,6 @@ export async function logoutViaUI(page: Page) {
   await page.getByTestId('app-menu-trigger').first().click()
   await page.getByText('Log out').click()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-}
-
-/**
- * Switch to a different organization via the app menu.
- */
-export async function switchOrgViaUI(page: Page, orgName: string) {
-  await page.getByTestId('app-menu-trigger').first().click()
-  await page.getByText(orgName, { exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/o/${orgName}`))
 }
 
 /**

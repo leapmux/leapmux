@@ -284,7 +284,7 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
  */
 export async function waitForAgentTabs(page: Page, count: number) {
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]'))
-    .toHaveCount(count, { timeout: 60_000 })
+    .toHaveCount(count)
 }
 
 export class CLIError extends Error {

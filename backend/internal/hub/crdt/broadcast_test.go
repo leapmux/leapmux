@@ -27,7 +27,7 @@ func (c *pointerCaptureSubscriber) send(evt *crdt.MarshaledEvent) error {
 	return nil
 }
 
-// batchEvents returns only the WatchOrgEvent_Batch events (dropping the initial
+// batchEvents returns only the WatchUserEvent_Batch events (dropping the initial
 // materialized snapshot Subscribe delivers).
 func (c *pointerCaptureSubscriber) batchEvents() []*crdt.MarshaledEvent {
 	c.mu.Lock()
@@ -45,7 +45,7 @@ func (c *pointerCaptureSubscriber) batchEvents() []*crdt.MarshaledEvent {
 // to a private events slice. Returns a snapshot accessor that copies
 // the events under a mutex, plus an unsubscribe callback. The
 // snapshot func is safe to call from any goroutine.
-func subscribeCapturing(t *testing.T, mgr *crdt.Manager, filter map[string]bool) (snapshot func() []*leapmuxv1.WatchOrgEvent, unsub func()) {
+func subscribeCapturing(t *testing.T, mgr *crdt.Manager, filter map[string]bool) (snapshot func() []*leapmuxv1.WatchUserEvent, unsub func()) {
 	t.Helper()
 	cap := &captureSubscriber{}
 	sub := &crdt.Subscriber{
@@ -56,11 +56,11 @@ func subscribeCapturing(t *testing.T, mgr *crdt.Manager, filter map[string]bool)
 	return cap.snapshot, u
 }
 
-// countOpsInBatches sums the ops across every WatchOrgEvent_Batch in
+// countOpsInBatches sums the ops across every WatchUserEvent_Batch in
 // the captured stream. The wire shape carries one filtered OpBatch per
 // committed batch — per-subscriber filtering may strip ops the
 // subscriber can't see, so the count is the post-filter visible total.
-func countOpsInBatches(events []*leapmuxv1.WatchOrgEvent) int {
+func countOpsInBatches(events []*leapmuxv1.WatchUserEvent) int {
 	n := 0
 	for _, evt := range events {
 		if b := evt.GetBatch(); b != nil {
@@ -76,7 +76,7 @@ func countOpsInBatches(events []*leapmuxv1.WatchOrgEvent) int {
 // once for both, not once per subscriber), while a subscriber that can't see the
 // batch's workspace receives no batch event at all.
 func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 180_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 180_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
@@ -84,7 +84,7 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 	// Seed a tab in w1 so a later position edit is a stable-visibility op for w1
 	// watchers (kept in the filtered batch, not redacted).
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -103,16 +103,16 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 	// A stable-visibility edit on the w1 tab (a position write that keeps it in w1).
 	edit := &leapmuxv1.OpBatch{
 		BatchId: "edit",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-edit",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{edit},
 	})
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 	// so proto.Marshal runs once for both rather than once per subscriber.
 	assert.Same(t, aEvents[0], bEvents[0], "co-visible subscribers must share one MarshaledEvent (single marshal)")
 	// The shared event still carries the visible op.
-	assert.Equal(t, 1, countOpsInBatches([]*leapmuxv1.WatchOrgEvent{aEvents[0].Event}),
+	assert.Equal(t, 1, countOpsInBatches([]*leapmuxv1.WatchUserEvent{aEvents[0].Event}),
 		"the shared batch event must carry the w1 edit op")
 
 	// The w2-only watcher has a different mask (cannot see w1), so it gets no batch
@@ -139,14 +139,14 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 // `EntityMaterialized` (not the raw move op) when an entity arrives in
 // a destination workspace they CAN see.
 func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 100_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 100_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -158,16 +158,16 @@ func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T
 	// Move the tab to w2 via a single tile_id write.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -188,14 +188,14 @@ func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T
 // destination workspace must receive `EntityRemoved` (not the raw
 // move op) when an entity leaves a workspace they were watching.
 func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 110_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 110_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -207,16 +207,16 @@ func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
 	// Move the tab to w2.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -241,13 +241,13 @@ func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
 // arm: a subscriber whose allowed set includes BOTH workspaces sees
 // raw move ops inside the filtered batch.
 func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 120_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 120_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -257,16 +257,16 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -294,7 +294,7 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 // diverged from the hub's (stale record after delete, missing record after
 // create) until reconnect.
 func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 120_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 120_000)
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	snapshot, unsub := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
@@ -306,23 +306,23 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 	// and be filtered as not-visible-to-anyone; separate batches each
 	// produce a real pre→post transition the EntityKindWorkspaceRoot arm
 	// keeps (preVisible || postVisible).
-	registerBatch := []*leapmuxv1.OrgOp{{
-		OpId: "ws-reg", Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+	registerBatch := []*leapmuxv1.CrdtOp{{
+		OpId: "ws-reg", Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		},
 	}}
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
 	})
 	require.NoError(t, err)
 
-	tombstoneBatch := []*leapmuxv1.OrgOp{{
-		OpId: "ws-del", Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+	tombstoneBatch := []*leapmuxv1.CrdtOp{{
+		OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		},
 	}}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
 	})
 	require.NoError(t, err)
 
@@ -332,9 +332,9 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 		if b := evt.GetBatch(); b != nil {
 			for _, op := range b.GetOps() {
 				switch op.GetBody().(type) {
-				case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+				case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
 					seenRegister = true
-				case *leapmuxv1.OrgOp_TombstoneWorkspace:
+				case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 					seenTombstone = true
 				}
 			}
@@ -365,30 +365,30 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 // asserts no snapshot entry is nil — failing against the unguarded
 // removed() and passing once it nil-guards.
 func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 121_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 121_000)
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	snapshot, unsub := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
 	defer unsub()
 
 	// Seed the record so the tombstone has a real pre→post OUT transition.
-	registerBatch := []*leapmuxv1.OrgOp{{
-		OpId: "ws-reg", Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+	registerBatch := []*leapmuxv1.CrdtOp{{
+		OpId: "ws-reg", Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		},
 	}}
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
 	})
 	require.NoError(t, err)
 
-	tombstoneBatch := []*leapmuxv1.OrgOp{{
-		OpId: "ws-del", Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+	tombstoneBatch := []*leapmuxv1.CrdtOp{{
+		OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		},
 	}}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
 	})
 	require.NoError(t, err)
 
@@ -408,13 +408,13 @@ func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
 // nil, or building the wrong entries) would silently drop
 // cross-workspace ops for every all-workspaces subscriber.
 func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 125_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 125_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -429,16 +429,16 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 	// EntityMaterialized/Removed.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -460,13 +460,13 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 // multi-op batch touching the same entity multiple times emits exactly
 // ONE EntityMaterialized to a becoming-visible subscriber.
 func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 130_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 130_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -477,23 +477,23 @@ func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
 	// Move + reposition + worker change — three ops on the same tab.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "multi",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "op-mv-tile", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "op-mv-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}}},
-			{OpId: "op-mv-pos", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-mv-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "newp"},
 			}}},
-			{OpId: "op-mv-wkr", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-mv-wkr", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr-new"},
 			}}},
 		},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -514,14 +514,14 @@ func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
 // TestBroadcast_AlwaysHidden_NoEvents covers the always-hidden case:
 // a subscriber who can see neither workspace gets nothing from the move.
 func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 140_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 140_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	seedRootInternal(t, mgr, "w3", "root3")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -532,16 +532,16 @@ func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
 	// Move tab between w1 and w2 — w3 should see nothing.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -567,13 +567,13 @@ func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
 // dropped path and showed a misleading "pending change was discarded"
 // toast on every tab close.
 func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 150_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 150_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -584,15 +584,15 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 	// Close the tab — this is the user's "close tab" path.
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "close",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-close",
-			Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tombstone},
 	})
 	require.NoError(t, err)
@@ -602,7 +602,7 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 	for _, evt := range events {
 		if b := evt.GetBatch(); b != nil {
 			for _, op := range b.GetOps() {
-				if _, isTomb := op.GetBody().(*leapmuxv1.OrgOp_TombstoneTab); isTomb {
+				if _, isTomb := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab); isTomb {
 					rawTombstones++
 				}
 			}
@@ -622,14 +622,14 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 // tombstones, so an unrelated workspace's subscriber still has
 // pre/post both invisible.
 func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 160_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 160_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -640,15 +640,15 @@ func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
 
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "close",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-close",
-			Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tombstone},
 	})
 	require.NoError(t, err)
@@ -667,7 +667,7 @@ func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
 // layer would classify the originator as becoming-hidden and fire
 // EntityRemoved.
 func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 170_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 170_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -676,7 +676,7 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 	// writes in the seeding batch, and pins hand-picked LWW HLCs the LWW-merge
 	// path would overwrite. SeedStateForTest runs the seed on the manager
 	// goroutine (the sole writer) so it cannot race the goroutine's bare reads.
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Nodes["fwroot"] = &leapmuxv1.NodeRecord{
 			NodeId: "fwroot",
 			Kind:   &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: &leapmuxv1.HLC{Physical: 1, Logical: 0, ClientId: "seed"}},
@@ -700,13 +700,13 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 	// only when paired with the window tombstone (Rule 12 exception).
 	close := &leapmuxv1.OpBatch{
 		BatchId: "close-fw",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "op-close-root", Body: &leapmuxv1.OrgOp_TombstoneNode{TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "fwroot"}}},
-			{OpId: "op-close-fw", Body: &leapmuxv1.OrgOp_TombstoneFloatingWindow{TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{WindowId: "fw"}}},
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "op-close-root", Body: &leapmuxv1.CrdtOp_TombstoneNode{TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "fwroot"}}},
+			{OpId: "op-close-fw", Body: &leapmuxv1.CrdtOp_TombstoneFloatingWindow{TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{WindowId: "fw"}}},
 		},
 	}
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{close},
 	})
 	require.NoError(t, err)
@@ -717,9 +717,9 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 		if b := evt.GetBatch(); b != nil {
 			for _, op := range b.GetOps() {
 				switch op.GetBody().(type) {
-				case *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+				case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 					rawWindowTombstones++
-				case *leapmuxv1.OrgOp_TombstoneNode:
+				case *leapmuxv1.CrdtOp_TombstoneNode:
 					rawNodeTombstones++
 				}
 			}

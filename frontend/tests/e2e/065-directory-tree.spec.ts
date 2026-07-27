@@ -10,12 +10,12 @@ const ABSOLUTE_PATH_RE = /^\//
 
 test.describe('DirectoryTree', () => {
   test('root directory is always visible and expanded', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Root Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Root Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // The root node should be visible
@@ -35,12 +35,12 @@ test.describe('DirectoryTree', () => {
   })
 
   test('directory context menu shows 4 items including terminal', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dir Menu Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dir Menu Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for root node to appear
@@ -65,12 +65,12 @@ test.describe('DirectoryTree', () => {
   })
 
   test('file context menu shows 3 items without terminal', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Menu Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Menu Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load
@@ -98,12 +98,12 @@ test.describe('DirectoryTree', () => {
   })
 
   test('open terminal tab from directory context menu', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Open Terminal Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Open Terminal Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for root node
@@ -132,12 +132,12 @@ test.describe('DirectoryTree', () => {
 
   test('copy path copies absolute path to clipboard', async ({ page, context, leapmuxServer }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Copy Path Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Copy Path Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for file tree
@@ -167,12 +167,12 @@ test.describe('DirectoryTree', () => {
   })
 
   test('collapsing a directory does not scroll the tree', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse Scroll Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse Scroll Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for tree to load
@@ -258,13 +258,13 @@ test.describe('DirectoryTree', () => {
   })
 
   test('collapse all collapses every expanded directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     // process.cwd() is the frontend directory in the test runner
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse All Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse All Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for tree to load — root is expanded by default
@@ -300,7 +300,7 @@ test.describe('DirectoryTree', () => {
   })
 
   test('large directory shows truncation indicator', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     // Create a temp directory with more than 256 entries
     const largeDir = join(tmpdir(), `leapmux-e2e-largedir-${Date.now()}`)
     mkdirSync(largeDir)
@@ -309,11 +309,11 @@ test.describe('DirectoryTree', () => {
       writeFileSync(join(largeDir, `file${String(i).padStart(3, '0')}.txt`), '')
     }
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Truncation Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Truncation Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, largeDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // The root node should be visible
@@ -331,12 +331,12 @@ test.describe('DirectoryTree', () => {
   })
 
   test('expand state persists across tab switches', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'State Persist Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'State Persist Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for tree to load

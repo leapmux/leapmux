@@ -30,7 +30,7 @@ import (
 // require constructing the full registry before this service is
 // reachable.
 type CRDTRegistry interface {
-	Get(ctx context.Context, orgID string) (*crdt.Manager, error)
+	Get(ctx context.Context, userID string) (*crdt.Manager, error)
 }
 
 type WorkerConnectorService struct {
@@ -46,7 +46,7 @@ type WorkerConnectorService struct {
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
 // `registry` may be nil in unit tests; production deployments wire in
-// the org-CRDT registry so worker tab-sync can drive manager-side
+// the user-CRDT registry so worker tab-sync can drive manager-side
 // tombstones for orphaned tabs the worker no longer hosts.
 func NewWorkerConnectorService(
 	st store.Store,
@@ -282,7 +282,7 @@ func (s *WorkerConnectorService) Connect(
 			return errWorkerStreamClosed
 		}
 		resetIdle()
-		if err := s.processWorkerMessage(ctx, conn, worker.ID, result.msg); err != nil {
+		if err := s.processWorkerMessage(ctx, conn, worker.ID, worker.RegisteredBy, result.msg); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		return nil
@@ -330,10 +330,14 @@ var errWorkerStreamClosed = errors.New("worker stream closed")
 
 // processWorkerMessage handles a single message from the worker stream.
 // Returns a non-nil error to terminate the connection (e.g. invalid config).
+//
+// registeredBy is the worker's registrant, already in hand from Connect's
+// GetByAuthToken. It is threaded here purely for the tab-sync path, which needs
+// the owner axis workspace_tab_owned is keyed by.
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,
 	conn *workermgr.Conn,
-	workerID string,
+	workerID, registeredBy string,
 	msg *leapmuxv1.ConnectRequest,
 ) error {
 	// Update last seen periodically on heartbeats.
@@ -394,7 +398,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	// back on the same bidi stream with the matching request_id so
 	// the worker can correlate it with its outbound message.
 	if tabSync := msg.GetWorkspaceTabsSync(); tabSync != nil {
-		s.handleWorkspaceTabsSync(ctx, conn, workerID, msg.GetRequestId(), tabSync)
+		s.handleWorkspaceTabsSync(ctx, conn, workerID, registeredBy, msg.GetRequestId(), tabSync)
 		return nil
 	}
 
@@ -480,13 +484,32 @@ func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, worker
 //
 // `requestID` is the ConnectRequest envelope id; the response carries
 // the same id so the worker correlates it.
+//
+// `registeredBy` is the worker's registrant and the owner the whole exchange is
+// scoped to. ListOwnedByWorker binds it, because workspace_tab_owned is keyed
+// by (user_id, tab_id) and worker_id alone selects across tenants -- nothing in
+// the schema ties a row's user_id to the registrant of the worker it names.
+//
+// That scoping is also why a blank registrant aborts the handler below instead
+// of falling through: the orphan classification reads "in the worker's report,
+// absent from hubTabs" as "the CRDT dropped it", so an empty hubTabs would tell
+// the worker to drop every agent and terminal it hosts.
 func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	ctx context.Context,
 	conn *workermgr.Conn,
-	workerID, requestID string,
+	workerID, registeredBy, requestID string,
 	sync *leapmuxv1.WorkspaceTabsSync,
 ) {
-	hubTabs, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, workerID)
+	owner, ok := userid.New(registeredBy)
+	if !ok {
+		slog.Error("workspace tab sync: worker has a blank registrant, cannot scope the owned-tab view",
+			"worker_id", workerID)
+		return
+	}
+	hubTabs, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
+		UserID:   owner,
+		WorkerID: workerID,
+	})
 	if err != nil {
 		slog.Error("failed to list hub-owned tabs for worker during sync", "worker_id", workerID, "error", err)
 		return
@@ -499,55 +522,67 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	// are removed during the worker-side scan so the post-scan
 	// leftovers ARE the stale-tombstone set — no third pass over the
 	// worker keys needed.
+	// (tab_type, tab_id) is a safe key here ONLY because the query above is
+	// owner-scoped: within one owner the table is unique on tab_id, so no two
+	// rows can collide. It would not be safe across owners -- tab ids are
+	// client-chosen, and the worker's report carries no user axis at all, so a
+	// cross-owner collision would be unresolvable on this side.
 	hubByKey := make(map[tabKey]store.WorkspaceTabRow, len(hubTabs))
 	for _, ht := range hubTabs {
 		hubByKey[tabKey{tabType: ht.TabType, tabID: ht.TabID}] = ht
 	}
 
 	resp := &leapmuxv1.WorkspaceTabsSyncResponse{}
+	// The scan's only remaining product is the leftovers in hubByKey. The
+	// per-tab classification the response used to carry (orphan_tab_ids,
+	// reassignments) is gone: no worker ever read it -- OnTabSyncResponse
+	// discards the payload and triggers a reconcile pass -- and it could not
+	// have been made owner-safe anyway, because the worker's report carries no
+	// user axis. OrphanReconciler makes both decisions from
+	// ListOwnedTabsForWorker, which does.
 	for _, t := range sync.GetTabs() {
-		k := tabKey{tabType: t.GetTabType(), tabID: t.GetTabId()}
-		ht, ok := hubByKey[k]
-		if !ok {
-			// Worker hosts a tab the CRDT doesn't know about. Tell
-			// the worker to drop it so its local agents/terminals
-			// stop running.
-			resp.OrphanTabIds = append(resp.OrphanTabIds, &leapmuxv1.TabIdent{
-				TabType: t.GetTabType(),
-				TabId:   t.GetTabId(),
-			})
-			continue
-		}
-		// Matched — fold the worker-side info in and drop from the
-		// stale candidate set.
-		delete(hubByKey, k)
-		if ht.WorkspaceID != t.GetWorkspaceId() {
-			// The CRDT moved the tab to a different workspace
-			// while the worker was disconnected. Tell the worker
-			// to update its local bookkeeping.
-			resp.Reassignments = append(resp.Reassignments, &leapmuxv1.TabReassignment{
-				Tab: &leapmuxv1.TabIdent{
-					TabType: t.GetTabType(),
-					TabId:   t.GetTabId(),
-				},
-				NewWorkspaceId: ht.WorkspaceID,
-			})
-		}
+		delete(hubByKey, tabKey{tabType: t.GetTabType(), tabID: t.GetTabId()})
 	}
 
 	// Whatever survived hubByKey above is a CRDT row the worker doesn't
 	// host anymore — tombstone via the manager so subscribers observe a
 	// consistent state.
+	//
+	// Group by owner and submit ONE BATCH PER TENANT, each to that tenant's own
+	// manager. A single flat batch handed to whichever owner's manager Go's
+	// randomized map iteration yielded first would carry every tombstone into
+	// that one manager, and nothing downstream can catch it: a submit names no
+	// tenant of its own -- the manager it lands on IS the tenant -- so there is
+	// nothing left to compare it against, and SubmitInternal marks the batch
+	// internal, which is exactly the flag that skips the per-op auth check. So
+	// the foreign tombstone COMMITS -- applyTombstoneTab materializes a record
+	// for a tab that owner has never seen, while the real owner's index row is
+	// left in place (the projection diff keys deletes by the projected row's own
+	// owner, i.e. the winner's) and its tabs live forever.
+	//
+	// Not reachable now that ListOwnedByWorker binds the owner: hubByKey holds
+	// exactly one owner's rows, and it is `owner` -- the value the query was
+	// bound with, already minted above.
+	//
+	// So the tombstones go to THAT manager, in ONE batch. The previous shape
+	// grouped by each row's own user_id and handed the resulting raw string to
+	// Registry.Get, which made this the last production path reaching the
+	// registry with an unvalidated column value. Deriving the target from the
+	// bound owner instead makes the batch's tenancy a property of the query
+	// rather than of data the loop re-reads -- and the row-level owner is still
+	// checked, but as an assertion that says so when it fails rather than a
+	// silent route into whatever manager a foreign string names.
 	if s.crdtRegistry != nil && len(hubByKey) > 0 {
-		var staleTombstones []*leapmuxv1.OrgOp
-		var staleOrgID string
+		tombstones := make([]*leapmuxv1.CrdtOp, 0, len(hubByKey))
 		for _, ht := range hubByKey {
-			if staleOrgID == "" {
-				staleOrgID = ht.OrgID
+			if !owner.Matches(ht.UserID) {
+				slog.Error("workspace tab sync: owner-bound query returned a foreign row; refusing to tombstone",
+					"worker_id", workerID, "scope_owner", owner.String(), "row_owner", ht.UserID, "tab_id", ht.TabID)
+				continue
 			}
-			staleTombstones = append(staleTombstones, &leapmuxv1.OrgOp{
+			tombstones = append(tombstones, &leapmuxv1.CrdtOp{
 				OpId: id.Generate(),
-				Body: &leapmuxv1.OrgOp_TombstoneTab{
+				Body: &leapmuxv1.CrdtOp_TombstoneTab{
 					TombstoneTab: &leapmuxv1.TombstoneTabOp{
 						TabType: ht.TabType,
 						TabId:   ht.TabID,
@@ -555,23 +590,26 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 				},
 			})
 		}
-		if len(staleTombstones) > 0 {
-			mgr, err := s.crdtRegistry.Get(ctx, staleOrgID)
+		if len(tombstones) > 0 {
+			mgr, err := s.crdtRegistry.Get(ctx, owner.String())
 			if err != nil {
 				slog.Warn("workspace tab sync: get manager failed",
-					"worker_id", workerID, "org_id", staleOrgID, "error", err)
+					"worker_id", workerID, "user_id", owner.String(), "error", err)
 			} else {
 				batch := &leapmuxv1.OpBatch{
-					BatchId: "worker-sync-" + workerID + "-" + id.Generate(),
-					Ops:     staleTombstones,
+					// The owner is part of the batch id so the entry names its
+					// own tenant in the journal: id.Generate() already makes it
+					// unique, but the dedup table is keyed per user, and an id
+					// that carries the tenant is diagnosable rather than opaque.
+					BatchId: "worker-sync-" + workerID + "-" + owner.String() + "-" + id.Generate(),
+					Ops:     tombstones,
 				}
 				if _, err := mgr.SubmitInternal(ctx, crdt.SubmitInput{
-					OrgID:       staleOrgID,
 					Batches:     []*leapmuxv1.OpBatch{batch},
 					PrincipalID: crdt.HubReservedPrincipal,
 				}); err != nil {
 					slog.Warn("workspace tab sync: submit tombstones failed",
-						"worker_id", workerID, "error", err)
+						"worker_id", workerID, "user_id", owner.String(), "error", err)
 				}
 			}
 		}
@@ -594,8 +632,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 		"worker_id", workerID,
 		"worker_tabs", len(sync.GetTabs()),
 		"hub_tabs", len(hubTabs),
-		"orphans", len(resp.OrphanTabIds),
-		"reassignments", len(resp.Reassignments),
+		"stale_hub_rows", len(hubByKey),
 	)
 }
 

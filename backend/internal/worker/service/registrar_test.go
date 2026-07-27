@@ -323,7 +323,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 						block()
 					})
 			},
-			req: &leapmuxv1.RevokeFileTabPathRequest{OrgId: "org-1", TabId: "tab-1"},
+			req: &leapmuxv1.RevokeFileTabPathRequest{TabId: "tab-1"},
 		},
 	}
 	for _, tc := range cases {

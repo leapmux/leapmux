@@ -89,32 +89,31 @@ enum ContentCompression {
 message OpenAgentRequest {
   // Target: where the agent runs.
   string workspace_id = 1;
-  string org_id = 2;            // Workspace's org (mirrors OpenTerminalRequest.org_id); used by the worker to inject LEAPMUX_REMOTE_ORG_ID into the spawned process
-  string worker_id = 3;         // Target worker (required)
-  string working_dir = 4;       // Working directory on the worker (required)
+  string worker_id = 2;         // Target worker (required)
+  string working_dir = 3;       // Working directory on the worker (required)
 
   // Agent configuration.
-  AgentProvider agent_provider = 5; // Coding agent provider (default: CLAUDE_CODE)
-  string title = 6;
-  string agent_session_id = 7;  // If set, resume from this session ID
+  AgentProvider agent_provider = 4; // Coding agent provider (default: CLAUDE_CODE)
+  string title = 5;
+  string agent_session_id = 6;  // If set, resume from this session ID
   // Initial option selections keyed by option-group id (e.g. "model", "effort",
   // "permissionMode", and provider-specific axes). Missing well-known ids are
   // filled with provider defaults server-side.
-  map<string, string> options = 8;
+  map<string, string> options = 7;
 
   // Git worktree / branch selection (mutually exclusive modes).
-  bool create_worktree = 9;         // If true, create a git worktree before starting
-  string worktree_branch = 10;      // Branch name for the worktree
-  string worktree_base_branch = 11; // Base branch for "Create new worktree" (default: current branch)
-  string use_worktree_path = 12;    // "Use existing worktree" mode
-  string checkout_branch = 13;      // "Switch to branch" mode
-  string create_branch = 14;        // "Create new branch" mode -- branch name to create
-  string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
+  bool create_worktree = 8;         // If true, create a git worktree before starting
+  string worktree_branch = 9;      // Branch name for the worktree
+  string worktree_base_branch = 10; // Base branch for "Create new worktree" (default: current branch)
+  string use_worktree_path = 11;    // "Use existing worktree" mode
+  string checkout_branch = 12;      // "Switch to branch" mode
+  string create_branch = 13;        // "Create new branch" mode -- branch name to create
+  string create_branch_base = 14;   // Base branch for "Create new branch" (default: current branch)
 
   // Reserved: slots freed when the model/effort scalars, system_prompt, and the
   // extra_settings map collapsed into the generic `options` map. The numbers are NOT
-  // reused -- a new field takes a fresh number (>= 16) -- and the names cannot return.
-  reserved 16, 17, 18;
+  // reused -- a new field takes a fresh number (>= 15) -- and the names cannot return.
+  reserved 15, 16, 17;
   reserved "model", "system_prompt", "effort", "extra_settings";
 }
 

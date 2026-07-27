@@ -8,7 +8,6 @@ import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
-import { orgHomePath } from '~/lib/orgRoutes'
 import { setPageTitle } from '~/lib/pageTitle'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { cardNarrow, errorText } from '~/styles/shared.css'
@@ -86,7 +85,7 @@ const OAuthCompleteSignupPage: Component = () => {
         navigate('/verify-email', { replace: true })
       }
       else {
-        navigate(orgHomePath(slug), { replace: true })
+        navigate('/', { replace: true })
       }
     }
     catch (e) {

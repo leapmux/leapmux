@@ -24,10 +24,10 @@ func (s *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspac
 }
 
 func (s *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspaceSectionItemParams) (*store.WorkspaceSectionItem, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, store.ErrNotFound
 	}
 	item, err := s.conn.q.GetWorkspaceSectionItem(ctx, gendb.GetWorkspaceSectionItemParams{
@@ -46,10 +46,10 @@ func (s *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspac
 }
 
 func (s *workspaceSectionItemStore) ListByUser(ctx context.Context, userID userid.UserID) ([]store.WorkspaceSectionItem, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListWorkspaceSectionItemsByUser(ctx, owner)
@@ -69,13 +69,13 @@ func (s *workspaceSectionItemStore) ListByUser(ctx context.Context, userID useri
 }
 
 func (s *workspaceSectionItemStore) Delete(ctx context.Context, p store.DeleteWorkspaceSectionItemParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteWorkspaceSectionItem(ctx, gendb.DeleteWorkspaceSectionItemParams{
@@ -94,10 +94,10 @@ func (s *workspaceSectionItemStore) HasItemsBySection(ctx context.Context, secti
 }
 
 func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p store.IsWorkspaceInArchivedSectionParams) (bool, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return false, nil
 	}
 	ok, err := s.conn.q.IsWorkspaceInArchivedSection(ctx, gendb.IsWorkspaceInArchivedSectionParams{

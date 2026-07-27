@@ -25,7 +25,7 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 ## Where is my data stored?
 
-Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts, personal organizations, workspace metadata (titles, tab positions, tiling geometry), and Worker public keys.
+Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts, workspace metadata (titles, tab positions, tiling geometry), and Worker public keys.
 
 Default locations:
 
@@ -43,7 +43,7 @@ See [Configuration](/docs/operating/configuration/) and [Encryption & Data](/doc
 
 No — all Frontend-to-Worker traffic is end-to-end encrypted, and the Hub is an **authenticated relay, not a trusted peer**: it forwards opaque ciphertext and never holds the session keys.
 
-The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account, organization, and workspace records and Worker public keys. The Hub **cannot** see agent transcripts, tool-call arguments or outputs, terminal I/O, file contents, diffs, or git status. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay. See [Security & Threat Model](/docs/operating/security/) for the authoritative scope of what the Hub does and does not see.
+The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. The Hub **cannot** see agent transcripts, tool-call arguments or outputs, terminal I/O, file contents, diffs, or git status. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay. See [Security & Threat Model](/docs/operating/security/) for the authoritative scope of what the Hub does and does not see.
 
 > **Note:** In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
 

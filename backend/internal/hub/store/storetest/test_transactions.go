@@ -16,31 +16,31 @@ func (s *Suite) testTransactions(t *testing.T) {
 	t.Run("commit on success", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		var orgID string
+		var userID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-org")
+			user := SeedUser(t, tx, "tx-user")
+			userID = user.ID
 			return nil
 		})
 		require.NoError(t, err)
 
-		// Org should be visible outside the transaction.
-		org, err := st.Orgs().GetByID(ctx, orgID)
+		user, err := st.Users().GetByID(ctx, userID)
 		require.NoError(t, err)
-		assert.Equal(t, "tx-org", org.Name)
+		assert.Equal(t, "tx-user", user.Username)
 	})
 
 	t.Run("rollback on error", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		var orgID string
+		var userID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-rollback-org")
+			user := SeedUser(t, tx, "tx-rollback-user")
+			userID = user.ID
 			return errors.New("intentional error")
 		})
 		require.Error(t, err)
 
-		// Org should NOT be visible after rollback.
-		_, err = st.Orgs().GetByID(ctx, orgID)
+		_, err = st.Users().GetByID(ctx, userID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -48,13 +48,11 @@ func (s *Suite) testTransactions(t *testing.T) {
 		st := s.NewStore(t)
 
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID := SeedOrg(t, tx, "tx-multi-org")
-			SeedUser(t, tx, orgID, "tx-multi-user")
+			SeedUser(t, tx, "tx-multi-user")
 			return nil
 		})
 		require.NoError(t, err)
 
-		// Both org and user should be visible.
 		page, err := st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 10}})
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 1)
@@ -65,16 +63,8 @@ func (s *Suite) testTransactions(t *testing.T) {
 		st := s.NewStore(t)
 
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID := SeedOrg(t, tx, "tx-read-org")
+			user := SeedUser(t, tx, "tx-read-user")
 
-			// Read within the same transaction should see the org.
-			org, err := tx.Orgs().GetByID(ctx, orgID)
-			require.NoError(t, err)
-			assert.Equal(t, "tx-read-org", org.Name)
-
-			user := SeedUser(t, tx, orgID, "tx-read-user")
-
-			// Read the user within the same transaction.
 			got, err := tx.Users().GetByID(ctx, user.ID)
 			require.NoError(t, err)
 			assert.Equal(t, "tx-read-user", got.Username)
@@ -87,28 +77,23 @@ func (s *Suite) testTransactions(t *testing.T) {
 	t.Run("rollback on error rolls back all entity types", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		orgID := id.Generate()
 		userID := id.Generate()
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-				ID: orgID, Name: "rollback-multi-org",
-			}); err != nil {
-				return err
-			}
 			if err := tx.Users().Create(ctx, store.CreateUserParams{
-				ID: userID, OrgID: orgID, Username: "rollback-multi-user",
-				PasswordHash: "hash", DisplayName: "RB", Email: "rb@example.com",
-				EmailVerified: true, PasswordSet: true, IsAdmin: false,
+				ID:            userID,
+				Username:      "rollback-multi-user",
+				PasswordHash:  "hash",
+				DisplayName:   "RB",
+				Email:         "rb@example.com",
+				EmailVerified: true,
+				PasswordSet:   true,
+				IsAdmin:       false,
 			}); err != nil {
 				return err
 			}
 			return fmt.Errorf("intentional rollback")
 		})
 		require.Error(t, err)
-
-		// Both org and user should be rolled back.
-		_, err = st.Orgs().GetByID(ctx, orgID)
-		assert.ErrorIs(t, err, store.ErrNotFound, "org should be rolled back")
 
 		_, err = st.Users().GetByID(ctx, userID)
 		assert.ErrorIs(t, err, store.ErrNotFound, "user should be rolled back")
@@ -117,12 +102,11 @@ func (s *Suite) testTransactions(t *testing.T) {
 	t.Run("transaction isolation", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		var orgID string
+		var userID string
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
-			orgID = SeedOrg(t, tx, "tx-isolation-org")
-			user := SeedUser(t, tx, orgID, "tx-isolation-user")
+			user := SeedUser(t, tx, "tx-isolation-user")
+			userID = user.ID
 
-			// Verify data is visible inside the transaction.
 			_, err := tx.Users().GetByID(ctx, user.ID)
 			require.NoError(t, err)
 
@@ -130,15 +114,13 @@ func (s *Suite) testTransactions(t *testing.T) {
 		})
 		require.Error(t, err)
 
-		// After rollback, the org should not be visible outside.
-		_, err = st.Orgs().GetByID(ctx, orgID)
+		_, err = st.Users().GetByID(ctx, userID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
 	t.Run("registration key consume rolls back with outer transaction", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "tx-registration-key-org")
-		user := SeedUser(t, st, orgID, "tx-registration-key-user")
+		user := SeedUser(t, st, "tx-registration-key-user")
 		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
 
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {

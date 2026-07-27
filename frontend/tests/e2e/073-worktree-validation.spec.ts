@@ -6,7 +6,7 @@ import {
   createGitRepo,
   openNewWorkspaceDialog,
   setWorkingDir,
-  waitForOrgPageReady,
+  waitForAppPageReady,
   waitForWorker,
 } from './helpers/worktree'
 
@@ -21,8 +21,8 @@ test.describe('Worktree Validation', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-error')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -75,8 +75,8 @@ test.describe('Worktree Validation', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-randomize')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -114,8 +114,8 @@ test.describe('Worktree Validation', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-switch-validate')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -146,8 +146,8 @@ test.describe('Worktree Validation', () => {
     execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-validate-wt')} -b validate-wt`, { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -175,8 +175,8 @@ test.describe('Worktree Validation', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-current-validate')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -208,8 +208,8 @@ test.describe('Worktree Validation', () => {
     const repo2 = createGitRepo(dataDir, 'test-repo-preserve-mode-2')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -258,8 +258,8 @@ test.describe('Worktree Validation', () => {
     execSync('git branch beta-branch', { cwd: repo2 })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -299,8 +299,8 @@ test.describe('Worktree Validation', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-refresh-branches')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -347,8 +347,8 @@ test.describe('Worktree Validation', () => {
     execSync('git branch existing-branch', { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -391,8 +391,8 @@ test.describe('Worktree Validation', () => {
     execSync('git branch wt-existing-branch', { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)

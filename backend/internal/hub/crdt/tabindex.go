@@ -8,8 +8,12 @@ import (
 )
 
 // TabIndexRow is the value carried into Upsert{Owned,Rendered}.
+//
+// It deliberately carries NO owner. Every writer stamps the committing tenant
+// itself (see service.txTabIndexWriter, which mints it once per transaction),
+// so a per-row owner could only ever agree with that one or contradict it. The
+// DELETE side is different and does keep an owner -- see TabKey.
 type TabIndexRow struct {
-	OrgID       string
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
@@ -44,10 +48,10 @@ type IndexDiff struct {
 	RenderedDeletes []TabKey
 }
 
-// TabKey identifies a tab inside a single org doc.
+// TabKey identifies a tab inside a single user doc.
 type TabKey struct {
-	OrgID string
-	TabID string
+	UserID string
+	TabID  string
 }
 
 // DiffProjectionForBatch is the commit hot-path entry point: it
@@ -67,7 +71,7 @@ type TabKey struct {
 // full Project + Diff path because the affected subtree can span any
 // number of pre-existing tabs and tight scoping would re-create most
 // of the per-batch cost we're trying to avoid.
-func DiffProjectionForBatch(prev, next *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp) IndexDiff {
+func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) IndexDiff {
 	if batchHasStructuralOp(batch) {
 		return DiffProjection(ProjectOwnership(prev), ProjectOwnership(next))
 	}
@@ -85,14 +89,14 @@ func DiffProjectionForBatch(prev, next *leapmuxv1.OrgCrdtState, batch []*leapmux
 
 		switch {
 		case nextOwned == nil && prevOwned != nil:
-			diff.OwnedDeletes = append(diff.OwnedDeletes, TabKey{OrgID: prevOwned.OrgID, TabID: prevOwned.TabID})
+			diff.OwnedDeletes = append(diff.OwnedDeletes, TabKey{UserID: prevOwned.UserID, TabID: prevOwned.TabID})
 		case nextOwned != nil && (prevOwned == nil || !rowEqual(prevOwned, nextOwned)):
 			diff.OwnedUpserts = append(diff.OwnedUpserts, toRow(nextOwned))
 		}
 
 		switch {
 		case nextRendered == nil && prevRendered != nil:
-			diff.RenderedDeletes = append(diff.RenderedDeletes, TabKey{OrgID: prevRendered.OrgID, TabID: prevRendered.TabID})
+			diff.RenderedDeletes = append(diff.RenderedDeletes, TabKey{UserID: prevRendered.UserID, TabID: prevRendered.TabID})
 		case nextRendered != nil && (prevRendered == nil || !rowEqual(prevRendered, nextRendered)):
 			diff.RenderedUpserts = append(diff.RenderedUpserts, nextRendered.toIndexRow())
 		}
@@ -103,13 +107,13 @@ func DiffProjectionForBatch(prev, next *leapmuxv1.OrgCrdtState, batch []*leapmux
 // touchedTabIDs returns the set of tab ids any Set/TombstoneTab op in
 // `batch` names. Other op kinds contribute nothing — for non-structural
 // batches those are the only tab projections that can change.
-func touchedTabIDs(batch []*leapmuxv1.OrgOp) map[string]bool {
+func touchedTabIDs(batch []*leapmuxv1.CrdtOp) map[string]bool {
 	out := map[string]bool{}
 	for _, op := range batch {
 		switch body := op.GetBody().(type) {
-		case *leapmuxv1.OrgOp_SetTabRegister:
+		case *leapmuxv1.CrdtOp_SetTabRegister:
 			out[body.SetTabRegister.GetTabId()] = true
-		case *leapmuxv1.OrgOp_TombstoneTab:
+		case *leapmuxv1.CrdtOp_TombstoneTab:
 			out[body.TombstoneTab.GetTabId()] = true
 		}
 	}
@@ -139,7 +143,7 @@ func DiffProjection(prev, next *Projection) IndexDiff {
 	}
 	for id, t := range prevOwned {
 		if _, ok := nextOwned[id]; !ok {
-			diff.OwnedDeletes = append(diff.OwnedDeletes, TabKey{OrgID: t.OrgID, TabID: t.TabID})
+			diff.OwnedDeletes = append(diff.OwnedDeletes, TabKey{UserID: t.UserID, TabID: t.TabID})
 		}
 	}
 	for id, t := range nextRendered {
@@ -149,7 +153,7 @@ func DiffProjection(prev, next *Projection) IndexDiff {
 	}
 	for id, t := range prevRendered {
 		if _, ok := nextRendered[id]; !ok {
-			diff.RenderedDeletes = append(diff.RenderedDeletes, TabKey{OrgID: t.OrgID, TabID: t.TabID})
+			diff.RenderedDeletes = append(diff.RenderedDeletes, TabKey{UserID: t.UserID, TabID: t.TabID})
 		}
 	}
 	return diff
@@ -157,7 +161,6 @@ func DiffProjection(prev, next *Projection) IndexDiff {
 
 func toRow(t *RenderedTab) TabIndexRow {
 	return TabIndexRow{
-		OrgID:       t.OrgID,
 		WorkspaceID: t.WorkspaceID,
 		TabType:     t.TabType,
 		TabID:       t.TabID,
@@ -179,7 +182,7 @@ func rowEqual(a, b *RenderedTab) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.OrgID == b.OrgID && a.WorkspaceID == b.WorkspaceID &&
+	return a.UserID == b.UserID && a.WorkspaceID == b.WorkspaceID &&
 		a.TabType == b.TabType && a.TabID == b.TabID &&
 		a.WorkerID == b.WorkerID && a.TileID == b.TileID &&
 		a.Position == b.Position

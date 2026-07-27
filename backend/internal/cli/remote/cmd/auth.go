@@ -96,7 +96,7 @@ type pathCmdFlags struct {
 func bindPathCmd(cmd Ctx, defaultFromEnv bool, usage string) *pathCmdFlags {
 	out := &pathCmdFlags{}
 	out.FS = flagSet(cmd, &out.Hub)
-	resolve.BindEntityFlags(out.FS, &out.In, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(out.FS, &out.In, resolve.FlagOptions{})
 	def := ""
 	if defaultFromEnv {
 		def = workingDirEnv()

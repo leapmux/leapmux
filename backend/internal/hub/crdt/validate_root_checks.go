@@ -18,21 +18,21 @@ import (
 // — the workspace_id map entry is removed immediately after. Root
 // uniqueness checks still apply: even an internal batch can't alias
 // two roots to the same node.
-func rootChecks(post *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp, internal bool, preRoots, postRoots rootSet, postChildren map[string][]string) (leapmuxv1.BatchRejectionReason, string) {
+func rootChecks(post *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp, internal bool, preRoots, postRoots rootSet, postChildren map[string][]string) (leapmuxv1.BatchRejectionReason, string) {
 	// preRoots carries the pre-batch workspace/window root maps already.
 	preWorkspaceRoots := preRoots.workspaceRoots
 	preWindowRoots := preRoots.windowRoots
 
 	tombstonedWindows := map[string]bool{}
 	for _, op := range batch {
-		if t, ok := op.GetBody().(*leapmuxv1.OrgOp_TombstoneFloatingWindow); ok {
+		if t, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneFloatingWindow); ok {
 			tombstonedWindows[t.TombstoneFloatingWindow.GetWindowId()] = true
 		}
 	}
 
 	for _, op := range batch {
 		switch body := op.GetBody().(type) {
-		case *leapmuxv1.OrgOp_TombstoneNode:
+		case *leapmuxv1.CrdtOp_TombstoneNode:
 			id := body.TombstoneNode.GetNodeId()
 			if _, ok := preWorkspaceRoots[id]; ok {
 				if !internal {
@@ -58,14 +58,14 @@ func rootChecks(post *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp, internal
 					return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_NODE_PROTECTED, op.GetOpId()
 				}
 			}
-		case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+		case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 			setOp := body.SetFloatingWindowRegister
 			if r, ok := setOp.GetField().(*leapmuxv1.SetFloatingWindowRegisterOp_RootNodeId); ok {
 				if reason, ok := validateRootAssignment(post, postRoots, r.RootNodeId); !ok {
 					return reason, op.GetOpId()
 				}
 			}
-		case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
+		case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 			if reason, ok := validateRootAssignment(post, postRoots, body.SetWorkspaceRootNode.GetRootNodeId()); !ok {
 				return reason, op.GetOpId()
 			}
@@ -79,7 +79,7 @@ func rootChecks(post *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp, internal
 // exactly one root in the post-batch state. The post-state occurrence
 // count comes from the precomputed rootSet (registeredRoots) so this
 // check is O(1) per call.
-func validateRootAssignment(post *leapmuxv1.OrgCrdtState, postRoots rootSet, candidateID string) (leapmuxv1.BatchRejectionReason, bool) {
+func validateRootAssignment(post *leapmuxv1.UserCrdtState, postRoots rootSet, candidateID string) (leapmuxv1.BatchRejectionReason, bool) {
 	rec := post.GetNodes()[candidateID]
 	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
 		return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE, false
@@ -99,7 +99,7 @@ func validateRootAssignment(post *leapmuxv1.OrgCrdtState, postRoots rootSet, can
 // adjacency for `state`; it must be built against the same state the
 // node records read against (the caller passes postChildren built from
 // the same post-batch working copy).
-func subtreeHasOtherLive(state *leapmuxv1.OrgCrdtState, children map[string][]string, rootID string) bool {
+func subtreeHasOtherLive(state *leapmuxv1.UserCrdtState, children map[string][]string, rootID string) bool {
 	subtree := collectSubtree(children, rootID)
 	for id := range subtree {
 		if id == rootID {
@@ -149,9 +149,9 @@ func collectSubtree(children map[string][]string, rootID string) map[string]bool
 // on whether `workspace_id` actually changes between pre and post
 // state — register writes that are no-ops, or that touch fresh
 // windows being created in this batch, fall through.
-func floatingMoveCheck(post, pre *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp, postChildren map[string][]string) (leapmuxv1.BatchRejectionReason, string) {
+func floatingMoveCheck(post, pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp, postChildren map[string][]string) (leapmuxv1.BatchRejectionReason, string) {
 	for _, op := range batch {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetFloatingWindowRegister)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetFloatingWindowRegister)
 		if !ok {
 			continue
 		}

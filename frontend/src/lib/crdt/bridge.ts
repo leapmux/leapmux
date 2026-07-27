@@ -1,17 +1,16 @@
 import type { HLCClock } from './hlc'
-import type { OrgCrdtState } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OpBatch } from '~/generated/leapmux/v1/org_ops_pb'
+import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
 import { createSignal } from 'solid-js'
 
 /**
- * Op-builder context — orgId / origin client / HLC clock — threaded
+ * Op-builder context — origin client / HLC clock — threaded
  * through every op-construction helper in `~/lib/crdt/ops`. Lives
  * here (next to the bridge accessors that produce it) so the
  * `withBridgeAndState` helper can return the constructed ctx without
  * creating a runtime cycle between bridge.ts and ops.ts.
  */
 export interface OpBuilderCtx {
-  orgId: string
   originClientId: string
   clock: HLCClock
 }
@@ -19,7 +18,7 @@ export interface OpBuilderCtx {
 /**
  * CRDT bridge — singleton wired by AppShell.tsx so the imperative
  * stores (layout / tab / floatingWindow) can read the speculatively-
- * applied OrgCrdtState and emit op batches without having to receive
+ * applied UserCrdtState and emit op batches without having to receive
  * the OpsSubmitter / PendingOpsManager / HLCClock through every
  * constructor.
  *
@@ -38,7 +37,6 @@ export interface OpBuilderCtx {
  * subscribing to a version signal.
  */
 export interface CRDTBridge {
-  orgId: () => string
   workspaceId: () => string | null
   /**
    * Enqueue a fresh batch — speculatively applies + ships in 16ms.
@@ -50,21 +48,26 @@ export interface CRDTBridge {
   /**
    * Mint advisory client_hlcs from the same monotonic stream the
    * pending manager uses.
+   *
+   * Never null: a bridge is only installed alongside a live
+   * `PendingOpsManager`, whose `clock` is a non-optional field. The
+   * "not wired yet" state is the absence of the bridge itself
+   * (`getCRDTBridge()` returning null), not a half-built one.
    */
-  clock: () => HLCClock | null
+  clock: () => HLCClock
   /** Stable client id for op origin (the tab's session token). */
   originClientId: () => string
   /**
-   * Speculatively-applied OrgCrdtState (confirmedState + every still-
+   * Speculatively-applied UserCrdtState (confirmedState + every still-
    * pending optimistic batch folded on top). Reactive: every call to
    * a state-mutating method on the underlying PendingOpsManager bumps
    * a version signal, so memoized projections derived from this
    * accessor re-derive on the next reactive tick.
    *
-   * Returns null before bootstrap (initial OrgMaterialized hasn't
+   * Returns null before bootstrap (initial UserMaterialized hasn't
    * landed yet) or in test harnesses without a wired bridge.
    */
-  speculativeState: () => OrgCrdtState | null
+  speculativeState: () => UserCrdtState | null
 }
 
 // Module-level Solid signal so reactive consumers (layout.store /
@@ -101,25 +104,30 @@ export function withBridge<T>(fn: (bridge: CRDTBridge) => T, fallback: T): T {
 }
 
 /**
- * Build an OpBuilderCtx from a bridge, returning null when the bridge
- * isn't fully wired yet (no orgId or clock). Lives next to
- * `withBridgeAndState` so both share the same wiring-readiness check.
+ * Build an OpBuilderCtx from a bridge. Total -- a wired bridge always has
+ * everything the ctx needs. Lives next to `withBridgeAndState` so both read
+ * the bridge through one accessor pair.
+ *
+ * There is no user-id check: ops stopped carrying a user id when the
+ * tenancy collapsed onto the session, and the installer already refuses
+ * to set a bridge without an authenticated user -- so "a bridge exists"
+ * IS "the user is known", and a second field restating it could only
+ * fall out of sync with it. The same argument retired the clock guard:
+ * `clock` is a non-optional field of the `PendingOpsManager` the installer
+ * builds the bridge from, so a null there was unreachable, and a guard for
+ * an unreachable state is an untested branch pretending to be safety.
  */
-export function ctxFromBridge(bridge: CRDTBridge): OpBuilderCtx | null {
-  const orgId = bridge.orgId()
-  const clock = bridge.clock()
-  if (!orgId || !clock)
-    return null
-  return { orgId, originClientId: bridge.originClientId(), clock }
+export function ctxFromBridge(bridge: CRDTBridge): OpBuilderCtx {
+  return { originClientId: bridge.originClientId(), clock: bridge.clock() }
 }
 
 /**
  * Collapse the `ctxFromBridge(bridge) + bridge.speculativeState() +
- * dual null-guard` preamble that every op-emitter in the layout and
- * floating-window stores repeats. Returns `fallback` when either the
- * bridge isn't wired (no orgId/clock) or speculativeState hasn't
- * landed yet; otherwise invokes `fn(ctx, state)` and returns its
- * result.
+ * null-guard` preamble that every op-emitter in the layout and
+ * floating-window stores repeats. Returns `fallback` when
+ * speculativeState hasn't landed yet (the pre-bootstrap window, before
+ * the initial UserMaterialized frame); otherwise invokes `fn(ctx, state)`
+ * and returns its result.
  *
  * Note: when `fn` needs to enqueue ops it should close over `bridge`
  * from the outer scope — this helper deliberately doesn't pass the
@@ -128,14 +136,11 @@ export function ctxFromBridge(bridge: CRDTBridge): OpBuilderCtx | null {
  */
 export function withBridgeAndState<T>(
   bridge: CRDTBridge,
-  fn: (ctx: OpBuilderCtx, state: OrgCrdtState) => T,
+  fn: (ctx: OpBuilderCtx, state: UserCrdtState) => T,
   fallback: T,
 ): T {
-  const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return fallback
   const state = bridge.speculativeState()
   if (!state)
     return fallback
-  return fn(ctx, state)
+  return fn(ctxFromBridge(bridge), state)
 }

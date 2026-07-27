@@ -108,7 +108,6 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
   let ops!: ReturnType<typeof useTerminalOperations>
   const dispose = createRoot((d) => {
     ops = useTerminalOperations({
-      org: { orgId: () => 'org-1' },
       tabStore,
       layoutStore,
       activeWorkspace,
@@ -146,7 +145,6 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
   let ops!: ReturnType<typeof useTerminalOperations>
   const dispose = createRoot((d) => {
     ops = useTerminalOperations({
-      org: { orgId: () => 'org-1' },
       tabStore,
       layoutStore,
       activeWorkspace,
@@ -283,7 +281,6 @@ describe('useterminaloperations.handleterminalinput', () => {
     expect(sendInputMock).not.toHaveBeenCalled()
     const arg = restartTerminalMock.mock.calls[0][1]
     expect(arg).toMatchObject({
-      orgId: 'org-1',
       workspaceId: 'ws-1',
       terminalId: 'tid-1',
       cols: 100,

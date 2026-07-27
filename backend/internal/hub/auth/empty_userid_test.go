@@ -29,9 +29,8 @@ const useridPkgPath = "github.com/leapmux/leapmux/internal/util/userid"
 // Dispatcher.Methods() vs the gate map. Names are receiver-qualified.
 var zeroUserIDDenyFuncs = []string{
 	"IsOwner",
-	"WorkspaceCanRead",
-	"WorkspaceCanAccessInOrg",
-	"WorkspaceReadableByUsersInOrg",
+	"WorkspaceCanAccess",
+	"WorkspaceReadableByUsers",
 	"WorkspacesReadableByUser",
 	"WorkerCanUse",
 	"CreateSession",
@@ -58,41 +57,32 @@ func TestZeroUserIDDenies(t *testing.T) {
 	ctx := context.Background()
 	var zero userid.UserID
 
-	orgID := storetest.SeedOrg(t, st, "zero-id-org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
+	owner := storetest.SeedUser(t, st, "owner")
 	ownerID := userid.MustNew(owner.ID)
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "ws")
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "ws")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
-	// The blank-owner fixture is the case that actually bites. owner_user_id and
-	// registered_by are `NOT NULL REFERENCES users(id)`, but SQLite accepts ""
-	// as a TEXT primary key, so a blank-id user -- and rows owned by it -- insert
-	// cleanly (a bad migration or a hand-seeded row is all it takes). Against
-	// THIS row a zero caller id and a blank stored id are the same empty string,
-	// which is the exact fail-open userid.UserID exists to close. Denials against
-	// the real-owner rows above prove nothing about it: a zero id loses to a real
-	// owner on plain inequality, guard or no guard.
-	blankUser := store.CreateUserParams{
-		ID: "", OrgID: orgID, Username: "blank-id-user",
-		PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
-	}
-	require.NoError(t, st.Users().Create(ctx, blankUser))
-	blankOwnedWS := "ws-blank-owner"
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: blankOwnedWS, OrgID: orgID, OwnerUserID: userid.UserID{}, Title: "blank-owner",
-	}))
-	// Created directly rather than via storetest.SeedWorker: that helper mints
-	// with MustNew, which is right for a known-good fixture but panics on the
-	// blank registrant this case exists to exercise.
-	blankOwnedWorkerID := "worker-blank-registrant"
-	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              blankOwnedWorkerID,
-		AuthToken:       "token-blank-registrant",
-		RegisteredBy:    userid.UserID{},
-		PublicKey:       []byte{},
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
-	}))
+	// The blank-owner fixture these cases used to build is gone, and what that
+	// costs is worth stating rather than leaving to be rediscovered.
+	//
+	// owner_user_id and registered_by are `NOT NULL REFERENCES users(id)`, and
+	// CreateUserParams.Validate now refuses a blank users.id -- so no blank-owner
+	// workspace and no blank-registrant worker can exist. That removes the
+	// empty-vs-empty pairing (a zero caller against a blank STORED id) from
+	// everything below that reads a row, which is the pairing userid.UserID
+	// exists to close.
+	//
+	// It is still pinned, just not from here: userid_test.go asserts
+	// `UserID{}.Matches("")` is false directly, and the IsOwner case below
+	// asserts it against an in-memory blank-owner workspace that needs no row at
+	// all. What the store-backed cases pin now is the other half -- that a zero
+	// caller is refused against a REAL owner's rows -- which stays reachable and
+	// still fails if a predicate stops comparing at all.
+	//
+	// A second real user's worker stands in for the delegation cases, where the
+	// question is whether a principal inherits the minter's owner reach.
+	stranger := storetest.SeedUser(t, st, "stranger")
+	strangerWorker := storetest.SeedWorker(t, st, stranger.ID)
 
 	for _, name := range zeroUserIDDenyFuncs {
 		t.Run(name, func(t *testing.T) {
@@ -105,66 +95,38 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// the empty-vs-empty pairing is the whole reason for the type.
 				assert.False(t, auth.IsOwner(&store.Workspace{OwnerUserID: ""}, zero),
 					"empty owner must not match an empty caller")
-			case "WorkspaceCanRead":
-				ok, err := auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, ownerID)
+			case "WorkspaceCanAccess":
+				ok, err := auth.WorkspaceCanAccess(ctx, st, workspaceID, ownerID)
 				require.NoError(t, err)
 				require.True(t, ok, "control: the owner must be able to read the seeded workspace")
 
-				ok, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), workspaceID, zero)
+				// Answered by the IsZero() prologue, before the row is ever
+				// loaded -- so this pins the prologue, NOT the empty-vs-empty
+				// refusal. That refusal is what IsOwner (which has no prologue
+				// and is the predicate this delegates the comparison to) asserts
+				// directly above.
+				ok, err = auth.WorkspaceCanAccess(ctx, st, workspaceID, zero)
 				require.NoError(t, err)
-				assert.False(t, ok)
-
-				// This one is answered by the IsZero() prologue, before the row
-				// is ever loaded -- so it pins the prologue, NOT the
-				// empty-vs-empty refusal. That refusal is what IsOwner (which
-				// has no prologue and is the predicate this delegates the
-				// comparison to) asserts directly above.
-				ok, err = auth.WorkspaceCanRead(ctx, st, auth.AnyOrg(), blankOwnedWS, zero)
-				require.NoError(t, err)
-				assert.False(t, ok, "the zero-id prologue must refuse before a blank-owner row is even read")
-			case "WorkspaceCanAccessInOrg":
-				ok, err := auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgID), workspaceID, ownerID)
-				require.NoError(t, err)
-				require.True(t, ok, "control: the owner must have in-org access")
-
-				ok, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgID), workspaceID, zero)
-				require.NoError(t, err)
-				assert.False(t, ok)
-
-				// As with WorkspaceCanRead, the IsZero() prologue answers this
-				// before the row is loaded: it pins the prologue rather than the
-				// empty-vs-empty refusal.
-				ok, err = auth.WorkspaceCanAccessInOrg(ctx, st, mustBoundOrg(t, orgID), blankOwnedWS, zero)
-				require.NoError(t, err)
-				assert.False(t, ok, "the zero-id prologue must refuse before a blank-owner row is even read")
-			case "WorkspaceReadableByUsersInOrg":
+				assert.False(t, ok, "a zero caller must not read another user's workspace")
+			case "WorkspaceReadableByUsers":
 				// The batch form takes a slice, so a zero entry must be dropped
 				// rather than short-circuiting the whole call: the real owner in
 				// the SAME batch must still resolve. Passing both ids together is
 				// what pins that -- a zero-only batch would pass even if the
 				// implementation bailed out on the first blank entry.
-				got, err := auth.WorkspaceReadableByUsersInOrg(
-					ctx, st, mustBoundOrg(t, orgID), workspaceID, []userid.UserID{zero, ownerID})
+				got, err := auth.WorkspaceReadableByUsers(
+					ctx, st, workspaceID, []userid.UserID{zero, ownerID})
 				require.NoError(t, err)
 				assert.Equal(t, map[string]bool{owner.ID: true}, got,
 					"the zero entry drops out and the real owner still resolves")
-
-				got, err = auth.WorkspaceReadableByUsersInOrg(
-					ctx, st, mustBoundOrg(t, orgID), blankOwnedWS, []userid.UserID{zero})
-				require.NoError(t, err)
-				assert.Empty(t, got, "a zero id must not appear readable on a blank-owner workspace")
 			case "WorkspacesReadableByUser":
-				got, err := auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgID), ownerID, []string{workspaceID})
+				got, err := auth.WorkspacesReadableByUser(ctx, st, ownerID, []string{workspaceID})
 				require.NoError(t, err)
 				require.Equal(t, []string{workspaceID}, got, "control: the owner reads their own workspace")
 
-				got, err = auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgID), zero, []string{workspaceID})
+				got, err = auth.WorkspacesReadableByUser(ctx, st, zero, []string{workspaceID})
 				require.NoError(t, err)
-				assert.Empty(t, got)
-
-				got, err = auth.WorkspacesReadableByUser(ctx, st, auth.BindOrg(orgID), zero, []string{blankOwnedWS})
-				require.NoError(t, err)
-				assert.Empty(t, got, "a zero id must not resolve a blank-owner workspace")
+				assert.Empty(t, got, "a zero id must not resolve another user's workspace")
 			case "CreateSession":
 				// Not an access predicate, but it takes the type, so the table
 				// requires it to state a contract: a session must never be
@@ -184,21 +146,14 @@ func TestZeroUserIDDenies(t *testing.T) {
 				require.True(t, ok, "control: the registrant may use the seeded worker")
 				require.NotNil(t, w)
 
+				// The deny comes from the `workerID == "" || userID.IsZero()`
+				// prologue, which returns before the row is loaded, so this pins
+				// the prologue rather than the empty-vs-empty refusal. The
+				// refusal itself is asserted where it is reachable without a
+				// row: IsOwner above, and userid_test.go directly.
 				w, ok, err = auth.WorkerCanUse(ctx, st, worker.ID, zero)
 				require.NoError(t, err)
-				assert.Nil(t, w)
-				assert.False(t, ok)
-
-				// The worker row EXISTS and its registrant is blank -- but this
-				// deny comes from the `workerID == "" || userID.IsZero()`
-				// prologue, which returns before the row is loaded, so it pins
-				// the prologue rather than the empty-vs-empty refusal. The
-				// refusal itself is asserted where it is actually reachable:
-				// IsOwner above, and the batch predicate below, neither of
-				// which has a prologue to short-circuit it.
-				w, ok, err = auth.WorkerCanUse(ctx, st, blankOwnedWorkerID, zero)
-				require.NoError(t, err)
-				assert.False(t, ok, "the zero-id prologue must refuse before a blank-registrant row is even read")
+				assert.False(t, ok, "a zero caller must not reach another user's worker")
 				assert.Nil(t, w, "a refused reach must not hand back the worker row either")
 			case "RevokeAllUserCredentials":
 				// A REVOKE path, so the polarity is inverted: here "false" would
@@ -215,40 +170,45 @@ func TestZeroUserIDDenies(t *testing.T) {
 				_, _, err = auth.RevokeAllUserCredentials(ctx, st, ownerID)
 				require.NoError(t, err, "control: a real user's credentials revoke")
 			case "ResolveDelegationWorkerScope":
-				// This is the sharpest empty-vs-empty pairing in the package:
 				// `user.ID.Matches(minter.RegisteredBy)` decides whether a
 				// delegation token gets its minter's OWNER reach (every worker
-				// that user has) or minter-only reach. Against a blank-registrant
-				// minter, a zero principal must not read as its owner.
+				// that user has) or minter-only reach. A zero principal must get
+				// minter-only, against a minter registered by anyone.
+				//
+				// The minter used to be a blank-REGISTRANT worker, which made
+				// this the sharpest empty-vs-empty pairing in the package. That
+				// row is unrepresentable now (see the fixture note above), so the
+				// minter is a real stranger's worker and what remains pinned is
+				// the reach, not the pairing.
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", blankOwnedWorkerID),
+					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
 				}
 				scope, err := auth.ResolveDelegationWorkerScope(ctx, st, zeroPrincipal)
 				require.NoError(t, err)
-				assert.True(t, scope.Allows(blankOwnedWorkerID),
+				assert.True(t, scope.Allows(strangerWorker.ID),
 					"a token always reaches the worker that minted it")
 				assert.False(t, scope.Allows(worker.ID),
-					"a zero principal must not inherit a blank registrant's owner reach")
+					"a zero principal must not inherit the registrant's owner reach")
 
 				// Control: a REAL registrant does widen the scope, so the denial
 				// above is about the zero id -- not about the scope never widening.
+				ownerWorker2 := storetest.SeedWorker(t, st, owner.ID)
 				ownerPrincipal := &auth.UserInfo{
 					ID:         ownerID,
 					Credential: auth.DelegationCredential("d-owner", "ws-1", worker.ID),
 				}
 				ownerScope, err := auth.ResolveDelegationWorkerScope(ctx, st, ownerPrincipal)
 				require.NoError(t, err)
-				assert.True(t, ownerScope.Allows(blankOwnedWorkerID),
+				assert.True(t, ownerScope.Allows(ownerWorker2.ID),
 					"control: the minter's real owner reaches their other workers")
 			case "CheckDelegationWorkerScope":
 				// The enforcing wrapper around the same comparison: a zero
-				// principal bearing a blank-registrant minter's token must be
-				// refused for any OTHER worker.
+				// principal must be refused for any worker but the minter.
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", blankOwnedWorkerID),
+					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
 				}
 				require.NoError(t,
-					auth.CheckDelegationWorkerScope(ctx, st, zeroPrincipal, blankOwnedWorkerID),
+					auth.CheckDelegationWorkerScope(ctx, st, zeroPrincipal, strangerWorker.ID),
 					"control: the minter itself stays reachable")
 				assert.ErrorIs(t,
 					auth.CheckDelegationWorkerScope(ctx, st, zeroPrincipal, worker.ID),
@@ -261,14 +221,14 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// a real user.
 				cache := auth.NewDelegationScopeCache(st)
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", blankOwnedWorkerID),
+					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
 				}
 				scope, err := cache.Resolve(ctx, zeroPrincipal)
 				require.NoError(t, err)
-				assert.True(t, scope.Allows(blankOwnedWorkerID),
+				assert.True(t, scope.Allows(strangerWorker.ID),
 					"a token always reaches the worker that minted it")
 				assert.False(t, scope.Allows(worker.ID),
-					"a zero principal must not inherit a blank registrant's owner reach through the cache")
+					"a zero principal must not inherit the registrant's owner reach through the cache")
 
 				// And again from the warm cache: a second call must not widen.
 				scope, err = cache.Resolve(ctx, zeroPrincipal)
@@ -293,7 +253,6 @@ var zeroUserIDNonDeciders = map[string]string{
 	"WithUser":                 "stores the principal on a context; the predicates that read it are the deciders",
 	"NewInterceptor":           "constructor; it authenticates requests rather than authorizing a principal it was handed",
 	"NewInterceptorWithTokens": "constructor; same as NewInterceptor",
-	"ResolveOrgID":             "decides on user.OrgID, never user.ID -- the identity is along for the ride",
 	"(*AuthContextRegistry).RegisterAuthenticatedLease": "records a lease for an ALREADY-authenticated principal; it grants nothing",
 	"(*AuthContextRegistry).CurrentSyntheticUser":       "returns the configured solo identity; it answers no question about the caller",
 	"(*AuthContextRegistry).IsAuthContextCurrent":       "compares cache generations, not identities -- a zero id is stale-vs-current, not allowed-vs-denied",

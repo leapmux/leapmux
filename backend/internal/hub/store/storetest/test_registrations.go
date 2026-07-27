@@ -13,14 +13,13 @@ import (
 )
 
 func (s *Suite) testRegistrations(t *testing.T) {
-	// Share the store + a default org/user across the whole group. Each
+	// Share the store + a default user across the whole group. Each
 	// subtest creates its key (and any extra users it needs) with fresh
 	// IDs, so cross-subtest interference is bounded to data the test
 	// itself queries — and every query is keyed by id. Subtests that
 	// must observe another user's row create that second user inline.
 	st := s.NewStore(t)
-	orgID := SeedOrg(t, st, "regkey-org")
-	user := SeedUser(t, st, orgID, "regkey-user")
+	user := SeedUser(t, st, "regkey-user")
 
 	t.Run("create and get by id", func(t *testing.T) {
 		expires := time.Now().Add(5 * time.Minute).UTC()
@@ -42,55 +41,54 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	// GetOwned / Extend / SoftDelete are ownership gates, and their WHERE
 	// clause is `created_by = ?`. Binding a zero caller id would unwrap to ""
 	// -- which does not fail to match, it MATCHES every blank-created_by row.
-	// created_by is `NOT NULL REFERENCES users(id)`, but a blank-id user row is
-	// representable in all three dialects, so the gate has to refuse a zero id
-	// before the query rather than rely on the query to miss.
-	t.Run("ownership gates refuse a zero caller id", func(t *testing.T) {
-		blankUser := store.CreateUserParams{
-			ID: "", OrgID: orgID, Username: "regkey-blank-id-user",
+	// Two independent things stop that, and both are pinned here: no
+	// blank-created_by row can be created (its `NOT NULL REFERENCES users(id)`
+	// has no parent now that a blank users.id is refused), and the gates refuse
+	// the zero bind before the query so a zero caller reaches nothing at all.
+	t.Run("a blank creator is unrepresentable and a zero caller reaches nothing", func(t *testing.T) {
+		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID: "", Username: "regkey-blank-id-user",
 			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
-		}
-		require.NoError(t, st.Users().Create(ctx, blankUser))
+		}), store.ErrInvalidArgument,
+			"a blank users.id is the parent key every blank-created_by row needs")
 
 		expires := time.Now().Add(5 * time.Minute).UTC()
-		blankOwnedID := "regkey-blank-owner"
-		require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-			ID: blankOwnedID, CreatedBy: userid.UserID{}, ExpiresAt: expires,
-		}))
+		require.Error(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID: "regkey-blank-owner", CreatedBy: userid.UserID{}, ExpiresAt: expires,
+		}), "a blank-created_by key has no parent user row to reference")
 
-		// Control: the blank-owner row really does exist, so the denials below
-		// are about the zero id and not about a missing row.
-		got, err := st.RegistrationKeys().GetByID(ctx, blankOwnedID)
-		require.NoError(t, err)
-		require.Equal(t, "", got.CreatedBy, "control: the row is owned by a blank id")
+		// The gate assertions target a REAL creator's key rather than a
+		// blank-created_by one. That is what keeps them non-vacuous now that no
+		// blank-created_by row can exist: were a gate to stop binding created_by,
+		// the zero caller would reach this key and each assertion would fail.
+		realID := SeedRegistrationKey(t, st, user.ID, expires)
 
-		_, err = st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
-			ID: blankOwnedID, CreatedBy: userid.UserID{},
+		_, err := st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
+			ID: realID, CreatedBy: userid.UserID{},
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound,
-			"a zero caller must not read a blank-created_by key")
+			"a zero caller must not read someone else's key")
 
 		n, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
-			ID: blankOwnedID, CreatedBy: userid.UserID{}, ExpiresAt: time.Now().Add(time.Hour).UTC(),
+			ID: realID, CreatedBy: userid.UserID{}, ExpiresAt: time.Now().Add(time.Hour).UTC(),
 		})
 		require.NoError(t, err)
-		assert.Zero(t, n, "a zero caller must not extend a blank-created_by key")
+		assert.Zero(t, n, "a zero caller must not extend someone else's key")
 
 		n, err = st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
-			ID: blankOwnedID, CreatedBy: userid.UserID{},
+			ID: realID, CreatedBy: userid.UserID{},
 		})
 		require.NoError(t, err)
-		assert.Zero(t, n, "a zero caller must not delete a blank-created_by key")
+		assert.Zero(t, n, "a zero caller must not delete someone else's key")
 
 		// The row is untouched: still live, still the original expiry.
-		after, err := st.RegistrationKeys().GetByID(ctx, blankOwnedID)
+		after, err := st.RegistrationKeys().GetByID(ctx, realID)
 		require.NoError(t, err)
 		assert.WithinDuration(t, expires, after.ExpiresAt, time.Second,
 			"neither refused mutation may have landed")
 
 		// And the gate still WORKS for a real owner, so the refusals above are
 		// not the gate simply denying everything.
-		realID := SeedRegistrationKey(t, st, user.ID, expires)
 		owned, err := st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
 			ID: realID, CreatedBy: userid.MustNew(user.ID),
 		})
@@ -130,7 +128,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("extend refuses other user's row", func(t *testing.T) {
-		intruder := SeedUser(t, st, orgID, "regkey-extend-intruder")
+		intruder := SeedUser(t, st, "regkey-extend-intruder")
 		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
 
 		rows, err := st.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
@@ -158,7 +156,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("soft delete refuses other user's row", func(t *testing.T) {
-		intruder := SeedUser(t, st, orgID, "regkey-softdel-intruder")
+		intruder := SeedUser(t, st, "regkey-softdel-intruder")
 		expires := time.Now().Add(5 * time.Minute).UTC()
 		regID := SeedRegistrationKey(t, st, user.ID, expires)
 
@@ -230,8 +228,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	t.Run("list admin hides expired by default", func(t *testing.T) {
 		// Fresh owner per list subtest so the assertions can ignore keys
 		// other subtests left behind on the shared store.
-		listOrgID := SeedOrg(t, st, "regkey-list-org-default")
-		owner := SeedUser(t, st, listOrgID, "regkey-list-default")
+		owner := SeedUser(t, st, "regkey-list-default")
 
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
 		_ = SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
@@ -246,8 +243,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("list admin include expired surfaces revoked rows", func(t *testing.T) {
-		listOrgID := SeedOrg(t, st, "regkey-list-org-incl")
-		owner := SeedUser(t, st, listOrgID, "regkey-list-incl")
+		owner := SeedUser(t, st, "regkey-list-incl")
 
 		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
 		dead := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
@@ -267,8 +263,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	})
 
 	t.Run("list admin paginates by created_at cursor", func(t *testing.T) {
-		listOrgID := SeedOrg(t, st, "regkey-list-org-page")
-		owner := SeedUser(t, st, listOrgID, "regkey-list-page")
+		owner := SeedUser(t, st, "regkey-list-page")
 
 		// created_at is set by the SQL DEFAULT (strftime ms on SQLite,
 		// CURRENT_TIMESTAMP(3) on MySQL, now() on PG). Consecutive seeds
@@ -303,8 +298,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 	t.Run("list admin cursor survives same-millisecond tie", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "regkey-tie-org")
-		owner := SeedUser(t, st, orgID, "regkey-tie-user")
+		owner := SeedUser(t, st, "regkey-tie-user")
 		expires := time.Now().Add(5 * time.Minute).UTC()
 
 		// Three keys: two share an identical created_at millisecond and the
@@ -329,8 +323,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 	t.Run("list admin clamps out-of-range limits", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "regkey-clamp-org")
-		owner := SeedUser(t, st, orgID, "regkey-clamp-user")
+		owner := SeedUser(t, st, "regkey-clamp-user")
 		expires := time.Now().Add(5 * time.Minute).UTC()
 		keyA := SeedRegistrationKey(t, st, owner.ID, expires)
 		keyB := SeedRegistrationKey(t, st, owner.ID, expires)

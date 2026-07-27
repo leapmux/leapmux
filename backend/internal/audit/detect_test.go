@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,6 +86,60 @@ func TestOwnerBindRe_CoversEveryColumnAndEveryParameterSpelling(t *testing.T) {
 		"user_identity is not user_id")
 }
 
+// TestOwnerBindRe_SeesAnOwnerColumnJoinedAgainstAnAliasedColumn pins the
+// fourth branch, which covers the predicate shape whose parameter is one level
+// of indirection away.
+//
+// Postgres's bulk tab deletes unnest a bound `sqlc.arg(user_ids)` array into a
+// CTE and then join `t.user_id = k.user_id`, so no parameter spelling ever sits
+// beside the owner column and the three parameter-shaped branches all miss it.
+// The consequence was measured, not guessed: with only those three branches,
+// deleting store.FilterTabIndexKeys from BOTH postgres bulk deletes left
+// TestRepoInvariants green -- the rule reported healthy over a reintroduction
+// of the exact fail-open it exists to catch.
+func TestOwnerBindRe_SeesAnOwnerColumnJoinedAgainstAnAliasedColumn(t *testing.T) {
+	for _, col := range ownerColumns {
+		assert.Truef(t, ownerBindRe.MatchString("WHERE t."+col+" = k."+col+" AND t.tab_id = k.tab_id"),
+			"aliased-column join: %q", col)
+	}
+	// The indirection only counts when BOTH sides name an owner. Joining an
+	// owner column to an unrelated one is not an ownership predicate binding a
+	// caller id, and classifying it would demand a refusal from adapters that
+	// have no caller id to refuse.
+	assert.False(t, ownerBindRe.MatchString("WHERE t.user_id = k.tab_id"),
+		"only an owner-to-owner join carries the caller id")
+}
+
+// TestHandBuiltOwnerSQL_ClassifiesWhatOwnerBindReCannotSee pins why
+// checkHandBuiltOwnerSQL needs a shape of its own rather than reusing
+// ownerBindRe over each string literal.
+//
+// A runtime builder appends its predicate in pieces -- sqlutil.BulkDeleteTabs
+// writes the clause, then one "(?, ?)" per key inside a loop -- so the column
+// and its placeholders never share a literal, and a per-literal regex sees a
+// predicate in neither half. Dropping to the function level (does THIS function
+// mention WHERE and an owner column anywhere) is what makes the runtime-composed
+// SQL visible at all.
+func TestHandBuiltOwnerSQL_ClassifiesWhatOwnerBindReCannotSee(t *testing.T) {
+	// The two literals sqlutil.BulkDeleteTabs appends, verbatim.
+	const clause = " WHERE (user_id, tab_id) IN ("
+	const perKey = "(?, ?)"
+
+	assert.False(t, ownerBindRe.MatchString(clause), "the clause literal carries no parameter")
+	assert.False(t, ownerBindRe.MatchString(perKey), "the per-key literal carries no column")
+	assert.False(t, ownerBindRe.MatchString(clause+perKey),
+		"even joined, row-value IN is not a shape ownerBindRe knows -- the function-level rule is the only thing that classifies this query")
+
+	assert.True(t, mentionsOwnerColumn(strings.ToLower(clause)),
+		"the function-level rule must classify the clause the builder emits")
+	// The store's other runtime-composed statement: a single-column UPDATE over
+	// a closed allowlist of timestamp columns, keyed on the row's own id. It
+	// names no owner, so the rule must leave it alone -- this is the whole
+	// false-positive surface of dropping to the function level.
+	assert.False(t, mentionsOwnerColumn(strings.ToLower("UPDATE %s SET %s = %s WHERE id = %s")),
+		"a non-ownership UPDATE must not be classified")
+}
+
 func TestSqlcQueryBodies_SplitsOnNameMarkers(t *testing.T) {
 	got := sqlcQueryBodies("-- name: First :one\nSELECT 1;\n\n-- name: Second :exec\nDELETE FROM t WHERE user_id = ?;\n")
 	require.Len(t, got, 2)
@@ -96,7 +151,7 @@ func TestSqlcQueryBodies_SplitsOnNameMarkers(t *testing.T) {
 
 // TestOwnerFilterRefusalHonoured pins the difference between "this function
 // mentions OwnerFilter" and "this function refuses an unminted caller". A
-// presence-only check passed `owner, _ := store.OwnerFilter(...)`, which binds
+// presence-only check passed `owner, _ := userid.OwnerFilter(...)`, which binds
 // "" into the query and matches every blank-owner row -- the exact fail-open
 // the whole rule exists to stop.
 func TestOwnerFilterRefusalHonoured(t *testing.T) {
@@ -106,7 +161,7 @@ func TestOwnerFilterRefusalHonoured(t *testing.T) {
 		whySubstr string
 	}{
 		"binds ok and returns on it": {
-			body: `owner, ok := store.OwnerFilter(p.UserID)
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
 			if !ok {
 				return nil, nil
 			}
@@ -114,18 +169,18 @@ func TestOwnerFilterRefusalHonoured(t *testing.T) {
 			honoured: true,
 		},
 		"discards ok": {
-			body: `owner, _ := store.OwnerFilter(p.UserID)
+			body: `owner, _ := userid.OwnerFilter(p.UserID)
 			_ = owner`,
 			whySubstr: "discards the ok result",
 		},
 		"binds ok but never returns on it": {
-			body: `owner, ok := store.OwnerFilter(p.UserID)
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
 			_ = owner
 			_ = ok`,
 			whySubstr: "never returns early on !ok",
 		},
 		"checks !ok but falls through": {
-			body: `owner, ok := store.OwnerFilter(p.UserID)
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
 			if !ok {
 				owner = "fallback"
 			}
@@ -133,13 +188,63 @@ func TestOwnerFilterRefusalHonoured(t *testing.T) {
 			whySubstr: "never returns early on !ok",
 		},
 		"single-value use": {
-			body:      `_ = store.OwnerFilter(p.UserID)`,
+			body:      `_ = userid.OwnerFilter(p.UserID)`,
 			whySubstr: "does not bind its (value, ok) results",
+		},
+		// A guard that runs AFTER the value is already bound refuses nothing:
+		// the query has executed with a blank owner by the time it fires. The
+		// position-blind version of this rule accepted it.
+		"guard placed after the value is used": {
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
+			_ = owner
+			if !ok {
+				return nil, nil
+			}`,
+			whySubstr: "never returns early on !ok before using the value it guards",
+		},
+		// A same-named ok from an unrelated lookup must not satisfy the rule
+		// for OwnerFilter's ok.
+		"unrelated same-named ok is guarded instead": {
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
+			_ = owner
+			v, ok := lookup[p.TabID]
+			if !ok {
+				return nil, nil
+			}
+			_ = v`,
+			whySubstr: "never returns early on !ok before using the value it guards",
+		},
+		// The natural folded spelling. Rejecting it is what forced production
+		// code to split one refusal into two statements purely to stay visible
+		// to this scanner.
+		"folded disjunct refusal": {
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
+			if !ok || p.TabID == "" {
+				return nil, nil
+			}
+			_ = owner`,
+			honoured: true,
+		},
+		// `&&` is not a refusal on !ok: it fires only when the second operand
+		// also holds, so a blank owner with a non-blank tab id sails through.
+		"conjunction is not a refusal": {
+			body: `owner, ok := userid.OwnerFilter(p.UserID)
+			if !ok && p.TabID == "" {
+				return nil, nil
+			}
+			_ = owner`,
+			whySubstr: "never returns early on !ok before using the value it guards",
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			fn, call := parseFuncWithOwnerFilter(t, tc.body)
+			guards, fn, call := parseFuncWithOwnerFilter(t, tc.body)
+			// The coupling isCallerActedGuardName exists for: a call
+			// isSharedGuardCall accepts must ALSO be one
+			// isCallerActedGuardCall holds to the refusal check, or the
+			// blessing would double as an exemption.
+			require.True(t, guards.isCallerActedGuardCall(call),
+				"userid.OwnerFilter returns (owner, ok) for the CALLER to act on, so it must be checked for an honoured refusal rather than trusted like the internally-refusing GetOwnedWorker")
 			why, ok := ownerFilterRefusalHonoured(fn, call)
 			assert.Equal(t, tc.honoured, ok)
 			if !tc.honoured {
@@ -225,41 +330,6 @@ func f() { _ = MustNew(x) }`
 	assert.False(t, hasRef(t, bare, func(ref symbolRef) bool {
 		return isMustNewCall("userid", false, ref)
 	}), "elsewhere a bare MustNew names some unrelated helper")
-}
-
-func TestIsAnyOrgCall_KeysOnTheImportedIdentifier(t *testing.T) {
-	// The bypass this closes: a file importing hub/auth under an alias and
-	// writing hubauth.AnyOrg() would skip the org check invisibly to the net.
-	assert.True(t, hasRef(t, `package p
-func f() { _ = hubauth.AnyOrg() }`, func(ref symbolRef) bool {
-		return isAnyOrgCall("hubauth", false, ref)
-	}), "an aliased auth import must still be matched")
-
-	assert.True(t, hasRef(t, `package p
-func f() { _ = auth.AnyOrg() }`, func(ref symbolRef) bool {
-		return isAnyOrgCall("auth", false, ref)
-	}))
-
-	// The two sibling constructors decide the opposite thing; matching them
-	// would demand table entries for sites that skip nothing.
-	for _, src := range []string{`package p
-func f() { _ = auth.BindOrg(x) }`, `package p
-func f() { _ = auth.DenyAllOrg() }`, `package p
-func f() { _ = other.AnyOrg() }`} {
-		assert.False(t, hasRef(t, src, func(ref symbolRef) bool {
-			return isAnyOrgCall("auth", false, ref)
-		}), "source: %s", src)
-	}
-
-	// Inside package auth the constructor is called unqualified.
-	bare := `package p
-func f() { _ = AnyOrg() }`
-	assert.True(t, hasRef(t, bare, func(ref symbolRef) bool {
-		return isAnyOrgCall("", true, ref)
-	}), "inside package auth a bare AnyOrg is the real constructor")
-	assert.False(t, hasRef(t, bare, func(ref symbolRef) bool {
-		return isAnyOrgCall("auth", false, ref)
-	}), "elsewhere a bare AnyOrg names some unrelated helper")
 }
 
 // TestMustNewArgGuarded pins the difference between "this exemption has a
@@ -429,23 +499,102 @@ func parseFuncWithMustNew(t *testing.T, body string) (*ast.FuncDecl, *ast.CallEx
 	return fn, call
 }
 
-// parseFuncWithOwnerFilter parses a function whose body is body and returns it
-// with the store.OwnerFilter call expression inside it.
-func parseFuncWithOwnerFilter(t *testing.T, body string) (*ast.FuncDecl, *ast.CallExpr) {
+// parseFuncWithOwnerFilter parses a function whose body is body and returns the
+// file's guard scope with the function and the shared owner-guard call
+// expression inside it (userid.OwnerFilter).
+//
+// The fixture carries a real import of the userid path because the guard scope
+// resolves calls by IMPORT PATH, not by the identifier at the call site -- a
+// fixture that merely spelled `userid.` would pass while proving nothing about
+// the alias handling the rule depends on.
+func parseFuncWithOwnerFilter(t *testing.T, body string) (ownerGuardScope, *ast.FuncDecl, *ast.CallExpr) {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "src.go", "package p\nfunc f() (any, error) {\n"+body+"\nreturn nil, nil\n}\n", 0)
+	src := "package p\n\nimport \"github.com/leapmux/leapmux/internal/util/userid\"\n\nfunc f() (any, error) {\n" + body + "\nreturn nil, nil\n}\n"
+	file, err := parser.ParseFile(token.NewFileSet(), "src.go", src, 0)
 	require.NoError(t, err)
-	fn := file.Decls[0].(*ast.FuncDecl)
+	guards := newOwnerGuardScope("internal/hub/store/sqlite", file)
+	fn := file.Decls[len(file.Decls)-1].(*ast.FuncDecl)
 	var call *ast.CallExpr
 	ast.Inspect(fn, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok && isSharedOwnerGuardCall(c) {
+		if c, ok := n.(*ast.CallExpr); ok && guards.isSharedGuardCall(c) {
 			call = c
 			return false
 		}
 		return true
 	})
-	require.NotNil(t, call, "the fixture must contain a store.OwnerFilter call")
-	return fn, call
+	require.NotNil(t, call, "the fixture must contain a userid.OwnerFilter call")
+	return guards, fn, call
+}
+
+// TestOwnerGuardScope_KeysOnTheImportedIdentifier pins the alias-blindness this
+// scope replaced. The predicate hardcoded the identifier `store`, so a file
+// importing the store under an alias had its guard call go unrecognised (the
+// adapter then looked unguarded), while a file aliasing some UNRELATED package
+// to `store` had that package's calls blessed as a refusal.
+func TestOwnerGuardScope_KeysOnTheImportedIdentifier(t *testing.T) {
+	parse := func(t *testing.T, src string) *ast.File {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "src.go", src, 0)
+		require.NoError(t, err)
+		return file
+	}
+	firstCall := func(file *ast.File) *ast.CallExpr {
+		var call *ast.CallExpr
+		ast.Inspect(file, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && call == nil {
+				call = c
+			}
+			return true
+		})
+		return call
+	}
+
+	aliased := parse(t, "package p\n\nimport uid \"github.com/leapmux/leapmux/internal/util/userid\"\n\nfunc f() { uid.OwnerFilter(x) }\n")
+	guards := newOwnerGuardScope("internal/hub/store/sqlite", aliased)
+	assert.True(t, guards.isSharedGuardCall(firstCall(aliased)),
+		"an aliased userid import must still be recognised as the guard")
+	assert.True(t, guards.isCallerActedGuardCall(firstCall(aliased)))
+
+	impostor := parse(t, "package p\n\nimport userid \"example.com/not/the/real/one\"\n\nfunc f() { userid.OwnerFilter(x) }\n")
+	guards = newOwnerGuardScope("internal/hub/store/sqlite", impostor)
+	assert.False(t, guards.isSharedGuardCall(firstCall(impostor)),
+		"some other package's OwnerFilter refuses nothing this rule knows about")
+
+	// store's two internally-refusing helpers are recognised, but they are NOT
+	// held to the caller-acted refusal check -- that coupling is what keeps a
+	// blessing from doubling as an exemption.
+	fromStore := parse(t, "package p\n\nimport hubstore \"github.com/leapmux/leapmux/internal/hub/store\"\n\nfunc f() { hubstore.FilterTabIndexKeys(keys) }\n")
+	guards = newOwnerGuardScope("internal/hub/store/sqlite", fromStore)
+	assert.True(t, guards.isSharedGuardCall(firstCall(fromStore)))
+	assert.False(t, guards.isCallerActedGuardCall(firstCall(fromStore)))
+
+	// Inside the package that DEFINES a guard it is called unqualified, so a
+	// selector-only rule would leave the owner of the refusal as the one place
+	// it is not enforced.
+	bare := parse(t, "package userid\n\nfunc f() { OwnerFilter(u) }\n")
+	guards = newOwnerGuardScope(useridDir, bare)
+	assert.True(t, guards.isSharedGuardCall(firstCall(bare)))
+	guards = newOwnerGuardScope("internal/hub/store/sqlite", bare)
+	assert.False(t, guards.isSharedGuardCall(firstCall(bare)),
+		"elsewhere a bare OwnerFilter names some unrelated helper")
+}
+
+// TestIsCallerActedGuardName_IncludesTheUntypedMint pins why userid.New counts
+// as the shared guard alongside OwnerFilter.
+//
+// OwnerFilter is `IsZero -> refuse, else unwrap`; New is `empty -> refuse, else
+// mint`, with String() as the unwrap. The worker binds owner columns from ids it
+// holds as plain strings, so without New the only guard reachable in that
+// process would be no guard at all -- and making the guard reachable from the
+// worker is the entire reason it moved into package userid.
+func TestIsCallerActedGuardName_IncludesTheUntypedMint(t *testing.T) {
+	assert.True(t, isCallerActedGuardName("OwnerFilter"))
+	assert.True(t, isCallerActedGuardName("New"))
+	// MustNew panics instead of returning a refusal the caller can act on, so
+	// blessing it would exempt the site from ownerFilterRefusalHonoured while
+	// leaving nothing for the caller to check.
+	assert.False(t, isCallerActedGuardName("MustNew"))
+	assert.False(t, isCallerActedGuardName("String"))
 }
 
 // TestForEachSymbolRef_SeesMethodValuesNotJustCalls pins the bypass every rule

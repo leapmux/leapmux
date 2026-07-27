@@ -1,5 +1,5 @@
 import type { AddTabOptions, AgentTab, FileDiffBase, FileTab, FileViewMode, RemoveTabOptions, RestorableTabState, Tab, TabStoreState, TerminalTab } from './tab.types'
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import type { OpBuilderCtx } from '~/lib/crdt'
 import { createMemo } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
@@ -26,7 +26,7 @@ const log = createLogger('tab-store')
 // call is a no-op in the test harness (the bridge is unset there) and
 // active in AppShell once `setCRDTBridge` runs. The store mutators
 // call this in addition to their local optimistic setState — the hub
-// echoes the ops back via `/ws/orgevents`, the local pendingOps
+// echoes the ops back via `/ws/userevents`, the local pendingOps
 // absorbs them, and the reconciliation effect (see
 // `reconcileFromProjection`) converges any drift against the canonical
 // projection.
@@ -36,14 +36,11 @@ const log = createLogger('tab-store')
 // BatchResult), or null when the bridge was unavailable or the
 // builder returned an empty op array.
 
-function emitOps(build: (ctx: OpBuilderCtx) => OrgOp[]): string | null {
+function emitOps(build: (ctx: OpBuilderCtx) => CrdtOp[]): string | null {
   const bridge = getCRDTBridge()
   if (!bridge)
     return null
-  const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return null
-  const ops = build(ctx)
+  const ops = build(ctxFromBridge(bridge))
   if (ops.length === 0)
     return null
   return bridge.enqueue(newBatch(ops))
@@ -821,7 +818,7 @@ export function createTabStore() {
         // the hub.
         if (moveOps.length > 0) {
           emitOps((ctx) => {
-            const batchOps: OrgOp[] = []
+            const batchOps: CrdtOp[] = []
             for (const m of moveOps) {
               batchOps.push(setTabTileId(ctx, m.type, m.id, m.tileId))
               batchOps.push(opSetTabPosition(ctx, m.type, m.id, m.position))

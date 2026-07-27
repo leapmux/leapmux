@@ -20,8 +20,8 @@ import (
 //   - Concurrent Bytes() calls are safe and only marshal once
 
 func TestMarshaledEvent_BytesReturnsSameBufferAcrossCalls(t *testing.T) {
-	evt := &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Presence{
+	evt := &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{
 			Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "w1", ActiveClientId: "cA"},
 		},
 	}
@@ -42,8 +42,8 @@ func TestMarshaledEvent_BytesReturnsSameBufferAcrossCalls(t *testing.T) {
 }
 
 func TestMarshaledEvent_BytesMatchesProtoMarshal(t *testing.T) {
-	evt := &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Presence{
+	evt := &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{
 			Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "ws", ActiveClientId: "c"},
 		},
 	}
@@ -57,8 +57,8 @@ func TestMarshaledEvent_BytesMatchesProtoMarshal(t *testing.T) {
 func TestMarshaledEvent_ConcurrentBytesIsSafeAndCachesOnce(t *testing.T) {
 	// Race-detector run pins that sync.Once guards the cache; multiple
 	// goroutines must observe the same slice and identical bytes.
-	evt := &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Initial{Initial: &leapmuxv1.OrgMaterialized{OrgId: "org"}},
+	evt := &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Initial{Initial: &leapmuxv1.UserMaterialized{UserId: "user-1"}},
 	}
 	me := crdt.NewMarshaledEvent(evt)
 
@@ -86,8 +86,8 @@ func TestMarshaledEvent_EventFieldIsAccessibleWithoutMarshal(t *testing.T) {
 	// Consumers that only need to inspect the proto (e.g. test fakes
 	// asserting on event.GetPresence()) should be able to read
 	// `.Event` without paying the marshal cost.
-	evt := &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Presence{
+	evt := &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{
 			Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "wX"},
 		},
 	}

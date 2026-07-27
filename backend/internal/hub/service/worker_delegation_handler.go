@@ -102,6 +102,22 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "user_id, workspace_id, issued_for_tab_id are required", http.StatusBadRequest)
 		return
 	}
+	// Mint the id HERE, before the first store read that needs an owner.
+	// waitForTabOwnership below reads workspace_tab_owned, which is keyed by
+	// (user_id, tab_id) -- tab ids are unique only within a user, so that
+	// lookup needs the caller's owner and nothing has authorized it yet at this
+	// point (the workspace-owner check runs after it).
+	//
+	// Unreachable behind the empty-field validation above, which already 400s a
+	// blank user_id. Kept as the mint boundary's own fail-close so a future
+	// relaxation of that validation cannot hand a store predicate a zero id: 403
+	// (not 400) because by this point the request is well-formed and the answer
+	// is "no access", the same shape the hasAccess check below returns.
+	uid, ok := userid.New(req.UserID)
+	if !ok {
+		http.Error(w, "user lacks workspace access", http.StatusForbidden)
+		return
+	}
 	// Verify the (workspace_id, tab_id, worker_id) triple exists in
 	// workspace_tabs and the worker is the owner of the tab. This is
 	// the authorization check: any worker can call mint, but only for
@@ -112,7 +128,7 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// AddTab call has committed at the hub. Poll with bounded backoff
 	// instead of failing immediately so the common case ("agent acts
 	// before AddTab quiesces") doesn't surface as a hard 403.
-	tabFound, lookupErr := h.waitForTabOwnership(r.Context(), req.WorkspaceID, req.IssuedForTabID, worker.ID)
+	tabFound, lookupErr := h.waitForTabOwnership(r.Context(), uid, req.WorkspaceID, req.IssuedForTabID, worker.ID)
 	if lookupErr != nil {
 		http.Error(w, "list tabs failed", http.StatusInternalServerError)
 		return
@@ -123,24 +139,14 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	}
 	// Verify user has access to the workspace via the canonical
 	// owner-only predicate. A missing workspace also returns false
-	// here (auth.WorkspaceCanRead maps NotFound to false); we
+	// here (auth.WorkspaceCanAccess maps NotFound to false); we
 	// flatten both "no such workspace" and "not the owner" into a 403
 	// so the worker doesn't get a probing oracle for workspace IDs.
 	// A non-nil err is a real store failure (SQLITE_BUSY, network
 	// blip) -- surface it as a retryable 500, not a permanent 403,
 	// so a brief DB hiccup doesn't fail a legitimate lazy mint (the
 	// tab-ownership lookup above already maps store errors to 500).
-	// Unreachable behind the empty-field validation above, which already 400s a
-	// blank user_id. Kept as the mint boundary's own fail-close so a future
-	// relaxation of that validation cannot hand WorkspaceCanRead a zero id: 403
-	// (not 400) because by this point the request is well-formed and the answer
-	// is "no access", the same shape the hasAccess check below returns.
-	uid, ok := userid.New(req.UserID)
-	if !ok {
-		http.Error(w, "user lacks workspace access", http.StatusForbidden)
-		return
-	}
-	hasAccess, err := auth.WorkspaceCanRead(r.Context(), h.store, auth.AnyOrg(), req.WorkspaceID, uid)
+	hasAccess, err := auth.WorkspaceCanAccess(r.Context(), h.store, req.WorkspaceID, uid)
 	if err != nil {
 		http.Error(w, "workspace access check failed", http.StatusInternalServerError)
 		return
@@ -250,7 +256,13 @@ func (h *WorkerDelegationHandler) handleRevoke(w http.ResponseWriter, r *http.Re
 // Polling uses exponential backoff (starting at `step`, capped at
 // `step*8`) so the typical race resolves in 1-3 queries while a slow
 // AddTab still gets a chance to land before the deadline.
-func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, workspaceID, tabID, workerID string) (bool, error) {
+//
+// `userID` is the owner the mint claims to act for, and GetOwned binds it:
+// workspace_tab_owned is keyed by (user_id, tab_id) precisely because tab ids
+// are NOT unique across users, so an owner-blind point lookup can return a
+// FOREIGN tenant's row -- and this is the check that decides whether the
+// calling worker may mint a bearer for the tab.
+func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, userID userid.UserID, workspaceID, tabID, workerID string) (bool, error) {
 	timeout := h.MintTabPropagationTimeout
 	if timeout <= 0 {
 		timeout = DefaultMintTabPropagationTimeout
@@ -259,7 +271,7 @@ func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, works
 	if step <= 0 {
 		step = DefaultMintTabPropagationStep
 	}
-	params := store.GetOwnedTabParams{WorkspaceID: workspaceID, TabID: tabID}
+	params := store.GetOwnedTabParams{UserID: userID, WorkspaceID: workspaceID, TabID: tabID}
 	deadline := time.Now().Add(timeout)
 	maxSleep := step * 8
 	sleep := step
@@ -268,7 +280,19 @@ func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, works
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return false, err
 		}
-		if row != nil && row.WorkerID == workerID {
+		// Match the owner as well as the worker. The query binds user_id, so a
+		// foreign row cannot come back here; re-checking it makes this loop's
+		// safety independent of the predicate in a SQL file three packages
+		// away. Fail-closed either way: a row whose owner does not match leaves
+		// the poll waiting and the mint 403s rather than issuing a bearer
+		// against a tab the caller does not own.
+		//
+		// Compared through Matches, not a raw ==. A raw compare on two unwrapped
+		// strings fails OPEN for blank-vs-blank, and -- because audit's detector
+		// recognises only Matches/MatchesUser/auth.IsOwner -- a .String() unwrap
+		// here would also make this site invisible to identityComparisonSites,
+		// silently falsifying that net's completeness claim.
+		if row != nil && userID.Matches(row.UserID) && row.WorkerID == workerID {
 			return true, nil
 		}
 		remaining := time.Until(deadline)

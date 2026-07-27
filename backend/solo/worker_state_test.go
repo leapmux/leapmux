@@ -28,8 +28,8 @@ func (f *fakeRegistrar) GetWorkerOwner(context.Context, string) (string, error) 
 	return f.owner, f.ownerErr
 }
 
-func (f *fakeRegistrar) GetAdminUser(context.Context) (string, string, error) {
-	return f.adminID, "org-1", nil
+func (f *fakeRegistrar) GetAdminUser(context.Context) (string, error) {
+	return f.adminID, nil
 }
 
 func (f *fakeRegistrar) RegisterWorker(context.Context, string) (*hub.WorkerCredentials, error) {

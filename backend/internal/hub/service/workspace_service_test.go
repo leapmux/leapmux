@@ -48,12 +48,11 @@ func TestNewWorkspaceService_RequiresChannelCloser(t *testing.T) {
 
 func TestWorkspaceServiceDeleteWorkspaceClosesChannelsWithWorkspaceSnapshots(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "delete-org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "deleted")
+	owner := storetest.SeedUser(t, st, "owner")
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "deleted")
 	closer := &recordingWorkspaceChannelCloser{}
 	svc := service.NewWorkspaceService(st, nil, closer)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID)})
 
 	_, err := svc.DeleteWorkspace(ctx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID}))
 	require.NoError(t, err)
@@ -61,72 +60,37 @@ func TestWorkspaceServiceDeleteWorkspaceClosesChannelsWithWorkspaceSnapshots(t *
 	assert.ElementsMatch(t, []string{owner.ID}, closer.closedUserIDs)
 }
 
-// TestWorkspaceService_CreateWorkspace_RejectsNonMemberOrg pins the C2 authz
-// gate: a caller may only home a new workspace in an org they belong to. A
-// caller-supplied org_id for an org the user is not a member of must fail
-// closed with NotFound (mirroring ResolveOrgID) and create nothing in that
-// org's namespace, while an empty org_id falls back to the caller's home org.
-func TestWorkspaceService_CreateWorkspace_RejectsNonMemberOrg(t *testing.T) {
+// TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly pins the
+// tenancy of the delete fan-out. The returned worker ids tell the caller which
+// workers to invalidate, and workspace_tab_owned is keyed by (user_id, tab_id)
+// with workspace_id only a plain FK -- so another user's row may name this
+// workspace and drag ITS worker into the fan-out. Unlike the row-returning
+// reads there is no owner column left in a DISTINCT worker_id projection for
+// the service to filter on afterwards, so the predicate has to be in the query.
+func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	homeOrg := storetest.SeedOrg(t, st, "home-org")
-	otherOrg := storetest.SeedOrg(t, st, "other-org")
-	user := storetest.SeedUser(t, st, homeOrg, "alice") // member of homeOrg only
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "fanout-owner")
+	stranger := storetest.SeedUser(t, st, "fanout-stranger")
+	ownerWorker := storetest.SeedWorker(t, st, owner.ID)
+	strangerWorker := storetest.SeedWorker(t, st, stranger.ID)
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "deleted")
 
-	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: homeOrg})
-
-	// A non-member org is rejected with NotFound and creates nothing.
-	_, err := svc.CreateWorkspace(ctx, connect.NewRequest(&leapmuxv1.CreateWorkspaceRequest{
-		OrgId: otherOrg,
-		Title: "intruder",
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		UserID: userid.MustNew(owner.ID), WorkspaceID: workspaceID, WorkerID: ownerWorker.ID,
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "tab-owner", TileID: "tile", Position: "a0",
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-	inOther, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-		UserID: userid.MustNew(user.ID), OrgID: otherOrg,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, inOther, "a rejected create must not leave a phantom workspace in the non-member org")
-
-	// An empty org_id succeeds and homes the workspace in the caller's org.
-	resp, err := svc.CreateWorkspace(ctx, connect.NewRequest(&leapmuxv1.CreateWorkspaceRequest{
-		Title: "mine",
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		UserID: userid.MustNew(stranger.ID), WorkspaceID: workspaceID, WorkerID: strangerWorker.ID,
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "tab-stranger", TileID: "tile", Position: "a1",
 	}))
-	require.NoError(t, err)
-	created, err := st.Workspaces().GetByID(ctx, resp.Msg.GetWorkspaceId())
-	require.NoError(t, err)
-	assert.Equal(t, homeOrg, created.OrgID, "empty org_id must home the workspace in the caller's org")
-}
 
-// TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome locks in
-// the CLI-friendly default: when the caller doesn't specify an
-// org_id, the handler falls back to the authenticated user's home
-// org rather than asking the SQL layer to match an empty string
-// (which never hits a row). Without this default, `leapmux remote
-// workspace list` returns `null` from inside a tab because the
-// worker-side delegation flow never threads an org_id into the
-// request body.
-func TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	ws1 := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS1")
-	ws2 := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS2")
-
-	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:    userid.MustNew(user.ID),
-		OrgID: orgID,
-	})
-
-	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}))
+	svc := service.NewWorkspaceService(st, nil, &recordingWorkspaceChannelCloser{})
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(owner.ID)})
+	resp, err := svc.DeleteWorkspace(authCtx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID}))
 	require.NoError(t, err)
-	got := make([]string, 0, len(resp.Msg.GetWorkspaces()))
-	for _, w := range resp.Msg.GetWorkspaces() {
-		got = append(got, w.GetId())
-	}
-	assert.ElementsMatch(t, []string{ws1, ws2}, got,
-		"empty org_id must default to user.OrgID, not match the literal empty string")
+	assert.Equal(t, []string{ownerWorker.ID}, resp.Msg.GetWorkerIds(),
+		"a stranger's worker must not be swept into the owner's workspace deletion")
 }
 
 // TestWorkspaceService_ListWorkspaces_DelegationPinsToScope encodes
@@ -138,15 +102,13 @@ func TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome(t *testing.T) {
 // every workspace the underlying user owns.
 func TestWorkspaceService_ListWorkspaces_DelegationPinsToScope(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
-	_ = storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
+	user := storetest.SeedUser(t, st, "alice")
+	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
+	_ = storetest.SeedWorkspace(t, st, user.ID, "Sibling")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
 
@@ -155,32 +117,6 @@ func TestWorkspaceService_ListWorkspaces_DelegationPinsToScope(t *testing.T) {
 	require.Len(t, resp.Msg.GetWorkspaces(), 1,
 		"delegation bearer must surface only its pinned workspace, not every accessible one")
 	assert.Equal(t, pinned, resp.Msg.GetWorkspaces()[0].GetId())
-
-	resp, err = svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{OrgId: "different-org"}))
-	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetWorkspaces(),
-		"delegated ListWorkspaces must still honor an explicit org_id mismatch")
-}
-
-// TestWorkspaceService_ListWorkspaces_ForeignOrgReturnsNothing locks in that
-// an explicit --org-id for another user's org never surfaces that org's
-// workspaces: access is owner-only, and the caller owns nothing there.
-func TestWorkspaceService_ListWorkspaces_ForeignOrgReturnsNothing(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	homeOrg := storetest.SeedOrg(t, st, "home-org")
-	otherOrg := storetest.SeedOrg(t, st, "other-org")
-	viewer := storetest.SeedUser(t, st, homeOrg, "viewer")
-	ownerB := storetest.SeedUser(t, st, otherOrg, "ownerB")
-	storetest.SeedWorkspace(t, st, otherOrg, ownerB.ID, "not mine")
-
-	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
-
-	// Explicitly target the foreign org: nothing may surface.
-	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{OrgId: otherOrg}))
-	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetWorkspaces(),
-		"another user's org must never surface workspaces the caller does not own")
 }
 
 // TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess
@@ -191,14 +127,13 @@ func TestWorkspaceService_ListWorkspaces_ForeignOrgReturnsNothing(t *testing.T) 
 // tombstoned row.
 func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
+	user := storetest.SeedUser(t, st, "alice")
+	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
 	// Other user owns a workspace `pinned` doesn't have access to —
 	// proves the handler doesn't blindly return whatever id is on
 	// the bearer.
-	other := storetest.SeedUser(t, st, orgID, "bob")
-	otherWS := storetest.SeedWorkspace(t, st, orgID, other.ID, "Other")
+	other := storetest.SeedUser(t, st, "bob")
+	otherWS := storetest.SeedWorkspace(t, st, other.ID, "Other")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 
@@ -206,7 +141,6 @@ func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) 
 	resp, err := svc.ListWorkspaces(
 		auth.WithUser(context.Background(), &auth.UserInfo{
 			ID:         userid.MustNew(user.ID),
-			OrgID:      orgID,
 			Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 		}),
 		connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}),
@@ -219,7 +153,6 @@ func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) 
 	resp, err = svc.ListWorkspaces(
 		auth.WithUser(context.Background(), &auth.UserInfo{
 			ID:         userid.MustNew(user.ID),
-			OrgID:      orgID,
 			Credential: auth.DelegationCredential("test-delegation", otherWS, "worker-mint"),
 		}),
 		connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}),
@@ -230,17 +163,16 @@ func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) 
 }
 
 // TestWorkspaceService_GetWorkspace_NonOwnerIsDenied pins the owner-only
-// access rule at the RPC surface: another user -- even in the same org --
-// must get PermissionDenied for a workspace they do not own.
+// access rule at the RPC surface: another user must get PermissionDenied
+// for a workspace they do not own.
 func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	other := storetest.SeedUser(t, st, orgID, "other")
-	wsID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "Owned")
+	owner := storetest.SeedUser(t, st, "owner")
+	other := storetest.SeedUser(t, st, "other")
+	wsID := storetest.SeedWorkspace(t, st, owner.ID, "Owned")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(other.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(other.ID)})
 
 	_, err := svc.GetWorkspace(ctx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
@@ -250,7 +182,7 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 		"a non-owner must be denied access to someone else's workspace")
 
 	// The owner still reads it.
-	ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID), OrgID: orgID})
+	ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID)})
 	resp, err := svc.GetWorkspace(ownerCtx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
 	}))
@@ -260,20 +192,17 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 
 func TestWorkspaceService_GetWorkspace_DelegationCollapsesSiblingToNotFound(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
-	sibling := storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
+	user := storetest.SeedUser(t, st, "alice")
+	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
+	sibling := storetest.SeedWorkspace(t, st, user.ID, "Sibling")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
 
 	_, err := svc.GetWorkspace(ctx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
-		OrgId:       orgID,
 		WorkspaceId: sibling,
 	}))
 	require.Error(t, err)
@@ -283,28 +212,25 @@ func TestWorkspaceService_GetWorkspace_DelegationCollapsesSiblingToNotFound(t *t
 
 func TestWorkspaceService_TabReads_DelegationPinsToScope(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
-	sibling := storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
-	seedRenderedTab(t, st, orgID, pinned, "tab-pinned")
-	seedRenderedTab(t, st, orgID, sibling, "tab-sibling")
+	user := storetest.SeedUser(t, st, "alice")
+	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
+	sibling := storetest.SeedWorkspace(t, st, user.ID, "Sibling")
+	seedRenderedTab(t, st, user.ID, pinned, "tab-pinned")
+	seedRenderedTab(t, st, user.ID, sibling, "tab-sibling")
 
 	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	})
 
-	listResp, err := svc.ListTabs(ctx, connect.NewRequest(&leapmuxv1.ListTabsRequest{OrgId: orgID}))
+	listResp, err := svc.ListTabs(ctx, connect.NewRequest(&leapmuxv1.ListTabsRequest{}))
 	require.NoError(t, err)
 	require.Len(t, listResp.Msg.GetTabs(), 1)
 	assert.Equal(t, pinned, listResp.Msg.GetTabs()[0].GetWorkspaceId(),
 		"an empty delegated tab list must expand to the pinned workspace only")
 
 	_, err = svc.ListTabs(ctx, connect.NewRequest(&leapmuxv1.ListTabsRequest{
-		OrgId:        orgID,
 		WorkspaceIds: []string{sibling},
 	}))
 	require.Error(t, err)
@@ -328,68 +254,34 @@ func TestWorkspaceService_TabReads_DelegationPinsToScope(t *testing.T) {
 		"cross-workspace tab locate must not leak a sibling tab through the user's broader ACL")
 }
 
-func TestWorkspaceService_TabReads_DelegationUsesPinnedWorkspaceOrg(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	homeOrgID := storetest.SeedOrg(t, st, "home-org")
-	agentOrgID := storetest.SeedOrg(t, st, "agent-org")
-	user := storetest.SeedUser(t, st, homeOrgID, "alice")
-	homeWS := storetest.SeedWorkspace(t, st, homeOrgID, user.ID, "Home")
-	pinned := storetest.SeedWorkspace(t, st, agentOrgID, user.ID, "Pinned")
-	seedRenderedTab(t, st, homeOrgID, homeWS, "shared-tab")
-	seedRenderedTab(t, st, agentOrgID, pinned, "shared-tab")
-
-	svc := service.NewWorkspaceService(st, nil, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userid.MustNew(user.ID),
-		OrgID:      homeOrgID,
-		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
-	})
-
-	listResp, err := svc.ListTabs(ctx, connect.NewRequest(&leapmuxv1.ListTabsRequest{}))
-	require.NoError(t, err)
-	require.Len(t, listResp.Msg.GetTabs(), 1)
-	assert.Equal(t, pinned, listResp.Msg.GetTabs()[0].GetWorkspaceId(),
-		"delegated ListTabs without org_id must use the pinned workspace org, not the user's home org")
-
-	locateResp, err := svc.LocateTab(ctx, connect.NewRequest(&leapmuxv1.LocateTabRequest{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "shared-tab",
-	}))
-	require.NoError(t, err)
-	assert.Equal(t, pinned, locateResp.Msg.GetTab().GetWorkspaceId(),
-		"delegated LocateTab must resolve inside the pinned workspace before considering broader user access")
-}
-
 // TestWorkspaceService_LocateTile_FindsByWorkspaceRoot exercises the
 // simplest happy path: a tile id that *is* a workspace root resolves
-// to its workspace + org without walking any parent links. This pins
+// to its workspace without walking any parent links. This pins
 // the base case of `tileOwningWorkspace` against future regressions
 // where a refactor of the walk loop accidentally skips the
 // "current node is a root" check.
 func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
+	user := storetest.SeedUser(t, st, "alice")
+	ws := storetest.SeedWorkspace(t, st, user.ID, "WS")
 
-	env := setupLocateTileEnv(t, orgID)
-	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	env := setupLocateTileEnv(t, user.ID)
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
 		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
 	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-1"}))
 	require.NoError(t, err)
 	assert.Equal(t, ws, resp.Msg.GetWorkspaceId())
-	assert.Equal(t, orgID, resp.Msg.GetOrgId())
 }
 
-func seedRenderedTab(t *testing.T, st store.Store, orgID, workspaceID, tabID string) {
+func seedRenderedTab(t *testing.T, st store.Store, userID, workspaceID, tabID string) {
 	t.Helper()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertRendered(context.Background(), store.UpsertRenderedTabParams{
-		OrgID:       orgID,
+		UserID:      userid.MustNew(userID),
 		WorkspaceID: workspaceID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabID:       tabID,
@@ -407,19 +299,18 @@ func seedRenderedTab(t *testing.T, st store.Store, orgID, workspaceID, tabID str
 // includes every tile in a tiled workspace.
 func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
+	user := storetest.SeedUser(t, st, "alice")
+	ws := storetest.SeedWorkspace(t, st, user.ID, "WS")
 
-	env := setupLocateTileEnv(t, orgID)
-	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	env := setupLocateTileEnv(t, user.ID)
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
 		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
 		s.Nodes["mid-1"] = &leapmuxv1.NodeRecord{NodeId: "mid-1", ParentId: "root-1"}
 		s.Nodes["leaf-1"] = &leapmuxv1.NodeRecord{NodeId: "leaf-1", ParentId: "mid-1"}
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
 	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "leaf-1"}))
 	require.NoError(t, err)
@@ -429,25 +320,23 @@ func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 // TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound is the
 // scope-leak guard. A delegated bearer pinned to workspace A must
 // not be able to enumerate sibling tiles in workspace B even though
-// both belong to the user's org. We deliberately collapse
+// both belong to the same user. We deliberately collapse
 // PermissionDenied to NotFound to avoid leaking existence to the
 // bearer.
 func TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	allowedWS := storetest.SeedWorkspace(t, st, orgID, user.ID, "Allowed")
-	forbiddenWS := storetest.SeedWorkspace(t, st, orgID, user.ID, "Forbidden")
+	user := storetest.SeedUser(t, st, "alice")
+	allowedWS := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
+	forbiddenWS := storetest.SeedWorkspace(t, st, user.ID, "Forbidden")
 
-	env := setupLocateTileEnv(t, orgID)
-	env.mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	env := setupLocateTileEnv(t, user.ID)
+	env.mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces[forbiddenWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: forbiddenWS, RootNodeId: "root-forbidden"}
 		s.Nodes["root-forbidden"] = &leapmuxv1.NodeRecord{NodeId: "root-forbidden"}
 	})
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", allowedWS, "worker-mint"),
 	})
 
@@ -457,86 +346,15 @@ func TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound(t *testing.T)
 		"a tile outside the delegation scope must surface as NotFound, not PermissionDenied (existence leak)")
 }
 
-func TestWorkspaceService_LocateTile_DelegationUsesPinnedWorkspaceOrg(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	homeOrgID := storetest.SeedOrg(t, st, "home-org")
-	agentOrgID := storetest.SeedOrg(t, st, "agent-org")
-	user := storetest.SeedUser(t, st, homeOrgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, agentOrgID, user.ID, "Pinned")
-
-	j := newMemJournal()
-	var (
-		once sync.Once
-		mgr  *crdt.Manager
-	)
-	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
-		if want != agentOrgID {
-			return nil, errors.New("unexpected org")
-		}
-		once.Do(func() {
-			mgr = crdt.NewManager(agentOrgID, j, allowAllAuth{}, nil, time.Now)
-			require.NoError(t, mgr.Bootstrap(ctx))
-		})
-		return mgr, nil
-	}, nil)
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-	_, err := registry.Get(context.Background(), agentOrgID)
-	require.NoError(t, err)
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
-		s.Workspaces[pinned] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: pinned, RootNodeId: "root-pinned"}
-		s.Nodes["root-pinned"] = &leapmuxv1.NodeRecord{NodeId: "root-pinned"}
-	})
-
-	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userid.MustNew(user.ID),
-		OrgID:      homeOrgID,
-		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
-	})
-	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-pinned"}))
-	require.NoError(t, err)
-	assert.Equal(t, pinned, resp.Msg.GetWorkspaceId())
-	assert.Equal(t, agentOrgID, resp.Msg.GetOrgId(),
-		"delegated LocateTile must use the pinned workspace org, not the user's home org")
-}
-
-// TestWorkspaceService_LocateTile_ForeignWorkspaceTileIsNotFound is the leak
-// guard: a tile that exists only in ANOTHER user's workspace (in that user's
-// org) must collapse to NotFound for the caller -- their personal org is the
-// only one searched, and the final loadWorkspaceForRead check gates the rest.
-func TestWorkspaceService_LocateTile_ForeignWorkspaceTileIsNotFound(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	homeOrg := storetest.SeedOrg(t, st, "viewer-home-org")
-	ownerOrg := storetest.SeedOrg(t, st, "owner-org")
-	viewer := storetest.SeedUser(t, st, homeOrg, "viewer")
-	owner := storetest.SeedUser(t, st, ownerOrg, "owner")
-	secretWS := storetest.SeedWorkspace(t, st, ownerOrg, owner.ID, "Secret")
-
-	registry, managers := newMultiOrgRegistry(t, homeOrg, ownerOrg)
-	managers[ownerOrg].SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
-		s.Workspaces[secretWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: secretWS, RootNodeId: "root-secret"}
-		s.Nodes["root-secret"] = &leapmuxv1.NodeRecord{NodeId: "root-secret"}
-	})
-
-	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
-
-	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-secret"}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
-		"a tile in another user's workspace must be NotFound, not leaked")
-}
-
 // TestWorkspaceService_LocateTile_RejectsEmptyTileID covers the
 // invalid-args branch. Empty tile_id hard-fails before any auth or
 // CRDT lookup so the error envelope is unambiguous.
 func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	env := setupLocateTileEnv(t, orgID)
+	user := storetest.SeedUser(t, st, "alice")
+	env := setupLocateTileEnv(t, user.ID)
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: ""}))
 	require.Error(t, err)
@@ -549,15 +367,41 @@ func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
 // as NotFound.
 func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	env := setupLocateTileEnv(t, orgID)
+	user := storetest.SeedUser(t, st, "alice")
+	env := setupLocateTileEnv(t, user.ID)
 	svc := service.NewWorkspaceService(st, env.registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
 	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "ghost"}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable pins the
+// registry.Get failure arm: when the caller's manager cannot be bootstrapped,
+// the caller must get a retryable Internal, not NotFound. NotFound is a
+// permanent answer -- the CLI tile resolver stops looking -- so a DB blip
+// during manager bootstrap would report a tile that exists as gone. Every
+// other LocateTile test goes through setupLocateTileEnv, whose factory always
+// succeeds, so without this test folding the Get failure into the same
+// `return notFound` as an unresolved tile stays green.
+func TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "alice")
+
+	// The only candidate (the caller's own user) fails to bootstrap transiently.
+	registry := crdt.NewRegistry(func(context.Context, userid.UserID) (*crdt.Manager, error) {
+		return nil, errors.New("transient bootstrap failure")
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
+
+	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "missing"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"an unresolved tile plus a transient manager failure must be retryable Internal, not NotFound")
 }
 
 // locateTileEnv bundles a registry-backed manager so each LocateTile
@@ -568,85 +412,25 @@ type locateTileEnv struct {
 	registry *crdt.Registry
 }
 
-func setupLocateTileEnv(t *testing.T, orgID string) *locateTileEnv {
+func setupLocateTileEnv(t *testing.T, userID string) *locateTileEnv {
 	t.Helper()
 	j := newMemJournal()
 	var (
 		once sync.Once
 		mgr  *crdt.Manager
 	)
-	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
-		if want != orgID {
-			return nil, errors.New("unexpected org")
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		if want.String() != userID {
+			return nil, errors.New("unexpected user")
 		}
 		once.Do(func() {
-			mgr = crdt.NewManager(orgID, j, allowAllAuth{}, nil, time.Now)
+			mgr = crdt.NewManager(userid.MustNew(userID), j, allowAllAuth{}, nil, time.Now)
 			require.NoError(t, mgr.Bootstrap(ctx))
 		})
 		return mgr, nil
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-	_, err := registry.Get(context.Background(), orgID)
+	_, err := registry.Get(context.Background(), userID)
 	require.NoError(t, err)
 	return &locateTileEnv{mgr: mgr, registry: registry}
-}
-
-// TestWorkspaceService_LocateTile_TransientOrgErrorWithNoMatchIsRetryable verifies
-// the complement: when no org resolves the tile AND at least one org's Get failed
-// transiently, the caller gets a retryable Internal (so it retries) rather than a
-// false NotFound (which would tell it to stop looking for a tile that may exist).
-func TestWorkspaceService_LocateTile_TransientOrgErrorWithNoMatchIsRetryable(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	homeOrg := storetest.SeedOrg(t, st, "viewer-home-org")
-	viewer := storetest.SeedUser(t, st, homeOrg, "viewer")
-
-	// The only candidate org (the home org) fails to bootstrap transiently.
-	registry := crdt.NewRegistry(func(_ context.Context, _ string) (*crdt.Manager, error) {
-		return nil, errors.New("transient bootstrap failure")
-	}, nil, crdt.WithManagerIdleTTL(0))
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-
-	svc := service.NewWorkspaceService(st, registry, noopWorkspaceChannelCloser{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(viewer.ID), OrgID: homeOrg})
-	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "missing"}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
-		"an unresolved tile plus a transient org failure must be retryable Internal, not NotFound")
-}
-
-// newMultiOrgRegistry builds a CRDT registry that lazily serves an independent
-// (memory-journal, allow-all-auth) manager per allowed org, and eagerly creates
-// each so tests can SeedStateForTest state before the RPC. Returns the registry and
-// the orgID -> Manager map. Any org not in orgIDs is rejected by the factory, so a
-// test that walks an unexpected org fails loudly rather than silently.
-func newMultiOrgRegistry(t *testing.T, orgIDs ...string) (*crdt.Registry, map[string]*crdt.Manager) {
-	t.Helper()
-	allowed := make(map[string]struct{}, len(orgIDs))
-	for _, o := range orgIDs {
-		allowed[o] = struct{}{}
-	}
-	var mu sync.Mutex
-	managers := make(map[string]*crdt.Manager, len(orgIDs))
-	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
-		if _, ok := allowed[want]; !ok {
-			return nil, errors.New("unexpected org: " + want)
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if m, ok := managers[want]; ok {
-			return m, nil
-		}
-		m := crdt.NewManager(want, newMemJournal(), allowAllAuth{}, nil, time.Now)
-		if err := m.Bootstrap(ctx); err != nil {
-			return nil, err
-		}
-		managers[want] = m
-		return m, nil
-	}, nil)
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-	for _, o := range orgIDs {
-		_, err := registry.Get(context.Background(), o)
-		require.NoError(t, err)
-	}
-	return registry, managers
 }

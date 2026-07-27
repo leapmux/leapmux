@@ -18,7 +18,7 @@ import (
 )
 
 // WorkspaceService implements the WorkspaceServiceHandler interface.
-// Layout / tab mutations now live on OrgCRDT (see crdt_service.go).
+// Layout / tab mutations now live on UserCRDT (see crdt_service.go).
 // This service owns the workspace metadata table plus read-only tab
 // views fed by the CRDT manager's workspace_tab_rendered index.
 type WorkspaceService struct {
@@ -55,7 +55,6 @@ func NewWorkspaceService(
 func workspaceToProto(w *store.Workspace) *leapmuxv1.Workspace {
 	return &leapmuxv1.Workspace{
 		Id:        w.ID,
-		OrgId:     w.OrgID,
 		CreatedBy: w.OwnerUserID,
 		Title:     w.Title,
 		CreatedAt: w.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
@@ -114,6 +113,29 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 // with NotFound (not PermissionDenied) so it cannot probe which other workspaces
 // exist. Enforcing the scope here -- rather than as a per-handler guard -- means
 // a new read handler cannot forget the check and leak cross-scope access.
+// readWorkspaceOrNotFound loads a workspace for reading and collapses the two
+// existence-revealing codes into notFound.
+//
+// PermissionDenied and NotFound both become notFound so a non-owner (or a
+// delegation bearer probing outside its scope) cannot tell "exists but not
+// yours" from "does not exist". Anything else passes through unchanged: a
+// transient Internal must stay retryable rather than becoming the permanent
+// answer a NotFound is.
+//
+// One function rather than the three hand-copied ladders this replaced, so the
+// tab and tile lookups cannot drift into leaking existence through a code one
+// of them forgot to fold.
+func readWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID string, user *auth.UserInfo, notFound error) (*store.Workspace, error) {
+	ws, err := loadWorkspaceForRead(ctx, st, workspaceID, user)
+	if err != nil {
+		if code := connect.CodeOf(err); code == connect.CodePermissionDenied || code == connect.CodeNotFound {
+			return nil, notFound
+		}
+		return nil, err
+	}
+	return ws, nil
+}
+
 func loadWorkspaceForRead(ctx context.Context, st store.Store, workspaceID string, user *auth.UserInfo) (*store.Workspace, error) {
 	if err := requireDelegationWorkspaceOrNotFound(user, workspaceID, "workspace not found"); err != nil {
 		return nil, err
@@ -133,15 +155,10 @@ func (s *WorkspaceService) CreateWorkspace(
 		return nil, err
 	}
 
-	// Home the workspace only in the caller's own (personal) org. Without this
-	// the caller-supplied org_id would let a user create and own a workspace
-	// in an arbitrary org's namespace (polluting its CRDT log / lifecycle
-	// outbox). ResolveOrgID fails closed with NotFound for any foreign org and
-	// falls back to the user's personal org when org_id is empty.
-	orgID, err := auth.ResolveOrgID(user, req.Msg.GetOrgId())
-	if err != nil {
-		return nil, err
-	}
+	// Home the workspace under the caller's own user tenancy. The CRDT
+	// manager / lifecycle outbox are keyed by user.ID, so every create
+	// lands in the caller's UserCRDT namespace.
+	userID := user.ID.String()
 
 	title, err := validate.SanitizeName(req.Msg.GetTitle())
 	if err != nil {
@@ -153,21 +170,20 @@ func (s *WorkspaceService) CreateWorkspace(
 
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpCreate,
-		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.OrgOp, error) {
+		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
 			if err := tx.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 				ID:          wsID,
-				OrgID:       orgID,
 				OwnerUserID: user.ID,
 				Title:       title,
 			}); err != nil {
 				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workspace: %w", err))
 			}
-			return orgID, crdt.LifecyclePayload{
+			return userID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpCreate,
 				WorkspaceID: wsID,
 				Title:       title,
 				RootNodeID:  rootID,
-			}, buildSeedRootOps(wsID, rootID, user.ID.String()), nil
+			}, buildSeedRootOps(wsID, rootID), nil
 		},
 	}); err != nil {
 		return nil, err
@@ -203,26 +219,13 @@ func (s *WorkspaceService) ListWorkspaces(
 			}
 			return nil, err
 		}
-		if reqOrgID := req.Msg.GetOrgId(); reqOrgID != "" && ws.OrgID != reqOrgID {
-			return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{}), nil
-		}
 		return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{
 			Workspaces: []*leapmuxv1.Workspace{workspaceToProto(ws)},
 		}), nil
 	}
-	// The underlying SQL filter matches `w.org_id = sqlc.arg(org_id)`
-	// literally, so an empty arg never hits a row. Fall back to the
-	// authenticated user's home org when the caller doesn't specify
-	// one — this is what `leapmux remote workspace list` (no
-	// --org-id) wants, and what the web frontend already passes
-	// explicitly.
-	orgID := req.Msg.GetOrgId()
-	if orgID == "" {
-		orgID = user.OrgID
-	}
+	// Owner-only listing: every workspace the authenticated user owns.
 	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
-		OrgID:  orgID,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspaces: %w", err))
@@ -243,9 +246,6 @@ func (s *WorkspaceService) GetWorkspace(
 	ws, err := loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user)
 	if err != nil {
 		return nil, err
-	}
-	if reqOrgID := req.Msg.GetOrgId(); reqOrgID != "" && ws.OrgID != reqOrgID {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 	}
 	return connect.NewResponse(&leapmuxv1.GetWorkspaceResponse{
 		Workspace: workspaceToProto(ws),
@@ -270,7 +270,7 @@ func (s *WorkspaceService) RenameWorkspace(
 
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpRename,
-		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.OrgOp, error) {
+		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
 			ws, err := loadOwnedWorkspaceOr403(ctx, tx, req.Msg.GetWorkspaceId(), user.ID, "only workspace owner can modify workspace state")
 			if err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
@@ -286,7 +286,7 @@ func (s *WorkspaceService) RenameWorkspace(
 			if rows == 0 {
 				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
 			}
-			return ws.OrgID, crdt.LifecyclePayload{
+			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpRename,
 				WorkspaceID: req.Msg.GetWorkspaceId(),
 				NewTitle:    title,
@@ -316,12 +316,26 @@ func (s *WorkspaceService) DeleteWorkspace(
 	var affectedUserIDs []string
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpDelete,
-		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.OrgOp, error) {
+		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
 			ws, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can modify workspace state")
 			if err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
-			workerIDs, err = tx.WorkspaceTabIndex().ListDistinctWorkersByWorkspace(ctx, workspaceID)
+			// The fan-out is scoped to the deleting owner. workspace_tab_owned
+			// is keyed by (user_id, tab_id), and workspace_id is a plain FK, so
+			// a row another user wrote against this workspace_id would
+			// otherwise contribute its worker here -- and unlike the
+			// row-returning reads, a DISTINCT worker_id projection carries no
+			// owner for the caller to filter on afterwards.
+			//
+			// user.ID rather than ws.OwnerUserID: loadOwnedWorkspaceOr403 above
+			// already refused a non-owner (auth.IsOwner compares exactly these
+			// two), so they hold the same id and user.ID is the typed one --
+			// the same value SoftDelete binds a few lines below.
+			workerIDs, err = tx.WorkspaceTabIndex().ListDistinctWorkersByWorkspace(ctx, store.ListDistinctWorkersByWorkspaceParams{
+				UserID:      user.ID,
+				WorkspaceID: workspaceID,
+			})
 			if err != nil {
 				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace workers: %w", err))
 			}
@@ -338,7 +352,7 @@ func (s *WorkspaceService) DeleteWorkspace(
 			if rows == 0 {
 				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
 			}
-			return ws.OrgID, crdt.LifecyclePayload{
+			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpDelete,
 				WorkspaceID: workspaceID,
 				WorkerIDs:   workerIDs,

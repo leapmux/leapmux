@@ -4,7 +4,7 @@ import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, s
 test.describe('Turn End Sound Preferences', () => {
   test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin')
+    await page.goto('/')
     await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'None' }).first()).toBeVisible()
@@ -13,7 +13,7 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin')
+    await page.goto('/')
     await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
 
@@ -37,7 +37,7 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should show Turn End Sound section in Account Defaults tab', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin')
+    await page.goto('/')
     await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
@@ -47,7 +47,7 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin')
+    await page.goto('/')
     await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
@@ -100,7 +100,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Wait for the turn to end (interrupt button disappears)
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
 
     // Give a short moment for the effect to fire
     await page.waitForTimeout(500)
@@ -139,7 +139,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Wait for the turn to end
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
 
     await page.waitForTimeout(200)
 
@@ -173,7 +173,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
     await page.waitForTimeout(200)
 
     // Verify the sound played exactly once for the real turn end
@@ -220,7 +220,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
     await page.waitForTimeout(200)
 
     // Verify the sound played exactly once for the real turn end
@@ -272,7 +272,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
     await page.waitForTimeout(200)
 
     // Verify the sound played exactly once for the real turn end
@@ -315,7 +315,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
-    }, { timeout: 120_000 })
+    })
     await page.waitForTimeout(200)
 
     // Record the sound count after the first turn

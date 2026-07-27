@@ -26,8 +26,7 @@ import (
 // storage read.
 func TestCreateRegistrationKeyStoresExpiresAtCanonical(t *testing.T) {
 	st, db := newSessionTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "canonical-regkey-org")
-	user := storetest.SeedUser(t, st, orgID, "canonical-regkey-user")
+	user := storetest.SeedUser(t, st, "canonical-regkey-user")
 	expiresAt := time.Date(2026, 7, 20, 12, 34, 56, 789_456_789, time.UTC)
 	keyID := id.Generate()
 	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{

@@ -18,7 +18,6 @@ import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
 import { SessionIdInput } from '~/components/shell/SessionIdInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { useOrg } from '~/context/OrgContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
@@ -48,7 +47,6 @@ interface NewWorkspaceDialogProps {
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
-  const org = useOrg()
   const { submit: { submitting, error, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create workspace' },
     // eslint-disable-next-line solid/reactivity -- one-time initial value
@@ -79,7 +77,6 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     let createdWorkspaceId: string | undefined
     try {
       const wsResp = await workspaceClient.createWorkspace({
-        orgId: org.orgId(),
         title: title().trim(),
       })
       if (!wsResp.workspaceId)

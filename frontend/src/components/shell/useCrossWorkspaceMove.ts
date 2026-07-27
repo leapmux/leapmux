@@ -18,7 +18,6 @@ import { removeEmptyFloatingWindow } from './tileLifecycle'
 
 export interface UseCrossWorkspaceMoveArgs {
   getActiveWorkspaceId: () => string | null
-  getOrgId: () => string | undefined
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
@@ -46,7 +45,6 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
 } {
   const {
     getActiveWorkspaceId,
-    getOrgId,
     tabStore,
     layoutStore,
     floatingWindowStore,
@@ -187,17 +185,13 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
     // 2) On worker success: emit the single CRDT batch.
     // 3) On worker failure: revert local UI optimism (no CRDT ops
     //    have shipped yet, so no rollback there).
-    const currentOrgId = getOrgId()
     let rpcDone: Promise<unknown> = Promise.resolve()
     if (workerId) {
       if (tab.type === TabType.FILE) {
-        if (currentOrgId) {
-          rpcDone = relocateFileTabPath(workerId, {
-            orgId: currentOrgId,
-            tabId: tab.id,
-            newWorkspaceId: resolvedTargetWsId,
-          })
-        }
+        rpcDone = relocateFileTabPath(workerId, {
+          tabId: tab.id,
+          newWorkspaceId: resolvedTargetWsId,
+        })
       }
       else {
         rpcDone = moveTabWorkspace(workerId, {
@@ -223,7 +217,7 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
       // retries with the same op_ids; principal-aware dedup means the
       // original commit (if any) is returned, and the rollback only
       // fires on an authoritative rejection.
-      if (batchId && workerId && currentOrgId) {
+      if (batchId && workerId) {
         batchResultHandlers.set(batchId, (outcome) => {
           batchResultHandlers.delete(batchId)
           if (outcome.case !== 'rejected')
@@ -233,7 +227,6 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
           // seen the submitter's warn-toast for the rejection.
           if (tab!.type === TabType.FILE) {
             relocateFileTabPath(workerId, {
-              orgId: currentOrgId,
               tabId: tab!.id,
               newWorkspaceId: resolvedSourceWsId,
             }).catch(() => {})
@@ -253,9 +246,9 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
       // merge them into the cached snapshot so it reflects the full
       // tab list before the user switches into the target workspace.
       const targetSnap = registry.get(resolvedTargetWsId)
-      if (currentOrgId && targetSnap && !targetSnap.tabsLoaded) {
+      if (targetSnap && !targetSnap.tabsLoaded) {
         try {
-          const resp = await listTabsForWorkspace(currentOrgId, resolvedTargetWsId)
+          const resp = await listTabsForWorkspace(resolvedTargetWsId)
           const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
           const extraTabs: Tab[] = []
           for (const t of resp.tabs) {

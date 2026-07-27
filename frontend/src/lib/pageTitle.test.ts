@@ -22,8 +22,8 @@ describe('setPageTitle', () => {
   })
 
   it('handles parts with separator characters', () => {
-    setPageTitle('Org - Settings')
-    expect(document.title).toBe('Org - Settings - LeapMux')
+    setPageTitle('User - Settings')
+    expect(document.title).toBe('User - Settings - LeapMux')
   })
 
   it('overwrites the previous title on each call', () => {

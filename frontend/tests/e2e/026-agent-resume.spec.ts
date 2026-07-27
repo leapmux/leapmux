@@ -23,19 +23,18 @@ async function waitForAssistantMessage(page: import('@playwright/test').Page, pa
       return [...msgs].some(m => re.test(m.textContent ?? ''))
     },
     { source, flags, sel: ASSISTANT_BUBBLE_SELECTOR },
-    { timeout: 60_000 },
   )
 }
 
 test.describe('Agent Session Resume', () => {
   test('should resume agent session after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor
@@ -80,12 +79,12 @@ test.describe('Agent Session Resume', () => {
 
   test('should deliver control request after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Request Restart', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Request Restart')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor
@@ -124,12 +123,12 @@ test.describe('Agent Session Resume', () => {
 
   test('should handle interrupt after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Interrupt Restart', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Interrupt Restart')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor

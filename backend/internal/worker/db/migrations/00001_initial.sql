@@ -167,19 +167,32 @@ CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS 
 
 -- Junction: which tabs use which LeapMux-created worktree.
 --
--- org_id scopes the FILE-tab liveness join (see worktree_tab_liveness): file
--- tab ids are only unique within an org (worker_file_tabs is keyed by
--- (org_id, tab_id)), so the liveness view needs the org to avoid matching a
--- different org's file tab. It is left '' for AGENT/TERMINAL links, whose ids
+-- user_id scopes the FILE-tab liveness join (see worktree_tab_liveness): file
+-- tab ids are only unique within a user (worker_file_tabs is keyed by
+-- (user_id, tab_id)), so the liveness view needs the user to avoid matching a
+-- different user's file tab. It is left '' for AGENT/TERMINAL links, whose ids
 -- are globally unique, so their liveness legs never need it.
+--
+-- user_id is part of the PRIMARY KEY for the same reason. Without it, two
+-- users' FILE links to the same worktree with the same tab_id collide: the
+-- second insert is swallowed by AddWorktreeTab's ON CONFLICT DO NOTHING, and
+-- then either user's tab-close deletes the single surviving row -- silently
+-- unlinking the other user's still-open file tab and letting the worktree GC
+-- reclaim a directory that is still mounted in an editor. FILE tab ids are
+-- minted client-side as file-<epoch-ms>-<per-module-load counter>, so a
+-- cross-user collision needs no adversary, just two clients starting in the
+-- same millisecond. The three read/delete queries keyed by tab
+-- (RemoveWorktreeTab, DeleteWorktreeTabsByTabID, GetWorktreeForTab) bind
+-- user_id to match.
 CREATE TABLE worktree_tabs (
     worktree_id  TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
-    org_id       TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (worktree_id, tab_type, tab_id)
+    user_id      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (worktree_id, tab_type, tab_id, user_id)
 );
-CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id);
+-- Covers the by-tab lookups, which all bind (tab_type, tab_id, user_id).
+CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 
 -- Each worktree_tabs link annotated with whether its backing tab is still
 -- live: an agent/terminal with closed_at IS NULL, or a still-present
@@ -192,36 +205,44 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id);
 -- not in two queries that must agree or the GC reaps a live worktree.
 --
 -- The agent/terminal legs match on the globally-unique row id; the file leg
--- matches on (org_id, tab_id) because worker_file_tabs is keyed that way --
--- file tab ids are unique only within an org, so matching tab_id alone would
--- let a multi-org worker borrow a different org's live file tab and mark a
--- strand live. worktree_tabs.org_id carries the link's org ('' for
+-- matches on (user_id, tab_id) because worker_file_tabs is keyed that way --
+-- file tab ids are unique only within a user, so matching tab_id alone would
+-- let a multi-user worker borrow a different user's live file tab and mark a
+-- strand live. worktree_tabs.user_id carries the link's user ('' for
 -- AGENT/TERMINAL links, whose ids are globally unique and so never need it;
 -- '' never matches a real worker_file_tabs row, which always has a non-empty
--- org_id).
+-- user_id).
 CREATE VIEW worktree_tab_liveness AS
 SELECT
     t.worktree_id AS worktree_id,
     CASE WHEN
         EXISTS (SELECT 1 FROM agents a WHERE a.id = t.tab_id AND a.closed_at IS NULL)
         OR EXISTS (SELECT 1 FROM terminals te WHERE te.id = t.tab_id AND te.closed_at IS NULL)
-        OR EXISTS (SELECT 1 FROM worker_file_tabs f WHERE f.tab_id = t.tab_id AND f.org_id = t.org_id)
+        OR EXISTS (SELECT 1 FROM worker_file_tabs f WHERE f.tab_id = t.tab_id AND f.user_id = t.user_id)
     THEN 1 ELSE 0 END AS is_live
 FROM worktree_tabs t;
 
 -- File-tab paths kept E2EE on the worker. The hub never sees these
 -- rows; clients fetch paths over WatchWorkspacePrivateEvents and
--- GetFileTabPath. tab_id is unique within an org but not across orgs,
--- so the primary key includes org_id.
+-- GetFileTabPath. tab_id is unique within a user but not across users,
+-- so the primary key includes user_id.
 CREATE TABLE worker_file_tabs (
-    org_id       TEXT NOT NULL,
+    -- CHECK (user_id <> ''): the worker's database has no users table, so the
+    -- hub's REFERENCES users(id) floor cannot reach here. FileTabPathStore
+    -- refuses a blank owner in Go, but a blank row that got in any other way
+    -- would be permanently unclearable -- Get/RevokeRow/Relocate all refuse an
+    -- unminted owner, and the reconciler's scope check skips it -- while
+    -- worktree_tab_liveness's FILE leg (which matches f.user_id = t.user_id and
+    -- relies on '' never matching a real file-tab row) would start reading
+    -- agent/terminal links as live and leak their worktrees.
+    user_id      TEXT NOT NULL CHECK (user_id <> ''),
     tab_id       TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     file_path    TEXT NOT NULL,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (org_id, tab_id)
+    PRIMARY KEY (user_id, tab_id)
 );
-CREATE INDEX idx_worker_file_tabs_workspace ON worker_file_tabs(org_id, workspace_id);
+CREATE INDEX idx_worker_file_tabs_workspace ON worker_file_tabs(user_id, workspace_id);
 
 -- Provider-neutral to-do rows. Populated incrementally by the worker
 -- output handler in response to Claude TodoWrite/Task*, Codex

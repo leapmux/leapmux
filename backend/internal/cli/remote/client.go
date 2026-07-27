@@ -55,7 +55,7 @@ func (c *Client) ConnectURL() string {
 
 // defaultHTTPTimeout is the per-request timeout on the unary HTTP
 // client used for ConnectRPC unary calls and the auth/version REST
-// endpoints. Streaming RPCs (org events, agent-message follow) use
+// endpoints. Streaming RPCs (user events, agent-message follow) use
 // a separate WebSocket client with no overall timeout.
 const defaultHTTPTimeout = 60 * time.Second
 
@@ -160,12 +160,12 @@ func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServ
 	)
 }
 
-// OrgCRDT returns a ConnectRPC client for the unary SubmitOps and
-// UpdatePresence calls. The org-event subscription (formerly the
-// `WatchOrg` streaming RPC) lives on `/ws/orgevents` — see
-// `OpenOrgEvents`. Auth headers are injected via an interceptor.
-func (c *Client) OrgCRDT() leapmuxv1connect.OrgCRDTClient {
-	return leapmuxv1connect.NewOrgCRDTClient(
+// UserCRDT returns a ConnectRPC client for the unary SubmitOps and
+// UpdatePresence calls. The user-event subscription (formerly the
+// `WatchUser` streaming RPC) lives on `/ws/userevents` — see
+// `OpenUserEvents`. Auth headers are injected via an interceptor.
+func (c *Client) UserCRDT() leapmuxv1connect.UserCRDTClient {
+	return leapmuxv1connect.NewUserCRDTClient(
 		c.HTTPClient, c.connectURL,
 		connect.WithInterceptors(c.AuthInterceptor()),
 	)
@@ -183,18 +183,28 @@ func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
 
 // RemoteIPCService returns a ConnectRPC client for the worker-local
 // IPC service. Only valid for clients constructed via NewLocalClient.
-func (c *Client) RemoteIPCService() leapmuxv1connect.RemoteIPCServiceClient {
+//
+// The restriction is ENFORCED, not merely documented, matching
+// OpenUserEvents and OpenE2EEChannel which both refuse the wrong transport.
+// Every caller already gates on IsLocal(), so this is a guard against a future
+// one that forgets: a hub-bound client here would aim worker-namespace
+// CallInner requests at the hub's connect URL, which answers 404 rather than
+// anything a caller could diagnose.
+func (c *Client) RemoteIPCService() (leapmuxv1connect.RemoteIPCServiceClient, error) {
+	if !c.IsLocal() {
+		return nil, errors.New("RemoteIPCService is only valid for local-IPC clients constructed via NewLocalClient")
+	}
 	return leapmuxv1connect.NewRemoteIPCServiceClient(
 		c.HTTPClient, c.connectURL,
 		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	), nil
 }
 
-// OrgEventsStream is a read-only WebSocket subscription to the hub's
-// `/ws/orgevents` endpoint. Each `Recv` returns the next decoded
-// `WatchOrgEvent` proto (the first call always returns an `Initial`
+// UserEventsStream is a read-only WebSocket subscription to the hub's
+// `/ws/userevents` endpoint. Each `Recv` returns the next decoded
+// `WatchUserEvent` proto (the first call always returns an `Initial`
 // event). Close cancels the stream and tears down the underlying WS.
-type OrgEventsStream struct {
+type UserEventsStream struct {
 	ws     *websocket.Conn
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -202,28 +212,28 @@ type OrgEventsStream struct {
 
 // Recv reads the next event from the stream. Returns io.EOF when the
 // peer closes cleanly; any other transport error is returned verbatim.
-func (s *OrgEventsStream) Recv() (*leapmuxv1.WatchOrgEvent, error) {
+func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
 	if s == nil || s.ws == nil {
 		return nil, io.EOF
 	}
-	// Wire format mirrors `writeOrgEvent` in ws_orgevents.go:
-	// [4-byte big-endian length][protobuf-encoded WatchOrgEvent].
+	// Wire format mirrors `writeUserEvent` in ws_userevents.go:
+	// [4-byte big-endian length][protobuf-encoded WatchUserEvent].
 	payload, err := channelwire.ReadFramedBytes(s.ctx, s.ws)
 	if err != nil {
-		if channelwire.IsOrgEventsCloseError(err) {
+		if channelwire.IsUserEventsCloseError(err) {
 			return nil, io.EOF
 		}
 		return nil, err
 	}
-	var evt leapmuxv1.WatchOrgEvent
+	var evt leapmuxv1.WatchUserEvent
 	if err := proto.Unmarshal(payload, &evt); err != nil {
-		return nil, fmt.Errorf("orgevents: decode event: %w", err)
+		return nil, fmt.Errorf("userevents: decode event: %w", err)
 	}
 	return &evt, nil
 }
 
 // Close shuts the stream down.
-func (s *OrgEventsStream) Close() error {
+func (s *UserEventsStream) Close() error {
 	if s == nil {
 		return nil
 	}
@@ -236,26 +246,24 @@ func (s *OrgEventsStream) Close() error {
 	return nil
 }
 
-// OpenOrgEvents opens a `/ws/orgevents` WebSocket subscription against
-// this hub. Bearer auth is added via the Authorization header. The
-// returned stream's first event is always `OrgMaterialized` (the
-// bootstrap snapshot). Only valid for non-local clients — local-IPC
-// clients should use the worker's per-agent delegation bearer to
-// reach the hub directly (the worker is not in this path).
-func (c *Client) OpenOrgEvents(ctx context.Context, orgID string, workspaceIDs []string) (*OrgEventsStream, error) {
+// OpenUserEvents opens a `/ws/userevents` WebSocket subscription against
+// this hub. Bearer auth is added via the Authorization header; the bearer
+// implies the user, so no user_id is sent. The returned stream's first
+// event is always `UserMaterialized` (the bootstrap snapshot). Only valid
+// for non-local clients — local-IPC clients should use the worker's
+// per-agent delegation bearer to reach the hub directly (the worker is
+// not in this path).
+func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
 	if c.IsLocal() {
-		return nil, errors.New("OpenOrgEvents is only valid for hub-bound clients; use the agent-spawned hub URL + delegation bearer to subscribe directly")
-	}
-	if orgID == "" {
-		return nil, errors.New("OpenOrgEvents: org_id required")
+		return nil, errors.New("OpenUserEvents is only valid for hub-bound clients; use the agent-spawned hub URL + delegation bearer to subscribe directly")
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
-	ws, err := channelwire.OpenOrgEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, orgID, workspaceIDs)
+	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, workspaceIDs)
 	if err != nil {
 		dialCancel()
 		return nil, err
 	}
-	return &OrgEventsStream{ws: ws, ctx: dialCtx, cancel: dialCancel}, nil
+	return &UserEventsStream{ws: ws, ctx: dialCtx, cancel: dialCancel}, nil
 }
 
 // OpenE2EEChannel opens a Noise_NK E2EE channel to the named worker
@@ -300,7 +308,7 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 // `OpenChannel`, and friends — the IPC server (or hub) then responds
 // 401 and the CLI surfaces it as "unauthenticated: HTTP status 401
 // Unauthorized". The streaming path matters here because CRDT
-// bootstrap (`hub.WatchOrg`) and any future server-streaming RPC
+// bootstrap (`hub.WatchUser`) and any future server-streaming RPC
 // flow through it.
 func (c *Client) AuthInterceptor() connect.Interceptor {
 	return &authInterceptor{client: c}

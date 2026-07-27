@@ -36,13 +36,13 @@ message Request {
     ShutdownRequest shutdown = 27;
     ListEditorsRequest list_editors = 28;
     OpenInEditorRequest open_in_editor = 29;
-    // OrgEvents relay: the webview cannot directly dial the
-    // unix-socket hub for /ws/orgevents, so the sidecar opens the WS
+    // UserEvents relay: the webview cannot directly dial the
+    // unix-socket hub for /ws/userevents, so the sidecar opens the WS
     // on its behalf and proxies inbound frames as Tauri events.
     // Mirrors the OpenChannelRelay / CloseChannelRelay pattern but
-    // is read-only — the frontend never writes to /ws/orgevents.
-    OpenOrgEventsRelayRequest open_org_events_relay = 30;
-    CloseOrgEventsRelayRequest close_org_events_relay = 31;
+    // is read-only — the frontend never writes to /ws/userevents.
+    OpenUserEventsRelayRequest open_user_events_relay = 30;
+    CloseUserEventsRelayRequest close_user_events_relay = 31;
     CliPathStatusRequest cli_path_status = 32;
     CliInstallSymlinkRequest cli_install_symlink = 33;
     // Tear down every tunnel and its pooled E2EE channels WITHOUT dropping the
@@ -63,7 +63,7 @@ message GetSidecarInfoRequest {}
 message OpenFullDiskAccessSettingsRequest {}
 message ConnectSoloRequest {}
 // relay_id names WHICH relay the caller means (both for the channel relay below and
-// for the org-events relay further down). The frontend already tracks a
+// for the user-events relay further down). The frontend already tracks a
 // per-wrapper id to decide who owns the relay, but that decision was made in JS and
 // never crossed the wire, so the sidecar had to infer the caller's intent from the
 // order its requests arrived in.
@@ -103,23 +103,22 @@ message CliInstallSymlinkRequest {
   bool force = 1;
 }
 
-// OpenOrgEventsRelay names the org subscription the sidecar should
+// OpenUserEventsRelay names the user subscription the sidecar should
 // establish. `workspace_ids` is empty for the standard "all my
 // workspaces" subscription; non-empty narrows the filter exactly
 // like the URL-query equivalent on the direct WebSocket path.
 //
 // relay_id carries the same ownership claim as the channel relay's (see above), and
-// additionally orders the OPENS: the sidecar force-restarts the org-events relay on
+// additionally orders the OPENS: the sidecar force-restarts the user-events relay on
 // every open, so an open that ran late must abandon its own dial rather than restart
 // over a newer one. The frontend hands out ids in dispatch order, which is the only
 // order that reflects the caller's intent.
-message OpenOrgEventsRelayRequest {
+message OpenUserEventsRelayRequest {
   uint64 relay_id = 1;
-  string org_id = 2;
-  repeated string workspace_ids = 3;
+  repeated string workspace_ids = 2;
 }
 
-message CloseOrgEventsRelayRequest {
+message CloseUserEventsRelayRequest {
   uint64 relay_id = 1;
 }
 
@@ -302,15 +301,15 @@ message Event {
     ChannelMessageEvent channel_message = 1;
     ChannelCloseEvent channel_close = 2;
     SidecarLogEvent sidecar_log = 3;
-    // OrgEventsMessage carries an already-framed WatchOrgEvent proto
+    // UserEventsMessage carries an already-framed WatchUserEvent proto
     // payload (the same length-prefixed bytes the direct WebSocket
-    // path would deliver). The frontend's useOrgEvents hook treats
+    // path would deliver). The frontend's useUserEvents hook treats
     // these identically to native WebSocket message frames.
-    OrgEventsMessageEvent org_events_message = 4;
-    // OrgEventsClose signals the sidecar's relay to the hub has
+    UserEventsMessageEvent user_events_message = 4;
+    // UserEventsClose signals the sidecar's relay to the hub has
     // terminated; the frontend resets its bootstrap state in the
     // same way it does on a native WebSocket `close` event.
-    OrgEventsCloseEvent org_events_close = 5;
+    UserEventsCloseEvent user_events_close = 5;
   }
 }
 
@@ -324,11 +323,11 @@ message ChannelCloseEvent {
   bool was_clean = 3;
 }
 
-message OrgEventsMessageEvent {
+message UserEventsMessageEvent {
   bytes data = 1;
 }
 
-message OrgEventsCloseEvent {
+message UserEventsCloseEvent {
   uint32 code = 1;
   string reason = 2;
   bool was_clean = 3;

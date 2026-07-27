@@ -68,7 +68,6 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 	}, nil
 }
 
-func (s *sqliteStore) Orgs() store.OrgStore         { return &orgStore{conn: s.conn} }
 func (s *sqliteStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *sqliteStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *sqliteStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
@@ -82,12 +81,12 @@ func (s *sqliteStore) Workspaces() store.WorkspaceStore { return &workspaceStore
 func (s *sqliteStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 	return &workspaceTabIndexStore{conn: s.conn}
 }
-func (s *sqliteStore) OrgOpBatches() store.OrgOpBatchesStore {
-	return &orgOpBatchesStore{conn: s.conn}
+func (s *sqliteStore) UserOpBatches() store.UserOpBatchesStore {
+	return &userOpBatchesStore{conn: s.conn}
 }
-func (s *sqliteStore) OrgState() store.OrgStateStore { return &orgStateStore{conn: s.conn} }
-func (s *sqliteStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
-	return &orgRecentBatchIDStore{conn: s.conn}
+func (s *sqliteStore) UserState() store.UserStateStore { return &userStateStore{conn: s.conn} }
+func (s *sqliteStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
+	return &userRecentBatchIDStore{conn: s.conn}
 }
 func (s *sqliteStore) LifecycleOutbox() store.LifecycleOutboxStore {
 	return &lifecycleOutboxStore{conn: s.conn}

@@ -27,7 +27,7 @@ import (
 // tests don't reach into another package's private symbols.
 type memJournal struct {
 	mu        sync.Mutex
-	state     *leapmuxv1.OrgCrdtState
+	state     *leapmuxv1.UserCrdtState
 	batches   []*leapmuxv1.OpBatch
 	dedup     map[string]crdt.RecentBatchRecord
 	commitErr error
@@ -35,10 +35,10 @@ type memJournal struct {
 
 func newMemJournal() *memJournal { return &memJournal{dedup: map[string]crdt.RecentBatchRecord{}} }
 
-func (j *memJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.OrgCrdtState, []*leapmuxv1.OpBatch, error) {
+func (j *memJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.UserCrdtState, []*leapmuxv1.OpBatch, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	var state *leapmuxv1.OrgCrdtState
+	var state *leapmuxv1.UserCrdtState
 	if j.state != nil {
 		state = crdt.CloneState(j.state)
 	}
@@ -52,7 +52,19 @@ func (j *memJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 		return j.commitErr
 	}
 	j.batches = append(j.batches, c.Batch)
-	j.dedup[c.DedupRow.BatchID] = c.DedupRow
+	// The dedup TABLE row is the commit envelope's context plus the batch's own
+	// fields; crdt.CommitBatch states the former once, so reassemble it here
+	// the way the real journal adapter does when it writes the row.
+	j.dedup[c.Dedup.BatchID] = crdt.RecentBatchRecord{
+		UserID:            c.UserID,
+		BatchID:           c.Dedup.BatchID,
+		BodyHash:          c.Dedup.BodyHash,
+		PrincipalID:       c.PrincipalID,
+		CanonicalFirstHLC: c.Dedup.CanonicalFirstHLC,
+		OpCount:           c.Dedup.OpCount,
+		Epoch:             c.Epoch,
+		ExpiresAt:         c.Dedup.ExpiresAt,
+	}
 	return nil
 }
 
@@ -110,27 +122,15 @@ func (memOutbox) MarkLifecycleOutboxConsumed(_ context.Context, _ int64, _ time.
 	return nil
 }
 
-// allowAllAuth lets every (org, workspace, principal) write — the
+// allowAllAuth lets every (user, workspace, principal) write — the
 // service-layer tests are about the wire-level stamping, not the auth
 // matrix (that's covered inside crdt/validate_test.go).
 type allowAllAuth struct{}
 
-func (allowAllAuth) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (allowAllAuth) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (allowAllAuth) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
-
-func TestCRDTAuthCheckerRejectsEmptyOrgID(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "workspace")
-	checker := service.NewCRDTAuthChecker(st)
-
-	access, err := checker.CanAccessWorkspace(context.Background(), "", workspaceID, owner.ID)
-	require.NoError(t, err)
-	assert.False(t, access)
-}
+func (allowAllAuth) CanUseWorker(_ context.Context, _, _ string) (bool, error) { return true, nil }
 
 // crdtServiceEnv bundles the bits a CRDT-service test needs: a
 // running manager (with a memJournal we can inspect), a registry that
@@ -140,36 +140,38 @@ type crdtServiceEnv struct {
 	mgr      *crdt.Manager
 	registry *crdt.Registry
 	svc      *service.CRDTService
-	orgID    string
+	userID   string
 }
 
 func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	t.Helper()
-	orgID := "org-test"
+	userID := "user-test"
 	j := newMemJournal()
 
 	// The registry is the sole owner of Manager.Start — it dispatches
 	// the goroutine itself. We supply a factory that constructs +
 	// bootstraps a single manager (and reuses it on subsequent Get).
-	var (
-		once sync.Once
-		mgr  *crdt.Manager
-	)
-	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
-		if want != orgID {
-			return nil, errors.New("unexpected org")
+	var mgr *crdt.Manager
+	managers := map[string]*crdt.Manager{}
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		if m, ok := managers[want.String()]; ok {
+			return m, nil
 		}
-		once.Do(func() {
-			mgr = crdt.NewManager(orgID, j, allowAllAuth{}, nil, time.Now)
-			require.NoError(t, mgr.Bootstrap(ctx))
-		})
-		return mgr, nil
+		m := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		managers[want.String()] = m
+		if want.String() == userID {
+			mgr = m
+		}
+		return m, nil
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	// Force the registry to load the manager up front (so the tests
 	// can pre-seed via SubmitInternal directly).
-	_, err := registry.Get(context.Background(), orgID)
+	_, err := registry.Get(context.Background(), userID)
 	require.NoError(t, err)
 
 	svc := service.NewCRDTService(nil /* store unused for these tests */, registry, nil, nil)
@@ -179,47 +181,46 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	// production after CreateWorkspace: SetWorkspaceRegister seeds the
 	// record in the same atomic batch as the root (no off-goroutine
 	// m.state write).
-	setRegister := &leapmuxv1.OrgOp{
+	setRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-workspace-register",
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
 			WorkspaceId: "w1",
 		}},
 	}
-	rootKind := &leapmuxv1.OrgOp{
+	rootKind := &leapmuxv1.CrdtOp{
 		OpId: "seed-kind",
-		Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+		Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}},
 	}
-	rootRegister := &leapmuxv1.OrgOp{
+	rootRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-register",
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root1",
 		}},
 	}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   orgID,
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.OrgOp{setRegister, rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.CrdtOp{setRegister, rootKind, rootRegister}}},
 	})
 	require.NoError(t, err)
 
-	return &crdtServiceEnv{journal: j, mgr: mgr, registry: registry, svc: svc, orgID: orgID}
+	return &crdtServiceEnv{journal: j, mgr: mgr, registry: registry, svc: svc, userID: userID}
 }
 
 // addTabOps builds the canonical 3-op SetTabRegister batch the tests
 // reuse. Each op gets a caller-supplied id so dedup assertions are easy.
-func addTabOps(idPrefix, tabID, tileID, workerID, position string) []*leapmuxv1.OrgOp {
-	return []*leapmuxv1.OrgOp{
-		{OpId: idPrefix + "-tile", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+func addTabOps(idPrefix, tabID, tileID, workerID, position string) []*leapmuxv1.CrdtOp {
+	return []*leapmuxv1.CrdtOp{
+		{OpId: idPrefix + "-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
 		}}},
-		{OpId: idPrefix + "-worker", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		{OpId: idPrefix + "-worker", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID},
 		}}},
-		{OpId: idPrefix + "-pos", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		{OpId: idPrefix + "-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: position},
 		}}},
@@ -233,7 +234,6 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 	env := setupCRDTService(t)
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
-		OrgId:   env.orgID,
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
 	})
@@ -252,10 +252,9 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 // values, so a malicious client cannot spoof them.
 func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: env.orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
-		OrgId:   env.orgID,
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
 	})
@@ -265,22 +264,22 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	require.Len(t, resp.Msg.GetResults(), 1)
 	require.NotNil(t, resp.Msg.GetResults()[0].GetCommitted())
 
-	// The dedup row landed under principal_id=user-alice — proving the
+	// The dedup row landed under principal_id=env.userID — proving the
 	// service stamped it, not a value the request body controlled.
 	row := env.journal.dedupRow("b1")
 	require.NotNil(t, row, "dedup row for batch b1 must exist")
-	assert.Equal(t, "user-alice", row.PrincipalID, "principal_id must match the authenticated user")
+	assert.Equal(t, env.userID, row.PrincipalID, "principal_id must match the authenticated user")
 }
 
 // TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected encodes the
 // security guarantee that the manager overwrites whatever
 // `origin_client_id` appears in the request body with the
 // authenticated session's identity. A malicious client setting
-// origin_client_id="hub" in the wire-level OrgOp must not be able to
+// origin_client_id="hub" in the wire-level CrdtOp must not be able to
 // impersonate the hub or another user.
 func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-bob"), OrgID: env.orgID})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
 
 	spoofed := addTabOps("op2", "tB", "root1", "wkr1", "p1")
 	for _, op := range spoofed {
@@ -289,7 +288,6 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	}
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
-		OrgId:   env.orgID,
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b2", Ops: spoofed}},
 	})
@@ -309,78 +307,18 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	// of any spoof in the request body.
 	row := env.journal.dedupRow("b2")
 	require.NotNil(t, row)
-	assert.Equal(t, "user-bob", row.PrincipalID,
+	assert.Equal(t, env.userID, row.PrincipalID,
 		"principal_id must reflect the authenticated user, not any spoofed origin_client_id")
 	// And the tab's stored worker_id reflects the actual op, so we know
 	// the commit happened through the standard validate-then-apply path.
 	assert.Equal(t, "wkr1", tab.GetWorkerId().GetValue())
 }
 
-// TestCRDTService_SubmitOps_ForeignOrgIsNotFound pins the fail-closed org guard:
-// SubmitOps must refuse a caller-supplied org_id that is not the caller's own
-// (personal) org with NotFound, BEFORE the registry materializes that org's
-// manager. Without the guard, any authenticated user could spin up (and, via
-// the WS path, pin) an arbitrary tenant's CRDT manager.
-func TestCRDTService_SubmitOps_ForeignOrgIsNotFound(t *testing.T) {
-	env := setupCRDTService(t)
-	// The caller belongs to a DIFFERENT org than the one they name in the request.
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: "org-alice-personal"})
-
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
-		OrgId:   env.orgID, // a foreign org id (org-test), not org-alice-personal
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
-	})
-
-	_, err := env.svc.SubmitOps(ctx, req)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
-		"a foreign org_id must be NotFound, not accepted into the manager")
-	// The batch must never have committed to the foreign manager.
-	assert.Nil(t, env.journal.dedupRow("b1"),
-		"a rejected foreign-org submit must not commit any batch")
-}
-
-// TestCRDTService_GetMaterialized_ForeignOrgIsNotFound is the read-side twin:
-// a foreign org_id must be NotFound rather than an empty snapshot that silently
-// materialized the foreign tenant's manager.
-func TestCRDTService_GetMaterialized_ForeignOrgIsNotFound(t *testing.T) {
-	env := setupCRDTService(t)
-	st := hubtestutil.OpenTestStore(t)
-	svc := service.NewCRDTService(st, env.registry, nil, nil)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: "org-alice-personal"})
-
-	_, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{OrgId: env.orgID}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
-		"a foreign org_id must be NotFound, not an empty materialized snapshot")
-}
-
-// TestCRDTService_SubmitOps_EmptyOrgResolvesToPersonal asserts the other arm of
-// ResolveOrgID: an empty org_id falls back to the caller's own org rather than
-// failing, so existing CLI callers that omit org_id keep working.
-func TestCRDTService_SubmitOps_EmptyOrgResolvesToPersonal(t *testing.T) {
-	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("user-alice"), OrgID: env.orgID})
-
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
-		OrgId:   "", // omitted; resolves to the caller's personal org (env.orgID)
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
-	})
-
-	resp, err := env.svc.SubmitOps(ctx, req)
-	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetResults(), 1)
-	require.NotNil(t, resp.Msg.GetResults()[0].GetCommitted(),
-		"an empty org_id must resolve to the caller's own org and commit there")
-}
-
 // TestCRDTService_UpdatePresence_RequiresAuth ensures presence calls
 // without an authenticated user are rejected with Unauthenticated.
 func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 	env := setupCRDTService(t)
-	req := connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{OrgId: env.orgID, WorkspaceId: "w1"})
+	req := connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{WorkspaceId: "w1"})
 	_, err := env.svc.UpdatePresence(context.Background(), req)
 	require.Error(t, err)
 	var ce *connect.Error
@@ -391,12 +329,11 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 func TestCRDTService_UpdatePresence_DelegationRejectsSiblingWorkspace(t *testing.T) {
 	env := setupCRDTService(t)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userid.MustNew("user-alice"),
+		ID:         userid.MustNew(env.userID),
 		Credential: auth.DelegationCredential("test-delegation", "w1", "worker-mint"),
 	})
 
 	_, err := env.svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
-		OrgId:       env.orgID,
 		WorkspaceId: "w2",
 	}))
 	require.Error(t, err)
@@ -407,21 +344,15 @@ func TestCRDTService_UpdatePresence_DelegationRejectsSiblingWorkspace(t *testing
 func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *testing.T) {
 	env := setupCRDTService(t)
 	st := hubtestutil.OpenTestStore(t)
-	orgID := env.orgID
-	require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
-		ID:   orgID,
-		Name: orgID,
-	}))
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	_ = storetest.SeedWorkspace(t, st, orgID, user.ID, "w1")
+	user := storetest.SeedUser(t, st, "alice")
+	_ = storetest.SeedWorkspace(t, st, user.ID, "w1")
 	svc := service.NewCRDTService(st, env.registry, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", "missing-workspace", "worker-mint"),
 	})
 
-	resp, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{OrgId: orgID}))
+	resp, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{}))
 	require.NoError(t, err)
 	assert.Empty(t, resp.Msg.GetState().GetWorkspaces(),
 		"an empty delegated ACL must not be interpreted as the all-workspaces materialized filter")
@@ -430,17 +361,15 @@ func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *tes
 }
 
 func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *testing.T) {
-	t.Run("workspace must belong to requested org", func(t *testing.T) {
+	t.Run("unknown workspace is denied", func(t *testing.T) {
 		env := setupCRDTService(t)
 		st := hubtestutil.OpenTestStore(t)
-		otherOrgID := storetest.SeedOrg(t, st, "presence-other-org")
-		user := storetest.SeedUser(t, st, otherOrgID, "presence-owner")
-		workspaceID := storetest.SeedWorkspace(t, st, otherOrgID, user.ID, "Other org")
+		user := storetest.SeedUser(t, st, "presence-owner")
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
-		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID), OrgID: otherOrgID})
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
-			OrgId: env.orgID, WorkspaceId: workspaceID,
+			WorkspaceId: "does-not-exist",
 		}))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -449,23 +378,19 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 	t.Run("non-owner delegated heartbeat is denied", func(t *testing.T) {
 		env := setupCRDTService(t)
 		st := hubtestutil.OpenTestStore(t)
-		require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
-			ID: env.orgID, Name: "presence-owner-org",
-		}))
-		owner := storetest.SeedUser(t, st, env.orgID, "presence-owner")
-		other := storetest.SeedUser(t, st, env.orgID, "presence-other")
-		workspaceID := storetest.SeedWorkspace(t, st, env.orgID, owner.ID, "Owned")
+		owner := storetest.SeedUser(t, st, "presence-owner")
+		other := storetest.SeedUser(t, st, "presence-other")
+		workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "Owned")
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
 		// A delegation credential pinned to the right workspace still cannot
 		// heartbeat for a user who does not own it: access is owner-only.
 		ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 			ID:         userid.MustNew(other.ID),
-			OrgID:      env.orgID,
 			Credential: auth.DelegationCredential("delegation-token", workspaceID, "worker-mint"),
 		})
 		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
-			OrgId: env.orgID, WorkspaceId: workspaceID,
+			WorkspaceId: workspaceID,
 		}))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -499,23 +424,20 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 		{
 			name:     "user fallback has its own namespace",
 			info:     &auth.UserInfo{},
-			expected: "user:shared-id",
+			expected: "user:user-test",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupCRDTService(t)
 			st := hubtestutil.OpenTestStore(t)
-			require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
-				ID: env.orgID, Name: env.orgID,
-			}))
 			require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-				ID: "shared-id", OrgID: env.orgID, Username: "presence-user",
+				ID: env.userID, Username: "presence-user",
 			}))
 			require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-				ID: "w1", OrgID: env.orgID, OwnerUserID: userid.MustNew("shared-id"), Title: "Presence",
+				ID: "w1", OwnerUserID: userid.MustNew(env.userID), Title: "Presence",
 			}))
-			tc.info.ID = userid.MustNew("shared-id")
+			tc.info.ID = userid.MustNew(env.userID)
 			svc := service.NewCRDTService(st, env.registry, nil, nil)
 
 			// Subscribe so we can capture the broadcast PresenceUpdate.
@@ -541,7 +463,7 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 
 			ctx := auth.WithUser(context.Background(), tc.info)
 			_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
-				OrgId: env.orgID, WorkspaceId: "w1",
+				WorkspaceId: "w1",
 			}))
 			require.NoError(t, err)
 
@@ -566,7 +488,7 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 }
 
 // TestResolveAllowedWorkspaces_FiltersAndDedups exercises the helper
-// the `/ws/orgevents` handler uses to project a per-user workspace
+// the `/ws/userevents` handler uses to project a per-user workspace
 // filter from the requested set. The helper must (a) drop workspaces
 // the caller has no access to, (b) expand an empty request to the full
 // set the caller can read, and (c) skip blank ids silently.
@@ -576,70 +498,64 @@ func TestResolveAllowedWorkspaces_FiltersAndDedups(t *testing.T) {
 	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
 	bobID := hubtestutil.CreateTestUser(t, st, "bob", "password-bob-456")
 
-	alice, err := st.Users().GetByID(ctx, aliceID)
-	require.NoError(t, err)
-
-	// Alice owns w1 in her personal org. Bob owns w2 in his.
+	// Alice owns w1. Bob owns w2.
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
+		ID: "w-alice", Title: "w-alice", OwnerUserID: userid.MustNew(aliceID),
 	}))
-	bob, err := st.Users().GetByID(ctx, bobID)
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-bob", Title: "w-bob", OrgID: bob.OrgID, OwnerUserID: userid.MustNew(bobID),
+		ID: "w-bob", Title: "w-bob", OwnerUserID: userid.MustNew(bobID),
 	}))
 
-	// Empty request → returns every workspace alice can read inside her org.
-	allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), nil, userid.MustNew(aliceID))
+	// Empty request → returns every workspace alice owns.
+	allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, nil, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"w-alice"}, allowed)
 
 	// Requesting Bob's workspace returns nothing (alice has no access).
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"w-bob"}, userid.MustNew(aliceID))
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, []string{"w-bob"}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.Empty(t, allowed)
 
 	// Requesting an unknown id returns nothing rather than an error.
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"ghost"}, userid.MustNew(aliceID))
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, []string{"ghost"}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.Empty(t, allowed)
 
 	// Blank entries inside the requested list are skipped silently.
-	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, auth.BindOrg(alice.OrgID), []string{"", "w-alice", ""}, userid.MustNew(aliceID))
+	allowed, err = service.ResolveAllowedWorkspacesForTest(ctx, st, []string{"", "w-alice", ""}, userid.MustNew(aliceID))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"w-alice"}, allowed)
 }
 
-// TestResolveAllowedWorkspaces_EmptyRequestNeedsSingleOrg pins the refusal on
-// the "every workspace I can read" branch: it is answered by a single-org store
-// query, and ListAccessibleWorkspaces matches org_id EXACTLY (there is no "any
-// org" form). A binding that names no single org must therefore error rather
-// than filter on "", which would return no rows and report "you own nothing"
-// for what is really a caller bug.
-func TestResolveAllowedWorkspaces_EmptyRequestNeedsSingleOrg(t *testing.T) {
+// A zero (unminted) user id must be REFUSED with PermissionDenied under both
+// arms of resolveAllowedWorkspaces -- whether or not the caller named workspace
+// ids -- so one unauthenticated verdict reaches the client as one behaviour.
+//
+// The guard is the only thing standing between an unminted id and a store query
+// keyed on the empty string. Its near-miss is auth.WorkspacesReadableByUser,
+// which answers the same condition with `if userID.IsZero() || len(...) == 0 {
+// return nil, nil }` -- so "make the two agree" turns the deny into an empty
+// success. Both consumers key on the code: ListTabs re-raises the error only
+// when connect.CodeOf(err) == CodePermissionDenied, and /ws/userevents picks
+// StatusPolicyViolation over StatusTryAgainLater on the same test. A (nil, nil)
+// regression therefore renders as a 200 with an empty tab list plus a frontend
+// reconnect loop against a condition that can never change.
+func TestResolveAllowedWorkspaces_ZeroUserIDRefusesUnderBothArms(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
-	alice, err := st.Users().GetByID(ctx, aliceID)
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
+		ID: "w-alice", Title: "w-alice", OwnerUserID: userid.MustNew(aliceID),
 	}))
 
-	for name, binding := range map[string]auth.OrgBinding{
-		"any org":      auth.AnyOrg(),
-		"deny-all":     {},
-		"bind empty":   auth.BindOrg(""),
-		"bound (sane)": auth.BindOrg(alice.OrgID),
+	for name, requested := range map[string][]string{
+		"empty request": nil,
+		"bulk request":  {"w-alice"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, binding, nil, userid.MustNew(aliceID))
-			if _, ok := binding.ListFilterOrgID(); ok {
-				require.NoError(t, err)
-				assert.ElementsMatch(t, []string{"w-alice"}, allowed)
-				return
-			}
-			require.Error(t, err, "a binding naming no single org must refuse, not return an empty set")
+			allowed, err := service.ResolveAllowedWorkspacesForTest(ctx, st, requested, userid.UserID{})
+			require.Error(t, err, "an unminted user id must refuse, not return an empty set")
+			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 			assert.Nil(t, allowed)
 		})
 	}
@@ -648,35 +564,24 @@ func TestResolveAllowedWorkspaces_EmptyRequestNeedsSingleOrg(t *testing.T) {
 func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
-	orgID := storetest.SeedOrg(t, st, "primary-org")
-	user := storetest.SeedUser(t, st, orgID, "alice")
-	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
-	sibling := storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
+	user := storetest.SeedUser(t, st, "alice")
+	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
+	sibling := storetest.SeedWorkspace(t, st, user.ID, "Sibling")
 	info := &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
 	}
 
-	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), nil, info)
+	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, nil, info)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{pinned}, allowed,
 		"an empty delegated workspace request must expand to the pinned workspace only")
 
-	// AnyOrg is what ListTabs passes for a delegation caller with no org_id,
-	// and it is the ONLY source of an unbound binding. It must still resolve:
-	// the pinned-workspace substitution happens before the org filter, so this
-	// never reaches the single-org store branch that refuses an unbound binding.
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.AnyOrg(), nil, info)
-	require.NoError(t, err,
-		"AnyOrg must not reach the single-org store branch -- the pinned workspace is substituted first")
-	assert.ElementsMatch(t, []string{pinned}, allowed)
-
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{pinned}, info)
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{pinned}, info)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{pinned}, allowed)
 
-	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{sibling}, info)
+	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{sibling}, info)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"explicit sibling workspace requests must fail closed instead of silently widening")
@@ -686,41 +591,8 @@ func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
 	// genuinely-empty request does, and NOT widen to every readable workspace the way
 	// a non-delegation empty request does. This is the case the middle bool return of
 	// delegationScopedWorkspaceRequest disambiguates.
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, auth.BindOrg(orgID), []string{""}, info)
+	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{""}, info)
 	require.NoError(t, err)
 	assert.Empty(t, allowed,
 		"a delegated request of only blank workspace ids must resolve to no workspaces, not the pinned one")
-}
-
-// A deny-all binding must produce the SAME client-visible answer whether or not
-// the caller named workspace ids.
-//
-// The empty-request arm has always refused (ListFilterOrgID reports the binding
-// is not expressible as a store filter). The bulk arm used to answer (nil, nil),
-// which ListTabs renders as a 200 with an empty tab list -- so one authorization
-// verdict reached the client as two incompatible behaviours: "stop retrying, you
-// are denied" versus "you have no tabs". Unreachable today, so this pins the
-// shape a future deny-all source inherits.
-func TestResolveAllowedWorkspaces_DenyAllRefusesUnderBothArms(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	ctx := context.Background()
-	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
-	alice, err := st.Users().GetByID(ctx, aliceID)
-	require.NoError(t, err)
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: "w-alice", Title: "w-alice", OrgID: alice.OrgID, OwnerUserID: userid.MustNew(aliceID),
-	}))
-
-	for name, requested := range map[string][]string{
-		"empty request": nil,
-		"bulk request":  {"w-alice"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			allowed, err := service.ResolveAllowedWorkspacesForTest(
-				ctx, st, auth.DenyAllOrg(), requested, userid.MustNew(aliceID))
-			require.Error(t, err, "a deny-all binding must refuse, not return an empty set")
-			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-			assert.Nil(t, allowed)
-		})
-	}
 }

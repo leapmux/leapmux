@@ -19,22 +19,30 @@ UPDATE worktrees SET branch_name = ? WHERE id = ?;
 DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);
 
 -- name: AddWorktreeTab :exec
--- org_id is set only for FILE links (it scopes the worktree_tab_liveness join
+-- user_id is set only for FILE links (it scopes the worktree_tab_liveness join
 -- against worker_file_tabs); AGENT/TERMINAL links pass '' since their ids are
 -- globally unique.
-INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id, org_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
+INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id, user_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
 
 -- name: RemoveWorktreeTab :exec
-DELETE FROM worktree_tabs WHERE worktree_id = ? AND tab_type = ? AND tab_id = ?;
+-- user_id is part of the key: FILE links carry the owning user (see the
+-- worktree_tabs DDL), so an unbound user_id would delete a different user's
+-- link to the same worktree with the same tab_id. AGENT/TERMINAL callers pass
+-- '' -- exactly what AddWorktreeTab wrote for them.
+DELETE FROM worktree_tabs WHERE worktree_id = ? AND tab_type = ? AND tab_id = ? AND user_id = ?;
 
 -- name: CountWorktreeTabs :one
 SELECT COUNT(*) FROM worktree_tabs WHERE worktree_id = ?;
 
 -- name: GetWorktreeForTab :one
-SELECT w.* FROM worktrees w JOIN worktree_tabs wt ON wt.worktree_id = w.id WHERE wt.tab_type = ? AND wt.tab_id = ? AND w.deleted_at IS NULL;
+-- Bound by user_id for the same reason as RemoveWorktreeTab: without it a
+-- FILE-tab close could resolve -- and then remove -- the worktree behind a
+-- different user's identically-named tab.
+SELECT w.* FROM worktrees w JOIN worktree_tabs wt ON wt.worktree_id = w.id WHERE wt.tab_type = ? AND wt.tab_id = ? AND wt.user_id = ? AND w.deleted_at IS NULL;
 
 -- name: DeleteWorktreeTabsByTabID :exec
-DELETE FROM worktree_tabs WHERE tab_type = ? AND tab_id = ?;
+-- Bound by user_id for the same reason as RemoveWorktreeTab.
+DELETE FROM worktree_tabs WHERE tab_type = ? AND tab_id = ? AND user_id = ?;
 
 -- name: DeleteWorktreeTabsByWorktreeID :exec
 DELETE FROM worktree_tabs WHERE worktree_id = ?;

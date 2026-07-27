@@ -403,7 +403,7 @@ func bringUpLocalWorker(
 // binding listeners and standing up a database.
 type workerRegistrar interface {
 	GetWorkerOwner(ctx context.Context, workerID string) (string, error)
-	GetAdminUser(ctx context.Context) (userID, orgID string, err error)
+	GetAdminUser(ctx context.Context) (userID string, err error)
 	RegisterWorker(ctx context.Context, userID string) (*hub.WorkerCredentials, error)
 }
 
@@ -486,7 +486,7 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 		return nil, fmt.Errorf("read state: %w", err)
 	}
 
-	userID, _, err := server.GetAdminUser(ctx)
+	userID, err := server.GetAdminUser(ctx)
 	if err != nil {
 		return nil, err
 	}

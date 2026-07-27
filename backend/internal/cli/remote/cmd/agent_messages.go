@@ -568,8 +568,12 @@ func newAgentMessagesTransport(ctx context.Context, c *remote.Client, workerID, 
 		// workerID may be empty; the router resolves the spawning
 		// worker from the bearer scope, mirroring the existing
 		// localIPCCallInnerBest behaviour.
+		ipc, err := c.RemoteIPCService()
+		if err != nil {
+			return nil, err
+		}
 		return &agentMessagesTransport{
-			transport: streamevents.NewLocalIPCTransport(c.RemoteIPCService(), workspaceID, workerID, slog.Default()),
+			transport: streamevents.NewLocalIPCTransport(ipc, workspaceID, workerID, slog.Default()),
 			close:     func() {},
 		}, nil
 	}

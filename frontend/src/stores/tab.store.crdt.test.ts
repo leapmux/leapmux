@@ -8,7 +8,7 @@ import {
   NodeKind,
   NodeRecordSchema,
   TabRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'

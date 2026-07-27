@@ -17,8 +17,8 @@ type TabRef struct {
 // FindRootWorkspace walks nodeID's parent_id chain to a registered
 // workspace root and returns the workspace_id, or "" when the chain
 // doesn't terminate at a known root (orphan, cycle, or workspace the
-// caller can't see). Works against both `OrgCrdtState` and
-// `OrgMaterialized` because both protos store their workspaces and
+// caller can't see). Works against both `UserCrdtState` and
+// `UserMaterialized` because both protos store their workspaces and
 // nodes as `map<string, WorkspaceContentsRecord>` / `map<string,
 // NodeRecord>` with identical shapes.
 //
@@ -86,10 +86,10 @@ func resolveParentChain(roots map[string]string, startID string, parentOf func(i
 // state.GetNodes() at every level. Tombstoned nodes are omitted from
 // both keys and values.
 //
-// Mirrors `BuildLiveChildrenIndex` (which operates on OrgCrdtState)
-// so callers that already have an OrgMaterialized projection
+// Mirrors `BuildLiveChildrenIndex` (which operates on UserCrdtState)
+// so callers that already have an UserMaterialized projection
 // (the CLI's bootstrap snapshot) don't need to convert.
-func LiveChildrenByParent(state *leapmuxv1.OrgMaterialized) map[string][]string {
+func LiveChildrenByParent(state *leapmuxv1.UserMaterialized) map[string][]string {
 	idx := map[string][]string{}
 	for _, n := range state.GetNodes() {
 		if !HLCIsZero(n.GetTombstoneAt()) {
@@ -106,11 +106,11 @@ func LiveChildrenByParent(state *leapmuxv1.OrgMaterialized) map[string][]string 
 // keys and values. Single O(N) pass; share the result across callers
 // that recurse so each level avoids re-scanning state.GetNodes().
 //
-// `OrgCrdtState` variant of LiveChildrenByParent — use this when
+// `UserCrdtState` variant of LiveChildrenByParent — use this when
 // you're walking the raw post-batch projection. Prefer
 // BuildAllChildrenIndex when the caller filters tombstones itself
 // and needs to include tombstoned nodes in the index.
-func BuildLiveChildrenIndex(state *leapmuxv1.OrgCrdtState) map[string][]string {
+func BuildLiveChildrenIndex(state *leapmuxv1.UserCrdtState) map[string][]string {
 	return buildChildrenIndex(state, false)
 }
 
@@ -119,11 +119,11 @@ func BuildLiveChildrenIndex(state *leapmuxv1.OrgCrdtState) map[string][]string {
 // project materialized state (validator, node→workspace walker) need
 // the tombstoned intermediates so descendants whose direct parent was
 // tombstoned still chain to the live grandparent.
-func BuildAllChildrenIndex(state *leapmuxv1.OrgCrdtState) map[string][]string {
+func BuildAllChildrenIndex(state *leapmuxv1.UserCrdtState) map[string][]string {
 	return buildChildrenIndex(state, true)
 }
 
-func buildChildrenIndex(state *leapmuxv1.OrgCrdtState, includeTombstoned bool) map[string][]string {
+func buildChildrenIndex(state *leapmuxv1.UserCrdtState, includeTombstoned bool) map[string][]string {
 	idx := map[string][]string{}
 	for nodeID, n := range state.GetNodes() {
 		if !includeTombstoned && !HLCIsZero(n.GetTombstoneAt()) {
@@ -140,7 +140,7 @@ func buildChildrenIndex(state *leapmuxv1.OrgCrdtState, includeTombstoned bool) m
 // LexoRank position register so heir-finding sees the same left/upper
 // ordering the renderer does. `index` is the already-built parent →
 // children adjacency from LiveChildrenByParent.
-func LiveOrderedChildren(state *leapmuxv1.OrgMaterialized, index map[string][]string, parentID string) []string {
+func LiveOrderedChildren(state *leapmuxv1.UserMaterialized, index map[string][]string, parentID string) []string {
 	ids := append([]string(nil), index[parentID]...)
 	sort.SliceStable(ids, func(i, j int) bool {
 		a := state.GetNodes()[ids[i]].GetPosition().GetValue()
@@ -160,7 +160,7 @@ func LiveOrderedChildren(state *leapmuxv1.OrgMaterialized, index map[string][]st
 // the iterative post-order walker reused with the lifecycle's
 // workspace-delete enumerator (subtreePostOrder) sees the same live
 // graph and skips tombstoned subtrees without extra checks.
-func DescendantsLeavesFirst(state *leapmuxv1.OrgMaterialized, nodeID string) []string {
+func DescendantsLeavesFirst(state *leapmuxv1.UserMaterialized, nodeID string) []string {
 	rec := state.GetNodes()[nodeID]
 	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
 		return nil
@@ -175,7 +175,7 @@ func DescendantsLeavesFirst(state *leapmuxv1.OrgMaterialized, nodeID string) []s
 // advanced once per iteration, and the proto's tab map has
 // non-deterministic Go iteration order — without the sort the same
 // fixture would produce different post-migration orderings between runs.
-func TabsOnTile(state *leapmuxv1.OrgMaterialized, tileID string) []TabRef {
+func TabsOnTile(state *leapmuxv1.UserMaterialized, tileID string) []TabRef {
 	type withPos struct {
 		ref TabRef
 		pos string
@@ -210,7 +210,7 @@ func TabsOnTile(state *leapmuxv1.OrgMaterialized, tileID string) []TabRef {
 // descendant of subtreeRoot (including the root itself). Used to
 // decide whether a destructive operation needs the user's explicit
 // --with-tabs choice.
-func LiveTabsInSubtree(state *leapmuxv1.OrgMaterialized, subtreeRoot string) []TabRef {
+func LiveTabsInSubtree(state *leapmuxv1.UserMaterialized, subtreeRoot string) []TabRef {
 	descendants := DescendantsLeavesFirst(state, subtreeRoot)
 	seen := map[string]bool{}
 	for _, id := range descendants {
@@ -237,7 +237,7 @@ func LiveTabsInSubtree(state *leapmuxv1.OrgMaterialized, subtreeRoot string) []T
 //
 // Mirrors frontend/src/stores/layout.store.ts:findHeirTileId so the
 // CLI and the CloseTileDialog drop tabs in the same place.
-func FindHeirTileID(state *leapmuxv1.OrgMaterialized, closingTileID, rootNodeID string) string {
+func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID string) string {
 	if rootNodeID == "" || closingTileID == "" {
 		return ""
 	}
@@ -281,7 +281,7 @@ func FindHeirTileID(state *leapmuxv1.OrgMaterialized, closingTileID, rootNodeID 
 // target was found. Skips tombstoned nodes. Position order doesn't
 // matter for path-finding because the closing tile is identified by id,
 // not slot.
-func buildPathToNode(state *leapmuxv1.OrgMaterialized, index map[string][]string, rootID, targetID string, out *[]string) bool {
+func buildPathToNode(state *leapmuxv1.UserMaterialized, index map[string][]string, rootID, targetID string, out *[]string) bool {
 	rec := state.GetNodes()[rootID]
 	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
 		return false
@@ -304,7 +304,7 @@ func buildPathToNode(state *leapmuxv1.OrgMaterialized, index map[string][]string
 // LEAF-kinded id encountered. Used by FindHeirTileID to pick the
 // destination leaf inside a sibling subtree. Returns "" when the
 // subtree is malformed (no live leaves).
-func firstLeafID(state *leapmuxv1.OrgMaterialized, index map[string][]string, subtreeRoot string) string {
+func firstLeafID(state *leapmuxv1.UserMaterialized, index map[string][]string, subtreeRoot string) string {
 	rec := state.GetNodes()[subtreeRoot]
 	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
 		return ""

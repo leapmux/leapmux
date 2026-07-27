@@ -21,17 +21,16 @@ export const codexTest = base.extend<{
   authenticatedCodexWorkspace: WorkspaceFixture
 }>({
   codexWorkspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       `codex-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      adminOrgId,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
       agentProvider: AgentProvider.CODEX,
     })
-    const workspaceUrl = `/o/admin/workspace/${workspaceId}`
+    const workspaceUrl = `/workspace/${workspaceId}`
 
     await use({ workspaceId, workspaceUrl })
 

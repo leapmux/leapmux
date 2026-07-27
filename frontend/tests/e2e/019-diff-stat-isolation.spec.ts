@@ -22,7 +22,7 @@ function createGitRepo(dataDir: string, name: string): string {
 
 test.describe('Diff Stat Isolation', () => {
   test('diff stats do not leak from one workspace to another', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
 
     // Create two separate git repos with different content.
     const repoA = createGitRepo(dataDir, 'repo-a')
@@ -35,8 +35,8 @@ test.describe('Diff Stat Isolation', () => {
     writeFileSync(join(repoB, 'new-file.txt'), 'hello\nworld\n')
 
     // Create two workspaces, each pointing to a different repo.
-    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Clean WS', adminOrgId)
-    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dirty WS', adminOrgId)
+    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Clean WS')
+    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dirty WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, repoA)
     await openAgentViaAPI(hubUrl, adminToken, workerId, wsB, repoB)
 
@@ -44,7 +44,7 @@ test.describe('Diff Stat Isolation', () => {
       await loginViaToken(page, adminToken)
 
       // Navigate to workspace B first to load its diff stats.
-      await page.goto(`/o/admin/workspace/${wsB}`)
+      await page.goto(`/workspace/${wsB}`)
       await waitForWorkspaceReady(page)
 
       // The DiffStatsBadge is rendered inside the workspace-item div.

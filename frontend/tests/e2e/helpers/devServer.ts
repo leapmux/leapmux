@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import {
-  getAdminOrgId,
   getWorkerId,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
@@ -24,7 +23,6 @@ import { findFreePort, getGlobalState, waitForServer } from './server'
 export interface DevServerHandle {
   hubUrl: string
   adminToken: string
-  adminOrgId: string
   workerId: string
   proc: ChildProcess
   dataDir: string
@@ -49,9 +47,8 @@ export async function startDevServer(opts: StartDevServerOptions = {}): Promise<
   const unseeded = await startUnseededDevServer(opts)
   // Register the first admin via setup mode (dev mode no longer auto-bootstraps).
   const adminToken = await signUpViaAPI(unseeded.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
-  const adminOrgId = await getAdminOrgId(unseeded.hubUrl, adminToken)
   const workerId = await getWorkerId(unseeded.hubUrl, adminToken)
-  return { ...unseeded, adminToken, adminOrgId, workerId }
+  return { ...unseeded, adminToken, workerId }
 }
 
 /**

@@ -1,6 +1,6 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, org_id, username, password_hash, display_name, display_name_folded, email, email_verified, password_set, is_admin, prefs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}');
+INSERT INTO users (id, username, password_hash, display_name, display_name_folded, email, email_verified, password_set, is_admin, prefs)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}');
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
@@ -109,29 +109,7 @@ WHERE id = sqlc.arg(id);
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = NOW(3) WHERE id = ?;
 
--- name: SoftDeleteUserPersonalOrg :exec
--- Soft-delete the personal org whose id is the given user's org_id. Paired with
--- DeleteUser inside userStore.Delete so a user soft-delete can never leave the org
--- name occupying the partial unique index idx_orgs_name -- which would fail a later
--- re-signup of the freed username. The subquery reads users (a different table from
--- the updated orgs, so MySQL permits it) with no deleted_at guard, so it resolves
--- the org_id whether or not the user row is already soft-deleted.
-UPDATE orgs SET deleted_at = NOW(3)
-WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = ?);
 
--- name: RenameUserPersonalOrg :exec
--- Rename the personal org whose id is the given user's org_id to mirror a
--- username change. Paired with UpdateUserProfile inside userStore.UpdateProfile
--- so a username change can never leave the org name (and thus the /o/ slug)
--- stale: the org name mirrors the username under idx_orgs_name, and this makes
--- the pairing a property of the store rather than a step each caller must
--- repeat -- mirroring SoftDeleteUserPersonalOrg's pairing with DeleteUser. The
--- subquery reads users (a different table from the updated orgs, so MySQL
--- permits it) with no deleted_at guard, matching SoftDeleteUserPersonalOrg.
--- Idempotent for a display-name-only edit: the org name already equals the
--- (unchanged, normalized) username, so this sets it to the same value.
-UPDATE orgs SET name = sqlc.arg(org_name)
-WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = sqlc.arg(user_id));
 
 -- name: HardDeleteUsersBefore :execresult
 -- A user is hard-deletable only once nothing references it via a no-ON-DELETE
@@ -141,7 +119,7 @@ WHERE orgs.id = (SELECT users.org_id FROM users WHERE users.id = sqlc.arg(user_i
 -- DELETE on a foreign-key violation -- poisoning every FK-free user in the same
 -- LIMIT 1000 chunk. Gating keeps the workspaces/workers -> users delete order
 -- correct under bulk deletes; the user is reaped on a later pass once its
--- stragglers drain. Mirrors the NOT EXISTS users gate on HardDeleteOrgsBefore.
+-- stragglers drain.
 DELETE FROM users WHERE id IN (
     SELECT u.id FROM (
         SELECT users.id FROM users

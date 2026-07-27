@@ -72,6 +72,12 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 
 	// Best-effort: enable FK support for TiDB (silently ignored on real MySQL).
 	_, _ = sqlDB.ExecContext(context.Background(), "SET GLOBAL tidb_enable_foreign_key = ON")
+	// Likewise for CHECK constraints, which TiDB parses and then IGNORES unless
+	// this is on. Without it the schema's CHECKs (users.id <> '', op_count > 0,
+	// the singleton-row guards, the seq/published_at coupling) hold on TiDB by
+	// application discipline alone -- and the shared storetest suite cannot
+	// catch a violation, because the constraint never fires there.
+	_, _ = sqlDB.ExecContext(context.Background(), "SET GLOBAL tidb_enable_check_constraint = ON")
 
 	mig, err := newMigrator(sqlDB)
 	if err != nil {
@@ -119,7 +125,6 @@ func normalizeMySQLDSN(dsn string) (string, error) {
 	return cfg.FormatDSN(), nil
 }
 
-func (s *mysqlStore) Orgs() store.OrgStore         { return &orgStore{conn: s.conn} }
 func (s *mysqlStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *mysqlStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *mysqlStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
@@ -133,12 +138,12 @@ func (s *mysqlStore) Workspaces() store.WorkspaceStore { return &workspaceStore{
 func (s *mysqlStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 	return &workspaceTabIndexStore{conn: s.conn}
 }
-func (s *mysqlStore) OrgOpBatches() store.OrgOpBatchesStore {
-	return &orgOpBatchesStore{conn: s.conn}
+func (s *mysqlStore) UserOpBatches() store.UserOpBatchesStore {
+	return &userOpBatchesStore{conn: s.conn}
 }
-func (s *mysqlStore) OrgState() store.OrgStateStore { return &orgStateStore{conn: s.conn} }
-func (s *mysqlStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
-	return &orgRecentBatchIDStore{conn: s.conn}
+func (s *mysqlStore) UserState() store.UserStateStore { return &userStateStore{conn: s.conn} }
+func (s *mysqlStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
+	return &userRecentBatchIDStore{conn: s.conn}
 }
 func (s *mysqlStore) LifecycleOutbox() store.LifecycleOutboxStore {
 	return &lifecycleOutboxStore{conn: s.conn}

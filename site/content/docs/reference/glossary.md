@@ -11,7 +11,7 @@ Short definitions of the terms you will meet throughout the LeapMux manual. Each
 
 ### Active client (presence)
 
-The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-org events stream and is not the same thing as the layout sync. See [Device Sync & Presence](/docs/using/collaboration/).
+The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-user events stream and is not the same thing as the layout sync. See [Device Sync & Presence](/docs/using/collaboration/).
 
 ### Agent
 
@@ -55,7 +55,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, organizations, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/operating/running-leapmux/).
+The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/operating/running-leapmux/).
 
 ## L
 
@@ -68,12 +68,6 @@ The string-based ordering scheme LeapMux uses to position tabs (and other ordere
 ### Noise_NK
 
 The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a known static key the Frontend verifies. LeapMux extends it into a hybrid post-quantum handshake (see **Post-quantum encryption**). See [Security & Threat Model](/docs/operating/security/).
-
-## O
-
-### Organization
-
-The top-level container ("org") that owns a user's workspaces, identified by a globally-unique GitHub-style slug. Every account has exactly one: a **personal** org created automatically with the account, named after the username, and renamed with it. The whole app lives under the URL prefix `/o/{username}`. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## P
 
@@ -131,7 +125,7 @@ A long-running daemon (`leapmux worker`) that runs on a developer machine and ho
 
 ### Workspace
 
-A named container for one tiling layout of tabs, owned by its creator and living in that user's personal organization. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own. Each workspace's tabs run agents and terminals on a Worker you pick. See [Workspaces](/docs/using/workspaces/).
+A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. Each workspace's tabs run agents and terminals on a Worker you pick. An open workspace lives at `/workspace/{id}`. See [Workspaces](/docs/using/workspaces/).
 
 ### Worktree
 

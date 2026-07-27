@@ -735,22 +735,22 @@ export const platformBridge = {
   async closeChannelRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_channel_relay', { relayId })
   },
-  // OrgEvents relay (`/ws/orgevents`). The webview can't dial the
+  // UserEvents relay (`/ws/userevents`). The webview can't dial the
   // unix-socket hub natively in desktop solo mode, so the Go sidecar
   // opens the WebSocket on our behalf and forwards each binary
-  // frame as a Tauri `orgevents:message` event (base64-encoded
-  // length-prefixed WatchOrgEvent bytes).
+  // frame as a Tauri `userevents:message` event (base64-encoded
+  // length-prefixed WatchUserEvent bytes).
   //
   // relayId names the attempt, exactly like the channel relay above. It carries more
-  // weight here: this open force-restarts the relay (the hub sends OrgMaterialized
+  // weight here: this open force-restarts the relay (the hub sends UserMaterialized
   // only at subscribe time, so reusing a live relay would leave a fresh page without
   // its bootstrap), so the sidecar also uses the id to ignore an OPEN that a newer
   // one has already superseded.
-  async openOrgEventsRelay(relayId: number, orgId: string, workspaceIds: string[] = []): Promise<void> {
-    await tauriInvoke('open_orgevents_relay', { relayId, orgId, workspaceIds })
+  async openUserEventsRelay(relayId: number, workspaceIds: string[] = []): Promise<void> {
+    await tauriInvoke('open_userevents_relay', { relayId, workspaceIds })
   },
-  async closeOrgEventsRelay(relayId: number): Promise<void> {
-    await tauriInvoke('close_orgevents_relay', { relayId })
+  async closeUserEventsRelay(relayId: number): Promise<void> {
+    await tauriInvoke('close_userevents_relay', { relayId })
   },
   async getStartupInfo(): Promise<StartupInfo> {
     const wire = await tauriInvoke<StartupInfoWire>('get_startup_info')
@@ -819,7 +819,7 @@ export interface RelayClosePayload {
 }
 
 /**
- * Defensively parse a sidecar `channel:close` / `orgevents:close` event
+ * Defensively parse a sidecar `channel:close` / `userevents:close` event
  * payload. The sidecar emits a well-formed object, but the payload crosses the
  * untyped Tauri event boundary, so each field is guarded and the shared 1006
  * (abnormal-closure) default lives here -- one home for the wire default both
@@ -836,9 +836,9 @@ export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
 
 /**
  * desktopFetch is the unary-only ConnectRPC transport for the desktop
- * sidecar. The org-event subscription is not an RPC — it lives on the
- * `/ws/orgevents` WebSocket endpoint (see
- * `frontend/src/components/shell/useOrgEvents.ts`). WebSocket
+ * sidecar. The user-event subscription is not an RPC — it lives on the
+ * `/ws/userevents` WebSocket endpoint (see
+ * `frontend/src/components/shell/useUserEvents.ts`). WebSocket
  * negotiates Upgrade and bypasses HTTP/1.1 chunked-stream buffering
  * hazards (corporate proxies, Tauri's buffered fetch), which is why
  * the previous streaming RPC was retired.

@@ -61,6 +61,12 @@ func (h *mysqlTestHelper) setTimestamp(ctx context.Context, column sqlutil.Times
 	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, column, id, at)
 }
 
+// ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
+// store.TestHelper.ListAllOwnedTabs for why this is test-only.
+func (h *mysqlTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {
+	return sqlutil.ListAllOwnedTabs(ctx, h.db)
+}
+
 func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return err

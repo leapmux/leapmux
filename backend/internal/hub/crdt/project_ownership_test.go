@@ -62,7 +62,7 @@ func TestProjectOwnership_ReturnsSameTabsAsFullProject(t *testing.T) {
 	// Full and fast must agree on OwnedTabs and RenderedTabs.
 	assert.Equal(t, full.OwnedTabs, fast.OwnedTabs, "OwnedTabs must match")
 	assert.Equal(t, full.RenderedTabs, fast.RenderedTabs, "RenderedTabs must match")
-	assert.Equal(t, full.OrgID, fast.OrgID)
+	assert.Equal(t, full.UserID, fast.UserID)
 
 	// Fast must NOT populate per-workspace MainTree / FloatingWindows
 	// — that's the whole point of the split.

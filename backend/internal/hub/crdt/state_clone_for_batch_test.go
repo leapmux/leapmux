@@ -34,11 +34,11 @@ func tabRec(id string) *leapmuxv1.TabRecord {
 	}
 }
 
-func setNodeKindOp(id string, kind leapmuxv1.NodeKind, h *leapmuxv1.HLC) *leapmuxv1.OrgOp {
-	return &leapmuxv1.OrgOp{
+func setNodeKindOp(id string, kind leapmuxv1.NodeKind, h *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
 		OpId:         "op-" + id,
 		CanonicalHlc: h,
-		Body: &leapmuxv1.OrgOp_SetNodeRegister{
+		Body: &leapmuxv1.CrdtOp_SetNodeRegister{
 			SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 				NodeId: id,
 				Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: kind},
@@ -47,21 +47,21 @@ func setNodeKindOp(id string, kind leapmuxv1.NodeKind, h *leapmuxv1.HLC) *leapmu
 	}
 }
 
-func tombstoneNodeOp(id string, h *leapmuxv1.HLC) *leapmuxv1.OrgOp {
-	return &leapmuxv1.OrgOp{
+func tombstoneNodeOp(id string, h *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
 		OpId:         "op-tomb-" + id,
 		CanonicalHlc: h,
-		Body: &leapmuxv1.OrgOp_TombstoneNode{
+		Body: &leapmuxv1.CrdtOp_TombstoneNode{
 			TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: id},
 		},
 	}
 }
 
-func setTabTileOp(id, tile string, h *leapmuxv1.HLC) *leapmuxv1.OrgOp {
-	return &leapmuxv1.OrgOp{
+func setTabTileOp(id, tile string, h *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
 		OpId:         "op-tile-" + id,
 		CanonicalHlc: h,
-		Body: &leapmuxv1.OrgOp_SetTabRegister{
+		Body: &leapmuxv1.CrdtOp_SetTabRegister{
 			SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 				TabId:   id,
@@ -74,8 +74,8 @@ func setTabTileOp(id, tile string, h *leapmuxv1.HLC) *leapmuxv1.OrgOp {
 func TestCloneStateForBatch_UntouchedRecordsShareReferenceWithPre(t *testing.T) {
 	// Setup: 3 nodes, batch only touches node "A". Records for "B" and
 	// "C" must be the SAME pointer in pre.Nodes and working.Nodes.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			"A": nodeRec("A"),
 			"B": nodeRec("B"),
@@ -83,7 +83,7 @@ func TestCloneStateForBatch_UntouchedRecordsShareReferenceWithPre(t *testing.T) 
 		},
 		MaxHlc: hlc(10, 0, "seed"),
 	}
-	batch := []*leapmuxv1.OrgOp{setNodeKindOp("A", leapmuxv1.NodeKind_NODE_KIND_SPLIT, hlc(11, 0, "client"))}
+	batch := []*leapmuxv1.CrdtOp{setNodeKindOp("A", leapmuxv1.NodeKind_NODE_KIND_SPLIT, hlc(11, 0, "client"))}
 
 	working := crdt.CloneStateForBatch(pre, batch)
 
@@ -100,8 +100,8 @@ func TestCloneStateForBatch_UntouchedRecordsShareReferenceWithPre(t *testing.T) 
 func TestCloneStateForBatch_ApplyOnWorkingDoesNotMutatePre(t *testing.T) {
 	// The safety invariant: Apply on the working copy must NOT mutate
 	// pre, even though Apply mutates touched records in place.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			"A": nodeRec("A"),
 		},
@@ -109,7 +109,7 @@ func TestCloneStateForBatch_ApplyOnWorkingDoesNotMutatePre(t *testing.T) {
 	}
 	originalAKind := pre.Nodes["A"].GetKind().GetValue()
 
-	batch := []*leapmuxv1.OrgOp{setNodeKindOp("A", leapmuxv1.NodeKind_NODE_KIND_SPLIT, hlc(20, 0, "client"))}
+	batch := []*leapmuxv1.CrdtOp{setNodeKindOp("A", leapmuxv1.NodeKind_NODE_KIND_SPLIT, hlc(20, 0, "client"))}
 	working := crdt.CloneStateForBatch(pre, batch)
 	for _, op := range batch {
 		crdt.Apply(working, op)
@@ -127,15 +127,15 @@ func TestCloneStateForBatch_TombstoneOpDoesNotMutateUntouchedRecords(t *testing.
 	// record. Since the working map is fresh, this shouldn't affect
 	// pre's map either way — but the shared "B" record must stay
 	// untouched.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			"A": nodeRec("A"),
 			"B": nodeRec("B"),
 		},
 		MaxHlc: hlc(10, 0, "seed"),
 	}
-	batch := []*leapmuxv1.OrgOp{tombstoneNodeOp("A", hlc(20, 0, "client"))}
+	batch := []*leapmuxv1.CrdtOp{tombstoneNodeOp("A", hlc(20, 0, "client"))}
 	working := crdt.CloneStateForBatch(pre, batch)
 	for _, op := range batch {
 		crdt.Apply(working, op)
@@ -150,8 +150,8 @@ func TestCloneStateForBatch_TombstoneOpDoesNotMutateUntouchedRecords(t *testing.
 }
 
 func TestCloneStateForBatch_TabBatchSharesUntouchedNodeAndWindowRecords(t *testing.T) {
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			"n1": nodeRec("n1"),
 		},
@@ -164,7 +164,7 @@ func TestCloneStateForBatch_TabBatchSharesUntouchedNodeAndWindowRecords(t *testi
 		},
 		MaxHlc: hlc(10, 0, "seed"),
 	}
-	batch := []*leapmuxv1.OrgOp{setTabTileOp("t1", "tile-B", hlc(20, 0, "c"))}
+	batch := []*leapmuxv1.CrdtOp{setTabTileOp("t1", "tile-B", hlc(20, 0, "c"))}
 	working := crdt.CloneStateForBatch(pre, batch)
 
 	assert.NotSame(t, pre.Tabs["t1"], working.Tabs["t1"], "touched tab t1 must be cloned")
@@ -178,8 +178,8 @@ func TestCloneStateForBatch_EmptyBatchSharesEveryRecordRef(t *testing.T) {
 	// Edge case: an empty batch produces a working state that shares
 	// every record ref with pre. The validator never invokes Apply on
 	// an empty batch but the function should still behave sensibly.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			"A": nodeRec("A"),
 		},
@@ -192,15 +192,15 @@ func TestCloneStateForBatch_EmptyBatchSharesEveryRecordRef(t *testing.T) {
 
 func TestCloneStateForBatch_NilPreReturnsNil(t *testing.T) {
 	assert.Nil(t, crdt.CloneStateForBatch(nil, nil))
-	assert.Nil(t, crdt.CloneStateForBatch(nil, []*leapmuxv1.OrgOp{
+	assert.Nil(t, crdt.CloneStateForBatch(nil, []*leapmuxv1.CrdtOp{
 		setNodeKindOp("x", leapmuxv1.NodeKind_NODE_KIND_LEAF, hlc(1, 0, "c")),
 	}))
 }
 
 func TestCloneStateForBatch_PreservesMaxHLCViaDeepClone(t *testing.T) {
 	// MaxHlc bump on the working copy must not write through to pre.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId:  "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		MaxHlc: hlc(5, 0, "seed"),
 	}
 	working := crdt.CloneStateForBatch(pre, nil)
@@ -215,12 +215,12 @@ func TestCloneStateForBatch_TouchedNodeNotInPreIsHarmless(t *testing.T) {
 	// working state where the new id is absent from working.Nodes —
 	// Apply's ensureNode will then create it inside the working map
 	// without touching pre.
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId:  "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
 		Nodes:  map[string]*leapmuxv1.NodeRecord{},
 		MaxHlc: hlc(0, 0, "seed"),
 	}
-	batch := []*leapmuxv1.OrgOp{setNodeKindOp("fresh", leapmuxv1.NodeKind_NODE_KIND_LEAF, hlc(1, 0, "c"))}
+	batch := []*leapmuxv1.CrdtOp{setNodeKindOp("fresh", leapmuxv1.NodeKind_NODE_KIND_LEAF, hlc(1, 0, "c"))}
 	working := crdt.CloneStateForBatch(pre, batch)
 	_, hasFresh := working.Nodes["fresh"]
 	assert.False(t, hasFresh, "fresh node id must not appear until Apply creates it")
@@ -238,21 +238,21 @@ func TestCloneStateForBatch_TouchedNodeNotInPreIsHarmless(t *testing.T) {
 // the entity-kind contract the CloneStateForBatch doc rests on for the
 // workspace-root ops added in the #269 lifecycle-as-ops conversion.
 func TestCloneStateForBatch_WorkspaceOpsCloneWorkspacesMapOnly(t *testing.T) {
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
-		Nodes: map[string]*leapmuxv1.NodeRecord{"A": nodeRec("A")},
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
+		Nodes:  map[string]*leapmuxv1.NodeRecord{"A": nodeRec("A")},
 		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
 			"w1": {WorkspaceId: "w1", RootNodeId: "root-w1"},
 		},
 		MaxHlc: hlc(10, 0, "seed"),
 	}
 	// A lifecycle delete batch: a node tombstone + the workspace tombstone.
-	batch := []*leapmuxv1.OrgOp{
+	batch := []*leapmuxv1.CrdtOp{
 		tombstoneNodeOp("root-w1", hlc(20, 0, "hub")),
 		{
 			OpId:         "ws-del",
 			CanonicalHlc: hlc(20, 1, "hub"),
-			Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 			},
 		},
@@ -277,16 +277,16 @@ func TestCloneStateForBatch_WorkspaceOpsCloneWorkspacesMapOnly(t *testing.T) {
 // A SetWorkspaceRegisterOp on a brand-new workspace must not leak into pre when
 // Apply runs on the working copy — the symmetric create-side contract.
 func TestCloneStateForBatch_SetWorkspaceRegisterDoesNotLeakToPre(t *testing.T) {
-	pre := &leapmuxv1.OrgCrdtState{
-		OrgId:      "org-1",
+	pre := &leapmuxv1.UserCrdtState{
+		UserId:     "user-1",
 		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{},
 		MaxHlc:     hlc(0, 0, "seed"),
 	}
-	batch := []*leapmuxv1.OrgOp{
+	batch := []*leapmuxv1.CrdtOp{
 		{
 			OpId:         "ws-reg",
 			CanonicalHlc: hlc(1, 0, "hub"),
-			Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 				SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "fresh"},
 			},
 		},

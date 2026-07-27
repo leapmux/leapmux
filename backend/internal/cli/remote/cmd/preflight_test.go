@@ -14,18 +14,18 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/remote"
 )
 
-// stateBuilder accumulates a minimal OrgMaterialized covering the
+// stateBuilder accumulates a minimal UserMaterialized covering the
 // shapes preflightTile / preflightTab inspect: workspaces with root
 // node ids, live + tombstoned nodes parented in a tree, and live +
 // tombstoned tabs anchored to specific tiles. Used by the
 // table-driven preflight tests below.
 type stateBuilder struct {
-	st *leapmuxv1.OrgMaterialized
+	st *leapmuxv1.UserMaterialized
 }
 
 func newStateBuilder() *stateBuilder {
 	return &stateBuilder{
-		st: &leapmuxv1.OrgMaterialized{
+		st: &leapmuxv1.UserMaterialized{
 			Nodes:      map[string]*leapmuxv1.NodeRecord{},
 			Tabs:       map[string]*leapmuxv1.TabRecord{},
 			Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{},
@@ -319,7 +319,7 @@ func TestNodeWorkspaceFromState_BreaksCycleSafely(t *testing.T) {
 }
 
 // TestIsWorkerUnreachable_ExistenceAuthClass guards the close-path
-// fallback that lets `agent close` / `terminal close` tombstone a
+// fallback that lets `tab close` tombstone a
 // tab whose worker is gone. We MUST match the four existence/auth
 // connect codes (NotFound, PermissionDenied, Unauthenticated,
 // Unavailable) and ONLY those — transient failures like Internal
@@ -366,15 +366,56 @@ func TestIsWorkerUnreachable_OnlyChannelOpenFailures(t *testing.T) {
 		"non-channel-open coded errors must not be treated as worker-unreachable")
 }
 
-// TestIsWorkerUnreachable_PlainConnectErrorAlsoMatches covers the
-// local-IPC path where the error reaches us as a raw connect.Error
-// (not wrapped in codedRPCError because localIPC translates server
-// errors directly).
+// TestIsWorkerUnreachable_PlainConnectErrorAlsoMatches covers a bare
+// connect.Error reaching the predicate unwrapped.
+//
+// This is a defensive branch, not the local-IPC path: localIPCCallInnerBest
+// always wraps in a codedRPCError, so local IPC arrives through the coded
+// branch instead -- see
+// TestIsWorkerUnreachable_MatchesLocalIPCShape below, which is the case the old
+// comment here claimed to cover but did not.
 func TestIsWorkerUnreachable_PlainConnectErrorAlsoMatches(t *testing.T) {
 	err := connect.NewError(connect.CodeNotFound, errors.New("worker absent"))
 	assert.True(t, isWorkerUnreachable(err))
 
 	transient := connect.NewError(connect.CodeInternal, errors.New("boom"))
+	assert.False(t, isWorkerUnreachable(transient))
+}
+
+// TestIsWorkerUnreachable_MatchesLocalIPCShape pins the fallback on the
+// transport a worker-spawned agent actually uses.
+//
+// The whole chain has to hold for `tab close` to tombstone a tab whose worker
+// is gone: remoteipc.relayError preserves the upstream code, then
+// localIPCCallInnerBest tags an existence-class code as channel_open_failed
+// rather than rpc_failed. Break either link and this predicate silently returns
+// false forever, `tab close` reports inspect_failed, and the tab becomes
+// unremovable from inside an agent -- while the same command over the hub
+// transport keeps working, which is what made the gap easy to miss.
+func TestIsWorkerUnreachable_MatchesLocalIPCShape(t *testing.T) {
+	for _, code := range []connect.Code{
+		connect.CodeUnavailable,
+		connect.CodeNotFound,
+		connect.CodePermissionDenied,
+		connect.CodeUnauthenticated,
+	} {
+		t.Run(code.String(), func(t *testing.T) {
+			// Exactly what localIPCCallInnerBest builds for a relayed failure.
+			err := &codedRPCError{
+				Code:  "channel_open_failed",
+				Cause: connect.NewError(code, errors.New("relayed from the hub")),
+			}
+			assert.True(t, isWorkerUnreachable(err),
+				"the CRDT-only tombstone fallback must fire on local IPC too")
+		})
+	}
+
+	// A genuine transport failure is NOT unreachable: it must surface rather
+	// than silently tombstone a tab whose worker may be perfectly alive.
+	transient := &codedRPCError{
+		Code:  "rpc_failed",
+		Cause: connect.NewError(connect.CodeInternal, errors.New("boom")),
+	}
 	assert.False(t, isWorkerUnreachable(transient))
 }
 

@@ -3,20 +3,10 @@ import { createEffect, createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'
 
-const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string, orgId: string }) => Promise<GetGitInfoResponse>>()
-
-// Per-test mutable orgId so the orgId-tracking test can drive a change
-// from outside the hook. Default `'org-1'` matches the value used
-// across the rest of the suite; tests that exercise orgId changes set
-// it explicitly.
-const [orgId, setOrgId] = createSignal('org-1')
-
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId, slug: () => 'admin' }),
-}))
+const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string }) => Promise<GetGitInfoResponse>>()
 
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: (workerId: string, req: { workerId: string, path: string, orgId: string }) =>
+  getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
     getGitInfo(workerId, req),
 }))
 
@@ -40,9 +30,6 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
 
 beforeEach(() => {
   getGitInfo.mockReset()
-  // Reset the shared orgId signal between tests so a prior test's
-  // last-set value doesn't leak in as the next test's starting org.
-  setOrgId('org-1')
 })
 
 describe('useGitPathInfo', () => {
@@ -81,7 +68,7 @@ describe('useGitPathInfo', () => {
         setWorkerId('A')
         await flush()
         expect(getGitInfo).toHaveBeenCalledTimes(1)
-        expect(getGitInfo.mock.calls[0]).toEqual(['A', { workerId: 'A', path: '/repo', orgId: 'org-1' }])
+        expect(getGitInfo.mock.calls[0]).toEqual(['A', { workerId: 'A', path: '/repo' }])
         expect(info.info().isGitRepo).toBe(true)
         expect(info.info().isRepoRoot).toBe(true)
         expect(info.info().isWorktreeRoot).toBe(false)
@@ -565,60 +552,6 @@ describe('useGitPathInfo', () => {
         setPath('/repo-2')
         await flush()
         expect(observed).toBe(1)
-        dispose()
-        done()
-      })
-    })
-  })
-
-  it('does not refire the probe when orgId notifies with an unchanged value', async () => {
-    // OrgContext can re-emit the same orgId (e.g. after a `refreshUser`
-    // re-sets the auth user with the same org). The tracked tuple goes
-    // through a memo with `shallowEqualArrays`, so identity churn upstream
-    // that doesn't change the value tuple must NOT fire a redundant RPC.
-    getGitInfo.mockResolvedValue(gitResp({ currentBranch: 'main' }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path] = createSignal('/repo')
-        useGitPathInfo(workerId, path)
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(1)
-
-        // Re-set orgId to the same value — Solid's default signal
-        // equality skips the write, but if a future refactor used
-        // `equals: false` (or replaced this with a memo that fires on
-        // identity), the dedup would still catch it.
-        setOrgId('org-1')
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(1)
-        dispose()
-        done()
-      })
-    })
-  })
-
-  it('refires the probe when orgId changes even if workerId and path are unchanged', async () => {
-    // The fetch closure reads `org.orgId()` at call time, so an orgId
-    // change without a workerId/path change would otherwise bake the
-    // stale orgId into the next RPC. Tracking orgId in the on() tuple
-    // forces a refresh tied to the change.
-    getGitInfo
-      .mockResolvedValueOnce(gitResp({ currentBranch: 'main' }))
-      .mockResolvedValueOnce(gitResp({ currentBranch: 'main' }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path] = createSignal('/repo')
-        useGitPathInfo(workerId, path)
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(1)
-        expect(getGitInfo.mock.calls[0][1].orgId).toBe('org-1')
-
-        setOrgId('org-2')
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(2)
-        expect(getGitInfo.mock.calls[1][1].orgId).toBe('org-2')
         dispose()
         done()
       })

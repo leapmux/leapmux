@@ -70,7 +70,7 @@ type HTTPAuthOpts struct {
 // Each rung is optional: nil SoloUser, nil Validator, or empty
 // Cookies cause that rung to no-op. Handlers that only support a
 // subset of the rungs pass the subset they want — e.g. the
-// `/ws/orgevents` and `/ws/channel` relays support all three;
+// `/ws/userevents` and `/ws/channel` relays support all three;
 // the `/auth/cli/*` endpoints support only cookies (and try both
 // secure modes so a TLS-issued session still validates when the
 // browser falls back to plain HTTP and vice versa).

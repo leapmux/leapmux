@@ -38,10 +38,6 @@ func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Ti
 	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
-func (s *cleanupStore) HardDeleteOrgsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteOrgsBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
-}
-
 func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx))
 }

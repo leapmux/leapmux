@@ -13,55 +13,64 @@ import (
 func (s *Suite) testWorkspaces(t *testing.T) {
 	// Every ownership predicate here is a `WHERE owner_user_id = ?` bind, and a
 	// zero caller id unwraps to "" -- which does NOT fail to match, it matches
-	// every blank-owner row. owner_user_id is `NOT NULL REFERENCES users(id)`,
-	// but a blank-id user row is representable in all three dialects, so the
-	// bind has to be refused before the query rather than missed by it.
-	t.Run("ownership gates refuse a zero caller id", func(t *testing.T) {
+	// every blank-owner row. TWO independent things stop that, and this pins
+	// both so neither can be dropped on the assumption the other still holds:
+	//
+	//  1. No blank-owner row can exist to be matched. owner_user_id is
+	//     `NOT NULL REFERENCES users(id)`, and CreateUserParams.Validate now
+	//     refuses the blank users.id that is the only parent such a row could
+	//     hang off. (The database still permits the shape via raw SQL, which is
+	//     why 2 remains load-bearing rather than belt-and-braces.)
+	//  2. The gates refuse the zero bind before the query runs, so a zero
+	//     caller reaches nothing -- including rows owned by someone real.
+	t.Run("a blank workspace owner is unrepresentable and a zero caller reaches nothing", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-zeroid-org")
-		owner := SeedUser(t, st, orgID, "ws-zeroid-owner")
-		realWS := SeedWorkspace(t, st, orgID, owner.ID, "Real")
+		owner := SeedUser(t, st, "ws-zeroid-owner")
+		realWS := SeedWorkspace(t, st, owner.ID, "Real")
 
-		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-			ID: "", OrgID: orgID, Username: "ws-blank-id-user",
+		// The seam, closed at its source.
+		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
+			ID: "", Username: "ws-blank-id-user",
 			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
-		}))
-		blankWS := "ws-blank-owner-gate"
-		require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-			ID: blankWS, OrgID: orgID, OwnerUserID: userid.UserID{}, Title: "blank-owner",
-		}))
-		// Control: the blank-owner row really exists, so the denials below are
-		// about the zero id and not about a missing row.
-		got, err := st.Workspaces().GetByID(ctx, blankWS)
-		require.NoError(t, err)
-		require.Equal(t, "", got.OwnerUserID)
+		}), store.ErrInvalidArgument,
+			"a blank users.id is the parent key every blank-owner row needs")
 
+		// And therefore closed for the child row too: with no blank-id parent,
+		// the FK has nothing to point at.
+		require.Error(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+			ID: "ws-blank-owner-gate", OwnerUserID: userid.UserID{}, Title: "blank-owner",
+		}), "a blank-owner workspace has no parent user row to reference")
+
+		// The gate assertions below target the REAL owner's workspace, not a
+		// blank-owner one. That is what keeps them non-vacuous now that no
+		// blank-owner row can exist: if a gate stopped binding the owner at all,
+		// the zero caller would reach realWS and each assertion would fail.
 		list, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: userid.UserID{}, OrgID: orgID,
+			UserID: userid.UserID{},
 		})
 		require.NoError(t, err)
-		assert.Empty(t, list, "a zero caller id must not list blank-owner workspaces")
+		assert.Empty(t, list, "a zero caller id must list nothing, not every workspace")
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
-			ID: blankWS, OwnerUserID: userid.UserID{}, Title: "hijacked",
+			ID: realWS, OwnerUserID: userid.UserID{}, Title: "hijacked",
 		})
 		require.NoError(t, err)
-		assert.Zero(t, n, "a zero caller id must not rename a blank-owner workspace")
+		assert.Zero(t, n, "a zero caller id must not rename someone else's workspace")
 
 		n, err = st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
-			ID: blankWS, OwnerUserID: userid.UserID{},
+			ID: realWS, OwnerUserID: userid.UserID{},
 		})
 		require.NoError(t, err)
-		assert.Zero(t, n, "a zero caller id must not delete a blank-owner workspace")
+		assert.Zero(t, n, "a zero caller id must not delete someone else's workspace")
 
-		after, err := st.Workspaces().GetByID(ctx, blankWS)
+		after, err := st.Workspaces().GetByID(ctx, realWS)
 		require.NoError(t, err)
-		assert.Equal(t, "blank-owner", after.Title, "neither refused mutation may have landed")
+		assert.Equal(t, "Real", after.Title, "neither refused mutation may have landed")
 
 		// Control: the gate still WORKS for a real owner, so the refusals above
 		// are not the gate simply denying everything.
 		list, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: userid.MustNew(owner.ID), OrgID: orgID,
+			UserID: userid.MustNew(owner.ID),
 		})
 		require.NoError(t, err)
 		require.Len(t, list, 1)
@@ -70,14 +79,12 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "My Workspace")
+		user := SeedUser(t, st, "ws-user")
+		wsID := SeedWorkspace(t, st, user.ID, "My Workspace")
 
 		ws, err := st.Workspaces().GetByID(ctx, wsID)
 		require.NoError(t, err)
 		assert.Equal(t, wsID, ws.ID)
-		assert.Equal(t, orgID, ws.OrgID)
 		assert.Equal(t, user.ID, ws.OwnerUserID)
 		assert.Equal(t, "My Workspace", ws.Title)
 		assert.False(t, ws.IsDeleted)
@@ -93,11 +100,10 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list by ids", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-byid-org")
-		user := SeedUser(t, st, orgID, "ws-byid-user")
-		wsA := SeedWorkspace(t, st, orgID, user.ID, "A")
-		wsB := SeedWorkspace(t, st, orgID, user.ID, "B")
-		wsDeleted := SeedWorkspace(t, st, orgID, user.ID, "Deleted")
+		user := SeedUser(t, st, "ws-byid-user")
+		wsA := SeedWorkspace(t, st, user.ID, "A")
+		wsB := SeedWorkspace(t, st, user.ID, "B")
+		wsDeleted := SeedWorkspace(t, st, user.ID, "Deleted")
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsDeleted,
 			OwnerUserID: userid.MustNew(user.ID),
@@ -122,14 +128,12 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list accessible", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-list-user")
-		SeedWorkspace(t, st, orgID, user.ID, "WS 1")
-		SeedWorkspace(t, st, orgID, user.ID, "WS 2")
+		user := SeedUser(t, st, "ws-list-user")
+		SeedWorkspace(t, st, user.ID, "WS 1")
+		SeedWorkspace(t, st, user.ID, "WS 2")
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(user.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		assert.Len(t, workspaces, 2)
@@ -144,8 +148,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 	// refresh.
 	t.Run("list accessible stable order on created_at ties", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-order-org")
-		user := SeedUser(t, st, orgID, "ws-order-user")
+		user := SeedUser(t, st, "ws-order-user")
 		// Seed in a tight loop so at least some pairs share a millisecond.
 		// We don't rely on hitting the tie path on every iteration —
 		// instead we assert the result matches the explicit
@@ -153,12 +156,11 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		const N = 8
 		seeded := make([]string, 0, N)
 		for i := 0; i < N; i++ {
-			seeded = append(seeded, SeedWorkspace(t, st, orgID, user.ID, "WS"))
+			seeded = append(seeded, SeedWorkspace(t, st, user.ID, "WS"))
 		}
 
 		first, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(user.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		require.Len(t, first, N)
@@ -182,7 +184,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		for trial := 0; trial < 3; trial++ {
 			got, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 				UserID: userid.MustNew(user.ID),
-				OrgID:  orgID,
 			})
 			require.NoError(t, err)
 			require.Len(t, got, N)
@@ -204,9 +205,8 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("rename", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-rename-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Old Title")
+		user := SeedUser(t, st, "ws-rename-user")
+		wsID := SeedWorkspace(t, st, user.ID, "Old Title")
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 			ID:          wsID,
@@ -223,9 +223,8 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("rename wrong owner", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-rename-wrong")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Title")
+		user := SeedUser(t, st, "ws-rename-wrong")
+		wsID := SeedWorkspace(t, st, user.ID, "Title")
 
 		n, err := st.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 			ID:          wsID,
@@ -238,9 +237,8 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-del-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Delete Me")
+		user := SeedUser(t, st, "ws-del-user")
+		wsID := SeedWorkspace(t, st, user.ID, "Delete Me")
 
 		n, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
@@ -262,10 +260,9 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-delall-user")
-		ws1 := SeedWorkspace(t, st, orgID, user.ID, "WS A")
-		ws2 := SeedWorkspace(t, st, orgID, user.ID, "WS B")
+		user := SeedUser(t, st, "ws-delall-user")
+		ws1 := SeedWorkspace(t, st, user.ID, "WS A")
+		ws2 := SeedWorkspace(t, st, user.ID, "WS B")
 
 		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
@@ -279,16 +276,14 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("non-owner sees nothing in accessible list", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		owner := SeedUser(t, st, orgID, "ws-own-owner")
-		other := SeedUser(t, st, orgID, "ws-own-other")
-		wsID := SeedWorkspace(t, st, orgID, owner.ID, "Owner Only WS")
+		owner := SeedUser(t, st, "ws-own-owner")
+		other := SeedUser(t, st, "ws-own-other")
+		wsID := SeedWorkspace(t, st, owner.ID, "Owner Only WS")
 
-		// Workspace access is owner-only: another user in the same org
+		// Workspace access is owner-only: another user
 		// never sees someone else's workspace.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(other.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		assert.Empty(t, workspaces)
@@ -296,7 +291,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// The owner does.
 		workspaces, err = st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(owner.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		require.Len(t, workspaces, 1)
@@ -305,10 +299,9 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft deleted not in accessible list", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-acclist-user")
-		SeedWorkspace(t, st, orgID, user.ID, "Alive")
-		delID := SeedWorkspace(t, st, orgID, user.ID, "Dead")
+		user := SeedUser(t, st, "ws-acclist-user")
+		SeedWorkspace(t, st, user.ID, "Alive")
+		delID := SeedWorkspace(t, st, user.ID, "Dead")
 
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          delID,
@@ -318,7 +311,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(user.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		assert.Len(t, workspaces, 1)
@@ -327,12 +319,10 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("list accessible empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-empty-user")
+		user := SeedUser(t, st, "ws-empty-user")
 
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 			UserID: userid.MustNew(user.ID),
-			OrgID:  orgID,
 		})
 		require.NoError(t, err)
 		require.NotNil(t, workspaces)
@@ -353,9 +343,8 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete already deleted", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-deldel-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Double Delete")
+		user := SeedUser(t, st, "ws-deldel-user")
+		wsID := SeedWorkspace(t, st, user.ID, "Double Delete")
 
 		n, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 			ID:          wsID,
@@ -384,8 +373,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-delall-empty-user")
+		user := SeedUser(t, st, "ws-delall-empty-user")
 
 		// Should be a no-op when user has no workspaces.
 		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID))
@@ -394,9 +382,8 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("get by id include deleted returns non-deleted workspace", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		user := SeedUser(t, st, orgID, "ws-incl-nondel-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Live WS")
+		user := SeedUser(t, st, "ws-incl-nondel-user")
+		wsID := SeedWorkspace(t, st, user.ID, "Live WS")
 
 		ws, err := st.Workspaces().GetByIDIncludeDeleted(ctx, wsID)
 		require.NoError(t, err)
@@ -407,11 +394,10 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 
 	t.Run("soft delete all by user does not affect other users", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "ws-org")
-		userA := SeedUser(t, st, orgID, "ws-sdabu-userA")
-		userB := SeedUser(t, st, orgID, "ws-sdabu-userB")
-		SeedWorkspace(t, st, orgID, userA.ID, "A's WS")
-		bWS := SeedWorkspace(t, st, orgID, userB.ID, "B's WS")
+		userA := SeedUser(t, st, "ws-sdabu-userA")
+		userB := SeedUser(t, st, "ws-sdabu-userB")
+		SeedWorkspace(t, st, userA.ID, "A's WS")
+		bWS := SeedWorkspace(t, st, userB.ID, "B's WS")
 
 		err := st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(userA.ID))
 		require.NoError(t, err)
@@ -422,22 +408,19 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		assert.False(t, ws.IsDeleted)
 	})
 
-	t.Run("list accessible isolates by org", func(t *testing.T) {
+	t.Run("list accessible returns owned workspaces", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgA := SeedOrg(t, st, "iso-orgA")
-		orgB := SeedOrg(t, st, "iso-orgB")
-		owner := SeedUser(t, st, orgA, "iso-owner")
-		wsA := SeedWorkspace(t, st, orgA, owner.ID, "WS in A")
-		SeedWorkspace(t, st, orgB, owner.ID, "WS in B")
+		owner := SeedUser(t, st, "iso-owner")
+		other := SeedUser(t, st, "iso-other")
+		wsOwned := SeedWorkspace(t, st, owner.ID, "Owned")
+		SeedWorkspace(t, st, other.ID, "Other")
 
-		// ListAccessible for orgA should only return wsA even though the
-		// owner also has a workspace homed in orgB.
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-			UserID: userid.MustNew(owner.ID), OrgID: orgA,
+			UserID: userid.MustNew(owner.ID),
 		})
 		require.NoError(t, err)
 		require.Len(t, workspaces, 1)
-		assert.Equal(t, wsA, workspaces[0].ID)
+		assert.Equal(t, wsOwned, workspaces[0].ID)
 	})
 
 }

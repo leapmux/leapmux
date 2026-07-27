@@ -3,7 +3,7 @@ import { createSignal } from 'solid-js'
 /**
  * activeClientStore is the per-(workspace_id) reactive map of the
  * currently-active client id, fed by PresenceUpdate events arriving
- * over the `/ws/orgevents` WebSocket subscription.
+ * over the `/ws/userevents` WebSocket subscription.
  * AppShell.handleTurnEnd consults this to gate the turn-end ding-dong:
  * only the client whose id matches the active client for the workspace
  * plays the sound.
@@ -17,7 +17,7 @@ export function createActiveClientStore() {
       return byWorkspace().get(workspaceId) ?? ''
     },
 
-    /** Apply a PresenceUpdate from the `/ws/orgevents` stream. */
+    /** Apply a PresenceUpdate from the `/ws/userevents` stream. */
     update(workspaceId: string, activeClientId: string): void {
       const prev = byWorkspace()
       const cur = prev.get(workspaceId) ?? ''
@@ -31,7 +31,7 @@ export function createActiveClientStore() {
       setByWorkspace(next)
     },
 
-    /** Drop every entry. Used on workspace logout / org switch. */
+    /** Drop every entry. Used on workspace logout / user change. */
     clear(): void {
       setByWorkspace(new Map())
     },

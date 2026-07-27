@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -937,6 +939,26 @@ func (m *Manager) RestampSessionGeneration(sessionID string, newGeneration int64
 // concurrent new relay binding preserves any channel it successfully claims.
 // Returns the closed channels so the caller can notify workers.
 func (m *Manager) UnbindUserAndCleanup(userID, connID string) []ClosedChannel {
+	// Mint the owner once so the per-channel predicate below can compare
+	// through userid.Matches rather than a raw !=. Two reasons, both of which
+	// the raw form got wrong:
+	//
+	//   - Polarity. `ch.UserID != userID` treats blank-vs-blank as a MATCH, so
+	//     a blank userID would select every unowned channel for teardown.
+	//     Matches never matches a blank, so an unidentifiable caller closes
+	//     nothing -- which is the fail-closed direction for a destructive
+	//     sweep.
+	//   - Visibility. audit's detector recognises Matches/MatchesUser/IsOwner
+	//     and nothing else, so a raw string compare here was an identity
+	//     decision sitting outside the net that claims to classify them all.
+	//
+	// A blank owner short-circuits: it can own no channel, so there is nothing
+	// to unbind or prune.
+	owner, ownerOK := userid.New(userID)
+	if !ownerOK {
+		return nil
+	}
+
 	// Channel pruning shares closeMatchingWithLocked's drain pipeline (notify
 	// senders, drop chunk tracking, cancel ctxs) so we don't grow a
 	// parallel teardown path that drifts from the shared teardown core.
@@ -958,7 +980,7 @@ func (m *Manager) UnbindUserAndCleanup(userID, connID string) []ClosedChannel {
 				candidateIDs = append(candidateIDs, id)
 			}
 			return candidateIDs, func(ch *channel) bool {
-				if ch.UserID != userID {
+				if !owner.Matches(ch.UserID) {
 					return false
 				}
 				return ch.ConnID == connID || (len(m.userSenders[userID]) == 0 && ch.ConnID == "")

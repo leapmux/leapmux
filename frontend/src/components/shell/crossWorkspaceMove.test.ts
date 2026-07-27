@@ -62,7 +62,6 @@ function setup(activeWsId = 'ws-active') {
   const focusTile = vi.fn()
   const { move } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => activeWsId,
-    getOrgId: () => 'org-1',
     tabStore,
     layoutStore,
     floatingWindowStore,

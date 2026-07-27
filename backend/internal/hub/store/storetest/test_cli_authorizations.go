@@ -16,8 +16,7 @@ import (
 func (s *Suite) testCLIAuthorizations(t *testing.T) {
 	t.Run("subsecond-live device grant can be approved", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "device-auth-subsecond-org")
-		user := SeedUser(t, st, orgID, "device-auth-subsecond-user")
+		user := SeedUser(t, st, "device-auth-subsecond-user")
 		deviceCode := id.Generate()
 		expiresAt := time.Now().UTC().Truncate(time.Second).Add(950 * time.Millisecond)
 		if time.Until(expiresAt) < 400*time.Millisecond {
@@ -34,8 +33,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 
 	t.Run("expired approved device grant cannot be consumed", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "device-auth-org")
-		user := SeedUser(t, st, orgID, "device-auth-user")
+		user := SeedUser(t, st, "device-auth-user")
 		deviceCode := id.Generate()
 		expiresAt := time.Now().Add(1500 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
@@ -64,8 +62,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 	// until the grant expired, told the opposite of what happened.
 	t.Run("device grant cannot be approved by an unminted user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "device-auth-zero-org")
-		user := SeedUser(t, st, orgID, "device-auth-zero-user")
+		user := SeedUser(t, st, "device-auth-zero-user")
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{

@@ -343,11 +343,10 @@ func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
 		captured = resp
 	}
 
-	resp := &leapmuxv1.WorkspaceTabsSyncResponse{
-		OrphanTabIds: []*leapmuxv1.TabIdent{
-			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "orphan-1"},
-		},
-	}
+	// The message is intentionally empty -- its whole contract is "a sync was
+	// handled, run a reconcile pass". What matters here is that the dispatch
+	// arm exists and hands the message to the callback.
+	resp := &leapmuxv1.WorkspaceTabsSyncResponse{}
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		RequestId: "req-7",
 		Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{

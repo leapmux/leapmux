@@ -7,7 +7,7 @@ import (
 )
 
 // RunTileList prints the projected tree for a workspace. Reads
-// ListTabs to enumerate live tabs and the bootstrapped OrgMaterialized
+// ListTabs to enumerate live tabs and the bootstrapped UserMaterialized
 // to walk node parent chains.
 func RunTileList(rawCtx any, args []string) error {
 	return runLayoutCommon(rawCtx, args, false)
@@ -29,7 +29,7 @@ func runLayoutCommon(rawCtx any, args []string, includeTabs bool) error {
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}

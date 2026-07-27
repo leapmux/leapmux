@@ -1,9 +1,9 @@
-import type { BatchRejection, OpBatch } from '~/generated/leapmux/v1/org_ops_pb'
+import type { BatchRejection, OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
 import type { PendingOpsManager } from '~/lib/crdt'
 import { onCleanup } from 'solid-js'
-import { orgCRDTClient } from '~/api/clients'
+import { userCRDTClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
-import { BatchRejectionReason } from '~/generated/leapmux/v1/org_ops_pb'
+import { BatchRejectionReason } from '~/generated/leapmux/v1/user_ops_pb'
 import { createExponentialBackoff } from '~/lib/retry'
 
 /**
@@ -29,7 +29,7 @@ const MAX_TRANSPORT_RETRIES = 5
  * reason is retryable (e.g. `epoch_required` after an epoch bump). Like
  * the transport cap it stops a client from re-hammering SubmitOps in a
  * tight loop -- and, for an epoch-refresh reason, from re-tearing-down the
- * `/ws/orgevents` socket whose async bootstrap it is waiting on -- when the
+ * `/ws/userevents` socket whose async bootstrap it is waiting on -- when the
  * refresh never lands. After the cap the batch is reported as an
  * authoritative rejection so its caller (e.g. the cross-workspace-move
  * rollback) can react, with a warn toast.
@@ -66,14 +66,13 @@ export type BatchOutcome
  *     the canonical HLCs if the original commit landed.
  */
 export interface CreateOpsSubmitterOpts {
-  orgId: () => string
   pending: () => PendingOpsManager | null
   /** Optional override for the SubmitOps client (tests). */
-  client?: typeof orgCRDTClient
+  client?: typeof userCRDTClient
   /**
-   * Called to force a teardown + fresh `/ws/orgevents` subscription
+   * Called to force a teardown + fresh `/ws/userevents` subscription
    * after `epoch_required` / `stale_epoch`. Resolved by the time the
-   * WebSocket has been torn down; the next `OrgMaterialized` arrives
+   * WebSocket has been torn down; the next `UserMaterialized` arrives
    * asynchronously and refreshes `pending.currentEpoch`.
    */
   reconnect?: () => Promise<void>
@@ -88,7 +87,7 @@ export interface CreateOpsSubmitterOpts {
 }
 
 export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
-  const client = opts.client ?? orgCRDTClient
+  const client = opts.client ?? userCRDTClient
   let queue: OpBatch[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
   // Per-batch transport-retry counter. Cleared on commit / non-
@@ -155,15 +154,26 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     timer = undefined
     if (queue.length === 0)
       return
-    const orgId = opts.orgId()
     const pending = opts.pending()
-    const epoch = pending?.state.currentEpoch ?? 0n
+    // Bail BEFORE draining `queue`: an early return taken after the
+    // drain would throw away already-queued batches with no path to
+    // resubmit them.
+    //
+    // Re-arm on the way out. `pending` is declared nullable, so keeping the
+    // queue is only half a promise: `timer` was cleared above, and `enqueue`
+    // arms it only when it is called again — so bailing bare strands every
+    // retained batch until the user happens to make another CRDT mutation.
+    // The re-arm polls the aggregator window until a manager shows up;
+    // `onCleanup` clears the timer on dispose, so it cannot outlive the owner.
+    if (!pending) {
+      timer = setTimeout(flush, SUBMIT_FLUSH_MS)
+      return
+    }
+    const epoch = pending.state.currentEpoch
     const batches = queue
     queue = []
-    if (!orgId || !pending)
-      return
     try {
-      const resp = await client.submitOps({ orgId, epoch, batches })
+      const resp = await client.submitOps({ epoch, batches })
       let anyCommitted = false
       let needsReconnect = false
       const retryableRejections: { batch: OpBatch, rejection: BatchRejection, needsEpochRefresh: boolean }[] = []

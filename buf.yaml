@@ -19,10 +19,10 @@ lint:
     # extra component noise isn't worth a global rename, and the
     # values are namespaced via the enum's package anyway.
     - ENUM_VALUE_PREFIX
-    # OrgCRDT is the canonical name in the plan and on the wire. The
+    # UserCRDT is the canonical name in the plan and on the wire. The
     # buf default would force a `Service` suffix; the existing
     # WorkspaceService / WorkerConnectorService etc. follow that
-    # convention, but OrgCRDT reads as a noun referring to the data
+    # convention, but UserCRDT reads as a noun referring to the data
     # type the service operates on. Carve it out specifically.
     - SERVICE_SUFFIX
 breaking:

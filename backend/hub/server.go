@@ -211,16 +211,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, cfg)
 
-	// Per-org CRDT manager registry. The factory constructs a fully
+	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on
-	// first reference per org. Lifecycle outbox / regular submits
+	// first reference per user. Lifecycle outbox / regular submits
 	// route through the same registry. Built early so it can be
 	// passed by constructor to every service that drives it (no
 	// post-construction injection or initialization-order hazards).
 	crdtJournal := service.NewCRDTJournal(st)
 	crdtAuth := service.NewCRDTAuthChecker(st)
-	crdtRegistry := crdt.NewRegistry(func(ctx context.Context, orgID string) (*crdt.Manager, error) {
-		mgr := crdt.NewManager(orgID, crdtJournal, crdtAuth, slog.Default(), time.Now)
+	crdtRegistry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(owner, crdtJournal, crdtAuth, slog.Default(), time.Now)
 		if err := mgr.Bootstrap(ctx); err != nil {
 			return nil, err
 		}
@@ -284,20 +284,20 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(workspacePath, workspaceHandler)
 
 	crdtSvc := service.NewCRDTService(st, crdtRegistry, slog.Default(), scopeCache)
-	crdtPath, crdtHandler := leapmuxv1connect.NewOrgCRDTHandler(crdtSvc, connectOpts)
+	crdtPath, crdtHandler := leapmuxv1connect.NewUserCRDTHandler(crdtSvc, connectOpts)
 	mux.Handle(crdtPath, crdtHandler)
 
 	// WebSocket endpoint for the CRDT event stream. Frontend opens a
-	// single `/ws/orgevents?org_id=...&workspace_ids=...` connection
-	// per org session and reads length-prefixed `WatchOrgEvent` proto
-	// frames. This is the sole transport for org-event subscriptions
-	// — the OrgCRDT ConnectRPC service exposes unary calls only
-	// (SubmitOps, UpdatePresence). The WS path bypasses HTTP/1.1
-	// chunked-stream buffering hazards (some proxies / Tauri's
-	// buffered fetch) that motivated retiring the streaming RPC.
-	orgEventsHandler := service.NewOrgEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies).
+	// single `/ws/userevents?workspace_ids=...` connection per session
+	// and reads length-prefixed `WatchUserEvent` proto frames. This is
+	// the sole transport for user-event subscriptions — the UserCRDT
+	// ConnectRPC service exposes unary calls only (SubmitOps,
+	// UpdatePresence). The WS path bypasses HTTP/1.1 chunked-stream
+	// buffering hazards (some proxies / Tauri's buffered fetch) that
+	// motivated retiring the streaming RPC.
+	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies).
 		WithTokenValidator(tokenValidator)
-	mux.Handle("/ws/orgevents", orgEventsHandler)
+	mux.Handle("/ws/userevents", userEventsHandler)
 
 	reconcilerSvc := service.NewWorkerReconcilerService(st)
 	reconcilerPath, reconcilerHandler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(reconcilerSvc, connectOpts)
@@ -435,25 +435,25 @@ func (s *Server) GetWorkerOwner(ctx context.Context, workerID string) (string, e
 	return w.RegisteredBy, nil
 }
 
-// GetAdminUser returns the ID and org ID of the user to attribute
-// auto-registered local workers to. In solo mode this is the bootstrapped
-// solo user. In dev/hub mode this is the first admin user registered via the
-// /setup flow; the caller gets store.ErrNotFound when no admin exists yet and
+// GetAdminUser returns the ID of the user to attribute auto-registered
+// local workers to. In solo mode this is the bootstrapped solo user. In
+// dev/hub mode this is the first admin user registered via the /setup
+// flow; the caller gets store.ErrNotFound when no admin exists yet and
 // is expected to retry once one does.
-func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err error) {
+func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 	if s.cfg.SoloMode {
 		user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
 		if err != nil {
-			return "", "", fmt.Errorf("get solo user: %w", err)
+			return "", fmt.Errorf("get solo user: %w", err)
 		}
-		return user.ID, user.OrgID, nil
+		return user.ID, nil
 	}
 
 	user, err := s.store.Users().GetFirstAdmin(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("get first admin: %w", err)
+		return "", fmt.Errorf("get first admin: %w", err)
 	}
-	return user.ID, user.OrgID, nil
+	return user.ID, nil
 }
 
 // Serve starts the Hub server on the listeners that NewServer pre-bound.

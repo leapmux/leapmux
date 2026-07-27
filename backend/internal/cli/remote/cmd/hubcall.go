@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 
@@ -71,8 +70,8 @@ func hubCallUnaryEmitOn(ctx context.Context, c *remote.Client, method, workspace
 // hub-bound orchestration steps (SubmitOps for tile/tab mutations,
 // CreateWorkspace, DeleteWorkspace, …) would silently no-op when invoked
 // from inside an agent. The plan calls these out as the second half of
-// every "two-step orchestration" (agent open, agent close, terminal open,
-// terminal close, tab close), so we route them uniformly.
+// every "two-step orchestration" (tab open and tab close, for both agent
+// and terminal tabs), so we route them uniformly.
 //
 // Method names map 1:1 onto `internal/hubrpc.Registry` entries, which
 // the worker-side RemoteIPC bridge also reads — one place to add or
@@ -89,7 +88,11 @@ func hubCallLocalIPC(ctx context.Context, c *remote.Client, method, workspaceID 
 	if err != nil {
 		return fmt.Errorf("marshal %s request: %w", method, err)
 	}
-	resp, err := c.RemoteIPCService().CallInner(ctx, connect.NewRequest(&leapmuxv1.CallInnerRequest{
+	ipc, err := c.RemoteIPCService()
+	if err != nil {
+		return err
+	}
+	resp, err := ipc.CallInner(ctx, connect.NewRequest(&leapmuxv1.CallInnerRequest{
 		Method:      "hub." + method,
 		Payload:     payload,
 		WorkspaceId: workspaceID,
@@ -98,7 +101,10 @@ func hubCallLocalIPC(ctx context.Context, c *remote.Client, method, workspaceID 
 		return err
 	}
 	if resp.Msg.GetIsError() {
-		return errors.New(resp.Msg.GetErrorMessage())
+		// Keep the in-band code: classifyHubError tests connect.CodeOf, so
+		// flattening to a bare message here made `not_found` unreachable on
+		// this transport. See inBandError in innerrpc.go.
+		return inBandError(resp.Msg)
 	}
 	if out != nil && len(resp.Msg.GetPayload()) > 0 {
 		if err := proto.Unmarshal(resp.Msg.GetPayload(), out); err != nil {
@@ -190,7 +196,10 @@ func workerUnaryEmitOn(c *remote.Client, workerID, method string, req, resp prot
 	// Worker-bound commands (file list, git status, …) all flow
 	// through here. Preflight workerID once so the user gets a
 	// clear "no such worker" before the E2EE channel handshake
-	// produces a less actionable transport error.
+	// produces a less actionable transport error. Best-effort: when
+	// the check itself can't run (a spawned agent's delegation
+	// bearer may not call ListWorkers) the command proceeds and the
+	// handshake error stands.
 	if err := maybePreflightWorker(ctx, c, workerID); err != nil {
 		return err
 	}

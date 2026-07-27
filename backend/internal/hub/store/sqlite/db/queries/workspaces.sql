@@ -1,6 +1,6 @@
 -- name: CreateWorkspace :exec
-INSERT INTO workspaces (id, org_id, owner_user_id, title)
-VALUES (?, ?, ?, ?);
+INSERT INTO workspaces (id, owner_user_id, title)
+VALUES (?, ?, ?);
 
 -- name: GetWorkspaceByID :one
 SELECT * FROM workspaces WHERE id = ? AND is_deleted = 0;
@@ -21,7 +21,6 @@ WHERE id IN (sqlc.slice('workspace_ids'))
 -- workspaces land in a batch.
 SELECT w.* FROM workspaces w
 WHERE w.is_deleted = 0
-  AND w.org_id = sqlc.arg(org_id)
   AND w.owner_user_id = sqlc.arg(user_id)
 ORDER BY w.created_at DESC, w.id DESC;
 

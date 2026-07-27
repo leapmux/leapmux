@@ -38,15 +38,15 @@ type agentScaffoldOpts struct {
 // command that targets an existing agent (send / interrupt / get /
 // rename / messages / set / send-control-response). It binds the
 // universal entity flag set pinned to TabTypeAgent, runs the resolver
-// to derive (worker, agent, workspace) from whichever subset of
-// --tab-id / --worker-id / --workspace-id / --tile-id / --org-id /
-// --user-id the caller supplied (with LEAPMUX_REMOTE_*_ID env-var
-// defaults), preflights the worker, and invokes the body.
+// to derive (worker, agent, workspace) -- in practice from --tab-id,
+// the only input LocateTab can expand into the whole triple (with
+// LEAPMUX_REMOTE_*_ID env-var defaults) -- best-effort preflights the
+// worker, and invokes the body.
 //
 // The helper does NOT cover commands whose shape diverges:
 //   - `agent open` mints an agent rather than addressing one;
 //   - `agent list` / `agent providers` don't take a tab id;
-//   - `agent close` skips worker preflight and has its own fallback
+//   - `tab close` skips worker preflight and has its own fallback
 //     CRDT-tombstone path on worker-unreachable errors.
 func withResolvedAgent(rawCtx any, args []string, opts agentScaffoldOpts) error {
 	cmd := asCtx(rawCtx)
@@ -54,8 +54,6 @@ func withResolvedAgent(rawCtx any, args []string, opts agentScaffoldOpts) error 
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:      true,
-		HideUser:     true,
 		FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 	})
 	if opts.setup != nil {
@@ -75,7 +73,7 @@ func withResolvedAgent(rawCtx any, args []string, opts agentScaffoldOpts) error 
 	// `not_logged_in` envelope for users who simply forgot --tab-id,
 	// masking the real "you need an agent id" hint.
 	if !hasAnyEntityInput(in) {
-		return remote.EmitError("invalid_request", "missing required ID(s): pass --tab-id (or any of --worker-id / --workspace-id / --tile-id / --org-id / --user-id)")
+		return remote.EmitError("invalid_request", "missing required ID(s): pass --tab-id (or set LEAPMUX_REMOTE_TAB_ID); --worker-id / --workspace-id / --tile-id cannot name an agent on their own")
 	}
 	c, err := requireClient(hub)
 	if err != nil {

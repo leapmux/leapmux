@@ -14,28 +14,32 @@ let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
 
+// loadSystemInfo fetches the hub's system info and caches it (unless `force`).
+//
+// A failure REJECTS rather than being swallowed. The module's defaults
+// (notably `soloMode = false`) are fabrications until a call succeeds, and a
+// caller that cannot tell "the hub said non-solo" from "we never asked" makes
+// unrecoverable decisions on them: on a solo hub the app would render a "Log
+// out" button whose one click sends the user to a login form no credentials
+// can satisfy. `loaded` still flips only on success, so a failed load is
+// retried by the next unforced call.
 export async function loadSystemInfo(force = false): Promise<void> {
   if (loaded && !force)
     return
-  try {
-    const resp = await authClient.getSystemInfo({})
-    soloMode = resp.soloMode
-    signupEnabled = resp.signupEnabled
-    setupRequired = resp.setupRequired
-    workerHubUrl = resp.workerHubUrl
-    emailEnabled = resp.emailEnabled
-    backendBuildInfo = {
-      version: resp.version,
-      commitHash: resp.commitHash,
-      commitTime: resp.commitTime,
-      buildTime: resp.buildTime,
-      branch: resp.branch,
-    }
-    loaded = true
+  const resp = await authClient.getSystemInfo({})
+  soloMode = resp.soloMode
+  signupEnabled = resp.signupEnabled
+  setupRequired = resp.setupRequired
+  workerHubUrl = resp.workerHubUrl
+  emailEnabled = resp.emailEnabled
+  backendBuildInfo = {
+    version: resp.version,
+    commitHash: resp.commitHash,
+    commitTime: resp.commitTime,
+    buildTime: resp.buildTime,
+    branch: resp.branch,
   }
-  catch {
-    // Ignore — defaults to false (non-solo)
-  }
+  loaded = true
 }
 
 export function isSoloMode(): boolean {

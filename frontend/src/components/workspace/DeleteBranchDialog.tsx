@@ -13,7 +13,6 @@ import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSe
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
-import { useOrg } from '~/context/OrgContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -140,7 +139,6 @@ export function worktreeRemovalToast(
 }
 
 export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) => {
-  const org = useOrg()
   // The dialog is locked to (props.workerId, props.gitToplevel) — no
   // worker selector, no directory picker, no git-mode state. Both delete
   // paths (see handleWorktreeDelete vs handleBranchDelete) drive `run` so
@@ -248,7 +246,6 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     void run(async () => {
       const target = switchTo()
       await workerRpc.deleteBranch(props.workerId, {
-        orgId: org.orgId(),
         workerId: props.workerId,
         path: props.gitToplevel,
         branchToDelete: i.branchName,

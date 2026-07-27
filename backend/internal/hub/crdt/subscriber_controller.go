@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 )
 
-// SubscriberController owns the live subscriber set for one org's
+// SubscriberController owns the live subscriber set for one user's
 // CRDT manager and publishes a lock-free snapshot for the broadcast
 // hot path.
 //

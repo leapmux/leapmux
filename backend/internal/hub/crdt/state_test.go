@@ -17,28 +17,28 @@ func hlcAt(physical, logical int64, clientID string) *leapmuxv1.HLC {
 	return &leapmuxv1.HLC{Physical: physical, Logical: logical, ClientId: clientID}
 }
 
-// stamped wraps a body in a fully-stamped OrgOp.
-func stamped(body any, hlc *leapmuxv1.HLC) *leapmuxv1.OrgOp {
-	op := &leapmuxv1.OrgOp{OrgId: "org", OpId: "op-" + hlc.GetClientId(), CanonicalHlc: hlc}
+// stamped wraps a body in a fully-stamped CrdtOp.
+func stamped(body any, hlc *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	op := &leapmuxv1.CrdtOp{OpId: "op-" + hlc.GetClientId(), CanonicalHlc: hlc}
 	switch b := body.(type) {
 	case *leapmuxv1.SetNodeRegisterOp:
-		op.Body = &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: b}
+		op.Body = &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: b}
 	case *leapmuxv1.TombstoneNodeOp:
-		op.Body = &leapmuxv1.OrgOp_TombstoneNode{TombstoneNode: b}
+		op.Body = &leapmuxv1.CrdtOp_TombstoneNode{TombstoneNode: b}
 	case *leapmuxv1.SetTabRegisterOp:
-		op.Body = &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: b}
+		op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: b}
 	case *leapmuxv1.TombstoneTabOp:
-		op.Body = &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: b}
+		op.Body = &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: b}
 	case *leapmuxv1.SetFloatingWindowRegisterOp:
-		op.Body = &leapmuxv1.OrgOp_SetFloatingWindowRegister{SetFloatingWindowRegister: b}
+		op.Body = &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: b}
 	case *leapmuxv1.TombstoneFloatingWindowOp:
-		op.Body = &leapmuxv1.OrgOp_TombstoneFloatingWindow{TombstoneFloatingWindow: b}
+		op.Body = &leapmuxv1.CrdtOp_TombstoneFloatingWindow{TombstoneFloatingWindow: b}
 	}
 	return op
 }
 
 func TestApply_SetNodeKind_FreshAndIdempotent(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	op := stamped(&leapmuxv1.SetNodeRegisterOp{
 		NodeId: "n1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
@@ -53,7 +53,7 @@ func TestApply_SetNodeKind_FreshAndIdempotent(t *testing.T) {
 }
 
 func TestApply_LWWHigherHLCWins(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	first := stamped(&leapmuxv1.SetNodeRegisterOp{
 		NodeId: "n1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "A"},
@@ -68,7 +68,7 @@ func TestApply_LWWHigherHLCWins(t *testing.T) {
 }
 
 func TestApply_LWWLowerHLCDrops(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	high := stamped(&leapmuxv1.SetNodeRegisterOp{
 		NodeId: "n1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "B"},
@@ -83,7 +83,7 @@ func TestApply_LWWLowerHLCDrops(t *testing.T) {
 }
 
 func TestApply_TombstoneClearsRegistersAndDropsLaterOps(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{
 		NodeId: "n1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "A"},
@@ -104,7 +104,7 @@ func TestApply_TombstoneClearsRegistersAndDropsLaterOps(t *testing.T) {
 }
 
 func TestApply_TombstoneEarlierThanCurrentSet_DropsTheSet(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	// Tombstone first at HLC 30.
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "n1"}, hlcAt(30, 0, "a")))
 	// A Set at HLC 20 lands afterwards (out-of-order delivery).
@@ -119,7 +119,7 @@ func TestApply_TombstoneEarlierThanCurrentSet_DropsTheSet(t *testing.T) {
 }
 
 func TestApply_ParentIdSetOnce(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	// First parent_id write lands.
 	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{
 		NodeId: "n1",
@@ -137,10 +137,10 @@ func TestApply_ParentIdSetOnce(t *testing.T) {
 }
 
 func TestApply_SetWorkspaceRegister_SeedsEmptyRecord(t *testing.T) {
-	state := crdt.NewState("org")
-	crdt.Apply(state, &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "seed-w1", CanonicalHlc: hlcAt(1, 0, "hub"),
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, &leapmuxv1.CrdtOp{
+		OpId: "seed-w1", CanonicalHlc: hlcAt(1, 0, "hub"),
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		},
 	})
@@ -154,13 +154,13 @@ func TestApply_SetWorkspaceRegister_IdempotentDoesNotClobberRootedRecord(t *test
 	// A rooted workspace (root_node_id already set by SetWorkspaceRootNodeOp
 	// or seeded directly) must NOT be clobbered by a re-drained create seed
 	// whose SetWorkspaceRegisterOp re-applies after a transient consume fault.
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{
 		WorkspaceId: "w1", RootNodeId: "root1",
 	}
-	crdt.Apply(state, &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "reseed-w1", CanonicalHlc: hlcAt(2, 0, "hub"),
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+	crdt.Apply(state, &leapmuxv1.CrdtOp{
+		OpId: "reseed-w1", CanonicalHlc: hlcAt(2, 0, "hub"),
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		},
 	})
@@ -169,11 +169,11 @@ func TestApply_SetWorkspaceRegister_IdempotentDoesNotClobberRootedRecord(t *test
 }
 
 func TestApply_TombstoneWorkspace_RemovesRecord(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1", RootNodeId: "root1"}
-	crdt.Apply(state, &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
-		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+	crdt.Apply(state, &leapmuxv1.CrdtOp{
+		OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
+		Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		},
 	})
@@ -184,10 +184,10 @@ func TestApply_TombstoneWorkspace_RemovesRecord(t *testing.T) {
 func TestApply_TombstoneWorkspace_IdempotentOnAbsent(t *testing.T) {
 	// Deleting a workspace whose record is already gone (re-drain after a
 	// consume fault) must be a no-op, not a panic.
-	state := crdt.NewState("org")
-	crdt.Apply(state, &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
-		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, &leapmuxv1.CrdtOp{
+		OpId: "del-w1", CanonicalHlc: hlcAt(3, 0, "hub"),
+		Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		},
 	})
@@ -195,7 +195,7 @@ func TestApply_TombstoneWorkspace_IdempotentOnAbsent(t *testing.T) {
 }
 
 func TestApply_NegativeZeroNormalization(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	// math.Copysign(0, -1) is the only portable way to construct
 	// -0.0 in Go: the literal `-0.0` is equal to `+0.0` per the
 	// IEEE-754 comparison rule and staticcheck flags it.
@@ -222,7 +222,7 @@ func signBit(v float64) bool {
 }
 
 func TestApply_TabRegisterTileIDLWW(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:   "t1",
@@ -237,7 +237,7 @@ func TestApply_TabRegisterTileIDLWW(t *testing.T) {
 }
 
 func TestApply_TabTypeMismatchDropsSilently(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:   "t1",

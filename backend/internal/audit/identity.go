@@ -12,8 +12,8 @@ package audit
 // This is the counterpart to hub/auth's zeroUserIDDenyFuncs net, and it is
 // keyed on the COMPARISON rather than on a parameter type on purpose. Several
 // of the decisions below take their identity from the request context rather
-// than a parameter -- (*UserService).GetUser and the delegation-mint handler --
-// so a parameter-keyed table would classify neither, and the net would read as
+// than a parameter -- the delegation-mint handler, for one -- so a
+// parameter-keyed table would not classify them, and the net would read as
 // complete while missing the sharpest sites. Keying on the comparison follows
 // the rule instead of the signature.
 //
@@ -36,15 +36,43 @@ var identityComparisonSites = map[string]string{
 	"internal/hub/service.(*SectionService).requireOwnedSection": "TestMoveSectionDeniesZeroCallerOnBlankOwnedSection",
 	// Decides whether a caller may reuse an already-registered channel.
 	"internal/hub/service.userCanUseChannel": "TestUserCanUseChannelRequiresMatchingIdentity",
-	// Self-vs-other gate on profile reads; identity comes from the context.
-	// Matches is defence in depth here -- the empty-target 400 above it is what
-	// makes a zero caller unable to self-match -- so the named test pins that
-	// boundary, which is the layer a future edit could actually remove.
-	"internal/hub/service.(*UserService).GetUser": "TestGetUserRejectsEmptyTargetBeforeSelfMatch",
 	// Decides whether a delegation token may be minted for a worker. The id is
 	// minted (and a blank one 403'd) before the comparison, so again the named
 	// test pins the boundary rather than the comparison behind it.
 	"internal/hub/service.(*WorkerDelegationHandler).handleMint": "TestWorkerDelegation_Mint_RejectsBlankUserID",
+	// The mint's second, independent ownership check: the tab-propagation poll
+	// re-verifies that the row it is waiting on is the caller's own, so the
+	// mint's safety does not rest solely on the user_id predicate in a SQL file
+	// three packages away. It was previously a raw `row.UserID == userID.String()`
+	// -- fail-OPEN for blank-vs-blank, and invisible here, because a .String()
+	// unwrap defeats the detector.
+	"internal/hub/service.(*WorkerDelegationHandler).waitForTabOwnership": "TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow",
+	// The tab-sync reconciler's tombstone target. Not a grant: the row-level
+	// owner is compared against the owner the query was BOUND with, so a
+	// mismatch is a broken predicate rather than an unauthorized caller, and it
+	// is reported rather than silently routed. It is listed because the
+	// comparison is the same one, and because this used to be the last
+	// production path that reached crdt.Registry.Get with an unvalidated column
+	// string -- the manager is now derived from the bound owner instead.
+	"internal/hub/service.(*WorkerConnectorService).handleWorkspaceTabsSync": "TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant",
+
+	// ---- hub/crdt: grant polarity ----
+
+	// The CRDT's only remaining tenancy comparison. A submit is no longer one:
+	// SubmitInput carries no user id, so the manager it lands on IS the tenant
+	// and processSubmit has nothing to compare (Registry.Get keys and
+	// bounds-checks the manager; the factory builds it from that key).
+	//
+	// Bootstrap is different because the user_state payload carries its OWN
+	// user_id, and adopting it would let the BLOB override the key the row was
+	// fetched by. The reach is outside the CRDT -- CompactBatch keys the next
+	// user_state row by state.GetUserId(), so a foreign payload rewrites another
+	// tenant's row. (The derived workspace_tab_owned rows were the other half of
+	// that reach; they now take their owner from the committing tenant and the
+	// column carries a users(id) FK, so this is the layer that still needs the
+	// check.) Matches rather than `!=` for the usual reason: a blank-tenant
+	// manager must not match a blank-tenant payload.
+	"internal/hub/crdt.(*Manager).requireOwnState": "TestBootstrapRefusesAStatePayloadNamingAnotherTenant",
 
 	// ---- hub/store ----
 
@@ -56,18 +84,24 @@ var identityComparisonSites = map[string]string{
 	// ---- hub/auth: grant polarity ----
 
 	// The shared owner predicate every workspace read funnels through, plus the
-	// four predicates that call it and the worker-ownership twin. All are
-	// exported and all are cases in hub/auth's fixture-driven net, which seeds a
-	// real owner and asserts both the deny and the owner-side control.
-	// WorkspaceCanAccessInOrg is deliberately absent: it delegates to
-	// WorkspaceCanRead rather than comparing itself, so there is one
-	// implementation of the owner-only rule and one entry for it here.
-	"internal/hub/auth.IsOwner":                       "TestZeroUserIDDenies",
-	"internal/hub/auth.WorkspaceCanRead":              "TestZeroUserIDDenies",
-	"internal/hub/auth.WorkspaceReadableByUsersInOrg": "TestZeroUserIDDenies",
-	"internal/hub/auth.WorkspacesReadableByUser":      "TestZeroUserIDDenies",
-	"internal/hub/auth.WorkerCanUse":                  "TestZeroUserIDDenies",
-	"internal/hub/auth.ResolveDelegationWorkerScope":  "TestZeroUserIDDenies",
+	// predicates that call it and the worker-ownership twin. All are exported
+	// and all are cases in hub/auth's fixture-driven net, which seeds a real
+	// owner and asserts both the deny and the owner-side control.
+	//
+	// IsOwner is the canonical comparison the rest route through, but routing
+	// through it does NOT excuse a caller from this table: isIdentityComparison
+	// counts a CALL to auth.IsOwner as an identity comparison in its own right,
+	// exactly as it counts the userid.Matches inside IsOwner. So the three
+	// predicates that call it -- WorkspaceCanAccess, WorkspaceReadableByUsers,
+	// WorkspacesReadableByUser -- are detected sites and must each be listed.
+	// Deleting one as "duplicating IsOwner" does not de-duplicate anything; it
+	// fails TestRepoInvariants with an unclassified-comparison error.
+	"internal/hub/auth.IsOwner":                      "TestZeroUserIDDenies",
+	"internal/hub/auth.WorkspaceCanAccess":           "TestZeroUserIDDenies",
+	"internal/hub/auth.WorkspaceReadableByUsers":     "TestZeroUserIDDenies",
+	"internal/hub/auth.WorkspacesReadableByUser":     "TestZeroUserIDDenies",
+	"internal/hub/auth.WorkerCanUse":                 "TestZeroUserIDDenies",
+	"internal/hub/auth.ResolveDelegationWorkerScope": "TestZeroUserIDDenies",
 
 	// ---- hub/auth: EVICTION polarity (false means "do not revoke") ----
 	//
@@ -81,6 +115,13 @@ var identityComparisonSites = map[string]string{
 	"internal/hub/auth.(*AuthContextRegistry).RevokeUserAuthContextAtGeneration": "TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration",
 	"internal/hub/auth.(*AuthContextRegistry).evictSessionsByUserGeneration":     "TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration",
 	"internal/hub/auth.(*AuthContextRegistry).evictBearersByUserGeneration":      "TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration",
+
+	// The relay-disconnect sweep. Not a grant: it selects which channels a
+	// disconnecting connection takes down with it. The polarity still matters
+	// and still points the same way -- a raw `ch.UserID != userID` counted
+	// blank-vs-blank as a match, so an unidentified caller would have swept
+	// every blank-owner channel; Matches refuses instead.
+	"internal/hub/channelmgr.(*Manager).UnbindUserAndCleanup": "TestUnbindUserAndCleanup_BlankUserClosesNothing",
 
 	// ---- worker/service: grant polarity ----
 	//
@@ -104,4 +145,13 @@ var identityComparisonSites = map[string]string{
 	// empty push rather than storing it -- is what stops the gate above from
 	// ever comparing against a blank owner.
 	"internal/worker/service.(*Service).UpdateRegisteredBy": "TestUpdateRegisteredByIgnoresEmptyOwner",
+	// The reap gate, and the most destructive comparison in either process: a
+	// false negative here closes a live agent/terminal and drops a worktree
+	// link. It decides whether an ABSENCE from the hub's owner-scoped response
+	// may be read as an orphan for this local row. It was previously spelled as
+	// a bespoke `ownerScope.covers` (`s.owner != "" && s.owner == userID`) --
+	// semantically identical to Matches, but a hand-written twin that no
+	// syntax-level rule could recognise, so the sharpest decision in the worker
+	// sat outside this net while appearing to be inside it.
+	"internal/worker/service.(*OrphanReconciler).reconcileFileTabs": "TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner",
 }

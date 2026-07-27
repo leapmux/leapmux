@@ -261,7 +261,7 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 	reconciler := service.NewOrphanReconciler(
 		queries,
 		svc.FileTabPaths,
-		func(rctx context.Context) ([]*leapmuxv1.OwnedTab, error) {
+		func(rctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
 		service.OrphanReconcilerOptions{

@@ -5,12 +5,12 @@ import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWor
 test.describe('Full Hub+Worker Restart', () => {
   test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Full Restart Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Full Restart Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor
@@ -256,12 +256,12 @@ test.describe('Full Hub+Worker Restart', () => {
 
   test('should preserve agent tab after clicking it post-restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Tab Click Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Tab Click Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Verify the agent tab is visible
@@ -304,12 +304,12 @@ test.describe('Full Hub+Worker Restart', () => {
 
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Thinking Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Thinking Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')

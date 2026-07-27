@@ -3,8 +3,8 @@ import { createEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceRestore } from '~/components/shell/useWorkspaceRestore'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { HLCSchema, LWWStringSchema, TabRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { HLCSchema, LWWStringSchema, TabRecordSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge, project, setCRDTBridge } from '~/lib/crdt'
@@ -19,12 +19,12 @@ import { installTestBridge } from '~/test-support/crdtBridge'
 
 // Both network calls return unresolved promises: the test only inspects
 // the synchronous fan-out that happens inside the restore effect.
-const mockListTabsForWorkspace = vi.fn<(orgId: string, wsId: string) => Promise<unknown>>(() => new Promise<never>(() => {}))
+const mockListTabsForWorkspace = vi.fn<(wsId: string) => Promise<unknown>>(() => new Promise<never>(() => {}))
 const mockListTerminals = vi.fn<(workerId: string, req: { tabIds: string[] }) => Promise<{ terminals: unknown[] }>>(() => new Promise<never>(() => {}))
 const mockListAgents = vi.fn<(workerId: string, req: { tabIds: string[] }) => Promise<{ agents: unknown[] }>>(() => new Promise<never>(() => {}))
 
 vi.mock('~/api/listTabsBatcher', () => ({
-  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args as [string, string]),
+  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args as [string]),
 }))
 
 vi.mock('~/api/workerRpc', () => ({
@@ -76,17 +76,17 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
     sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1', 'sib-2'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       useWorkspaceRestore({
         ...makeBaseOpts(),
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
         onExpandWorkspace,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -94,7 +94,7 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
 
     // The active workspace's ListTabs must fire.
     expect(mockListTabsForWorkspace).toHaveBeenCalledTimes(1)
-    expect(mockListTabsForWorkspace).toHaveBeenCalledWith('org-1', 'active-ws')
+    expect(mockListTabsForWorkspace).toHaveBeenCalledWith('active-ws')
 
     // onExpandWorkspace fires for every sibling, not for the active workspace.
     const calls = onExpandWorkspace.mock.calls.map(c => c[0]).sort()
@@ -108,7 +108,7 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
     sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       const opts = makeBaseOpts()
@@ -125,11 +125,11 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
       useWorkspaceRestore({
         ...opts,
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
         onExpandWorkspace,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -145,17 +145,17 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
     // No sessionStorage entry — readExpandedWorkspaceIds returns an empty set.
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       useWorkspaceRestore({
         ...makeBaseOpts(),
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
         onExpandWorkspace,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -196,16 +196,16 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     })
 
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       useWorkspaceRestore({
         ...opts,
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -241,16 +241,16 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     })
 
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       useWorkspaceRestore({
         ...opts,
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -297,16 +297,16 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
       })
 
       const [activeId, setActiveId] = createSignal<string | null>(null)
-      const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+      const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
       const dispose = createRoot((dispose) => {
         useWorkspaceRestore({
           ...opts,
           getActiveWorkspaceId: activeId,
-          getOrgId: orgId,
+          getUserId: userId,
         })
         setActiveId('active-ws')
-        setOrgId('org-1')
+        setUserId('user-1')
         return dispose
       })
 
@@ -390,16 +390,16 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     })
 
     const [activeId, setActiveId] = createSignal<string | null>(null)
-    const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+    const [userId, setUserId] = createSignal<string | undefined>(undefined)
 
     const dispose = createRoot((dispose) => {
       useWorkspaceRestore({
         ...opts,
         getActiveWorkspaceId: activeId,
-        getOrgId: orgId,
+        getUserId: userId,
       })
       setActiveId('active-ws')
-      setOrgId('org-1')
+      setUserId('user-1')
       return dispose
     })
 
@@ -429,7 +429,7 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
 // reported after a fresh desktop-solo restart.
 describe('useWorkspaceRestore agent hydration race against reconciler', () => {
   it('keeps full metadata on every agent tab even when the reconciler fires mid-loop', async () => {
-    const orgId = 'org-race'
+    const userId = 'user-race'
     const wsId = 'ws-race'
     const tileId = 'tile-race'
     const workerId = 'worker-race'
@@ -439,7 +439,7 @@ describe('useWorkspaceRestore agent hydration race against reconciler', () => {
         try {
           // Real bridge + PendingOpsManager so addTab's emit path drives
           // the same signal AppShell wires the reconciler to.
-          const harness = installTestBridge({ orgId, workspaceId: wsId, rootTileId: tileId })
+          const harness = installTestBridge({ userId, workspaceId: wsId, rootTileId: tileId })
           const hlc = create(HLCSchema, { physical: 10n, logical: 0n, clientId: 'seed' })
           for (const id of ['etta', 'walker']) {
             harness.pending.state.confirmedState.tabs[id] = create(TabRecordSchema, {
@@ -508,15 +508,15 @@ describe('useWorkspaceRestore agent hydration race against reconciler', () => {
           }))
 
           const [getActiveId, setActiveId] = createSignal<string | null>(null)
-          const [getOrgId, setOrgId] = createSignal<string | undefined>(undefined)
+          const [getUserId, setUserId] = createSignal<string | undefined>(undefined)
 
           useWorkspaceRestore({
             ...opts,
             getActiveWorkspaceId: getActiveId,
-            getOrgId,
+            getUserId,
           })
           setActiveId(wsId)
-          setOrgId(orgId)
+          setUserId(userId)
 
           // Drain microtasks until the restore .then() body has run.
           // The path awaits two promises (tabsLoaded + bootstrap) and

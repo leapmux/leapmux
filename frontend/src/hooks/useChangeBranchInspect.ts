@@ -3,7 +3,6 @@ import type { GitBranchEntry, InspectBranchChangeResponse } from '~/generated/le
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { createMemo, createSignal, onMount } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { useOrg } from '~/context/OrgContext'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { buildInfo, EMPTY_INFO } from '~/hooks/useGitPathInfo'
 import { createLogger } from '~/lib/logger'
@@ -76,8 +75,6 @@ export interface ChangeBranchInspect {
  * branch list in one update.
  */
 export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): ChangeBranchInspect {
-  const org = useOrg()
-
   // Seed the synthesized path-info snapshot from the calling row.
   // ChangeBranchDialog is opened against a known toplevel, so we can
   // paint Switch/Create/Worktree options without waiting for the RPC.
@@ -124,7 +121,6 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
 
   const fetcher = createGuardedFetch<void, InspectBranchChangeResponse>({
     fetch: (_args, signal) => workerRpc.inspectBranchChange(args.workerId, {
-      orgId: org.orgId(),
       workerId: args.workerId,
       path: args.gitToplevel,
     }, { signal }),

@@ -86,29 +86,23 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 // seedUserWorkspaceWorker creates a user, two workspaces both
 // accessible to that user, and a worker the user owns. Returns ids
 // the test will use to mint a delegation bearer scoped to ws-A.
-func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, orgID, wsA, wsB, workerID string) {
+func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, wsB, workerID string) {
 	t.Helper()
 	ctx := context.Background()
-
-	orgID = id.Generate()
-	require.NoError(t, e.store.Orgs().Create(ctx, store.CreateOrgParams{
-		ID: orgID, Name: "test-org",
-	}))
 
 	userID = id.Generate()
 	require.NoError(t, e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:       userID,
-		OrgID:    orgID,
 		Username: "delegation-user-" + id.Generate()[:6],
 	}))
 
 	wsA = id.Generate()
 	require.NoError(t, e.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsA, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws-A",
+		ID: wsA, OwnerUserID: userid.MustNew(userID), Title: "ws-A",
 	}))
 	wsB = id.Generate()
 	require.NoError(t, e.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsB, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws-B",
+		ID: wsB, OwnerUserID: userid.MustNew(userID), Title: "ws-B",
 	}))
 
 	workerID = id.Generate()
@@ -121,7 +115,7 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, orgID,
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
 
-	return userID, orgID, wsA, wsB, workerID
+	return userID, wsA, wsB, workerID
 }
 
 // mintDelegation seeds a delegation_tokens row directly so the test
@@ -191,17 +185,12 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 	ctx := context.Background()
 
 	// The victim, with a workspace and their own worker.
-	victimID, _, victimWS, _, victimWorkerID := e.seedUserWorkspaceWorker(t)
+	victimID, victimWS, _, victimWorkerID := e.seedUserWorkspaceWorker(t)
 
 	// The attacker owns a separate worker.
 	attackerID := id.Generate()
-	attackerOrgID := id.Generate()
-	require.NoError(t, e.store.Orgs().Create(ctx, store.CreateOrgParams{
-		ID: attackerOrgID, Name: "attacker-org",
-	}))
 	require.NoError(t, e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:       attackerID,
-		OrgID:    attackerOrgID,
 		Username: "attacker-" + id.Generate()[:6],
 	}))
 	attackerWorkerID := id.Generate()
@@ -258,7 +247,7 @@ func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *tes
 // worker that minted it (the common `leapmux remote` path).
 func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, _, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 
 	req := connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
@@ -273,7 +262,7 @@ func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T
 // the ordinary `leapmux remote` case, where an agent talks to its own host.
 func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, _, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 	sent, _ := env.captureWorker(t, workerID)
@@ -303,7 +292,7 @@ func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 // ListAccessible would report both.
 func TestOpenChannel_DelegationTokenNarrowsAccessibleWorkspaces(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, _, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
 
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 
@@ -339,7 +328,7 @@ func TestOpenChannel_DelegationTokenNarrowsAccessibleWorkspaces(t *testing.T) {
 // formally valid.
 func TestOpenChannel_DelegationRejectsRevokedScope(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, _, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 
@@ -365,7 +354,7 @@ func TestOpenChannel_DelegationRejectsRevokedScope(t *testing.T) {
 
 func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, orgID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
 
 	cookieChannelID := id.Generate()
@@ -381,7 +370,6 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(userID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential(tokenID, wsA, "worker-mint"),
 	})
 
@@ -402,7 +390,7 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 
 func TestPrepareWorkspaceAccess_DelegationUpdatesOnlyMatchingBearerChannel(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, orgID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
 
 	cookieChannelID := id.Generate()
@@ -435,7 +423,6 @@ func TestPrepareWorkspaceAccess_DelegationUpdatesOnlyMatchingBearerChannel(t *te
 	// be refused as unscopeable rather than exercising the fan-out.
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(userID),
-		OrgID:      orgID,
 		Credential: auth.DelegationCredential(tokenID, wsA, workerID),
 	})
 	_, err := env.channelSvc.PrepareWorkspaceAccess(ctx, connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
@@ -474,11 +461,11 @@ func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
 
 	wsA := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsA, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-A",
+		ID: wsA, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-A",
 	}))
 	wsB := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsB, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-B",
+		ID: wsB, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-B",
 	}))
 
 	workerID := env.createWorkerWithKey(t, token, []byte("k"))
@@ -511,9 +498,8 @@ func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
 }
 
 // TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces pins the owner-only
-// announce: a workspace owned by ANOTHER user -- in the caller's org or any
-// other -- must never appear in the accessible-workspace set announced to the
-// worker on channel open.
+// announce: a workspace owned by ANOTHER user must never appear in the
+// accessible-workspace set announced to the worker on channel open.
 func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
@@ -522,23 +508,20 @@ func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
 	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
-	// A workspace in the caller's own org (baseline).
+	// A workspace owned by the caller (baseline).
 	wsHome := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsHome, OrgID: adminUser.OrgID, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-home",
+		ID: wsHome, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-home",
 	}))
 
-	// A workspace owned by a different user (their own personal org) -- never
-	// announced to this caller.
-	orgB := id.Generate()
-	require.NoError(t, env.store.Orgs().Create(ctx, store.CreateOrgParams{ID: orgB, Name: "org-b"}))
+	// A workspace owned by a different user -- never announced to this caller.
 	ownerB := id.Generate()
 	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: ownerB, OrgID: orgB, Username: "owner-b", DisplayName: "Owner B",
+		ID: ownerB, Username: "owner-b", DisplayName: "Owner B",
 	}))
 	wsForeign := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsForeign, OrgID: orgB, OwnerUserID: userid.MustNew(ownerB), Title: "ws-foreign",
+		ID: wsForeign, OwnerUserID: userid.MustNew(ownerB), Title: "ws-foreign",
 	}))
 
 	workerID := env.createWorkerWithKey(t, token, []byte("k"))
@@ -576,7 +559,7 @@ func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
 // OpenChannel is just a speed-bump.
 func TestPrepareWorkspaceAccess_DelegationCannotWidenScope(t *testing.T) {
 	env := setupBearerChannelEnv(t)
-	userID, _, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
+	userID, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
 
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 

@@ -22,7 +22,7 @@ var OrphanAuditLookupTimeout = 5 * time.Second
 // common) non-tombstone batch.
 func containsTombstoneTab(batch *leapmuxv1.OpBatch) bool {
 	for _, op := range batch.GetOps() {
-		if _, ok := op.GetBody().(*leapmuxv1.OrgOp_TombstoneTab); ok {
+		if _, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab); ok {
 			return true
 		}
 	}
@@ -33,15 +33,15 @@ func containsTombstoneTab(batch *leapmuxv1.OpBatch) bool {
 // id the tab was pinned to in the pre-commit state. It runs SYNCHRONOUSLY at the
 // spawn site (processBatch, before the audit goroutine is launched) so the
 // background goroutine captures only this small map, not the whole (potentially
-// multi-MB) OrgCrdtState -- which the goroutine would otherwise pin for the
+// multi-MB) UserCrdtState -- which the goroutine would otherwise pin for the
 // CanUseWorker DB lookup's duration, past the m.state = working swap that makes
 // preState otherwise GC-eligible. Tabs already shelled out of pre or pinned to no
 // worker are omitted, the same cases auditOrphanTabTombstones skips on a missing
 // key.
-func tombstonedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre *leapmuxv1.OrgCrdtState) map[string]string {
+func tombstonedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre *leapmuxv1.UserCrdtState) map[string]string {
 	out := make(map[string]string)
 	for _, op := range batch.GetOps() {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_TombstoneTab)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
 		if !ok {
 			continue
 		}
@@ -77,7 +77,7 @@ func tombstonedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre *leapmuxv1.OrgCrdtStat
 // tombstoned tabs' worker ids are resolved from the pre-commit state
 // SYNCHRONOUSLY, before the goroutine is spawned (tombstonedTabWorkerIDs), so the
 // goroutine captures only that small map instead of the whole pre-commit
-// OrgCrdtState -- which would otherwise pin the old generation (potentially
+// UserCrdtState -- which would otherwise pin the old generation (potentially
 // multi-MB) for the CanUseWorker DB lookup's duration, past the m.state = working
 // swap that makes it otherwise GC-eligible. The auditWG counter ensures Stop()
 // drains in-flight audits.
@@ -117,7 +117,7 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		// here). The timeout (OrphanAuditLookupTimeout) bounds the
 		// lifetime a stalled lookup can keep the goroutine -- and thus
 		// Stop()'s auditWG.Wait() -- alive.
-		v, err := m.auth.CanUseWorker(auditCtx, m.orgID, workerID, in.PrincipalID)
+		v, err := m.auth.CanUseWorker(auditCtx, workerID, in.PrincipalID)
 		if err != nil {
 			// A transient worker-lookup failure must not be read as "worker
 			// gone": that would mislabel a legitimate tombstone as orphan
@@ -141,7 +141,7 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		return v
 	}
 	for _, op := range batch.GetOps() {
-		body, ok := op.GetBody().(*leapmuxv1.OrgOp_TombstoneTab)
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
 		if !ok {
 			continue
 		}
@@ -166,8 +166,8 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		}
 		ref := EntityRef{Kind: EntityKindTab, TabType: body.TombstoneTab.GetTabType(), TabID: tabID}
 		workspaceID := res.AffectedEntities[ref].Pre
-		// org_id is already stamped on m.logger via NewManager's
-		// logger.With("org_id", orgID); don't double-stamp.
+		// user_id is already stamped on m.logger via NewManager's
+		// logger.With("user_id", userID); don't double-stamp.
 		m.logger.Warn("crdt: orphan tab tombstoned (worker inaccessible to principal)",
 			"workspace_id", workspaceID,
 			"tab_id", tabID,

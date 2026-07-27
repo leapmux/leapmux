@@ -128,7 +128,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		}
 		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, r.scopeWorkspaceID(workspaceID), bare, payload)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, relayError(err)
 		}
 		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
 	case namespaceHub:
@@ -137,12 +137,43 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		}
 		out, err := r.Hub.CallInner(ctx, r.UserID, r.scopeWorkspaceID(workspaceID), stripNamespace(method), payload)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, relayError(err)
 		}
 		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown method namespace: %s", method))
 	}
+}
+
+// relayError preserves the originating connect code when relaying a hub or
+// cross-worker failure back to the caller.
+//
+// It used to be a flat connect.CodeInternal wrap, and that silently disabled
+// every code-sensitive decision the CLI makes on this transport. The code is
+// the only machine-readable part of the answer -- the message survives, but
+// nothing may parse it -- so flattening turned "no such workspace"
+// (CodeNotFound) and "worker is offline" (CodeUnavailable) into an
+// indistinguishable internal error. Downstream that made
+// cmd.isNotFoundOrForbidden and cmd.isWorkerUnreachable unable to match at all
+// for a worker-spawned agent, so `tab close` on an offline sibling worker
+// reported inspect_failed instead of falling back to a CRDT-only tombstone --
+// while the identical command over the hub transport, and the frontend's
+// mirrored predicate, both fell back correctly.
+//
+// Note this is NOT the in-band CallInnerResponse.ErrorCode path: hub and
+// cross-worker failures return a nil response and a non-nil error, so they
+// never reach the IsError branch that dispatchLocal populates. The two also
+// carry different enums (ErrorCode is a grpc code, this is a connect.Code);
+// they must not be conflated.
+func relayError(err error) error {
+	// CodeOf answers CodeUnknown for a plain error. Only a real upstream code is
+	// worth preserving; an uncoded failure keeps the old CodeInternal, which is
+	// what distinguishes "the relay broke" from "no hub configured"
+	// (Unimplemented) and "workspace out of scope" (PermissionDenied).
+	if code := connect.CodeOf(err); code != connect.CodeUnknown {
+		return connect.NewError(code, err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
 }
 
 // withLocalAuthorizer registers a per-request synthetic stream id with

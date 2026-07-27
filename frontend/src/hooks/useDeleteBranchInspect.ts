@@ -2,7 +2,6 @@ import type { Accessor } from 'solid-js'
 import type { InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
 import { createSignal, onMount } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { useOrg } from '~/context/OrgContext'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { createLogger } from '~/lib/logger'
 
@@ -41,12 +40,10 @@ export interface DeleteBranchInspect {
  * after a push lands.
  */
 export function useDeleteBranchInspect(args: UseDeleteBranchInspectArgs): DeleteBranchInspect {
-  const org = useOrg()
   const [info, setInfo] = createSignal<InspectBranchDeletionResponse | null>(null)
 
   const fetcher = createGuardedFetch<void, InspectBranchDeletionResponse>({
     fetch: (_args, signal) => workerRpc.inspectBranchDeletion(args.workerId, {
-      orgId: org.orgId(),
       workerId: args.workerId,
       path: args.gitToplevel,
       branchNameHint: args.branchName ?? '',

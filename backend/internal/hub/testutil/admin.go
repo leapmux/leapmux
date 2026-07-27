@@ -59,26 +59,16 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 	hash, err := cachedTestAdminHash()
 	require.NoError(t, err)
 
-	orgID := id.Generate()
 	userID := id.Generate()
 
-	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:   orgID,
-			Name: TestAdminUsername,
-		}); err != nil {
-			return err
-		}
-		return tx.Users().Create(ctx, store.CreateUserParams{
-			ID:           userID,
-			OrgID:        orgID,
-			Username:     TestAdminUsername,
-			PasswordHash: hash,
-			DisplayName:  "Admin",
-			Email:        "",
-			PasswordSet:  true,
-			IsAdmin:      true,
-		})
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:           userID,
+		Username:     TestAdminUsername,
+		PasswordHash: hash,
+		DisplayName:  "Admin",
+		Email:        "",
+		PasswordSet:  true,
+		IsAdmin:      true,
 	}))
 }
 
@@ -92,24 +82,14 @@ func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string
 	hash, err := password.Hash(plainPassword)
 	require.NoError(t, err)
 
-	orgID := id.Generate()
 	userID := id.Generate()
 
-	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
-			ID:   orgID,
-			Name: username,
-		}); err != nil {
-			return err
-		}
-		return tx.Users().Create(ctx, store.CreateUserParams{
-			ID:           userID,
-			OrgID:        orgID,
-			Username:     username,
-			PasswordHash: hash,
-			DisplayName:  username,
-			PasswordSet:  true,
-		})
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:           userID,
+		Username:     username,
+		PasswordHash: hash,
+		DisplayName:  username,
+		PasswordSet:  true,
 	}))
 	return userID
 }

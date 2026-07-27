@@ -31,35 +31,16 @@ func resolveDeps(c *remote.Client) resolve.Deps {
 			t := resp.GetTab()
 			return t.GetTabType(), t.GetWorkspaceId(), t.GetTileId(), t.GetWorkerId(), nil
 		},
-		GetWorkspace: func(ctx context.Context, workspaceID string) (string, string, error) {
+		GetWorkspace: func(ctx context.Context, workspaceID string) error {
 			var resp leapmuxv1.GetWorkspaceResponse
-			if err := hubCallUnary(ctx, c, "GetWorkspace", workspaceID, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp); err != nil {
-				return "", "", err
-			}
-			w := resp.GetWorkspace()
-			return w.GetOrgId(), w.GetCreatedBy(), nil
+			return hubCallUnary(ctx, c, "GetWorkspace", workspaceID, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp)
 		},
-		GetWorker: func(ctx context.Context, workerID string) (string, string, error) {
-			var resp leapmuxv1.GetWorkerResponse
-			if err := hubCallUnary(ctx, c, "GetWorker", "", &leapmuxv1.GetWorkerRequest{WorkerId: workerID}, &resp); err != nil {
-				return "", "", err
-			}
-			w := resp.GetWorker()
-			return w.GetRegisteredBy(), w.GetOrgId(), nil
-		},
-		LocateTile: func(ctx context.Context, tileID string) (string, string, error) {
+		LocateTile: func(ctx context.Context, tileID string) (string, error) {
 			var resp leapmuxv1.LocateTileResponse
 			if err := hubCallUnary(ctx, c, "LocateTile", "", &leapmuxv1.LocateTileRequest{TileId: tileID}, &resp); err != nil {
-				return "", "", err
-			}
-			return resp.GetWorkspaceId(), resp.GetOrgId(), nil
-		},
-		GetUser: func(ctx context.Context, userID string) (string, error) {
-			var resp leapmuxv1.GetUserResponse
-			if err := hubCallUnary(ctx, c, "GetUser", "", &leapmuxv1.GetUserRequest{UserId: userID}, &resp); err != nil {
 				return "", err
 			}
-			return resp.GetOrgId(), nil
+			return resp.GetWorkspaceId(), nil
 		},
 		GetWorkingDir: func(ctx context.Context, workerID string, tabType leapmuxv1.TabType, tabID string) (string, error) {
 			switch tabType {
@@ -68,28 +49,42 @@ func resolveDeps(c *remote.Client) resolve.Deps {
 				if err := callInnerRPCBest(ctx, c, workerID, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{tabID}}, &resp); err != nil {
 					return "", err
 				}
-				for _, a := range resp.GetAgents() {
-					if a.GetId() == tabID {
-						return a.GetWorkingDir(), nil
-					}
-				}
-				return "", nil
+				return findWorkingDir(resp.GetAgents(), tabID,
+					(*leapmuxv1.AgentInfo).GetId, (*leapmuxv1.AgentInfo).GetWorkingDir), nil
 			case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 				var resp leapmuxv1.ListTerminalsResponse
 				if err := callInnerRPCBest(ctx, c, workerID, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{tabID}}, &resp); err != nil {
 					return "", err
 				}
-				for _, t := range resp.GetTerminals() {
-					if t.GetTerminalId() == tabID {
-						return t.GetWorkingDir(), nil
-					}
-				}
-				return "", nil
+				return findWorkingDir(resp.GetTerminals(), tabID,
+					(*leapmuxv1.TerminalInfo).GetTerminalId, (*leapmuxv1.TerminalInfo).GetWorkingDir), nil
 			default:
 				return "", nil
 			}
 		},
 	}
+}
+
+// findWorkingDir returns the working dir of the entry whose id is tabID, or ""
+// when no entry matches.
+//
+// GetWorkingDir's AGENT and TERMINAL branches differ only in the response type
+// and these two accessors, so the scan lives here once instead of being
+// copy-pasted per tab type -- the next tab type with a working dir adds a call,
+// not another loop. The id accessor is a parameter rather than an interface
+// because the generated types spell it differently (GetId vs GetTerminalId) and
+// neither is going to grow a shared one.
+//
+// A miss returns "" and NOT an error, matching GetWorkingDir's contract: the
+// resolver treats working_dir as best-effort, and a worker that has already
+// forgotten the tab is an ordinary outcome, not a failure.
+func findWorkingDir[T any](items []T, tabID string, id func(T) string, workingDir func(T) string) string {
+	for _, it := range items {
+		if id(it) == tabID {
+			return workingDir(it)
+		}
+	}
+	return ""
 }
 
 // runResolve is the canonical handler entry point: build a client,
@@ -116,5 +111,5 @@ func runResolve(ctx context.Context, c *remote.Client, need resolve.Need, in res
 // surfaces a confusing `not_logged_in` envelope.
 func hasAnyEntityInput(in resolve.Inputs) bool {
 	return in.TabID != "" || in.TileID != "" || in.WorkspaceID != "" ||
-		in.WorkerID != "" || in.OrgID != "" || in.UserID != ""
+		in.WorkerID != ""
 }

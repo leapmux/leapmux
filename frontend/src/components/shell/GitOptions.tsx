@@ -10,7 +10,6 @@ import { RefreshButton } from '~/components/common/RefreshButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WorktreeSelect } from '~/components/shell/WorktreeSelect'
 import { BranchSelect } from '~/components/workspace/BranchSelect'
-import { useOrg } from '~/context/OrgContext'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { GitMode } from '~/hooks/useGitModeState'
 import { createLogger } from '~/lib/logger'
@@ -142,7 +141,7 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
 /**
  * Per-mode dirty-worktree warning copy. Exported so tests can pin the
  * exact strings shown for each mode without rendering the full GitOptions
- * component (which depends on org context, RPC mocks, etc.). Returns null
+ * component (which depends on auth context, RPC mocks, etc.). Returns null
  * for modes that don't surface a dirty-tree warning.
  */
 export function dirtyWarningCopy(mode: GitMode): string | null {
@@ -159,7 +158,6 @@ export function dirtyWarningCopy(mode: GitMode): string | null {
 }
 
 export const GitOptions: Component<GitOptionsProps> = (props) => {
-  const org = useOrg()
   // `?? DEFAULT_GIT_MODES` only triggers on null/undefined, not on an
   // empty array — but an empty array is the more dangerous shape: it
   // would yield `enabledModeList()[0] === undefined` below and the
@@ -293,7 +291,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // the signal didn't change, only the children did. Skipped entirely
   // when the parent supplies `preloadedBranches`.
   const branchFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitBranches>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { workerId: wid, path, orgId: org.orgId() }),
+    fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { workerId: wid, path }),
     applySuccess: (resp) => {
       setInternalBranches(resp.branches)
       const cur = resp.currentBranch || props.gitInfo.info().currentBranch
@@ -330,7 +328,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   })
 
   const worktreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitWorktrees>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitWorktrees(wid, { workerId: wid, path, orgId: org.orgId() }),
+    fetch: ({ wid, path }) => workerRpc.listGitWorktrees(wid, { workerId: wid, path }),
     applySuccess: (resp) => {
       // Only show actual worktrees (exclude the main working tree).
       setWorktrees(resp.worktrees.filter(wt => !wt.isMain).map(wt => ({ path: wt.path, branch: wt.branch })))

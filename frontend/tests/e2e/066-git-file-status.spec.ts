@@ -40,12 +40,12 @@ function createTempGitRepo(): string {
 
 test.describe('Git File Status', () => {
   test('git filter tab bar is visible for git repo workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Git TabBar Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Git TabBar Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load.
@@ -67,15 +67,15 @@ test.describe('Git File Status', () => {
   })
 
   test('tab bar hidden for non-git directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     // Use /tmp as a non-git directory.
     const tempDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-nongit-'))
     writeFileSync(join(tempDir, 'hello.txt'), 'test')
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Non-Git Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Non-Git Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load.
@@ -91,13 +91,13 @@ test.describe('Git File Status', () => {
   })
 
   test('filter tabs show correct files', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Filter Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Filter Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for tree to load.
@@ -140,13 +140,13 @@ test.describe('Git File Status', () => {
   })
 
   test('git status indicators on files', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Status Indicator Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Status Indicator Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -168,13 +168,13 @@ test.describe('Git File Status', () => {
   })
 
   test('untracked files show diff stats badge', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Untracked Stats Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Untracked Stats Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -202,13 +202,13 @@ test.describe('Git File Status', () => {
   })
 
   test('flat list toggle in changed mode', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flat List Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flat List Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -238,12 +238,12 @@ test.describe('Git File Status', () => {
   })
 
   test('collapse all button resets tree expansion', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse All Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse All Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -268,12 +268,12 @@ test.describe('Git File Status', () => {
   })
 
   test('locate file button hidden when no file tab active', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Locate Hidden Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Locate Hidden Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -288,13 +288,13 @@ test.describe('Git File Status', () => {
   })
 
   test('diff mode toolbar appears for changed files', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Diff Toolbar Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Diff Toolbar Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -320,13 +320,13 @@ test.describe('Git File Status', () => {
   })
 
   test('opening from staged tab starts in diff view', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const tempDir = createTempGitRepo()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Staged Diff Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Staged Diff Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()

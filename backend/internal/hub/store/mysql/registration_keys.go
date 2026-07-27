@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type registrationKeyStore struct {
@@ -43,7 +44,7 @@ func (s *registrationKeyStore) GetByID(ctx context.Context, id string) (*store.W
 }
 
 func (s *registrationKeyStore) GetOwned(ctx context.Context, p store.GetOwnedRegistrationKeyParams) (*store.WorkerRegistrationKey, error) {
-	owner, ok := store.OwnerFilter(p.CreatedBy)
+	owner, ok := userid.OwnerFilter(p.CreatedBy)
 	if !ok {
 		// A blank bind parameter would MATCH a blank created_by column
 		// rather than fail to match, so an unminted caller must be refused
@@ -61,7 +62,7 @@ func (s *registrationKeyStore) GetOwned(ctx context.Context, p store.GetOwnedReg
 }
 
 func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistrationKeyParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.CreatedBy)
+	owner, ok := userid.OwnerFilter(p.CreatedBy)
 	if !ok {
 		return 0, nil // an unminted caller owns nothing; see OwnerFilter
 	}
@@ -74,7 +75,7 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 }
 
 func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDeleteRegistrationKeyParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.CreatedBy)
+	owner, ok := userid.OwnerFilter(p.CreatedBy)
 	if !ok {
 		return 0, nil // an unminted caller owns nothing; see OwnerFilter
 	}

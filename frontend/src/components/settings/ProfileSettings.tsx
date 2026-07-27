@@ -170,9 +170,6 @@ export const ProfileSettings: Component = () => {
     <div class={styles.section}>
       <div class="vstack gap-4">
         <UsernameField value={username} onInput={setUsername} labelClass={styles.fieldLabel} />
-        <Show when={username() !== auth.user()?.username}>
-          <div class={warningText}>Changing your username will also rename your personal organization.</div>
-        </Show>
         <label class={styles.fieldLabel}>
           Display Name
           <input type="text" value={displayName()} onInput={e => setDisplayName(e.currentTarget.value)} />

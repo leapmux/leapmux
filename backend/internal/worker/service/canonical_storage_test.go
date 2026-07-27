@@ -130,7 +130,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// worker_file_tabs.created_at via the column DEFAULT on UpsertWorkerFileTab.
 	require.NoError(t, queries.UpsertWorkerFileTab(ctx, gendb.UpsertWorkerFileTabParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       "tab-1",
 		WorkspaceID: "ws-1",
 		FilePath:    "/tmp/file.txt",

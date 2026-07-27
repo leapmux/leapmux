@@ -1,12 +1,12 @@
 -- name: InsertLifecycleOutbox :exec
-INSERT INTO lifecycle_outbox (org_id, op_type, payload)
+INSERT INTO lifecycle_outbox (user_id, op_type, payload)
 VALUES ($1, $2, $3);
 
 -- name: ListPendingLifecycleOutbox :many
 -- Paged scan so a wedged outbox cannot OOM the dispatcher; callers
 -- iterate to drain.
 SELECT * FROM lifecycle_outbox
-WHERE org_id = $1 AND consumed_at IS NULL
+WHERE user_id = $1 AND consumed_at IS NULL
 ORDER BY id
 LIMIT $2;
 

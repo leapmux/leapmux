@@ -1,7 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createEffect, createMemo, createSignal, on } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { useOrg } from '~/context/OrgContext'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { createLogger } from '~/lib/logger'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
@@ -10,8 +9,8 @@ const log = createLogger('useGitPathInfo')
 
 // Module-scoped seed for the probeKey memo. Static so the createMemo
 // init slot doesn't end up evaluating an expression that reads the
-// (workerId, path, orgId) accessors in the parent's reactive scope.
-const EMPTY_PROBE_KEY: readonly [string, string, string] = ['', '', '']
+// (workerId, path) accessors in the parent's reactive scope.
+const EMPTY_PROBE_KEY: readonly [string, string] = ['', '']
 
 export interface UseGitPathInfoOptions {
   /**
@@ -105,7 +104,6 @@ export function useGitPathInfo(
   path: Accessor<string>,
   options: UseGitPathInfoOptions = {},
 ): GitPathInfo {
-  const org = useOrg()
   // One signal holding the full record. Consumers read fields via
   // `info().X`, so SolidJS only triggers a single update when the probe
   // lands (no batch() ceremony, no setter fan-out).
@@ -146,7 +144,7 @@ export function useGitPathInfo(
   }
 
   const fetcher = createGuardedFetch<{ wid: string, p: string }, Awaited<ReturnType<typeof workerRpc.getGitInfo>>>({
-    fetch: ({ wid, p }, signal) => workerRpc.getGitInfo(wid, { workerId: wid, path: p, orgId: org.orgId() }, { signal }),
+    fetch: ({ wid, p }, signal) => workerRpc.getGitInfo(wid, { workerId: wid, path: p }, { signal }),
     applySuccess: (resp, args) => {
       // First-probe-on-worktree-root → remap: the caller's path setter
       // will switch to the canonical repoRoot, retriggering the probe.
@@ -223,22 +221,18 @@ export function useGitPathInfo(
     await fetcher.run({ wid, p })
   }
 
-  // Track orgId alongside workerId/path: the fetch closure reads orgId
-  // out of the org context, so an orgId change without a workerId/path
-  // change must still refire the probe (otherwise the stale orgId is
-  // baked into the RPC). Stamp the tuple through a memo with
-  // value-comparing equality so identity churn upstream (e.g. the auth
-  // user re-loading to the same value) doesn't refire the probe.
+  // Track workerId/path so the probe refires when either changes.
+  // Stamp the tuple through a memo with value-comparing equality so
+  // identity churn upstream doesn't refire the probe.
   //
-  // The seed is a STATIC empty tuple, not another `[workerId(), path(),
-  // org.orgId()]` expression: Solid's createMemo second arg is the
-  // initial value, NOT a second computation. Passing the live tuple
-  // there would evaluate the three accessors in the hook's reactive
-  // scope (not inside the memo), wasting work AND creating signal
-  // subscriptions on the parent owner that the memo's own equals
-  // callback can't dedupe.
-  const probeKey = createMemo<readonly [string, string, string]>(
-    () => [workerId(), path(), org.orgId()] as const,
+  // The seed is a STATIC empty tuple, not another `[workerId(), path()]`
+  // expression: Solid's createMemo second arg is the initial value, NOT
+  // a second computation. Passing the live tuple there would evaluate
+  // the accessors in the hook's reactive scope (not inside the memo),
+  // wasting work AND creating signal subscriptions on the parent owner
+  // that the memo's own equals callback can't dedupe.
+  const probeKey = createMemo<readonly [string, string]>(
+    () => [workerId(), path()] as const,
     EMPTY_PROBE_KEY,
     { equals: shallowEqualArrays },
   )

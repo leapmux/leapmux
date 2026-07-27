@@ -5,7 +5,6 @@ import { A, useNavigate } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
-import { orgHomePath } from '~/lib/orgRoutes'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { cardNarrow } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -60,7 +59,7 @@ export const SignupPage: Component = () => {
                     />
                   </Show>
                 )}
-                onSuccess={(resp, slug) => {
+                onSuccess={(resp) => {
                   if (resp.verificationRequired) {
                     // The signup RPC now creates a session even when
                     // verification is required, so the user can hit the
@@ -73,7 +72,7 @@ export const SignupPage: Component = () => {
                   }
                   else {
                     auth.setAuth(resp.user!)
-                    navigate(orgHomePath(slug), { replace: true })
+                    navigate('/', { replace: true })
                   }
                 }}
               />

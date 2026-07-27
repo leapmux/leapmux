@@ -63,10 +63,9 @@ func assertStoredInstant(t *testing.T, label string, bound, stored time.Time) {
 func (s *Suite) testTimeFloor(t *testing.T) {
 	t.Run("delegation token create floors bound expiries", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "floor-ws")
+		wsID := SeedWorkspace(t, st, user.ID, "floor-ws")
 		base := floorProbeBase()
 
 		tokenID := id.Generate()
@@ -91,8 +90,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("api token create floors bound expiries", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 		base := floorProbeBase()
 
 		tokenID := id.Generate()
@@ -119,8 +117,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("session create and touch floor bound instants", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 		base := floorProbeBase()
 
 		sessionID := id.Generate()
@@ -153,8 +150,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("registration key create and extend floor bound expiry", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 		base := floorProbeBase()
 
 		expiresAt := floorProbe(base, 0)
@@ -178,8 +174,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("cli authorization code create floors bound expiry", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
@@ -210,22 +205,22 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		assertStoredInstant(t, "expires_at", expiresAt, auth.ExpiresAt)
 	})
 
-	t.Run("org state upsert floors bound instants", func(t *testing.T) {
+	t.Run("user state upsert floors bound instants", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
 		base := floorProbeBase()
 
 		epochStartedAt := floorProbe(base, 0)
 		updatedAt := floorProbe(base, 1)
-		require.NoError(t, st.OrgState().Upsert(ctx, store.UpsertOrgStateParams{
-			OrgID:          orgID,
+		user := SeedUser(t, st, "floor-state-user")
+		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
+			UserID:         userid.MustNew(user.ID),
 			StatePayload:   []byte("payload"),
 			CurrentEpoch:   1,
 			EpochStartedAt: epochStartedAt,
 			UpdatedAt:      updatedAt,
 		}))
 
-		row, err := st.OrgState().Get(ctx, orgID)
+		row, err := st.UserState().Get(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assertStoredInstant(t, "epoch_started_at", epochStartedAt, row.EpochStartedAt)
 		assertStoredInstant(t, "updated_at", updatedAt, row.UpdatedAt)
@@ -233,8 +228,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("pending email expiry floors bound instant", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
@@ -250,14 +244,13 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		assertStoredInstant(t, "pending_email_expires_at", expiresAt, *got.PendingEmailExpiresAt)
 	})
 
-	t.Run("org recent batch id insert floors bound expiry", func(t *testing.T) {
+	t.Run("user recent batch id insert floors bound expiry", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.OrgRecentBatchIDs().Insert(ctx, store.InsertOrgRecentBatchIDParams{
-			OrgID:               orgID,
+		require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
+			UserID:              userid.MustNew(user.ID),
 			BatchID:             "floor-batch",
 			BodyHash:            []byte("hash"),
 			PrincipalID:         user.ID,
@@ -269,7 +262,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ExpiresAt:           expiresAt,
 		}))
 
-		row, err := st.OrgRecentBatchIDs().Get(ctx, orgID, "floor-batch")
+		row, err := st.UserRecentBatchIDs().Get(ctx, userid.MustNew(user.ID), "floor-batch")
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, row.ExpiresAt)
 	})
@@ -293,8 +286,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 	t.Run("oauth tokens upsert floors bound expiry", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "floor-org")
-		user := SeedUser(t, st, orgID, "floor-user")
+		user := SeedUser(t, st, "floor-user")
 		prov := SeedOAuthProvider(t, st, "floor-provider")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)

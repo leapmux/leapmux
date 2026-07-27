@@ -77,11 +77,10 @@ test.describe('Claude Code agent open timing', () => {
       srv.hubUrl,
       srv.adminToken,
       `timing-${Date.now()}`,
-      srv.adminOrgId,
     )
     await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
     await loginViaToken(page, srv.adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
@@ -151,9 +150,9 @@ test.describe('Claude Code agent open timing', () => {
       // startup to finish. Identify the new agent_id from the first
       // handler_begin marker after logsBefore, then wait for its
       // "agent started" log.
-      await expect.poll(() => findNewAgentId(srv.logLines, logsBefore) !== null, { timeout: 10_000 }).toBeTruthy()
+      await expect.poll(() => findNewAgentId(srv.logLines, logsBefore) !== null).toBeTruthy()
       const iterAgentId = findNewAgentId(srv.logLines, logsBefore)!
-      await expect.poll(() => srv.logLines.slice(logsBefore).some(l => l.json?.msg === 'agent started' && l.json?.agent_id === iterAgentId), { timeout: 60_000 }).toBeTruthy()
+      await expect.poll(() => srv.logLines.slice(logsBefore).some(l => l.json?.msg === 'agent started' && l.json?.agent_id === iterAgentId)).toBeTruthy()
       // The MutationObserver installed above gives us the instant the
       // new tab DOM node was attached and the instant a new .ProseMirror
       // mounted for the new tab; these avoid Playwright's poll-interval
@@ -161,7 +160,7 @@ test.describe('Claude Code agent open timing', () => {
       // Force a final observation of the overlay-removed signal in
       // case the MutationObserver's last callback already ran before
       // ACTIVE arrived (i.e. without a subsequent mutation).
-      await page.locator('[data-testid="agent-startup-overlay"]').waitFor({ state: 'detached', timeout: 60_000 })
+      await page.locator('[data-testid="agent-startup-overlay"]').waitFor({ state: 'detached' })
       const { tTabDomMs, tEditorReadyMs, tStatusActiveMs } = await page.evaluate(() => {
         const w = window as unknown as {
           __tabAppearedAt?: number | null
