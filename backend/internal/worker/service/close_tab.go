@@ -22,14 +22,15 @@ import (
 // link and revokes the file_tab row directly, precisely to avoid the
 // worktree-removal branch this flow owns (the hub's "this tab is gone"
 // signal says nothing about whether the worktree should be removed).
-func (svc *Service) closeFileTabCommon(orgID, tabID string, action leapmuxv1.WorktreeAction) *leapmuxv1.CloseTabResult {
+func (svc *Service) closeFileTabCommon(userID, tabID string, action leapmuxv1.WorktreeAction) *leapmuxv1.CloseTabResult {
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_FILE,
 		tabID,
+		userID,
 		action,
 		func() {},
 		func() error {
-			err := svc.FileTabPaths.RevokeRow(bgCtx(), orgID, tabID)
+			err := svc.FileTabPaths.RevokeRow(bgCtx(), userID, tabID)
 			// Idempotent: the row may have been deleted by a concurrent
 			// close. closeTabCommon proceeds to drop the worktree link
 			// regardless.
@@ -60,9 +61,16 @@ func (svc *Service) closeFileTabCommon(orgID, tabID string, action leapmuxv1.Wor
 // result populates failure_message / failure_detail / worktree_path /
 // worktree_id so the UI can toast a warning. The returned
 // *CloseTabResult is never nil.
+//
+// userID is the authenticated caller. It scopes every worktree_tabs read and
+// delete below, because a FILE tab's id is unique only within a user -- an
+// owner-blind delete would detach a DIFFERENT user's still-open file tab from
+// the same worktree. AGENT/TERMINAL callers may pass "" or the real user;
+// worktreeTabUserID normalizes both to the "" those links were written with.
 func (svc *Service) closeTabCommon(
 	tabType leapmuxv1.TabType,
 	tabID string,
+	userID string,
 	action leapmuxv1.WorktreeAction,
 	stopProcess func(),
 	closeDB func() error,
@@ -81,6 +89,7 @@ func (svc *Service) closeTabCommon(
 		wt, err := svc.Queries.GetWorktreeForTab(bgCtx(), db.GetWorktreeForTabParams{
 			TabType: tabType,
 			TabID:   tabID,
+			UserID:  worktreeTabUserID(tabType, userID),
 		})
 		switch {
 		case err == nil:
@@ -135,11 +144,11 @@ func (svc *Service) closeTabCommon(
 			// reconciles and reaps once it confirms no live ref remains.
 			return result
 		}
-		svc.unregisterTab(tabType, tabID)
+		svc.unregisterTab(tabType, tabID, userID)
 		return result
 	}
 
-	svc.removeWorktreeIfLastReference(result, wtForRemoval, tabType, tabID)
+	svc.removeWorktreeIfLastReference(result, wtForRemoval, tabType, tabID, userID)
 	return result
 }
 
@@ -161,7 +170,7 @@ func (svc *Service) closeTabCommon(
 // same-worktree closes wait, so the unbounded hold can never stall an
 // unrelated tab. The same per-worktree lock guards ReapOrphanWorktree, so a
 // close and the orphan GC for one worktree can never interleave.
-func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID string) {
+func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID, userID string) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -181,7 +190,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	case errors.Is(err, sql.ErrNoRows):
 		// Hard-deleted (HardDeleteWorktreesBefore) after a prior soft-delete:
 		// already gone, same as the soft-deleted case below.
-		svc.unregisterTab(tabType, tabID)
+		svc.unregisterTab(tabType, tabID, userID)
 		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
 		return
 	case err != nil:
@@ -194,12 +203,12 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 		// Already removed by a concurrent close or the orphan GC. Drop our
 		// now-dead link so it isn't left as a strand, and report the terminal
 		// state -- the worktree the user asked to delete is gone.
-		svc.unregisterTab(tabType, tabID)
+		svc.unregisterTab(tabType, tabID, userID)
 		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
 		return
 	}
 
-	if err := svc.removeTabFromWorktree(tabType, tabID, wt.ID); err != nil {
+	if err := svc.removeTabFromWorktree(tabType, tabID, userID, wt.ID); err != nil {
 		// We couldn't drop THIS tab's link, so the count below would still
 		// see it and wrongly conclude the worktree is still referenced --
 		// silently leaking it when this was the last tab. Surface a partial

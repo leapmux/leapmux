@@ -137,7 +137,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
 				UserID:      userID,
-				OrgID:       r.GetOrgId(),
 				WorkspaceID: workspaceID,
 				WorkerID:    svc.WorkerID,
 				TabID:       terminalID,
@@ -222,7 +221,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			}
 			spawnInfo := TerminalSpawnInfo{
 				UserID:      userID,
-				OrgID:       r.GetOrgId(),
 				WorkspaceID: dbTerm.WorkspaceID,
 				WorkerID:    svc.WorkerID,
 				TabID:       terminalID,
@@ -241,7 +239,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 	// CloseTerminal stops and removes a terminal session.
 	registerTerminalGatedByIDTracked(d, "CloseTerminal",
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, userID userid.UserID, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Tracked via dispatcher RegisterTracked above so Shutdown
@@ -254,6 +252,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			result := svc.closeTabCommon(
 				leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 				terminalID,
+				userID.String(),
 				r.GetWorktreeAction(),
 				func() {
 					svc.TerminalStartup.cancelAndClear(terminalID)

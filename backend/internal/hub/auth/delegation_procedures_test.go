@@ -46,11 +46,11 @@ var delegationProcedureScope = map[string]string{
 	// requireDelegationWorkspaceOrNotFound guards the resolved workspace.
 	leapmuxv1connect.WorkspaceServiceLocateTileProcedure: "LocateTile rejects a tile outside the delegation scope workspace",
 	// delegationScopedWorkspaceRequest narrows the submitted ops' workspaces.
-	leapmuxv1connect.OrgCRDTSubmitOpsProcedure: "SubmitOps narrows the requested workspaces to the delegation scope",
+	leapmuxv1connect.UserCRDTSubmitOpsProcedure: "SubmitOps narrows the requested workspaces to the delegation scope",
 	// resolveAllowedWorkspacesSetForUser -> delegationScopedWorkspaceRequest.
-	leapmuxv1connect.OrgCRDTGetMaterializedProcedure: "GetMaterialized narrows the materialized set to the delegation scope",
+	leapmuxv1connect.UserCRDTGetMaterializedProcedure: "GetMaterialized narrows the materialized set to the delegation scope",
 	// requireDelegationWorkspace rejects a different workspace (CRDT.UpdatePresence).
-	leapmuxv1connect.OrgCRDTUpdatePresenceProcedure: "UpdatePresence rejects a workspace outside the delegation scope",
+	leapmuxv1connect.UserCRDTUpdatePresenceProcedure: "UpdatePresence rejects a workspace outside the delegation scope",
 }
 
 // TestDelegationAllowedProceduresAreScopeClassified is a tripwire coupling the

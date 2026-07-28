@@ -39,17 +39,16 @@ export const piTest = base.extend<{
   authenticatedPiWorkspace: WorkspaceFixture
 }>({
   piWorkspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       `pi-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      adminOrgId,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
       agentProvider: AgentProvider.PI,
     })
-    const workspaceUrl = `/o/admin/workspace/${workspaceId}`
+    const workspaceUrl = `/workspace/${workspaceId}`
 
     await use({ workspaceId, workspaceUrl })
 

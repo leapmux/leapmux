@@ -23,6 +23,10 @@ import (
 // trustless client that bypasses the CLI still can't write a tab
 // pointing at a non-existent worker. The CLI preflight exists for UX
 // — a friendlier error message and one fewer round-trip.
+//
+// One exception to "fail fast": the worker check is best-effort and
+// proceeds unvalidated when it cannot run at all. See
+// maybePreflightWorker for why. Every other helper here fails closed.
 
 // preflightTileKind returns the canonical "tile X is a Y node; <verb>
 // only operates on <wantLabel> tiles" envelope when the state's node
@@ -31,7 +35,7 @@ import (
 // NodeKind (set-ratios on SPLIT, set-grid-ratios on GRID, remove-grid
 // on GRID, …) so each call site avoids the per-verb `fmt.Sprintf`
 // boilerplate.
-func preflightTileKind(state *leapmuxv1.OrgMaterialized, tileID string, want leapmuxv1.NodeKind, verb, wantLabel, extra string) error {
+func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want leapmuxv1.NodeKind, verb, wantLabel, extra string) error {
 	kind := state.GetNodes()[tileID].GetKind().GetValue()
 	if kind == want {
 		return nil
@@ -43,18 +47,49 @@ func preflightTileKind(state *leapmuxv1.OrgMaterialized, tileID string, want lea
 	return remote.EmitError("invalid_request", msg)
 }
 
-// preflightWorker verifies workerID names a worker the authenticated
-// user can use. Empty workerID is rejected as `invalid_request`;
-// unknown / unauthorised IDs surface as `not_found`. One ListWorkers
-// round-trip per call — callers that need to check several workers
-// should hoist the listAccessibleWorkers call.
-func preflightWorker(ctx context.Context, c *remote.Client, workerID string) error {
+// maybePreflightWorker verifies workerID names a worker the caller can
+// use, when that question can be answered at all. Empty workerID is a
+// no-op (the flag is optional on every caller; some resolve the worker
+// later from a configured default or an agent lookup). An unknown or
+// unauthorised id surfaces as `not_found`. One ListWorkers round-trip
+// per call.
+//
+// A FAILED lookup is not fatal: the command proceeds unvalidated.
+// This check is advisory (see the file header -- the hub independently
+// rejects bogus worker refs), so its whole job is to trade an opaque
+// downstream error for a friendly "no such worker" one. Aborting
+// because the nicety itself couldn't run would be strictly worse than
+// not having it.
+//
+// That is not hypothetical. Every worker-spawned agent inherits
+// $LEAPMUX_REMOTE_WORKER_ID, which BindEntityFlags binds as the
+// --worker-id default -- so this preflight runs on essentially every
+// `leapmux remote` command an agent issues, over a delegation bearer
+// the hub restricts to `auth.delegationAllowedProcedures`. No
+// WorkerManagementService procedure is on that list, and ListWorkers
+// must NOT be added: a leaked worker delegation token would then be
+// able to enumerate the user's whole fleet. Denial here is the
+// designed outcome, and tolerating it is the fix.
+//
+// The tolerance is scoped to the DENIAL, not to every error. It used to be
+// "tolerate anything", because remoteipc.Router.CallInner flattened every hub
+// failure to connect Internal and a CodePermissionDenied test could not fire on
+// the transport where the denial actually happens. That flattening is fixed
+// (see remoteipc.relayError), so the check can be narrow again: a denial is
+// expected and tolerated, while a transport failure surfaces as
+// preflight_failed instead of silently downgrading the check to "unvalidated".
+func maybePreflightWorker(ctx context.Context, c *remote.Client, workerID string) error {
 	if workerID == "" {
-		return remote.EmitError("invalid_request", "--worker-id is required")
+		return nil
 	}
 	workers, err := listAccessibleWorkers(ctx, c)
 	if err != nil {
-		return err
+		if isPreflightDenied(err) {
+			// The designed outcome for a delegation bearer: an advisory check
+			// this caller is not allowed to run must not fail the command.
+			return nil
+		}
+		return remote.EmitErrorWith("preflight_failed", err)
 	}
 	if _, ok := workers[workerID]; !ok {
 		return remote.EmitError("not_found", "no such worker: "+workerID)
@@ -62,24 +97,30 @@ func preflightWorker(ctx context.Context, c *remote.Client, workerID string) err
 	return nil
 }
 
-// maybePreflightWorker validates workerID when non-empty, no-op
-// otherwise. Used by commands where the flag is optional and may be
-// resolved later (env var / configured default / agent lookup); the
-// explicit-flag path still gets a fail-fast check.
-func maybePreflightWorker(ctx context.Context, c *remote.Client, workerID string) error {
-	if workerID == "" {
-		return nil
+// isPreflightDenied reports whether err is the hub refusing to answer the
+// preflight for this caller, as opposed to the preflight failing to run.
+//
+// Unauthenticated counts alongside PermissionDenied: a delegation bearer whose
+// scope excludes WorkerManagementService can surface either, depending on
+// whether the interceptor rejects the procedure or the credential.
+func isPreflightDenied(err error) bool {
+	switch connect.CodeOf(err) {
+	case connect.CodePermissionDenied, connect.CodeUnauthenticated:
+		return true
+	default:
+		return false
 	}
-	return preflightWorker(ctx, c, workerID)
 }
 
 // listAccessibleWorkers fetches the set of workers the authenticated
-// user can use, indexed by worker_id. Returns an already-wrapped
-// `preflight_failed` error envelope on transport failure.
+// user can use, indexed by worker_id. The error is returned raw, NOT
+// emitted as a JSON envelope: its only caller treats a failed lookup
+// as "unvalidated" and keeps going, so emitting here would print a
+// stray error envelope ahead of the command's real output.
 func listAccessibleWorkers(ctx context.Context, c *remote.Client) (map[string]*leapmuxv1.Worker, error) {
 	var resp leapmuxv1.ListWorkersResponse
 	if err := hubCallUnary(ctx, c, "ListWorkers", "", &leapmuxv1.ListWorkersRequest{}, &resp); err != nil {
-		return nil, remote.EmitErrorWith("preflight_failed", err)
+		return nil, err
 	}
 	out := make(map[string]*leapmuxv1.Worker, len(resp.GetWorkers()))
 	for _, w := range resp.GetWorkers() {
@@ -93,9 +134,13 @@ func listAccessibleWorkers(ctx context.Context, c *remote.Client) (map[string]*l
 // caller can't distinguish "no such workspace" from "no access" — the
 // hub already deliberately conflates these to avoid info-leak.
 //
-// Most CRDT-bound commands go through openCRDTCall → resolveOrgID,
-// which already calls GetWorkspace and returns NotFound on miss; this
-// helper is the explicit version for non-CRDT commands.
+// This is the only workspace existence check the CLI has: the CRDT
+// bootstrap does NOT double as one. GetMaterialized intersects the
+// requested workspace ids with the caller's ACL and returns an empty
+// projection for anything it can't see (see
+// `auth.WorkspacesReadableByUser`), so an unknown --workspace-id
+// bootstraps "successfully" against nothing. Any command that must
+// reject a bogus workspace id has to call this helper explicitly.
 func preflightWorkspace(ctx context.Context, c *remote.Client, workspaceID string) error {
 	if workspaceID == "" {
 		return remote.EmitError("invalid_request", "--workspace-id is required")
@@ -113,7 +158,7 @@ func preflightWorkspace(ctx context.Context, c *remote.Client, workspaceID strin
 // preflightTile returns nil when tileID names a live node belonging
 // to workspaceID. Uses the materialized state already in hand from
 // the CRDT bootstrap — no extra round-trip.
-func preflightTile(state *leapmuxv1.OrgMaterialized, workspaceID, tileID string) error {
+func preflightTile(state *leapmuxv1.UserMaterialized, workspaceID, tileID string) error {
 	if tileID == "" {
 		return remote.EmitError("invalid_request", "--tile-id is required")
 	}
@@ -135,7 +180,7 @@ func preflightTile(state *leapmuxv1.OrgMaterialized, workspaceID, tileID string)
 // preflightTab returns nil when tabID names a live tab of the given
 // tabType placed under workspaceID. workspaceID == "" skips the
 // placement check (callers that don't know the workspace pass "").
-func preflightTab(state *leapmuxv1.OrgMaterialized, workspaceID, tabID string, tabType leapmuxv1.TabType) error {
+func preflightTab(state *leapmuxv1.UserMaterialized, workspaceID, tabID string, tabType leapmuxv1.TabType) error {
 	if tabID == "" {
 		return remote.EmitError("invalid_request", "--tab-id is required")
 	}
@@ -169,11 +214,11 @@ func preflightTab(state *leapmuxv1.OrgMaterialized, workspaceID, tabID string, t
 // preflightTab. The CRDT records every spawned agent / terminal as a
 // tab; the worker-side state can drift transiently but the canonical
 // "this id is reachable from the CLI" check is the tab record.
-func preflightAgent(state *leapmuxv1.OrgMaterialized, workspaceID, agentID string) error {
+func preflightAgent(state *leapmuxv1.UserMaterialized, workspaceID, agentID string) error {
 	return preflightTab(state, workspaceID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT)
 }
 
-func preflightTerminal(state *leapmuxv1.OrgMaterialized, workspaceID, terminalID string) error {
+func preflightTerminal(state *leapmuxv1.UserMaterialized, workspaceID, terminalID string) error {
 	return preflightTab(state, workspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 }
 
@@ -181,7 +226,7 @@ func preflightTerminal(state *leapmuxv1.OrgMaterialized, workspaceID, terminalID
 // matches (workspaces.root_node_id). Returns "" when the chain
 // doesn't terminate at a known workspace — usually means the node is
 // orphaned or belongs to a workspace the caller can't see.
-func nodeWorkspaceFromState(state *leapmuxv1.OrgMaterialized, nodeID string) string {
+func nodeWorkspaceFromState(state *leapmuxv1.UserMaterialized, nodeID string) string {
 	return crdt.FindRootWorkspace(state.GetNodes(), state.GetWorkspaces(), nodeID)
 }
 

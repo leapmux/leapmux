@@ -32,7 +32,6 @@ type delegationEnv struct {
 	server          *httptest.Server
 	handler         *service.WorkerDelegationHandler
 	userID          string
-	orgID           string
 	workerID        string
 	workerAuthToken string
 	workspaceID     string
@@ -82,14 +81,13 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       u.OrgID,
 		OwnerUserID: userid.MustNew(u.ID),
 		Title:       "ws",
 	}))
 
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
-		OrgID:       u.OrgID,
+		UserID:      userid.MustNew(u.ID),
 		WorkspaceID: workspaceID,
 		WorkerID:    workerID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -105,7 +103,6 @@ func setupDelegation(t *testing.T) *delegationEnv {
 		server:          srv,
 		handler:         h,
 		userID:          u.ID,
-		orgID:           u.OrgID,
 		workerID:        workerID,
 		workerAuthToken: workerAuthToken,
 		workspaceID:     workspaceID,
@@ -271,7 +268,7 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 	go func() {
 		time.Sleep(75 * time.Millisecond)
 		_ = env.store.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
-			OrgID:       env.orgID,
+			UserID:      userid.MustNew(env.userID),
 			WorkspaceID: env.workspaceID,
 			WorkerID:    env.workerID,
 			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -295,7 +292,7 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
 	env := setupDelegation(t)
 
-	// Seed a second user with their own org and try to mint for env.workerID.
+	// Seed a second user and try to mint for env.workerID.
 	otherUserID := hubtestutil.CreateTestUser(t, env.store, "other-user", "p")
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           otherUserID,
@@ -324,11 +321,11 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 
 	otherWS := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: otherWS, OrgID: other.OrgID, OwnerUserID: userid.MustNew(other.ID), Title: "foreign-ws",
+		ID: otherWS, OwnerUserID: userid.MustNew(other.ID), Title: "foreign-ws",
 	}))
 	otherTab := id.Generate()
 	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		OrgID:       other.OrgID,
+		UserID:      userid.MustNew(other.ID),
 		WorkspaceID: otherWS,
 		WorkerID:    env.workerID, // registered by admin, not by `other`
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -551,4 +548,62 @@ func TestWorkerDelegation_Mint_RejectsBlankUserID(t *testing.T) {
 		"a blank user_id must be refused before any identity comparison runs")
 	assert.Less(t, resp.StatusCode, http.StatusInternalServerError,
 		"and refused as a client error, not surfaced as a server fault")
+}
+
+// A tab row owned by a DIFFERENT user must not authorize a mint.
+//
+// workspace_tab_owned is keyed by (user_id, tab_id) precisely because tab ids
+// are not unique across users. The mint's ownership lookup binds the caller's
+// user_id, so a foreign row cannot come back at all; waitForTabOwnership also
+// compares the returned row's owner, so the refusal survives even if that
+// predicate is ever loosened. This test pins the outcome, not which of the two
+// produced it.
+func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
+	env := setupDelegation(t)
+	ctx := context.Background()
+
+	other, err := env.store.Users().GetByUsername(ctx, "admin")
+	require.NoError(t, err)
+	otherID := id.Generate()
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID:           otherID,
+		Username:     "intruder",
+		PasswordHash: "hash",
+		DisplayName:  "Intruder",
+		Email:        "intruder@example.com",
+	}))
+	require.NotEqual(t, other.ID, otherID)
+
+	// Only the intruder holds this tab id, and it is pinned to the calling
+	// worker -- everything the pre-fix predicate checked.
+	foreignTabID := id.Generate()
+	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		UserID:      userid.MustNew(otherID),
+		WorkspaceID: env.workspaceID,
+		WorkerID:    env.workerID,
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       foreignTabID,
+		Position:    "a",
+		TileID:      "tile-2",
+	}))
+
+	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           env.userID,
+		"workspace_id":      env.workspaceID,
+		"issued_for_tab_id": foreignTabID,
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"a tab row owned by another user must not authorize this caller's mint")
+
+	// Control: the caller's own tab still mints, so the refusal above is the
+	// owner mismatch and not a broken fixture.
+	ok := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           env.userID,
+		"workspace_id":      env.workspaceID,
+		"issued_for_tab_id": env.tabID,
+	})
+	defer func() { _ = ok.Body.Close() }()
+	assert.Equal(t, http.StatusOK, ok.StatusCode)
 }

@@ -124,7 +124,6 @@ type envT struct {
 	closer   *fakeCloser
 	watcher  *revocationwatcher.Watcher
 	userID   string
-	orgID    string
 	workerID string
 	wsID     string
 	tabID    string
@@ -178,11 +177,11 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	wsID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: wsID, OrgID: u.OrgID, OwnerUserID: userid.MustNew(u.ID), Title: "ws",
+		ID: wsID, OwnerUserID: userid.MustNew(u.ID), Title: "ws",
 	}))
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
-		OrgID:       u.OrgID,
+		UserID:      userid.MustNew(u.ID),
 		WorkspaceID: wsID,
 		WorkerID:    workerID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -193,7 +192,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	return &envT{
 		st: st, cache: sc, closer: closer, watcher: w,
-		userID: u.ID, orgID: u.OrgID, workerID: workerID, wsID: wsID, tabID: tabID,
+		userID: u.ID, workerID: workerID, wsID: wsID, tabID: tabID,
 	}
 }
 
@@ -232,7 +231,6 @@ func (e *envT) seedUser(t *testing.T, username string) string {
 	userID := id.Generate()
 	require.NoError(t, e.st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        e.orgID,
 		Username:     username,
 		PasswordHash: "hash",
 		DisplayName:  username,

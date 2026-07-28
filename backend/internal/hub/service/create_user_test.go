@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
@@ -23,7 +24,7 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 	t.Helper()
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	user, err := CreateUserWithOrg(context.Background(), st, CreateUserParams{
+	user, err := CreateUser(context.Background(), st, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  username,
@@ -32,6 +33,74 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 	})
 	require.NoError(t, err)
 	return user
+}
+
+// TestCreateUser_CreatesOnlyUserRow pins the user-owned model: CreateUser
+// inserts exactly one users row and does not invent workspaces (or any other
+// owned entity) as a side effect of signup.
+func TestCreateUser_CreatesOnlyUserRow(t *testing.T) {
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	before, err := st.Users().Count(ctx)
+	require.NoError(t, err)
+
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	user, err := CreateUser(ctx, st, CreateUserParams{
+		Username:     "solo-user",
+		PasswordHash: hash,
+		DisplayName:  "Solo",
+		Email:        "solo@example.com",
+		PasswordSet:  true,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, user.ID)
+
+	got, err := st.Users().GetByID(ctx, user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "solo-user", got.Username)
+	assert.Equal(t, "Solo", got.DisplayName)
+	assert.Equal(t, "solo@example.com", got.Email)
+
+	after, err := st.Users().Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, before+1, after, "CreateUser must insert exactly one users row")
+
+	workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+		UserID: userid.MustNew(user.ID),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, workspaces, "CreateUser must not create workspaces as a signup side effect")
+}
+
+// TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed pins the shape of the
+// error a duplicate signup surfaces. The store already returns an
+// ErrConflict-chain error whose text begins "conflict: ", and every signup path
+// in auth_service.go hands the result to the client as CodeInternal -- so
+// wrapping it in a second "conflict: " layer was directly user-visible as
+// "create user: conflict: conflict: UNIQUE constraint failed: users.username".
+// The ErrorIs assertion is the control: collapsing the wrap must not cost
+// callers their ability to classify the failure.
+func TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed(t *testing.T) {
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	createSimpleUser(t, st, "dupe-user", "first@example.com")
+
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	_, err = CreateUser(ctx, st, CreateUserParams{
+		Username:     "dupe-user",
+		PasswordHash: hash,
+		DisplayName:  "Dupe",
+		Email:        "second@example.com",
+		PasswordSet:  true,
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, store.ErrConflict, "a duplicate username must still classify as a conflict")
+	assert.NotContains(t, err.Error(), "conflict: conflict:",
+		"the store's error already carries the conflict prefix; wrapping adds a second one")
 }
 
 func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
@@ -75,7 +144,7 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 	assert.Zero(t, updated.PendingEmailAttempts)
 }
 
-func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
+func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 
@@ -92,7 +161,7 @@ func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
 
 	// User B signs up with that email directly.
 	hash, _ := password.Hash("testpass")
-	_, err = CreateUserWithOrg(ctx, st, CreateUserParams{
+	_, err = CreateUser(ctx, st, CreateUserParams{
 		Username:     "user-b",
 		PasswordHash: hash,
 		DisplayName:  "User B",

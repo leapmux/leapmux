@@ -123,10 +123,10 @@ func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDeleg
 }
 
 func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID userid.UserID) ([]store.DelegationToken, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListActiveDelegationTokensByUser(ctx, owner)
@@ -168,11 +168,11 @@ func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, er
 }
 
 func (s *delegationTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.RevokeDelegationTokensByUserFast(ctx, owner))

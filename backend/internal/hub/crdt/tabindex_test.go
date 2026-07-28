@@ -14,7 +14,7 @@ import (
 
 func projectionWithTab(workspaceID, tabID, tileID, position string) *crdt.Projection {
 	row := &crdt.RenderedTab{
-		OrgID:       "org",
+		UserID:      "user-1",
 		WorkspaceID: workspaceID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabID:       tabID,
@@ -23,7 +23,7 @@ func projectionWithTab(workspaceID, tabID, tileID, position string) *crdt.Projec
 		Position:    position,
 	}
 	return &crdt.Projection{
-		OrgID:        "org",
+		UserID:       "user-1",
 		Workspaces:   map[string]*crdt.WorkspaceProjection{},
 		OwnedTabs:    []*crdt.RenderedTab{row},
 		RenderedTabs: []*crdt.RenderedTab{row},
@@ -31,7 +31,7 @@ func projectionWithTab(workspaceID, tabID, tileID, position string) *crdt.Projec
 }
 
 func TestDiffProjection_NewTab_GeneratesUpserts(t *testing.T) {
-	prev := &crdt.Projection{OrgID: "org", Workspaces: map[string]*crdt.WorkspaceProjection{}}
+	prev := &crdt.Projection{UserID: "user-1", Workspaces: map[string]*crdt.WorkspaceProjection{}}
 	next := projectionWithTab("ws1", "t1", "tile-A", "a")
 	diff := crdt.DiffProjection(prev, next)
 	assert.Len(t, diff.OwnedUpserts, 1)
@@ -43,7 +43,7 @@ func TestDiffProjection_NewTab_GeneratesUpserts(t *testing.T) {
 
 func TestDiffProjection_RemovedTab_GeneratesDeletes(t *testing.T) {
 	prev := projectionWithTab("ws1", "t1", "tile-A", "a")
-	next := &crdt.Projection{OrgID: "org", Workspaces: map[string]*crdt.WorkspaceProjection{}}
+	next := &crdt.Projection{UserID: "user-1", Workspaces: map[string]*crdt.WorkspaceProjection{}}
 	diff := crdt.DiffProjection(prev, next)
 	assert.Empty(t, diff.OwnedUpserts)
 	assert.Len(t, diff.OwnedDeletes, 1)
@@ -122,16 +122,16 @@ func (w *recordingTabIndexWriter) BulkDeleteRendered(_ context.Context, keys []c
 func TestApplyDiff_OnePhasePerNonEmptySlice(t *testing.T) {
 	diff := crdt.IndexDiff{
 		OwnedUpserts: []crdt.TabIndexRow{
-			{OrgID: "org", WorkspaceID: "ws", TabID: "t1", TileID: "tile-1"},
-			{OrgID: "org", WorkspaceID: "ws", TabID: "t2", TileID: "tile-2"},
-			{OrgID: "org", WorkspaceID: "ws", TabID: "t3", TileID: "tile-3"},
+			{WorkspaceID: "ws", TabID: "t1", TileID: "tile-1"},
+			{WorkspaceID: "ws", TabID: "t2", TileID: "tile-2"},
+			{WorkspaceID: "ws", TabID: "t3", TileID: "tile-3"},
 		},
 		OwnedDeletes: []crdt.TabKey{
-			{OrgID: "org", TabID: "old-1"},
-			{OrgID: "org", TabID: "old-2"},
+			{UserID: "user-1", TabID: "old-1"},
+			{UserID: "user-1", TabID: "old-2"},
 		},
 		RenderedUpserts: []crdt.TabIndexRow{
-			{OrgID: "org", WorkspaceID: "ws", TabID: "t1", TileID: "tile-1"},
+			{WorkspaceID: "ws", TabID: "t1", TileID: "tile-1"},
 		},
 		// RenderedDeletes intentionally empty.
 	}
@@ -163,8 +163,8 @@ func TestApplyDiff_EmptyDiff_NoCalls(t *testing.T) {
 
 func TestApplyDiff_PropagatesPhaseError(t *testing.T) {
 	diff := crdt.IndexDiff{
-		OwnedUpserts: []crdt.TabIndexRow{{OrgID: "org", TabID: "t1"}},
-		OwnedDeletes: []crdt.TabKey{{OrgID: "org", TabID: "old"}},
+		OwnedUpserts: []crdt.TabIndexRow{{TabID: "t1"}},
+		OwnedDeletes: []crdt.TabKey{{UserID: "user-1", TabID: "old"}},
 	}
 	w := &recordingTabIndexWriter{failOn: "owned-delete"}
 	err := crdt.ApplyDiff(context.Background(), w, diff)

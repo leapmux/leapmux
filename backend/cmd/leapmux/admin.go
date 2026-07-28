@@ -14,6 +14,7 @@ import (
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -361,27 +362,66 @@ func resolveUserFilter(ctx context.Context, st store.Store, userID, username str
 
 // friendlyConstraintError translates uniqueness constraint violations
 // into user-friendly messages.
+//
+// The underlying unique violation can be on either users.username or
+// users.email. The store's dialect mapErr detects the constraint code but does
+// not preserve which index fired (sqlite reports SQLITE_CONSTRAINT_UNIQUE;
+// postgres reports UniqueViolation; mysql reports the duplicate-key errno) --
+// the column name lives only in the driver's free-text error, which differs
+// per dialect and is fragile to parse. So this is the LAST-RESORT message:
+// the callers pre-check availability first (see checkUserFieldsAvailable)
+// and only fall through to here when a concurrent insert wins the race between
+// the check and the write. When it can't tell which field lost, it names both
+// rather than guessing and sending the operator to change the wrong one.
+//
+// The arms cover every combination of the two fields the caller may know, and
+// only a field the caller actually supplied may be named: `admin user update
+// --email` passes username="" (that command cannot change the username), so
+// blaming an empty username would send the operator after a field that is
+// neither taken nor editable there. When neither field is known there is
+// nothing to name, so the message stays generic and WRAPS the cause -- callers
+// can still classify it with errors.Is(err, store.ErrConflict), which the
+// field-naming arms deliberately trade away for a directly actionable message.
 func friendlyConstraintError(err error, username, email string) error {
-	var ce *store.ConflictError
-	if !errors.As(err, &ce) {
-		if errors.Is(err, store.ErrConflict) {
-			// Fallback for untyped ErrConflict.
-			return fmt.Errorf("username %q is already taken", username)
-		}
+	if !errors.Is(err, store.ErrConflict) {
 		return err
 	}
-	switch ce.Entity {
-	case store.ConflictEntityOrg:
-		// Org name = username (personal org), so username is taken.
-		return fmt.Errorf("username %q is already taken", username)
-	case store.ConflictEntityUser:
-		if email != "" {
-			return fmt.Errorf("email %q is already in use", email)
-		}
+	switch {
+	case email != "" && username != "":
+		return fmt.Errorf("username %q is already taken or email %q is already in use", username, email)
+	case email != "":
+		return fmt.Errorf("email %q is already in use", email)
+	case username != "":
 		return fmt.Errorf("username %q is already taken", username)
 	default:
+		return fmt.Errorf("conflicting user record: %w", err)
+	}
+}
+
+// checkUserFieldsAvailable reports the specific field that is already taken,
+// before the write is attempted. The unique-index violation still backstops it
+// (a concurrent insert can win the race between this check and the write, and
+// friendlyConstraintError handles that), but in the ordinary single-operator
+// case this is what turns "one of these two fields collided" into a message
+// naming the field to change.
+//
+// Delegates to the SAME pair the signup and profile-edit paths use, rather than
+// the third private implementation this replaced: one uniqueness rule, one set
+// of messages, so the CLI and the RPC paths cannot disagree about which fields
+// are checked, how blank is treated, or what a collision reads as. The
+// service's errors are already the sentence to print (service.FieldTakenError),
+// so no re-wording happens here.
+//
+// A blank username or email is skipped by the checks themselves --
+// `admin user update --email` changes only the email, so the unchanged username
+// must not be reported as a cause. excludeUserID is the user being updated
+// (empty when creating), so re-setting an account's own email is not a
+// collision with itself.
+func checkUserFieldsAvailable(ctx context.Context, st store.Store, username, email, excludeUserID string) error {
+	if err := service.CheckUsernameAvailable(ctx, st, username); err != nil {
 		return err
 	}
+	return service.CheckEmailAvailable(ctx, st, email, excludeUserID)
 }
 
 // promptPassword reads a password from the terminal without echoing.

@@ -72,7 +72,7 @@ export function authedHeaders(cookie: string): Record<string, string> {
   }
 }
 
-// ---- Hub API helpers (Auth, Org, Admin, Worker management) ----
+// ---- Hub API helpers (Auth, Admin, Worker management) ----
 
 /**
  * Login via the Connect API. Returns the session cookie string
@@ -97,8 +97,6 @@ export interface ApiUser {
   displayName: string
   isAdmin: boolean
   email: string
-  orgId: string
-  orgName: string
 }
 
 /**
@@ -118,10 +116,16 @@ export async function getCurrentUser(hubUrl: string, cookie: string): Promise<Ap
 }
 
 /**
- * Get the current user's ID via the Connect API.
+ * Get the current user's ID via the Connect API. Which user that is comes
+ * entirely from `cookie` -- there is no separate "admin" lookup, since admin
+ * is a property of the session the caller supplies, not of the endpoint.
  */
 export async function getUserId(hubUrl: string, cookie: string): Promise<string> {
-  return (await getCurrentUser(hubUrl, cookie)).id
+  const id = (await getCurrentUser(hubUrl, cookie)).id
+  if (!id) {
+    throw new Error('getUserId: no user id in GetCurrentUser response')
+  }
+  return id
 }
 
 /**
@@ -144,17 +148,6 @@ export async function signUpViaAPI(
     throw new Error(`signUpViaAPI failed: ${res.status}`)
   }
   return extractSessionCookie(res.headers.get('set-cookie'))
-}
-
-/**
- * Get the admin user's personal org ID via the Connect API.
- */
-export async function getAdminOrgId(hubUrl: string, cookie: string): Promise<string> {
-  const orgId = (await getCurrentUser(hubUrl, cookie)).orgId
-  if (!orgId) {
-    throw new Error('No org found for admin user')
-  }
-  return orgId
 }
 
 /**
@@ -353,27 +346,25 @@ export async function openAgentViaAPI(
   // `tabStore.addTab` emits during a browser-driven openAgent flow:
   // SetTabRegister(tile_id=root_node_id) + position + worker_id.
   //
-  // The seed uses the SHARED `OrgEventsSubscription` opened by
+  // The seed uses the SHARED `UserEventsSubscription` opened by
   // `createWorkspaceViaAPI` BEFORE the workspace existed. That
   // subscription's state is populated by the hub's broadcast of the
   // seed `SetWorkspaceRootNode` op (or the `WorkspaceCreated` event),
-  // exactly like the browser's long-lived `/ws/orgevents`. A
+  // exactly like the browser's long-lived `/ws/userevents`. A
   // workspace where the hub failed to deliver those events surfaces
   // here as an `awaitRootNodeId` timeout — same diagnostic the user
   // would see in production (empty workspace, missing agent tab).
-  const orgId = await getAdminOrgId(hubUrl, cookie)
-  const { seedTabIntoWorkspace, getOrgEventsSubscription } = await import('./crdt')
+  const { seedTabIntoWorkspace, getUserEventsSubscription } = await import('./crdt')
   const { TabType } = await import('../../../src/generated/leapmux/v1/workspace_pb')
-  const orgEvents = await getOrgEventsSubscription(hubUrl, cookie, orgId)
+  const userEvents = await getUserEventsSubscription(hubUrl, cookie)
   await seedTabIntoWorkspace({
     hubUrl,
     cookie,
-    orgId,
     workspaceId,
     tabType: TabType.AGENT,
     tabId: resp.agent.id,
     workerId,
-    orgEvents,
+    userEvents,
   })
   return resp.agent.id
 }
@@ -384,9 +375,9 @@ export async function openAgentViaAPI(
 /**
  * Create a workspace via the hub's WorkspaceService. Returns the workspace ID.
  *
- * Warms the per-(hub, org) `OrgEventsSubscription` BEFORE dispatching
+ * Warms the per-(hub, session) `UserEventsSubscription` BEFORE dispatching
  * the create RPC. This makes the test fixture mirror the production
- * browser flow: a long-lived `/ws/orgevents` subscription is already
+ * browser flow: a long-lived `/ws/userevents` subscription is already
  * attached at the moment the workspace is created, so the hub-side
  * seed-ops broadcast (and its filter-expansion contract) is on the
  * critical path of the test. Opening the subscription AFTER the
@@ -398,20 +389,19 @@ export async function createWorkspaceViaAPI(
   hubUrl: string,
   cookie: string,
   title: string,
-  orgId: string,
 ): Promise<string> {
   // Establish the subscription FIRST so the hub's broadcast of the
   // lifecycle-create's seed batch lands on it. Awaiting the open
   // here guarantees the WebSocket is in the manager's subscriber set
   // by the time the CreateWorkspace RPC reaches the lifecycle
   // outbox.
-  const { getOrgEventsSubscription } = await import('./crdt')
-  await getOrgEventsSubscription(hubUrl, cookie, orgId)
+  const { getUserEventsSubscription } = await import('./crdt')
+  await getUserEventsSubscription(hubUrl, cookie)
 
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ title, orgId }),
+    body: JSON.stringify({ title }),
   })
   if (!res.ok) {
     throw new Error(`createWorkspaceViaAPI failed: ${res.status}`)
@@ -484,17 +474,16 @@ export async function deleteWorkspaceViaAPI(
 }
 
 /**
- * List all workspaces in an org via the hub's WorkspaceService.
+ * List all workspaces for the authenticated user via the hub's WorkspaceService.
  */
 export async function listWorkspacesViaAPI(
   hubUrl: string,
   cookie: string,
-  orgId: string,
 ): Promise<{ id: string }[]> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListWorkspaces`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ orgId }),
+    body: JSON.stringify({}),
   })
   if (!res.ok) {
     throw new Error(`listWorkspacesViaAPI failed: ${res.status}`)
@@ -504,14 +493,13 @@ export async function listWorkspacesViaAPI(
 }
 
 /**
- * Delete all workspaces in an org via the hub (best effort).
+ * Delete all workspaces for the authenticated user via the hub (best effort).
  */
 export async function deleteAllWorkspacesViaAPI(
   hubUrl: string,
   cookie: string,
-  orgId: string,
 ): Promise<void> {
-  const workspaces = await listWorkspacesViaAPI(hubUrl, cookie, orgId)
+  const workspaces = await listWorkspacesViaAPI(hubUrl, cookie)
   for (const ws of workspaces) {
     await deleteWorkspaceViaAPI(hubUrl, cookie, ws.id).catch(() => {})
   }

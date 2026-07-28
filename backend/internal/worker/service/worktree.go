@@ -700,9 +700,10 @@ func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 
 // registerTabForWorktree associates a tab with a worktree.
 // No-op if worktreeID is empty. Used for AGENT/TERMINAL links only (FILE
-// links go through FileTabPathStore.linkFileTabToWorktree), so org_id is
-// left "" -- agent/terminal ids are globally unique, so worktree_tab_liveness
-// never needs the org to disambiguate them.
+// links go through FileTabPathStore.linkFileTabToWorktree), so user_id is
+// left "" -- agent/terminal ids are globally unique, so neither
+// worktree_tab_liveness nor the by-tab delete queries need the user id to
+// disambiguate them. worktreeTabUserID is the read side of this same rule.
 func (svc *Service) registerTabForWorktree(worktreeID string, tabType leapmuxv1.TabType, tabID string) {
 	if worktreeID == "" {
 		return
@@ -711,6 +712,7 @@ func (svc *Service) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 		WorktreeID: worktreeID,
 		TabType:    tabType,
 		TabID:      tabID,
+		UserID:     worktreeTabUserID(tabType, ""),
 	}); err != nil {
 		slog.Warn("failed to register tab for worktree",
 			"worktree_id", worktreeID, "tab_id", tabID, "error", err)
@@ -1067,6 +1069,24 @@ func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 	}
 }
 
+// worktreeTabUserID returns the user_id a worktree_tabs row carries for a tab
+// of this type. It is the single definition of that convention, shared by
+// every by-tab read and delete so they cannot drift from what
+// registerTabForWorktree / linkFileTabToWorktree wrote.
+//
+// FILE links carry the owning user because file tab ids are unique only within
+// a user (worker_file_tabs is keyed by (user_id, tab_id)); AGENT/TERMINAL ids
+// are globally unique, so their links carry "" and callers that only have an
+// agent/terminal in hand need not know the user at all. Normalizing here --
+// rather than at each call site -- means passing the authenticated user for an
+// AGENT close is harmless instead of a silent no-match.
+func worktreeTabUserID(tabType leapmuxv1.TabType, userID string) string {
+	if tabType == leapmuxv1.TabType_TAB_TYPE_FILE {
+		return userID
+	}
+	return ""
+}
+
 // unregisterTab drops a tab's worktree association row. Worktree
 // deletion itself is driven by the close handler when the caller
 // passed WorktreeAction_REMOVE and no other tabs remain.
@@ -1074,12 +1094,17 @@ func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 // The REMOVE-close path in closeTabCommon still uses removeTabFromWorktree
 // so it can guard the delete by worktree_id (defense-in-depth against a
 // stale association). Other callers don't have the worktree in hand and
-// would pay for a GetWorktreeForTab round-trip; the bare (tab_type, tab_id)
-// delete is enough, because (tab_type, tab_id) is unique in practice.
-func (svc *Service) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
+// would pay for a GetWorktreeForTab round-trip; the (tab_type, tab_id,
+// user_id) delete is enough, because a tab belongs to at most one worktree in
+// practice.
+//
+// userID is normalized through worktreeTabUserID, so AGENT/TERMINAL callers
+// may pass either the authenticated user or "".
+func (svc *Service) unregisterTab(tabType leapmuxv1.TabType, tabID, userID string) {
 	if err := svc.Queries.DeleteWorktreeTabsByTabID(bgCtx(), db.DeleteWorktreeTabsByTabIDParams{
 		TabType: tabType,
 		TabID:   tabID,
+		UserID:  worktreeTabUserID(tabType, userID),
 	}); err != nil {
 		slog.Warn("failed to remove worktree tab",
 			"tab_type", tabType, "tab_id", tabID, "error", err)
@@ -1093,11 +1118,12 @@ func (svc *Service) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
 // error (also logged) so the REMOVE-close path can surface a partial
 // failure rather than letting the surviving link masquerade as a
 // sibling still referencing the worktree.
-func (svc *Service) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) error {
+func (svc *Service) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, userID, worktreeID string) error {
 	if err := svc.Queries.RemoveWorktreeTab(bgCtx(), db.RemoveWorktreeTabParams{
 		WorktreeID: worktreeID,
 		TabType:    tabType,
 		TabID:      tabID,
+		UserID:     worktreeTabUserID(tabType, userID),
 	}); err != nil {
 		slog.Warn("failed to remove worktree tab",
 			"worktree_id", worktreeID, "tab_id", tabID, "error", err)

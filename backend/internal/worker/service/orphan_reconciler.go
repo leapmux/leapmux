@@ -6,6 +6,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -25,7 +26,7 @@ import (
 type OrphanReconciler struct {
 	queries   *db.Queries
 	files     *FileTabPathStore
-	listFn    func(ctx context.Context) ([]*leapmuxv1.OwnedTab, error)
+	listFn    func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error)
 	now       func() time.Time
 	interval  time.Duration
 	trigger   chan struct{}
@@ -90,7 +91,12 @@ type OrphanReconcilerOptions struct {
 // queries plus the FileTabPathStore for path mutations. listFn is
 // the hub-side ListOwnedTabsForWorker call (injected so tests can
 // substitute a fake).
-func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn func(ctx context.Context) ([]*leapmuxv1.OwnedTab, error), opts OrphanReconcilerOptions) *OrphanReconciler {
+//
+// listFn hands back the WHOLE response, not just its tabs: the reap decision
+// needs the owner the response declares (see reconcileFileTabs), and a
+// signature that returned the tab list alone would let a caller drop that owner
+// on the floor and turn a narrow list into a universal absence.
+func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error), opts OrphanReconcilerOptions) *OrphanReconciler {
 	if opts.Interval <= 0 {
 		opts.Interval = time.Hour
 	}
@@ -159,9 +165,26 @@ func (r *OrphanReconciler) Stop() {
 	<-r.done
 }
 
+// ownedTabKey identifies one reconcilable tab on both sides of the
+// comparison: the hub's workspace_tab_owned projection and the worker's local
+// rows. userID is part of the key because workspace_tab_owned and
+// worker_file_tabs are both keyed by (user_id, tab_id) -- a FILE tab id is
+// unique only within a user, so an owner-blind key looks up user B's local row
+// in a map built from user A's hub rows, misses, and reaps a live tab.
+//
+// It is normalized through worktreeTabUserID, so AGENT/TERMINAL keys collapse
+// to userID "" on both sides: their ids are globally unique, and the local
+// agents/terminals tables carry no owner column to match against.
 type ownedTabKey struct {
 	tabType leapmuxv1.TabType
 	tabID   string
+	userID  string
+}
+
+// newOwnedTabKey builds a key with the owner axis normalized. Both the hub-side
+// map build and every local-row lookup go through it so the two can't drift.
+func newOwnedTabKey(tabType leapmuxv1.TabType, tabID, userID string) ownedTabKey {
+	return ownedTabKey{tabType: tabType, tabID: tabID, userID: worktreeTabUserID(tabType, userID)}
 }
 
 func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
@@ -185,17 +208,33 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 
-	hubTabs, err := r.listFn(ctx)
+	resp, err := r.listFn(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list owned tabs", "err", err)
 		return
 	}
+	owner, ownerOK := userid.New(resp.GetOwnerUserId())
+	if !ownerOK {
+		// No declared scope, so the response is authoritative for nobody and
+		// every absence below would be an unfounded reap. Nothing to do --
+		// including the relocations, since a response with no owner is not one
+		// we can attribute rows to either.
+		r.logger.Warn("orphan reconciler: hub response declares no owner scope; skipping this pass",
+			"hub_tabs", len(resp.GetTabs()))
+		return
+	}
+	hubTabs := resp.GetTabs()
 	hubByKey := make(map[ownedTabKey]*leapmuxv1.OwnedTab, len(hubTabs))
 	for _, t := range hubTabs {
-		hubByKey[ownedTabKey{tabType: t.GetTabType(), tabID: t.GetTabId()}] = t
+		hubByKey[newOwnedTabKey(t.GetTabType(), t.GetTabId(), t.GetUserId())] = t
 	}
 
-	r.reconcileFileTabs(ctx, hubByKey)
+	// Only the file-tab pass takes the owner. Local agents / terminals carry no
+	// owner column at all (their ids are globally unique, so nothing on this
+	// side ever needed one), so their rows can be attributed to no owner and
+	// excluded from no scope; the only scope check available to them is the
+	// mint gate above.
+	r.reconcileFileTabs(ctx, hubByKey, owner)
 	r.reconcileAgents(ctx, hubByKey)
 	r.reconcileTerminals(ctx, hubByKey)
 }
@@ -261,16 +300,54 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) {
 	r.prevOrphanWorktrees = nextOrphans
 }
 
-func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab) {
+// reconcileFileTabs reaps local file-tab rows the hub no longer lists.
+//
+// owner is the single owner the hub response is authoritative about -- exactly
+// one, the calling worker's registrant, because the hub's query binds user_id
+// (workspace_tab_owned is keyed by (user_id, tab_id), so worker_id alone
+// selects across tenants).
+//
+// The read below is deliberately NOT scoped to that owner, and must not be.
+// Only the REAP is an inference from absence; a relocation acts on a row the
+// hub actually LISTED, which names its own owner and is authoritative for
+// itself. Narrowing the read to `owner` would silently stop applying
+// cross-owner relocations -- pinned by
+// TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner, which fails if you
+// try it.
+func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID) {
 	rows, err := r.queries.ListAllWorkerFileTabs(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list worker_file_tabs", "err", err)
 		return
 	}
 	for _, row := range rows {
-		k := ownedTabKey{tabType: leapmuxv1.TabType_TAB_TYPE_FILE, tabID: row.TabID}
+		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_FILE, row.TabID, row.UserID)
 		hub, ok := hubByKey[k]
 		if !ok {
+			// INVARIANT: absence is only evidence of an orphan for the owner
+			// the response covers. ListAllWorkerFileTabs walks EVERY owner's
+			// rows (it must -- see the note on this function about
+			// relocations), while the hub list is scoped to one. So for any
+			// other owner "not in hubByKey" means "not asked about", not
+			// "deleted", and reaping on that would destroy a live tab (its
+			// worktree link, then its row) belonging to a user this response
+			// said nothing about.
+			//
+			// Compared through Matches rather than a raw ==: a raw compare on
+			// two strings fails OPEN for blank-vs-blank, and it would be
+			// invisible to audit.identityComparisonSites, whose detector
+			// recognises only Matches/MatchesUser/auth.IsOwner. This is the
+			// worker's most destructive code path; it should be the easiest one
+			// for that net to see.
+			//
+			// Do not weaken this to `hubByKey is non-empty`, and do not drop it
+			// because "a worker only ever serves one registrant": that property
+			// is not enforced by any schema on either side, and this is the
+			// exact trap that made the hub-side owner predicate a data-loss
+			// risk in the first place.
+			if !owner.Matches(row.UserID) {
+				continue
+			}
 			// Order matters: drop the worktree_tabs link FIRST, then the
 			// file_tab row. The two calls are intentionally split (so
 			// orphan reconciliation never takes the worktree-removal
@@ -287,6 +364,7 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 			if err := r.queries.DeleteWorktreeTabsByTabID(ctx, db.DeleteWorktreeTabsByTabIDParams{
 				TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
 				TabID:   row.TabID,
+				UserID:  worktreeTabUserID(leapmuxv1.TabType_TAB_TYPE_FILE, row.UserID),
 			}); err != nil {
 				r.logger.Warn("orphan reconciler: drop worktree association for stale file tab",
 					"tab_id", row.TabID, "err", err)
@@ -295,7 +373,7 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 				continue
 			}
 			if r.files != nil {
-				if err := r.files.RevokeRow(ctx, row.OrgID, row.TabID); err != nil {
+				if err := r.files.RevokeRow(ctx, row.UserID, row.TabID); err != nil {
 					r.logger.Warn("orphan reconciler: revoke stale file tab",
 						"tab_id", row.TabID, "err", err)
 				}
@@ -304,7 +382,7 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 		}
 		if hub.GetWorkspaceId() != row.WorkspaceID {
 			if r.files != nil {
-				if err := r.files.Relocate(ctx, row.OrgID, row.TabID, hub.GetWorkspaceId()); err != nil {
+				if err := r.files.Relocate(ctx, row.UserID, row.TabID, hub.GetWorkspaceId()); err != nil {
 					r.logger.Warn("orphan reconciler: relocate file tab",
 						"tab_id", row.TabID, "err", err)
 				}
@@ -323,9 +401,14 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 		return
 	}
 	for _, row := range rows {
-		k := ownedTabKey{tabType: leapmuxv1.TabType_TAB_TYPE_AGENT, tabID: row.ID}
+		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, row.ID, "")
 		hub, ok := hubByKey[k]
 		if !ok {
+			// Unlike the file-tab loop this absence is NOT owner-checked --
+			// see the note in reconcileOnce: there is no owner to check it
+			// against on either side of this comparison (the key normalizes to
+			// "" for AGENT).
+			//
 			// Hub no longer knows about this agent. Mark the row
 			// closed in SQLite AND dispatch a stop signal to the
 			// in-memory agent manager so the live exec.Cmd is
@@ -369,9 +452,10 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 		return
 	}
 	for _, row := range rows {
-		k := ownedTabKey{tabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, tabID: row.ID}
+		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row.ID, "")
 		hub, ok := hubByKey[k]
 		if !ok {
+			// Owner-blind for the same reason as reconcileAgents.
 			// Symmetric to reconcileAgents: SQLite close + send a
 			// stop signal to the in-memory terminal manager so the
 			// PTY-attached shell process is reaped at reconcile

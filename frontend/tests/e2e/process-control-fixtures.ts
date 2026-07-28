@@ -12,7 +12,6 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
-  getAdminOrgId,
   listOnlineWorkerIDsViaAPI,
   loginViaAPI,
   mintRegistrationKeyViaAPI,
@@ -53,7 +52,6 @@ export function trackSpawnedPid(dataDir: string, pid: number): void {
 export interface SeparateServerInfo {
   hubUrl: string
   adminToken: string
-  adminOrgId: string
   workerId: string
   newuserToken: string
   hubProc: ChildProcess
@@ -334,7 +332,6 @@ export const processTest = base.extend<
 
     // Create admin via setup mode (first signup becomes admin)
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
-    const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
 
     // Mint a registration key (new flow: admin creates key, hands it to
     // worker via --registration-key). The old self-serve token flow
@@ -379,7 +376,6 @@ export const processTest = base.extend<
       workerPid: workerProc.pid,
       hubUrl,
       adminToken,
-      adminOrgId,
       workerId,
       newuserToken,
     }
@@ -388,7 +384,6 @@ export const processTest = base.extend<
     const serverInfo: SeparateServerInfo = {
       hubUrl,
       adminToken,
-      adminOrgId,
       workerId,
       newuserToken,
       hubProc,
@@ -463,15 +458,14 @@ export const processTest = base.extend<
   // Workspace fixture — ensure worker is online before creating workspace + initial agent
   workspace: async ({ separateHubWorker }, use) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      adminOrgId,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const workspaceUrl = `/o/admin/workspace/${workspaceId}`
+    const workspaceUrl = `/workspace/${workspaceId}`
     await use({ workspaceId, workspaceUrl })
     // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
     // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub

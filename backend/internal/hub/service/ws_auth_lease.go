@@ -13,7 +13,7 @@ import (
 
 // wsAuthenticator carries the inputs every WebSocket handler needs to run the
 // shared HTTP auth ladder (solo -> bearer -> cookie) and bind an authenticated
-// lease. Both OrgEventsHandler and ChannelRelayHandler embed it, so the auth
+// lease. Both UserEventsHandler and ChannelRelayHandler embed it, so the auth
 // option set lives in one place and cannot drift between endpoints.
 type wsAuthenticator struct {
 	store          store.Store

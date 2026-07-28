@@ -135,6 +135,12 @@ func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error
 	return nil
 }
 
+// ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
+// store.TestHelper.ListAllOwnedTabs for why this is test-only.
+func (h *sqliteTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {
+	return sqlutil.ListAllOwnedTabs(ctx, h.db)
+}
+
 func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return err

@@ -24,7 +24,11 @@ func RunWhoami(rawCtx any, args []string) error {
 		return err
 	}
 	if c.IsLocal() {
-		resp, err := c.RemoteIPCService().Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+		ipc, ipcErr := c.RemoteIPCService()
+		if ipcErr != nil {
+			return remote.EmitErrorWith("invalid_request", ipcErr)
+		}
+		resp, err := ipc.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 		if err != nil {
 			return remote.EmitErrorWith("rpc_failed", err)
 		}
@@ -34,7 +38,6 @@ func RunWhoami(rawCtx any, args []string) error {
 		out := map[string]any{
 			"user_id":      resp.Msg.GetUserId(),
 			"username":     resp.Msg.GetUsername(),
-			"org_id":       resp.Msg.GetOrgId(),
 			"workspace_id": resp.Msg.GetWorkspaceId(),
 			"worker_id":    resp.Msg.GetWorkerId(),
 			"tab_id":       resp.Msg.GetTabId(),
@@ -52,10 +55,10 @@ func RunWhoami(rawCtx any, args []string) error {
 	})
 }
 
-// RunWorkspaceList enumerates the caller's own workspaces. The resolver
-// can derive --org-id from any of --tab-id / --workspace-id /
-// --worker-id / --user-id so scripts running inside a worker-spawned
-// agent don't have to know their org id explicitly.
+// RunWorkspaceList enumerates the caller's own workspaces. The hub
+// takes the tenant from the session, so the command needs no entity ids
+// at all -- `workspace list` is a complete invocation, from a laptop or
+// from inside a worker-spawned agent.
 func RunWorkspaceList(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
@@ -68,7 +71,7 @@ func RunWorkspaceList(rawCtx any, args []string) error {
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.ListWorkspacesResponse
 		return hubCallUnaryEmitOn(ctx, c, "ListWorkspaces", "",
-			&leapmuxv1.ListWorkspacesRequest{OrgId: got.OrgID}, &resp,
+			&leapmuxv1.ListWorkspacesRequest{}, &resp,
 			func() any { return resp.GetWorkspaces() })
 	})
 }
@@ -81,7 +84,7 @@ func RunWorkspaceGet(rawCtx any, args []string) error {
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -93,9 +96,10 @@ func RunWorkspaceGet(rawCtx any, args []string) error {
 	})
 }
 
-// RunWorkspaceCreate provisions a new workspace under an org. The
-// resolver derives --org-id from --tab-id / --workspace-id /
-// --worker-id / --user-id when not supplied directly.
+// RunWorkspaceCreate provisions a new workspace for the authenticated
+// user. The hub takes the owner from the session, so the command needs
+// no entity ids at all -- `workspace create --title X` is a complete
+// invocation.
 func RunWorkspaceCreate(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, title string
@@ -109,10 +113,10 @@ func RunWorkspaceCreate(rawCtx any, args []string) error {
 	if title == "" {
 		return remote.EmitError("invalid_request", "--title is required")
 	}
-	return resolveAndEmit(hub, resolve.Need{OrgID: true}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
+	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.CreateWorkspaceResponse
 		return hubCallUnaryEmitOn(ctx, c, "CreateWorkspace", "",
-			&leapmuxv1.CreateWorkspaceRequest{OrgId: got.OrgID, Title: title}, &resp,
+			&leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": resp.GetWorkspaceId()} })
 	})
 }
@@ -124,7 +128,7 @@ func RunWorkspaceRename(rawCtx any, args []string) error {
 	var hub, title string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&title, "title", "", "new title (required)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
@@ -155,7 +159,7 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 	var force bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "delete even if the calling tab lives in the target workspace (would kill the caller's own PTY)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err

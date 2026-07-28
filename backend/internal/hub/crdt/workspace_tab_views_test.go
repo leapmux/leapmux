@@ -12,13 +12,13 @@ import (
 )
 
 // TestTabIndex_RebuildFromState exercises the path that rebuilds the
-// index views purely from `OrgCrdtState`. This is the manager's
+// index views purely from `UserCrdtState`. This is the manager's
 // invariant: even if the index were to drift (operator mistake,
 // post-incident rebuild), Project + DiffProjection produce the
 // canonical row set.
 func TestTabIndex_RebuildFromState(t *testing.T) {
 	state := seedWorkspaceWithRoot("w1", "root1")
-	state.OrgId = "org"
+	state.UserId = "user-1"
 
 	// One live tab.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
@@ -35,7 +35,7 @@ func TestTabIndex_RebuildFromState(t *testing.T) {
 	}, hlcAt(10, 2, "a")))
 
 	// Diff from empty → next is a full rebuild.
-	prev := crdt.Project(crdt.NewState("org"))
+	prev := crdt.Project(crdt.NewState("user-1"))
 	next := crdt.Project(state)
 	diff := crdt.DiffProjection(prev, next)
 
@@ -56,7 +56,7 @@ func TestTabIndex_RebuildFromState(t *testing.T) {
 // disagreement.
 func TestTabIndex_SkipsTabsOnDeadTiles(t *testing.T) {
 	state := seedWorkspaceWithRoot("w1", "root1")
-	state.OrgId = "org"
+	state.UserId = "user-1"
 
 	// Live tab on root1.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
@@ -110,25 +110,25 @@ func TestTabIndex_SkipsTabsOnDeadTiles(t *testing.T) {
 // tombstoned tab does not appear in the OwnedTabs slice the
 // reconciler reads.
 func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 100_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 100_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Create then tombstone a tab.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
 
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "b2",
-		Ops: []*leapmuxv1.OrgOp{{OpId: "op-tomb", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-tomb", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tombstone},
 	})
 	require.NoError(t, err)

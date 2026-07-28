@@ -39,14 +39,13 @@ When a hub or dev instance has no users yet, it is in *setup mode*. The first pe
    - **Confirm Password**
 4. Click **Create account** (the button reads **Creating account...** while it works).
 
-On success you are signed in and taken to your personal organization at `/o/{username}`.
+On success you are signed in and taken to the app home at `/`.
 
 A few things are special about this first account:
 
 - It is **always created as an administrator**.
 - Its email is **marked verified immediately**, even when email verification is otherwise required for everyone else.
 - The username `admin` is **allowed** here (it is reserved in public signup and OAuth completion). The username `solo` is reserved everywhere and cannot be used.
-- Each new user — including this one — gets a personal organization named after the username. See [Your personal organization](#your-personal-organization).
 
 > **Note:** The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
 
@@ -73,7 +72,7 @@ If your operator has configured OAuth/OIDC providers, a list of provider buttons
 
 What happens after you submit depends on whether email verification is required:
 
-- **Verification not required:** you are signed in immediately and taken to `/o/{username}`.
+- **Verification not required:** you are signed in immediately and taken to `/`.
 - **Verification required:** you see **"Check your email to verify your account."**, and you are routed to the email-verification screen. A failed verification email does **not** undo your signup — your account exists and you can request a fresh code.
 
 > **Note:** The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
@@ -106,7 +105,7 @@ You reach the **"Verify your email"** screen automatically right after signing u
 
 The verification email arrives with the subject **"[LeapMux] Verify your email address"** and contains both the code and a direct link. Clicking the link opens the verification screen with the code pre-filled and submits it automatically.
 
-On success you are signed in fully and taken to `/o/{username}`.
+On success you are signed in fully and taken to `/`.
 
 ### Code limits
 
@@ -153,7 +152,7 @@ For a new identity, you land on the **"Complete Sign Up"** page. It greets you w
 | **Display Name** | Pre-filled from the provider; editable. |
 | **Email** | Read-only, shown only if the provider supplied one. |
 
-Click **Create account** (**Creating account...** while it works). On success you are signed in. If your email still needs verification, you are routed to the verification screen first; otherwise you go straight to `/o/{username}`.
+Click **Create account** (**Creating account...** while it works). On success you are signed in. If your email still needs verification, you are routed to the verification screen first; otherwise you go straight to `/`.
 
 Accounts created this way have no password set. You can add one later from your profile (see [Managing your profile](#managing-your-profile)), which is useful as a fallback login method.
 
@@ -184,19 +183,9 @@ Usernames are GitHub-style slugs, enforced identically in the browser and on the
 
 `solo` is reserved in every account-creation path. `admin` is reserved for public signup and OAuth completion, but allowed during first-run `/setup`.
 
-> **Note:** Your username doubles as the name of your personal organization. Changing your username also renames that org — LeapMux warns you when you edit it.
+## Ownership
 
-## Your personal organization
-
-Every account has exactly one **personal organization**. It is created automatically when the account is created and deleted with it — you never create, join, or leave one yourself. Its name is a slug equal to your username, and the whole app lives under it in the URL:
-
-```text
-/o/{username}
-```
-
-Renaming your username renames the personal organization (and its URL prefix) along with it; LeapMux warns you about this when you edit the username in your profile.
-
-A personal organization is not a team: it has no members or roles beyond you, and there is nothing to invite anyone to or switch between. It exists to scope your URLs and the event stream your workspaces sync over. See [Concepts & Architecture](/docs/getting-started/concepts/) for how it fits into the object hierarchy.
+Every account owns its own workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy — you see exactly the workspaces you create, and nobody else's. The app home is `/`; an open workspace lives at `/workspace/{id}`. See [Concepts & Architecture](/docs/getting-started/concepts/) for how ownership fits into the object hierarchy.
 
 ## Sessions and signing out
 
@@ -220,7 +209,7 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 ### Profile
 
-- **Username** — editable; changing it renames your personal organization (you are warned). Taken usernames are rejected.
+- **Username** — editable. Taken usernames are rejected.
 - **Display Name** — your shown name.
 - Save with **Save Profile** (disabled until you change something valid). Success shows **"Profile updated."**
 

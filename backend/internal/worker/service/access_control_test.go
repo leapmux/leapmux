@@ -239,7 +239,7 @@ func seedForeignFileTab(t *testing.T, svc *Service, tabID, workspaceID string) {
 	t.Helper()
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       tabID,
 		WorkspaceID: workspaceID,
 		FilePath:    "/tmp/probe.txt",
@@ -298,7 +298,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 			seed:   func(*testing.T, *Service) {},
 			req: func() proto.Message {
 				return &leapmuxv1.RegisterFileTabPathRequest{
-					TabId: "tab-1", OrgId: "org-1", WorkspaceId: "ws-other", FilePath: "/tmp/x",
+					TabId: "tab-1", WorkspaceId: "ws-other", FilePath: "/tmp/x",
 				}
 			},
 		},
@@ -315,7 +315,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 			method: "GetFileTabPath",
 			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
-				return &leapmuxv1.GetFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
+				return &leapmuxv1.GetFileTabPathRequest{TabId: "file-tab-other"}
 			},
 		},
 		gatedMethodProbe{
@@ -323,7 +323,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 			method: "RevokeFileTabPath",
 			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
-				return &leapmuxv1.RevokeFileTabPathRequest{OrgId: "org-1", TabId: "file-tab-other"}
+				return &leapmuxv1.RevokeFileTabPathRequest{TabId: "file-tab-other"}
 			},
 		},
 		gatedMethodProbe{
@@ -332,7 +332,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
 			req: func() proto.Message {
 				return &leapmuxv1.RelocateFileTabPathRequest{
-					OrgId: "org-1", TabId: "file-tab-other", NewWorkspaceId: "ws-1",
+					TabId: "file-tab-other", NewWorkspaceId: "ws-1",
 				}
 			},
 		},
@@ -344,7 +344,7 @@ var gatedMethodProbes = func() []gatedMethodProbe {
 			},
 			req: func() proto.Message {
 				return &leapmuxv1.RelocateFileTabPathRequest{
-					OrgId: "org-1", TabId: "file-tab-mine", NewWorkspaceId: "ws-other",
+					TabId: "file-tab-mine", NewWorkspaceId: "ws-other",
 				}
 			},
 		},
@@ -427,7 +427,7 @@ func TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID(t *testing.T) {
 		// ordering: workspace_id is validated in the registrar BEFORE the
 		// handler's own required-field check gets a say.
 		{"RegisterFileTabPath", &leapmuxv1.RegisterFileTabPathRequest{
-			TabId: "tab-1", OrgId: "org-1", FilePath: "/tmp/x",
+			TabId: "tab-1", FilePath: "/tmp/x",
 		}},
 		{"CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{}},
 	}

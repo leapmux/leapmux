@@ -2,11 +2,19 @@ package sqlutil
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
+
+// DBQuery is the read-side counterpart of DBExec: the subset of
+// database/sql.DB the shared test-helper reads need.
+type DBQuery interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
 
 // SetDeletedAt backdates the deleted_at timestamp for a record. The exec
 // closure and parameter style let every dialect delegate here rather than
@@ -131,4 +139,36 @@ func placeholders(style ParameterStyle) (string, string, error) {
 	default:
 		return "", "", fmt.Errorf("unknown parameter style %d", style)
 	}
+}
+
+// ListAllOwnedTabsSQL is the owner-blind workspace_tab_owned read behind
+// store.TestHelper.ListAllOwnedTabs, shared by the two database/sql dialects
+// (sqlite, mysql); postgres runs the same statement through pgx. The statement
+// takes no parameters, so it needs no ParameterStyle.
+//
+// Test-only: see the TestHelper.ListAllOwnedTabs doc for why no production read
+// of this table may omit user_id.
+const ListAllOwnedTabsSQL = `SELECT user_id, workspace_id, tab_type, tab_id, worker_id, tile_id, position
+FROM workspace_tab_owned ORDER BY user_id, tab_id`
+
+// ListAllOwnedTabs runs ListAllOwnedTabsSQL against a database/sql handle and
+// converts each row to store.WorkspaceTabRow. tab_type is scanned as int64
+// because both sqlite (INTEGER) and mysql (INT) widen into it losslessly.
+func ListAllOwnedTabs(ctx context.Context, db DBQuery) ([]store.WorkspaceTabRow, error) {
+	rows, err := db.QueryContext(ctx, ListAllOwnedTabsSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []store.WorkspaceTabRow
+	for rows.Next() {
+		var r store.WorkspaceTabRow
+		var tabType int64
+		if err := rows.Scan(&r.UserID, &r.WorkspaceID, &tabType, &r.TabID, &r.WorkerID, &r.TileID, &r.Position); err != nil {
+			return nil, err
+		}
+		r.TabType = leapmuxv1.TabType(tabType)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

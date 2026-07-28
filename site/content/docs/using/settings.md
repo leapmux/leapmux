@@ -163,7 +163,7 @@ The Profile dialog manages your account identity. It is **not available in solo 
 
 ### Username and Display Name
 
-- **Username** — your login name and personal-organization slug. Changing it shows the warning **"Changing your username will also rename your personal organization."** Usernames are 1–32 characters, lowercase letters, digits, and hyphens only, with no leading, trailing, or consecutive hyphens. `solo` is always reserved; `admin` is reserved on most paths.
+- **Username** — your login name. Usernames are 1–32 characters, lowercase letters, digits, and hyphens only, with no leading, trailing, or consecutive hyphens. `solo` is always reserved; `admin` is reserved on most paths.
 - **Display Name** — an optional friendly name. If left empty it falls back to your username. Limited to 128 characters.
 - Click **Save Profile** to apply. The button is disabled until something changes and is valid; it reads **Saving...** while in flight. Success shows **Profile updated.**
 

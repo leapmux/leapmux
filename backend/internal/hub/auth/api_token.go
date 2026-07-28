@@ -454,7 +454,6 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 	}
 	return &UserInfo{
 		ID:                 id,
-		OrgID:              u.OrgID,
 		Username:           u.Username,
 		IsAdmin:            u.IsAdmin,
 		Email:              u.Email,

@@ -424,8 +424,7 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	// Seed an OAuth token encrypted under key version 1.
 	st, err := storeopen.Open(ctx, adminConfig(dir))
 	require.NoError(t, err)
-	orgID := storetest.SeedOrg(t, st, "org")
-	user := storetest.SeedUser(t, st, orgID, "tokuser")
+	user := storetest.SeedUser(t, st, "tokuser")
 	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
 	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
 		UserID:       userid.MustNew(user.ID),
@@ -503,7 +502,6 @@ func TestCLI_UserCreate(t *testing.T) {
 	assert.Equal(t, int64(1), user.IsAdmin, "is_admin should be 1 when --admin passed")
 	assert.Equal(t, int64(1), user.PasswordSet)
 	assert.NotEmpty(t, user.PasswordHash)
-	assert.NotEmpty(t, user.OrgID)
 }
 
 func TestCLI_UserCreate_MinimalFlags(t *testing.T) {
@@ -746,11 +744,6 @@ func TestCLI_UserDelete_ByID(t *testing.T) {
 	deletedUser, err := q.GetUserByIDIncludeDeleted(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.True(t, deletedUser.DeletedAt.Valid, "user should be soft-deleted")
-
-	// Verify personal org is soft-deleted.
-	deletedOrg, err := q.GetOrgByIDIncludeDeleted(context.Background(), user.OrgID)
-	require.NoError(t, err)
-	assert.True(t, deletedOrg.DeletedAt.Valid, "org should be soft-deleted")
 }
 
 func TestCLI_UserDelete_ByUsername(t *testing.T) {
@@ -990,6 +983,59 @@ func TestCLI_UserCreate_DuplicateEmail(t *testing.T) {
 	assert.Contains(t, err.Error(), "already in use")
 }
 
+// TestCLI_UserUpdate_DuplicateEmailNamesTheEmail drives the real
+// `admin user update --email` path end to end against a colliding email.
+//
+// Regression guard. This path used to report an email collision as
+// "username %q is already taken": the fallback arm blamed the username
+// unconditionally -- a field this command cannot even change -- and the only
+// unit coverage fed friendlyConstraintError an error shape no real caller on
+// this path produces.
+func TestCLI_UserUpdate_DuplicateEmailNamesTheEmail(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	require.NoError(t, runUserCreate(testAdminCtx, []string{
+		"--username", "alice", "--password", "TestPassword1!",
+		"--email", "taken@example.com", "--data-dir", dir,
+	}))
+	require.NoError(t, runUserCreate(testAdminCtx, []string{
+		"--username", "bob", "--password", "TestPassword1!",
+		"--email", "bob@example.com", "--data-dir", dir,
+	}))
+
+	err := runUserUpdate(testAdminCtx, []string{
+		"--username", "bob",
+		"--email", "taken@example.com",
+		"--data-dir", dir,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "taken@example.com",
+		"the message must name the email that actually collided")
+	assert.Contains(t, err.Error(), "already in use")
+	assert.NotContains(t, err.Error(), "bob",
+		"the username was never changed, so it must not be blamed")
+	assert.NotContains(t, err.Error(), "already taken",
+		"'already taken' is the username phrasing; this is an email collision")
+}
+
+// TestCLI_UserUpdate_OwnEmailIsNotAConflict pins the exclude-self half of the
+// pre-check: re-applying an account's own email must not be reported as a
+// collision with itself.
+func TestCLI_UserUpdate_OwnEmailIsNotAConflict(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	require.NoError(t, runUserCreate(testAdminCtx, []string{
+		"--username", "carol", "--password", "TestPassword1!",
+		"--email", "carol@example.com", "--data-dir", dir,
+	}))
+
+	assert.NoError(t, runUserUpdate(testAdminCtx, []string{
+		"--username", "carol",
+		"--email", "carol@example.com",
+		"--data-dir", dir,
+	}))
+}
+
 func TestCLI_UserGet_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
@@ -1096,7 +1142,6 @@ func TestCLI_UserDelete_WorkspaceSoftDeleted(t *testing.T) {
 	wsID := id.Generate()
 	err := q.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
 		ID:          wsID,
-		OrgID:       user.OrgID,
 		OwnerUserID: user.ID,
 		Title:       "test workspace",
 	})
@@ -1721,4 +1766,62 @@ func TestCLI_DBPath(t *testing.T) {
 	// Verify no error. The printed path should match the expected DB path.
 	err := runDBPath(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
+}
+
+// friendlyConstraintError cannot tell a username collision from an email
+// collision: both unique violations surface as store.ErrConflict, and the
+// store's mapErr detects only the constraint code (not which index fired).
+// When both a username and an email are in play, the message must name both
+// candidates rather than guessing one and sending the operator to change the
+// wrong field -- and when it has neither, it must not invent one.
+func TestFriendlyConstraintError(t *testing.T) {
+	conflict := store.ErrConflict
+
+	t.Run("username and email both present names both", func(t *testing.T) {
+		err := friendlyConstraintError(conflict, "alice", "alice@example.com")
+		require.Error(t, err)
+		msg := err.Error()
+		assert.Contains(t, msg, "alice")
+		assert.Contains(t, msg, "alice@example.com")
+		assert.Contains(t, msg, "username")
+		assert.Contains(t, msg, "email")
+	})
+
+	t.Run("email only reports email", func(t *testing.T) {
+		err := friendlyConstraintError(conflict, "", "alice@example.com")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "alice@example.com")
+		assert.NotContains(t, err.Error(), "username")
+	})
+
+	t.Run("username only reports username", func(t *testing.T) {
+		err := friendlyConstraintError(conflict, "alice", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `username "alice"`)
+	})
+
+	t.Run("wrapped conflict is recognised and names both", func(t *testing.T) {
+		err := friendlyConstraintError(fmt.Errorf("insert user: %w", store.ErrConflict), "alice", "alice@example.com")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `username "alice"`)
+		assert.Contains(t, err.Error(), "alice@example.com")
+	})
+
+	// The `admin user update --email` path calls this with username=""
+	// (admin_user.go), so the fallback arm must not blame a field it was
+	// never given -- and must keep the cause attached for errors.Is.
+	t.Run("neither field known reports the conflict without inventing a field", func(t *testing.T) {
+		err := friendlyConstraintError(conflict, "", "")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), `username ""`,
+			"an empty username must never be reported as the taken field")
+		assert.ErrorIs(t, err, store.ErrConflict,
+			"the wrapped cause must survive so callers can still classify it")
+	})
+
+	t.Run("non-conflict error passes through", func(t *testing.T) {
+		other := fmt.Errorf("something else")
+		err := friendlyConstraintError(other, "alice", "alice@example.com")
+		assert.Same(t, other, err)
+	})
 }

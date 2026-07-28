@@ -10,7 +10,7 @@ import (
 // downstream auth and tracking passes can iterate it without
 // re-running OpTarget / workspaceForEntity per op.
 type resolvedOp struct {
-	op    *leapmuxv1.OrgOp
+	op    *leapmuxv1.CrdtOp
 	ref   EntityRef
 	preW  string
 	postW string
@@ -26,7 +26,7 @@ type resolvedOp struct {
 // `roots` MUST come from `registeredRoots(state)` against the same
 // state. The validator caches a pre/post pair per batch and reuses it
 // across the per-op auth loop and the per-op affected-entities loop.
-func workspaceForEntity(state *leapmuxv1.OrgCrdtState, ref EntityRef, roots rootSet) string {
+func workspaceForEntity(state *leapmuxv1.UserCrdtState, ref EntityRef, roots rootSet) string {
 	switch ref.Kind {
 	case EntityKindNode:
 		return nodeWorkspace(state, state.GetNodes()[ref.NodeID], roots)
@@ -52,7 +52,7 @@ func workspaceForEntity(state *leapmuxv1.OrgCrdtState, ref EntityRef, roots root
 	return ""
 }
 
-func nodeWorkspace(state *leapmuxv1.OrgCrdtState, node *leapmuxv1.NodeRecord, roots rootSet) string {
+func nodeWorkspace(state *leapmuxv1.UserCrdtState, node *leapmuxv1.NodeRecord, roots rootSet) string {
 	if node == nil || !HLCIsZero(node.GetTombstoneAt()) {
 		return ""
 	}

@@ -57,7 +57,7 @@ func locateCallingTab(ctx context.Context, c *remote.Client) (workspaceID, tileI
 // unrelated reason (e.g. preflightTile). Returns "" when no anchor
 // is set, the tab is absent from the snapshot, or the tab record is
 // tombstoned. Same fail-open semantics as locateCallingTab.
-func callingTileFromState(state *leapmuxv1.OrgMaterialized) string {
+func callingTileFromState(state *leapmuxv1.UserMaterialized) string {
 	self := callingTabID()
 	if self == "" || state == nil {
 		return ""
@@ -124,7 +124,7 @@ func guardTabClose(targetTabID string, force bool) error {
 // guardTileClose blocks `tile close` when the calling tab sits on
 // the target tile and --force was not passed. Uses CRDT state the
 // handler has already loaded.
-func guardTileClose(state *leapmuxv1.OrgMaterialized, targetTileID string, force bool) error {
+func guardTileClose(state *leapmuxv1.UserMaterialized, targetTileID string, force bool) error {
 	if force || targetTileID == "" {
 		return nil
 	}
@@ -143,7 +143,7 @@ func guardTileClose(state *leapmuxv1.OrgMaterialized, targetTileID string, force
 // caller passes the already-computed descendants list (which
 // `descendantsLeavesFirst` includes the grid node in) so the guard
 // doesn't redo the walk.
-func guardTileRemoveGrid(state *leapmuxv1.OrgMaterialized, doomedTileIDs []string, force bool) error {
+func guardTileRemoveGrid(state *leapmuxv1.UserMaterialized, doomedTileIDs []string, force bool) error {
 	if force || len(doomedTileIDs) == 0 {
 		return nil
 	}

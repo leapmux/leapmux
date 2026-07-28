@@ -52,16 +52,15 @@ test.describe('Claude Code agent startup error', () => {
       srv.hubUrl,
       srv.adminToken,
       `startup-err-${Date.now()}`,
-      srv.adminOrgId,
     )
     await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
     await loginViaToken(page, srv.adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     // The startup-error panel must appear with the formatted error.
     const errorPanel = page.locator('[data-testid="agent-startup-error"]')
-    await expect(errorPanel).toBeVisible({ timeout: 30_000 })
+    await expect(errorPanel).toBeVisible()
     await expect(errorPanel.locator('h2')).toContainText('failed to start')
     await expect(errorPanel.locator('pre code')).toBeVisible()
 
@@ -72,7 +71,7 @@ test.describe('Claude Code agent startup error', () => {
     await editor.click()
     await page.keyboard.type('hello')
     await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="message-error"]')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('[data-testid="message-error"]')).toBeVisible()
 
     await deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId).catch(() => {})
     await context.close()

@@ -1,4 +1,4 @@
-import type { ParentComponent } from 'solid-js'
+import type { Component } from 'solid-js'
 import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
@@ -10,7 +10,7 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { Tab } from '~/stores/tab.types'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, Match, on, Show, Switch, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs } from '~/api/transport'
@@ -23,7 +23,6 @@ import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
-import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
@@ -46,7 +45,6 @@ import { createIdentityCache } from '~/lib/identityCache'
 import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
-import { orgHomePath } from '~/lib/orgRoutes'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
@@ -67,7 +65,6 @@ import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.sto
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
-import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
 import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
@@ -84,18 +81,19 @@ import { useCrossWorkspaceMove } from './useCrossWorkspaceMove'
 import { useFloatingWindowOps } from './useFloatingWindowOps'
 import { useFocusInvariant } from './useFocusInvariant'
 import { createOpsSubmitter } from './useOpsSubmitter'
-import { useOrgEvents } from './useOrgEvents'
 import { useTabHydrators } from './useTabHydrators'
 import { useTabOperations } from './useTabOperations'
 import { useTabPersistence } from './useTabPersistence'
 import { useTerminalOperations } from './useTerminalOperations'
 import { useTileDragDrop } from './useTileDragDrop'
 import { useTurnEnd } from './useTurnEnd'
+import { useUserEvents } from './useUserEvents'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 import { useWorkspaceHydration } from './useWorkspaceHydration'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
 import { useWorkspaceRestore } from './useWorkspaceRestore'
 import { useWorkspaceSwitchSnapshot } from './useWorkspaceSwitchSnapshot'
+import { isWorkspaceNotFound } from './workspaceNotFound'
 
 // Stable empty-array reference for the inactive-workspace tile-order
 // path. Returning a fresh `[]` per call would defeat the WeakMap-based
@@ -104,12 +102,12 @@ const EMPTY_TILE_ORDER: string[] = []
 
 const log = createLogger('AppShell')
 
-export const AppShell: ParentComponent = (props) => {
+export const AppShell: Component = () => {
   const auth = useAuth()
+  const userId = () => auth.user()?.id ?? ''
   const workspace = useWorkspace()
-  const org = useOrg()
   const preferences = usePreferences()
-  const params = useParams<{ orgSlug: string, workspaceId?: string }>()
+  const params = useParams<{ workspaceId?: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
@@ -169,7 +167,7 @@ export const AppShell: ParentComponent = (props) => {
 
   // Fetch workers list.
   async function fetchWorkers() {
-    if (!org.orgId())
+    if (!userId())
       return
     try {
       const resp = await workerClient.listWorkers({})
@@ -186,9 +184,9 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
-  // Fetch workers when org changes.
+  // Fetch workers when the authenticated user is known.
   createEffect(() => {
-    org.orgId() // track
+    userId() // track
     void fetchWorkers()
   })
 
@@ -232,8 +230,9 @@ export const AppShell: ParentComponent = (props) => {
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
   // Per-(workspace_id) active-client tracker fed by PresenceUpdate
-  // events on OrgCRDT.WatchOrg. AppShell.handleTurnEnd consults this
-  // to gate the turn-end ding so only the focused client plays it.
+  // events off the `/ws/userevents` WebSocket (see `useUserEvents`).
+  // AppShell.handleTurnEnd consults this to gate the turn-end ding so
+  // only the focused client plays it.
   const activeClient = createActiveClientStore()
   // Cache of file-tab paths fed by WatchWorkspacePrivateEvents
   // bootstrap replay + GetFileTabPath fallback. Components consult
@@ -248,7 +247,7 @@ export const AppShell: ParentComponent = (props) => {
   // identifies subscribers by session id / bearer-token id (so it can
   // refuse cross-tab spoofing), which never matches the local nanoid.
   // The hub returns the subscriber's effective identity in
-  // `OrgMaterialized.subscriber_client_id`; the gate compares
+  // `UserMaterialized.subscriber_client_id`; the gate compares
   // `activeClient.activeFor(wsId)` against `effectiveClientId()`.
   const ownClientId = (() => {
     const cur = sessionStorageGet<string>(KEY_CLIENT_ID)
@@ -259,37 +258,37 @@ export const AppShell: ParentComponent = (props) => {
     return fresh
   })()
 
-  // Effective identity reported by the hub via OrgMaterialized; the
+  // Effective identity reported by the hub via UserMaterialized; the
   // active-client gate compares broadcast `active_client_id` against
   // this. Empty until bootstrap; gate treats empty as "unknown — allow"
   // so a sole client plays its ding even before the first heartbeat
   // broadcast settles.
   const [effectiveClientId, setEffectiveClientId] = createSignal('')
   // Local CRDT pending manager + clock. Constructed lazily once the
-  // org id is known; useOrgEvents seeds the bootstrap from
-  // OrgMaterialized and useOpsSubmitter drives commits.
+  // user id is known; useUserEvents seeds the bootstrap from
+  // UserMaterialized and useOpsSubmitter drives commits.
   const [pendingMgr, setPendingMgr] = createSignal<PendingOpsManager | null>(null)
   // Reactive version counter that bumps on every PendingOpsManager
   // state mutation (submit / consumeRemote / consumeBatch* /
   // consumeEntity* / bootstrap). Subscribed by `bridge.speculativeState`
   // so memoized projections in the layout / floating-window / tab
   // stores re-derive when ops land. The PendingOpsManager mutates
-  // its OrgCrdtState in place; this signal is how Solid observes it.
+  // its UserCrdtState in place; this signal is how Solid observes it.
   const [pendingVersion, setPendingVersion] = createSignal(0)
   const bumpPending = () => setPendingVersion(v => v + 1)
   createEffect(() => {
-    const oid = org.orgId()
-    if (!oid) {
+    const uid = userId()
+    if (!uid) {
       setPendingMgr(null)
       return
     }
-    setPendingMgr(new PendingOpsManager(oid, new HLCClock(ownClientId), bumpPending))
+    setPendingMgr(new PendingOpsManager(uid, new HLCClock(ownClientId), bumpPending))
   })
 
   // Late-bound reload trigger for workspace-lifecycle events. Bound
   // once `useWorkspaceLoader` is instantiated later in this component;
   // until then, lifecycle events arriving before mount complete are a
-  // no-op (the initial `listWorkspaces` runs once `getOrgId()` fires,
+  // no-op (the hook's own `onMount` seeds the initial `listWorkspaces`,
   // so we don't miss the seed list).
   let reloadWorkspacesOnLifecycle: () => void = () => {}
 
@@ -298,11 +297,11 @@ export const AppShell: ParentComponent = (props) => {
   // handlers that need to react to specific batch ids.
   const batchResultHandlers = new Map<string, (outcome: BatchOutcome) => void>()
 
-  // Open the per-org `/ws/orgevents` subscription once the org id is
+  // Open the per-user `/ws/userevents` subscription once the user id is
   // known. The hook stays live across workspace switches; per-
   // workspace stores slice the materialized state instead.
-  const orgEvents = useOrgEvents({
-    orgId: () => org.orgId(),
+  const userEvents = useUserEvents({
+    userId: () => userId(),
     activeClient,
     pending: () => pendingMgr(),
     onWorkspaceLifecycleChanged: () => reloadWorkspacesOnLifecycle(),
@@ -315,8 +314,8 @@ export const AppShell: ParentComponent = (props) => {
       showWarnToast('A pending change was discarded because the affected item left your view.')
     },
     onFatalClose: () => {
-      // The org-events stream closed with a terminal code (e.g. the session
-      // expired / access was revoked), so useOrgEvents stopped retrying rather
+      // The user-events stream closed with a terminal code (e.g. the session
+      // expired / access was revoked), so useUserEvents stopped retrying rather
       // than loop. Tell the user to reload instead of silently going stale.
       showWarnToast('Live updates disconnected. Reload the page to reconnect.')
     },
@@ -330,9 +329,8 @@ export const AppShell: ParentComponent = (props) => {
   //   - any other rejection → drop + warn-toast keyed by reason
   //   - transport timeout → retry same op_ids (principal-aware dedup)
   const opsSubmitter = createOpsSubmitter({
-    orgId: () => org.orgId(),
     pending: () => pendingMgr(),
-    reconnect: () => orgEvents.reconnect(),
+    reconnect: () => userEvents.reconnect(),
     onBatchResult: (batchId, outcome) => {
       const cb = batchResultHandlers.get(batchId)
       if (cb)
@@ -343,16 +341,15 @@ export const AppShell: ParentComponent = (props) => {
   // Wire the global CRDT bridge so the imperative stores can emit op
   // batches without threading every dependency through their
   // constructors. Re-installed on every reactive change to the
-  // pending manager / org id.
+  // pending manager / user id.
   createEffect(() => {
     const mgr = pendingMgr()
-    const oid = org.orgId()
-    if (!mgr || !oid) {
+    const uid = userId()
+    if (!mgr || !uid) {
       setCRDTBridge(null)
       return
     }
     setCRDTBridge({
-      orgId: () => oid,
       workspaceId: () => workspace.activeWorkspaceId() ?? null,
       enqueue: (batch) => {
         opsSubmitter.enqueue(batch)
@@ -458,17 +455,15 @@ export const AppShell: ParentComponent = (props) => {
   useTabHydrators({
     tabStore,
     fileTabPaths,
-    getOrgId: () => org.orgId(),
   })
 
   // Mount the input-driven heartbeat for the active workspace. The
   // returned `pingNow` is wired below to fire whenever the
-  // `/ws/orgevents` subscription completes its bootstrap — the hub's
+  // `/ws/userevents` subscription completes its bootstrap — the hub's
   // PresenceUpdate broadcast only reaches subscribers, so a
   // heartbeat sent before the WS is connected never makes it back to
   // this client and the active-client gate stays empty.
   const heartbeat = mountPresenceHeartbeat({
-    orgId: () => org.orgId(),
     workspaceId: () => workspace.activeWorkspaceId() ?? '',
   })
 
@@ -478,7 +473,7 @@ export const AppShell: ParentComponent = (props) => {
   // `bootstrapped` flip false → true.
   let lastBootstrapped = false
   createEffect(() => {
-    const now = orgEvents.bootstrapped()
+    const now = userEvents.bootstrapped()
     if (now && !lastBootstrapped)
       heartbeat.pingNow()
     lastBootstrapped = now
@@ -536,6 +531,14 @@ export const AppShell: ParentComponent = (props) => {
     }
   })
 
+  // Constant-true today: `(app).tsx` has exactly two leaves (`/` and
+  // `/workspace/:workspaceId`) and hasWorkspaceDesktopChrome matches both, so
+  // every guard below always passes. It is kept, not inlined away, because it
+  // is the predicate the documented extension path in `(app).tsx` names: adding
+  // a non-workspace leaf under `(app)/` is a type error at the layout (AppShell
+  // takes no children), but nothing would stop these three EFFECTS from running
+  // on it -- and one of them redirects a childless route straight into a
+  // workspace. Deleting them would make that extension silently hostile.
   const isWorkspaceRoute = createMemo(() => hasWorkspaceDesktopChrome(location.pathname))
 
   // macOS-only: when the user enters the workspace view in Solo mode, ask
@@ -565,16 +568,13 @@ export const AppShell: ParentComponent = (props) => {
     })()
   })
 
-  // True when the URL has a workspace ID but it doesn't exist in the loaded list
-  const workspaceNotFound = createMemo(() => {
-    if (!params.workspaceId)
-      return false
-    if (workspaceStore.state.loading)
-      return false
-    if (!org.orgId())
-      return false
-    return !workspaceStore.state.workspaces.some(w => w.id === params.workspaceId)
-  })
+  // True when the URL has a workspace ID but it doesn't exist in the loaded
+  // list. See `isWorkspaceNotFound` for why a failed load is not "not found".
+  const workspaceNotFound = createMemo(() => isWorkspaceNotFound({
+    workspaceId: params.workspaceId,
+    userId: userId(),
+    workspaceState: workspaceStore.state,
+  }))
 
   // Sync workspaceId from URL params to WorkspaceContext, snapshotting
   // the outgoing workspace's stores into the registry BEFORE the
@@ -590,19 +590,18 @@ export const AppShell: ParentComponent = (props) => {
 
   // Workspace & section loading
   const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
-    getOrgId: () => org.orgId(),
     workspaceStore,
     sectionStore,
   })
   // Now that loadWorkspaces is in scope, wire it to the lifecycle
-  // event callback above. Created/renamed/deleted events on the org
+  // event callback above. Created/renamed/deleted events on the user
   // WS stream will refresh the sidebar without requiring a reconnect.
   reloadWorkspacesOnLifecycle = () => {
     void loadWorkspaces()
     void loadSections()
   }
 
-  // Auto-activate workspace when navigating to org root with no workspace selected
+  // Auto-activate workspace when navigating to home with no workspace selected
   createEffect(() => {
     if (!isWorkspaceRoute())
       return
@@ -628,7 +627,7 @@ export const AppShell: ParentComponent = (props) => {
     const target = (savedId && workspaces.some(w => w.id === savedId))
       ? savedId
       : workspaces[0].id
-    navigate(`/o/${params.orgSlug}/workspace/${target}`, { replace: true })
+    navigate(`/workspace/${target}`, { replace: true })
   })
 
   // Dynamic page title
@@ -764,7 +763,6 @@ export const AppShell: ParentComponent = (props) => {
 
   // Terminal operations hook
   const termOps = useTerminalOperations({
-    org,
     tabStore,
     layoutStore,
     activeWorkspace,
@@ -791,7 +789,6 @@ export const AppShell: ParentComponent = (props) => {
     focusEditor: () => focusEditorRef()?.(),
     getScrollState: () => getScrollStateRef()?.(),
     setFileTreePath,
-    getOrgId: () => org.orgId(),
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     registry,
   })
@@ -820,13 +817,12 @@ export const AppShell: ParentComponent = (props) => {
   // active workspace's ListTabs — the batcher coalesces them.
   const { expand: handleExpandWorkspace } = useWorkspaceHydration({
     registry,
-    getOrgId: () => org.orgId(),
   })
 
   // Workspace restore (load agents/terminals/tabs/layout on workspace change)
   useWorkspaceRestore({
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    getOrgId: () => org.orgId(),
+    getUserId: () => userId(),
     tabStore,
     layoutStore,
     floatingWindowStore,
@@ -860,7 +856,6 @@ export const AppShell: ParentComponent = (props) => {
 
   const { move: handleCrossWorkspaceMove } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    getOrgId: () => org.orgId(),
     tabStore,
     layoutStore,
     floatingWindowStore,
@@ -885,7 +880,7 @@ export const AppShell: ParentComponent = (props) => {
   // Workspace selection navigates to URL
   const handleSelectWorkspace = (id: string) => {
     closeAllSidebars()
-    navigate(`/o/${params.orgSlug}/workspace/${id}`)
+    navigate(`/workspace/${id}`)
   }
 
   // Handle workspace deletion
@@ -894,10 +889,10 @@ export const AppShell: ParentComponent = (props) => {
       return
     tabStore.clear()
     if (nextWorkspaceId) {
-      navigate(`/o/${params.orgSlug}/workspace/${nextWorkspaceId}`)
+      navigate(`/workspace/${nextWorkspaceId}`)
     }
     else {
-      navigate(orgHomePath(params.orgSlug))
+      navigate('/')
     }
   }
 
@@ -1137,15 +1132,15 @@ export const AppShell: ParentComponent = (props) => {
     },
   ))
 
-  // Three layer components close over the parent's scope so the outer
-  // JSX is a flat `<Switch>` — no nested `<Show>` ladders, no need to
-  // thread the dozens of in-scope closures (handle*, tile/agent
-  // stores, layout store, etc.) through props.
+  // The layer components close over the parent's scope so the outer JSX
+  // stays flat — no nested `<Show>` ladders, no need to thread the dozens
+  // of in-scope closures (handle*, tile/agent stores, layout store, etc.)
+  // through props.
   //
-  // The 3-way decision: workspaceNotFound → NotFoundPage; on a
-  // workspace route → the workspace shell (desktop or mobile); else →
-  // fullWindow children (dashboard layout serving as the route's
-  // wrapper).
+  // The decision is 2-way: workspaceNotFound → NotFoundPage; otherwise the
+  // workspace shell (desktop or mobile). There is deliberately no arm for a
+  // non-workspace route, and no route outlet — see the note on the `(app)`
+  // layout, which is where a third case would have to be reintroduced.
 
   const MobileShellLayer = () => (
     <MobileLayout
@@ -1241,21 +1236,16 @@ export const AppShell: ParentComponent = (props) => {
 
   return (
     <TunnelProvider store={tunnelStore}>
-      <Switch>
-        <Match when={workspaceNotFound()}>
-          <NotFoundPage
-            message="The workspace you're looking for doesn't exist or you don't have access."
-            linkHref={orgHomePath(params.orgSlug)}
-            linkText="Go to Dashboard"
-          />
-        </Match>
-        <Match when={isWorkspaceRoute()}>
-          <WorkspaceShellLayer />
-        </Match>
-        <Match when={true}>
-          <div class={styles.fullWindow}>{props.children}</div>
-        </Match>
-      </Switch>
+      <Show
+        when={workspaceNotFound()}
+        fallback={<WorkspaceShellLayer />}
+      >
+        <NotFoundPage
+          message="The workspace you're looking for doesn't exist or you don't have access."
+          linkHref="/"
+          linkText="Go to Dashboard"
+        />
+      </Show>
 
       <tileRenderer.CloseDialogs />
 
@@ -1380,7 +1370,6 @@ export const AppShell: ParentComponent = (props) => {
         sectionStore={sectionStore}
         registry={registry}
         focusEditor={() => focusEditorRef()?.()}
-        orgSlug={params.orgSlug}
         loadWorkspaces={loadWorkspaces}
         navigate={path => navigate(path)}
         availableProviders={agentOps.availableProviders()}

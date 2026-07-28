@@ -9,6 +9,15 @@ var (
 
 	// ErrConflict is returned when an operation violates a uniqueness
 	// constraint (e.g. duplicate ID, username, or email).
+	//
+	// It is a bare sentinel, with no structured shape carrying WHICH unique
+	// index fired. That is deliberate, not an omission: the three dialects
+	// expose three different things -- sqlite names the column in free text,
+	// postgres exposes an index name structurally (pgconn.PgError.
+	// ConstraintName), mysql names a different index in free text -- so a typed
+	// field would be honest on one backend and guesswork on the other two.
+	// Callers that need the specific field pre-check availability instead; see
+	// cmd/leapmux's checkAdminUserFieldsAvailable.
 	ErrConflict = errors.New("conflict")
 
 	// ErrHubAlreadyRunning is returned when another Hub holds the singleton
@@ -20,53 +29,9 @@ var (
 	ErrSectionNotEmpty = errors.New("section not empty")
 
 	// ErrInvalidArgument is returned when a store method receives input that
-	// violates a store-level invariant (e.g. an empty username, which would blank
-	// both users.username and the mirroring personal-org name). The service layer
-	// validates the same constraints upstream; the store re-checks so a store-level
-	// caller that bypasses the service cannot land the invariant violation.
+	// violates a store-level invariant (e.g. an empty or non-slug username). The
+	// service layer validates the same constraints upstream; the store re-checks
+	// so a store-level caller that bypasses the service cannot land the invariant
+	// violation.
 	ErrInvalidArgument = errors.New("invalid argument")
 )
-
-// ConflictEntity identifies the entity type that caused a uniqueness
-// violation. Currently limited to org/user because those are the only
-// cases where a transaction creates multiple entities and the caller
-// needs to distinguish which one conflicted.
-type ConflictEntity string
-
-const (
-	ConflictEntityOrg  ConflictEntity = "org"
-	ConflictEntityUser ConflictEntity = "user"
-)
-
-// ConflictError is a structured conflict error that carries the entity
-// type (e.g. "org", "user") that caused the uniqueness violation.
-// It matches ErrConflict via errors.Is and preserves the original error
-// chain via Unwrap for debugging.
-type ConflictError struct {
-	Entity ConflictEntity
-	Cause  error
-}
-
-func (e *ConflictError) Error() string {
-	if e.Cause != nil {
-		return "conflict: " + string(e.Entity) + ": " + e.Cause.Error()
-	}
-	return "conflict: " + string(e.Entity)
-}
-
-func (e *ConflictError) Is(target error) bool {
-	return target == ErrConflict
-}
-
-func (e *ConflictError) Unwrap() error {
-	return e.Cause
-}
-
-// NewConflictError wraps an ErrConflict-chain error with entity
-// information. If err is not an ErrConflict, it is returned as-is.
-func NewConflictError(err error, entity ConflictEntity) error {
-	if errors.Is(err, ErrConflict) {
-		return &ConflictError{Entity: entity, Cause: err}
-	}
-	return err
-}

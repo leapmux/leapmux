@@ -1,23 +1,23 @@
 import type { HLCClock } from './hlc'
-import type { FloatingWindowRecord, NodeRecord, OrgCrdtState, TabRecord, WorkspaceContentsRecord } from '~/generated/leapmux/v1/org_crdt_pb'
+import type { FloatingWindowRecord, NodeRecord, TabRecord, UserCrdtState, WorkspaceContentsRecord } from '~/generated/leapmux/v1/user_crdt_pb'
 import type {
   BatchCommitted,
   BatchRejection,
   CommittedOp,
+  CrdtOp,
   EntityMaterialized,
   EntityRemoved,
   OpBatch,
-  OrgOp,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { clone, create } from '@bufbuild/protobuf'
 import {
   FloatingWindowRecordSchema,
   NodeRecordSchema,
-  OrgCrdtStateSchema,
   TabRecordSchema,
+  UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
-import { BatchRejectionReason } from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
+import { BatchRejectionReason } from '~/generated/leapmux/v1/user_ops_pb'
 import { applyOp, newState } from './apply'
 import { hlcClone } from './hlc'
 
@@ -28,8 +28,8 @@ import { hlcClone } from './hlc'
  * speculativeState.
  */
 export interface PendingOpsState {
-  confirmedState: OrgCrdtState
-  speculativeState: OrgCrdtState
+  confirmedState: UserCrdtState
+  speculativeState: UserCrdtState
   pendingBatches: OpBatch[]
   currentEpoch: bigint
 }
@@ -75,25 +75,29 @@ export class PendingOpsManager {
   private readonly notify?: () => void
 
   constructor(
-    public readonly orgId: string,
+    // Seeds the pre-bootstrap placeholder state only, and is deliberately NOT
+    // retained as a field: bootstrap() replaces confirmedState wholesale with
+    // the hub's UserMaterialized, so a kept copy would be a second tenancy key
+    // nothing reads and that could only drift from state.userId.
+    userId: string,
     public readonly clock: HLCClock,
     notify?: () => void,
   ) {
     // Distinct refs: applying speculative ops must not pollute
     // confirmedState even before bootstrap() arrives.
     this.state = {
-      confirmedState: newState(orgId),
-      speculativeState: newState(orgId),
+      confirmedState: newState(userId),
+      speculativeState: newState(userId),
       pendingBatches: [],
       currentEpoch: 1n,
     }
     this.notify = notify
   }
 
-  /** Seed the confirmed + speculative state from a fresh OrgMaterialized. */
-  bootstrap(materialized: { orgId: string, nodes: Record<string, unknown>, tabs: Record<string, unknown>, floatingWindows: Record<string, unknown>, workspaces: Record<string, WorkspaceContentsRecord>, maxHlc?: { physical: bigint, logical: bigint, clientId: string }, currentEpoch: bigint }): void {
-    const confirmed = create(OrgCrdtStateSchema, {
-      orgId: materialized.orgId,
+  /** Seed the confirmed + speculative state from a fresh UserMaterialized. */
+  bootstrap(materialized: { userId: string, nodes: Record<string, unknown>, tabs: Record<string, unknown>, floatingWindows: Record<string, unknown>, workspaces: Record<string, WorkspaceContentsRecord>, maxHlc?: { physical: bigint, logical: bigint, clientId: string }, currentEpoch: bigint }): void {
+    const confirmed = create(UserCrdtStateSchema, {
+      userId: materialized.userId,
       nodes: materialized.nodes as never,
       tabs: materialized.tabs as never,
       floatingWindows: materialized.floatingWindows as never,
@@ -300,7 +304,7 @@ export class PendingOpsManager {
   }
 
   /** dropPendingByPredicate removes every op for which `pred` returns true and returns whether any ops were dropped. */
-  private dropPendingByPredicate(pred: (op: OrgOp) => boolean): boolean {
+  private dropPendingByPredicate(pred: (op: CrdtOp) => boolean): boolean {
     let dropped = false
     for (const batch of this.state.pendingBatches) {
       const before = batch.ops.length
@@ -314,7 +318,7 @@ export class PendingOpsManager {
 
   /**
    * Re-fold every pending batch on top of confirmedState. Public so
-   * the caller (useOrgEvents) can flush after directly mutating
+   * the caller (useUserEvents) can flush after directly mutating
    * confirmedState in response to EntityMaterialized / EntityRemoved
    * events.
    *
@@ -348,7 +352,7 @@ export class PendingOpsManager {
  * arrive with canonical_hlc pre-set. (canonicalHlc IS written, but only
  * by consumeBatchCommitted on commit, after which the op is never re-sent.)
  */
-function applySpeculative(state: OrgCrdtState, op: OrgOp): void {
+function applySpeculative(state: UserCrdtState, op: CrdtOp): void {
   applyOp(state, op, op.canonicalHlc ? undefined : (op.clientHlc ?? undefined))
 }
 
@@ -371,7 +375,7 @@ function applySpeculative(state: OrgCrdtState, op: OrgOp): void {
  *
  * Mirrors the backend's `CloneStateForBatch` (state.go).
  */
-function cloneStateForBatches(state: OrgCrdtState, batches: OpBatch[]): OrgCrdtState {
+function cloneStateForBatches(state: UserCrdtState, batches: OpBatch[]): UserCrdtState {
   const nodes: Record<string, NodeRecord> = { ...state.nodes }
   const tabs: Record<string, TabRecord> = { ...state.tabs }
   const floatingWindows: Record<string, FloatingWindowRecord> = { ...state.floatingWindows }
@@ -428,8 +432,8 @@ function cloneStateForBatches(state: OrgCrdtState, batches: OpBatch[]): OrgCrdtS
     }
   }
 
-  return create(OrgCrdtStateSchema, {
-    orgId: state.orgId,
+  return create(UserCrdtStateSchema, {
+    userId: state.userId,
     nodes,
     tabs,
     floatingWindows,

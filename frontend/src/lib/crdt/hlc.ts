@@ -1,6 +1,6 @@
-import type { HLC } from '~/generated/leapmux/v1/org_crdt_pb'
+import type { HLC } from '~/generated/leapmux/v1/user_crdt_pb'
 import { create } from '@bufbuild/protobuf'
-import { HLCSchema } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 
 /** Compare two HLC values lex by (physical, logical, client_id). */
 export function hlcCmp(a: HLC | undefined | null, b: HLC | undefined | null): number {

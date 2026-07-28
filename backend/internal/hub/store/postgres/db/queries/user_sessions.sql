@@ -23,7 +23,7 @@ WHERE id = $2 AND last_active_at < $3;
 DELETE FROM user_sessions WHERE id = $1 RETURNING id, user_id;
 
 -- name: ValidateSessionWithUser :one
-SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified, u.email, s.created_at, s.expires_at, s.auth_generation
+SELECT u.id, u.username, u.is_admin, u.email_verified, u.email, s.created_at, s.expires_at, s.auth_generation
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = $1

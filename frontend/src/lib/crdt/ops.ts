@@ -1,20 +1,20 @@
 import type { OpBuilderCtx } from './bridge'
-import type { OrgCrdtState } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OpBatch, OrgOp, SetFloatingWindowRegisterOp, SetNodeRegisterOp, SetTabRegisterOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { CrdtOp, OpBatch, SetFloatingWindowRegisterOp, SetNodeRegisterOp, SetTabRegisterOp } from '~/generated/leapmux/v1/user_ops_pb'
 import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
-import { DoubleListSchema } from '~/generated/leapmux/v1/org_crdt_pb'
+import { DoubleListSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
+  CrdtOpSchema,
   OpBatchSchema,
-  OrgOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
   TombstoneFloatingWindowOpSchema,
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { after, first } from '~/lib/lexorank'
 import { hlcIsZero } from './hlc'
 import { cmpStr } from './project'
@@ -32,9 +32,8 @@ export function generateId(): string {
   return nanoid48()
 }
 
-function buildOp(ctx: OpBuilderCtx, body: OrgOp['body']): OrgOp {
-  return create(OrgOpSchema, {
-    orgId: ctx.orgId,
+function buildOp(ctx: OpBuilderCtx, body: CrdtOp['body']): CrdtOp {
+  return create(CrdtOpSchema, {
     opId: generateId(),
     originClientId: ctx.originClientId,
     clientHlc: ctx.clock.tick(),
@@ -53,130 +52,130 @@ function buildOp(ctx: OpBuilderCtx, body: OrgOp['body']): OrgOp {
  * a one-line wrapper instead of a fresh six-line builder.
  */
 
-function setNodeRegister(ctx: OpBuilderCtx, nodeId: string, field: SetNodeRegisterOp['field']): OrgOp {
+function setNodeRegister(ctx: OpBuilderCtx, nodeId: string, field: SetNodeRegisterOp['field']): CrdtOp {
   return buildOp(ctx, {
     case: 'setNodeRegister',
     value: create(SetNodeRegisterOpSchema, { nodeId, field }),
   })
 }
 
-function setTabRegister(ctx: OpBuilderCtx, tabType: TabType, tabId: string, field: SetTabRegisterOp['field']): OrgOp {
+function setTabRegister(ctx: OpBuilderCtx, tabType: TabType, tabId: string, field: SetTabRegisterOp['field']): CrdtOp {
   return buildOp(ctx, {
     case: 'setTabRegister',
     value: create(SetTabRegisterOpSchema, { tabType, tabId, field }),
   })
 }
 
-function setFloatingRegister(ctx: OpBuilderCtx, windowId: string, field: SetFloatingWindowRegisterOp['field']): OrgOp {
+function setFloatingRegister(ctx: OpBuilderCtx, windowId: string, field: SetFloatingWindowRegisterOp['field']): CrdtOp {
   return buildOp(ctx, {
     case: 'setFloatingWindowRegister',
     value: create(SetFloatingWindowRegisterOpSchema, { windowId, field }),
   })
 }
 
-export function setNodeKind(ctx: OpBuilderCtx, nodeId: string, kind: number): OrgOp {
+export function setNodeKind(ctx: OpBuilderCtx, nodeId: string, kind: number): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'kind', value: kind })
 }
 
-export function setNodeParentId(ctx: OpBuilderCtx, nodeId: string, parentId: string): OrgOp {
+export function setNodeParentId(ctx: OpBuilderCtx, nodeId: string, parentId: string): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'parentId', value: parentId })
 }
 
-export function setNodePosition(ctx: OpBuilderCtx, nodeId: string, position: string): OrgOp {
+export function setNodePosition(ctx: OpBuilderCtx, nodeId: string, position: string): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'position', value: position })
 }
 
-export function setNodeDirection(ctx: OpBuilderCtx, nodeId: string, direction: number): OrgOp {
+export function setNodeDirection(ctx: OpBuilderCtx, nodeId: string, direction: number): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'direction', value: direction })
 }
 
-export function setNodeRatios(ctx: OpBuilderCtx, nodeId: string, ratios: number[]): OrgOp {
+export function setNodeRatios(ctx: OpBuilderCtx, nodeId: string, ratios: number[]): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'ratios', value: create(DoubleListSchema, { values: ratios }) })
 }
 
-export function setNodeRows(ctx: OpBuilderCtx, nodeId: string, rows: number): OrgOp {
+export function setNodeRows(ctx: OpBuilderCtx, nodeId: string, rows: number): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'rows', value: rows })
 }
 
-export function setNodeCols(ctx: OpBuilderCtx, nodeId: string, cols: number): OrgOp {
+export function setNodeCols(ctx: OpBuilderCtx, nodeId: string, cols: number): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'cols', value: cols })
 }
 
-export function setNodeRowRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): OrgOp {
+export function setNodeRowRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'rowRatios', value: create(DoubleListSchema, { values }) })
 }
 
-export function setNodeColRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): OrgOp {
+export function setNodeColRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): CrdtOp {
   return setNodeRegister(ctx, nodeId, { case: 'colRatios', value: create(DoubleListSchema, { values }) })
 }
 
-export function tombstoneNode(ctx: OpBuilderCtx, nodeId: string): OrgOp {
+export function tombstoneNode(ctx: OpBuilderCtx, nodeId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'tombstoneNode',
     value: create(TombstoneNodeOpSchema, { nodeId }),
   })
 }
 
-export function setTabTileId(ctx: OpBuilderCtx, tabType: TabType, tabId: string, tileId: string): OrgOp {
+export function setTabTileId(ctx: OpBuilderCtx, tabType: TabType, tabId: string, tileId: string): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'tileId', value: tileId })
 }
 
-export function setTabPosition(ctx: OpBuilderCtx, tabType: TabType, tabId: string, position: string): OrgOp {
+export function setTabPosition(ctx: OpBuilderCtx, tabType: TabType, tabId: string, position: string): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'position', value: position })
 }
 
-export function setTabWorkerId(ctx: OpBuilderCtx, tabType: TabType, tabId: string, workerId: string): OrgOp {
+export function setTabWorkerId(ctx: OpBuilderCtx, tabType: TabType, tabId: string, workerId: string): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'workerId', value: workerId })
 }
 
-export function setTabDisplayMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): OrgOp {
+export function setTabDisplayMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'displayMode', value: mode })
 }
 
-export function setTabFileViewMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): OrgOp {
+export function setTabFileViewMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'fileViewMode', value: mode })
 }
 
-export function setTabFileDiffBase(ctx: OpBuilderCtx, tabType: TabType, tabId: string, base: string): OrgOp {
+export function setTabFileDiffBase(ctx: OpBuilderCtx, tabType: TabType, tabId: string, base: string): CrdtOp {
   return setTabRegister(ctx, tabType, tabId, { case: 'fileDiffBase', value: base })
 }
 
-export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): OrgOp {
+export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'tombstoneTab',
     value: create(TombstoneTabOpSchema, { tabType, tabId }),
   })
 }
 
-export function setFloatingWorkspaceId(ctx: OpBuilderCtx, windowId: string, workspaceId: string): OrgOp {
+export function setFloatingWorkspaceId(ctx: OpBuilderCtx, windowId: string, workspaceId: string): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'workspaceId', value: workspaceId })
 }
 
-export function setFloatingX(ctx: OpBuilderCtx, windowId: string, x: number): OrgOp {
+export function setFloatingX(ctx: OpBuilderCtx, windowId: string, x: number): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'x', value: x })
 }
 
-export function setFloatingY(ctx: OpBuilderCtx, windowId: string, y: number): OrgOp {
+export function setFloatingY(ctx: OpBuilderCtx, windowId: string, y: number): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'y', value: y })
 }
 
-export function setFloatingWidth(ctx: OpBuilderCtx, windowId: string, width: number): OrgOp {
+export function setFloatingWidth(ctx: OpBuilderCtx, windowId: string, width: number): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'width', value: width })
 }
 
-export function setFloatingHeight(ctx: OpBuilderCtx, windowId: string, height: number): OrgOp {
+export function setFloatingHeight(ctx: OpBuilderCtx, windowId: string, height: number): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'height', value: height })
 }
 
-export function setFloatingOpacity(ctx: OpBuilderCtx, windowId: string, opacity: number): OrgOp {
+export function setFloatingOpacity(ctx: OpBuilderCtx, windowId: string, opacity: number): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'opacity', value: opacity })
 }
 
-export function setFloatingRootNodeId(ctx: OpBuilderCtx, windowId: string, rootNodeId: string): OrgOp {
+export function setFloatingRootNodeId(ctx: OpBuilderCtx, windowId: string, rootNodeId: string): CrdtOp {
   return setFloatingRegister(ctx, windowId, { case: 'rootNodeId', value: rootNodeId })
 }
 
-export function tombstoneFloatingWindow(ctx: OpBuilderCtx, windowId: string): OrgOp {
+export function tombstoneFloatingWindow(ctx: OpBuilderCtx, windowId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'tombstoneFloatingWindow',
     value: create(TombstoneFloatingWindowOpSchema, { windowId }),
@@ -184,7 +183,7 @@ export function tombstoneFloatingWindow(ctx: OpBuilderCtx, windowId: string): Or
 }
 
 /** Bundle a list of ops into a fresh OpBatch. */
-export function newBatch(ops: OrgOp[]): OpBatch {
+export function newBatch(ops: CrdtOp[]): OpBatch {
   return create(OpBatchSchema, { batchId: generateId(), ops })
 }
 
@@ -204,7 +203,7 @@ export function newBatch(ops: OrgOp[]): OpBatch {
  * order-preserving by construction; the tiebreak matches `tabsByTile`
  * in tab.store so the visible order is identical before and after.
  */
-export function liveTabsOnTile(state: OrgCrdtState, tileId: string): Array<{ tabType: TabType, tabId: string }> {
+export function liveTabsOnTile(state: UserCrdtState, tileId: string): Array<{ tabType: TabType, tabId: string }> {
   const matches: Array<{ tabType: TabType, tabId: string, position: string }> = []
   for (const t of Object.values(state.tabs)) {
     if (!hlcIsZero(t.tombstoneAt))

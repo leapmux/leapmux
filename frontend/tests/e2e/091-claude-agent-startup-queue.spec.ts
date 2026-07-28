@@ -33,16 +33,16 @@ test.describe('Claude Code agent startup queue', () => {
       // While still queued, the optimistic bubble must show the
       // pending sublabel — proof the message was held back, not sent.
       const pending = page.locator('[data-testid="message-pending"]')
-      await expect(pending).toBeVisible({ timeout: 5_000 })
+      await expect(pending).toBeVisible()
       await expect(pending).toContainText('Queued')
 
       // The startup overlay disappears when the agent transitions
       // to ACTIVE. The pending sublabel disappears with it.
-      await expect(overlay).not.toBeVisible({ timeout: 60_000 })
-      await expect(pending).not.toBeVisible({ timeout: 30_000 })
+      await expect(overlay).not.toBeVisible()
+      await expect(pending).not.toBeVisible()
     }
 
     // The queued message must reach Claude and produce a response.
-    await expectAssistantAnswer(page, { timeout: 60_000 })
+    await expectAssistantAnswer(page)
   })
 })

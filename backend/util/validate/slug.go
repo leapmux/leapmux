@@ -9,7 +9,7 @@ import (
 var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // SanitizeSlug trims whitespace, lowercases, then validates as a
-// GitHub-style slug (username or organization name).
+// GitHub-style username slug.
 // Rules: 1-32 chars, lowercase alphanumeric and hyphens only,
 // no leading/trailing hyphens, no consecutive hyphens.
 // Returns the cleaned slug and an error if invalid.

@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
-import { breakpoints, motion } from '~/styles/tokens'
+import { motion } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -67,23 +67,6 @@ export const tilePane = style({
 export const tilePaneHidden = style({
   visibility: 'hidden',
   pointerEvents: 'none',
-})
-
-export const fullWindow = style({
-  'height': '100%',
-  'width': '100%',
-  'overflow': 'auto',
-  // Mobile only: when the AppShell falls back to rendering non-workspace
-  // routes (dashboard etc.) inside this wrapper, we must NOT let it
-  // become page-scrollable underneath any nested mobile UI. iOS Safari
-  // happily scrolls the outer container while a focused contenteditable
-  // is in the inner column, pushing the composer above the visible
-  // viewport. Locking the scroll here keeps the chosen layout in charge.
-  '@media': {
-    [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      overflow: 'hidden',
-    },
-  },
 })
 
 export const placeholder = style({

@@ -39,7 +39,7 @@ func RunTabMove(rawCtx any, args []string) error {
 	// HideTile so the resolver doesn't auto-consume --tile-id as a
 	// derivation source for the source workspace; the move target is
 	// a separate input owned by --target-tile-id / --target-workspace-id.
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true, HideTile: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideTile: true})
 	fs.StringVar(&destTileID, "target-tile-id", "", "destination tile id (defaults derived from --target-workspace-id or --before/--after)")
 	fs.StringVar(&destWorkspaceID, "target-workspace-id", "", "destination workspace id; when set without --target-tile-id, the tab lands on the workspace's first live leaf")
 	pos := bindPositionFlags(fs, "land")
@@ -113,7 +113,7 @@ func RunTabMove(rawCtx any, args []string) error {
 			)
 		}
 	}
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		opSetTabTileID(cc.bs, tt, got.TabID, resolvedTileID),
 		opSetTabPosition(cc.bs, tt, got.TabID, resolvedPos),
 	}

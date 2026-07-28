@@ -10,7 +10,7 @@ import (
 // Layout / tile-tree mutation commands. Every mutator follows the
 // projection-driven CRDT contract:
 //
-//  1. Bootstrap the org via WatchOrg → OrgMaterialized.
+//  1. Bootstrap the user CRDT via a unary GetMaterialized call.
 //  2. Resolve parent_id chains from the materialized state when the op
 //     batch needs them (e.g. replaceGridWithLeaf inherits the grid's
 //     parent).

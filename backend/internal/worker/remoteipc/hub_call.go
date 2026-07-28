@@ -15,7 +15,7 @@ import (
 )
 
 // HubWorkspaceBridge implements HubBridge by talking to the hub's
-// WorkspaceService, WorkerManagementService, and OrgCRDT services over
+// WorkspaceService, WorkerManagementService, and UserCRDT services over
 // ConnectRPC, authenticated with a per-(user, workspace) delegation-token
 // bearer.
 //

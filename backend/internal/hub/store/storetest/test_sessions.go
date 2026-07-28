@@ -17,8 +17,7 @@ import (
 func (s *Suite) testSessions(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "sess-user")
+		user := SeedUser(t, st, "sess-user")
 		sess := SeedSession(t, st, user.ID)
 
 		found, err := st.Sessions().GetByID(ctx, sess.ID)
@@ -39,8 +38,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("touch", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "touch-user")
+		user := SeedUser(t, st, "touch-user")
 		sess := SeedSession(t, st, user.ID)
 
 		newExpiry := time.Now().Add(48 * time.Hour)
@@ -64,8 +62,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "del-user")
+		user := SeedUser(t, st, "del-user")
 		sess := SeedSession(t, st, user.ID)
 
 		n, err := st.Sessions().Delete(ctx, sess.ID)
@@ -78,8 +75,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("delete publishes session revocation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "del-event-user")
+		user := SeedUser(t, st, "del-event-user")
 		sess := SeedSession(t, st, user.ID)
 
 		n, err := st.Sessions().Delete(ctx, sess.ID)
@@ -106,8 +102,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("delete by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "del-by-user")
+		user := SeedUser(t, st, "del-by-user")
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 
@@ -121,8 +116,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("delete others", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "others-user")
+		user := SeedUser(t, st, "others-user")
 		keep := SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
@@ -140,8 +134,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list by user id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "list-user")
+		user := SeedUser(t, st, "list-user")
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 
@@ -151,12 +144,10 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("validate with user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
 
 		userID := id.Generate()
 		err := st.Users().Create(ctx, store.CreateUserParams{
 			ID:            userID,
-			OrgID:         orgID,
 			Username:      "validate-user",
 			PasswordHash:  "hash",
 			DisplayName:   "Val User",
@@ -172,7 +163,6 @@ func (s *Suite) testSessions(t *testing.T) {
 		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID)
 		require.NoError(t, err)
 		assert.Equal(t, userID, sw.UserID)
-		assert.Equal(t, orgID, sw.OrgID)
 		assert.Equal(t, "validate-user", sw.Username)
 		assert.True(t, sw.IsAdmin)
 		assert.True(t, sw.EmailVerified)
@@ -180,8 +170,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("user revocation invalidates stale session generation", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "generation-user")
+		user := SeedUser(t, st, "generation-user")
 		sess := SeedSession(t, st, user.ID)
 
 		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID)
@@ -213,8 +202,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("expired session not returned", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "expired-user")
+		user := SeedUser(t, st, "expired-user")
 
 		sessID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
@@ -232,9 +220,8 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user1 := SeedUser(t, st, orgID, "active-user1")
-		user2 := SeedUser(t, st, orgID, "active-user2")
+		user1 := SeedUser(t, st, "active-user1")
+		user2 := SeedUser(t, st, "active-user2")
 		SeedSession(t, st, user1.ID)
 		SeedSession(t, st, user2.ID)
 
@@ -256,8 +243,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("validate expired session not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "expired-validate-user")
+		user := SeedUser(t, st, "expired-validate-user")
 
 		sessID := id.Generate()
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
@@ -275,8 +261,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("touch stale is no-op", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "touch-stale-user")
+		user := SeedUser(t, st, "touch-stale-user")
 		sess := SeedSession(t, st, user.ID)
 
 		// First touch with a future LastActiveAt — should succeed.
@@ -330,8 +315,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("touch rolls back with transaction", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "touch-tx-user")
+		user := SeedUser(t, st, "touch-tx-user")
 		sess := SeedSession(t, st, user.ID)
 
 		rollbackErr := errors.New("rollback touch")
@@ -355,8 +339,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("delete others with single session", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "single-sess-user")
+		user := SeedUser(t, st, "single-sess-user")
 		sess := SeedSession(t, st, user.ID)
 
 		// DeleteOthers when user has only one session should keep it.
@@ -384,8 +367,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active excludes expired", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "active-expired-user")
+		user := SeedUser(t, st, "active-expired-user")
 
 		// Create a valid session.
 		SeedSession(t, st, user.ID)
@@ -412,8 +394,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active with limit", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "limit-user")
+		user := SeedUser(t, st, "limit-user")
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
 		SeedSession(t, st, user.ID)
@@ -427,8 +408,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("validate deleted user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "validate-del-user")
+		user := SeedUser(t, st, "validate-del-user")
 		sess := SeedSession(t, st, user.ID)
 
 		// Delete the user (soft-delete).
@@ -442,9 +422,8 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active surfaces sessions of soft-deleted users", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		alive := SeedUser(t, st, orgID, "active-alive-user")
-		dead := SeedUser(t, st, orgID, "active-dead-user")
+		alive := SeedUser(t, st, "active-alive-user")
+		dead := SeedUser(t, st, "active-dead-user")
 		SeedSession(t, st, alive.ID)
 		SeedSession(t, st, dead.ID)
 
@@ -475,8 +454,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list by user excludes expired sessions", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "list-expired-user")
+		user := SeedUser(t, st, "list-expired-user")
 
 		// Create a valid session.
 		SeedSession(t, st, user.ID)
@@ -496,9 +474,8 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list by user pages by last_active_at", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "sess-page-user")
-		other := SeedUser(t, st, orgID, "sess-page-other")
+		user := SeedUser(t, st, "sess-page-user")
+		other := SeedUser(t, st, "sess-page-other")
 		s1 := SeedSession(t, st, user.ID)
 		s2 := SeedSession(t, st, user.ID)
 		s3 := SeedSession(t, st, user.ID)
@@ -531,8 +508,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active with cursor returns next page", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "cursor-user")
+		user := SeedUser(t, st, "cursor-user")
 		// Create 3 sessions with delays to ensure distinct last_active_at.
 		for i := 0; i < 3; i++ {
 			if i > 0 {
@@ -566,8 +542,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("list all active cursor survives same-millisecond tie", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-tie-org")
-		user := SeedUser(t, st, orgID, "sess-tie-user")
+		user := SeedUser(t, st, "sess-tie-user")
 
 		// Three sessions: two share an identical last_active_at millisecond and
 		// the third is strictly older. The cursor orders on last_active_at, so
@@ -591,8 +566,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("duplicate session id returns conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "sess-org")
-		user := SeedUser(t, st, orgID, "dup-sess-user")
+		user := SeedUser(t, st, "dup-sess-user")
 		sess := SeedSession(t, st, user.ID)
 
 		err := st.Sessions().Create(ctx, store.CreateSessionParams{
@@ -612,8 +586,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		// RPC's InvalidArgument mapping; this covers the five sibling list
 		// methods' shared decode path through store.ParseCursor.
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "cursor-err-org")
-		SeedUser(t, st, orgID, "cursor-err-user")
+		SeedUser(t, st, "cursor-err-user")
 
 		cases := map[string]string{
 			"missing delimiter": "2026-07-20T12:34:56.789Z",
@@ -646,8 +619,7 @@ func (s *Suite) testSessions(t *testing.T) {
 // NotFound the same way it maps "someone else's row".
 func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 	st := s.NewStore(t)
-	orgID := SeedOrg(t, st, "zero-bulk-org")
-	user := SeedUser(t, st, orgID, "zero-bulk-user")
+	user := SeedUser(t, st, "zero-bulk-user")
 	ownerID := userid.MustNew(user.ID)
 
 	// Bulk: every row belonging to one user.

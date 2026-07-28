@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import { HLCClock, hlcCmp, hlcIsZero } from './hlc'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {

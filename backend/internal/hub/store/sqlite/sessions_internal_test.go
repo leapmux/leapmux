@@ -44,8 +44,7 @@ func waitForSQLiteFraction(t *testing.T, db *sql.DB, match func(float64) bool) {
 
 func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (string, string) {
 	t.Helper()
-	orgID := storetest.SeedOrg(t, st, "fractional-session-org")
-	user := storetest.SeedUser(t, st, orgID, "fractional-session-user")
+	user := storetest.SeedUser(t, st, "fractional-session-user")
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
 		ID:        sessionID,
@@ -147,8 +146,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 // prove the wrap quantizes to the canonical millisecond layout.
 func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 	st, db := newSessionTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "canonical-expiry-org")
-	user := storetest.SeedUser(t, st, orgID, "canonical-expiry-user")
+	user := storetest.SeedUser(t, st, "canonical-expiry-user")
 	expiresAt := time.Date(2026, 7, 20, 12, 34, 56, 789_456_789, time.UTC)
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
@@ -212,8 +210,7 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 // silently return.
 func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	st, db := newSessionTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "touch-canonical-org")
-	user := storetest.SeedUser(t, st, orgID, "touch-canonical-user")
+	user := storetest.SeedUser(t, st, "touch-canonical-user")
 	sessionID := storetest.SeedSession(t, st, user.ID).ID
 
 	// Pin last_active_at to a known-old canonical instant so Touch's
@@ -279,8 +276,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 // against a future driver regression that would make the drop real.
 func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 	st, db := newSessionTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "tie-org")
-	user := storetest.SeedUser(t, st, orgID, "tie-user")
+	user := storetest.SeedUser(t, st, "tie-user")
 
 	mk := func() string {
 		sessionID := id.Generate()

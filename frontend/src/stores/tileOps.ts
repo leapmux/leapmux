@@ -1,7 +1,7 @@
-import type { NodeRecord, OrgCrdtState } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { NodeRecord, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import type { OpBuilderCtx } from '~/lib/crdt'
-import { NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
   buildChildIndex,
   descendantsLeavesFirst,
@@ -27,7 +27,7 @@ import { first } from '~/lib/lexorank'
  * tombstone order, root-protected nodes) so the rewrite logic must
  * match — putting the builders here keeps them from drifting.
  *
- * None of these enqueue anything; they return `OrgOp[]` so callers
+ * None of these enqueue anything; they return `CrdtOp[]` so callers
  * can compose with their own pre/post ops (e.g. floating-window
  * creation around `buildCloseSubtreeOps`).
  */
@@ -53,11 +53,11 @@ import { first } from '~/lib/lexorank'
  */
 export function buildCloseTileOps(
   ctx: OpBuilderCtx,
-  state: OrgCrdtState,
+  state: UserCrdtState,
   tileId: string,
   childIndex?: Map<string, NodeRecord[]>,
-): OrgOp[] {
-  const ops: OrgOp[] = []
+): CrdtOp[] {
+  const ops: CrdtOp[] = []
   for (const t of liveTabsOnTile(state, tileId))
     ops.push(tombstoneTab(ctx, t.tabType, t.tabId))
   ops.push(tombstoneNode(ctx, tileId))
@@ -177,15 +177,15 @@ export interface CloseSubtreeOpts {
  */
 export function buildCloseSubtreeOps(
   ctx: OpBuilderCtx,
-  state: OrgCrdtState,
+  state: UserCrdtState,
   tileId: string,
   opts: CloseSubtreeOpts = {},
   childIndex?: Map<string, NodeRecord[]>,
-): OrgOp[] {
+): CrdtOp[] {
   const migrateTo = opts.migrateTabsTo
   const tombstoneRoot = opts.tombstoneRoot !== false
   const descendants = descendantsLeavesFirst(state, tileId, childIndex)
-  const ops: OrgOp[] = []
+  const ops: CrdtOp[] = []
   // Migrate-or-tombstone tabs walk leaves-first to keep the wire
   // order stable and the validator's intermediate states predictable.
   let migratedPos = 0
@@ -237,11 +237,11 @@ export function buildCloseSubtreeOps(
  */
 export function buildReplaceNonRootGridWithLeafOps(
   ctx: OpBuilderCtx,
-  state: OrgCrdtState,
+  state: UserCrdtState,
   gridId: string,
   parentId: string,
   childIndex?: Map<string, NodeRecord[]>,
-): { ops: OrgOp[], newLeafId: string } {
+): { ops: CrdtOp[], newLeafId: string } {
   const newLeafId = generateId()
   const gridRec = state.nodes[gridId]
   const inheritedPosition = gridRec?.position?.value ?? first()

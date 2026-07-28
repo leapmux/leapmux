@@ -8,7 +8,7 @@ import {
   openNewAgentDialog,
   openNewWorkspaceDialog,
   setWorkingDir,
-  waitForOrgPageReady,
+  waitForAppPageReady,
   waitForWorker,
 } from './helpers/worktree'
 
@@ -26,8 +26,8 @@ test.describe('Worktree Detection', () => {
     mkdirSync(nonGitDir, { recursive: true })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -57,8 +57,8 @@ test.describe('Worktree Detection', () => {
     mkdirSync(subDir, { recursive: true })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -84,8 +84,8 @@ test.describe('Worktree Detection', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-ws')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -121,14 +121,14 @@ test.describe('Worktree Detection', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-agent')
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent WT Dialog Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent WT Dialog Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     await openNewAgentDialog(page)
@@ -147,14 +147,14 @@ test.describe('Worktree Detection', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-terminal')
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal WT Dialog Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal WT Dialog Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
@@ -191,8 +191,8 @@ test.describe('Worktree Detection', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -219,8 +219,8 @@ test.describe('Worktree Detection', () => {
     writeFileSync(join(repoDir, 'dirty-file.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)

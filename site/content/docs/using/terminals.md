@@ -222,9 +222,8 @@ The variables injected into a terminal are:
 | --- | --- | --- |
 | `LEAPMUX_REMOTE_SOCK` | Always | Local IPC socket the CLI connects to |
 | `LEAPMUX_REMOTE_TOKEN` | Always | Per-spawn bearer token for that socket |
-| `LEAPMUX_REMOTE_USER_ID` | Always | The authenticated user |
+| `LEAPMUX_REMOTE_USER_ID` | Always | The authenticated user (informational; no flag defaults from it) |
 | `LEAPMUX_REMOTE_WORKER_ID` | Always | The host Worker |
-| `LEAPMUX_REMOTE_ORG_ID` | When known | The organization |
 | `LEAPMUX_REMOTE_TAB_ID` | When known | This terminal's tab id |
 | `LEAPMUX_REMOTE_TAB_TYPE` | When known | `terminal` |
 | `LEAPMUX_REMOTE_WORKING_DIR` | When known | The working directory at spawn |

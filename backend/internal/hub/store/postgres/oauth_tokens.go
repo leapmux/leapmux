@@ -45,10 +45,10 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 }
 
 func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams) (*store.OAuthToken, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, store.ErrNotFound
 	}
 	t, err := s.conn.q.GetOAuthTokens(ctx, gendb.GetOAuthTokensParams{
@@ -91,24 +91,24 @@ func (s *oauthTokenStore) DeleteByProvider(ctx context.Context, providerID strin
 }
 
 func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteOAuthTokensByUser(ctx, owner))
 }
 
 func (s *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{

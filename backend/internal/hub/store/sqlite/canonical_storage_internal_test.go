@@ -45,11 +45,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	future := now.Add(time.Hour)
 	farFuture := now.Add(2 * time.Hour)
 	ptr := func(v time.Time) *time.Time { return &v }
-
-	orgID := storetest.SeedOrg(t, st, "canon-org")
-	user := storetest.SeedUser(t, st, orgID, "canon-user")
+	user := storetest.SeedUser(t, st, "canon-user")
 	worker := storetest.SeedWorker(t, st, user.ID)
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, user.ID, "canon-ws")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "canon-ws")
 	provider := storetest.SeedOAuthProvider(t, st, "canon-provider")
 
 	// delegation_tokens: expires_at + refresh_expires_at on Create (created_at
@@ -173,13 +171,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// lifecycle_outbox.consumed_at.
 	require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
-		OrgID:   orgID,
+		UserID:  userid.MustNew(user.ID),
 		OpType:  "create",
 		Payload: []byte("payload"),
 	}))
 	pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{
-		OrgID: orgID,
-		Limit: 10,
+		UserID: userid.MustNew(user.ID),
+		Limit:  10,
 	})
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
@@ -188,9 +186,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ConsumedAt: now,
 	}))
 
-	// org_recent_batch_ids.expires_at.
-	require.NoError(t, st.OrgRecentBatchIDs().Insert(ctx, store.InsertOrgRecentBatchIDParams{
-		OrgID:               orgID,
+	// user_recent_batch_ids.expires_at.
+	require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
+		UserID:              userid.MustNew(user.ID),
 		BatchID:             "canon-batch",
 		BodyHash:            []byte("hash"),
 		PrincipalID:         user.ID,
@@ -202,16 +200,16 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ExpiresAt:           future,
 	}))
 
-	// org_state: epoch_started_at + updated_at on Upsert AND AdvanceEpoch.
-	require.NoError(t, st.OrgState().Upsert(ctx, store.UpsertOrgStateParams{
-		OrgID:          orgID,
+	// user_state: epoch_started_at + updated_at on Upsert AND AdvanceEpoch.
+	require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
+		UserID:         userid.MustNew(user.ID),
 		StatePayload:   []byte("state"),
 		CurrentEpoch:   1,
 		EpochStartedAt: now,
 		UpdatedAt:      now,
 	}))
-	require.NoError(t, st.OrgState().AdvanceEpoch(ctx, store.AdvanceOrgEpochParams{
-		OrgID:          orgID,
+	require.NoError(t, st.UserState().AdvanceEpoch(ctx, store.AdvanceUserEpochParams{
+		UserID:         userid.MustNew(user.ID),
 		Epoch:          2,
 		EpochStartedAt: future,
 		UpdatedAt:      future,
@@ -235,9 +233,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	}))
 	require.NoError(t, st.WorkerNotifications().MarkDelivered(ctx, notifID))
 
-	// org_op_batches.committed_at via its column DEFAULT.
-	require.NoError(t, st.OrgOpBatches().Insert(ctx, store.InsertOrgOpBatchParams{
-		OrgID:        orgID,
+	// user_op_batches.committed_at via its column DEFAULT.
+	require.NoError(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
+		UserID:       userid.MustNew(user.ID),
 		PhysicalMs:   1,
 		Logical:      1,
 		LastLogical:  1,
@@ -305,11 +303,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, err)
 
 	// Soft-delete paths, run last so every fixture above wrote against live
-	// rows: users.deleted_at + orgs.deleted_at through the transactional user
-	// delete (which soft-deletes the personal org too); workers.deleted_at and
+	// rows: users.deleted_at through Users().Delete; workers.deleted_at and
 	// workspaces.deleted_at through their own strftime-based soft deletes.
-	delOrgID := storetest.SeedOrg(t, st, "canon-org-del")
-	delUser := storetest.SeedUser(t, st, delOrgID, "canon-user-del")
+	delUser := storetest.SeedUser(t, st, "canon-user-del")
 	require.NoError(t, st.Users().Delete(ctx, delUser.ID))
 	require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
 	deletedWs, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{

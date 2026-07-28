@@ -460,14 +460,10 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "dup@example.com", "Dup", "sub-dup", time.Now().Add(5*time.Minute).UTC())
 
 	// Create an existing user with the same username.
-	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "existing-org"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
-		OrgID:        orgID,
 		Username:     "takenname",
 		PasswordHash: hash,
 		DisplayName:  "Taken",
@@ -497,14 +493,10 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "taken@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
 	// Create an existing user with the same email.
-	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emaildup-org"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
-		OrgID:        orgID,
 		Username:     "emailowner",
 		PasswordHash: hash,
 		DisplayName:  "Email Owner",
@@ -718,15 +710,11 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	_, st, ks := setupOAuthTestServer(t)
 
 	// Create a user with a verified email.
-	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "alice-org"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userID := id.Generate()
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:            userID,
-		OrgID:         orgID,
 		Username:      "alice",
 		PasswordHash:  hash,
 		DisplayName:   "Alice",
@@ -817,14 +805,10 @@ func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
 	_, st, _ := setupOAuthTestServer(t)
 
 	// Create a user with an unverified email.
-	orgID := id.Generate()
-	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "bob-org"})
-	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:            id.Generate(),
-		OrgID:         orgID,
 		Username:      "bob",
 		PasswordHash:  hash,
 		DisplayName:   "Bob",

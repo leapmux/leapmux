@@ -36,7 +36,7 @@ func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 
 func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 	assert.Panics(t, func() { NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, false) })
-	assert.Panics(t, func() { NewOrgEventsHandler(nil, nil, nil, nil, false) })
+	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, nil, nil, false) })
 }
 
 // TestChannelRelayHandlerRequiresWorkerRegistry pins the OTHER dependency the
@@ -150,7 +150,7 @@ func (httpAuthFailureSessions) ValidateWithUser(context.Context, string) (*store
 func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 	handlers := map[string]http.Handler{
 		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, false),
-		"org events":    NewOrgEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false),
+		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false),
 	}
 	for name, handler := range handlers {
 		t.Run(name, func(t *testing.T) {
@@ -415,17 +415,13 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
-	orgID := id.Generate()
-	require.NoError(t, st.Orgs().Create(context.Background(), store.CreateOrgParams{
-		ID: orgID, Name: "relay-delegation-org",
-	}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "relay-user-" + id.Generate()[:6],
+		ID: userID, Username: "relay-user-" + id.Generate()[:6],
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: workspaceID, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "relay-ws",
+		ID: workspaceID, OwnerUserID: userid.MustNew(userID), Title: "relay-ws",
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{

@@ -131,7 +131,6 @@ interface AppShellDialogsProps {
   sectionStore: ReturnType<typeof createSectionStore>
   registry: WorkspaceStoreRegistryType
   focusEditor: () => void
-  orgSlug: string
   loadWorkspaces: () => Promise<void>
   navigate: (path: string) => void
   availableProviders?: AgentProvider[]
@@ -224,7 +223,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               else {
                 refreshWorkspaces()
               }
-              props.navigate(`/o/${props.orgSlug}/workspace/${workspaceId}`)
+              props.navigate(`/workspace/${workspaceId}`)
             }}
             onClose={() => props.dialogs.newWorkspace.close()}
           />

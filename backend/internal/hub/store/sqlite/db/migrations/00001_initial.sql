@@ -1,20 +1,19 @@
 -- +goose Up
 
--- Personal organizations: exactly one per user, created with the account,
--- soft-deleted with it. name mirrors the username (renamed together).
-CREATE TABLE orgs (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    deleted_at  DATETIME
-);
-CREATE UNIQUE INDEX idx_orgs_name ON orgs(name) WHERE deleted_at IS NULL;
-CREATE INDEX idx_orgs_deleted_at ON orgs(deleted_at) WHERE deleted_at IS NOT NULL;
-
 -- Users
+-- users.id carries CHECK (id <> '') because it is the parent key every
+-- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
+-- at the Go API, but that closes only the store as a route to the shape; raw SQL
+-- (an operator repair script, a restored file, a seed) could still land one, and
+-- from there every REFERENCES users(id) below would happily point at it. The
+-- CHECK is what makes the blank-owner family unrepresentable rather than merely
+-- unreachable through one API.
+--
+-- NOTE: enforced on SQLite, PostgreSQL, CockroachDB and YugabyteDB. TiDB parses
+-- and IGNORES CHECK constraints unless tidb_enable_check_constraint is ON --
+-- see mysql.go, which sets it alongside tidb_enable_foreign_key.
 CREATE TABLE users (
-    id             TEXT PRIMARY KEY,
-    org_id         TEXT NOT NULL REFERENCES orgs(id),
+    id             TEXT PRIMARY KEY CHECK (id <> ''),
     username       TEXT NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
@@ -54,7 +53,6 @@ CREATE TABLE users (
     auth_generation          BIGINT NOT NULL DEFAULT 0,
     deleted_at     DATETIME
 );
-CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
@@ -176,7 +174,7 @@ CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys
 CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at DESC, id DESC);
 
 
--- Sidebar sections (per-user organization of sidebar panels)
+-- Sidebar sections (per-user grouping of sidebar panels)
 CREATE TABLE workspace_sections (
     id           TEXT PRIMARY KEY,
     user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -191,14 +189,13 @@ CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 -- Workspaces (hub-owned registry) -- must come before workspace_section_items
 CREATE TABLE workspaces (
     id            TEXT PRIMARY KEY,
-    org_id        TEXT NOT NULL REFERENCES orgs(id),
     owner_user_id TEXT NOT NULL REFERENCES users(id),
     title         TEXT NOT NULL DEFAULT '',
     is_deleted    INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     deleted_at    DATETIME
 );
-CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id) WHERE is_deleted = 0;
+CREATE INDEX idx_workspaces_owner_live ON workspaces(owner_user_id) WHERE is_deleted = 0;
 CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
 
@@ -212,18 +209,18 @@ CREATE TABLE workspace_section_items (
 );
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
--- CRDT op-batch journal. The per-org CRDT manager appends every committed
+-- CRDT op-batch journal. The per-user CRDT manager appends every committed
 -- batch here in the same transaction that updates the in-memory state and
 -- the derived workspace_tab_owned / workspace_tab_rendered views. One row
--- per OpBatch (not per OrgOp); ops within a batch share a contiguous
+-- per OpBatch (not per CrdtOp); ops within a batch share a contiguous
 -- canonical HLC range anchored at (physical_ms, logical) with op_count
 -- ops, so the last op's logical = logical + op_count - 1.
 --
 -- Compaction periodically drops rows whose batch's last canonical HLC <=
 -- compaction_watermark; the surviving batch_ids move to
--- org_recent_batch_ids so retries within ~14 days remain idempotent.
-CREATE TABLE org_op_batches (
-    org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+-- user_recent_batch_ids so retries within ~14 days remain idempotent.
+CREATE TABLE user_op_batches (
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     physical_ms   BIGINT NOT NULL,                  -- first op's canonical_hlc.physical (= last op's; ops in a batch share physical_ms)
     logical       BIGINT NOT NULL,                  -- first op's canonical_hlc.logical
     last_logical  BIGINT NOT NULL,                  -- last op's canonical_hlc.logical (= logical + op_count - 1); precomputed for compaction filter
@@ -233,58 +230,65 @@ CREATE TABLE org_op_batches (
     body_hash     BLOB NOT NULL,                    -- SHA-256 of OpBatch with per-op HLC/origin fields stripped
     batch_payload BLOB NOT NULL,                    -- proto-marshalled OpBatch (ops carry per-op canonical_hlc)
     op_count      INTEGER NOT NULL CHECK (op_count > 0),
-    epoch         BIGINT NOT NULL,                  -- the org's epoch at commit time
+    epoch         BIGINT NOT NULL,                  -- the user's epoch at commit time
     committed_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (org_id, physical_ms, logical, origin_client)
+    PRIMARY KEY (user_id, physical_ms, logical, origin_client)
 );
-CREATE UNIQUE INDEX idx_org_op_batches_dedup ON org_op_batches(org_id, batch_id);
+CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_id);
 
--- One materialized OrgCrdtState blob per org. The manager rewrites this
+-- One materialized UserCrdtState blob per user. The manager rewrites this
 -- row only on compaction or lifecycle-outbox processing; per-batch
--- commits update only org_op_batches + the index views to keep the hot
+-- commits update only user_op_batches + the index views to keep the hot
 -- path off the multi-MB blob.
-CREATE TABLE org_state (
-    org_id           TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+CREATE TABLE user_state (
+    user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     state_payload    BLOB NOT NULL,
     current_epoch    BIGINT NOT NULL DEFAULT 1,
     epoch_started_at DATETIME NOT NULL,
     updated_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
--- Worker-ownership view: every non-tombstoned tab in the org. Worker
+-- Worker-ownership view: every non-tombstoned tab for the user. Worker
 -- reconciliation reads from this view (NOT from _rendered) so a tab
 -- dropped by projection-repair doesn't cause the worker to delete a
 -- still-live agent / terminal / file-tab.
 CREATE TABLE workspace_tab_owned (
-    org_id       TEXT NOT NULL,
+    -- The users(id) FK mirrors the sibling CRDT tables (user_op_batches,
+    -- user_state, user_recent_batch_ids, lifecycle_outbox): without it a
+    -- blank-owner row is insertable but no delete path can bind it away.
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
     worker_id    TEXT NOT NULL,
     tile_id      TEXT NOT NULL,
     position     TEXT NOT NULL,
-    PRIMARY KEY (org_id, tab_id)
+    PRIMARY KEY (user_id, tab_id)
 );
-CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(worker_id);
+-- (user_id, worker_id), not worker_id alone: ListOwnedTabsByWorker binds both,
+-- so a single-column index could only seek worker_id and then re-filter every
+-- match by owner.
+CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(user_id, worker_id);
 CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
 
 -- UI / projection view: subset of workspace_tab_owned whose tab passes
 -- projection (live tile, no duplicate-grid-cell tie-break, no
 -- cycle-break drop). ListTabs / GetTab read from this view.
 CREATE TABLE workspace_tab_rendered (
-    org_id       TEXT NOT NULL,
+    -- Same users(id) FK as workspace_tab_owned above.
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
     worker_id    TEXT NOT NULL,
     tile_id      TEXT NOT NULL,
     position     TEXT NOT NULL,
-    PRIMARY KEY (org_id, tab_id)
+    PRIMARY KEY (user_id, tab_id)
 );
 CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
--- LocateAccessibleRenderedTab filters on tab_id alone; the PK has tab_id
--- as the trailing column so it is not seekable.
-CREATE INDEX idx_workspace_tab_rendered_tab_id ON workspace_tab_rendered(tab_id);
+-- No tab_id-only index: LocateAccessibleRenderedTab now binds user_id as well,
+-- so PRIMARY KEY (user_id, tab_id) serves it as a point lookup. A standalone
+-- tab_id index would be write amplification with no reader.
 
 -- Recently-committed batch_ids retained for ~14 days (one full epoch
 -- window) so retries are idempotent without scanning the journal. The
@@ -292,8 +296,8 @@ CREATE INDEX idx_workspace_tab_rendered_tab_id ON workspace_tab_rendered(tab_id)
 -- HLC tuple is the batch's first op; combined with op_count it lets the
 -- manager reconstruct every CommittedOp.canonical_hlc for retries
 -- byte-for-byte.
-CREATE TABLE org_recent_batch_ids (
-    org_id                TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+CREATE TABLE user_recent_batch_ids (
+    user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     batch_id              TEXT NOT NULL,
     body_hash             BLOB NOT NULL,
     principal_id          TEXT NOT NULL,
@@ -303,26 +307,26 @@ CREATE TABLE org_recent_batch_ids (
     op_count              INTEGER NOT NULL CHECK (op_count > 0),
     epoch                 BIGINT NOT NULL,
     expires_at            DATETIME NOT NULL,
-    PRIMARY KEY (org_id, batch_id)
+    PRIMARY KEY (user_id, batch_id)
 );
-CREATE INDEX idx_org_recent_batch_ids_expires ON org_recent_batch_ids(expires_at);
+CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_at);
 
 -- Transactional outbox for workspace lifecycle events. Lifecycle RPCs
 -- (CreateWorkspace / RenameWorkspace / DeleteWorkspace) write to
 -- `workspaces` and to this table inside the same DB transaction; the
--- per-org manager goroutine drains the outbox post-commit, applies any
+-- per-user manager goroutine drains the outbox post-commit, applies any
 -- carried CRDT ops, mutates manager-internal state slots, broadcasts the
 -- lifecycle event, and stamps consumed_at. All inside a single
 -- transaction so a mid-process crash is replayable.
 CREATE TABLE lifecycle_outbox (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     op_type     TEXT NOT NULL,                 -- "create" | "rename" | "delete"
     payload     BLOB NOT NULL,                 -- proto-marshalled lifecycle event + ops
     enqueued_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     consumed_at DATETIME
 );
-CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id) WHERE consumed_at IS NULL;
+CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id) WHERE consumed_at IS NULL;
 
 -- Durable revocation stream. Token/user mutations write pending events
 -- in the same transaction as the state transition. Watchers publish those
@@ -551,11 +555,11 @@ DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;
-DROP TABLE IF EXISTS org_recent_batch_ids;
+DROP TABLE IF EXISTS user_recent_batch_ids;
 DROP TABLE IF EXISTS workspace_tab_rendered;
 DROP TABLE IF EXISTS workspace_tab_owned;
-DROP TABLE IF EXISTS org_state;
-DROP TABLE IF EXISTS org_op_batches;
+DROP TABLE IF EXISTS user_state;
+DROP TABLE IF EXISTS user_op_batches;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
@@ -564,4 +568,3 @@ DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS orgs;

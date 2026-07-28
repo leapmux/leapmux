@@ -4,10 +4,6 @@ import { workerClient } from '~/api/clients'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
 import { flush } from '~/test-support/async'
 
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
-
 vi.mock('~/api/clients', () => ({
   workerClient: {
     listWorkers: vi.fn().mockResolvedValue({ workers: [] }),

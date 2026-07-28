@@ -22,7 +22,7 @@ func RunTileSetRatios(rawCtx any, args []string) error {
 	var hub, ratiosCSV string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&ratiosCSV, "ratios", "", "comma-separated ratios summing to 1.0 (required)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
@@ -45,7 +45,7 @@ func RunTileSetRatios(rawCtx any, args []string) error {
 	if err := validateSplitRatiosLength(cc.bs.State, splitID, ratios); err != nil {
 		return err
 	}
-	if err := cc.submitOps([]*leapmuxv1.OrgOp{opSetNodeRatios(cc.bs, splitID, ratios)}); err != nil {
+	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetNodeRatios(cc.bs, splitID, ratios)}); err != nil {
 		return err
 	}
 	return remote.EmitData(map[string]any{"split_tile_id": splitID, "ratios": ratios})
@@ -62,7 +62,7 @@ func RunTileSetGridRatios(rawCtx any, args []string) error {
 	var hub, rowRatiosCSV, colRatiosCSV string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&rowRatiosCSV, "row-ratios", "", "comma-separated row ratios (at least one of --row-ratios / --col-ratios is required)")
 	fs.StringVar(&colRatiosCSV, "col-ratios", "", "comma-separated column ratios (at least one of --row-ratios / --col-ratios is required)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -97,7 +97,7 @@ func RunTileSetGridRatios(rawCtx any, args []string) error {
 	if err := validateGridRatiosShape(cc.bs.State, gridID, rowRatios, colRatios); err != nil {
 		return err
 	}
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 	if rowRatios != nil {
 		ops = append(ops, opSetNodeRowRatios(cc.bs, gridID, rowRatios))
 	}
@@ -178,7 +178,7 @@ func normalizeRatios(values []float64) ([]float64, error) {
 // count M" error instead of an opaque BATCH_REJECTION_* from the
 // server (or worse: a successful write with a ratios slice the
 // renderer doesn't know how to consume).
-func validateSplitRatiosLength(state *leapmuxv1.OrgMaterialized, splitID string, ratios []float64) error {
+func validateSplitRatiosLength(state *leapmuxv1.UserMaterialized, splitID string, ratios []float64) error {
 	live := crdt.LiveChildrenByParent(state)[splitID]
 	if len(ratios) != len(live) {
 		return remote.EmitError("invalid_request",
@@ -193,7 +193,7 @@ func validateSplitRatiosLength(state *leapmuxv1.OrgMaterialized, splitID string,
 // slice may be nil (the caller skips that side of the update); only
 // non-nil slices are checked. Same catch-it-early rationale as
 // validateSplitRatiosLength.
-func validateGridRatiosShape(state *leapmuxv1.OrgMaterialized, gridID string, rowRatios, colRatios []float64) error {
+func validateGridRatiosShape(state *leapmuxv1.UserMaterialized, gridID string, rowRatios, colRatios []float64) error {
 	rec := state.GetNodes()[gridID]
 	rows := int(rec.GetRows().GetValue())
 	cols := int(rec.GetCols().GetValue())

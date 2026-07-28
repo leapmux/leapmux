@@ -3,10 +3,10 @@ import { createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'
 
-const listAvailableShells = vi.fn<(workerId: string, req: { orgId: string, workspaceId: string, workerId: string }) => Promise<ListAvailableShellsResponse>>()
+const listAvailableShells = vi.fn<(workerId: string, req: { workspaceId: string, workerId: string }) => Promise<ListAvailableShellsResponse>>()
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableShells: (workerId: string, req: { orgId: string, workspaceId: string, workerId: string }) =>
+  listAvailableShells: (workerId: string, req: { workspaceId: string, workerId: string }) =>
     listAvailableShells(workerId, req),
 }))
 
@@ -28,7 +28,7 @@ describe('useAvailableShells', () => {
   it('does not fetch while the source returns null', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, _setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, _setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
         await flush()
         expect(listAvailableShells).not.toHaveBeenCalled()
@@ -45,12 +45,12 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/zsh', '/bin/bash'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
-        expect(listAvailableShells.mock.calls[0]).toEqual(['A', { orgId: 'o', workspaceId: 'w', workerId: 'A' }])
+        expect(listAvailableShells.mock.calls[0]).toEqual(['A', { workspaceId: 'w', workerId: 'A' }])
         expect(hook.shells()).toEqual(['/bin/zsh', '/bin/bash'])
         expect(hook.defaultShell()).toBe('/bin/zsh')
         expect(hook.shell()).toBe('/bin/zsh')
@@ -65,9 +65,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/fish', '/bin/zsh'], ''))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(hook.defaultShell()).toBe('/bin/fish')
         dispose()
@@ -80,9 +80,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp([], ''))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(hook.defaultShell()).toBe('')
         expect(hook.shell()).toBe('')
@@ -96,9 +96,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/zsh'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
 
@@ -111,7 +111,7 @@ describe('useAvailableShells', () => {
         // Re-toggle for the same worker. Still no refetch -- this is
         // the regression guard for the ChangeBranchDialog "fires once
         // even after Open-as toggles" case.
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
         dispose()
@@ -126,9 +126,9 @@ describe('useAvailableShells', () => {
       .mockResolvedValueOnce(shellsResp(['/usr/bin/pwsh'], '/usr/bin/pwsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
 
         // User overrides to /bin/bash.
@@ -137,7 +137,7 @@ describe('useAvailableShells', () => {
 
         // User picks a different worker. The override must clear so
         // we don't send a shell path that doesn't exist on worker B.
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'B' })
+        setSource({ workspaceId: 'w', workerId: 'B' })
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(2)
         expect(hook.shells()).toEqual(['/usr/bin/pwsh'])
@@ -152,9 +152,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/zsh', '/bin/bash'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(hook.shell()).toBe('/bin/zsh')
 
@@ -174,9 +174,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockImplementationOnce(() => d.promise)
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(hook.loading()).toBe(true)
         d.resolve(shellsResp(['/bin/zsh'], '/bin/zsh'))
@@ -190,29 +190,29 @@ describe('useAvailableShells', () => {
 
   it('source identity churn with stable workerId does not refire the fetch', async () => {
     // Real callers build a fresh args object on every reactive read
-    // (`{ orgId: org.orgId(), workspaceId: …, workerId: … }`). Tracking
-    // the source accessor by reference would refire the effect on
-    // every upstream tick (e.g. an `org.orgId()` change) even though
-    // the workerId — the only field that gates the fetch — is
-    // unchanged. The hook tracks `source()?.workerId` instead, so
-    // identity churn upstream stays a memo no-op.
+    // (`{ workspaceId, workerId }`). Tracking the source accessor by
+    // reference would refire the effect on every upstream tick — a
+    // `workspaceId` change, or merely a re-read that allocates a new
+    // object — even though the workerId, the only field that gates the
+    // fetch, is unchanged. The hook tracks `source()?.workerId` instead,
+    // so identity churn upstream stays a memo no-op.
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/zsh'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [orgId, setOrgId] = createSignal('org-1')
-        const source = () => ({ orgId: orgId(), workspaceId: 'w', workerId: 'A' })
+        const [workspaceId, setWorkspaceId] = createSignal('w')
+        const source = () => ({ workspaceId: workspaceId(), workerId: 'A' })
         useAvailableShells(source)
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
 
-        // orgId change: source returns a fresh object identity, but the
+        // workspaceId change: source returns a fresh object identity, but the
         // workerId field is unchanged. No refetch.
-        setOrgId('org-2')
+        setWorkspaceId('w2')
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
 
         // And a third churn for good measure.
-        setOrgId('org-3')
+        setWorkspaceId('w3')
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
         dispose()
@@ -226,9 +226,9 @@ describe('useAvailableShells', () => {
     listAvailableShells.mockRejectedValueOnce(new Error('worker offline'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source, onError)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(onError).toHaveBeenCalledTimes(1)
         expect((onError.mock.calls[0][0] as Error).message).toBe('worker offline')
@@ -252,15 +252,15 @@ describe('useAvailableShells', () => {
       .mockImplementationOnce(() => d.promise)
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(hook.shells()).toEqual(['/bin/zsh'])
         expect(hook.shell()).toBe('/bin/zsh')
 
         // Switch workers — the new worker's fetch is in flight.
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'B' })
+        setSource({ workspaceId: 'w', workerId: 'B' })
         await flush()
         // While the new fetch is pending, the OLD worker's shell must
         // not be reported — otherwise downstream gates would accept it.
@@ -292,8 +292,8 @@ describe('useAvailableShells', () => {
       .mockResolvedValueOnce(shellsResp(['/bin/zsh'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(
-          { orgId: 'o', workspaceId: 'w', workerId: 'A' },
+        const [source] = createSignal<{ workspaceId: string, workerId: string } | null>(
+          { workspaceId: 'w', workerId: 'A' },
         )
         const hook = useAvailableShells(source, onError)
         await flush()
@@ -314,7 +314,7 @@ describe('useAvailableShells', () => {
   it('refresh() is a no-op when the source returns null (the gate said don\'t fetch)', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source)
         await hook.refresh()
         await flush()
@@ -337,9 +337,9 @@ describe('useAvailableShells', () => {
       .mockResolvedValueOnce(shellsResp(['/bin/zsh'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ orgId: string, workspaceId: string, workerId: string } | null>(null)
+        const [source, setSource] = createSignal<{ workspaceId: string, workerId: string } | null>(null)
         const hook = useAvailableShells(source, onError)
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(onError).toHaveBeenCalledTimes(1)
         expect(hook.shells()).toEqual([])
@@ -350,7 +350,7 @@ describe('useAvailableShells', () => {
         // must fire and succeed.
         setSource(null)
         await flush()
-        setSource({ orgId: 'o', workspaceId: 'w', workerId: 'A' })
+        setSource({ workspaceId: 'w', workerId: 'A' })
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(2)
         expect(hook.shells()).toEqual(['/bin/zsh'])

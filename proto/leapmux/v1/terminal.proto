@@ -19,21 +19,20 @@ enum TerminalStatus {
 }
 
 message OpenTerminalRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string worker_id = 3;
-  string working_dir = 4;
-  string shell = 5;
-  string shell_start_dir = 6;
-  uint32 cols = 7;
-  uint32 rows = 8;
-  bool create_worktree = 9;     // If true, create a git worktree before starting
-  string worktree_branch = 10;  // Branch name for the worktree
-  string checkout_branch = 11;      // "Switch to branch" mode
-  string use_worktree_path = 12;    // "Use existing worktree" mode
-  string worktree_base_branch = 13; // Base branch for "Create new worktree" (default: current branch)
-  string create_branch = 14;        // "Create new branch" mode — branch name to create
-  string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
+  string workspace_id = 1;
+  string worker_id = 2;
+  string working_dir = 3;
+  string shell = 4;
+  string shell_start_dir = 5;
+  uint32 cols = 6;
+  uint32 rows = 7;
+  bool create_worktree = 8;     // If true, create a git worktree before starting
+  string worktree_branch = 9;  // Branch name for the worktree
+  string checkout_branch = 10;      // "Switch to branch" mode
+  string use_worktree_path = 11;    // "Use existing worktree" mode
+  string worktree_base_branch = 12; // Base branch for "Create new worktree" (default: current branch)
+  string create_branch = 13;        // "Create new branch" mode — branch name to create
+  string create_branch_base = 14;   // Base branch for "Create new branch" (default: current branch)
 }
 
 message OpenTerminalResponse {
@@ -49,10 +48,9 @@ message OpenTerminalResponse {
 }
 
 message CloseTerminalRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string terminal_id = 3;
-  WorktreeAction worktree_action = 4;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  WorktreeAction worktree_action = 3;
 }
 
 // CloseTerminalResponse reports the outcome of CloseTerminal. See
@@ -68,39 +66,35 @@ message CloseTerminalResponse {
 // (including the "[Terminal process exited (N) - Press Enter to restart]"
 // notice) is preserved so the new shell's prompt appears below it.
 message RestartTerminalRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string terminal_id = 3;
-  uint32 cols = 4;
-  uint32 rows = 5;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  uint32 cols = 3;
+  uint32 rows = 4;
 }
 
 message RestartTerminalResponse {}
 
 message SendInputRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string terminal_id = 3;
-  bytes data = 4;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  bytes data = 3;
 }
 
 message SendInputResponse {}
 
 message ResizeTerminalRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string terminal_id = 3;
-  uint32 cols = 4;
-  uint32 rows = 5;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  uint32 cols = 3;
+  uint32 rows = 4;
 }
 
 message ResizeTerminalResponse {}
 
 message UpdateTerminalTitleRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string terminal_id = 3;
-  string title = 4;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  string title = 3;
 }
 
 message UpdateTerminalTitleResponse {}
@@ -174,9 +168,8 @@ message TerminalStatusChange {
 }
 
 message ListAvailableShellsRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  string worker_id = 3;   // Which worker to query for shells (required)
+  string workspace_id = 1;
+  string worker_id = 2;   // Which worker to query for shells (required)
 }
 
 message ListAvailableShellsResponse {

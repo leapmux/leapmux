@@ -15,11 +15,11 @@ import (
 // TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers
 // pins the dedup optimization: when N subscribers observe the same
 // visibility-becoming-visible transition, they receive the IDENTICAL
-// `*WatchOrgEvent` pointer rather than per-subscriber allocations of
+// `*WatchUserEvent` pointer rather than per-subscriber allocations of
 // the same body. Without dedup the entity clone alone scales with sub
 // count.
 func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 1_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
@@ -28,7 +28,7 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 	// so the move op below is the only event that fires across both
 	// subscribers.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -53,16 +53,16 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 	// becoming-visible transition.
 	mv := &leapmuxv1.OpBatch{
 		BatchId: "move-shared",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
-			Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mv},
 	})
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 	evt2 := findEntityMaterialized(cap2.snapshot())
 	require.NotNil(t, evt1, "subscriber 1 must receive EntityMaterialized")
 	require.NotNil(t, evt2, "subscriber 2 must receive EntityMaterialized")
-	assert.Same(t, evt1, evt2, "broadcast must share the same *WatchOrgEvent pointer across subscribers")
+	assert.Same(t, evt1, evt2, "broadcast must share the same *WatchUserEvent pointer across subscribers")
 }
 
 // TestBroadcast_Presence_SharesEventPointerAcrossSubscribers pins the
@@ -79,7 +79,7 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 // to every subscriber whose filter includes the workspace; with dedup
 // they all receive the same envelope.
 func TestBroadcast_Presence_SharesEventPointerAcrossSubscribers(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 1_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	cap1 := &captureSubscriber{}
@@ -106,7 +106,7 @@ func TestBroadcast_Presence_SharesEventPointerAcrossSubscribers(t *testing.T) {
 	// presenceCh job and only THEN broadcasts. Poll for the event with
 	// a reasonable cap so the test stays fast in the happy path and
 	// fails fast otherwise.
-	var evt1, evt2 *leapmuxv1.WatchOrgEvent
+	var evt1, evt2 *leapmuxv1.WatchUserEvent
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		evt1 = findPresence(cap1.snapshot(), "w1")
@@ -118,10 +118,10 @@ func TestBroadcast_Presence_SharesEventPointerAcrossSubscribers(t *testing.T) {
 	}
 	require.NotNil(t, evt1)
 	require.NotNil(t, evt2)
-	assert.Same(t, evt1, evt2, "presence broadcasts must share the same *WatchOrgEvent pointer across subscribers")
+	assert.Same(t, evt1, evt2, "presence broadcasts must share the same *WatchUserEvent pointer across subscribers")
 }
 
-func findEntityMaterialized(events []*leapmuxv1.WatchOrgEvent) *leapmuxv1.WatchOrgEvent {
+func findEntityMaterialized(events []*leapmuxv1.WatchUserEvent) *leapmuxv1.WatchUserEvent {
 	for _, evt := range events {
 		if evt.GetEntityMaterialized() != nil {
 			return evt
@@ -130,7 +130,7 @@ func findEntityMaterialized(events []*leapmuxv1.WatchOrgEvent) *leapmuxv1.WatchO
 	return nil
 }
 
-func findPresence(events []*leapmuxv1.WatchOrgEvent, workspaceID string) *leapmuxv1.WatchOrgEvent {
+func findPresence(events []*leapmuxv1.WatchUserEvent, workspaceID string) *leapmuxv1.WatchUserEvent {
 	for _, evt := range events {
 		p := evt.GetPresence()
 		if p != nil && p.GetWorkspaceId() == workspaceID {

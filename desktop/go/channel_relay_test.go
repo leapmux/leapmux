@@ -46,10 +46,10 @@ func TestApp_OpenChannelRelay_Solo(t *testing.T) {
 	}
 }
 
-func TestCanceledOrgEventsRelayDoesNotEmitClose(t *testing.T) {
+func TestCanceledUserEventsRelayDoesNotEmitClose(t *testing.T) {
 	serverRelease := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"orgevents-relay"}})
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
 		}
@@ -59,10 +59,10 @@ func TestCanceledOrgEventsRelayDoesNotEmitClose(t *testing.T) {
 	t.Cleanup(server.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	wsURL := "ws" + server.URL[len("http"):]
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"orgevents-relay"}})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"userevents-relay"}})
 	require.NoError(t, err)
 	events := make(chan *desktoppb.Event, 1)
-	relay := &OrgEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, emit: func(event *desktoppb.Event) { events <- event }}}
+	relay := &UserEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, emit: func(event *desktoppb.Event) { events <- event }}}
 	done := make(chan struct{})
 	go func() { relay.readLoop(); close(done) }()
 	cancel()
@@ -108,9 +108,9 @@ func TestChannelRelayPreservesAbnormalCloseDetails(t *testing.T) {
 	<-relay.done
 }
 
-func TestOrgEventsRelayPreservesAbnormalCloseDetails(t *testing.T) {
+func TestUserEventsRelayPreservesAbnormalCloseDetails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"orgevents-relay"}})
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
 		}
@@ -121,28 +121,28 @@ func TestOrgEventsRelayPreservesAbnormalCloseDetails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	wsURL := "ws" + server.URL[len("http"):]
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"orgevents-relay"}})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"userevents-relay"}})
 	require.NoError(t, err)
 	events := make(chan *desktoppb.Event, 1)
-	relay := &OrgEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) { events <- event }}}
+	relay := &UserEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) { events <- event }}}
 	go relay.runReadLoop()
 
 	select {
 	case event := <-events:
-		closeEvent := event.GetOrgEventsClose()
+		closeEvent := event.GetUserEventsClose()
 		require.NotNil(t, closeEvent)
 		require.Equal(t, uint32(websocket.StatusProtocolError), closeEvent.GetCode())
 		require.Equal(t, "bad frame", closeEvent.GetReason())
 		require.False(t, closeEvent.GetWasClean())
 	case <-time.After(time.Second):
-		t.Fatal("org-events relay did not emit its close event")
+		t.Fatal("userevents relay did not emit its close event")
 	}
 	<-relay.done
 }
 
-func TestOrgEventsRelayPreservesGoingAwayCloseDetails(t *testing.T) {
+func TestUserEventsRelayPreservesGoingAwayCloseDetails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"orgevents-relay"}})
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
 		}
@@ -153,38 +153,38 @@ func TestOrgEventsRelayPreservesGoingAwayCloseDetails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	wsURL := "ws" + server.URL[len("http"):]
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"orgevents-relay"}})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"userevents-relay"}})
 	require.NoError(t, err)
 	events := make(chan *desktoppb.Event, 1)
-	relay := &OrgEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) { events <- event }}}
+	relay := &UserEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) { events <- event }}}
 	go relay.runReadLoop()
 
 	select {
 	case event := <-events:
-		closeEvent := event.GetOrgEventsClose()
+		closeEvent := event.GetUserEventsClose()
 		require.NotNil(t, closeEvent)
 		require.Equal(t, uint32(websocket.StatusGoingAway), closeEvent.GetCode())
 		require.Equal(t, "hub restart", closeEvent.GetReason())
 		require.True(t, closeEvent.GetWasClean())
 	case <-time.After(time.Second):
-		t.Fatal("org-events relay did not emit its close event")
+		t.Fatal("userevents relay did not emit its close event")
 	}
 	<-relay.done
 }
 
 // A read-loop failure cancels the relay's lifetime BEFORE it emits its close
 // event, mirroring ChannelRelay.readLoop: the two relays share wsRelay.run /
-// openRelay, so their emit/cancel order must stay identical. No org-events adopt
-// path gates on ctx.Err()==nil today (OpenOrgEventsRelay supersedes by owner id,
+// openRelay, so their emit/cancel order must stay identical. No userevents adopt
+// path gates on ctx.Err()==nil today (OpenUserEventsRelay supersedes by owner id,
 // not by ctx), but a future shared adopt-on-ctx path must not be able to adopt a
 // relay whose read loop has already failed during the (potentially blocking)
 // emit window -- so the cancel must precede the emit. The emit closure records
 // ctx.Err() at the moment the close event fires; reading it after relay.done
 // (the read loop has fully returned) is a happens-before edge, so no atomic is
 // needed.
-func TestOrgEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
+func TestUserEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"orgevents-relay"}})
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
 		}
@@ -195,13 +195,13 @@ func TestOrgEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	wsURL := "ws" + server.URL[len("http"):]
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"orgevents-relay"}})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"userevents-relay"}})
 	require.NoError(t, err)
 
 	var ctxErrAtEmit error
 	events := make(chan *desktoppb.Event, 1)
-	relay := &OrgEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) {
-		if event.GetOrgEventsClose() != nil {
+	relay := &UserEventsRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(event *desktoppb.Event) {
+		if event.GetUserEventsClose() != nil {
 			ctxErrAtEmit = ctx.Err()
 		}
 		events <- event
@@ -211,7 +211,7 @@ func TestOrgEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 	select {
 	case <-events:
 	case <-time.After(time.Second):
-		t.Fatal("org-events relay did not emit its close event")
+		t.Fatal("userevents relay did not emit its close event")
 	}
 	<-relay.done
 
@@ -222,7 +222,7 @@ func TestOrgEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 
 // parkedEmitRelay dials a real WebSocket that sends one frame and returns a wsRelay
 // whose emit callback parks (signalling emitEntered) until releaseEmit is closed. The
-// caller wraps the returned base in ChannelRelay/OrgEventsRelay, runs its read loop,
+// caller wraps the returned base in ChannelRelay/UserEventsRelay, runs its read loop,
 // and closes readDone when the loop exits. Chan/func fields are shared with any copy
 // of the base, so a &ChannelRelay{wsRelay: base} drives the same socket and emit.
 func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmit, emitEntered, readDone chan struct{}) {
@@ -351,22 +351,22 @@ func TestCloseChannelRelayDrainsOffLockWithoutFreezingReaders(t *testing.T) {
 	}
 }
 
-// The internal closeOrgEventsRelay mirrors closeChannelRelay: it detaches promptly
+// The internal closeUserEventsRelay mirrors closeChannelRelay: it detaches promptly
 // under the lock and hands the drain to the caller.
-func TestCloseOrgEventsRelayDetachIsPromptUnderLock(t *testing.T) {
-	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "orgevents-relay")
-	relay := &OrgEventsRelay{wsRelay: base}
+func TestCloseUserEventsRelayDetachIsPromptUnderLock(t *testing.T) {
+	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "userevents-relay")
+	relay := &UserEventsRelay{wsRelay: base}
 	go func() {
 		defer close(readDone)
 		relay.runReadLoop()
 	}()
 	<-emitEntered
 
-	app := &App{connection: &desktopConnection{orgEventsRelay: relay}}
+	app := &App{connection: &desktopConnection{userEventsRelay: relay}}
 	returned := make(chan (<-chan struct{}), 1)
 	go func() {
 		app.lifecycleMu.Lock()
-		drain := app.closeOrgEventsRelay()
+		drain := app.closeUserEventsRelay()
 		app.lifecycleMu.Unlock()
 		returned <- drain
 	}()
@@ -374,10 +374,10 @@ func TestCloseOrgEventsRelayDetachIsPromptUnderLock(t *testing.T) {
 	select {
 	case drain = <-returned:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("closeOrgEventsRelay blocked under the lock instead of detaching promptly")
+		t.Fatal("closeUserEventsRelay blocked under the lock instead of detaching promptly")
 	}
 	require.NotNil(t, drain, "detach must return the relay's done channel")
-	require.Nil(t, app.connection.orgEventsRelay, "the relay slot must be cleared by detach")
+	require.Nil(t, app.connection.userEventsRelay, "the relay slot must be cleared by detach")
 	close(releaseEmit)
 	<-readDone
 	select {
@@ -730,7 +730,7 @@ func channelRelayTestServer(t *testing.T) *httptest.Server {
 // returned release channel is closed, and reports (via dialing) when it has entered.
 // Later dials run straight through. This is the seam that makes the adopt-vs-supersede
 // window -- otherwise a race no test could pin down -- deterministic. Mirrors
-// blockFirstOrgEventsDial.
+// blockFirstUserEventsDial.
 func blockFirstChannelRelayDial(t *testing.T) (dialing chan struct{}, release chan struct{}) {
 	t.Helper()
 	dialing = make(chan struct{})
@@ -816,7 +816,7 @@ func TestApp_OpenChannelRelay_StaleOpenDoesNotStealFromSuccessor(t *testing.T) {
 
 // The install path has the same window: a stale open that blocked in its dial while
 // its successor installed must abandon its just-dialed socket instead of adopting the
-// successor's relay (and re-stamping its owner) at install. Mirrors the org-events
+// successor's relay (and re-stamping its owner) at install. Mirrors the userevents
 // concurrent-open fence.
 func TestApp_OpenChannelRelay_ConcurrentOpenDoesNotStealFromSuccessor(t *testing.T) {
 	server := channelRelayTestServer(t)

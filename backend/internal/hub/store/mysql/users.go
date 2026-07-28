@@ -22,7 +22,6 @@ var _ store.UserStore = (*userStore)(nil)
 func fromDBUser(u gendb.User) store.User {
 	return store.User{
 		ID:                    u.ID,
-		OrgID:                 u.OrgID,
 		Username:              u.Username,
 		PasswordHash:          u.PasswordHash,
 		DisplayName:           u.DisplayName,
@@ -49,7 +48,6 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 	}
 	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
 		ID:                p.ID,
-		OrgID:             p.OrgID,
 		Username:          store.NormalizeUsername(p.Username),
 		PasswordHash:      p.PasswordHash,
 		DisplayName:       p.DisplayName,
@@ -322,21 +320,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 			UpdatedAt:         sqltime.NewMySQLTime(updatedAt),
 			ID:                p.ID,
 		}))
-		if ok, err := requireSingleRowUpdate(n, err, "update user profile", p.ID); !ok || err != nil {
-			return ok, err
-		}
-		// Pair the username with a personal-org rename in the same transaction so
-		// the org name (and /o/ slug) can never go stale -- mirroring the DeleteUser
-		// + SoftDeleteUserPersonalOrg pairing in Delete. Idempotent for a
-		// display-name-only edit (see RenameUserPersonalOrg's query doc), so it
-		// runs unconditionally rather than only when the username changed.
-		if err := mapErr(conn.q.RenameUserPersonalOrg(ctx, gendb.RenameUserPersonalOrgParams{
-			OrgName: store.NormalizeUsername(p.Username),
-			UserID:  p.ID,
-		})); err != nil {
-			return false, err
-		}
-		return true, nil
+		return requireSingleRowUpdate(n, err, "update user profile", p.ID)
 	})
 }
 
@@ -450,24 +434,15 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	// The personal-org soft-delete is paired with the user delete in one
-	// transaction (rationale in store.DeleteUserWithPersonalOrg).
-	return store.DeleteUserWithPersonalOrg(ctx, s.conn.withTransaction,
-		func(ctx context.Context, conn *mysqlConn) error {
-			return mapErr(conn.q.SoftDeleteUserPersonalOrg(ctx, id))
-		},
-		func(ctx context.Context, conn *mysqlConn) error {
-			return mapErr(conn.q.DeleteUser(ctx, id))
-		},
-	)
+	return mapErr(s.conn.q.DeleteUser(ctx, id))
 }
 
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {

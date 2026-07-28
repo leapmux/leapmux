@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/remote"
 )
 
 // TestResolveProvider_KnownAliasShortCircuits pins the happy path:
@@ -21,11 +20,11 @@ import (
 // extra ListAvailableProviders RPC for no benefit.
 func TestResolveProvider_KnownAliasShortCircuits(t *testing.T) {
 	called := false
-	list := func(context.Context, *remote.Client, string, string, proto.Message, proto.Message) error {
+	list := func(context.Context, string, proto.Message, proto.Message) error {
 		called = true
 		return nil
 	}
-	got, err := resolveProvider(context.Background(), nil, "worker-A", "claude-code", list)
+	got, err := resolveProvider(context.Background(), "claude-code", list)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, got)
 	assert.False(t, called, "known alias must skip the worker RPC")
@@ -38,12 +37,12 @@ func TestResolveProvider_KnownAliasShortCircuits(t *testing.T) {
 // the user can fix the typo without grepping the source.
 func TestResolveProvider_UnknownAliasReturnsInvalidRequest(t *testing.T) {
 	called := false
-	list := func(context.Context, *remote.Client, string, string, proto.Message, proto.Message) error {
+	list := func(context.Context, string, proto.Message, proto.Message) error {
 		called = true
 		return nil
 	}
 	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), nil, "worker-A", "not-a-provider", list)
+		_, err := resolveProvider(context.Background(), "not-a-provider", list)
 		require.Error(t, err)
 	})
 	assert.False(t, called, "unknown alias must not fire the worker RPC")
@@ -64,14 +63,14 @@ func TestResolveProvider_UnknownAliasReturnsInvalidRequest(t *testing.T) {
 // `tab open --type=agent` needs no --provider flag at all. Mirrors
 // the frontend picker auto-selecting when only one option exists.
 func TestResolveProvider_EmptyAutoPicksWhenWorkerHasOne(t *testing.T) {
-	list := func(_ context.Context, _ *remote.Client, _, method string, _ proto.Message, out proto.Message) error {
+	list := func(_ context.Context, method string, _ proto.Message, out proto.Message) error {
 		assert.Equal(t, "ListAvailableProviders", method)
 		resp, ok := out.(*leapmuxv1.ListAvailableProvidersResponse)
 		require.True(t, ok)
 		resp.Providers = []leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}
 		return nil
 	}
-	got, err := resolveProvider(context.Background(), nil, "worker-A", "", list)
+	got, err := resolveProvider(context.Background(), "", list)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, got)
 }
@@ -82,7 +81,7 @@ func TestResolveProvider_EmptyAutoPicksWhenWorkerHasOne(t *testing.T) {
 // stable `ambiguous_provider` so scripts can branch without parsing the
 // message, and the message itself lists the candidate display names.
 func TestResolveProvider_EmptyAmbiguousReturnsTypedError(t *testing.T) {
-	list := func(_ context.Context, _ *remote.Client, _, _ string, _ proto.Message, out proto.Message) error {
+	list := func(_ context.Context, _ string, _ proto.Message, out proto.Message) error {
 		resp := out.(*leapmuxv1.ListAvailableProvidersResponse)
 		resp.Providers = []leapmuxv1.AgentProvider{
 			leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -91,7 +90,7 @@ func TestResolveProvider_EmptyAmbiguousReturnsTypedError(t *testing.T) {
 		return nil
 	}
 	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), nil, "worker-A", "", list)
+		_, err := resolveProvider(context.Background(), "", list)
 		require.Error(t, err)
 	})
 	var env struct {
@@ -109,13 +108,13 @@ func TestResolveProvider_EmptyAmbiguousReturnsTypedError(t *testing.T) {
 // than letting the user's tab open fail downstream with a generic
 // worker-side error.
 func TestResolveProvider_EmptyEmptyWorkerReturnsTypedError(t *testing.T) {
-	list := func(_ context.Context, _ *remote.Client, _, _ string, _ proto.Message, out proto.Message) error {
+	list := func(_ context.Context, _ string, _ proto.Message, out proto.Message) error {
 		resp := out.(*leapmuxv1.ListAvailableProvidersResponse)
 		resp.Providers = nil
 		return nil
 	}
 	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), nil, "worker-A", "", list)
+		_, err := resolveProvider(context.Background(), "", list)
 		require.Error(t, err)
 	})
 	var env struct {
@@ -131,11 +130,11 @@ func TestResolveProvider_EmptyEmptyWorkerReturnsTypedError(t *testing.T) {
 // `rpc_failed`. Without this, network and authn problems become
 // indistinguishable in scripts.
 func TestResolveProvider_EmptyPropagatesCodedRPCError(t *testing.T) {
-	list := func(context.Context, *remote.Client, string, string, proto.Message, proto.Message) error {
+	list := func(context.Context, string, proto.Message, proto.Message) error {
 		return &codedRPCError{Code: "channel_open_failed", Cause: errors.New("noise handshake failed")}
 	}
 	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), nil, "worker-A", "", list)
+		_, err := resolveProvider(context.Background(), "", list)
 		require.Error(t, err)
 	})
 	var env struct {

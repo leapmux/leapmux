@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -24,7 +25,7 @@ const (
 	// tombstones). Doubles as the prefix for origin_client_id stamps
 	// produced by the manager (see hubClientID in NewManager).
 	HubReservedPrincipal = "hub"
-	// DedupTTL is how long a batch_id stays in org_recent_batch_ids.
+	// DedupTTL is how long a batch_id stays in user_recent_batch_ids.
 	DedupTTL = 14 * 24 * time.Hour
 	// PresenceClearGrace is how long the manager waits after a
 	// client's last WS subscription closes before clearing its
@@ -49,8 +50,17 @@ const (
 
 // SubmitInput is what callers hand the manager. internal=true skips
 // per-op auth and is required for SetWorkspaceRootNodeOp.
+//
+// It names no tenant: the manager it is submitted to IS the tenant. Registry.Get
+// keys managers by user id and refuses a blank one, and the factory builds
+// NewManager from that same key -- so a UserID field here could only restate
+// what the receiver already knows, and its sole consumer was the gate that
+// compared it back against m.owner.String(). Dropping it makes "a submit landed on the
+// wrong tenant's manager" unrepresentable rather than merely detected.
+//
+// PrincipalID is the other axis and stays: it names WHO is writing (a session,
+// a delegation bearer, or the hub), which nothing about the receiver supplies.
 type SubmitInput struct {
-	OrgID        string
 	Epoch        int64
 	Batches      []*leapmuxv1.OpBatch
 	PrincipalID  string
@@ -80,7 +90,7 @@ type SubmitInput struct {
 	Internal    bool
 }
 
-// Manager owns one org's CRDT state and its journal, and coordinates
+// Manager owns one user's CRDT state and its journal, and coordinates
 // presence + subscriber concerns through two dedicated controllers.
 // All state writes funnel through the goroutine started by Start;
 // methods that mutate state are NOT safe to call from outside.
@@ -99,12 +109,12 @@ type SubmitInput struct {
 // lock contention surface (m.mu now protects state only) and makes
 // the "Subscribe touches both" sequence explicit at every call site.
 type Manager struct {
-	orgID       string
+	owner       userid.UserID
 	clock       *Clock
 	hubClientID string
 
 	mu    sync.RWMutex
-	state *leapmuxv1.OrgCrdtState
+	state *leapmuxv1.UserCrdtState
 	// The manager goroutine (Start's select loop) is the SOLE writer of
 	// m.state: every mutation -- including workspace lifecycle create/delete,
 	// which flows through SubmitInternal as SetWorkspaceRegisterOp /
@@ -129,7 +139,7 @@ type Manager struct {
 	subscribeExpandMu sync.Mutex
 	// lifecycleMu serializes SubmitLifecycle drains against each other. Every
 	// workspace lifecycle RPC drains the outbox post-commit on its own request
-	// goroutine, so without this two mutations in the same org drain
+	// goroutine, so without this two mutations for the same user drain
 	// concurrently -- and the per-row apply logic is written against a single
 	// sequential consumer (contractSubscribersForWorkspace's single-key-delete
 	// safety argument, applyLifecycleCreate's filter expand + seed batch, and
@@ -146,7 +156,7 @@ type Manager struct {
 	// keeps failing transiently is not re-logged on every subsequent drain. The
 	// commit's contract is one Error log per corrupt row; without this a corrupt
 	// row whose consume races a long-lived DB write fault would re-decode,
-	// re-fail, and re-log on every lifecycle RPC in the org for as long as the
+	// re-fail, and re-log on every lifecycle RPC for the user for as long as the
 	// fault lasts. Guarded by lifecycleMu (every access is inside SubmitLifecycle).
 	// Entries are removed once the row is successfully consumed, so the set is
 	// bounded by the number of currently-stuck corrupt rows.
@@ -155,8 +165,8 @@ type Manager struct {
 	// failure has already been logged at Error. A row that fails to apply is NOT
 	// consumed -- it retries on the next drain, since an apply failure is most
 	// often transient (a create whose read-ACL lookup faulted) -- so without this
-	// dedup a persistently-failing row re-logs Error on every lifecycle RPC in
-	// the org for as long as the fault lasts, exactly the amplification
+	// dedup a persistently-failing row re-logs Error on every lifecycle RPC for
+	// the user for as long as the fault lasts, exactly the amplification
 	// undecodableLogged exists to prevent for decode failures. The row is still
 	// retried (and re-pay the store lookup); only the log is deduped. Mirrors
 	// undecodableLogged: one Error then Warn, cleared once the row succeeds so
@@ -235,8 +245,8 @@ func (f SubscriberFilter) IsAllowed(workspaceID string) bool {
 	return f.WorkspaceIDs[workspaceID]
 }
 
-// Subscriber is a single open org-event subscription (one connected
-// `/ws/orgevents` client, or a one-shot in-process test reader).
+// Subscriber is a single open user-event subscription (one connected
+// `/ws/userevents` client, or a one-shot in-process test reader).
 // Events are pushed via Send; the caller owns the underlying stream's
 // lifetime.
 //
@@ -268,11 +278,11 @@ type Subscriber struct {
 	// torn down) or do the work synchronously. Send MUST NOT block on
 	// network IO or a full unbounded buffer; the manager's broadcast
 	// goroutine fans out to every subscriber sequentially, so one slow
-	// Send would head-of-line block the entire org's broadcasts.
+	// Send would head-of-line block the entire user's broadcasts.
 	//
 	// Manager dedupes the *MarshaledEvent pointer across subscribers
-	// that receive the same underlying *leapmuxv1.WatchOrgEvent, so
-	// callers that marshal the payload (e.g. ws_orgevents.go) can call
+	// that receive the same underlying *leapmuxv1.WatchUserEvent, so
+	// callers that marshal the payload (e.g. ws_userevents.go) can call
 	// `evt.Bytes()` and pay the proto.Marshal cost once per broadcast —
 	// not once per subscriber.
 	Send func(*MarshaledEvent) error
@@ -293,7 +303,7 @@ func subscriberMaySeeWorkspace(sub *Subscriber, workspaceID string) bool {
 // drops the connection.
 var ErrSubscriberSlow = errors.New("crdt: subscriber send buffer full")
 
-// MarshaledEvent wraps a `*leapmuxv1.WatchOrgEvent` with a lazy
+// MarshaledEvent wraps a `*leapmuxv1.WatchUserEvent` with a lazy
 // proto.Marshal cache. Multiple subscribers share the same
 // `*MarshaledEvent` for events the manager broadcasts to all of them;
 // the first writer that calls `Bytes()` pays the marshal cost and
@@ -305,7 +315,7 @@ var ErrSubscriberSlow = errors.New("crdt: subscriber send buffer full")
 type MarshaledEvent struct {
 	// Event is the underlying proto. Read-only for consumers; the
 	// manager constructs it before any Send call sees the wrapper.
-	Event *leapmuxv1.WatchOrgEvent
+	Event *leapmuxv1.WatchUserEvent
 
 	once  sync.Once
 	bytes []byte
@@ -315,7 +325,7 @@ type MarshaledEvent struct {
 // NewMarshaledEvent wraps `evt` for delivery. The proto pointer is
 // captured by reference; do not mutate `evt` after constructing the
 // wrapper.
-func NewMarshaledEvent(evt *leapmuxv1.WatchOrgEvent) *MarshaledEvent {
+func NewMarshaledEvent(evt *leapmuxv1.WatchUserEvent) *MarshaledEvent {
 	return &MarshaledEvent{Event: evt}
 }
 
@@ -347,7 +357,7 @@ type submitResponse struct {
 // single-writer: it cannot race the goroutine's bare m.state reads in
 // ValidateBatch / DiffProjectionForBatch. done is closed once fn has run.
 type seedJob struct {
-	fn   func(*leapmuxv1.OrgCrdtState)
+	fn   func(*leapmuxv1.UserCrdtState)
 	done chan struct{}
 }
 
@@ -377,6 +387,18 @@ func WithPresenceClearGrace(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.clearGrace = d }
 }
 
+// truncateRunes returns the first n runes of s, never splitting one.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
 // NewManager constructs a manager. Callers MUST call Bootstrap before
 // Start so the in-memory state is consistent with disk.
 //
@@ -384,22 +406,29 @@ func WithPresenceClearGrace(d time.Duration) ManagerOption {
 // instead of being stashed on the manager — the manager only ever
 // reads from one when the service-layer drains pending rows, and
 // holding a reference here served no purpose.
-func NewManager(orgID string, journal Journal, auth AuthChecker, logger *slog.Logger, now func() time.Time, opts ...ManagerOption) *Manager {
+func NewManager(owner userid.UserID, journal Journal, auth AuthChecker, logger *slog.Logger, now func() time.Time, opts ...ManagerOption) *Manager {
 	if now == nil {
 		now = time.Now
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	hubID := HubReservedPrincipal + "-" + orgID[:min(8, len(orgID))]
+	// Truncate by RUNE, not by byte. userID is an ASCII nanoid today, but
+	// nothing on the way here enforces that -- userid.New only refuses the
+	// empty string -- and a byte slice through a multi-byte rune would make
+	// hubClientID invalid UTF-8. That is not merely cosmetic: it rides out on
+	// every hub-originated op as origin_client_id, a proto3 string, and Go's
+	// protobuf runtime REFUSES to marshal invalid UTF-8 -- so it would fail
+	// every hub-internal commit for that user rather than just looking wrong.
+	hubID := HubReservedPrincipal + "-" + truncateRunes(owner.String(), 8)
 	m := &Manager{
-		orgID:       orgID,
+		owner:       owner,
 		clock:       NewClock("hub-canonical"),
 		hubClientID: hubID,
 		auth:        auth,
 		journal:     journal,
 		now:         now,
-		logger:      logger.With("org_id", orgID),
+		logger:      logger.With("user_id", owner.String()),
 		clearGrace:  PresenceClearGrace,
 		submitCh:    make(chan submitJob, 64),
 		internalCh:  make(chan submitJob, 16),
@@ -416,19 +445,18 @@ func NewManager(orgID string, journal Journal, auth AuthChecker, logger *slog.Lo
 	return m
 }
 
-// OrgID returns the manager's org id.
-func (m *Manager) OrgID() string { return m.orgID }
-
-// Bootstrap loads org_state + replays org_op_batches > watermark. Safe
+// Bootstrap loads user_state + replays user_op_batches > watermark. Safe
 // to call before Start.
 func (m *Manager) Bootstrap(ctx context.Context) error {
-	state, tail, err := m.journal.LoadState(ctx, m.orgID)
+	state, tail, err := m.journal.LoadState(ctx, m.owner.String())
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
 	if state == nil {
-		state = NewState(m.orgID)
+		state = NewState(m.owner.String())
 		state.EpochStartedAt = nil
+	} else if err := m.requireOwnState(state); err != nil {
+		return err
 	}
 	ensureStateMaps(state)
 	for _, batch := range tail {
@@ -444,6 +472,57 @@ func (m *Manager) Bootstrap(ctx context.Context) error {
 	// loaded at t=0 with no traffic would look eternally idle (lastActivity
 	// zero-value) and the janitor would tear it down on the next sweep.
 	m.touchActivity()
+	return nil
+}
+
+// errBlankManagerTenant guards the one hole the typed field cannot close:
+// userid.UserID's zero value is constructible, so NewManager(userid.UserID{})
+// still compiles. Registry.Get is the only production constructor and mints
+// before calling, so this is the in-process/test backstop.
+var errBlankManagerTenant = errors.New("crdt: manager has a blank user id; it was not created through Registry.Get")
+
+// requireOwnState refuses a loaded state payload that names a tenant other than
+// this manager's.
+//
+// The manager's tenancy is m.owner.String(): the key LoadState fetched by, the key
+// Registry.Get built it from, and the key every batch it commits is written
+// under.
+// The `user_id` INSIDE the payload is data, and adopting it silently would make
+// the blob the authority over the key -- with consequences well outside the
+// CRDT, because CompactBatch keys the next user_state row by
+// state.GetUserId(). A payload naming another tenant would rewrite that
+// tenant's state row; a payload naming NONE would key one by "" (which the
+// store now refuses outright, since the row's user_id REFERENCES users(id)).
+//
+// The derived tab-index rows carried the same hazard until two later layers
+// closed it: Project / projectOneTab still take each row's owner from
+// state.GetUserId(), but service.txTabIndexWriter stamps every upserted row
+// with the COMMITTING tenant instead, and workspace_tab_owned.user_id now
+// REFERENCES users(id), so a blank-owner row -- the one the store could never
+// delete and the worker reconciler kept reading as a live tab -- is no longer
+// storable at all. This refusal is still the first of the three, and the only
+// one that stops a manager serving a document it cannot name.
+//
+// Nothing in the code can produce that divergence today: UpsertUserState keys
+// the row by the payload's own user_id, so key and payload agree by
+// construction. That is precisely why refusing is the right response rather
+// than repairing -- a mismatch means the row was corrupted or hand-edited, and
+// a manager that cannot say whose document it holds must not serve it.
+//
+// The comparison routes through userid.UserID.Matches rather than `!=` because
+// `!=` is fail-OPEN on empty-vs-empty, so a blank-tenant manager would accept a
+// blank-tenant payload -- the one case that used to produce the undeletable tab
+// rows described above, and the one that still reaches a blank-keyed user_state
+// write. Named by internal/audit.identityComparisonSites.
+func (m *Manager) requireOwnState(state *leapmuxv1.UserCrdtState) error {
+	if m.owner.IsZero() {
+		return errBlankManagerTenant
+	}
+	mgrUser := m.owner
+	if !mgrUser.Matches(state.GetUserId()) {
+		return fmt.Errorf("user_state payload names user %q, but this manager serves %q",
+			state.GetUserId(), m.owner.String())
+	}
 	return nil
 }
 
@@ -665,7 +744,7 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 // connection before streaming any events. Lock order
 // subscribeExpandMu -> projection -> m.mu is preserved because Subscribe
 // (called here) takes only projection and m.mu.
-func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]bool, error)) (initial *leapmuxv1.OrgMaterialized, unsub func(), err error) {
+func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]bool, error)) (initial *leapmuxv1.UserMaterialized, unsub func(), err error) {
 	m.subscribeExpandMu.Lock()
 	defer m.subscribeExpandMu.Unlock()
 	allowed, err := resolve()
@@ -681,7 +760,7 @@ func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]b
 // callback. Bootstrap is sent inline (the caller's stream layer
 // formats it).
 //
-// The production org-events path registers through SubscribeWithACL, which
+// The production userevents path registers through SubscribeWithACL, which
 // resolves the filter and calls this Add while holding subscribeExpandMu so a
 // concurrent workspace-create expansion cannot leave a straggler with a stale
 // pre-commit filter (see SubscribeWithACL). A direct Subscribe (tests, or a
@@ -693,7 +772,7 @@ func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]b
 // the last unsub schedules one PresenceClearGrace into the future. A
 // reconnect inside the grace window keeps the client's presence
 // entries intact so the active-client gate doesn't flicker.
-func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.OrgMaterialized, unsub func()) {
+func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.UserMaterialized, unsub func()) {
 	// The whole sequence runs under m.projection -- the same lock broadcasts
 	// take -- so a subscriber's registration + initial snapshot are atomic with
 	// respect to any concurrent broadcast: the filter captured by Add and the
@@ -702,8 +781,8 @@ func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.OrgMaterialized
 	// filter and Adding it here unserialized -- a workspace-create expansion
 	// only visits already-registered subscribers; see SubscribeWithACL.) The
 	// cost is that the O(N) materializedLocked clone below is serialized
-	// against broadcasts for that duration (a large-org connect briefly stalls
-	// the org's commit/broadcast pipeline); relaxing it -- computing the
+	// against broadcasts for that duration (a large-user-doc connect briefly stalls
+	// the user's commit/broadcast pipeline); relaxing it -- computing the
 	// snapshot outside m.projection -- would reopen exactly that straddle
 	// window, so it is held deliberately.
 	//
@@ -739,15 +818,15 @@ func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.OrgMaterialized
 
 // Materialized returns the public projection filtered to a given
 // allowed-set (used by tests / one-shot callers).
-func (m *Manager) Materialized(filter SubscriberFilter) *leapmuxv1.OrgMaterialized {
+func (m *Manager) Materialized(filter SubscriberFilter) *leapmuxv1.UserMaterialized {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.materializedLocked(filter)
 }
 
-func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.OrgMaterialized {
-	out := &leapmuxv1.OrgMaterialized{
-		OrgId:           m.state.GetOrgId(),
+func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.UserMaterialized {
+	out := &leapmuxv1.UserMaterialized{
+		UserId:          m.state.GetUserId(),
 		Nodes:           map[string]*leapmuxv1.NodeRecord{},
 		Tabs:            map[string]*leapmuxv1.TabRecord{},
 		FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{},
@@ -807,7 +886,7 @@ func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.OrgMate
 // root still maps to the workspace, matching the legacy walker. The
 // per-entry tombstone check stays with the caller (so tombstoned
 // nodes themselves are excluded from the materialized projection).
-func buildNodeWorkspaceMap(state *leapmuxv1.OrgCrdtState, roots rootSet, filter SubscriberFilter) map[string]string {
+func buildNodeWorkspaceMap(state *leapmuxv1.UserCrdtState, roots rootSet, filter SubscriberFilter) map[string]string {
 	childIdx := BuildAllChildrenIndex(state)
 	out := make(map[string]string, len(state.GetNodes()))
 	for rootID, wsID := range roots.roots {
@@ -836,8 +915,20 @@ func buildNodeWorkspaceMap(state *leapmuxv1.OrgCrdtState, roots rootSet, filter 
 // committed batch.
 func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitResponse {
 	in := job.input
-	if in.OrgID != m.orgID {
-		return submitResponse{err: fmt.Errorf("manager %q received submit for org %q", m.orgID, in.OrgID)}
+	// The tenancy floor. A submit no longer names the tenant it is addressed to
+	// -- the manager it landed on IS the tenant, keyed and bounds-checked by
+	// Registry.Get -- so a cross-tenant submit is unspellable and there is
+	// nothing left to compare. What remains is the manager with NO tenant:
+	// NewManager("") would commit ops into a CRDT belonging to nobody and key a
+	// user_state row by "". Registry.Get's blank-key refusal keeps production
+	// from ever reaching here; this arm covers a manager built directly with
+	// NewManager (tests, and any future in-process caller).
+	//
+	// It has to live here rather than only in the journal: service.crdtJournal's
+	// errBlankTenant guards the REAL journal, so a manager wired to a test or
+	// in-memory journal would otherwise commit blank-tenant state unopposed.
+	if m.owner.IsZero() {
+		return submitResponse{err: errBlankManagerTenant}
 	}
 
 	// This submit's read-modify-write of m.state runs on the manager goroutine,
@@ -960,7 +1051,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	//
 	// The audit fires in a background goroutine: m.auth.CanUseWorker
 	// hits the DB (workers) and we don't want
-	// to serialise every other client in the org behind that lookup.
+	// to serialise every other client for that user behind that lookup.
 	// preState is the pre-commit state captured above; once stored in
 	// m.state's history it's immutable, so the goroutine can safely
 	// read from it after the manager mutex is released. auditWG
@@ -968,7 +1059,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	if !in.Internal && containsTombstoneTab(batch) {
 		// Resolve the tombstoned tabs' worker ids from preState NOW, before
 		// spawning, so the audit goroutine captures only this small map instead
-		// of the whole (potentially multi-MB) OrgCrdtState. After m.state =
+		// of the whole (potentially multi-MB) UserCrdtState. After m.state =
 		// working below, preState is otherwise GC-eligible; capturing it in the
 		// goroutine would pin the old generation for the CanUseWorker DB lookup.
 		workerIDs := tombstonedTabWorkerIDs(batch, preState)
@@ -1002,7 +1093,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	}, nil
 }
 
-// runDedup checks the batch's batch_id against org_recent_batch_ids.
+// runDedup checks the batch's batch_id against user_recent_batch_ids.
 // Outcomes:
 //   - transient store error (err non-nil): the caller propagates it as a
 //     retryable Submit error rather than a permanent rejection.
@@ -1011,7 +1102,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 //     original CommittedOps from the cached canonical HLC range.
 //   - miss (all nil): caller proceeds with assigning canonical HLCs.
 func (m *Manager) runDedup(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch) (*leapmuxv1.BatchResult, *RecentBatchRecord, error) {
-	row, err := m.journal.LookupRecentBatchID(ctx, m.orgID, batch.GetBatchId())
+	row, err := m.journal.LookupRecentBatchID(ctx, m.owner.String(), batch.GetBatchId())
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		// A transient store failure, not a value-domain problem: surface it so
 		// the caller returns a retryable Submit error instead of a permanent
@@ -1052,7 +1143,7 @@ func (m *Manager) runDedup(ctx context.Context, in SubmitInput, batch *leapmuxv1
 // state stays at `m.state` and the canonical HLCs minted for this batch
 // are simply discarded (they're strictly greater than any future tick,
 // so no client can observe them).
-func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch, working *leapmuxv1.OrgCrdtState) error {
+func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch, working *leapmuxv1.UserCrdtState) error {
 	// DiffProjectionForBatch skips the per-tab chain walks for tabs the
 	// batch cannot possibly transition. Non-structural batches (the
 	// common case: user-triggered tab open/move/close) re-project only
@@ -1066,24 +1157,19 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 	if err != nil {
 		return fmt.Errorf("hash batch body: %w", err)
 	}
-	dedupRow := RecentBatchRecord{
-		OrgID:             m.orgID,
-		BatchID:           batch.GetBatchId(),
-		BodyHash:          hash,
-		PrincipalID:       in.PrincipalID,
-		CanonicalFirstHLC: HLCClone(batch.GetOps()[0].GetCanonicalHlc()),
-		OpCount:           int64(len(batch.GetOps())),
-		Epoch:             m.state.GetCurrentEpoch(),
-		ExpiresAt:         m.now().Add(DedupTTL),
-	}
-
 	if err := m.journal.CommitBatch(ctx, CommitBatch{
-		OrgID:       m.orgID,
+		UserID:      m.owner.String(),
 		Batch:       batch,
 		PrincipalID: in.PrincipalID,
 		Epoch:       m.state.GetCurrentEpoch(),
-		DedupRow:    dedupRow,
-		IndexDiff:   diff,
+		Dedup: DedupEntry{
+			BatchID:           batch.GetBatchId(),
+			BodyHash:          hash,
+			CanonicalFirstHLC: HLCClone(batch.GetOps()[0].GetCanonicalHlc()),
+			OpCount:           int64(len(batch.GetOps())),
+			ExpiresAt:         m.now().Add(DedupTTL),
+		},
+		IndexDiff: diff,
 	}); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}
@@ -1101,7 +1187,7 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 // manager goroutine, after a validated batch). A future debug path that tried
 // to assign m.state directly would have to add a third call site here, which
 // is exactly the review checkpoint the invariant needs.
-func (m *Manager) commitState(state *leapmuxv1.OrgCrdtState) {
+func (m *Manager) commitState(state *leapmuxv1.UserCrdtState) {
 	m.mu.Lock()
 	m.state = state
 	m.mu.Unlock()
@@ -1112,7 +1198,7 @@ func (m *Manager) commitState(state *leapmuxv1.OrgCrdtState) {
 // window (e.g. send it across a goroutine boundary). Hot-path readers
 // that just walk the state during one synchronous pass should prefer
 // WithStateRLock to avoid the per-call clone.
-func (m *Manager) State() *leapmuxv1.OrgCrdtState {
+func (m *Manager) State() *leapmuxv1.UserCrdtState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return CloneState(m.state)
@@ -1123,7 +1209,7 @@ func (m *Manager) State() *leapmuxv1.OrgCrdtState {
 // it only needs a synchronous walk (enumeration, projection,
 // computation). The state pointer MUST NOT escape `fn` — callers that
 // need to hold the state past the call should use State() instead.
-func (m *Manager) WithStateRLock(fn func(state *leapmuxv1.OrgCrdtState)) {
+func (m *Manager) WithStateRLock(fn func(state *leapmuxv1.UserCrdtState)) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	fn(m.state)
@@ -1187,7 +1273,7 @@ func (m *Manager) currentEpoch() int64 {
 // cannot race, but it also cannot seed) rather than wedging the caller.
 //
 // Test-only: production state writes flow exclusively through SubmitInternal.
-func (m *Manager) SeedStateForTest(fn func(state *leapmuxv1.OrgCrdtState)) {
+func (m *Manager) SeedStateForTest(fn func(state *leapmuxv1.UserCrdtState)) {
 	select {
 	case <-m.startedChan:
 		// Start has been called: route through the manager goroutine (the sole

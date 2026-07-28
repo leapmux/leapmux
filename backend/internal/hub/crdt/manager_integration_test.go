@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,7 +22,7 @@ import (
 // context. The injected `now` advances by 1ms per call so every
 // heartbeat / submit gets a strictly-fresh timestamp; this keeps the
 // presence-leader logic (which requires strict-ahead) deterministic.
-func runManager(t *testing.T, orgID string, auth crdt.AuthChecker, nowSeed int64, opts ...crdt.ManagerOption) (*crdt.Manager, *fakeJournal, context.CancelFunc) {
+func runManager(t *testing.T, userID string, auth crdt.AuthChecker, nowSeed int64, opts ...crdt.ManagerOption) (*crdt.Manager, *fakeJournal, context.CancelFunc) {
 	t.Helper()
 	j := newFakeJournal()
 	var (
@@ -33,7 +35,16 @@ func runManager(t *testing.T, orgID string, auth crdt.AuthChecker, nowSeed int64
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager(orgID, j, auth, nil, now, opts...)
+	// A blank userID is a deliberate fixture (see
+	// TestSubmitRefusesABlankTenantManager): userid.UserID's zero value is
+	// constructible, which is precisely why the manager keeps its own
+	// blank-tenant refusal. MustNew would panic here instead of building the
+	// object under test.
+	owner := userid.UserID{}
+	if userID != "" {
+		owner = userid.MustNew(userID)
+	}
+	mgr := crdt.NewManager(owner, j, auth, nil, now, opts...)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -57,29 +68,28 @@ func runManager(t *testing.T, orgID string, auth crdt.AuthChecker, nowSeed int64
 // m.state (no off-goroutine MutateInternal write).
 func seedRootInternal(t *testing.T, mgr *crdt.Manager, workspaceID, rootID string) {
 	t.Helper()
-	setRegister := &leapmuxv1.OrgOp{
+	setRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-workspace-register-" + workspaceID,
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
 			WorkspaceId: workspaceID,
 		}},
 	}
-	rootKind := &leapmuxv1.OrgOp{
+	rootKind := &leapmuxv1.CrdtOp{
 		OpId: "seed-root-kind-" + workspaceID,
-		Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+		Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: rootID,
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}},
 	}
-	rootRegister := &leapmuxv1.OrgOp{
+	rootRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-root-register-" + workspaceID,
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: workspaceID,
 			RootNodeId:  rootID,
 		}},
 	}
 	results, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: []*leapmuxv1.OrgOp{setRegister, rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: []*leapmuxv1.CrdtOp{setRegister, rootKind, rootRegister}}},
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
@@ -91,16 +101,16 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 	t.Helper()
 	return &leapmuxv1.OpBatch{
 		BatchId: batchID,
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "op-" + batchID + "-tile", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "op-" + batchID + "-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
 			}}},
-			{OpId: "op-" + batchID + "-worker", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-" + batchID + "-worker", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID},
 			}}},
-			{OpId: "op-" + batchID + "-pos", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-" + batchID + "-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: position},
 			}}},
@@ -121,7 +131,7 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 // -race -- with no "concurrent map read and map write", and the churned
 // workspaces must end absent (every create was paired with a delete).
 func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 900_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 900_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -135,7 +145,7 @@ func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
 					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
 			})
@@ -161,21 +171,21 @@ func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 			root := "root-" + strconv.Itoa(i)
 			createPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 				OpType: crdt.LifecycleOpCreate, WorkspaceID: ws, RootNodeID: root,
-			}, []*leapmuxv1.OrgOp{
-				{OpId: "seed-kind-" + ws, Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			}, []*leapmuxv1.CrdtOp{
+				{OpId: "seed-kind-" + ws, Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 					NodeId: root, Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 				}}},
-				{OpId: "seed-root-" + ws, Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+				{OpId: "seed-root-" + ws, Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 					WorkspaceId: ws, RootNodeId: root,
 				}}},
 			})
 			require.NoError(t, err)
-			outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+			outbox.push("user-1", crdt.LifecycleOpCreate, createPayload)
 			deletePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 				OpType: crdt.LifecycleOpDelete, WorkspaceID: ws,
 			}, nil)
 			require.NoError(t, err)
-			outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+			outbox.push("user-1", crdt.LifecycleOpDelete, deletePayload)
 			// Drain after each pair so the create lands before the delete
 			// enumerates it (deletion of a not-yet-created workspace would
 			// skip the tombstone batch and leave the record seeded by create).
@@ -197,7 +207,7 @@ func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 	lifecycleErrMu.Lock()
 	require.NoError(t, lastLifecycle, "lifecycle drain must not error (a permanently-failing create/delete would make the workspace-absence assertion below tautological)")
 	lifecycleErrMu.Unlock()
-	pending, err := outbox.ListPendingLifecycleOutbox(context.Background(), "org")
+	pending, err := outbox.ListPendingLifecycleOutbox(context.Background(), "user-1")
 	require.NoError(t, err)
 	require.Empty(t, pending, "every pushed create+delete row must be consumed (a non-empty outbox means the lifecycle path did not commit)")
 
@@ -219,7 +229,7 @@ func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 // parallel; under -race this must stay clean (the old off-goroutine
 // MutateInternal was a latent "concurrent map read and map write").
 func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 800_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 800_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -232,7 +242,7 @@ func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
 					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
 			})
@@ -255,13 +265,13 @@ func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			id := "seed-" + strconv.Itoa(i)
-			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+			mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 				s.Workspaces[id] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: id}
 			})
-			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
+			mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) { delete(s.Workspaces, id) })
 		}
 		// A final seed with no paired delete: must persist, proving seeds land.
-		mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+		mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 			s.Workspaces[sentinel] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: sentinel}
 		})
 	}()
@@ -288,11 +298,11 @@ func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
 // shape, where state is seeded before the goroutine launches.
 func TestManager_SeedStateForTest_PreStart(t *testing.T) {
 	j := newFakeJournal()
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, func() time.Time { return time.UnixMilli(1) })
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, func() time.Time { return time.UnixMilli(1) })
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 
 	// Seed BEFORE Start — the !started branch.
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces["pre-w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "pre-w1"}
 	})
 	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "pre-w1",
@@ -313,7 +323,7 @@ func TestManager_SeedStateForTest_PreStart(t *testing.T) {
 		"pre-Start seed must survive Start")
 
 	// A post-Start seed runs via the goroutine and lands too.
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces["post-w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "post-w1"}
 	})
 	assert.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "post-w1",
@@ -343,8 +353,8 @@ func TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace(t *testing.T) {
 		return time.UnixMilli(clock)
 	}
 	var mgr *crdt.Manager
-	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
-		m := crdt.NewManager("org", j, allowAll{}, nil, now)
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 		if err := m.Bootstrap(ctx); err != nil {
 			return nil, err
 		}
@@ -355,7 +365,7 @@ func TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace(t *testing.T) {
 
 	// Get spawns the manager goroutine and returns only once it is servicing
 	// the loop (the internal started() wait).
-	_, err := registry.Get(context.Background(), "org")
+	_, err := registry.Get(context.Background(), "user-1")
 	require.NoError(t, err)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
@@ -368,7 +378,7 @@ func TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-				OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+				Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 				Batches: []*leapmuxv1.OpBatch{addTabBatch(t,
 					"b-"+strconv.Itoa(i), "tab-"+strconv.Itoa(i), "root1", "wkr", "p"+strconv.Itoa(i))},
 			})
@@ -383,10 +393,10 @@ func TestManager_SeedStateForTest_AfterRegistryGetDoesNotRace(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			id := "rg-" + strconv.Itoa(i)
-			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+			mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 				s.Workspaces[id] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: id}
 			})
-			mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { delete(s.Workspaces, id) })
+			mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) { delete(s.Workspaces, id) })
 		}
 	}()
 	wg.Wait()
@@ -401,7 +411,7 @@ func TestSubscriberFilter_NilAllowsAllEmptyMapAllowsNone(t *testing.T) {
 }
 
 func TestManager_TwoClients_InterleavedOps_Converge(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 1_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	// Bootstrap epoch from the manager's materialized.
@@ -409,7 +419,7 @@ func TestManager_TwoClients_InterleavedOps_Converge(t *testing.T) {
 
 	// Client A: add tab tA at root1.
 	resA, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
+		Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bA", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -417,7 +427,7 @@ func TestManager_TwoClients_InterleavedOps_Converge(t *testing.T) {
 
 	// Client B: add tab tB at root1.
 	resB, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userB", OriginClient: "clientB",
+		Epoch: epoch, PrincipalID: "userB", OriginClient: "clientB",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bB", "tB", "root1", "wkr1", "p2")},
 	})
 	require.NoError(t, err)
@@ -442,7 +452,7 @@ func TestManager_RestartReplay(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -450,7 +460,7 @@ func TestManager_RestartReplay(t *testing.T) {
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -458,7 +468,7 @@ func TestManager_RestartReplay(t *testing.T) {
 	mgr.Stop()
 
 	// Reload from journal.
-	mgr2 := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr2 := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr2.Bootstrap(context.Background()))
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
@@ -500,7 +510,7 @@ func TestManager_RestartReplay_PreservesWorkspaceRecord(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -508,7 +518,7 @@ func TestManager_RestartReplay_PreservesWorkspaceRecord(t *testing.T) {
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -526,7 +536,7 @@ func TestManager_RestartReplay_PreservesWorkspaceRecord(t *testing.T) {
 	// fakeJournal has no snapshot yet (no CompactBatch ran), so this
 	// hits the cold-boot path: LoadState returns nil state + the full
 	// tail, Bootstrap re-applies every op via Apply.
-	mgr2 := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr2 := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr2.Bootstrap(context.Background()))
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
@@ -541,13 +551,13 @@ func TestManager_RestartReplay_PreservesWorkspaceRecord(t *testing.T) {
 }
 
 func TestManager_DedupeByOpID(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 3_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 3_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	batch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	first, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{batch},
 	})
 	require.NoError(t, err)
@@ -557,7 +567,7 @@ func TestManager_DedupeByOpID(t *testing.T) {
 	// Resubmit the same batch (same op_ids) — dedup hit.
 	rebatch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	second, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{rebatch},
 	})
 	require.NoError(t, err)
@@ -573,13 +583,13 @@ func TestManager_DedupeByOpID(t *testing.T) {
 }
 
 func TestManager_DedupeByOpID_DifferentBody_RejectsCollision(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 4_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 4_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	first := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	r1, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{first},
 	})
 	require.NoError(t, err)
@@ -588,7 +598,7 @@ func TestManager_DedupeByOpID_DifferentBody_RejectsCollision(t *testing.T) {
 	// Reuse op_ids but with a different body (different position).
 	mutated := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p2")
 	r2, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{mutated},
 	})
 	require.NoError(t, err)
@@ -598,13 +608,13 @@ func TestManager_DedupeByOpID_DifferentBody_RejectsCollision(t *testing.T) {
 }
 
 func TestManager_DedupeByOpID_DifferentPrincipal_RejectsUnauthorized(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 5_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 5_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	batch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	r1, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "userA", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{batch},
 	})
 	require.NoError(t, err)
@@ -613,7 +623,7 @@ func TestManager_DedupeByOpID_DifferentPrincipal_RejectsUnauthorized(t *testing.
 	// Different principal retries the same op_ids — must reject as
 	// op_id_collision_unauthorized (principal-before-body precedence).
 	r2, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userB", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "userB", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -623,13 +633,12 @@ func TestManager_DedupeByOpID_DifferentPrincipal_RejectsUnauthorized(t *testing.
 }
 
 func TestManager_WorkspaceScopeRejectsSiblingSubmit(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 5_500)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 5_500)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	allowed, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID:            "org",
 		Epoch:            epoch,
 		PrincipalID:      "user",
 		OriginClient:     "c1",
@@ -641,7 +650,6 @@ func TestManager_WorkspaceScopeRejectsSiblingSubmit(t *testing.T) {
 		"workspace-scoped submits must still allow ops inside the pinned workspace")
 
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID:            "org",
 		Epoch:            epoch,
 		PrincipalID:      "user",
 		OriginClient:     "c1",
@@ -656,11 +664,11 @@ func TestManager_WorkspaceScopeRejectsSiblingSubmit(t *testing.T) {
 }
 
 func TestManager_Epoch0_RejectedAsEpochRequired(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 6_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 6_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: 0, PrincipalID: "user", OriginClient: "c1",
+		Epoch: 0, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -670,19 +678,19 @@ func TestManager_Epoch0_RejectedAsEpochRequired(t *testing.T) {
 }
 
 func TestManager_StaleEpoch_Rejected(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 7_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 7_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	currentEpoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Bump the in-memory epoch by 2 directly; emulates 28 days of advance.
 	// SeedStateForTest (not an op batch — no op writes CurrentEpoch; only
 	// maybeAdvanceEpoch does) routes the write through the manager goroutine.
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) {
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.CurrentEpoch = currentEpoch + 2
 	})
 
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: currentEpoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: currentEpoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -697,7 +705,7 @@ func TestManager_StaleEpoch_Rejected(t *testing.T) {
 // transport error, so mapping a transient store failure to a rejection would
 // silently lose the user's edit.
 func TestManager_TransientCommitError_SurfacesAsRetryableError(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 12_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 12_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -706,7 +714,7 @@ func TestManager_TransientCommitError_SurfacesAsRetryableError(t *testing.T) {
 	j.mu.Unlock()
 
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
+		Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bA", "tA", "root1", "wkr1", "p1")},
 	})
 	require.Error(t, err, "a transient commit failure must be a retryable error, not a rejection")
@@ -718,7 +726,7 @@ func TestManager_TransientCommitError_SurfacesAsRetryableError(t *testing.T) {
 // hiccup) must likewise surface as a retryable Submit error rather than a
 // permanent VALUE_DOMAIN rejection the client would drop.
 func TestManager_TransientDedupLookupError_SurfacesAsRetryableError(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 13_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 13_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -727,7 +735,7 @@ func TestManager_TransientDedupLookupError_SurfacesAsRetryableError(t *testing.T
 	j.mu.Unlock()
 
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
+		Epoch: epoch, PrincipalID: "userA", OriginClient: "clientA",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "bA", "tA", "root1", "wkr1", "p1")},
 	})
 	require.Error(t, err, "a transient dedup-lookup failure must be a retryable error, not a rejection")
@@ -736,7 +744,7 @@ func TestManager_TransientDedupLookupError_SurfacesAsRetryableError(t *testing.T
 }
 
 func TestManager_PresenceActiveClient(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 8_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 8_000)
 
 	// First client heartbeats — becomes active.
 	require.NoError(t, mgr.HeartbeatPresence(context.Background(), "w1", "clientA"))
@@ -745,7 +753,7 @@ func TestManager_PresenceActiveClient(t *testing.T) {
 	// Subscribe to capture broadcasts.
 	var (
 		mu     sync.Mutex
-		events []*leapmuxv1.WatchOrgEvent
+		events []*leapmuxv1.WatchUserEvent
 	)
 	sub := &crdt.Subscriber{
 		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}},
@@ -775,12 +783,12 @@ func TestManager_PresenceActiveClient(t *testing.T) {
 }
 
 func TestManager_PresenceDeferredClear_ClearsOnFinalUnsub(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 7_000, crdt.WithPresenceClearGrace(20*time.Millisecond))
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 7_000, crdt.WithPresenceClearGrace(20*time.Millisecond))
 
 	// Subscribe two presence-tracked clients to w1.
 	var (
 		muA     sync.Mutex
-		eventsA []*leapmuxv1.WatchOrgEvent
+		eventsA []*leapmuxv1.WatchUserEvent
 	)
 	subA := &crdt.Subscriber{
 		ClientID: "clientA",
@@ -831,7 +839,7 @@ func TestManager_PresenceDeferredClear_ClearsOnFinalUnsub(t *testing.T) {
 
 	var (
 		muC     sync.Mutex
-		eventsC []*leapmuxv1.WatchOrgEvent
+		eventsC []*leapmuxv1.WatchUserEvent
 	)
 	subC := &crdt.Subscriber{
 		ClientID: "clientC",
@@ -857,11 +865,11 @@ func TestManager_PresenceDeferredClear_ClearsOnFinalUnsub(t *testing.T) {
 }
 
 func TestManager_PresenceDeferredClear_ReconnectCancelsClear(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 7_500, crdt.WithPresenceClearGrace(150*time.Millisecond))
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 7_500, crdt.WithPresenceClearGrace(150*time.Millisecond))
 
 	var (
 		muObs     sync.Mutex
-		eventsObs []*leapmuxv1.WatchOrgEvent
+		eventsObs []*leapmuxv1.WatchUserEvent
 	)
 	observer := &crdt.Subscriber{
 		ClientID: "observer",
@@ -921,11 +929,11 @@ func TestManager_PresenceDeferredClear_ReconnectCancelsClear(t *testing.T) {
 // underflows the count to 0, schedules a clear, and prematurely evicts a client
 // that still has a live connection -- flickering the active-client gate.
 func TestManager_PresenceUnsubIsIdempotent(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 6_250, crdt.WithPresenceClearGrace(20*time.Millisecond))
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 6_250, crdt.WithPresenceClearGrace(20*time.Millisecond))
 
 	var (
 		muObs     sync.Mutex
-		eventsObs []*leapmuxv1.WatchOrgEvent
+		eventsObs []*leapmuxv1.WatchUserEvent
 	)
 	observer := &crdt.Subscriber{
 		ClientID: "observer",
@@ -982,12 +990,12 @@ func TestManager_PresenceUnsubIsIdempotent(t *testing.T) {
 }
 
 func TestManager_TabIndexInSync(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 9_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 9_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -1005,12 +1013,12 @@ func TestManager_TabIndexInSync(t *testing.T) {
 	// Tombstone the tab; both views must drop the row.
 	tombstoneBatch := &leapmuxv1.OpBatch{
 		BatchId: "b2",
-		Ops: []*leapmuxv1.OrgOp{{OpId: "op-tomb-tA", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-tomb-tA", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
 	})
 	require.NoError(t, err)
@@ -1021,7 +1029,7 @@ func TestManager_TabIndexInSync(t *testing.T) {
 }
 
 func TestManager_AtomicBatch_RejectAll_OnAnyOpFailure(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 10_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 10_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -1030,23 +1038,23 @@ func TestManager_AtomicBatch_RejectAll_OnAnyOpFailure(t *testing.T) {
 	// Build a batch that fails: tab references a non-existent tile.
 	batch := &leapmuxv1.OpBatch{
 		BatchId: "fail-batch",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "op-tile-bad", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "op-tile-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
 			}}},
-			{OpId: "op-worker-bad", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-worker-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
 			}}},
-			{OpId: "op-pos-bad", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "op-pos-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 			}}},
 		},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{batch},
 	})
 	require.NoError(t, err)
@@ -1059,22 +1067,22 @@ func TestManager_AtomicBatch_RejectAll_OnAnyOpFailure(t *testing.T) {
 }
 
 func TestManager_IndependentBatches_OneRejection_DoesNotAffectOthers(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 11_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 11_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	good := addTabBatch(t, "good", "tGood", "root1", "wkr1", "p1")
 	bad := &leapmuxv1.OpBatch{
 		BatchId: "bad",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "op-bad-tile", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "op-bad-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost"},
 			}}},
 		},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{good, bad},
 	})
 	require.NoError(t, err)
@@ -1088,12 +1096,12 @@ func TestManager_IndependentBatches_OneRejection_DoesNotAffectOthers(t *testing.
 }
 
 func TestManager_AssignsContiguousMonotonicCanonicalHLCs(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 12_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 12_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -1110,19 +1118,19 @@ func TestManager_AssignsContiguousMonotonicCanonicalHLCs(t *testing.T) {
 }
 
 func TestManager_HubOnlyOp_FromClient_Rejected(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 13_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 13_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Client tries to call SetWorkspaceRootNode (hub-only).
 	batch := &leapmuxv1.OpBatch{
 		BatchId: "evil",
-		Ops: []*leapmuxv1.OrgOp{{OpId: "op-evil", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{
+		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-evil", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
 			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "stolen"},
 		}}},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{batch},
 	})
 	require.NoError(t, err)
@@ -1132,7 +1140,7 @@ func TestManager_HubOnlyOp_FromClient_Rejected(t *testing.T) {
 }
 
 func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 14_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 14_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -1141,23 +1149,23 @@ func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing
 	// second wins LWW.
 	tabA := &leapmuxv1.OpBatch{
 		BatchId: "init",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "init-1", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "init-1", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 			}}},
-			{OpId: "init-2", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "init-2", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
 			}}},
-			{OpId: "init-3", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "init-3", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 			}}},
 		},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tabA},
 	})
 	require.NoError(t, err)
@@ -1168,19 +1176,19 @@ func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing
 	// batch contains two tile_id writes targeting the same tab.
 	conflict := &leapmuxv1.OpBatch{
 		BatchId: "conflict",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "c-1", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "c-1", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "first"},
 			}}},
-			{OpId: "c-2", Body: &leapmuxv1.OrgOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			{OpId: "c-2", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "second"},
 			}}},
 		},
 	}
 	r2, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{conflict},
 	})
 	require.NoError(t, err)
@@ -1192,7 +1200,7 @@ func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing
 }
 
 func TestManager_Subscribe_AlwaysBootstraps(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 15_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 15_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	// Subscriber asks for w1.
@@ -1209,7 +1217,7 @@ func TestManager_Subscribe_AlwaysBootstraps(t *testing.T) {
 }
 
 func TestManager_BroadcastFiltering_AllowedSet(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 16_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 16_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
@@ -1217,7 +1225,7 @@ func TestManager_BroadcastFiltering_AllowedSet(t *testing.T) {
 	// Subscriber sees w1 only.
 	var (
 		mu     sync.Mutex
-		events []*leapmuxv1.WatchOrgEvent
+		events []*leapmuxv1.WatchUserEvent
 	)
 	sub := &crdt.Subscriber{
 		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"w1": true}},
@@ -1233,7 +1241,7 @@ func TestManager_BroadcastFiltering_AllowedSet(t *testing.T) {
 
 	// Submit a tab on w2 — subscriber must NOT see the raw op.
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "tabW2", "tInW2", "root2", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -1252,14 +1260,14 @@ func TestManager_BroadcastFiltering_AllowedSet(t *testing.T) {
 // op log, but the per-op dedup row is retained — so a retry of any of
 // those op_ids still returns the original canonical HLC.
 func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 20_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 20_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Commit a batch — three ops journaled, three dedup rows written.
 	batch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{batch},
 	})
 	require.NoError(t, err)
@@ -1287,7 +1295,7 @@ func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
 	// dedup row, NOT a fresh apply (which would have minted new HLCs).
 	retry := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	res2, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{retry},
 	})
 	require.NoError(t, err)
@@ -1303,14 +1311,14 @@ func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
 func TestManager_HousekeepingDeletesDedupRowsAfterExpiresAt(t *testing.T) {
 	j := newFakeJournal()
 	now := time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC)
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, func() time.Time {
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, func() time.Time {
 		return now
 	})
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 
 	expiresAt := now.Add(crdt.DedupTTL)
 	j.putDedup(crdt.RecentBatchRecord{
-		OrgID:     "org",
+		UserID:    "user-1",
 		BatchID:   "batch-expiring",
 		BodyHash:  []byte("hash"),
 		ExpiresAt: expiresAt,
@@ -1331,13 +1339,13 @@ func TestManager_HousekeepingDeletesDedupRowsAfterExpiresAt(t *testing.T) {
 // behind the manager's current epoch, the retry rejects as stale_epoch
 // instead of replaying the canonical HLC.
 func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 21_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 21_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Commit a batch at the initial epoch — dedup rows now carry that epoch.
 	first, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
@@ -1346,7 +1354,7 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 	// Advance current_epoch by 2; the dedup row's stored epoch is now
 	// `current_epoch - 2`, outside the one-epoch grace window. SeedStateForTest
 	// (no op writes CurrentEpoch) routes the write through the manager goroutine.
-	mgr.SeedStateForTest(func(s *leapmuxv1.OrgCrdtState) { s.CurrentEpoch = epoch + 2 })
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) { s.CurrentEpoch = epoch + 2 })
 	newEpoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	require.Equal(t, epoch+2, newEpoch)
 
@@ -1354,7 +1362,7 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 	// but a stored dedup row that's now too old.
 	retry := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: newEpoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: newEpoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{retry},
 	})
 	require.NoError(t, err)
@@ -1372,12 +1380,12 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 // future contributor wouldn't accidentally collapse the rendered row
 // schema down to (tab_id, tile_id, workspace_id) and break routing.
 func TestRendered_HasWorkerID_ListTabsCanRouteWithoutOwnedJoin(t *testing.T) {
-	mgr, j, _ := runManager(t, "org", allowAll{}, 22_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 22_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr-rendered", "p1")},
 	})
 	require.NoError(t, err)
@@ -1396,7 +1404,7 @@ func TestRendered_HasWorkerID_ListTabsCanRouteWithoutOwnedJoin(t *testing.T) {
 // panicking with 'close of closed channel'. stopOnce makes the close land
 // exactly once; both callers still wait for the goroutine to exit.
 func TestManager_StopConcurrentDoesNotPanic(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 900_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 900_000)
 
 	const n = 8
 	var wg sync.WaitGroup

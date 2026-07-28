@@ -58,7 +58,7 @@ func (c *AuthContextRegistry) RegisterAuthenticatedLease(ctx context.Context, us
 	// fallback -- this WebSocket lease is the twin of the channel guard, so it must
 	// fall back to the DB the same way. Without it a lease racing a slide whose cache
 	// row is gone degrades to the stale connect-time value and the still-valid
-	// org-events / channel-relay socket is torn down early. The DB read runs off
+	// userevents / channel-relay socket is torn down early. The DB read runs off
 	// revocationMu, so it never holds the hot auth lock across store I/O.
 	floor := c.CurrentCredentialExpiry(ctx, user)
 
@@ -187,7 +187,7 @@ func (s *authState) renewLeasesLocked(ids map[uint64]struct{}, newExpiry Credent
 // session alive but bumps the user generation, and the acting session's leases
 // still carry their connect-time (older) generation, so without this restamp
 // RevokeUserAuthContextAtGeneration would cancel the acting user's own
-// org-events / channel-relay WebSockets. Only leases at an older generation are
+// userevents / channel-relay WebSockets. Only leases at an older generation are
 // advanced, so a concurrently-opened newer lease is left untouched. Call it
 // before UserRevoked, alongside the channel restamp.
 func (c *AuthContextRegistry) RestampSessionLeaseGeneration(sessionID string, newGeneration int64) {

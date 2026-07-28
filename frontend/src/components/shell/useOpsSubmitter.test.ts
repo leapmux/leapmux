@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BatchRejectionReason, OpBatchSchema } from '~/generated/leapmux/v1/org_ops_pb'
+import { BatchRejectionReason, OpBatchSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { createOpsSubmitter } from './useOpsSubmitter'
 
 // The submitter's only user-visible side effect on a permanent rejection is a
@@ -9,7 +9,7 @@ import { createOpsSubmitter } from './useOpsSubmitter'
 vi.mock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
 // Default client is never used (every test injects its own), but the module
 // pulls it in at import time.
-vi.mock('~/api/clients', () => ({ orgCRDTClient: { submitOps: vi.fn() } }))
+vi.mock('~/api/clients', () => ({ userCRDTClient: { submitOps: vi.fn() } }))
 
 function batch(id: string) {
   return create(OpBatchSchema, { batchId: id, ops: [] })
@@ -83,7 +83,6 @@ describe('createopssubmitter (retry requeue)', () => {
         .mockResolvedValueOnce(rejectedResponse('b1'))
         .mockResolvedValueOnce(committedResponse('b1'))
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         // No reconnect handler on purpose: requeue must be driven by the
@@ -111,7 +110,6 @@ describe('createopssubmitter (retry requeue)', () => {
         .mockResolvedValueOnce(committedResponse('b1'))
       const reconnect = vi.fn(async () => {})
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         reconnect,
@@ -134,7 +132,6 @@ describe('createopssubmitter (retry requeue)', () => {
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const reconnect = vi.fn(async () => {})
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         reconnect,
@@ -161,7 +158,6 @@ describe('createopssubmitter (retry requeue)', () => {
       const reconnect = vi.fn(async () => {})
       const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         reconnect,
@@ -193,7 +189,6 @@ describe('createopssubmitter (retry requeue)', () => {
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         onBatchResult,
@@ -215,7 +210,6 @@ describe('createopssubmitter (retry requeue)', () => {
       const pending = makeFakePending({ retryable: true, needsEpochRefresh: true })
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         // No reconnect handler: a batch that needs an epoch refresh can't make
@@ -261,7 +255,6 @@ describe('createopssubmitter (retry requeue)', () => {
         ] })
         .mockResolvedValueOnce(committedResponse('b-plain'))
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         // No reconnect handler on purpose.
@@ -296,7 +289,6 @@ describe('createopssubmitter (onBatchResult reporting)', () => {
         .mockResolvedValueOnce(committedResponse('b1'))
       const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         onBatchResult,
@@ -320,7 +312,6 @@ describe('createopssubmitter (onBatchResult reporting)', () => {
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         onBatchResult,
@@ -342,7 +333,6 @@ describe('createopssubmitter (onBatchResult reporting)', () => {
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
-        orgId: () => 'org-1',
         pending: () => pending as never,
         client: { submitOps } as never,
         onBatchResult,
@@ -359,6 +349,63 @@ describe('createopssubmitter (onBatchResult reporting)', () => {
       expect(onBatchResult).toHaveBeenCalledTimes(1)
       expect(onBatchResult).toHaveBeenCalledWith('b1', expect.objectContaining({ case: 'rejected' }))
       dispose()
+    })
+  })
+})
+
+describe('createopssubmitter (pending manager unavailable)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  // `CreateOpsSubmitterOpts.pending` is declared `() => PendingOpsManager | null`,
+  // so the null case is part of the published contract. flush() deliberately
+  // bails BEFORE draining the queue so the batches survive -- but bailing bare
+  // also clears the only timer that could ever ship them. enqueue() re-arms
+  // only when `timer` is unset AND it is called again, so a retained queue with
+  // no further user mutation was stranded indefinitely.
+  it('re-arms the flush timer while the pending manager is unavailable', async () => {
+    await createRoot(async (dispose) => {
+      let manager: ReturnType<typeof makeFakePending> | null = null
+      const submitOps = vi.fn().mockResolvedValue(committedResponse('b1'))
+      const submitter = createOpsSubmitter({
+        pending: () => manager as never,
+        client: { submitOps } as never,
+      })
+      submitter.enqueue(batch('b1'))
+
+      // No manager yet: nothing may go out, and the queued batch must be kept.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(submitOps).not.toHaveBeenCalled()
+
+      // The manager becomes available with NO further enqueue. A re-armed
+      // timer is the only thing that can ship the retained batch.
+      manager = makeFakePending()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(submitOps).toHaveBeenCalledTimes(1)
+      const arg = submitOps.mock.calls[0]![0] as { batches: { batchId: string }[] }
+      expect(arg.batches.map(b => b.batchId)).toEqual(['b1'])
+
+      // Exactly once: the drained queue stops the re-arm loop.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(submitOps).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('stops re-arming once the owner is disposed', async () => {
+    await createRoot(async (dispose) => {
+      const submitOps = vi.fn().mockResolvedValue(committedResponse('b1'))
+      const submitter = createOpsSubmitter({
+        pending: () => null,
+        client: { submitOps } as never,
+      })
+      submitter.enqueue(batch('b1'))
+      await vi.advanceTimersByTimeAsync(100)
+      dispose()
+
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(submitOps).not.toHaveBeenCalled()
     })
   })
 })

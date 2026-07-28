@@ -1,13 +1,13 @@
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
   NodeKind,
   NodeRecordSchema,
-  OrgCrdtStateSchema,
   TabRecordSchema,
+  UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import { SplitDirection, TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from '~/lib/crdt/apply'
 import { HLCClock } from '~/lib/crdt/hlc'
@@ -40,7 +40,6 @@ function applyBuiltOps(state: ReturnType<typeof newState>, ops: ReadonlyArray<{ 
 
 function newCtx(clientId = 'cli-A') {
   return {
-    orgId: 'org-1',
     originClientId: clientId,
     clock: new HLCClock(clientId),
   }
@@ -80,8 +79,8 @@ function buildSplitTileOps(
   return ops
 }
 
-function seedWorkspaceWithTab(orgId: string, wsId: string, rootId: string, tabId: string) {
-  const state = newState(orgId)
+function seedWorkspaceWithTab(userId: string, wsId: string, rootId: string, tabId: string) {
+  const state = newState(userId)
   state.workspaces[wsId] = create(WorkspaceContentsRecordSchema, { workspaceId: wsId, rootNodeId: rootId })
   const ctx = newCtx()
   applyBuiltOps(state, [
@@ -92,7 +91,7 @@ function seedWorkspaceWithTab(orgId: string, wsId: string, rootId: string, tabId
   return { state, ctx }
 }
 
-// Summarise an OrgOp as "kind:nodeId" or "field:tab-id:value" so
+// Summarise an CrdtOp as "kind:nodeId" or "field:tab-id:value" so
 // tests can assert against an order-independent set without
 // unpacking the oneof at every assertion. Mirrors the Go-side
 // `opCases` helper in `tile_close_ops_test.go`.
@@ -131,11 +130,10 @@ function opCases(ops: ReadonlyArray<AnyOp>): string[] {
 
 // Direct-construction helpers for the unit-level suites. Instead of
 // replaying production op-builders through `applyOp`, these stamp an
-// `OrgCrdtState` by hand so the tests can inspect the raw op sequence
+// `UserCrdtState` by hand so the tests can inspect the raw op sequence
 // `buildClose*Ops` emits without going through the projection layer.
 function mkCtx() {
   return {
-    orgId: 'org',
     originClientId: 'client',
     clock: new HLCClock('client'),
   }
@@ -180,7 +178,7 @@ function mkTab(tabId: string, tileId: string) {
 describe('buildCloseTileOps', () => {
   it('keeps the surviving tab visible after split → split → close → close', () => {
     // Step 0: Workspace w1 with tab X on root tile A.
-    const { state, ctx } = seedWorkspaceWithTab('org-1', 'w1', 'A', 'X')
+    const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'A', 'X')
 
     // Step 1: Split A horizontally. A → SPLIT(A_top, A_bot). Tab X
     // migrates to A_top.
@@ -242,7 +240,7 @@ describe('buildCloseTileOps', () => {
     // (the close-K step at the bottom is what should collapse the
     // chain — the close-other-side steps just have to leave a chain
     // of single-child SPLITs above the closing tile).
-    const { state, ctx } = seedWorkspaceWithTab('org-1', 'w1', 'R', 'X')
+    const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'R', 'X')
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'R', SplitDirection.HORIZONTAL, 'M', 'R_other'))
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'M', SplitDirection.HORIZONTAL, 'P', 'M_other'))
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'P', SplitDirection.HORIZONTAL, 'L', 'K'))
@@ -278,7 +276,7 @@ describe('buildCloseTileOps', () => {
     // the walk must STOP at R because R is a live multi-child SPLIT
     // (R_other is alive) — projection won't collapse R, so tabs must
     // land on P, not R.
-    const { state, ctx } = seedWorkspaceWithTab('org-1', 'w1', 'R', 'X')
+    const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'R', 'X')
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'R', SplitDirection.HORIZONTAL, 'P', 'R_other'))
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'P', SplitDirection.HORIZONTAL, 'L', 'K'))
     expect(state.tabs.X.tileId?.value).toBe('L')
@@ -301,7 +299,7 @@ describe('buildCloseTileOps', () => {
     // window's root. The projection treats both root kinds the same
     // (`registeredRoots` indexes both into `roots`), so the fix's
     // upward walk must terminate at a floating root the same way.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'wsRoot' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -338,7 +336,7 @@ describe('buildCloseTileOps', () => {
     // Sibling holds three tabs (X1, X2, X3) in lexorank order. After
     // the close they should land on the destination tile in the same
     // order with freshly-stamped lexorank positions.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'A' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -373,7 +371,7 @@ describe('buildCloseTileOps', () => {
     // populated cell. Build: GRID(1×1, single cell P) → P(SPLIT,
     // children L + K). Tab X lands on L. Closing K should migrate X
     // to P, NOT propagate up into the GRID root.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'G' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -404,7 +402,7 @@ describe('buildCloseTileOps', () => {
     // dialog's "close all tabs" branch). The closing tile's tabs
     // tombstone, the sibling's tabs migrate up the collapsed chain,
     // and the rendered leaf id matches the surviving tabs' tileId.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'A' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -443,7 +441,7 @@ describe('buildCloseTileOps', () => {
     // T(SPLIT, root) → {childA(leaf with tabs), childB(empty leaf)}.
     // Closing childB: tabs on childA migrate to T, childA tombstoned,
     // T flips back to LEAF.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'T' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -472,7 +470,7 @@ describe('buildCloseTileOps', () => {
     // Mirror image of the previous: close the tile that holds the
     // tabs. Tabs tombstone; empty sibling tombstones; parent flips
     // back to LEAF.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'T' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -494,7 +492,7 @@ describe('buildCloseTileOps', () => {
   it('no inverse-split when the parent is not a SPLIT', () => {
     // Plain leaf-under-leaf-root: closing the child just tombstones it
     // and any tabs. No kind flip, no sibling rewiring.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'root' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -516,7 +514,7 @@ describe('buildCloseTileOps', () => {
     // tabs. The plain close path tombstones only the closing leaf;
     // projection's single-child SPLIT collapse renders the GRID at
     // the parent's slot.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'T' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -557,7 +555,7 @@ describe('buildCloseTileOps', () => {
   it('no inverse-split when the sibling is a SPLIT', () => {
     // Same reasoning as the GRID-sibling case: a nested SPLIT with
     // live leaves can't be naively tombstoned.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'T' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -591,7 +589,7 @@ describe('buildCloseTileOps', () => {
   it('no inverse-split when the parent SPLIT has three live children', () => {
     // 3-child SPLIT loses one: still a multi-leaf SPLIT after the
     // close, so projection won't collapse and we must not undo-split.
-    const state = newState('org-1')
+    const state = newState('user-1')
     state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1', rootNodeId: 'T' })
     const ctx = newCtx()
     applyBuiltOps(state, [
@@ -618,8 +616,7 @@ describe('buildCloseTileOps', () => {
   // projection-driven cases above by pinning the op-sequence shape. --------
 
   it('tombstones the tile and its tabs when there is no SPLIT parent', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: { root: mkLeafNode('root'), tile: mkLeafNode('tile', 'root') },
       tabs: { 'tab-1': mkTab('tab-1', 'tile') },
     })
@@ -631,8 +628,7 @@ describe('buildCloseTileOps', () => {
   it('undo-splits a 2-child SPLIT parent: migrates sibling tabs and collapses parent', () => {
     // Tree: parent (SPLIT) → [closing (LEAF), sibling (LEAF)]
     // Tabs:  tab-A on closing, tab-B on sibling
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),
@@ -665,8 +661,7 @@ describe('buildCloseTileOps', () => {
   })
 
   it('does NOT undo-split when parent has more than 2 live children', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),
@@ -682,8 +677,7 @@ describe('buildCloseTileOps', () => {
   })
 
   it('does NOT undo-split when parent is a GRID (only SPLIT triggers the rewrite)', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: create(NodeRecordSchema, {
@@ -711,8 +705,7 @@ describe('buildCloseTileOps', () => {
   // re-keys the GRID to the parent's slot at render time, so no
   // rewiring is needed.
   it('does NOT undo-split when the surviving sibling is a GRID with its own cells/tabs', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),
@@ -738,8 +731,7 @@ describe('buildCloseTileOps', () => {
   })
 
   it('does NOT undo-split when the surviving sibling is a SPLIT', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),
@@ -764,8 +756,7 @@ describe('buildCloseTileOps', () => {
     // logic (there's no parent). This isn't a valid invocation —
     // callers must not close registered roots — but the builder
     // should still produce a sensible op sequence.
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: { tile: mkLeafNode('tile') },
     })
     const ops = buildCloseTileOps(mkCtx(), state, 'tile')
@@ -776,8 +767,7 @@ describe('buildCloseTileOps', () => {
 describe('buildCloseSubtreeOps', () => {
   it('tombstones every descendant leaves-first plus the root by default', () => {
     // Tree: root (SPLIT) → [a (LEAF), b (SPLIT) → [c (LEAF)]]
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
         a: mkLeafNode('a', 'root'),
@@ -798,8 +788,7 @@ describe('buildCloseSubtreeOps', () => {
   })
 
   it('omits the root tombstone when tombstoneRoot=false', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
         a: mkLeafNode('a', 'root'),
@@ -814,8 +803,7 @@ describe('buildCloseSubtreeOps', () => {
   })
 
   it('migrates tabs to the target tile when migrateTabsTo is set (no tombstoneTab ops)', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
         a: mkLeafNode('a', 'root'),
@@ -844,8 +832,7 @@ describe('buildCloseSubtreeOps', () => {
   })
 
   it('tombstones tabs when migrateTabsTo is unset', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: { root: mkLeafNode('root') },
       tabs: { 'tab-A': mkTab('tab-A', 'root') },
     })
@@ -858,8 +845,7 @@ describe('buildCloseSubtreeOps', () => {
     // Edge case: a leaf with no tabs and tombstoneRoot=false yields
     // exactly zero ops. Used by callers that want only the subtree
     // tombstones without affecting the root.
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: { root: mkLeafNode('root') },
     })
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root', { tombstoneRoot: false })
@@ -877,13 +863,12 @@ describe('buildCloseSubtreeOps', () => {
 // per op so we compare the deterministic structural shape (body case
 // + payload fields) rather than full object equality.
 describe('precomputed childIndex equivalence', () => {
-  function bodyShape(op: OrgOp) {
+  function bodyShape(op: CrdtOp) {
     return { case: op.body.case, value: op.body.value }
   }
 
   it('buildCloseTileOps: no SPLIT-parent path matches build-internally output', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: { root: mkLeafNode('root'), tile: mkLeafNode('tile', 'root') },
       tabs: { 'tab-1': mkTab('tab-1', 'tile') },
     })
@@ -894,8 +879,7 @@ describe('precomputed childIndex equivalence', () => {
   })
 
   it('buildCloseTileOps: undo-split path matches build-internally output', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),
@@ -914,8 +898,7 @@ describe('precomputed childIndex equivalence', () => {
   })
 
   it('buildCloseSubtreeOps: nested subtree matches build-internally output', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
         a: mkLeafNode('a', 'root'),
@@ -934,8 +917,7 @@ describe('precomputed childIndex equivalence', () => {
   })
 
   it('buildCloseSubtreeOps with migrateTabsTo + tombstoneRoot variations matches', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
         a: mkLeafNode('a', 'root'),
@@ -959,8 +941,7 @@ describe('precomputed childIndex equivalence', () => {
   })
 
   it('buildCloseTileOps with parent that has > 2 live children matches', () => {
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org',
+    const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
         parent: mkSplitNode('parent', 'root'),

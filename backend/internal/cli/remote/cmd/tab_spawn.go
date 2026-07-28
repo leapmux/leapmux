@@ -8,7 +8,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/util/optionids"
-	"github.com/leapmux/leapmux/tunnel"
 )
 
 // openAgentArgs is the resolved input to openAgentAndAddTab. All
@@ -60,6 +59,13 @@ type openAgentResult struct {
 	InitialMsgWarn string
 }
 
+// closeOrphanAgent tears down an agent that was spawned but never got a tab,
+// on the channel the spawn already holds. Best-effort: the caller is already
+// returning the failure that caused the unwind.
+func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
+	_ = w.CallEmit(ctx, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}, nil)
+}
+
 // openAgentAndAddTab opens an agent on the worker, defaults its tile
 // to the workspace's root node when none is supplied, writes the
 // CRDT tab batch (tile_id + position + worker_id), and rolls the
@@ -68,27 +74,26 @@ type openAgentResult struct {
 // follow-up runs AFTER the CRDT batch — its failure surfaces as a
 // non-fatal warning on the result.
 //
-// The three round-trips that don't depend on each other — OpenAgent on
-// the worker, resolveOrgID via GetWorkspace, and crdtBootstrap once
-// orgID is known — are run concurrently via errgroup so wall-clock
-// latency is bounded by the slowest of (OpenAgent) and
-// (GetWorkspace → crdtBootstrap) rather than their sum.
-func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArgs) (*openAgentResult, error) {
+// The two round-trips that don't depend on each other — OpenAgent on
+// the worker and crdtBootstrap — are run concurrently via errgroup so
+// wall-clock latency is bounded by the slower of the two rather than
+// their sum.
+//
+// `ch` is a channel the CALLER opened to args.WorkerID and keeps open for
+// the whole sequence, so OpenAgent, the optional SendAgentMessage, and any
+// rollback CloseAgent share one Noise_NK handshake instead of one apiece.
+// Pass nil on local-IPC clients, where there is no channel and each call
+// routes through the per-agent socket.
+//
+// Only one errgroup leg touches `ch`, so nothing here relies on the
+// channel being safe for concurrent calls.
+func openAgentAndAddTab(ctx context.Context, c *remote.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, remote.EmitError("invalid_request", "workspace_id and worker_id are required for --type=agent")
-	}
-	// Resolve org synchronously: both OpenAgentRequest.OrgId (so the
-	// worker can inject LEAPMUX_REMOTE_ORG_ID into the spawned process)
-	// and crdtBootstrap below need it. One round-trip up front lets
-	// OpenAgent and crdtBootstrap then run in parallel.
-	orgID, err := resolveOrgID(ctx, c, args.WorkspaceID)
-	if err != nil {
-		return nil, remote.EmitErrorWith("resolve_failed", err)
 	}
 	// Initial option selections (model / effort / permission mode), built once.
 	options := spawnOptions(args.Model, args.Effort, args.PermissionMode)
 	req := &leapmuxv1.OpenAgentRequest{
-		OrgId:         orgID,
 		WorkspaceId:   args.WorkspaceID,
 		WorkerId:      args.WorkerID,
 		AgentProvider: args.Provider,
@@ -98,7 +103,7 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 	}
 
 	// Phase 1: spawn the agent on the worker AND bootstrap the CRDT in
-	// parallel. Org is already resolved above. Errgroup short-circuits
+	// parallel -- neither leg feeds the other. Errgroup short-circuits
 	// the other half on failure via ctx cancellation.
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -108,11 +113,11 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 	var bs *CRDTBootstrap
 
 	g.Go(func() error {
-		return callInnerRPC(gctx, c, args.WorkerID, "OpenAgent", req, &resp)
+		return w.CallEmit(gctx, "OpenAgent", req, &resp)
 	})
 	g.Go(func() error {
 		var err error
-		bs, err = crdtBootstrap(gctx, c, orgID, []string{args.WorkspaceID})
+		bs, err = crdtBootstrap(gctx, c, []string{args.WorkspaceID})
 		if err != nil {
 			return remote.EmitErrorWith("crdt_bootstrap_failed", err)
 		}
@@ -123,15 +128,17 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 		// agent is now orphan on the worker. Roll it back so the user
 		// isn't left with a dangling agent record.
 		if agentID := resp.GetAgent().GetId(); agentID != "" {
-			_ = callInnerRPC(ctx, c, args.WorkerID, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}, nil)
+			closeOrphanAgent(ctx, w, agentID)
 		}
 		return nil, err
 	}
 
 	agentID := resp.GetAgent().GetId()
-	rollback := func() {
-		_ = callInnerRPC(ctx, c, args.WorkerID, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}, nil)
-	}
+	// Both unwind paths go through the SAME helper on the SAME channel. The
+	// CRDT-failure rollback below used to call callInnerRPC, which opened a
+	// fresh Noise_NK channel and quietly broke the one-handshake property this
+	// function's doc comment promises -- on the likelier of the two paths.
+	rollback := func() { closeOrphanAgent(ctx, w, agentID) }
 	resolvedTileID, position, err := addTabToCRDTWithBootstrap(ctx, c, bs, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, args.TileID, args.Position, args.WorkerID, rollback)
 	if err != nil {
 		return nil, err
@@ -143,17 +150,16 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 	}
 	// The permission mode rode in on the OpenAgent options above, so the only remaining
 	// post-spawn follow-up is the optional initial message -- an inner-RPC against the same
-	// worker that just received OpenAgent.
+	// worker that just received OpenAgent, on the same channel it arrived over.
 	if args.InitialMessage != "" {
-		_ = withWorkerChannel(ctx, c, args.WorkerID, func(ch *tunnel.Channel) error {
-			if err := callInnerRPCOnChannelMarshal(ctx, ch, c, args.WorkerID, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
-				AgentId: agentID,
-				Content: args.InitialMessage,
-			}, nil); err != nil {
-				result.InitialMsgWarn = err.Error()
-			}
-			return nil
-		})
+		if err := w.Call(ctx, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+			AgentId: agentID,
+			Content: args.InitialMessage,
+		}, nil); err != nil {
+			// Non-fatal: the agent is open and its tab is registered, so the
+			// caller reports the spawn as a success carrying this warning.
+			result.InitialMsgWarn = err.Error()
+		}
 	}
 	return result, nil
 }
@@ -168,14 +174,14 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, args openAgentArg
 func addTabToCRDT(
 	ctx context.Context,
 	c *remote.Client,
-	orgID, workspaceID string,
+	workspaceID string,
 	tabType leapmuxv1.TabType,
 	tabID, requestedTileID string,
 	spec positionSpec,
 	workerID string,
 	rollback func(),
 ) (resolvedTileID, position string, err error) {
-	bs, err := crdtBootstrap(ctx, c, orgID, []string{workspaceID})
+	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
 	if err != nil {
 		rollback()
 		return "", "", remote.EmitErrorWith("crdt_bootstrap_failed", err)
@@ -225,7 +231,7 @@ func addTabToCRDTWithBootstrap(
 		rollback()
 		return "", "", err
 	}
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		opSetTabTileID(bs, tabType, tabID, resolvedTileID),
 		opSetTabPosition(bs, tabType, tabID, position),
 		opSetTabWorkerID(bs, tabType, tabID, workerID),
@@ -267,19 +273,14 @@ type openTerminalResult struct {
 // openTerminalAndAddTab opens a terminal on the worker, defaults its
 // tile to the workspace's root node when none is supplied, writes the
 // CRDT tab batch, and rolls the terminal back on CRDT failure.
-func openTerminalAndAddTab(ctx context.Context, c *remote.Client, args openTerminalArgs) (*openTerminalResult, error) {
+func openTerminalAndAddTab(ctx context.Context, c *remote.Client, w workerCall, args openTerminalArgs) (*openTerminalResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, remote.EmitError("invalid_request", "workspace_id and worker_id are required for --type=terminal")
-	}
-	orgID, err := resolveOrgID(ctx, c, args.WorkspaceID)
-	if err != nil {
-		return nil, remote.EmitErrorWith("resolve_failed", err)
 	}
 	// Cols / Rows left at zero so the worker applies its 80x25 default
 	// (terminal.Open). The frontend resizes the PTY as soon as the
 	// user attaches.
 	req := &leapmuxv1.OpenTerminalRequest{
-		OrgId:         orgID,
 		WorkspaceId:   args.WorkspaceID,
 		WorkerId:      args.WorkerID,
 		WorkingDir:    args.WorkingDir,
@@ -287,18 +288,20 @@ func openTerminalAndAddTab(ctx context.Context, c *remote.Client, args openTermi
 		ShellStartDir: args.ShellStartDir,
 	}
 	var resp leapmuxv1.OpenTerminalResponse
-	if err := callInnerRPC(ctx, c, args.WorkerID, "OpenTerminal", req, &resp); err != nil {
+	if err := w.CallEmit(ctx, "OpenTerminal", req, &resp); err != nil {
 		return nil, err
 	}
 	terminalID := resp.GetTerminalId()
+	// On the SAME channel as the open, matching the agent path: the rollback
+	// is the likelier of this function's two worker calls to actually run, and
+	// paying a second Noise_NK handshake for it defeats the hoist.
 	rollback := func() {
-		_ = callInnerRPC(ctx, c, args.WorkerID, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-			OrgId:       orgID,
+		_ = w.CallEmit(ctx, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
 			WorkspaceId: args.WorkspaceID,
 			TerminalId:  terminalID,
 		}, nil)
 	}
-	resolvedTileID, position, err := addTabToCRDT(ctx, c, orgID, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)
+	resolvedTileID, position, err := addTabToCRDT(ctx, c, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)
 	if err != nil {
 		return nil, err
 	}

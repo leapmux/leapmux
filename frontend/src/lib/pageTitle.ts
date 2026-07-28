@@ -22,7 +22,7 @@ export function setWorkspaceTitle(workspaceTitle: string | undefined | null): vo
   setPageTitle(workspaceTitle && workspaceTitle.length > 0 ? workspaceTitle : 'Untitled')
 }
 
-/** Title shown when the user is on an org route without an active workspace. */
+/** Title shown when the user is on the home route without an active workspace. */
 export function setDashboardTitle(): void {
   setPageTitle('Dashboard')
 }

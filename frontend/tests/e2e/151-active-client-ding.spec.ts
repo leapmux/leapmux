@@ -54,9 +54,9 @@ test.describe('Active-client ding gate', () => {
   // ding lives at `src/components/shell/AppShell.tsx` (turn-end
   // sound preferences) where the env stays controllable.
   test('dispatches `leapmux:turn-end-played` only when this client is the active client', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Active Client Ding', adminOrgId)
-    const workspaceUrl = `/o/admin/workspace/${wsId}`
+    const { hubUrl, adminToken } = leapmuxServer
+    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Active Client Ding')
+    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })

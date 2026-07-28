@@ -1,11 +1,11 @@
 import type { RenderTree } from './project'
 import type { LayoutNodeLocal } from '~/stores/layout.store'
-import { NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import { SplitDirection } from '~/generated/leapmux/v1/workspace_pb'
 
 /**
  * Convert a CRDT-projected RenderTree (the canonical, authoritative
- * tree shape derived from OrgCrdtState) into the LayoutNodeLocal
+ * tree shape derived from UserCrdtState) into the LayoutNodeLocal
  * shape consumed by the renderer + tile predicates. The two shapes
  * carry the same data; LayoutNodeLocal is the discriminated-union
  * form Solid components understand.

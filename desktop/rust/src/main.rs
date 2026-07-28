@@ -621,16 +621,16 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
                 json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
             );
         }
-        proto::event::Payload::OrgEventsMessage(msg) => {
-            // Forward the hub's length-prefixed WatchOrgEvent frame
-            // verbatim to the webview. The frontend's `useOrgEvents`
+        proto::event::Payload::UserEventsMessage(msg) => {
+            // Forward the hub's length-prefixed WatchUserEvent frame
+            // verbatim to the webview. The frontend's `useUserEvents`
             // hook decodes identically to native WS frames.
             let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit("orgevents:message", b64);
+            let _ = app_handle.emit("userevents:message", b64);
         }
-        proto::event::Payload::OrgEventsClose(close) => {
+        proto::event::Payload::UserEventsClose(close) => {
             let _ = app_handle.emit(
-                "orgevents:close",
+                "userevents:close",
                 json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
             );
         }
@@ -1010,18 +1010,16 @@ async fn close_channel_relay(
 }
 
 #[tauri::command]
-async fn open_orgevents_relay(
+async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
     relay_id: u64,
-    org_id: String,
     workspace_ids: Vec<String>,
 ) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(proto::request::Method::OpenOrgEventsRelay(
-                proto::OpenOrgEventsRelayRequest {
+            .send_request_async(proto::request::Method::OpenUserEventsRelay(
+                proto::OpenUserEventsRelayRequest {
                     relay_id,
-                    org_id,
                     workspace_ids,
                 },
             ))
@@ -1031,14 +1029,14 @@ async fn open_orgevents_relay(
 }
 
 #[tauri::command]
-async fn close_orgevents_relay(
+async fn close_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
     relay_id: u64,
 ) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(proto::request::Method::CloseOrgEventsRelay(
-                proto::CloseOrgEventsRelayRequest { relay_id },
+            .send_request_async(proto::request::Method::CloseUserEventsRelay(
+                proto::CloseUserEventsRelayRequest { relay_id },
             ))
             .await?,
     )?;
@@ -1638,8 +1636,8 @@ fn main() {
             open_channel_relay,
             send_channel_message,
             close_channel_relay,
-            open_orgevents_relay,
-            close_orgevents_relay,
+            open_userevents_relay,
+            close_userevents_relay,
             create_tunnel,
             delete_tunnel,
             reset_tunnels,

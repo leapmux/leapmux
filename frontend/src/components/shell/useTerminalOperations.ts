@@ -26,7 +26,6 @@ import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 const ENTER_KEY_CR = 0x0D
 
 export interface UseTerminalOperationsProps {
-  org: { orgId: () => string }
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspace: Accessor<Workspace | null>
@@ -48,7 +47,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     const ctx = props.getCurrentTabContext()
     if (!ctx.workerId)
       return null
-    return { orgId: props.org.orgId(), workspaceId: ws.id, workerId: ctx.workerId }
+    return { workspaceId: ws.id, workerId: ctx.workerId }
   })
   // Dedup concurrent restartTerminal RPCs. Held Enter (autorepeat) would
   // otherwise fire one RPC per keystroke, and the backend rejects every
@@ -86,7 +85,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     args.setLoading(true)
     try {
       const resp = await workerRpc.openTerminal(ctx.workerId, {
-        orgId: props.org.orgId(),
         workspaceId: ws.id,
         cols: DEFAULT_TERMINAL_COLS,
         rows: DEFAULT_TERMINAL_ROWS,
@@ -136,7 +134,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
     if (tab.status === TerminalStatus.READY) {
       try {
-        await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
+        await workerRpc.sendInput(tab.workerId ?? '', { workspaceId: ws.id, terminalId, data })
       }
       catch {
         // ignore input errors
@@ -154,7 +152,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       try {
         await restartInflight.run(terminalId, async () => {
           await workerRpc.restartTerminal(tab.workerId ?? '', {
-            orgId: props.org.orgId(),
             workspaceId: ws.id,
             terminalId,
             cols: tab.cols ?? DEFAULT_TERMINAL_COLS,
@@ -182,7 +179,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       return
     const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     workerRpc.updateTerminalTitle(workerId, {
-      orgId: props.org.orgId(),
       workspaceId: ws.id,
       terminalId,
       title,
@@ -248,7 +244,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         || tab.status === TerminalStatus.STARTUP_FAILED) {
         return
       }
-      await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
+      await workerRpc.resizeTerminal(tab.workerId ?? '', { workspaceId: ws.id, terminalId, cols, rows })
     }
     catch {
       // ignore resize errors
@@ -274,7 +270,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
     // `tabStore.removeTab` above emitted the TombstoneTab op via the
     // CRDT bridge; the hub broadcasts it to peer clients via
-    // /ws/orgevents.
+    // /ws/userevents.
     if (!workerId || !ws) {
       // Local tab is gone, but with no worker/workspace the close RPC
       // can't fire — a REMOVE therefore can't reach the worktree. Surface
@@ -288,7 +284,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     // worktree outcome.
     return awaitCloseResult(
       workerRpc.closeTerminal(workerId, {
-        orgId: props.org.orgId(),
         workspaceId: ws.id,
         terminalId,
         worktreeAction,

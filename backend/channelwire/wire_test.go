@@ -200,7 +200,7 @@ func TestChunkContinuation(t *testing.T) {
 	}
 }
 
-func TestIsOrgEventsCloseErrorClassifiesRecoverableCloses(t *testing.T) {
+func TestIsUserEventsCloseErrorClassifiesRecoverableCloses(t *testing.T) {
 	// Recoverable: a clean shutdown, an endpoint going away, or a transient
 	// intermediary signal (load balancer / server restart) the caller reconnects
 	// from rather than treating as a fatal stream error.
@@ -215,7 +215,7 @@ func TestIsOrgEventsCloseErrorClassifiesRecoverableCloses(t *testing.T) {
 		// nothing the consumer should surface as a hard error.
 		websocket.StatusNoStatusRcvd,
 	} {
-		require.True(t, IsOrgEventsCloseError(websocket.CloseError{Code: code}),
+		require.True(t, IsUserEventsCloseError(websocket.CloseError{Code: code}),
 			"code %d should be recoverable", code)
 	}
 	// Terminal protocol/policy failures must not collapse to a clean close.
@@ -225,13 +225,13 @@ func TestIsOrgEventsCloseErrorClassifiesRecoverableCloses(t *testing.T) {
 		websocket.StatusInternalError,
 		websocket.StatusAbnormalClosure,
 	} {
-		require.False(t, IsOrgEventsCloseError(websocket.CloseError{Code: code}),
+		require.False(t, IsUserEventsCloseError(websocket.CloseError{Code: code}),
 			"code %d should be terminal", code)
 	}
 }
 
 func TestWebSocketCloseDetailsUsesRecoverableClassifier(t *testing.T) {
-	// wasClean tracks the same recoverable classification as IsOrgEventsCloseError
+	// wasClean tracks the same recoverable classification as IsUserEventsCloseError
 	// so the desktop relay and the CLI/worker consumers agree on which closes are
 	// reconnect signals.
 	for _, code := range []websocket.StatusCode{

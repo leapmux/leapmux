@@ -40,15 +40,15 @@ async function preloadWorkspace(page: Page, workspaceId: string, thenSwitchTo: s
 
 test.describe('Multi-Workspace', () => {
   test('workspace switch preserves tabs in sidebar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi WS Alpha', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi WS Beta', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi WS Alpha')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi WS Beta')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
 
       // WS Alpha should be active with an agent tab visible
@@ -74,15 +74,15 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('expand non-active workspace shows tab tree', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'TreeView Active', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'TreeView Inactive', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'TreeView Active')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'TreeView Inactive')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -104,16 +104,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('cross-workspace drag: tabbar tab to sidebar workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Source WS', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Target WS', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Source WS')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Target WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1) // second agent so source keeps a tab
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
 
       // ws1 should have 2 agent tabs
@@ -155,16 +155,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('cross-workspace drag: sidebar tab to active tabbar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Active WS', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Sidebar WS', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Active WS')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Sidebar WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2) // ws2 has 2 agents so it keeps one
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -267,15 +267,15 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('expanded workspace state persists after reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Expand Persist A', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Expand Persist B', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Expand Persist A')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Expand Persist B')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -299,15 +299,15 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('clicking non-active workspace tab switches workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Click Tab Active', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Click Tab Inactive', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Click Tab Active')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Click Tab Inactive')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -346,16 +346,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('clicking moved tab in target workspace activates it', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Source', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Target', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Source')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Target')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1) // keep a tab in source
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
@@ -413,16 +413,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('clicking moved tab in sidebar shows all target workspace tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     // ws1 has 1 tab (tab 1), ws2 has 1 tab (tab 2)
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Src', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Tgt', adminOrgId)
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Src')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Move Click Tgt')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -481,16 +481,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('moved tab does not flash in source workspace after reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flash Source', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flash Target', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flash Source')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flash Target')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1) // keep a tab in ws1
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
@@ -544,16 +544,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('move tab back to original workspace preserves tab bar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'MoveBack WS1', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'MoveBack WS2', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'MoveBack WS1')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'MoveBack WS2')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1) // keep a tab in ws1
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
@@ -610,9 +610,9 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('clicking specific tab in non-active workspace activates that tab', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS1', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS2', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS1')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS2')
     // Create 2 agents in ws2 so we can distinguish which tab is active.
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
@@ -620,7 +620,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
@@ -666,16 +666,16 @@ test.describe('Multi-Workspace', () => {
   })
 
   test('cross-workspace move persists after reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Source', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Target', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Source')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Target')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1) // keep a tab in source
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${ws1}`)
+      await page.goto(`/workspace/${ws1}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 

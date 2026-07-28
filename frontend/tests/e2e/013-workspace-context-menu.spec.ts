@@ -29,7 +29,7 @@ test.describe('Workspace Context Menu', () => {
 
     // ── Delete (two-step) ───────────────────────────────────────────────────
     // Navigate to the dashboard so the workspace can be safely deleted.
-    await page.goto('/o/admin')
+    await page.goto('/')
     await expect(workspaceItem).toBeVisible()
 
     await workspaceItem.hover()

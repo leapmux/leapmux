@@ -112,7 +112,6 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 	}, nil
 }
 
-func (s *pgStore) Orgs() store.OrgStore         { return &orgStore{conn: s.conn} }
 func (s *pgStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *pgStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *pgStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
@@ -126,10 +125,10 @@ func (s *pgStore) Workspaces() store.WorkspaceStore { return &workspaceStore{con
 func (s *pgStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 	return &workspaceTabIndexStore{conn: s.conn}
 }
-func (s *pgStore) OrgOpBatches() store.OrgOpBatchesStore { return &orgOpBatchesStore{conn: s.conn} }
-func (s *pgStore) OrgState() store.OrgStateStore         { return &orgStateStore{conn: s.conn} }
-func (s *pgStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
-	return &orgRecentBatchIDStore{conn: s.conn}
+func (s *pgStore) UserOpBatches() store.UserOpBatchesStore { return &userOpBatchesStore{conn: s.conn} }
+func (s *pgStore) UserState() store.UserStateStore         { return &userStateStore{conn: s.conn} }
+func (s *pgStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
+	return &userRecentBatchIDStore{conn: s.conn}
 }
 func (s *pgStore) LifecycleOutbox() store.LifecycleOutboxStore {
 	return &lifecycleOutboxStore{conn: s.conn}

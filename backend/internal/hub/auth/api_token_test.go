@@ -31,12 +31,9 @@ func newTestStore(t *testing.T) store.Store {
 func seedUser(t *testing.T, st store.Store) string {
 	t.Helper()
 	ctx := context.Background()
-	orgID := id.Generate()
-	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "test-org-" + orgID}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "test-" + userID[:8],
 		PasswordHash: "x",
 	}))
@@ -49,8 +46,6 @@ func seedUser(t *testing.T, st store.Store) string {
 func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (workerID, workspaceID string) {
 	t.Helper()
 	ctx := context.Background()
-	u, err := st.Users().GetByID(ctx, userID)
-	require.NoError(t, err)
 	workerID = id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
@@ -63,7 +58,6 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 	workspaceID = id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       u.OrgID,
 		OwnerUserID: userid.MustNew(userID),
 		Title:       "test-ws",
 	}))

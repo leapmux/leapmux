@@ -1,4 +1,4 @@
-// Package crdt implements the per-org commutative CRDT for workspace
+// Package crdt implements the per-user commutative CRDT for workspace
 // layouts and tabs. The model is documented in the plan at
 // `~/.config/leapmux/solo/worker/plans/2026/05/`. In short:
 //
@@ -73,10 +73,10 @@ func HLCClone(h *leapmuxv1.HLC) *leapmuxv1.HLC {
 	}
 }
 
-// Clock is a hybrid logical clock. The hub holds one Clock per org,
+// Clock is a hybrid logical clock. The hub holds one Clock per user,
 // keyed by an `originClientID` that distinguishes the hub-side
 // allocator from any client. Tick and Observe are NOT thread-safe;
-// callers must serialize through the per-org manager goroutine.
+// callers must serialize through the per-user manager goroutine.
 type Clock struct {
 	clientID string
 	maxPhys  int64
@@ -149,9 +149,9 @@ func BatchBodyHash(batch *leapmuxv1.OpBatch) ([]byte, error) {
 	if batch == nil {
 		return nil, fmt.Errorf("nil batch")
 	}
-	bodyOps := make([]*leapmuxv1.OrgOp, len(batch.GetOps()))
+	bodyOps := make([]*leapmuxv1.CrdtOp, len(batch.GetOps()))
 	for i, op := range batch.GetOps() {
-		bodyOps[i] = &leapmuxv1.OrgOp{Body: op.GetBody()}
+		bodyOps[i] = &leapmuxv1.CrdtOp{Body: op.GetBody()}
 	}
 	// batch_id is NOT part of the body hash — clients may retry the
 	// same semantic batch under a different batch_id, but dedup must
@@ -167,13 +167,13 @@ func BatchBodyHash(batch *leapmuxv1.OpBatch) ([]byte, error) {
 
 // MarshalOp returns the deterministic binary encoding of a fully
 // canonical-stamped op (canonical_hlc set).
-func MarshalOp(op *leapmuxv1.OrgOp) ([]byte, error) {
+func MarshalOp(op *leapmuxv1.CrdtOp) ([]byte, error) {
 	return proto.MarshalOptions{Deterministic: true}.Marshal(op)
 }
 
 // UnmarshalOp parses a binary-encoded op.
-func UnmarshalOp(data []byte) (*leapmuxv1.OrgOp, error) {
-	op := &leapmuxv1.OrgOp{}
+func UnmarshalOp(data []byte) (*leapmuxv1.CrdtOp, error) {
+	op := &leapmuxv1.CrdtOp{}
 	if err := proto.Unmarshal(data, op); err != nil {
 		return nil, fmt.Errorf("unmarshal op: %w", err)
 	}
@@ -193,7 +193,7 @@ const (
 
 // EntityRef identifies the target of an op. For tabs, TabType is
 // also part of identity; the validator enforces tab_id uniqueness
-// across TabTypes inside a single org doc.
+// across TabTypes inside a single user doc.
 type EntityRef struct {
 	Kind        EntityKind
 	NodeID      string
@@ -210,11 +210,11 @@ type EntityRef struct {
 // TombstoneWorkspace (lifecycle delete record removal). validateSetOnce calls
 // this once at the top so the hub-only policy is enumerable in one place
 // rather than re-stated as a `!internal` arm inside each op's case.
-func isHubOnlyOp(op *leapmuxv1.OrgOp) bool {
+func isHubOnlyOp(op *leapmuxv1.CrdtOp) bool {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetWorkspaceRootNode,
-		*leapmuxv1.OrgOp_SetWorkspaceRegister,
-		*leapmuxv1.OrgOp_TombstoneWorkspace:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode,
+		*leapmuxv1.CrdtOp_SetWorkspaceRegister,
+		*leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return true
 	}
 	return false
@@ -237,9 +237,9 @@ func isHubOnlyOp(op *leapmuxv1.OrgOp) bool {
 // instead of producing a spurious OUT transition that calls removed(), which
 // returns nil because the proto EntityRemoved oneof has no workspace variant
 // (the 0-byte-frame bug the removed() nil-guard patched at the call site).
-func IsTombstoneOp(op *leapmuxv1.OrgOp) bool {
+func IsTombstoneOp(op *leapmuxv1.CrdtOp) bool {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_TombstoneNode, *leapmuxv1.OrgOp_TombstoneTab, *leapmuxv1.OrgOp_TombstoneFloatingWindow, *leapmuxv1.OrgOp_TombstoneWorkspace:
+	case *leapmuxv1.CrdtOp_TombstoneNode, *leapmuxv1.CrdtOp_TombstoneTab, *leapmuxv1.CrdtOp_TombstoneFloatingWindow, *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return true
 	}
 	return false
@@ -267,33 +267,33 @@ func (r EntityRef) ToJSON() map[string]any {
 }
 
 // OpTarget extracts the EntityRef an op acts on.
-func OpTarget(op *leapmuxv1.OrgOp) EntityRef {
+func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 	switch body := op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		return EntityRef{Kind: EntityKindNode, NodeID: body.SetNodeRegister.GetNodeId()}
-	case *leapmuxv1.OrgOp_TombstoneNode:
+	case *leapmuxv1.CrdtOp_TombstoneNode:
 		return EntityRef{Kind: EntityKindNode, NodeID: body.TombstoneNode.GetNodeId()}
-	case *leapmuxv1.OrgOp_SetTabRegister:
+	case *leapmuxv1.CrdtOp_SetTabRegister:
 		return EntityRef{
 			Kind:    EntityKindTab,
 			TabType: body.SetTabRegister.GetTabType(),
 			TabID:   body.SetTabRegister.GetTabId(),
 		}
-	case *leapmuxv1.OrgOp_TombstoneTab:
+	case *leapmuxv1.CrdtOp_TombstoneTab:
 		return EntityRef{
 			Kind:    EntityKindTab,
 			TabType: body.TombstoneTab.GetTabType(),
 			TabID:   body.TombstoneTab.GetTabId(),
 		}
-	case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.SetFloatingWindowRegister.GetWindowId()}
-	case *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.TombstoneFloatingWindow.GetWindowId()}
-	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRootNode.GetWorkspaceId()}
-	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRegister.GetWorkspaceId()}
-	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.TombstoneWorkspace.GetWorkspaceId()}
 	}
 	return EntityRef{}

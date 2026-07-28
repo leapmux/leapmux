@@ -46,10 +46,10 @@ func (s *workspaceSectionStore) GetByID(ctx context.Context, id string) (*store.
 }
 
 func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.UserID) ([]store.WorkspaceSection, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListWorkspaceSectionsByUserID(ctx, owner)
@@ -60,10 +60,10 @@ func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.
 }
 
 func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorkspaceSectionParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	return rowsAffected(s.conn.q.RenameWorkspaceSection(ctx, gendb.RenameWorkspaceSectionParams{
@@ -74,13 +74,13 @@ func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorksp
 }
 
 func (s *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.UpdateWorkspaceSectionPositionParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.UpdateWorkspaceSectionPosition(ctx, gendb.UpdateWorkspaceSectionPositionParams{
@@ -91,13 +91,13 @@ func (s *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.Upda
 }
 
 func (s *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p store.UpdateWorkspaceSectionSidebarPositionParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.UpdateWorkspaceSectionSidebarPosition(ctx, gendb.UpdateWorkspaceSectionSidebarPositionParams{
@@ -109,10 +109,10 @@ func (s *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p sto
 }
 
 func (s *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorkspaceSectionParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	return rowsAffected(s.conn.q.DeleteWorkspaceSection(ctx, gendb.DeleteWorkspaceSectionParams{
@@ -122,10 +122,10 @@ func (s *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorksp
 }
 
 func (s *workspaceSectionStore) HasDefaultForUser(ctx context.Context, userID userid.UserID) (bool, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return false, nil
 	}
 	n, err := s.conn.q.HasDefaultSectionsForUser(ctx, owner)

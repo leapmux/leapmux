@@ -431,7 +431,7 @@ func TestHubProxyDoFollowsSameOriginRedirect(t *testing.T) {
 // hub-side off-origin 3xx is refused on every path this CORS-free process opens
 // to the hub. coder/websocket's Dial FOLLOWS redirect responses during the WS
 // upgrade, so a wsClient without the pin would let an open redirect on
-// /ws/channel or /ws/orgevents lead the desktop off-origin; this proves both
+// /ws/channel or /ws/userevents lead the desktop off-origin; this proves both
 // clients carry it so a future edit that drops either is caught.
 func TestNewHTTPProxyPinsRedirects(t *testing.T) {
 	proxy := newHTTPProxy("https://hub.example.com")

@@ -54,7 +54,9 @@ test.describe('First-admin setup', () => {
     await page.getByLabel('New Password').fill('strongpass1')
     await page.getByLabel('Confirm Password').fill('strongpass1')
     await page.getByRole('button', { name: 'Create account' }).click()
-    await expect(page).toHaveURL(/\/o\/admin$/)
+    // Flat home route: post-setup lands on `/` (the authenticated home),
+    // not an org-scoped path. Matches APP_HOME_URL_RE in the auth specs.
+    await expect(page).toHaveURL(/\/$/)
 
     // Verify the backend recorded this user as an admin.
     const cookies = await context.cookies()

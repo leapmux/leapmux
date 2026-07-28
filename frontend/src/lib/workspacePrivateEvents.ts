@@ -53,7 +53,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
   // immediately instead of letting it sit out the full backoff delay.
   let wakeReconnect: (() => void) | null = null
 
-  // Shared jittered backoff (matching useOrgEvents / useWorkspaceConnection)
+  // Shared jittered backoff (matching useUserEvents / useWorkspaceConnection)
   // in place of the previous hand-rolled, jitter-free doubling closure.
   const reconnectBackoff = createExponentialBackoff<string>({
     initialMs: RECONNECT_INITIAL_MS,
@@ -65,7 +65,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
     while (!stopped) {
       // A fresh (re)connect: reset the backoff streak once this attempt proves
       // healthy by delivering its first event (the worker's bootstrap replay or
-      // a live update), mirroring useOrgEvents' reset-on-bootstrap so a merely
+      // a live update), mirroring useUserEvents' reset-on-bootstrap so a merely
       // opened-then-immediately-dropped stream keeps backing off.
       let healthy = false
       try {
@@ -74,7 +74,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
         // E2EE) channel open. At that instant currentClose was still null, so
         // the returned cleanup closed nothing -- bail before registering the
         // stream listener, or it would stay subscribed and keep firing the
-        // opts.on* callbacks into a torn-down caller (mirrors useOrgEvents'
+        // opts.on* callbacks into a torn-down caller (mirrors useUserEvents'
         // attemptDisposed guard).
         if (stopped)
           return

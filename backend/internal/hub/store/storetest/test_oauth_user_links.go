@@ -15,8 +15,7 @@ import (
 func (s *Suite) testOAuthUserLinks(t *testing.T) {
 	t.Run("create and get", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-user")
+		user := SeedUser(t, st, "oul-user")
 		prov := SeedOAuthProvider(t, st, "oul-prov")
 		provID := prov.ID
 
@@ -49,8 +48,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 	t.Run("list by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-list-user")
+		user := SeedUser(t, st, "oul-list-user")
 
 		for i := 0; i < 2; i++ {
 			prov := SeedOAuthProvider(t, st, fmt.Sprintf("oul-list-prov-%d", i))
@@ -69,8 +67,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-del-user")
+		user := SeedUser(t, st, "oul-del-user")
 		prov := SeedOAuthProvider(t, st, "oul-del-prov")
 		provID := prov.ID
 
@@ -96,8 +93,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 	t.Run("delete by provider", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-dbp-user")
+		user := SeedUser(t, st, "oul-dbp-user")
 		prov := SeedOAuthProvider(t, st, "oul-dbp-prov")
 		provID := prov.ID
 
@@ -119,8 +115,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 	t.Run("delete by provider preserves other providers", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-dbppres-user")
+		user := SeedUser(t, st, "oul-dbppres-user")
 		prov1 := SeedOAuthProvider(t, st, "oul-dbppres-prov1")
 		prov2 := SeedOAuthProvider(t, st, "oul-dbppres-prov2")
 
@@ -152,8 +147,7 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 
 	t.Run("list by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "oul-org")
-		user := SeedUser(t, st, orgID, "oul-listempty-user")
+		user := SeedUser(t, st, "oul-listempty-user")
 
 		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)

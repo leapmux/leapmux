@@ -7,10 +7,6 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChangeBranchDialog } from './ChangeBranchDialog'
 
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
-
 vi.mock('~/api/clients', () => ({
   workerClient: {
     listWorkers: vi.fn().mockResolvedValue({

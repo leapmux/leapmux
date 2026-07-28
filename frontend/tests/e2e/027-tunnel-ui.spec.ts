@@ -22,15 +22,15 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       targetPort: number
     }> = []
     let nextId = 1
-    let orgEventsSocket: WebSocket | undefined
+    let userEventsSocket: WebSocket | undefined
     const intentionallyClosedSockets = new WeakSet<WebSocket>()
 
-    const closeOrgEventsSocket = () => {
-      if (!orgEventsSocket)
+    const closeUserEventsSocket = () => {
+      if (!userEventsSocket)
         return
-      intentionallyClosedSockets.add(orgEventsSocket)
-      orgEventsSocket.close()
-      orgEventsSocket = undefined
+      intentionallyClosedSockets.add(userEventsSocket)
+      userEventsSocket.close()
+      userEventsSocket = undefined
     }
 
     const bytesToBase64 = (data: ArrayBuffer) => {
@@ -80,32 +80,33 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               localSolo: false,
             },
           })
-        case 'open_orgevents_relay': {
-          closeOrgEventsSocket()
-          const params = new URLSearchParams({ org_id: args.orgId })
+        case 'open_userevents_relay': {
+          closeUserEventsSocket()
+          const params = new URLSearchParams()
           for (const workspaceId of args.workspaceIds ?? [])
             params.append('workspace_ids', workspaceId)
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+          const qs = params.toString()
           const socket = new WebSocket(
-            `${protocol}//${window.location.host}/ws/orgevents?${params}`,
-            ['orgevents-relay'],
+            `${protocol}//${window.location.host}/ws/userevents${qs ? `?${qs}` : ''}`,
+            ['userevents-relay'],
           )
-          orgEventsSocket = socket
+          userEventsSocket = socket
           socket.binaryType = 'arraybuffer'
           socket.addEventListener('message', (event) => {
-            win.__TAURI_INTERNALS__.emitEvent('orgevents:message', bytesToBase64(event.data))
+            win.__TAURI_INTERNALS__.emitEvent('userevents:message', bytesToBase64(event.data))
           })
           socket.addEventListener('close', () => {
             if (!intentionallyClosedSockets.has(socket))
-              win.__TAURI_INTERNALS__.emitEvent('orgevents:close', undefined)
+              win.__TAURI_INTERNALS__.emitEvent('userevents:close', undefined)
           })
           return new Promise<void>((resolve, reject) => {
             socket.addEventListener('open', () => resolve(), { once: true })
-            socket.addEventListener('error', () => reject(new Error('org-events relay failed')), { once: true })
+            socket.addEventListener('error', () => reject(new Error('userevents relay failed')), { once: true })
           })
         }
-        case 'close_orgevents_relay':
-          closeOrgEventsSocket()
+        case 'close_userevents_relay':
+          closeUserEventsSocket()
           return Promise.resolve()
         default:
           return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))

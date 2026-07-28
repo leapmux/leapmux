@@ -15,14 +15,14 @@ import (
 // allowAll returns an AuthChecker that accepts every workspace.
 type allowAll struct{}
 
-func (allowAll) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
-func (allowAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)       { return true, nil }
+func (allowAll) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) { return true, nil }
+func (allowAll) CanUseWorker(_ context.Context, _, _ string) (bool, error)       { return true, nil }
 
 // denyAll returns an AuthChecker that rejects every workspace.
 type denyAll struct{}
 
-func (denyAll) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
-func (denyAll) CanUseWorker(_ context.Context, _, _, _ string) (bool, error)       { return false, nil }
+func (denyAll) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) { return false, nil }
+func (denyAll) CanUseWorker(_ context.Context, _, _ string) (bool, error)       { return false, nil }
 
 // onlyOwner returns an AuthChecker that accepts only workspaces
 // owned by the given principal id.
@@ -30,10 +30,10 @@ type onlyOwner struct {
 	allowed map[string]bool // workspaceID set
 }
 
-func (o onlyOwner) CanAccessWorkspace(_ context.Context, _, workspaceID, _ string) (bool, error) {
+func (o onlyOwner) CanAccessWorkspace(_ context.Context, workspaceID, _ string) (bool, error) {
 	return o.allowed[workspaceID], nil
 }
-func (o onlyOwner) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+func (o onlyOwner) CanUseWorker(_ context.Context, _, _ string) (bool, error) { return true, nil }
 
 // workerScope is an AuthChecker variant that accepts every workspace
 // (the per-op auth check is orthogonal to worker_ref validation) but
@@ -44,10 +44,10 @@ type workerScope struct {
 	workers map[string]bool
 }
 
-func (workerScope) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (workerScope) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
+func (s workerScope) CanUseWorker(_ context.Context, workerID, _ string) (bool, error) {
 	return s.workers[workerID], nil
 }
 
@@ -56,10 +56,10 @@ func (s workerScope) CanUseWorker(_ context.Context, _, workerID, _ string) (boo
 // failure must NOT collapse into a permanent FORBIDDEN op-rejection.
 type erroringAuth struct{ err error }
 
-func (e erroringAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+func (e erroringAuth) CanAccessWorkspace(context.Context, string, string) (bool, error) {
 	return false, e.err
 }
-func (e erroringAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+func (e erroringAuth) CanUseWorker(context.Context, string, string) (bool, error) {
 	return false, e.err
 }
 
@@ -83,7 +83,7 @@ func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.
 	}, hlcAt(10, 0, "a"))
 
 	boom := errors.New("db unavailable")
-	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tomb}, false /* not internal */, "p1", erroringAuth{err: boom})
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tomb}, false /* not internal */, "p1", erroringAuth{err: boom})
 
 	require.ErrorIs(t, res.Err, boom, "a transient permission-lookup failure must surface as a retryable error")
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
@@ -96,10 +96,10 @@ func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.
 // validateWorkerRefs' CanUseWorker call.
 type workerRefErrorAuth struct{ err error }
 
-func (workerRefErrorAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+func (workerRefErrorAuth) CanAccessWorkspace(context.Context, string, string) (bool, error) {
 	return true, nil
 }
-func (w workerRefErrorAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+func (w workerRefErrorAuth) CanUseWorker(context.Context, string, string) (bool, error) {
 	return false, w.err
 }
 
@@ -124,7 +124,7 @@ func TestValidate_TransientWorkerLookupError_SurfacesAsErr(t *testing.T) {
 	}, hlcAt(10, 0, "a"))
 
 	boom := errors.New("db unavailable")
-	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false /* not internal */, "p1", workerRefErrorAuth{err: boom})
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false /* not internal */, "p1", workerRefErrorAuth{err: boom})
 
 	require.ErrorIs(t, res.Err, boom, "a transient worker-lookup failure must surface as a retryable error")
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
@@ -149,7 +149,7 @@ func TestValidate_TabPlacementInvariant_OrphanTile(t *testing.T) {
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tab, worker, pos}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID, res.Reason)
 }
 
@@ -161,7 +161,7 @@ func TestValidate_ParentImmutable_RejectsReParent(t *testing.T) {
 		NodeId: "root1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "other"},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_PARENT_IMMUTABLE, res.Reason)
 }
 
@@ -170,10 +170,10 @@ func TestValidate_HubOnlyOp_RejectsClient(t *testing.T) {
 	op := stamped(&leapmuxv1.SetWorkspaceRootNodeOp{
 		WorkspaceId: "w1", RootNodeId: "another",
 	}, hlcAt(10, 0, "a"))
-	op.Body = &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+	op.Body = &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 		WorkspaceId: "w1", RootNodeId: "another",
 	}}
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false /* not internal */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false /* not internal */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 }
 
@@ -182,19 +182,19 @@ func TestValidate_HubOnlyOp_RejectsClient(t *testing.T) {
 // Both must be rejected as HUB_ONLY_OP when a client sends them (only the
 // internal lifecycle path may submit them) and accepted under internal=true.
 func TestValidate_SetWorkspaceRegister_HubOnlyGate(t *testing.T) {
-	pre := crdt.NewState("org")
-	op := &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "ws-reg", CanonicalHlc: hlcAt(10, 0, "a"),
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+	pre := crdt.NewState("user-1")
+	op := &leapmuxv1.CrdtOp{
+		OpId: "ws-reg", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		},
 	}
 	// Client path (internal=false): rejected as hub-only.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 
 	// Internal path (internal=true): accepted.
-	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "hub", allowAll{})
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "hub", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason)
 	require.NotNil(t, working)
 	assert.Contains(t, working.GetWorkspaces(), "w1", "internal SetWorkspaceRegisterOp should seed the record")
@@ -205,20 +205,20 @@ func TestValidate_TombstoneWorkspace_HubOnlyGate(t *testing.T) {
 	// record alone doesn't orphan anything (the lifecycle delete path
 	// always pairs TombstoneWorkspace with the subtree tombstones; this
 	// isolates the hub-only gate from the completeness check).
-	pre := crdt.NewState("org")
+	pre := crdt.NewState("user-1")
 	pre.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1"}
-	op := &leapmuxv1.OrgOp{
-		OrgId: "org", OpId: "ws-del", CanonicalHlc: hlcAt(10, 0, "a"),
-		Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+	op := &leapmuxv1.CrdtOp{
+		OpId: "ws-del", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		},
 	}
 	// Client path (internal=false): rejected as hub-only.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 
 	// Internal path (internal=true): accepted, record removed.
-	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "hub", allowAll{})
+	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "hub", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason)
 	require.NotNil(t, working)
 	assert.NotContains(t, working.GetWorkspaces(), "w1", "internal TombstoneWorkspaceOp should remove the record")
@@ -232,20 +232,20 @@ func TestValidate_TombstoneWorkspace_HubOnlyGate(t *testing.T) {
 // validateSetOnce (it would slip through as UNSPECIFIED on the client path).
 func TestValidate_HubOnlyOps_RejectEveryClientArm(t *testing.T) {
 	hlc := hlcAt(10, 0, "a")
-	hubOnlyOps := map[string]*leapmuxv1.OrgOp{
-		"SetWorkspaceRootNode": {OrgId: "org", OpId: "root", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{
+	hubOnlyOps := map[string]*leapmuxv1.CrdtOp{
+		"SetWorkspaceRootNode": {OpId: "root", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
 			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1"},
 		}},
-		"SetWorkspaceRegister": {OrgId: "org", OpId: "reg", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+		"SetWorkspaceRegister": {OpId: "reg", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 		}},
-		"TombstoneWorkspace": {OrgId: "org", OpId: "del", CanonicalHlc: hlc, Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+		"TombstoneWorkspace": {OpId: "del", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 		}},
 	}
 	for name, op := range hubOnlyOps {
 		t.Run(name, func(t *testing.T) {
-			res, _ := crdt.ValidateBatch(context.Background(), crdt.NewState("org"), []*leapmuxv1.OrgOp{op}, false, "p1", allowAll{})
+			res, _ := crdt.ValidateBatch(context.Background(), crdt.NewState("user-1"), []*leapmuxv1.CrdtOp{op}, false, "p1", allowAll{})
 			assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason,
 				"client-sent %s must be rejected as hub-only", name)
 		})
@@ -264,7 +264,7 @@ func TestValidate_TabIDCollisionAcrossTypes(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "X",
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 1, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{a, b}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{a, b}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES, res.Reason)
 }
 
@@ -274,7 +274,7 @@ func TestValidate_ValueDomain_OpacityOutOfRange(t *testing.T) {
 		WindowId: "fw",
 		Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: 1.5},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
@@ -297,7 +297,7 @@ func TestValidate_WorkerRef_AcceptsAccessibleWorker(t *testing.T) {
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	auth := workerScope{workers: map[string]bool{"w-ok": true}}
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tab, worker, pos}, false, "p1", auth)
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, false, "p1", auth)
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"a SetTabRegister(worker_id) with an accessible worker must not be rejected")
 }
@@ -322,7 +322,7 @@ func TestValidate_WorkerRef_RejectsInaccessibleWorker(t *testing.T) {
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	auth := workerScope{workers: map[string]bool{"w-ok": true}} // "f" not allowed
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tab, worker, pos}, false, "p1", auth)
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, false, "p1", auth)
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INVALID_WORKER_REF, res.Reason)
 	assert.Equal(t, worker.GetOpId(), res.OffendingOpID,
 		"OffendingOpID must point at the SetTabRegister(worker_id) op, not the tile/position siblings")
@@ -340,7 +340,7 @@ func TestValidate_WorkerRef_EmptyWorkerIDSkipsCheck(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: ""},
 	}, hlcAt(10, 1, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{clearWorker}, false, "p1", denyAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{clearWorker}, false, "p1", denyAll{})
 	assert.NotEqual(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INVALID_WORKER_REF, res.Reason,
 		"an empty worker_id MUST NOT trip the worker-ref gate, even with a denying AuthChecker")
 }
@@ -363,7 +363,7 @@ func TestValidate_WorkerRef_SkippedUnderInternal(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tab, worker, pos}, true /* internal */, "", denyAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, true /* internal */, "", denyAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"internal=true must skip the worker-ref check regardless of auth verdict")
 }
@@ -388,7 +388,7 @@ func TestValidate_TombstonedTarget_Rejects(t *testing.T) {
 		NodeId: "child",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "v"},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TOMBSTONED_TARGET, res.Reason)
 }
 
@@ -406,7 +406,7 @@ func TestValidate_AuthCheck_DenyForbiddenWorkspace(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op, worker, pos}, false /* not internal */, "p1", denyAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op, worker, pos}, false /* not internal */, "p1", denyAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_FORBIDDEN_WORKSPACE, res.Reason)
 }
 
@@ -424,6 +424,6 @@ func TestValidate_AuthCheck_AllowsOwnerWrite(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op, worker, pos}, false, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op, worker, pos}, false, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason, "owner write should pass")
 }

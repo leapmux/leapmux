@@ -18,7 +18,7 @@ func RunTileSplit(rawCtx any, args []string) error {
 	var hub, direction string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&direction, "direction", "vertical", `divider orientation: "vertical" (|) puts the new pane to the right; "horizontal" (-) puts it below`)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
@@ -36,7 +36,7 @@ func RunTileSplit(rawCtx any, args []string) error {
 	childB := id.Generate()
 	posA := lexorank.First()
 	posB := lexorank.After(posA)
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		opSetNodeKind(cc.bs, tileID, leapmuxv1.NodeKind_NODE_KIND_SPLIT),
 		opSetNodeDirection(cc.bs, tileID, dirEnum),
 		opSetNodeRatios(cc.bs, tileID, []float64{0.5, 0.5}),
@@ -99,7 +99,7 @@ func RunTileClose(rawCtx any, args []string) error {
 	var force, recursive bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "close even if the calling tab sits on the target tile (would kill the caller's own PTY)")
 	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs on the closing tile (or subtree): "close" tombstones them; "move" migrates them to the heir tile. Required when the target has tabs.`)
 	fs.BoolVar(&recursive, "recursive", false, "required to close a SPLIT or GRID tile; cascades the close to every descendant in one batch")
@@ -187,7 +187,7 @@ func RunTileClose(rawCtx any, args []string) error {
 		}
 	}
 
-	var ops []*leapmuxv1.OrgOp
+	var ops []*leapmuxv1.CrdtOp
 	heirID := ""
 	switch {
 	case recursive:
@@ -288,7 +288,7 @@ func parseWithTabsPolicy(s string) (withTabsPolicy, error) {
 // caller can name it in the error message. Used by `tile close` to
 // refuse closing a single grid cell (which would leave an unusable
 // placeholder in the grid).
-func isGridCell(state *leapmuxv1.OrgMaterialized, nodeID string) (gridID string, ok bool) {
+func isGridCell(state *leapmuxv1.UserMaterialized, nodeID string) (gridID string, ok bool) {
 	rec := state.GetNodes()[nodeID]
 	if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
 		return "", false
@@ -328,9 +328,9 @@ func isGridCell(state *leapmuxv1.OrgMaterialized, nodeID string) (gridID string,
 // `root_node_protected` and would roll the whole batch back. The
 // inverse-split itself never tombstones the parent, only flips its
 // kind, so a SPLIT root that lands in the collapse path is safe.
-func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.OrgOp {
+func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 	state := bs.State
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 	for _, t := range crdt.TabsOnTile(state, tileID) {
 		ops = append(ops, opTombstoneTab(bs, t.TabType, t.TabID))
 	}
@@ -467,10 +467,10 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.OrgOp {
 // flip the root's kind to LEAF instead of tombstoning it). Mirrors
 // the frontend's `tileOps.ts:buildCloseSubtreeOps` so cascade closes
 // converge with the UI's removeGrid / floating-window-disposal flows.
-func buildCloseSubtreeOps(bs *CRDTBootstrap, tileID, migrateTo string, keepRoot bool) []*leapmuxv1.OrgOp {
+func buildCloseSubtreeOps(bs *CRDTBootstrap, tileID, migrateTo string, keepRoot bool) []*leapmuxv1.CrdtOp {
 	state := bs.State
 	descendants := crdt.DescendantsLeavesFirst(state, tileID)
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 	migratedPos := lexorank.First()
 	emitTabOps := func(tabs []crdt.TabRef) {
 		for _, t := range tabs {
@@ -516,7 +516,7 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 	var rows, cols int
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	maxDim := int(crdt.MaxGridDimension)
 	fs.IntVar(&rows, "rows", 0, fmt.Sprintf("grid rows (1-%d, required)", maxDim))
 	fs.IntVar(&cols, "cols", 0, fmt.Sprintf("grid cols (1-%d, required)", maxDim))
@@ -541,7 +541,7 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 	tabsOnLeaf := crdt.TabsOnTile(cc.bs.State, tileID)
 	rowRatios := crdt.EqualRatios(rows)
 	colRatios := crdt.EqualRatios(cols)
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		opSetNodeKind(cc.bs, tileID, leapmuxv1.NodeKind_NODE_KIND_GRID),
 		opSetNodeRows(cc.bs, tileID, uint32(rows)),
 		opSetNodeCols(cc.bs, tileID, uint32(cols)),
@@ -611,7 +611,7 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 	var force bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "remove even if the calling tab sits inside the target grid (would kill the caller's own PTY)")
 	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs in the grid: "close" tombstones them; "move" collapses the grid to a single leaf (in the grid's old slot) and migrates the tabs onto it. Required when the grid has tabs.`)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -658,7 +658,7 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 
 	parentID := gridRec.GetParentId()
 	isRoot := parentID == ""
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 	out := map[string]any{
 		"grid_tile_id": gridID,
 		"tabs_closed":  0,

@@ -66,13 +66,8 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 		return nil, err
 	}
 
-	org, err := s.store.Orgs().GetByID(ctx, user.OrgID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
 	resp := connect.NewResponse(&leapmuxv1.LoginResponse{
-		User: userToProtoWithOrgName(user, org.Name),
+		User: userToProto(user),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
@@ -104,11 +99,6 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	org, err := s.store.Orgs().GetByID(ctx, user.OrgID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
 	var linkedProviders []*leapmuxv1.LinkedOAuthProvider
 	links, _ := s.store.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
 	if len(links) > 0 {
@@ -133,7 +123,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOAuth(user, org.Name, linkedProviders),
+		User: userToProtoWithOAuth(user, linkedProviders),
 	}), nil
 }
 
@@ -176,8 +166,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	if err := checkUsernameAvailable(ctx, s.store, username); err != nil {
-		return nil, err
+	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
+		return nil, AvailabilityConnectError(err)
 	}
 
 	email := req.Msg.GetEmail()
@@ -196,10 +186,10 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	if s.cfg.EmailVerificationRequired && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+			return nil, AvailabilityConnectError(err)
 		}
 
-		user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
+		user, err := CreateUser(ctx, s.store, CreateUserParams{
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  displayName,
@@ -242,7 +232,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
 		resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-			User:                  userToProtoWithOrgName(updatedUser, username),
+			User:                  userToProto(updatedUser),
 			VerificationRequired:  true,
 			VerificationEmailSent: emailSent,
 		})
@@ -253,11 +243,11 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	// No verification required — email goes directly to email column.
 	if email != "" {
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+			return nil, AvailabilityConnectError(err)
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
+	user, err := CreateUser(ctx, s.store, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  displayName,
@@ -269,7 +259,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	return s.signUpResponse(ctx, user, username)
+	return s.signUpResponse(ctx, user)
 }
 
 // signUpSetupMode handles the initial admin account creation when no users
@@ -287,11 +277,11 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 
 	if email != "" {
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+			return nil, AvailabilityConnectError(err)
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
+	user, err := CreateUser(ctx, s.store, CreateUserParams{
 		Username:      username,
 		PasswordHash:  passwordHash,
 		DisplayName:   displayName,
@@ -305,11 +295,11 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 	}
 
 	s.hasAnyUser.Store(true)
-	return s.signUpResponse(ctx, user, username)
+	return s.signUpResponse(ctx, user)
 }
 
 // signUpResponse creates a session, sets the cookie, and returns the SignUpResponse.
-func (s *AuthService) signUpResponse(ctx context.Context, user *store.User, orgName string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*connect.Response[leapmuxv1.SignUpResponse], error) {
 	loginUID, err := mintRowUserID(user.ID)
 	if err != nil {
 		return nil, err
@@ -320,7 +310,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User, orgN
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-		User: userToProtoWithOrgName(user, orgName),
+		User: userToProto(user),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
@@ -456,8 +446,8 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
 	}
 
-	if err := checkUsernameAvailable(ctx, s.store, username); err != nil {
-		return nil, err
+	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
+		return nil, AvailabilityConnectError(err)
 	}
 
 	// Check that the OAuth link doesn't already exist (race protection).
@@ -498,7 +488,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	if email != "" {
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+			return nil, AvailabilityConnectError(err)
 		}
 
 		if trustEmail {
@@ -514,7 +504,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
+	user, err := CreateUser(ctx, s.store, CreateUserParams{
 		Username:      username,
 		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,
@@ -586,13 +576,8 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
-	org, err := s.store.Orgs().GetByID(ctx, finalUser.OrgID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
 	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
-		User:                  userToProtoWithOrgName(finalUser, org.Name),
+		User:                  userToProto(finalUser),
 		VerificationRequired:  pendingEmail != "",
 		VerificationEmailSent: emailSent,
 	})
@@ -635,7 +620,6 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 func userToProto(u *store.User) *leapmuxv1.User {
 	return &leapmuxv1.User{
 		Id:            u.ID,
-		OrgId:         u.OrgID,
 		Username:      u.Username,
 		DisplayName:   u.DisplayName,
 		IsAdmin:       u.IsAdmin,
@@ -646,14 +630,8 @@ func userToProto(u *store.User) *leapmuxv1.User {
 	}
 }
 
-func userToProtoWithOrgName(u *store.User, orgName string) *leapmuxv1.User {
+func userToProtoWithOAuth(u *store.User, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
 	p := userToProto(u)
-	p.OrgName = orgName
-	return p
-}
-
-func userToProtoWithOAuth(u *store.User, orgName string, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
-	p := userToProtoWithOrgName(u, orgName)
 	p.OauthProviders = oauthProviders
 	return p
 }

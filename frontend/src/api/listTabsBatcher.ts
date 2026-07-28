@@ -3,36 +3,36 @@ import { createInflightCache } from '~/lib/inflightCache'
 import { workspaceClient } from './clients'
 
 interface Batch {
-  orgId: string
   resolvers: Map<string, {
     resolve: (value: { tabs: WorkspaceTab[] }) => void
     reject: (reason: unknown) => void
   }>
 }
 
-const pendingBatches = new Map<string, Batch>()
+let pendingBatch: Batch | null = null
 const inflight = createInflightCache<string, { tabs: WorkspaceTab[] }>()
 
 /**
  * Fetches the tabs for a single workspace, coalescing concurrent calls into
- * one ListTabs RPC per org. Each caller receives only the tabs belonging to
+ * one ListTabs RPC. Each caller receives only the tabs belonging to
  * the workspace it asked for.
  */
-export function listTabsForWorkspace(orgId: string, workspaceId: string): Promise<{ tabs: WorkspaceTab[] }> {
-  return inflight.run(`${orgId}:${workspaceId}`, () => {
-    const batch = pendingBatches.get(orgId) ?? createBatch(orgId)
+export function listTabsForWorkspace(workspaceId: string): Promise<{ tabs: WorkspaceTab[] }> {
+  return inflight.run(workspaceId, () => {
+    const batch = pendingBatch ?? createBatch()
     return new Promise((resolve, reject) => {
       batch.resolvers.set(workspaceId, { resolve, reject })
     })
   })
 }
 
-function createBatch(orgId: string): Batch {
-  const batch: Batch = { orgId, resolvers: new Map() }
-  pendingBatches.set(orgId, batch)
+function createBatch(): Batch {
+  const batch: Batch = { resolvers: new Map() }
+  pendingBatch = batch
   queueMicrotask(() => {
     // Remove first so any call that arrives during the RPC opens a fresh batch.
-    pendingBatches.delete(orgId)
+    if (pendingBatch === batch)
+      pendingBatch = null
     void flushBatch(batch)
   })
   return batch
@@ -41,7 +41,6 @@ function createBatch(orgId: string): Batch {
 async function flushBatch(batch: Batch): Promise<void> {
   try {
     const resp = await workspaceClient.listTabs({
-      orgId: batch.orgId,
       workspaceIds: Array.from(batch.resolvers.keys()),
     })
     const byWorkspace = new Map<string, WorkspaceTab[]>()

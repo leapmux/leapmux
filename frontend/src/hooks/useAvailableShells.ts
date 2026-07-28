@@ -4,7 +4,6 @@ import * as workerRpc from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 
 export interface UseAvailableShellsArgs {
-  orgId: string
   workspaceId: string
   workerId: string
 }
@@ -81,17 +80,17 @@ export function useAvailableShells(
 
   // Track `source()?.workerId` rather than the source accessor itself.
   // Caller closures typically build a fresh args object each tick
-  // (`{ orgId, workspaceId, workerId }`), so `on(source, ...)` would
-  // re-fire the effect on every identity change upstream (e.g. an
-  // `org.orgId()` tick) even when the workerId — the only field that
-  // gates the fetch — is unchanged. Tracking the workerId scalar means
-  // identity churn that doesn't change worker stays a no-op tick on the
-  // memo, not a full effect run.
+  // (`{ workspaceId, workerId }`), so `on(source, ...)` would re-fire the
+  // effect on every identity change upstream — a `workspaceId` tick, or
+  // merely a re-read that allocates a new object — even when the workerId,
+  // the only field that gates the fetch, is unchanged. Tracking the workerId
+  // scalar means identity churn that doesn't change worker stays a no-op tick
+  // on the memo, not a full effect run.
   //
-  // orgId / workspaceId are passed through to the RPC for
-  // authorization but the worker's ListAvailableShells handler ignores
-  // them (shells are per-worker, not per-workspace), so an org or
-  // workspace change with the same worker does not warrant a refetch.
+  // workspaceId is passed through to the RPC for authorization but the
+  // worker's ListAvailableShells handler ignores it (shells are per-worker,
+  // not per-workspace), so a workspace change with the same worker does not
+  // warrant a refetch.
   const workerIdFromSource = (): string | null => source()?.workerId ?? null
   createEffect(on(workerIdFromSource, (workerId) => {
     if (!workerId)

@@ -325,10 +325,60 @@ func TestRouter_CallInner_HubNamespace_PropagatesError(t *testing.T) {
 		remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
 		"hub.GetTab", []byte("{}"), "", "")
 	require.Error(t, err)
-	// Internal hub failure is surfaced with CodeInternal so callers
-	// can distinguish transport failure from "no hub configured"
-	// (Unimplemented) and "workspace out of scope" (PermissionDenied).
+	// An uncoded hub failure still surfaces as CodeInternal, so callers can
+	// distinguish transport failure from "no hub configured" (Unimplemented)
+	// and "workspace out of scope" (PermissionDenied).
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+}
+
+// TestRouter_CallInner_PreservesUpstreamCode pins the property that makes every
+// code-sensitive CLI decision work on the local-IPC transport.
+//
+// Both relay arms used to wrap unconditionally in connect.CodeInternal, which
+// left the originating code readable only as text in the message. Downstream
+// that made cmd.isWorkerUnreachable and cmd.isNotFoundOrForbidden unable to
+// match for a worker-spawned agent, so `tab close` on an offline sibling worker
+// reported inspect_failed instead of falling back to a CRDT-only tombstone.
+func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code connect.Code
+	}{
+		{"offline worker", connect.CodeUnavailable},
+		{"missing workspace", connect.CodeNotFound},
+		{"denied", connect.CodePermissionDenied},
+	} {
+		t.Run("hub namespace: "+tc.name, func(t *testing.T) {
+			hub := &fakeHubClient{respErr: connect.NewError(tc.code, errors.New("upstream"))}
+			r := &remoteipc.Router{
+				UserID:       userid.MustNew("user-1"),
+				WorkspaceIDs: []string{"ws-1"},
+				Hub:          hub,
+			}
+			_, err := r.CallInner(context.Background(),
+				remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
+				"hub.GetTab", []byte("{}"), "", "")
+			require.Error(t, err)
+			assert.Equal(t, tc.code, connect.CodeOf(err),
+				"the originating code must survive the relay, not collapse to Internal")
+		})
+
+		t.Run("cross-worker namespace: "+tc.name, func(t *testing.T) {
+			cw := &fakeCrossWorker{respErr: connect.NewError(tc.code, errors.New("upstream"))}
+			r := &remoteipc.Router{
+				UserID:       userid.MustNew("user-1"),
+				WorkerID:     "wkr-self",
+				WorkspaceIDs: []string{"ws-1"},
+				CrossWorker:  cw,
+			}
+			_, err := r.CallInner(context.Background(),
+				remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
+				"worker.GetTab", []byte("{}"), "wkr-other", "")
+			require.Error(t, err)
+			assert.Equal(t, tc.code, connect.CodeOf(err),
+				"the originating code must survive the relay, not collapse to Internal")
+		})
+	}
 }
 
 func TestRouter_CallInner_HubNamespace_NotConfigured(t *testing.T) {
@@ -667,7 +717,6 @@ func startStaleStream(t *testing.T, r *remoteipc.Router, clientReqID string, can
 func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
 		UserID:        userid.MustNew("u-1"),
-		OrgID:         "org-1",
 		WorkspaceID:   "ws-1", // present on TokenInfo for delegation scoping; intentionally NOT emitted as env
 		WorkerID:      "worker-A",
 		TabID:         "agent-1",
@@ -679,7 +728,6 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		"LEAPMUX_REMOTE_SOCK":           "unix:/tmp/sock",
 		"LEAPMUX_REMOTE_TOKEN":          "raw-token",
 		"LEAPMUX_REMOTE_USER_ID":        "u-1",
-		"LEAPMUX_REMOTE_ORG_ID":         "org-1",
 		"LEAPMUX_REMOTE_WORKER_ID":      "worker-A",
 		"LEAPMUX_REMOTE_TAB_ID":         "agent-1",
 		"LEAPMUX_REMOTE_TAB_TYPE":       "agent",
@@ -712,6 +760,7 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		"LEAPMUX_REMOTE_AGENT",
 		"LEAPMUX_REMOTE_TERMINAL",
 		"LEAPMUX_REMOTE_ORG",
+		"LEAPMUX_REMOTE_ORG_ID",
 	}
 	for _, k := range forbidden {
 		_, present := got[k]
@@ -722,7 +771,6 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
 		UserID:      userid.MustNew("u-1"),
-		OrgID:       "org-1",
 		WorkspaceID: "ws-1",
 		WorkerID:    "worker-A",
 		TabID:       "term-1",

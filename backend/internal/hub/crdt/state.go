@@ -33,7 +33,7 @@ import (
 //     tombstone records locally and continue to apply remote ops
 //     correctly. New subscribers bootstrap from the pruned state and
 //     see the entity as if it never existed.
-func PruneTombstonesAtOrBelow(state *leapmuxv1.OrgCrdtState, watermark *leapmuxv1.HLC) int {
+func PruneTombstonesAtOrBelow(state *leapmuxv1.UserCrdtState, watermark *leapmuxv1.HLC) int {
 	if state == nil || HLCIsZero(watermark) {
 		return 0
 	}
@@ -71,14 +71,14 @@ func PruneTombstonesAtOrBelow(state *leapmuxv1.OrgCrdtState, watermark *leapmuxv
 	return pruned
 }
 
-// NewState returns an empty OrgCrdtState seeded with the given org id.
+// NewState returns an empty UserCrdtState seeded with the given user id.
 // The workspaces map is initialized empty; the lifecycle create/delete
 // paths add and remove entries via SetWorkspaceRegisterOp /
 // TombstoneWorkspaceOp in the op log (the same serialized pipeline every
 // other op flows through).
-func NewState(orgID string) *leapmuxv1.OrgCrdtState {
-	return &leapmuxv1.OrgCrdtState{
-		OrgId:           orgID,
+func NewState(userID string) *leapmuxv1.UserCrdtState {
+	return &leapmuxv1.UserCrdtState{
+		UserId:          userID,
 		Nodes:           map[string]*leapmuxv1.NodeRecord{},
 		Tabs:            map[string]*leapmuxv1.TabRecord{},
 		FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{},
@@ -103,7 +103,7 @@ func NewState(orgID string) *leapmuxv1.OrgCrdtState {
 //
 // Apply also normalizes -0.0 to +0.0 for every double register so
 // byte-equal comparison across permutations is tractable.
-func Apply(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) {
+func Apply(state *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) {
 	canon := op.GetCanonicalHlc()
 	if canon == nil {
 		return
@@ -111,28 +111,28 @@ func Apply(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.OrgOp) {
 	advanceMaxHLC(state, canon)
 
 	switch body := op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		applySetNodeRegister(state, body.SetNodeRegister, canon)
-	case *leapmuxv1.OrgOp_TombstoneNode:
+	case *leapmuxv1.CrdtOp_TombstoneNode:
 		applyTombstoneNode(state, body.TombstoneNode, canon)
-	case *leapmuxv1.OrgOp_SetTabRegister:
+	case *leapmuxv1.CrdtOp_SetTabRegister:
 		applySetTabRegister(state, body.SetTabRegister, canon)
-	case *leapmuxv1.OrgOp_TombstoneTab:
+	case *leapmuxv1.CrdtOp_TombstoneTab:
 		applyTombstoneTab(state, body.TombstoneTab, canon)
-	case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		applySetFloatingWindowRegister(state, body.SetFloatingWindowRegister, canon)
-	case *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		applyTombstoneFloatingWindow(state, body.TombstoneFloatingWindow, canon)
-	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 		applySetWorkspaceRootNode(state, body.SetWorkspaceRootNode)
-	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
 		applySetWorkspaceRegister(state, body.SetWorkspaceRegister)
-	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		applyTombstoneWorkspace(state, body.TombstoneWorkspace)
 	}
 }
 
-func advanceMaxHLC(state *leapmuxv1.OrgCrdtState, hlc *leapmuxv1.HLC) {
+func advanceMaxHLC(state *leapmuxv1.UserCrdtState, hlc *leapmuxv1.HLC) {
 	if HLCCmp(hlc, state.GetMaxHlc()) > 0 {
 		state.MaxHlc = HLCClone(hlc)
 	}
@@ -220,7 +220,7 @@ func setLWWNodeKind(slot **leapmuxv1.LWWNodeKind, hlc *leapmuxv1.HLC, value leap
 
 // --- Node register transitions ---
 
-func applySetNodeRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetNodeRegisterOp, hlc *leapmuxv1.HLC) {
+func applySetNodeRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetNodeRegisterOp, hlc *leapmuxv1.HLC) {
 	id := op.GetNodeId()
 	rec, ok := state.Nodes[id]
 	if !ok {
@@ -256,7 +256,7 @@ func applySetNodeRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetNodeRe
 	}
 }
 
-func applyTombstoneNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneNodeOp, hlc *leapmuxv1.HLC) {
+func applyTombstoneNode(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneNodeOp, hlc *leapmuxv1.HLC) {
 	id := op.GetNodeId()
 	rec := state.Nodes[id]
 	// Materialize the cleared tombstoned record both when no record
@@ -269,7 +269,7 @@ func applyTombstoneNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneNo
 
 // --- Tab register transitions ---
 
-func applySetTabRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetTabRegisterOp, hlc *leapmuxv1.HLC) {
+func applySetTabRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetTabRegisterOp, hlc *leapmuxv1.HLC) {
 	id := op.GetTabId()
 	rec, ok := state.Tabs[id]
 	if !ok {
@@ -299,7 +299,7 @@ func applySetTabRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetTabRegi
 	}
 }
 
-func applyTombstoneTab(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneTabOp, hlc *leapmuxv1.HLC) {
+func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTabOp, hlc *leapmuxv1.HLC) {
 	id := op.GetTabId()
 	rec := state.Tabs[id]
 	if rec == nil || HLCCmp(hlc, rec.GetTombstoneAt()) > 0 {
@@ -320,7 +320,7 @@ func applyTombstoneTab(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneTab
 
 // --- Floating window register transitions ---
 
-func applySetFloatingWindowRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetFloatingWindowRegisterOp, hlc *leapmuxv1.HLC) {
+func applySetFloatingWindowRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetFloatingWindowRegisterOp, hlc *leapmuxv1.HLC) {
 	id := op.GetWindowId()
 	rec, ok := state.FloatingWindows[id]
 	if !ok {
@@ -351,7 +351,7 @@ func applySetFloatingWindowRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1
 	}
 }
 
-func applyTombstoneFloatingWindow(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneFloatingWindowOp, hlc *leapmuxv1.HLC) {
+func applyTombstoneFloatingWindow(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneFloatingWindowOp, hlc *leapmuxv1.HLC) {
 	id := op.GetWindowId()
 	rec := state.FloatingWindows[id]
 	if rec == nil || HLCCmp(hlc, rec.GetTombstoneAt()) > 0 {
@@ -364,7 +364,7 @@ func applyTombstoneFloatingWindow(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.T
 
 // --- Workspace-root assignment ---
 
-func applySetWorkspaceRootNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetWorkspaceRootNodeOp) {
+func applySetWorkspaceRootNode(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetWorkspaceRootNodeOp) {
 	wsID := op.GetWorkspaceId()
 	rec, ok := state.Workspaces[wsID]
 	if !ok {
@@ -403,7 +403,7 @@ func applySetWorkspaceRootNode(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetW
 // (after a transient consume fault) never clobbers a workspace the user
 // has since rooted or populated. The accompanying SetWorkspaceRootNodeOp
 // in the same batch fills root_node_id.
-func applySetWorkspaceRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetWorkspaceRegisterOp) {
+func applySetWorkspaceRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetWorkspaceRegisterOp) {
 	wsID := op.GetWorkspaceId()
 	if wsID == "" {
 		return
@@ -416,7 +416,7 @@ func applySetWorkspaceRegister(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.SetW
 // applyTombstoneWorkspace removes the WorkspaceContentsRecord map entry.
 // Idempotent: deleting an already-absent workspace is a no-op, so a
 // re-drained delete batch (after a transient consume fault) is safe.
-func applyTombstoneWorkspace(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.TombstoneWorkspaceOp) {
+func applyTombstoneWorkspace(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneWorkspaceOp) {
 	wsID := op.GetWorkspaceId()
 	if wsID == "" {
 		return
@@ -424,7 +424,7 @@ func applyTombstoneWorkspace(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.Tombst
 	delete(state.Workspaces, wsID)
 }
 
-// CloneState returns a deep copy of an OrgCrdtState. Used by paths
+// CloneState returns a deep copy of an UserCrdtState. Used by paths
 // that mutate every record (manager bootstrap, tests). `proto.Clone`
 // is deep on maps + nested messages so a single call covers every
 // record kind plus the workspaces map. We re-allocate any nil maps
@@ -435,11 +435,11 @@ func applyTombstoneWorkspace(state *leapmuxv1.OrgCrdtState, op *leapmuxv1.Tombst
 // deep-clones only the records the batch touches and shares refs for
 // the rest, dropping per-batch cost from O(total entities) to
 // O(|touched|).
-func CloneState(state *leapmuxv1.OrgCrdtState) *leapmuxv1.OrgCrdtState {
+func CloneState(state *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
 	if state == nil {
 		return nil
 	}
-	out := proto.Clone(state).(*leapmuxv1.OrgCrdtState)
+	out := proto.Clone(state).(*leapmuxv1.UserCrdtState)
 	ensureStateMaps(out)
 	return out
 }
@@ -455,7 +455,7 @@ func CloneState(state *leapmuxv1.OrgCrdtState) *leapmuxv1.OrgCrdtState {
 //     touched record's slot is deep-cloned so Apply's in-place
 //     mutations land on the clone.
 //   - For an entity kind no op in the batch can write to, the map is
-//     shared with `pre`. A tab-only batch in a 50k-node org skips
+//     shared with `pre`. A tab-only batch in a 50k-node user doc skips
 //     three O(N) map copies.
 //
 // Safety invariant: Apply must only ever mutate records (and the map
@@ -465,13 +465,13 @@ func CloneState(state *leapmuxv1.OrgCrdtState) *leapmuxv1.OrgCrdtState {
 //
 // Top-level HLC fields (max_hlc, compaction_watermark) are deep-
 // cloned because Apply may bump max_hlc on every op.
-func CloneStateForBatch(pre *leapmuxv1.OrgCrdtState, batch []*leapmuxv1.OrgOp) *leapmuxv1.OrgCrdtState {
+func CloneStateForBatch(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) *leapmuxv1.UserCrdtState {
 	if pre == nil {
 		return nil
 	}
 	touched := batchTouchedIDs(batch)
-	out := &leapmuxv1.OrgCrdtState{
-		OrgId:               pre.GetOrgId(),
+	out := &leapmuxv1.UserCrdtState{
+		UserId:              pre.GetUserId(),
 		MaxHlc:              HLCClone(pre.GetMaxHlc()),
 		CompactionWatermark: HLCClone(pre.GetCompactionWatermark()),
 		CurrentEpoch:        pre.GetCurrentEpoch(),
@@ -549,7 +549,7 @@ type touchedIDs struct {
 	workspaces map[string]bool
 }
 
-func batchTouchedIDs(batch []*leapmuxv1.OrgOp) touchedIDs {
+func batchTouchedIDs(batch []*leapmuxv1.CrdtOp) touchedIDs {
 	t := touchedIDs{
 		nodes:      map[string]bool{},
 		tabs:       map[string]bool{},
@@ -572,7 +572,7 @@ func batchTouchedIDs(batch []*leapmuxv1.OrgOp) touchedIDs {
 	return t
 }
 
-func ensureStateMaps(s *leapmuxv1.OrgCrdtState) {
+func ensureStateMaps(s *leapmuxv1.UserCrdtState) {
 	if s.Nodes == nil {
 		s.Nodes = map[string]*leapmuxv1.NodeRecord{}
 	}

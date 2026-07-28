@@ -9,7 +9,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// TestOpTarget_ClassifiesEveryOpKind pins the EntityRef each OrgOp body
+// TestOpTarget_ClassifiesEveryOpKind pins the EntityRef each CrdtOp body
 // resolves to. The broadcast filter's EntityKindWorkspaceRoot arm
 // (manager_broadcast.go: keep on preVisible || postVisible, distinct from the
 // preVisible && postVisible rule for other entities) depends on the two
@@ -18,26 +18,26 @@ import (
 func TestOpTarget_ClassifiesEveryOpKind(t *testing.T) {
 	cases := []struct {
 		name string
-		op   *leapmuxv1.OrgOp
+		op   *leapmuxv1.CrdtOp
 		want crdt.EntityRef
 	}{
 		{
 			name: "SetWorkspaceRegister -> WorkspaceRoot",
-			op: &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 				SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
 			}},
 			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
 		},
 		{
 			name: "TombstoneWorkspace -> WorkspaceRoot",
-			op: &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
 			}},
 			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
 		},
 		{
 			name: "SetWorkspaceRootNode -> WorkspaceRoot",
-			op: &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{
+			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
 				SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "r"},
 			}},
 			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
@@ -54,7 +54,7 @@ func TestOpTarget_ClassifiesEveryOpKind(t *testing.T) {
 // yields EntityKindUnknown, which batchVisibleOpsEvent treats as not-visible
 // (IsAllowed("") is false) so a malformed op is dropped rather than crashing.
 func TestOpTarget_UnknownBodyIsKindUnknown(t *testing.T) {
-	ref := crdt.OpTarget(&leapmuxv1.OrgOp{})
+	ref := crdt.OpTarget(&leapmuxv1.CrdtOp{})
 	assert.Equal(t, crdt.EntityKindUnknown, ref.Kind)
 }
 
@@ -70,24 +70,24 @@ func TestOpTarget_UnknownBodyIsKindUnknown(t *testing.T) {
 func TestIsTombstoneOp(t *testing.T) {
 	cases := []struct {
 		name string
-		op   *leapmuxv1.OrgOp
+		op   *leapmuxv1.CrdtOp
 		want bool
 	}{
-		{"TombstoneNode", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_TombstoneNode{
+		{"TombstoneNode", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneNode{
 			TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "n1"}}}, true},
-		{"TombstoneTab", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_TombstoneTab{
+		{"TombstoneTab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneTab{
 			TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}}}, true},
-		{"TombstoneFloatingWindow", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_TombstoneFloatingWindow{
+		{"TombstoneFloatingWindow", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneFloatingWindow{
 			TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{WindowId: "fw1"}}}, true},
-		{"TombstoneWorkspace", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_TombstoneWorkspace{
+		{"TombstoneWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"}}}, true},
-		{"SetWorkspaceRegister", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{
+		{"SetWorkspaceRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
 			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"}}}, false},
-		{"SetWorkspaceRootNode", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{
+		{"SetWorkspaceRootNode", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
 			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "r"}}}, false},
-		{"SetNodeRegister", &leapmuxv1.OrgOp{Body: &leapmuxv1.OrgOp_SetNodeRegister{
+		{"SetNodeRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetNodeRegister{
 			SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{NodeId: "n1"}}}, false},
-		{"nil body", &leapmuxv1.OrgOp{}, false},
+		{"nil body", &leapmuxv1.CrdtOp{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

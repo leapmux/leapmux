@@ -97,11 +97,8 @@ func TestDelegationToken_DifferentWorkspacesAreIndependent(t *testing.T) {
 	// creates one; mint a sibling here so we can prove the validator
 	// doesn't conflate them.
 	workspaceB := id.Generate()
-	user, err := st.Users().GetByID(context.Background(), userID)
-	require.NoError(t, err)
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceB,
-		OrgID:       user.OrgID,
 		OwnerUserID: userid.MustNew(userID),
 		Title:       "test-ws-b",
 	}))
@@ -114,7 +111,7 @@ func TestDelegationToken_DifferentWorkspacesAreIndependent(t *testing.T) {
 	})
 
 	// Both validate independently.
-	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenA, secretA))
+	_, err := v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenA, secretA))
 	require.NoError(t, err)
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenB, secretB))
 	require.NoError(t, err)

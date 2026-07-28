@@ -37,8 +37,8 @@ func streamClientForHubURL(hubURL string) (*http.Client, string) {
 
 // HubWorkspaceStreamer streams server-side hub events to a worker-
 // spawned CLI invocation through a per-(user, workspace) delegation
-// bearer. The org-event subscription rides on the hub's
-// `/ws/orgevents` WebSocket; this streamer opens that WS upstream
+// bearer. The user-event subscription rides on the hub's
+// `/ws/userevents` WebSocket; this streamer opens that WS upstream
 // with the delegation bearer and forwards each frame to the local
 // IPC consumer.
 type HubWorkspaceStreamer struct {
@@ -60,32 +60,32 @@ func NewHubWorkspaceStreamer(hubURL string, delegation *crossworker.DelegationSt
 	}
 }
 
-// StreamHub satisfies HubStreamer. `WatchOrg` is the only supported
-// method: spawned-agent CLI invocations consume the org-scoped CRDT
-// stream by tunneling `/ws/orgevents` through the same delegation-
+// StreamHub satisfies HubStreamer. `WatchUser` is the only supported
+// method: spawned-agent CLI invocations consume the user-scoped CRDT
+// stream by tunneling `/ws/userevents` through the same delegation-
 // token channel as unary calls.
 func (s *HubWorkspaceStreamer) StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error {
 	if s.Delegation == nil {
 		return errors.New("remoteipc: delegation store not configured")
 	}
 	switch method {
-	case "WatchOrg":
-		return s.watchOrg(ctx, userID, payload, onPayload)
+	case "WatchUser":
+		return s.watchUser(ctx, userID, payload, onPayload)
 	default:
 		return fmt.Errorf("remoteipc: hub stream method not implemented: %s", method)
 	}
 }
 
-// watchOrg opens `/ws/orgevents` upstream with a fresh delegation
+// watchUser opens `/ws/userevents` upstream with a fresh delegation
 // bearer and forwards each binary WS frame as the protobuf payload
-// of a marshalled WatchOrgEvent. The framing format on /ws/orgevents
-// is `[4-byte big-endian length][protobuf WatchOrgEvent]`; we strip
+// of a marshalled WatchUserEvent. The framing format on /ws/userevents
+// is `[4-byte big-endian length][protobuf WatchUserEvent]`; we strip
 // the length prefix before re-emitting so the IPC consumer sees
 // proto bytes directly.
-func (s *HubWorkspaceStreamer) watchOrg(ctx context.Context, userID userid.UserID, payload []byte, onPayload func([]byte) error) error {
-	var req leapmuxv1.WatchOrgRequest
+func (s *HubWorkspaceStreamer) watchUser(ctx context.Context, userID userid.UserID, payload []byte, onPayload func([]byte) error) error {
+	var req leapmuxv1.WatchUserRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
-		return fmt.Errorf("decode WatchOrgRequest: %w", err)
+		return fmt.Errorf("decode WatchUserRequest: %w", err)
 	}
 	scopeWorkspace := ""
 	if len(req.GetWorkspaceIds()) > 0 {
@@ -96,12 +96,12 @@ func (s *HubWorkspaceStreamer) watchOrg(ctx context.Context, userID userid.UserI
 		return fmt.Errorf("delegation bearer: %w", err)
 	}
 
-	ws, err := channelwire.OpenOrgEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, req.GetOrgId(), req.GetWorkspaceIds())
+	ws, err := channelwire.OpenUserEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, req.GetWorkspaceIds())
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 	// Strip the 4-byte length prefix so the IPC consumer receives the
-	// WatchOrgEvent proto bytes directly.
-	return channelwire.RunOrgEventsReadLoop(ctx, ws, true, onPayload)
+	// WatchUserEvent proto bytes directly.
+	return channelwire.RunUserEventsReadLoop(ctx, ws, true, onPayload)
 }

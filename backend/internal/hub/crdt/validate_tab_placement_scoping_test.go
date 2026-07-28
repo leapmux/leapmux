@@ -15,10 +15,10 @@ import (
 // so any auth shim works.
 type allowAllAuth struct{}
 
-func (allowAllAuth) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+func (allowAllAuth) CanAccessWorkspace(context.Context, string, string) (bool, error) {
 	return true, nil
 }
-func (allowAllAuth) CanUseWorker(context.Context, string, string, string) (bool, error) {
+func (allowAllAuth) CanUseWorker(context.Context, string, string) (bool, error) {
 	return true, nil
 }
 
@@ -27,14 +27,13 @@ func (allowAllAuth) CanUseWorker(context.Context, string, string, string) (bool,
 // register/tombstone ops. A structural op (tombstone-node, kind flip,
 // root register, floating-window register) re-enables the full walk.
 
-func mkState() *leapmuxv1.OrgCrdtState {
+func mkState() *leapmuxv1.UserCrdtState {
 	// Workspace with a root LEAF tile and one valid AGENT tab on it.
 	wsID := "ws-1"
 	rootID := "root-tile"
 	tabID := "tab-A"
 	hl := func(p int64) *leapmuxv1.HLC { return &leapmuxv1.HLC{Physical: p, ClientId: "seed"} }
-	return &leapmuxv1.OrgCrdtState{
-		OrgId: "org-1",
+	return &leapmuxv1.UserCrdtState{
 		Nodes: map[string]*leapmuxv1.NodeRecord{
 			rootID: {
 				NodeId: rootID,
@@ -76,11 +75,11 @@ func TestValidate_TabPlacementSkipsPreExistingTabsWhenNoStructuralOp(t *testing.
 		WorkerId: &leapmuxv1.LWWString{Value: "w-x", Hlc: &leapmuxv1.HLC{Physical: 5}},
 		Position: &leapmuxv1.LWWString{Value: "o0", Hlc: &leapmuxv1.HLC{Physical: 5}},
 	}
-	batch := []*leapmuxv1.OrgOp{
+	batch := []*leapmuxv1.CrdtOp{
 		{
 			OpId:         "op-pos",
 			CanonicalHlc: &leapmuxv1.HLC{Physical: 20, ClientId: "hub"},
-			Body: &leapmuxv1.OrgOp_SetTabRegister{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{
 				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 					TabId:   "tab-A",
@@ -99,11 +98,11 @@ func TestValidate_TabPlacementRejectsTouchedTabWithInvalidTile(t *testing.T) {
 	// actually touches. Set a tab's tile_id to a non-existent node and
 	// the batch must reject.
 	pre := mkState()
-	batch := []*leapmuxv1.OrgOp{
+	batch := []*leapmuxv1.CrdtOp{
 		{
 			OpId:         "op-move",
 			CanonicalHlc: &leapmuxv1.HLC{Physical: 20, ClientId: "hub"},
-			Body: &leapmuxv1.OrgOp_SetTabRegister{
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{
 				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 					TabId:   "tab-A",
@@ -138,11 +137,11 @@ func TestValidate_TabPlacementStructuralOpReEnablesFullWalk(t *testing.T) {
 			Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: &leapmuxv1.HLC{Physical: 3},
 		},
 	}
-	batch := []*leapmuxv1.OrgOp{
+	batch := []*leapmuxv1.CrdtOp{
 		{
 			OpId:         "op-tomb",
 			CanonicalHlc: &leapmuxv1.HLC{Physical: 20, ClientId: "hub"},
-			Body: &leapmuxv1.OrgOp_TombstoneNode{
+			Body: &leapmuxv1.CrdtOp_TombstoneNode{
 				TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "extra-leaf"},
 			},
 		},

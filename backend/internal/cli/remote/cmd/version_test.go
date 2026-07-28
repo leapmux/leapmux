@@ -33,9 +33,11 @@ func withCapturedStdout(t *testing.T, fn func()) []byte {
 	return buf.Bytes()
 }
 
-// clearRemoteEnv blanks every LEAPMUX_REMOTE_*_ID env var that
-// resolve.BindEntityFlags consults as a flag default, plus the related
-// LEAPMUX_HUB / LEAPMUX_REMOTE_TAB_TYPE pair. Without this, tests that
+// clearRemoteEnv blanks every LEAPMUX_REMOTE_* env var a worker spawn emits,
+// plus LEAPMUX_HUB. Only _TAB_ID and _WORKER_ID are actually read as flag
+// defaults by resolve.BindEntityFlags; _WORKSPACE_ID, _TILE_ID and _USER_ID are
+// informational (no flag reads them) and are cleared anyway so a spawned test
+// process cannot depend on their presence. Without this, tests that
 // pin the "missing flag" code paths flake (and produce `resolve_failed`
 // instead of `invalid_request`) when run inside a worker-spawned
 // process that inherits these variables.
@@ -48,7 +50,6 @@ func clearRemoteEnv(t *testing.T) {
 		"LEAPMUX_REMOTE_WORKER_ID",
 		"LEAPMUX_REMOTE_WORKSPACE_ID",
 		"LEAPMUX_REMOTE_TILE_ID",
-		"LEAPMUX_REMOTE_ORG_ID",
 		"LEAPMUX_REMOTE_USER_ID",
 	} {
 		t.Setenv(key, "")

@@ -15,8 +15,7 @@ import (
 func (s *Suite) testWorkspaceSections(t *testing.T) {
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-user")
+		user := SeedUser(t, st, "wsec-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -48,8 +47,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("list by user id", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-list-user")
+		user := SeedUser(t, st, "wsec-list-user")
 
 		for i, name := range []string{"Sec A", "Sec B"} {
 			err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -70,8 +68,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("rename", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-rename-user")
+		user := SeedUser(t, st, "wsec-rename-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -99,8 +96,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("rename wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-rename-wrong")
+		user := SeedUser(t, st, "wsec-rename-wrong")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -124,8 +120,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update position", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-pos-user")
+		user := SeedUser(t, st, "wsec-pos-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -152,8 +147,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update sidebar position", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-sidebar-user")
+		user := SeedUser(t, st, "wsec-sidebar-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -182,8 +176,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-del-user")
+		user := SeedUser(t, st, "wsec-del-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -209,9 +202,8 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete section with items succeeds at store level", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-notempty-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "ws-notempty")
+		user := SeedUser(t, st, "wsec-notempty-user")
+		wsID := SeedWorkspace(t, st, user.ID, "ws-notempty")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -247,8 +239,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("has default for user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-count-user")
+		user := SeedUser(t, st, "wsec-count-user")
 
 		// Create an in-progress section (default type).
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -290,8 +281,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("list by user id empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-listempty-user")
+		user := SeedUser(t, st, "wsec-listempty-user")
 
 		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
@@ -301,8 +291,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("update sidebar position wrong user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-sbwrong-user")
+		user := SeedUser(t, st, "wsec-sbwrong-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -333,8 +322,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("delete non custom type fails", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-delnc-user")
+		user := SeedUser(t, st, "wsec-delnc-user")
 
 		secID := id.Generate()
 		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -362,8 +350,7 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 
 	t.Run("has default for user false", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsec-org")
-		user := SeedUser(t, st, orgID, "wsec-countzero-user")
+		user := SeedUser(t, st, "wsec-countzero-user")
 
 		has, err := st.WorkspaceSections().HasDefaultForUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)

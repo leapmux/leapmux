@@ -26,9 +26,9 @@ import { gotoWorkspace } from './helpers/ui'
 
 test.describe('Stale close-tile semantics', () => {
   test('close-tile from one client tombstones the tile in another (remove-wins)', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'remove-wins', adminOrgId)
-    const workspaceUrl = `/o/admin/workspace/${wsId}`
+    const { hubUrl, adminToken } = leapmuxServer
+    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'remove-wins')
+    const workspaceUrl = `/workspace/${wsId}`
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
     const pageA = await ctxA.newPage()
@@ -68,9 +68,9 @@ test.describe('Stale close-tile semantics', () => {
   })
 
   test('close-tile after a fast remote split is permanent (remove-wins guards against stale-resurrect)', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'fast-split-close', adminOrgId)
-    const workspaceUrl = `/o/admin/workspace/${wsId}`
+    const { hubUrl, adminToken } = leapmuxServer
+    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'fast-split-close')
+    const workspaceUrl = `/workspace/${wsId}`
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
     const pageA = await ctxA.newPage()

@@ -15,10 +15,10 @@ opencodeTest.describe('OpenCode Interrupt', () => {
     // If it never does (regression: button never wired up, or button stays
     // hidden), the assertion must fail rather than be swallowed.
     const stopButton = page.locator('[data-testid="stop-btn"]')
-    await expect(stopButton).toBeVisible({ timeout: 30_000 })
+    await expect(stopButton).toBeVisible()
 
     // Click the interrupt and confirm processing stops.
     await stopButton.click()
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
   })
 })

@@ -175,7 +175,7 @@ func batchVisibleOpsEvent(batch *leapmuxv1.OpBatch, visible func(EntityRef) subs
 	// Lazy-allocate the visibleOps slice: subscribers with tight filters often
 	// see zero ops in a batch, so allocating only on first append keeps the
 	// all-filtered-out case at zero allocations.
-	var visibleOps []*leapmuxv1.OrgOp
+	var visibleOps []*leapmuxv1.CrdtOp
 	for _, op := range batch.GetOps() {
 		ref := OpTarget(op)
 		v := visible(ref)
@@ -194,18 +194,18 @@ func batchVisibleOpsEvent(batch *leapmuxv1.OpBatch, visible func(EntityRef) subs
 			continue
 		}
 		if visibleOps == nil {
-			visibleOps = make([]*leapmuxv1.OrgOp, 0, len(batch.GetOps()))
+			visibleOps = make([]*leapmuxv1.CrdtOp, 0, len(batch.GetOps()))
 		}
 		visibleOps = append(visibleOps, op)
 	}
 	if len(visibleOps) == 0 {
 		return nil
 	}
-	// Sending the filtered subset as a single WatchOrgEvent_Batch avoids leaking
+	// Sending the filtered subset as a single WatchUserEvent_Batch avoids leaking
 	// ops affecting workspaces the subscriber can't see while still delivering the
 	// batch atomically to the frontend.
-	return NewMarshaledEvent(&leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Batch{
+	return NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Batch{
 			Batch: &leapmuxv1.OpBatch{
 				BatchId: batch.GetBatchId(),
 				Ops:     visibleOps,
@@ -297,15 +297,15 @@ func (m *Manager) broadcastBatchToSubscriber(
 // buildEntityMaterializedEvent constructs the EntityMaterialized event
 // for a single ref against `state`. Caller MUST hold m.mu (read lock is
 // enough). Returns nil when the ref doesn't resolve to a live record.
-func buildEntityMaterializedEvent(state *leapmuxv1.OrgCrdtState, ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchOrgEvent {
+func buildEntityMaterializedEvent(state *leapmuxv1.UserCrdtState, ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchUserEvent {
 	switch ref.Kind {
 	case EntityKindTab:
 		t := state.GetTabs()[ref.TabID]
 		if t == nil {
 			return nil
 		}
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityMaterialized{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{
 				EntityMaterialized: &leapmuxv1.EntityMaterialized{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: cloneTab(t)},
@@ -317,8 +317,8 @@ func buildEntityMaterializedEvent(state *leapmuxv1.OrgCrdtState, ref EntityRef, 
 		if fw == nil {
 			return nil
 		}
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityMaterialized{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{
 				EntityMaterialized: &leapmuxv1.EntityMaterialized{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{FloatingWindow: cloneFloatingWindow(fw)},
@@ -330,8 +330,8 @@ func buildEntityMaterializedEvent(state *leapmuxv1.OrgCrdtState, ref EntityRef, 
 		if n == nil {
 			return nil
 		}
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityMaterialized{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{
 				EntityMaterialized: &leapmuxv1.EntityMaterialized{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityMaterialized_Node{Node: cloneNode(n)},
@@ -349,11 +349,11 @@ func buildEntityMaterializedEvent(state *leapmuxv1.OrgCrdtState, ref EntityRef, 
 // membership has no per-entity Removed event; a TombstoneWorkspace op's
 // visibility transition is delivered as the raw op in the Batch frame).
 // Callers must nil-guard the result before wrapping (see removed()).
-func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchOrgEvent {
+func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchUserEvent {
 	switch ref.Kind {
 	case EntityKindTab:
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityRemoved{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityRemoved{
 				EntityRemoved: &leapmuxv1.EntityRemoved{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityRemoved_Tab{Tab: &leapmuxv1.TabIdent{TabType: ref.TabType, TabId: ref.TabID}},
@@ -361,8 +361,8 @@ func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.Wat
 			},
 		}
 	case EntityKindFloatingWindow:
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityRemoved{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityRemoved{
 				EntityRemoved: &leapmuxv1.EntityRemoved{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityRemoved_WindowId{WindowId: ref.WindowID},
@@ -370,8 +370,8 @@ func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.Wat
 			},
 		}
 	case EntityKindNode:
-		return &leapmuxv1.WatchOrgEvent{
-			Event: &leapmuxv1.WatchOrgEvent_EntityRemoved{
+		return &leapmuxv1.WatchUserEvent{
+			Event: &leapmuxv1.WatchUserEvent_EntityRemoved{
 				EntityRemoved: &leapmuxv1.EntityRemoved{
 					AtHlc:  atHLC,
 					Entity: &leapmuxv1.EntityRemoved_NodeId{NodeId: ref.NodeID},
@@ -394,8 +394,8 @@ func lastBatchHLC(batch *leapmuxv1.OpBatch) *leapmuxv1.HLC {
 }
 
 func (m *Manager) broadcastPresence(workspaceID, activeClientID string) {
-	m.broadcastTo(workspaceID, &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Presence{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{
 			Presence: &leapmuxv1.PresenceUpdate{
 				WorkspaceId:    workspaceID,
 				ActiveClientId: activeClientID,
@@ -410,7 +410,7 @@ func (m *Manager) broadcastPresence(workspaceID, activeClientID string) {
 // every subscriber receives the same proto bytes; subscribers that
 // can't see the workspace are skipped. No-op when there are no
 // subscribers.
-func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchOrgEvent) {
+func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
 	m.projection.Lock()
 	defer m.projection.Unlock()
 	subs := m.snapshotSubs()
@@ -510,7 +510,7 @@ func (m *Manager) ExpandSubscribersForWorkspace(ctx context.Context, workspaceID
 			seen[c.userID] = struct{}{}
 			userIDs = append(userIDs, c.userID)
 		}
-		readable, err := accessWorkspaceForUsers(ctx, m.auth, m.orgID, workspaceID, userIDs)
+		readable, err := accessWorkspaceForUsers(ctx, m.auth, workspaceID, userIDs)
 		if err != nil {
 			// Surface the lookup failure so the caller (workspace-create) can retry
 			// instead of treating a transient DB error as "nobody may read" and
@@ -621,24 +621,24 @@ func (m *Manager) BroadcastWorkspaceCreated(ctx context.Context, workspaceID, ti
 // batch; BroadcastWorkspaceCreated does so inline) -- this does not re-issue the
 // read-ACL lookup.
 func (m *Manager) broadcastWorkspaceCreatedEvent(workspaceID, title, rootNodeID string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Created{
+	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Created{
 			Created: &leapmuxv1.WorkspaceCreated{WorkspaceId: workspaceID, Title: title, RootNodeId: rootNodeID},
 		},
 	})
 }
 
 func (m *Manager) BroadcastWorkspaceRenamed(workspaceID, title string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Renamed{
+	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Renamed{
 			Renamed: &leapmuxv1.WorkspaceRenamed{WorkspaceId: workspaceID, Title: title},
 		},
 	})
 }
 
 func (m *Manager) BroadcastWorkspaceDeleted(workspaceID string, workerIDs []string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchOrgEvent{
-		Event: &leapmuxv1.WatchOrgEvent_Deleted{
+	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Deleted{
 			Deleted: &leapmuxv1.WorkspaceDeleted{WorkspaceId: workspaceID, WorkerIds: workerIDs},
 		},
 	})
@@ -647,6 +647,6 @@ func (m *Manager) BroadcastWorkspaceDeleted(workspaceID string, workerIDs []stri
 // broadcastWorkspaceLifecycle fans out `evt` to subscribers that admit
 // `workspaceID`. Thin wrapper preserved as a name-readable call site
 // in the Created/Renamed/Deleted helpers.
-func (m *Manager) broadcastWorkspaceLifecycle(workspaceID string, evt *leapmuxv1.WatchOrgEvent) {
+func (m *Manager) broadcastWorkspaceLifecycle(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
 	m.broadcastTo(workspaceID, evt)
 }

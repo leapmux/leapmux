@@ -284,7 +284,7 @@ Any unrecognized value falls back to `post-quantum` (fail-safe). For what each m
 
 ## Storage backends
 
-The Hub stores all relational data (users, orgs, workers, sessions, workspaces, tokens, …) in a single SQL store. Select the backend with `storage.type` (flag `--storage-type`). Every storage setting's CLI flag is `--` plus the dotted key with dots and underscores replaced by hyphens — for example `storage.sqlite.path` → `--storage-sqlite-path`, `storage.postgres.max_conns` → `--storage-postgres-max-conns`. Schema migrations run automatically every time the store is opened — including normal Hub startup — so there is no manual migration step on a fresh database.
+The Hub stores all relational data (users, workers, sessions, workspaces, tokens, …) in a single SQL store. Select the backend with `storage.type` (flag `--storage-type`). Every storage setting's CLI flag is `--` plus the dotted key with dots and underscores replaced by hyphens — for example `storage.sqlite.path` → `--storage-sqlite-path`, `storage.postgres.max_conns` → `--storage-postgres-max-conns`. Schema migrations run automatically every time the store is opened — including normal Hub startup — so there is no manual migration step on a fresh database.
 
 | `storage.type` | Driver family | Notes                                              |
 | -------------- | ------------- | ------------------------------------------------- |

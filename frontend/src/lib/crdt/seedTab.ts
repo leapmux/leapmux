@@ -27,7 +27,7 @@ export interface SeedTabResult {
  *
  *   1. Client calls `WorkspaceService.CreateWorkspace`.
  *   2. Hub commits the `workspaces` row plus a lifecycle-outbox row.
- *   3. The org-CRDT manager processes the outbox: seeds the root
+ *   3. The user-CRDT manager processes the outbox: seeds the root
  *      NodeRecord, populates `WorkspaceContentsRecord.root_node_id`,
  *      and broadcasts `WorkspaceCreated{workspace_id, title,
  *      root_node_id}`.
@@ -38,7 +38,7 @@ export interface SeedTabResult {
  *
  * `seedTabIntoNewWorkspace` implements step 4: it awaits the
  * `leapmux:workspace-created` window event dispatched by
- * `useOrgEvents` when the hub's `WorkspaceCreated` broadcast lands,
+ * `useUserEvents` when the hub's `WorkspaceCreated` broadcast lands,
  * then enqueues the seed batch via the bridge. If the workspace is
  * already in the speculative state when called (the event fired
  * before the caller reached us), it proceeds immediately. The
@@ -60,8 +60,6 @@ export async function seedTabIntoNewWorkspace(args: {
   if (!bridge)
     return null
   const ctx = ctxFromBridge(bridge)
-  if (!ctx)
-    return null
 
   const rootNodeId = await awaitWorkspaceRoot(bridge, args.workspaceId, args.timeoutMs ?? 5000)
   if (!rootNodeId)

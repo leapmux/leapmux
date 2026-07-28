@@ -67,7 +67,7 @@ type desktopConnection struct {
 	hubURL string
 	// Both relays carry their own owner id (see wsRelay.owner), so ownership dies
 	// with the relay it named rather than lingering on the connection.
-	orgEventsRelay *OrgEventsRelay
+	userEventsRelay *UserEventsRelay
 }
 
 const protocolVersion = "1"
@@ -287,22 +287,22 @@ func (a *App) CloseRelayForUndeliverableEvent(emitterOwner uint64, event *deskto
 					},
 				},
 			})
-	case *desktoppb.Event_OrgEventsMessage:
+	case *desktoppb.Event_UserEventsMessage:
 		a.closeUndeliverableRelay(
 			func(c *desktopConnection) *wsRelay {
-				if c.orgEventsRelay == nil {
+				if c.userEventsRelay == nil {
 					return nil
 				}
-				return &c.orgEventsRelay.wsRelay
+				return &c.userEventsRelay.wsRelay
 			},
 			emitterOwner,
-			a.closeOrgEventsRelay,
-			"org-events relay frame was undeliverable; closing the relay so the frontend re-bootstraps",
+			a.closeUserEventsRelay,
+			"userevents relay frame was undeliverable; closing the relay so the frontend re-bootstraps",
 			&desktoppb.Event{
-				Payload: &desktoppb.Event_OrgEventsClose{
-					OrgEventsClose: &desktoppb.OrgEventsCloseEvent{
+				Payload: &desktoppb.Event_UserEventsClose{
+					UserEventsClose: &desktoppb.UserEventsCloseEvent{
 						Code:     uint32(websocket.StatusInternalError),
-						Reason:   "sidecar could not deliver an org-events frame",
+						Reason:   "sidecar could not deliver a userevents frame",
 						WasClean: false,
 					},
 				},
@@ -345,7 +345,7 @@ func (a *App) closeUndeliverableRelay(getRelay func(*desktopConnection) *wsRelay
 }
 
 // The five methods below are thin forwarders onto a.events (see event_sink.go);
-// they preserve the call sites in rpc.go, channel_relay.go, orgevents_relay.go,
+// they preserve the call sites in rpc.go, channel_relay.go, userevents_relay.go,
 // solo.go, and the tests, which keep calling a.SetEventSink / a.EmitEvent / etc.
 
 func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
@@ -477,7 +477,7 @@ func (a *App) rejectIfCannotConnect() error {
 // released. Returning the unlock -- rather than leaving the lock silently held
 // on one return path -- puts the asymmetric postcondition in the signature, so
 // a caller cannot compile without deciding what to do with the lock it may
-// hold. Shared by the channel and org-events relay opens so the post-dial
+// hold. Shared by the channel and userevents relay opens so the post-dial
 // install guard cannot drift between them.
 func (a *App) reacquireConnectionForInstall(connection *desktopConnection) (unlock func(), err error) {
 	unlock, err = a.acquireLifecycleLock()
@@ -573,7 +573,7 @@ func (a *App) disconnectLocked() *soloRuntime {
 	// self-clean once their force-closed sockets error out. Draining here would
 	// freeze every lifecycle reader for relayDrainTimeout (see wsRelay.detach).
 	_ = a.closeChannelRelay()
-	_ = a.closeOrgEventsRelay()
+	_ = a.closeUserEventsRelay()
 	a.tunnels.CloseAll()
 	// Drop idle proxy connections before stopping the Hub so they don't pin
 	// named-pipe handles open across solo.Stop() and block the next ListenPipe.

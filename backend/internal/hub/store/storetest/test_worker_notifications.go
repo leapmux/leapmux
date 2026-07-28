@@ -13,8 +13,7 @@ import (
 func (s *Suite) testWorkerNotifications(t *testing.T) {
 	t.Run("create and list pending", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-user")
+		user := SeedUser(t, st, "wn-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()
@@ -38,8 +37,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("mark delivered", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-deliver-user")
+		user := SeedUser(t, st, "wn-deliver-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()
@@ -63,8 +61,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("mark failed", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-fail-user")
+		user := SeedUser(t, st, "wn-fail-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()
@@ -88,8 +85,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("increment attempts", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-attempts-user")
+		user := SeedUser(t, st, "wn-attempts-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()
@@ -114,8 +110,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("list pending empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-empty-user")
+		user := SeedUser(t, st, "wn-empty-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifs, err := st.WorkerNotifications().ListPendingByWorker(ctx, worker.ID)
@@ -126,8 +121,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("mark delivered removes from pending", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-deliver2-user")
+		user := SeedUser(t, st, "wn-deliver2-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		n1 := id.Generate()
@@ -155,8 +149,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("duplicate notification id returns conflict", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "notif-org")
-		user := SeedUser(t, st, orgID, "notif-dup-user")
+		user := SeedUser(t, st, "notif-dup-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()
@@ -179,8 +172,7 @@ func (s *Suite) testWorkerNotifications(t *testing.T) {
 
 	t.Run("increment attempts multiple", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wn-org")
-		user := SeedUser(t, st, orgID, "wn-incr-user")
+		user := SeedUser(t, st, "wn-incr-user")
 		worker := SeedWorker(t, st, user.ID)
 
 		notifID := id.Generate()

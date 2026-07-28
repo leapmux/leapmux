@@ -20,8 +20,8 @@ use prost::Message;
 use crate::proto;
 
 // Must stay in sync with maxFrameSize in desktop/go/frame.go: it must exceed the
-// 16 MiB org-events read limit plus its Frame/Event envelope so a full-size
-// OrgMaterialized bootstrap is not rejected on read.
+// 16 MiB userevents read limit plus its Frame/Event envelope so a full-size
+// UserMaterialized bootstrap is not rejected on read.
 const MAX_FRAME_SIZE: u64 = 20 * 1024 * 1024; // 20 MiB
                                               // A base-128 varint carries 7 bits per byte, so a u64 length prefix needs at
                                               // most 10 bytes. A reader that has consumed this many without seeing a

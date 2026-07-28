@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type lifecycleOutboxStore struct {
@@ -17,16 +18,22 @@ var _ store.LifecycleOutboxStore = (*lifecycleOutboxStore)(nil)
 
 func (s *lifecycleOutboxStore) Insert(ctx context.Context, p store.InsertLifecycleOutboxParams) error {
 	return mapErr(s.conn.q.InsertLifecycleOutbox(ctx, gendb.InsertLifecycleOutboxParams{
-		OrgID:   p.OrgID,
+		UserID:  p.UserID.String(),
 		OpType:  p.OpType,
 		Payload: p.Payload,
 	}))
 }
 
 func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPendingLifecycleOutboxParams) ([]store.LifecycleOutboxRow, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return nil, nil
+	}
 	rows, err := s.conn.q.ListPendingLifecycleOutbox(ctx, gendb.ListPendingLifecycleOutboxParams{
-		OrgID: p.OrgID,
-		Limit: p.Limit,
+		UserID: owner,
+		Limit:  p.Limit,
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -35,7 +42,7 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 	for i, r := range rows {
 		out[i] = store.LifecycleOutboxRow{
 			ID:         r.ID,
-			OrgID:      r.OrgID,
+			UserID:     r.UserID,
 			OpType:     r.OpType,
 			Payload:    r.Payload,
 			EnqueuedAt: r.EnqueuedAt.Time,

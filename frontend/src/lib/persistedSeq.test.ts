@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_ORG_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
+import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
-// (relayClaim.test.ts and useOrgEvents.test.ts drive it via vi.resetModules);
+// (relayClaim.test.ts and useUserEvents.test.ts drive it via vi.resetModules);
 // what only this test pins is the mark/id algebra, key isolation, and the
 // cross-process uniqueness the per-process random low bits exist for.
 
@@ -84,7 +84,7 @@ describe('createPersistedSeq', () => {
   it('keeps sequences over different keys independent', () => {
     installCryptoMock()
     const nextA = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
-    const nextB = createPersistedSeq(KEY_ORG_EVENTS_RELAY_SEQ)
+    const nextB = createPersistedSeq(KEY_USER_EVENTS_RELAY_SEQ)
 
     const a1 = nextA()
     const a2 = nextA()
@@ -96,7 +96,7 @@ describe('createPersistedSeq', () => {
     expect(b1).not.toBe(a1)
     // Each key persists its own mark independently.
     expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).not.toBe(
-      localStorageGet<number>(KEY_ORG_EVENTS_RELAY_SEQ),
+      localStorageGet<number>(KEY_USER_EVENTS_RELAY_SEQ),
     )
   })
 

@@ -140,8 +140,8 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 		  AND table_name <> 'goose_db_version'
 		  AND (column_name = 'id' OR column_name LIKE '%\_id' OR column_name IN ('registered_by', 'created_by')
 		       OR (table_name, column_name) IN (
-		           ('org_op_batches', 'origin_client'),
-		           ('org_recent_batch_ids', 'canonical_client'),
+		           ('user_op_batches', 'origin_client'),
+		           ('user_recent_batch_ids', 'canonical_client'),
 		           ('workspace_sections', 'position'),
 		           ('workspace_section_items', 'position'),
 		           ('workspace_tab_owned', 'position'),

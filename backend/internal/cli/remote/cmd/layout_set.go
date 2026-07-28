@@ -55,7 +55,7 @@ func RunLayoutSet(rawCtx any, args []string) error {
 	var stdinFlag bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.StringVar(&file, "file", "", "path to a JSON file describing the target tree (exactly one of --file / --stdin required)")
 	fs.BoolVar(&stdinFlag, "stdin", false, "read the target tree JSON from stdin (exactly one of --file / --stdin required)")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -134,14 +134,14 @@ func submitLayoutSetWithRetry(hub, workspaceID string, target *targetNode) error
 // leaf of the new tree (where every live tab lands), and an error.
 // Extracted from RunLayoutSet so the retry loop can rebuild the batch
 // against a fresh snapshot without duplicating the step logic.
-func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode) ([]*leapmuxv1.OrgOp, string, string, error) {
+func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode) ([]*leapmuxv1.CrdtOp, string, string, error) {
 	rec := bs.State.GetWorkspaces()[workspaceID]
 	if rec == nil || rec.GetRootNodeId() == "" {
 		return nil, "", "", remote.EmitError("invalid_state", "workspace has no root node yet")
 	}
 	rootID := rec.GetRootNodeId()
 
-	ops := []*leapmuxv1.OrgOp{}
+	ops := []*leapmuxv1.CrdtOp{}
 
 	// Step 1: mutate the existing root to match the target's root.
 	ops = appendNodeShapeOps(ops, bs, rootID, target)
@@ -161,7 +161,7 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode
 	// the (kept) root.
 	firstLeaf := ""
 	if !target.isLeaf() {
-		var creationOps []*leapmuxv1.OrgOp
+		var creationOps []*leapmuxv1.CrdtOp
 		creationOps, firstLeaf = synthesizeSubtree(bs, rootID, target.Children)
 		ops = append(ops, creationOps...)
 	} else {
@@ -377,7 +377,7 @@ func validateAndNormalizeTree(t *targetNode, path string) error {
 // appendNodeShapeOps emits the register writes needed to make
 // `nodeID`'s shape match `target`'s kind+attributes. The kind switch
 // rewrites in place even when the previous kind differed.
-func appendNodeShapeOps(ops []*leapmuxv1.OrgOp, bs *CRDTBootstrap, nodeID string, target *targetNode) []*leapmuxv1.OrgOp {
+func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID string, target *targetNode) []*leapmuxv1.CrdtOp {
 	kind := target.parsedKind()
 	ops = append(ops, opSetNodeKind(bs, nodeID, kind))
 	switch kind {
@@ -410,7 +410,7 @@ func appendNodeShapeOps(ops []*leapmuxv1.OrgOp, bs *CRDTBootstrap, nodeID string
 // encountered (depth-first, left-to-right) — that's where tabs are
 // migrated to so they pass the "tile_id resolves to a live leaf"
 // validator rule.
-func synthesizeSubtree(bs *CRDTBootstrap, parentID string, children []*targetNode) (ops []*leapmuxv1.OrgOp, firstLeaf string) {
+func synthesizeSubtree(bs *CRDTBootstrap, parentID string, children []*targetNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
 	pos := lexorank.First()
 	for _, child := range children {
 		childID := id.Generate()

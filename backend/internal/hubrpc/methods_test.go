@@ -28,12 +28,10 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 		"GetTab", "LocateTab", "LocateTile", "ListTabs",
 		"ListWorkspaces", "GetWorkspace",
 		"CreateWorkspace", "RenameWorkspace", "DeleteWorkspace",
-		// OrgCRDT surface.
+		// UserCRDT surface.
 		"SubmitOps", "UpdatePresence", "GetMaterialized",
 		// WorkerManagementService surface.
 		"ListWorkers", "GetWorker",
-		// UserService surface.
-		"GetUser",
 	}
 	for _, m := range expected {
 		_, err := hubrpc.Lookup(m)
@@ -172,7 +170,7 @@ func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 	desc, err := hubrpc.Lookup("GetTab")
 	require.NoError(t, err)
 	// Use a non-GetTabRequest proto to provoke the type assertion.
-	wrongIn := &leapmuxv1.ListTabsRequest{OrgId: "org-1"}
+	wrongIn := &leapmuxv1.ListTabsRequest{}
 	out := desc.NewResponse()
 
 	err = desc.Invoke(context.Background(), &http.Client{}, "http://unused.invalid", wrongIn, out)
@@ -202,8 +200,8 @@ func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
 		"LocateTab":       leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		"LocateTile":      leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
 		"ListTabs":        leapmuxv1connect.WorkspaceServiceListTabsProcedure,
-		"SubmitOps":       leapmuxv1connect.OrgCRDTSubmitOpsProcedure,
-		"UpdatePresence":  leapmuxv1connect.OrgCRDTUpdatePresenceProcedure,
+		"SubmitOps":       leapmuxv1connect.UserCRDTSubmitOpsProcedure,
+		"UpdatePresence":  leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
 		"ListWorkspaces":  leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		"GetWorkspace":    leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 		"CreateWorkspace": leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
@@ -211,7 +209,6 @@ func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
 		"DeleteWorkspace": leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
 		"ListWorkers":     leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
 		"GetWorker":       leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
-		"GetUser":         leapmuxv1connect.UserServiceGetUserProcedure,
 	}
 	for method, want := range cases {
 		desc, err := hubrpc.Lookup(method)

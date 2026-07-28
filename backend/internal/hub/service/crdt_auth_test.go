@@ -25,14 +25,13 @@ import (
 // refuses it.
 func TestCRDTAuthChecker_CanUseWorker_RequiresActive(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
+	owner := storetest.SeedUser(t, st, "owner")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 	checker := service.NewCRDTAuthChecker(st)
 	ctx := context.Background()
 
 	// ACTIVE worker owned by the caller: allowed.
-	ok, err := checker.CanUseWorker(ctx, "", worker.ID, owner.ID)
+	ok, err := checker.CanUseWorker(ctx, worker.ID, owner.ID)
 	require.NoError(t, err)
 	assert.True(t, ok, "owner may bind a tab to their ACTIVE worker")
 
@@ -46,7 +45,7 @@ func TestCRDTAuthChecker_CanUseWorker_RequiresActive(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), n)
 
-	ok, err = checker.CanUseWorker(ctx, "", worker.ID, owner.ID)
+	ok, err = checker.CanUseWorker(ctx, worker.ID, owner.ID)
 	require.NoError(t, err)
 	assert.False(t, ok, "a deregistering worker must be refused, matching the channel path")
 }
@@ -58,7 +57,7 @@ func TestCRDTAuthChecker_CanUseWorker_EmptyWorkerID(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	checker := service.NewCRDTAuthChecker(st)
 
-	ok, err := checker.CanUseWorker(context.Background(), "", "", "user")
+	ok, err := checker.CanUseWorker(context.Background(), "", "user")
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
@@ -67,13 +66,12 @@ func TestCRDTAuthChecker_CanUseWorker_EmptyWorkerID(t *testing.T) {
 // different user is refused.
 func TestCRDTAuthChecker_CanUseWorker_NonOwner(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	orgID := storetest.SeedOrg(t, st, "org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	other := storetest.SeedUser(t, st, orgID, "other")
+	owner := storetest.SeedUser(t, st, "owner")
+	other := storetest.SeedUser(t, st, "other")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 	checker := service.NewCRDTAuthChecker(st)
 
-	ok, err := checker.CanUseWorker(context.Background(), "", worker.ID, other.ID)
+	ok, err := checker.CanUseWorker(context.Background(), worker.ID, other.ID)
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
@@ -91,23 +89,22 @@ func TestCRDTAuthChecker_CanUseWorker_NonOwner(t *testing.T) {
 func TestCRDTAuthChecker_EmptyPrincipalDenies(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
-	orgID := storetest.SeedOrg(t, st, "org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "ws")
+	owner := storetest.SeedUser(t, st, "owner")
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "ws")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 	checker := service.NewCRDTAuthChecker(st)
 
 	// Control: the real owner is allowed on every arm, so the denials below
 	// cannot be passing because the fixture itself is inaccessible.
-	access, err := checker.CanAccessWorkspace(ctx, orgID, workspaceID, owner.ID)
+	access, err := checker.CanAccessWorkspace(ctx, workspaceID, owner.ID)
 	require.NoError(t, err)
 	require.True(t, access, "the owner must be allowed, or the denials below prove nothing")
 
-	access, err = checker.CanAccessWorkspace(ctx, orgID, workspaceID, "")
+	access, err = checker.CanAccessWorkspace(ctx, workspaceID, "")
 	require.NoError(t, err)
 	assert.False(t, access, "a blank principal must not read a workspace")
 
-	ok, err := checker.CanUseWorker(ctx, "", worker.ID, "")
+	ok, err := checker.CanUseWorker(ctx, worker.ID, "")
 	require.NoError(t, err)
 	assert.False(t, ok, "a blank principal must not bind a tab to a worker")
 }
@@ -120,27 +117,26 @@ func TestCRDTAuthChecker_EmptyPrincipalDenies(t *testing.T) {
 func TestCRDTAuthChecker_CanAccessWorkspaceForUsers_DropsBlankPrincipals(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
-	orgID := storetest.SeedOrg(t, st, "org")
-	owner := storetest.SeedUser(t, st, orgID, "owner")
-	stranger := storetest.SeedUser(t, st, orgID, "stranger")
-	workspaceID := storetest.SeedWorkspace(t, st, orgID, owner.ID, "ws")
+	owner := storetest.SeedUser(t, st, "owner")
+	stranger := storetest.SeedUser(t, st, "stranger")
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "ws")
 	// CanAccessWorkspaceForUsers is an OPTIONAL capability the crdt package
 	// discovers by assertion (its interface is unexported there), so assert it
 	// here too: a rename or drop would otherwise silently downgrade subscriber
 	// expansion to the per-op form with nothing failing.
 	batch, ok := service.NewCRDTAuthChecker(st).(interface {
-		CanAccessWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error)
+		CanAccessWorkspaceForUsers(ctx context.Context, workspaceID string, userIDs []string) (map[string]bool, error)
 	})
 	require.True(t, ok, "crdtAuthChecker must implement the batch read capability")
 
 	readable, err := batch.CanAccessWorkspaceForUsers(
-		ctx, orgID, workspaceID, []string{"", owner.ID, "", stranger.ID})
+		ctx, workspaceID, []string{"", owner.ID, "", stranger.ID})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]bool{owner.ID: true}, readable,
 		"blank principals drop out; the owner still resolves and a non-owner stays absent")
 
 	// An all-blank batch is the empty set, never a blanket allow.
-	readable, err = batch.CanAccessWorkspaceForUsers(ctx, orgID, workspaceID, []string{"", ""})
+	readable, err = batch.CanAccessWorkspaceForUsers(ctx, workspaceID, []string{"", ""})
 	require.NoError(t, err)
 	assert.Empty(t, readable)
 }

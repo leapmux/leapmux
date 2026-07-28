@@ -1,11 +1,7 @@
 package cmd
 
 import (
-	"context"
-	"fmt"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/remote"
 )
 
 // filterTabsByType drops tabs whose type doesn't match wanted. A zero
@@ -26,23 +22,4 @@ func filterTabsByType(in []*leapmuxv1.WorkspaceTab, wanted leapmuxv1.TabType) []
 		}
 	}
 	return out
-}
-
-// resolveOrgID looks up the org_id for a workspace via GetWorkspace.
-// Returns an error if the workspace is not found or the response is
-// missing org_id.
-func resolveOrgID(ctx context.Context, c *remote.Client, workspaceID string) (string, error) {
-	if workspaceID == "" {
-		return "", fmt.Errorf("workspace_id required")
-	}
-	req := &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}
-	var resp leapmuxv1.GetWorkspaceResponse
-	if err := hubCallUnary(ctx, c, "GetWorkspace", workspaceID, req, &resp); err != nil {
-		return "", err
-	}
-	orgID := resp.GetWorkspace().GetOrgId()
-	if orgID == "" {
-		return "", fmt.Errorf("workspace %s has no org_id", workspaceID)
-	}
-	return orgID, nil
 }

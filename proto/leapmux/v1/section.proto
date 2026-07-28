@@ -54,7 +54,6 @@ message SectionItem {
 }
 
 message ListSectionsRequest {
-  string org_id = 1;
 }
 
 message ListSectionsResponse {
@@ -63,8 +62,7 @@ message ListSectionsResponse {
 }
 
 message CreateSectionRequest {
-  string org_id = 1;
-  string name = 2;
+  string name = 1;
 }
 
 message CreateSectionResponse {

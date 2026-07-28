@@ -24,23 +24,20 @@
 -- explicitly.
 SET NAMES utf8mb4 COLLATE utf8mb4_bin;
 
--- Personal organizations: exactly one per user, created with the account,
--- soft-deleted with it. name mirrors the username (renamed together).
-CREATE TABLE orgs (
-    id          VARCHAR(255) PRIMARY KEY,
-    name        VARCHAR(255) NOT NULL,
-    created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    deleted_at  DATETIME(3),
-    -- Generated column for partial unique index emulation
-    active_name VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED
-) COLLATE=utf8mb4_bin;
-CREATE UNIQUE INDEX idx_orgs_active_name ON orgs(active_name);
-CREATE INDEX idx_orgs_deleted_at ON orgs(deleted_at);
-
 -- Users
+-- users.id carries CHECK (id <> '') because it is the parent key every
+-- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
+-- at the Go API, but that closes only the store as a route to the shape; raw SQL
+-- (an operator repair script, a restored file, a seed) could still land one, and
+-- from there every REFERENCES users(id) below would happily point at it. The
+-- CHECK is what makes the blank-owner family unrepresentable rather than merely
+-- unreachable through one API.
+--
+-- NOTE: enforced on SQLite, PostgreSQL, CockroachDB and YugabyteDB. TiDB parses
+-- and IGNORES CHECK constraints unless tidb_enable_check_constraint is ON --
+-- see mysql.go, which sets it alongside tidb_enable_foreign_key.
 CREATE TABLE users (
-    id             VARCHAR(255) PRIMARY KEY,
-    org_id         VARCHAR(255) NOT NULL,
+    id             VARCHAR(255) PRIMARY KEY CHECK (id <> ''),
     username       VARCHAR(255) NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL,
@@ -77,10 +74,8 @@ CREATE TABLE users (
     deleted_at     DATETIME(3),
     -- Generated columns for partial unique index emulation
     active_username VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN username ELSE NULL END) STORED,
-    active_email    VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND email != '' THEN email ELSE NULL END) STORED,
-    FOREIGN KEY (org_id) REFERENCES orgs(id)
+    active_email    VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND email != '' THEN email ELSE NULL END) STORED
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_active_username ON users(active_username);
 CREATE UNIQUE INDEX idx_users_active_email ON users(active_email);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at);
@@ -191,7 +186,7 @@ CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys
 CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
 CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at DESC, id DESC);
 
--- Sidebar sections (per-user organization of sidebar panels)
+-- Sidebar sections (per-user grouping of sidebar panels)
 CREATE TABLE workspace_sections (
     id           VARCHAR(255) PRIMARY KEY,
     user_id      VARCHAR(255) NOT NULL,
@@ -207,17 +202,26 @@ CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 -- Workspaces (hub-owned registry) -- must come before workspace_section_items
 CREATE TABLE workspaces (
     id            VARCHAR(255) PRIMARY KEY,
-    org_id        VARCHAR(255) NOT NULL,
     owner_user_id VARCHAR(255) NOT NULL,
     title         TEXT NOT NULL,
     is_deleted    BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     deleted_at    DATETIME(3),
-    FOREIGN KEY (org_id) REFERENCES orgs(id),
     FOREIGN KEY (owner_user_id) REFERENCES users(id)
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id);
-CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
+-- MySQL has no partial indexes; (owner_user_id, is_deleted) covers the
+-- live-owner ListAccessible seek that SQLite/Postgres express as
+-- idx_workspaces_owner_live WHERE is_deleted = 0/FALSE.
+--
+-- There is deliberately no separate idx_workspaces_owner_user_id here, unlike
+-- SQLite/Postgres. Because this index is a plain composite rather than a
+-- partial one, its leftmost prefix is owner_user_id, so it also serves the
+-- un-filtered owner probes: HardDeleteUsersBefore's NOT EXISTS gate and the
+-- owner_user_id foreign key (InnoDB adds no auto-index when an existing index
+-- has the FK column as its leftmost prefix). SQLite/Postgres still need the
+-- plain index because their live-owner index is partial and cannot answer a
+-- query that must see soft-deleted rows.
+CREATE INDEX idx_workspaces_owner_live ON workspaces(owner_user_id, is_deleted);
 CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at);
 
 -- Workspace-to-section assignments (per-user)
@@ -234,8 +238,8 @@ CREATE TABLE workspace_section_items (
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
 -- See sqlite migration for full rationale on the CRDT schema.
-CREATE TABLE org_op_batches (
-    org_id        VARCHAR(255) NOT NULL,
+CREATE TABLE user_op_batches (
+    user_id       VARCHAR(255) NOT NULL,
     physical_ms   BIGINT NOT NULL,
     logical       BIGINT NOT NULL,
     last_logical  BIGINT NOT NULL,
@@ -247,53 +251,62 @@ CREATE TABLE org_op_batches (
     op_count      INT NOT NULL CHECK (op_count > 0),
     epoch         BIGINT NOT NULL,
     committed_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (org_id, physical_ms, logical, origin_client),
-    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+    PRIMARY KEY (user_id, physical_ms, logical, origin_client),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE UNIQUE INDEX idx_org_op_batches_dedup ON org_op_batches(org_id, batch_id);
+CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_id);
 
-CREATE TABLE org_state (
-    org_id           VARCHAR(255) NOT NULL,
+CREATE TABLE user_state (
+    user_id           VARCHAR(255) NOT NULL,
     state_payload    LONGBLOB NOT NULL,
     current_epoch    BIGINT NOT NULL DEFAULT 1,
     epoch_started_at DATETIME(6) NOT NULL,
     updated_at       DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (org_id),
-    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+    PRIMARY KEY (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 
 CREATE TABLE workspace_tab_owned (
-    org_id       VARCHAR(255) NOT NULL,
+    user_id      VARCHAR(255) NOT NULL,
     workspace_id VARCHAR(255) NOT NULL,
     tab_type     INT NOT NULL,
     tab_id       VARCHAR(255) NOT NULL,
     worker_id    VARCHAR(255) NOT NULL,
     tile_id      VARCHAR(255) NOT NULL,
     position     TEXT NOT NULL,
-    PRIMARY KEY (org_id, tab_id),
+    PRIMARY KEY (user_id, tab_id),
+    -- The users(id) FK mirrors the sibling CRDT tables (user_op_batches,
+    -- user_state, user_recent_batch_ids, lifecycle_outbox): without it a
+    -- blank-owner row is insertable but no delete path can bind it away.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(worker_id);
+-- (user_id, worker_id), not worker_id alone: ListOwnedTabsByWorker binds both,
+-- so a single-column index could only seek worker_id and then re-filter every
+-- match by owner.
+CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(user_id, worker_id);
 CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
 
 CREATE TABLE workspace_tab_rendered (
-    org_id       VARCHAR(255) NOT NULL,
+    user_id      VARCHAR(255) NOT NULL,
     workspace_id VARCHAR(255) NOT NULL,
     tab_type     INT NOT NULL,
     tab_id       VARCHAR(255) NOT NULL,
     worker_id    VARCHAR(255) NOT NULL,
     tile_id      VARCHAR(255) NOT NULL,
     position     TEXT NOT NULL,
-    PRIMARY KEY (org_id, tab_id),
+    PRIMARY KEY (user_id, tab_id),
+    -- Same users(id) FK as workspace_tab_owned above.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
--- LocateAccessibleRenderedTab filters on tab_id alone; the PK has tab_id
--- as the trailing column so it is not seekable.
-CREATE INDEX idx_workspace_tab_rendered_tab_id ON workspace_tab_rendered(tab_id);
+-- No tab_id-only index: LocateAccessibleRenderedTab now binds user_id as well,
+-- so PRIMARY KEY (user_id, tab_id) serves it as a point lookup. A standalone
+-- tab_id index would be write amplification with no reader.
 
-CREATE TABLE org_recent_batch_ids (
-    org_id                VARCHAR(255) NOT NULL,
+CREATE TABLE user_recent_batch_ids (
+    user_id                VARCHAR(255) NOT NULL,
     batch_id              VARCHAR(255) NOT NULL,
     body_hash             BLOB NOT NULL,
     principal_id          VARCHAR(255) NOT NULL,
@@ -303,21 +316,21 @@ CREATE TABLE org_recent_batch_ids (
     op_count              INT NOT NULL CHECK (op_count > 0),
     epoch                 BIGINT NOT NULL,
     expires_at            DATETIME(6) NOT NULL,
-    PRIMARY KEY (org_id, batch_id),
-    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+    PRIMARY KEY (user_id, batch_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_org_recent_batch_ids_expires ON org_recent_batch_ids(expires_at);
+CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_at);
 
 CREATE TABLE lifecycle_outbox (
     id          BIGINT PRIMARY KEY AUTO_INCREMENT,
-    org_id      VARCHAR(255) NOT NULL,
+    user_id      VARCHAR(255) NOT NULL,
     op_type     VARCHAR(16) NOT NULL,
     payload     LONGBLOB NOT NULL,
     enqueued_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     consumed_at DATETIME(6),
-    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id);
+CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id);
 
 CREATE TABLE revocation_events (
     id         VARCHAR(255) PRIMARY KEY,
@@ -530,11 +543,11 @@ DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;
-DROP TABLE IF EXISTS org_recent_batch_ids;
+DROP TABLE IF EXISTS user_recent_batch_ids;
 DROP TABLE IF EXISTS workspace_tab_rendered;
 DROP TABLE IF EXISTS workspace_tab_owned;
-DROP TABLE IF EXISTS org_state;
-DROP TABLE IF EXISTS org_op_batches;
+DROP TABLE IF EXISTS user_state;
+DROP TABLE IF EXISTS user_op_batches;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
@@ -543,4 +556,3 @@ DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS orgs;

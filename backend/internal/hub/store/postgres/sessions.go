@@ -87,24 +87,24 @@ func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 }
 
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. This method reports only an error,
 		// so returning nil would tell the caller the mutation SUCCEEDED while
 		// addressing no row -- the shape a revocation must never have. See
-		// store.OwnerFilter.
+		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
@@ -114,10 +114,10 @@ func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSess
 }
 
 func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.RefreshSessionAuthGenerationParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	n, err := s.conn.q.RefreshUserSessionAuthGeneration(ctx, gendb.RefreshUserSessionAuthGenerationParams{
@@ -131,10 +131,10 @@ func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.Refres
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams) (store.Page[store.UserSession], error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.UserSession]{}, nil
 	}
 	return queryPage(ctx, p.Limit,
@@ -159,7 +159,6 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 	}
 	return &store.SessionWithUser{
 		UserID:         row.ID,
-		OrgID:          row.OrgID,
 		Username:       row.Username,
 		IsAdmin:        row.IsAdmin,
 		EmailVerified:  row.EmailVerified,

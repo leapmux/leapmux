@@ -1,18 +1,18 @@
 ---
 title: "Concepts & Architecture"
-description: "How LeapMux is built: the Hub, Worker, and Frontend, the solo and distributed deployment shapes, and the org, workspace, tile, tab, and worktree model."
+description: "How LeapMux is built: the Hub, Worker, and Frontend, the solo and distributed deployment shapes, and the workspace, tile, tab, and worktree model."
 type: docs
 weight: 2
 ---
 
-This chapter is the map of the territory. It explains the three pieces LeapMux is built from, the two shapes you can deploy it in, and the objects you will work with every day — organizations, workspaces, layouts, tiles, tabs, worktrees, Workers, and the encrypted channels that connect them. Read it once and the rest of the manual will make sense. Every concept here links to the chapter that covers it in depth, so use this as a hub: skim it, then jump.
+This chapter is the map of the territory. It explains the three pieces LeapMux is built from, the two shapes you can deploy it in, and the objects you will work with every day — workspaces, layouts, tiles, tabs, worktrees, Workers, and the encrypted channels that connect them. Read it once and the rest of the manual will make sense. Every concept here links to the chapter that covers it in depth, so use this as a hub: skim it, then jump.
 
 ## The three components
 
 LeapMux is a single Go binary, `leapmux`, that can play three roles. In a running system you always have all three present — what changes between deployment shapes is whether they live in one process or several.
 
 - **Frontend** — the SolidJS web app that renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It runs in your browser or inside the native desktop app. The Frontend is where you click, type, and read; it holds no agent state of its own.
-- **Hub** — a Go service that handles login, organization and workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It owns the central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). The Hub is a coordinator and a relay, not a place where your code or conversations live.
+- **Hub** — a Go service that handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It owns the central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). The Hub is a coordinator and a relay, not a place where your code or conversations live.
 - **Worker** — a Go process that actually runs your coding agents, PTY/terminal sessions, file browsing, and git operations. Each Worker keeps its own local SQLite database and auto-reconnects to the Hub if the connection drops. **Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
 
 The division is deliberate: the Hub knows *who is talking to whom* but never *what they say*. That property is what makes it safe to let a teammate or platform team operate the Hub while your agents run on your own machine.
@@ -92,7 +92,7 @@ The default TCP port everywhere is **4327**. For run modes, ports, data director
 Everything you see in the UI fits into one nested structure. From the outside in:
 
 ```text
-Organization
+User (you)
 └── Workspace
     ├── Layout tree (tiles: leaf / split / grid)
     │   └── Tabs (agent / terminal / file)
@@ -102,13 +102,13 @@ Organization
 Each tab is hosted on a Worker, optionally bound to a worktree/branch.
 ```
 
-### Organization
+### Ownership
 
-An **organization** (org) is the top-level tenant. Every account has exactly **one**: a personal org created automatically with the account and deleted with it, whose slug is your username. It scopes the URLs — the whole app lives under the prefix `/o/{username}` — and the event stream your workspaces sync over. An org is not a team: it has no members or roles beyond you, and there is nothing to create, join, or switch between. Renaming your username renames the org (and the URL prefix) with it. See [Accounts & Authentication](/docs/using/accounts/).
+You own everything you create — workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy: workspace access is strictly owner-only, and you see exactly the workspaces you own. The app home is `/`; an open workspace lives at `/workspace/{id}`. See [Accounts & Authentication](/docs/using/accounts/).
 
 ### Workspace
 
-A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs and lives at `/o/{username}/workspace/{id}`. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator), and workspace access is strictly owner-only: you see exactly the workspaces you own. See [Workspaces](/docs/using/workspaces/).
+A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs and lives at `/workspace/{id}`. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
 
 ### Layout, tiles, and floating windows
 
@@ -187,7 +187,7 @@ See [Device Sync & Presence](/docs/using/collaboration/) for exactly what does a
 
 A typical mental walkthrough:
 
-1. You sign in to a **Hub** (or just launch **solo** and skip login). You land in your **personal organization**.
+1. You sign in to a **Hub** (or just launch **solo** and skip login). You land at `/`, with the workspaces you own listed in the sidebar.
 2. You open or create a **workspace**.
 3. Inside it you arrange a **layout** of **tiles** — splits, grids, maybe a **floating window**.
 4. In each tile you open **tabs**: an agent here, a terminal there, a file viewer alongside. Each tab is hosted on a **Worker** you choose, and an agent or terminal tab can be bound to a git **worktree/branch**.

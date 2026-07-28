@@ -174,9 +174,8 @@ When a Worker spawns an agent or terminal (and remote control is enabled on that
 | --- | --- | --- |
 | `LEAPMUX_REMOTE_SOCK` | always | Local-IPC socket URL the CLI talks to |
 | `LEAPMUX_REMOTE_TOKEN` | always | Per-process bearer token |
-| `LEAPMUX_REMOTE_USER_ID` | always | Authenticated user |
+| `LEAPMUX_REMOTE_USER_ID` | always | Authenticated user (informational; no flag reads it) |
 | `LEAPMUX_REMOTE_WORKER_ID` | always | The host Worker |
-| `LEAPMUX_REMOTE_ORG_ID` | when non-empty | Organization |
 | `LEAPMUX_REMOTE_TAB_ID` | when non-empty | The spawned tab's id |
 | `LEAPMUX_REMOTE_TAB_TYPE` | when non-empty | `agent`, `terminal`, or `file` |
 | `LEAPMUX_REMOTE_WORKING_DIR` | when non-empty | Working directory at spawn time |
@@ -199,20 +198,17 @@ Almost every command needs to know which entity to act on. Rather than hand-roll
 | `--tile-id` | (none) | Derivable from `--tab-id` |
 | `--workspace-id` | (none) | Derivable from `--tab-id` / `--tile-id` |
 | `--worker-id` | `$LEAPMUX_REMOTE_WORKER_ID` | The host Worker |
-| `--org-id` | `$LEAPMUX_REMOTE_ORG_ID` | Derivable from any other entity flag |
-| `--user-id` | `$LEAPMUX_REMOTE_USER_ID` | Derivable from `--tab-id` / `--workspace-id` / `--worker-id` |
 
-### How the resolver derives missing IDs
+There is no `--user-id` flag: the Hub takes the tenant from the authenticated session, so no command needs one.
 
-The Hub resolver follows the obvious chains so you only ever supply the most specific ID you have:
+### Which IDs you can omit
 
-- a **tab** locates its matched type, workspace, tile, and Worker;
-- a **tile** locates its workspace and org;
-- a **workspace** locates its org and owner;
-- a **Worker** locates its org and the user who registered it;
-- a **user** locates its org.
+Supply the most specific ID you have and the Hub fills in the rest:
 
-So `--tab-id` alone is usually enough; the resolver fills in workspace, tile, Worker, and org behind the scenes.
+- `--tab-id` gives the tab's matched type, workspace, tile, and Worker;
+- `--tile-id` gives its workspace.
+
+So `--tab-id` alone is usually enough. `--workspace-id` and `--worker-id` sit at the end of these chains — nothing is derived from them, so reach for one only when you have nothing more specific.
 
 ### Pinned tab type for agent and terminal commands
 
@@ -233,24 +229,24 @@ leapmux remote whoami          # who am I, where am I?
 leapmux remote version --hub https://leapmux.example.com
 ```
 
-- `whoami` from inside an agent/terminal returns `{user_id, username, org_id, workspace_id, worker_id, tab_id, tab_type, scope}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username}`.
+- `whoami` from inside an agent/terminal returns `{user_id, username, workspace_id, worker_id, tab_id, tab_type, scope}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username}`.
 - `version` always emits the CLI's `{cli:{version, commit, branch, build_time, formatted}}`; when `--hub` is set it also probes the Hub's unauthenticated version endpoint and adds `hub:{...}` (or a non-fatal `hub_error`).
 
 ## Workspace commands
 
 | Command | Key flags | Output |
 | --- | --- | --- |
-| `workspace list` | `--org-id` (or any entity flag) | That org's workspaces |
+| `workspace list` | (any entity flag, or none when authenticated) | Your workspaces |
 | `workspace get` | `--workspace-id` (or `--tab-id`/`--tile-id`) | One workspace |
-| `workspace create` | `--org-id`, `--title` (required) | `{workspace_id}` |
+| `workspace create` | `--title` (required) | `{workspace_id}` |
 | `workspace rename` | `--workspace-id`, `--title` (required) | `{workspace_id}` |
 | `workspace delete` | `--workspace-id`, `--force` | Deletion + per-worker cleanup status |
 
 ```bash
-leapmux remote workspace create --org-id "$ORG" --title "Release 2.0"
+leapmux remote workspace create --title "Release 2.0"
 ```
 
-`workspace list` returns a single org's workspaces — the one you name with `--org-id`, or the org the resolver derives from any other entity flag. The listing covers exactly the workspaces you own; workspace access is owner-only.
+`workspace list` returns the workspaces you own; workspace access is owner-only.
 
 `workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`. If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force` ("delete even if the calling tab lives in the target workspace (would kill the caller's own PTY)").
 
@@ -260,7 +256,7 @@ The `tab` group is the generic open/close/list/rename surface across all three t
 
 | Command | Key flags |
 | --- | --- |
-| `tab list` | `--workspace-id`, `--org-id`, `--tab-type agent\|terminal\|file` (output filter) |
+| `tab list` | `--workspace-id`, `--tab-type agent\|terminal\|file` (output filter) |
 | `tab get` | `--tab-id` (type auto-detected) |
 | `tab open` | `--type agent\|terminal\|file` (required) + type-specific flags + [placement flags](#placement-flags) |
 | `tab close` | `--tab-id`, `--force`, `--worktree keep\|push\|discard` |
@@ -510,7 +506,7 @@ leapmux remote git read --path src/main.go --ref staged
 
 ## Streaming events
 
-`events watch` subscribes to a workspace's live event stream and prints one JSON object per line. The resolver fills `org_id` from any entity flag.
+`events watch` subscribes to a workspace's live event stream and prints one JSON object per line. The resolver fills missing entity IDs from any entity flag you provide.
 
 ```bash
 leapmux remote events watch --workspace-id "$WS"
@@ -532,7 +528,7 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 
 The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
 
-> **Note:** `events watch` streams **workspace/layout** events only (the CRDT org stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+> **Note:** `events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
 
 ```bash
 # React to tab removals in a workspace
@@ -548,7 +544,7 @@ leapmux remote events watch --workspace-id "$WS" \
 export LEAPMUX_HUB=https://leapmux.example.com
 leapmux remote auth login --hub "$LEAPMUX_HUB"
 
-WS=$(leapmux remote workspace create --org-id "$ORG" --title "Bugfix" | jq -r '.data.workspace_id')
+WS=$(leapmux remote workspace create --title "Bugfix" | jq -r '.data.workspace_id')
 W=$(leapmux remote worker list | jq -r '.data[0].worker_id')
 
 T=$(leapmux remote tab open --type agent \

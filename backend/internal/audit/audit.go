@@ -17,8 +17,8 @@
 // One sibling invariant deliberately lives elsewhere:
 // internal/hub/auth's TestZeroUserIDDenies / TestEveryUserIDCarryingFuncIsClassified.
 // Its table does not merely list sites -- it drives a table-driven test whose
-// cases seed real orgs, blank-owner rows, and control assertions against a live
-// store. Moving the list here would separate it from the fixtures that prove
+// cases seed real users/workspaces, blank-owner rows, and control
+// assertions against a live store. Moving the list here would separate it from the fixtures that prove
 // each entry actually denies, which is the only thing that makes that net worth
 // having. A registry of names belongs here; a registry of names plus the
 // evidence for each belongs with the evidence.

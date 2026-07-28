@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,21 +39,21 @@ func newControllableOutbox() *controllableOutbox {
 	return &controllableOutbox{nextID: 0}
 }
 
-func (o *controllableOutbox) push(orgID string, opType crdt.LifecycleOpType, payload []byte) int64 {
+func (o *controllableOutbox) push(userID string, opType crdt.LifecycleOpType, payload []byte) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextID++
-	row := crdt.LifecycleOutboxRow{ID: o.nextID, OrgID: orgID, OpType: opType, Payload: payload}
+	row := crdt.LifecycleOutboxRow{ID: o.nextID, UserID: userID, OpType: opType, Payload: payload}
 	o.pending = append(o.pending, row)
 	return row.ID
 }
 
-func (o *controllableOutbox) ListPendingLifecycleOutbox(_ context.Context, orgID string) ([]crdt.LifecycleOutboxRow, error) {
+func (o *controllableOutbox) ListPendingLifecycleOutbox(_ context.Context, userID string) ([]crdt.LifecycleOutboxRow, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	out := make([]crdt.LifecycleOutboxRow, 0, len(o.pending))
 	for _, row := range o.pending {
-		if row.OrgID == orgID {
+		if row.UserID == userID {
 			out = append(out, row)
 		}
 	}
@@ -88,7 +90,7 @@ func (o *controllableOutbox) consumedSnapshot() []int64 {
 // subscriber, suitable for asserting filter-expansion behavior.
 type captureSubscriber struct {
 	mu     sync.Mutex
-	events []*leapmuxv1.WatchOrgEvent
+	events []*leapmuxv1.WatchUserEvent
 }
 
 func (c *captureSubscriber) send(evt *crdt.MarshaledEvent) error {
@@ -98,10 +100,10 @@ func (c *captureSubscriber) send(evt *crdt.MarshaledEvent) error {
 	return nil
 }
 
-func (c *captureSubscriber) snapshot() []*leapmuxv1.WatchOrgEvent {
+func (c *captureSubscriber) snapshot() []*leapmuxv1.WatchUserEvent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]*leapmuxv1.WatchOrgEvent, len(c.events))
+	out := make([]*leapmuxv1.WatchUserEvent, len(c.events))
 	copy(out, c.events)
 	return out
 }
@@ -123,7 +125,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -143,12 +145,12 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 	defer unsub()
 
 	// Push a CreateWorkspace lifecycle row carrying the seed-root batch.
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -156,7 +158,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "First", RootNodeID: "root-w1",
 	}, seedOps)
 	require.NoError(t, err)
-	rowID := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	rowID := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
@@ -178,7 +180,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 	}
 	require.NotNil(t, seedBatch, "lifecycle-create-w1 batch should be committed")
 	require.NotEmpty(t, seedBatch.GetOps())
-	_, isFirstSetWorkspaceRegister := seedBatch.GetOps()[0].GetBody().(*leapmuxv1.OrgOp_SetWorkspaceRegister)
+	_, isFirstSetWorkspaceRegister := seedBatch.GetOps()[0].GetBody().(*leapmuxv1.CrdtOp_SetWorkspaceRegister)
 	assert.True(t, isFirstSetWorkspaceRegister,
 		"seed batch's first op should be SetWorkspaceRegister; got %T", seedBatch.GetOps()[0].GetBody())
 
@@ -202,7 +204,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 
 // TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent pins SWEEP-1-Create +
 // SWEEP-2: if the seed batch landed on a prior drain but the consume failed, and
-// the org then sees no lifecycle RPC for > DedupTTL, the next drain re-validates
+// the user then sees no lifecycle RPC for > DedupTTL, the next drain re-validates
 // the seed and the SetWorkspaceRootNode op rejects with ROOT_IMMUTABLE (the root
 // is already set). That rejection must be treated as idempotent success -- the
 // create already happened -- rather than rolling back, because the rollback would
@@ -222,7 +224,7 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -239,12 +241,12 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	})
 	defer unsub()
 
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -254,7 +256,7 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	// First drain: the seed lands, the row is consumed, the workspace is live.
-	row1 := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	row1 := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	require.Contains(t, outbox.consumedSnapshot(), row1)
 	mat := mgr.Materialized(crdt.SubscriberFilter{})
@@ -274,7 +276,7 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 
 	// Re-push the same create row (the consume on a prior failed drain would
 	// have left it pending; a fresh push stands in for that here) and re-drain.
-	row2 := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	row2 := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox),
 		"a re-drain whose seed hits ROOT_IMMUTABLE must be treated as idempotent success, not an error")
 	require.Contains(t, outbox.consumedSnapshot(), row2, "the re-drained row is consumed (no permanent rejection loop)")
@@ -310,7 +312,7 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -319,12 +321,12 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 		mgr.Stop()
 	})
 
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -335,14 +337,14 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 
 	// 1. Create W1, then delete it (the delete tombstones root-w1 and removes
 	//    the workspace record in one atomic batch).
-	rowCreate := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	rowCreate := outbox.push("user-1", crdt.LifecycleOpCreate, createPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	require.Contains(t, outbox.consumedSnapshot(), rowCreate)
 	deletePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
 	}, nil)
 	require.NoError(t, err)
-	rowDelete := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	rowDelete := outbox.push("user-1", crdt.LifecycleOpDelete, deletePayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	require.Contains(t, outbox.consumedSnapshot(), rowDelete)
 	raw := mgr.State()
@@ -364,7 +366,7 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 	//    the seed batch rejects with TOMBSTONED_TARGET. This must be treated as
 	//    idempotent success: no error, the row is consumed, the workspace stays
 	//    deleted (not resurrected).
-	rowRedrain := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	rowRedrain := outbox.push("user-1", crdt.LifecycleOpCreate, createPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox),
 		"a re-drained create whose root is tombstoned must be treated as idempotent success, not a permanent rejection")
 	require.Contains(t, outbox.consumedSnapshot(), rowRedrain, "the re-drained create row is consumed (no permanent rejection loop)")
@@ -395,7 +397,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -405,12 +407,12 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	})
 
 	// Create W1 so the delete has something to enumerate.
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -418,7 +420,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "First", RootNodeID: "root-w1",
 	}, seedOps)
 	require.NoError(t, err)
-	rowCreate := outbox.push("org", crdt.LifecycleOpCreate, createPayload)
+	rowCreate := outbox.push("user-1", crdt.LifecycleOpCreate, createPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	require.Contains(t, outbox.consumedSnapshot(), rowCreate)
 
@@ -427,7 +429,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
 	}, nil)
 	require.NoError(t, err)
-	rowDelete := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	rowDelete := outbox.push("user-1", crdt.LifecycleOpDelete, deletePayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	require.Contains(t, outbox.consumedSnapshot(), rowDelete)
 	raw := mgr.State()
@@ -445,7 +447,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	// Re-drain the delete. Every op in the delete batch is idempotent, so the
 	// re-validation sees the already-tombstoned state and re-commits cleanly --
 	// no rejection, the row is consumed.
-	rowRedrain := outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	rowRedrain := outbox.push("user-1", crdt.LifecycleOpDelete, deletePayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox),
 		"a re-drained delete batch whose ops are all idempotent must commit, not reject")
 	require.Contains(t, outbox.consumedSnapshot(), rowRedrain, "the re-drained delete row is consumed (no permanent rejection loop)")
@@ -465,7 +467,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 // `state.workspaces[wsID].rootNodeId` and times out without the seed
 // ops, so the agent tab the user just opened never lands in the CRDT
 // projection. Production browser flow hit this every time; the E2E
-// helper masked the bug by opening a fresh `/ws/orgevents` after the
+// helper masked the bug by opening a fresh `/ws/userevents` after the
 // workspace existed.
 //
 // The contract:
@@ -490,7 +492,7 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -516,12 +518,12 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 	require.False(t, listenerSub.Filter.IsAllowed("w1"),
 		"precondition: subscriber's connect-time filter does NOT include the new workspace")
 
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -529,7 +531,7 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "Fresh", RootNodeID: "root-w1",
 	}, seedOps)
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpCreate, payload)
+	outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
 	// Postcondition: filter is now expanded.
@@ -543,21 +545,21 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 	var sawRootMaterialized, sawWorkspaceRootOp, sawCreated bool
 	for _, evt := range listener.snapshot() {
 		switch e := evt.GetEvent().(type) {
-		case *leapmuxv1.WatchOrgEvent_EntityMaterialized:
+		case *leapmuxv1.WatchUserEvent_EntityMaterialized:
 			node := e.EntityMaterialized.GetNode()
 			if node != nil && node.GetNodeId() == "root-w1" {
 				sawRootMaterialized = true
 			}
-		case *leapmuxv1.WatchOrgEvent_Batch:
+		case *leapmuxv1.WatchUserEvent_Batch:
 			for _, op := range e.Batch.GetOps() {
-				if body, ok := op.GetBody().(*leapmuxv1.OrgOp_SetWorkspaceRootNode); ok {
+				if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetWorkspaceRootNode); ok {
 					if body.SetWorkspaceRootNode.GetWorkspaceId() == "w1" &&
 						body.SetWorkspaceRootNode.GetRootNodeId() == "root-w1" {
 						sawWorkspaceRootOp = true
 					}
 				}
 			}
-		case *leapmuxv1.WatchOrgEvent_Created:
+		case *leapmuxv1.WatchUserEvent_Created:
 			if e.Created.GetWorkspaceId() == "w1" {
 				sawCreated = true
 			}
@@ -590,7 +592,7 @@ func TestExpandSubscribersForWorkspace_RespectsACL(t *testing.T) {
 		"ok-user": {"w1": true},
 		// denied-user not present — CanAccessWorkspace returns false.
 	}}
-	mgr := crdt.NewManager("org", j, auth, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -643,7 +645,7 @@ func TestExpandSubscribersForWorkspace_BatchPath(t *testing.T) {
 	auth := &perUserOwnerBatch{perUserOwner: perUserOwner{allowed: map[string]map[string]bool{
 		"ok-user": {"w1": true},
 	}}}
-	mgr := crdt.NewManager("org", j, auth, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -686,7 +688,7 @@ type erroringBatch struct {
 	err error
 }
 
-func (e *erroringBatch) CanAccessWorkspaceForUsers(_ context.Context, _, _ string, _ []string) (map[string]bool, error) {
+func (e *erroringBatch) CanAccessWorkspaceForUsers(_ context.Context, _ string, _ []string) (map[string]bool, error) {
 	return nil, e.err
 }
 
@@ -707,7 +709,7 @@ func TestExpandSubscribersForWorkspace_PropagatesLookupError(t *testing.T) {
 		perUserOwner: perUserOwner{allowed: map[string]map[string]bool{"ok-user": {"w1": true}}},
 		err:          wantErr,
 	}
-	mgr := crdt.NewManager("org", j, auth, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -734,7 +736,7 @@ func TestExpandSubscribersForWorkspace_PropagatesLookupError(t *testing.T) {
 
 func TestExpandSubscribersForWorkspace_RespectsImmutableWorkspaceScope(t *testing.T) {
 	j := newFakeJournal()
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, time.Now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, time.Now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -779,7 +781,7 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -793,43 +795,43 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Add a tab + a child leaf under root-w1.
-	splitToSplit := &leapmuxv1.OrgOp{OpId: "op-rootkind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	splitToSplit := &leapmuxv1.CrdtOp{OpId: "op-rootkind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "root-w1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_SPLIT},
 	}}}
-	splitDir := &leapmuxv1.OrgOp{OpId: "op-rootdir", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	splitDir := &leapmuxv1.CrdtOp{OpId: "op-rootdir", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "root-w1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Direction{Direction: leapmuxv1.SplitDirection_SPLIT_DIRECTION_HORIZONTAL},
 	}}}
-	splitRatios := &leapmuxv1.OrgOp{OpId: "op-rootratios", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	splitRatios := &leapmuxv1.CrdtOp{OpId: "op-rootratios", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "root-w1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Ratios{Ratios: &leapmuxv1.DoubleList{Values: []float64{1.0}}},
 	}}}
-	childKind := &leapmuxv1.OrgOp{OpId: "op-childkind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	childKind := &leapmuxv1.CrdtOp{OpId: "op-childkind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "leaf-1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 	}}}
-	childParent := &leapmuxv1.OrgOp{OpId: "op-childparent", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	childParent := &leapmuxv1.CrdtOp{OpId: "op-childparent", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "leaf-1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root-w1"},
 	}}}
-	childPos := &leapmuxv1.OrgOp{OpId: "op-childpos", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	childPos := &leapmuxv1.CrdtOp{OpId: "op-childpos", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 		NodeId: "leaf-1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "N"},
 	}}}
 	splitBatch := &leapmuxv1.OpBatch{
 		BatchId: "split-batch",
-		Ops:     []*leapmuxv1.OrgOp{splitToSplit, splitDir, splitRatios, childKind, childParent, childPos},
+		Ops:     []*leapmuxv1.CrdtOp{splitToSplit, splitDir, splitRatios, childKind, childParent, childPos},
 	}
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{splitBatch},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res[0].GetCommitted(), "split batch should commit; got %v", res[0])
 
 	tabRes, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "tab-batch", "tab-1", "leaf-1", "wkr-1", "p1")},
 	})
 	require.NoError(t, err)
@@ -840,7 +842,7 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1", WorkerIDs: []string{"wkr-1"},
 	}, nil)
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpDelete, delPayload)
+	outbox.push("user-1", crdt.LifecycleOpDelete, delPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
 	// The delete batch landed on the journal with a TombstoneWorkspace op
@@ -858,7 +860,7 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 	require.NotNil(t, delBatch, "lifecycle-delete-w1 batch should be committed")
 	require.NotEmpty(t, delBatch.GetOps())
 	lastOp := delBatch.GetOps()[len(delBatch.GetOps())-1]
-	_, isLastTombstoneWorkspace := lastOp.GetBody().(*leapmuxv1.OrgOp_TombstoneWorkspace)
+	_, isLastTombstoneWorkspace := lastOp.GetBody().(*leapmuxv1.CrdtOp_TombstoneWorkspace)
 	assert.True(t, isLastTombstoneWorkspace,
 		"delete batch's last op should be TombstoneWorkspace; got %T", lastOp.GetBody())
 
@@ -904,7 +906,7 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -917,10 +919,9 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 	// via SubmitInternal SetWorkspaceRegister — the lifecycle-create shape
 	// minus the root, keeping the manager goroutine the sole writer.
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org",
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-record-w1", Ops: []*leapmuxv1.OrgOp{{
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-record-w1", Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "seed-record-w1",
-			Body: &leapmuxv1.OrgOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
+			Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
 				WorkspaceId: "w1",
 			}},
 		}}}},
@@ -932,7 +933,7 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
 	}, nil)
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpDelete, delPayload)
+	outbox.push("user-1", crdt.LifecycleOpDelete, delPayload)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
 	// The delete batch landed as a single TombstoneWorkspace op.
@@ -945,7 +946,7 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 	}
 	require.NotNil(t, delBatch, "lifecycle-delete-w1 batch should be committed")
 	require.Len(t, delBatch.GetOps(), 1, "empty-workspace delete batch should be a single TombstoneWorkspace op")
-	_, isTombstoneWorkspace := delBatch.GetOps()[0].GetBody().(*leapmuxv1.OrgOp_TombstoneWorkspace)
+	_, isTombstoneWorkspace := delBatch.GetOps()[0].GetBody().(*leapmuxv1.CrdtOp_TombstoneWorkspace)
 	assert.True(t, isTombstoneWorkspace, "the single op should be TombstoneWorkspace")
 
 	// Workspace record is gone.
@@ -973,7 +974,7 @@ func TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -998,12 +999,12 @@ func TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending
 	j.commitErr = errCommitFailed
 	j.mu.Unlock()
 
-	seedOps := []*leapmuxv1.OrgOp{
-		{OpId: "seed-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	seedOps := []*leapmuxv1.CrdtOp{
+		{OpId: "seed-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -1011,7 +1012,7 @@ func TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "Fresh", RootNodeID: "root-w1",
 	}, seedOps)
 	require.NoError(t, err)
-	rowID := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	rowID := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 
 	drainErr := mgr.SubmitLifecycle(context.Background(), outbox)
 	require.Error(t, drainErr, "transient SubmitInternal failure must surface from SubmitLifecycle")
@@ -1057,7 +1058,7 @@ func TestLifecycleDelete_ThenCreate_NewSeedSucceeds(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1069,17 +1070,17 @@ func TestLifecycleDelete_ThenCreate_NewSeedSucceeds(t *testing.T) {
 	// Create W1.
 	createW1, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w1", Title: "First", RootNodeID: "root-w1",
-	}, []*leapmuxv1.OrgOp{
-		{OpId: "w1-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	}, []*leapmuxv1.CrdtOp{
+		{OpId: "w1-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "w1-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "w1-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	})
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpCreate, createW1)
+	outbox.push("user-1", crdt.LifecycleOpCreate, createW1)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
 	// Delete W1.
@@ -1087,23 +1088,23 @@ func TestLifecycleDelete_ThenCreate_NewSeedSucceeds(t *testing.T) {
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
 	}, nil)
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpDelete, deleteW1)
+	outbox.push("user-1", crdt.LifecycleOpDelete, deleteW1)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox))
 
 	// Create W2 with a fresh root.
 	createW2, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "w2", Title: "Second", RootNodeID: "root-w2",
-	}, []*leapmuxv1.OrgOp{
-		{OpId: "w2-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	}, []*leapmuxv1.CrdtOp{
+		{OpId: "w2-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-w2",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "w2-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "w2-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w2", RootNodeId: "root-w2",
 		}}},
 	})
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpCreate, createW2)
+	outbox.push("user-1", crdt.LifecycleOpCreate, createW2)
 	require.NoError(t, mgr.SubmitLifecycle(context.Background(), outbox), "create W2 must succeed after W1 delete")
 
 	// W2's seed root must be live and registered.
@@ -1138,7 +1139,7 @@ func (c *perWorkspaceFailBatch) setFail(ws string, err error) {
 	}
 }
 
-func (c *perWorkspaceFailBatch) CanAccessWorkspaceForUsers(_ context.Context, _, workspaceID string, userIDs []string) (map[string]bool, error) {
+func (c *perWorkspaceFailBatch) CanAccessWorkspaceForUsers(_ context.Context, workspaceID string, userIDs []string) (map[string]bool, error) {
 	c.mu.Lock()
 	err := c.failFor[workspaceID]
 	c.mu.Unlock()
@@ -1156,7 +1157,7 @@ func (c *perWorkspaceFailBatch) CanAccessWorkspaceForUsers(_ context.Context, _,
 // skip-and-continue drain: a persistently-failing create for one workspace must
 // not block INDEPENDENT workspaces' rows behind it, yet every LATER row for the
 // SAME workspace must be deferred with it so per-workspace order holds. Aborting
-// the whole batch on the first error stranded independent rows until unrelated org
+// the whole batch on the first error stranded independent rows until unrelated user
 // activity happened to drain while the fault was clear.
 func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.T) {
 	outbox := newControllableOutbox()
@@ -1176,7 +1177,7 @@ func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.
 		perUserOwner: perUserOwner{allowed: map[string]map[string]bool{"user-1": {"wA": true, "wB": true}}},
 	}
 	auth.setFail("wA", wantErr)
-	mgr := crdt.NewManager("org", j, auth, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1197,11 +1198,11 @@ func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.
 	createRow := func(ws, root string) []byte {
 		p, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 			OpType: crdt.LifecycleOpCreate, WorkspaceID: ws, Title: ws, RootNodeID: root,
-		}, []*leapmuxv1.OrgOp{
-			{OpId: ws + "-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+		}, []*leapmuxv1.CrdtOp{
+			{OpId: ws + "-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 				NodeId: root, Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 			}}},
-			{OpId: ws + "-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			{OpId: ws + "-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 				WorkspaceId: ws, RootNodeId: root,
 			}}},
 		})
@@ -1215,9 +1216,9 @@ func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.
 
 	// Rows in id order: create wA (faults), create wB (independent, succeeds),
 	// rename wA (same workspace as the failed create -> must be deferred).
-	createA := outbox.push("org", crdt.LifecycleOpCreate, createRow("wA", "root-wA"))
-	createB := outbox.push("org", crdt.LifecycleOpCreate, createRow("wB", "root-wB"))
-	renameAID := outbox.push("org", crdt.LifecycleOpRename, renameA)
+	createA := outbox.push("user-1", crdt.LifecycleOpCreate, createRow("wA", "root-wA"))
+	createB := outbox.push("user-1", crdt.LifecycleOpCreate, createRow("wB", "root-wB"))
+	renameAID := outbox.push("user-1", crdt.LifecycleOpRename, renameA)
 
 	// The drain surfaces wA's fault but must not abort wB.
 	err = mgr.SubmitLifecycle(context.Background(), outbox)
@@ -1247,7 +1248,7 @@ func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.
 // since an apply failure is most often transient), but it must not re-log at
 // Error on every drain -- one Error on the first sighting, Warn on the repeats,
 // mirroring the decode-failure path's undecodableLogged. Without the dedup a
-// persistently-failing row would re-log Error on every lifecycle RPC in the org
+// persistently-failing row would re-log Error on every lifecycle RPC for the user
 // for as long as the fault lasts.
 func TestSubmitLifecycle_ApplyFailureDedupsLogAcrossDrains(t *testing.T) {
 	outbox := newControllableOutbox()
@@ -1273,7 +1274,7 @@ func TestSubmitLifecycle_ApplyFailureDedupsLogAcrossDrains(t *testing.T) {
 		perUserOwner: perUserOwner{allowed: map[string]map[string]bool{"user-1": {"wF": true}}},
 	}
 	auth.setFail("wF", wantErr)
-	mgr := crdt.NewManager("org", j, auth, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1291,16 +1292,16 @@ func TestSubmitLifecycle_ApplyFailureDedupsLogAcrossDrains(t *testing.T) {
 
 	payload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 		OpType: crdt.LifecycleOpCreate, WorkspaceID: "wF", Title: "wF", RootNodeID: "root-wF",
-	}, []*leapmuxv1.OrgOp{
-		{OpId: "wF-kind", Body: &leapmuxv1.OrgOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+	}, []*leapmuxv1.CrdtOp{
+		{OpId: "wF-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-wF", Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "wF-register", Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "wF-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "wF", RootNodeId: "root-wF",
 		}}},
 	})
 	require.NoError(t, err)
-	badRow := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	badRow := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 
 	// First drain: the row fails to apply, logs Error once, stays pending.
 	require.ErrorIs(t, mgr.SubmitLifecycle(context.Background(), outbox), wantErr)
@@ -1327,7 +1328,7 @@ func TestSubmitLifecycle_ApplyFailureDedupsLogAcrossDrains(t *testing.T) {
 	// dedup entry was cleared on success, so a later failure is a new incident.
 	auth.setFail("wF", errors.New("a different, later fault"))
 	// Re-push the row (it was consumed on success) to observe a fresh failure.
-	badRow2 := outbox.push("org", crdt.LifecycleOpCreate, payload)
+	badRow2 := outbox.push("user-1", crdt.LifecycleOpCreate, payload)
 	require.Error(t, mgr.SubmitLifecycle(context.Background(), outbox))
 	assert.Equal(t, 2, captured.count(slog.LevelError),
 		"a failure after a prior success is a new incident (the dedup entry was cleared on success)")
@@ -1379,7 +1380,7 @@ func TestSubmitLifecycle_UndecodableRowIsDiscardedWithoutAbortingTheBatch(t *tes
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1389,12 +1390,12 @@ func TestSubmitLifecycle_UndecodableRowIsDiscardedWithoutAbortingTheBatch(t *tes
 	})
 
 	// A corrupt row (non-JSON payload) followed by a well-formed rename.
-	badRow := outbox.push("org", crdt.LifecycleOpCreate, []byte("}{ not json"))
+	badRow := outbox.push("user-1", crdt.LifecycleOpCreate, []byte("}{ not json"))
 	renamePayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
 		OpType: crdt.LifecycleOpRename, WorkspaceID: "wZ", NewTitle: "wZ-renamed",
 	}, nil)
 	require.NoError(t, err)
-	renameRow := outbox.push("org", crdt.LifecycleOpRename, renamePayload)
+	renameRow := outbox.push("user-1", crdt.LifecycleOpRename, renamePayload)
 
 	err = mgr.SubmitLifecycle(context.Background(), outbox)
 	require.Error(t, err, "the decode failure must be surfaced")
@@ -1429,7 +1430,7 @@ func TestBroadcastWorkspaceCreated_ExpandsFilter_ForReadableUsers(t *testing.T) 
 	// onlyOwner{allowed: ...} maps workspaceID -> allowed; CanAccessWorkspace
 	// shares the same allowed set in this test helper.
 	auth := onlyOwner{allowed: map[string]bool{"new-ws": true}}
-	mgr := crdt.NewManager("org", j, auth, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1460,7 +1461,7 @@ func TestBroadcastWorkspaceCreated_ExpandsFilter_ForReadableUsers(t *testing.T) 
 	// onlyOwner ignores principalID — both users hit the same allowed
 	// set. To exercise the "denied user doesn't get the event" path,
 	// flip the auth checker to a per-user-aware one.
-	mgrPerUser := crdt.NewManager("org2", j, perUserOwner{
+	mgrPerUser := crdt.NewManager(userid.MustNew("org2"), j, perUserOwner{
 		allowed: map[string]map[string]bool{
 			"ok-user": {"new-ws": true},
 			// denied-user not present → CanAccessWorkspace returns false.
@@ -1518,15 +1519,15 @@ func TestBroadcastWorkspaceCreated_ExpandsFilter_ForReadableUsers(t *testing.T) 
 
 // perUserOwner is an AuthChecker variant that keys access by both
 // userID and workspaceID, used by the broadcast filter-expansion test
-// where the two subscribers share an org but have different access.
+// where the two subscribers share a user doc but have different access.
 type perUserOwner struct {
 	allowed map[string]map[string]bool
 }
 
-func (p perUserOwner) CanAccessWorkspace(_ context.Context, _, workspaceID, principalID string) (bool, error) {
+func (p perUserOwner) CanAccessWorkspace(_ context.Context, workspaceID, principalID string) (bool, error) {
 	return p.allowed[principalID][workspaceID], nil
 }
-func (perUserOwner) CanUseWorker(_ context.Context, _, _, _ string) (bool, error) { return true, nil }
+func (perUserOwner) CanUseWorker(_ context.Context, _, _ string) (bool, error) { return true, nil }
 
 // perUserOwnerBatch adds the optional workspaceReaderBatch capability to
 // perUserOwner so the batch-dispatch path in ExpandSubscribersForWorkspace is
@@ -1538,7 +1539,7 @@ type perUserOwnerBatch struct {
 	calls int
 }
 
-func (p *perUserOwnerBatch) CanAccessWorkspaceForUsers(_ context.Context, _, workspaceID string, userIDs []string) (map[string]bool, error) {
+func (p *perUserOwnerBatch) CanAccessWorkspaceForUsers(_ context.Context, workspaceID string, userIDs []string) (map[string]bool, error) {
 	p.mu.Lock()
 	p.calls++
 	p.mu.Unlock()
@@ -1568,7 +1569,7 @@ func (p *perUserOwnerBatch) batchCalls() int {
 // drain's ListPending must not begin until the first drain's whole
 // list-process-consume pass has returned.
 func TestSubmitLifecycle_SerializesConcurrentDrains(t *testing.T) {
-	mgr := crdt.NewManager("org", newFakeJournal(), allowAll{}, nil, time.Now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), newFakeJournal(), allowAll{}, nil, time.Now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 
 	reader := &gatedOutbox{
@@ -1630,7 +1631,7 @@ func (o *gatedOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.T
 // When a corrupt row's consume keeps failing (a transient DB write fault), the
 // row stays pending and the next drain re-decodes it. The Error log must fire
 // ONCE -- not once per drain -- or one bad row amplifies into permanent log
-// noise tied to every lifecycle RPC in the org. The dedupe logs Error on the
+// noise tied to every lifecycle RPC for the user. The dedupe logs Error on the
 // first sighting and Warn on the repeats; once the consume finally succeeds the
 // row is gone and its dedupe entry is cleared.
 func TestSubmitLifecycle_UndecodableRowErrorIsDedupedAcrossDrains(t *testing.T) {
@@ -1649,7 +1650,7 @@ func TestSubmitLifecycle_UndecodableRowErrorIsDedupedAcrossDrains(t *testing.T) 
 	}
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := crdt.NewManager("org", j, allowAll{}, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1658,7 +1659,7 @@ func TestSubmitLifecycle_UndecodableRowErrorIsDedupedAcrossDrains(t *testing.T) 
 		mgr.Stop()
 	})
 
-	outbox.push("org", crdt.LifecycleOpCreate, []byte("}{ not json"))
+	outbox.push("user-1", crdt.LifecycleOpCreate, []byte("}{ not json"))
 
 	// First drain: consume fails, row stays pending, Error fires.
 	require.Error(t, mgr.SubmitLifecycle(context.Background(), outbox))
@@ -1689,7 +1690,7 @@ func TestSubmitLifecycle_UndecodableRowErrorIsDedupedAcrossDrains(t *testing.T) 
 // already reflects the delete (the tombstone batch ran and the Workspaces entry
 // is gone), so delaying the subscriber-visible event behind outbox bookkeeping
 // would leave subscribers routing tabs to a dead workspace until some later
-// lifecycle RPC re-drained -- which for a delete that removed the org's last
+// lifecycle RPC re-drained -- which for a delete that removed the user's last
 // workspace may not come for a long time. The broadcast runs before the consume;
 // a later successful re-drain re-broadcasts, which is idempotent.
 func TestSubmitLifecycle_DeleteBroadcastsEvenWhenConsumeFails(t *testing.T) {
@@ -1705,7 +1706,7 @@ func TestSubmitLifecycle_DeleteBroadcastsEvenWhenConsumeFails(t *testing.T) {
 		clock++
 		return time.UnixMilli(clock)
 	}
-	mgr := crdt.NewManager("org", j, allowAll{}, nil, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -1732,7 +1733,7 @@ func TestSubmitLifecycle_DeleteBroadcastsEvenWhenConsumeFails(t *testing.T) {
 		OpType: crdt.LifecycleOpDelete, WorkspaceID: "wDel",
 	}, nil)
 	require.NoError(t, err)
-	outbox.push("org", crdt.LifecycleOpDelete, deletePayload)
+	outbox.push("user-1", crdt.LifecycleOpDelete, deletePayload)
 
 	require.Error(t, mgr.SubmitLifecycle(context.Background(), outbox),
 		"the consume failure must be surfaced")

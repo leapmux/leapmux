@@ -148,12 +148,12 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should allow closing file tabs in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree and open a file tab
@@ -192,12 +192,12 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should hide tree mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Mention', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Mention')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load
@@ -238,12 +238,12 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should hide file mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No File Mention', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No File Mention')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree and open a file tab
@@ -287,7 +287,7 @@ test.describe('Workspace Archive', () => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
 
     // Navigate away so we can see delete result
-    await page.goto('/o/admin')
+    await page.goto('/')
     await expect(workspaceItem).toBeVisible()
 
     // Open context menu and click Delete

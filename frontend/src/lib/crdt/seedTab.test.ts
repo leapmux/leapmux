@@ -1,8 +1,8 @@
 import type { CRDTBridge } from './bridge'
-import type { OpBatch } from '~/generated/leapmux/v1/org_ops_pb'
+import type { OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { OrgCrdtStateSchema, WorkspaceContentsRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
+import { UserCrdtStateSchema, WorkspaceContentsRecordSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from './bridge'
 import { HLCClock } from './hlc'
@@ -11,8 +11,8 @@ import { seedTabIntoNewWorkspace } from './seedTab'
 function installBridge(wsId: string, rootNodeId: string | null) {
   const enqueued: OpBatch[] = []
   const state = rootNodeId
-    ? create(OrgCrdtStateSchema, {
-        orgId: 'o-1',
+    ? create(UserCrdtStateSchema, {
+        userId: 'user-1',
         workspaces: {
           [wsId]: create(WorkspaceContentsRecordSchema, {
             workspaceId: wsId,
@@ -20,9 +20,8 @@ function installBridge(wsId: string, rootNodeId: string | null) {
           }),
         },
       })
-    : create(OrgCrdtStateSchema, { orgId: 'o-1' })
+    : create(UserCrdtStateSchema, { userId: 'user-1' })
   const bridge: CRDTBridge = {
-    orgId: () => 'o-1',
     workspaceId: () => wsId,
     enqueue: (batch) => {
       enqueued.push(batch)

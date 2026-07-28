@@ -325,9 +325,8 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_REMOTE_CONFIG_DIR` | `remote` | Override the credential/pin directory (default `~/.config/leapmux/remote`) |
 | `LEAPMUX_REMOTE_SOCK` | spawned agents | Local IPC socket URL (selects local-IPC transport) |
 | `LEAPMUX_REMOTE_TOKEN` | spawned agents | Per-process bearer token for the local IPC socket |
-| `LEAPMUX_REMOTE_USER_ID` | spawned agents | Authenticated user ID (entity default) |
+| `LEAPMUX_REMOTE_USER_ID` | spawned agents | Authenticated user ID (informational; no flag defaults from it) |
 | `LEAPMUX_REMOTE_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
-| `LEAPMUX_REMOTE_ORG_ID` | spawned agents | Org ID (default for `--org-id`) |
 | `LEAPMUX_REMOTE_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
 | `LEAPMUX_REMOTE_TAB_TYPE` | spawned agents | `agent`, `terminal`, or `file` |
 | `LEAPMUX_REMOTE_WORKING_DIR` | spawned agents | Working directory at spawn |

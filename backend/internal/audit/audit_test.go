@@ -20,7 +20,7 @@ import (
 // Import paths the rules recognise calls by. They are matched through
 // testutil.ImportedAs rather than by the identifier at the call site, because
 // every one of these rules is a net: a file that writes
-// `uid "…/internal/util/userid"` and then `uid.MustNew(row.UserID)` must not be
+// `uid "internal/util/userid"` and then `uid.MustNew(row.UserID)` must not be
 // invisible to the rule that exists to catch exactly that call.
 const (
 	useridPkg = "github.com/leapmux/leapmux/internal/util/userid"
@@ -37,6 +37,7 @@ const (
 	useridDir    = "internal/util/userid"
 	workermgrDir = "internal/hub/workermgr"
 	authDir      = "internal/hub/auth"
+	storeDir     = "internal/hub/store"
 )
 
 // repoRoot is the backend module root, two levels up from internal/audit.
@@ -56,14 +57,9 @@ func TestRepoInvariants(t *testing.T) {
 	// One parse, shared by the AST rules. Walking once is the point of merging
 	// these: three of them previously walked their own package and were blind
 	// to everything outside it.
-	type parsed struct {
-		fset *token.FileSet
-		rel  string
-		file *ast.File
-	}
-	var files []parsed
+	var files []parsedFile
 	scanned := testutil.ForEachRepoSourceFile(t, root, func(fset *token.FileSet, rel string, file *ast.File) {
-		files = append(files, parsed{fset, rel, file})
+		files = append(files, parsedFile{fset, rel, file})
 	})
 	// A walk that silently stops finding source is the one way a repo-wide net
 	// rots while staying green.
@@ -194,43 +190,6 @@ func TestRepoInvariants(t *testing.T) {
 		}
 	})
 
-	t.Run("org-check skips are classified", func(t *testing.T) {
-		var unclassified []string
-		seen := map[string]bool{}
-
-		for _, f := range files {
-			enclosing := testutil.NewEnclosingFuncFinder(f.file)
-			authAlias, _ := testutil.ImportedAs(f.file, authPkg)
-			inAuthPkg := packageDir(f.rel) == authDir
-			forEachSymbolRef(f.file, func(ref symbolRef) {
-				if !isAnyOrgCall(authAlias, inAuthPkg, ref) {
-					return
-				}
-				where := position(f.fset, ref.pos, f.rel)
-				fn, inFunc := enclosing.Find(ref.pos)
-				if !inFunc {
-					unclassified = append(unclassified, fmt.Sprintf(
-						"%s: package-level AnyOrg() belongs to no function, so it can never be classified", where))
-					return
-				}
-				name := siteKey(f.rel, fn)
-				seen[name] = true
-				if _, ok := orgCheckSkipSites[name]; !ok {
-					unclassified = append(unclassified, fmt.Sprintf(
-						"%s: %s() calls auth.AnyOrg(), skipping the organization check -- bind the caller's org, or add an orgCheckSkipSites entry with the reason",
-						where, name))
-				}
-			})
-		}
-
-		for _, msg := range unclassified {
-			assert.Fail(t, "unclassified org-check skip", "%s", msg)
-		}
-		assert.NotEmpty(t, seen, "the AnyOrg scan matched nothing; the detection is broken, not the code")
-		assertNoStaleEntries(t, orgCheckSkipSites, seen,
-			"orgCheckSkipSites lists %q but no auth.AnyOrg() call was found in it -- remove the stale entry or restore the call")
-	})
-
 	t.Run("MustNew is never called on stored data", func(t *testing.T) {
 		matched := 0
 		for _, f := range files {
@@ -338,11 +297,29 @@ func TestRepoInvariants(t *testing.T) {
 	})
 
 	t.Run("ownership queries refuse an unminted caller", func(t *testing.T) {
-		checkOwnerFilterCoverage(t, root)
+		checkOwnerFilterCoverage(t, root, files)
+	})
+
+	t.Run("runtime-composed ownership SQL refuses an unminted caller", func(t *testing.T) {
+		checkHandBuiltOwnerSQL(t, root)
+	})
+
+	t.Run("owner-keyed rows are never read by the non-owner half of their key", func(t *testing.T) {
+		checkOwnerScopedQueries(t, root)
 	})
 }
 
 // ---- shared helpers ----
+
+// parsedFile is one parsed repo source file, carried by the shared walk so
+// every AST rule reads the same parse rather than re-walking its own subtree.
+// The repo-relative path travels with it because every rule keys and reports on
+// the path, not on the package name (see packageDir).
+type parsedFile struct {
+	fset *token.FileSet
+	rel  string
+	file *ast.File
+}
 
 // symbolRef is one reference to a named symbol: `pkg.Name` / `recv.Name` (sel
 // set), or a bare `Name` heading a call (ident set). call is the call the
@@ -378,7 +355,7 @@ func (r symbolRef) name() string {
 // forEachSymbolRef visits every selector expression in file, plus every bare
 // identifier that heads a call. Bare identifiers are limited to call position
 // because every local variable read is one otherwise; the unqualified shapes
-// these rules care about (a package's own IsOwner / MustNew / AnyOrg) are all
+// these rules care about (a package's own IsOwner / MustNew) are all
 // calls.
 func forEachSymbolRef(file *ast.File, visit func(symbolRef)) {
 	heads := map[ast.Expr]*ast.CallExpr{}
@@ -893,19 +870,6 @@ func isIdentityComparison(authAlias string, inAuthPkg bool, ref symbolRef) bool 
 		return false
 	}
 	return true
-}
-
-// isAnyOrgCall reports whether ref names auth.AnyOrg -- spelled through
-// whatever identifier the file imported hub/auth as, or bare inside package
-// auth itself. AnyOrg is the ONLY constructor that skips the organization
-// binding, so this is the whole population of org-check carve-outs.
-func isAnyOrgCall(authAlias string, inAuthPkg bool, ref symbolRef) bool {
-	if ref.sel == nil {
-		// A bare AnyOrg is auth's own only inside package auth; anywhere else
-		// it names some unrelated helper.
-		return inAuthPkg && ref.ident.Name == "AnyOrg"
-	}
-	return ref.sel.Sel.Name == "AnyOrg" && isPkgIdent(authAlias, ref.sel.X)
 }
 
 // isMustNewCall reports whether ref names userid.MustNew -- spelled through

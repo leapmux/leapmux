@@ -1,6 +1,6 @@
 /**
  * Shared length-prefix framing for multiplexed channel WebSocket frames
- * (and the same BE-uint32 layout used by org-events).
+ * (and the same BE-uint32 layout used by userevents).
  *
  * Wire format: [4 bytes big-endian length][payload].
  * Encode lives next to decode so a framing change cannot desync send vs receive.

@@ -13,27 +13,27 @@ import (
 	"google.golang.org/protobuf/encoding/protodelim"
 )
 
-// A full-size org-events OrgMaterialized bootstrap (up to OrgEventsReadLimit)
+// A full-size userevents UserMaterialized bootstrap (up to UserEventsReadLimit)
 // wrapped in its Frame/Event envelope must fit the frame budget, so
 // validateFrameSize forwards it instead of silently dropping it.
-func TestFrame_MaxOrgEventsMessageFitsBudget(t *testing.T) {
+func TestFrame_MaxUserEventsMessageFitsBudget(t *testing.T) {
 	frame := &desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: &desktoppb.Event{
-			Payload: &desktoppb.Event_OrgEventsMessage{
-				OrgEventsMessage: &desktoppb.OrgEventsMessageEvent{
-					Data: make([]byte, channelwire.OrgEventsReadLimit),
+			Payload: &desktoppb.Event_UserEventsMessage{
+				UserEventsMessage: &desktoppb.UserEventsMessageEvent{
+					Data: make([]byte, channelwire.UserEventsReadLimit),
 				},
 			},
 		}},
 	}
 	require.NoError(t, validateFrameSize(frame),
-		"a full-size org-events bootstrap must fit within the frame budget")
+		"a full-size userevents bootstrap must fit within the frame budget")
 }
 
-// maxFrameSize is DERIVED on the Go side (OrgEventsReadLimit + margin) but
+// maxFrameSize is DERIVED on the Go side (UserEventsReadLimit + margin) but
 // HARDCODED as MAX_FRAME_SIZE in desktop/rust/src/main.rs. The frame.go comment
 // says the two "must stay in sync"; this guard makes that mechanical for the
-// likely drift direction. If a future OrgEventsReadLimit bump changes the Go
+// likely drift direction. If a future UserEventsReadLimit bump changes the Go
 // ceiling, this fails and forces updating the Rust constant too -- otherwise the
 // Go sidecar would emit frames the Rust proxy layer silently rejects, truncating
 // a full-size bootstrap at the Rust hop.

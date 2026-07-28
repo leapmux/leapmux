@@ -4,14 +4,14 @@ import { expectAnyVisible, loginViaToken, waitForWorkspaceReady } from './helper
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken } = leapmuxServer
     const workspaceIds: string[] = []
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Alpha', adminOrgId))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Beta', adminOrgId))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma', adminOrgId))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Alpha'))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Beta'))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma'))
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceIds[0]}`)
+      await page.goto(`/workspace/${workspaceIds[0]}`)
       await waitForWorkspaceReady(page)
 
       // All three workspaces should appear in the sidebar
@@ -27,11 +27,11 @@ test.describe('Workspace Lifecycle', () => {
   })
 
   test('should handle workspace with special characters in title', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Test - My_Workspace 2.0', adminOrgId)
+    const { hubUrl, adminToken } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Test - My_Workspace 2.0')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // The workspace with special characters should appear correctly in the sidebar
@@ -42,12 +42,12 @@ test.describe('Workspace Lifecycle', () => {
     }
   })
 
-  test('should show workspace list or empty state on org root', async ({ page, leapmuxServer }) => {
+  test('should show workspace list or empty state on app home', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
 
-    // Navigate to the org root without creating any workspaces in this test.
+    // Navigate to the app home without creating any workspaces in this test.
     // Other tests may have created workspaces, so we check for either state.
-    await page.goto('/o/admin')
+    await page.goto('/')
 
     // Wait for the sidebar to load - it should show either an empty prompt
     // or a section header (In progress / Archived) from the workspace list.

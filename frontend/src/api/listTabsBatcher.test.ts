@@ -2,11 +2,11 @@ import type { WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { listTabsForWorkspace } from './listTabsBatcher'
 
-const mockListTabs = vi.fn<(req: { orgId: string, workspaceIds: string[] }) => Promise<{ tabs: WorkspaceTab[] }>>()
+const mockListTabs = vi.fn<(req: { workspaceIds: string[] }) => Promise<{ tabs: WorkspaceTab[] }>>()
 
 vi.mock('./clients', () => ({
   workspaceClient: {
-    listTabs: (req: { orgId: string, workspaceIds: string[] }) => mockListTabs(req),
+    listTabs: (req: { workspaceIds: string[] }) => mockListTabs(req),
   },
 }))
 
@@ -32,9 +32,9 @@ describe('listTabsForWorkspace', () => {
     }))
 
     const [a, b, c] = await Promise.all([
-      listTabsForWorkspace('org', 'ws-1'),
-      listTabsForWorkspace('org', 'ws-2'),
-      listTabsForWorkspace('org', 'ws-3'),
+      listTabsForWorkspace('ws-1'),
+      listTabsForWorkspace('ws-2'),
+      listTabsForWorkspace('ws-3'),
     ])
 
     expect(mockListTabs).toHaveBeenCalledTimes(1)
@@ -50,8 +50,8 @@ describe('listTabsForWorkspace', () => {
     }))
 
     const [a, b] = await Promise.all([
-      listTabsForWorkspace('org', 'ws-1'),
-      listTabsForWorkspace('org', 'ws-1'),
+      listTabsForWorkspace('ws-1'),
+      listTabsForWorkspace('ws-1'),
     ])
 
     expect(mockListTabs).toHaveBeenCalledTimes(1)
@@ -60,55 +60,50 @@ describe('listTabsForWorkspace', () => {
     expect(a.tabs.map(t => t.tabId)).toEqual(['ws-1-x'])
   })
 
-  it('keeps batches separate across orgs', async () => {
-    mockListTabs.mockImplementation(async ({ orgId, workspaceIds }) => ({
-      tabs: workspaceIds.map(id => tab(id, `${orgId}:${id}`)),
-    }))
-
-    await Promise.all([
-      listTabsForWorkspace('orgA', 'ws-1'),
-      listTabsForWorkspace('orgB', 'ws-1'),
-    ])
-
-    expect(mockListTabs).toHaveBeenCalledTimes(2)
-    const calledOrgs = mockListTabs.mock.calls.map(c => c[0].orgId).sort()
-    expect(calledOrgs).toEqual(['orgA', 'orgB'])
-  })
-
   it('returns an empty tabs list when the server omits a requested workspace', async () => {
     mockListTabs.mockImplementation(async () => ({
       tabs: [tab('ws-1', 'a')], // ws-2 silently dropped
     }))
 
-    const [one, two] = await Promise.all([
-      listTabsForWorkspace('org', 'ws-1'),
-      listTabsForWorkspace('org', 'ws-2'),
+    const [a, b] = await Promise.all([
+      listTabsForWorkspace('ws-1'),
+      listTabsForWorkspace('ws-2'),
     ])
 
-    expect(one.tabs.map(t => t.tabId)).toEqual(['a'])
-    expect(two.tabs).toEqual([])
+    expect(a.tabs.map(t => t.tabId)).toEqual(['a'])
+    expect(b.tabs).toEqual([])
   })
 
-  it('rejects every waiter when the RPC fails', async () => {
+  it('rejects every waiter with the same error instance when the RPC fails', async () => {
+    // Asserting the identity, not just the rejected status: a `catch` that
+    // swallows and re-wraps would still leave every waiter rejected, so a
+    // status-only assertion cannot tell the two apart.
     const boom = new Error('boom')
-    mockListTabs.mockImplementation(async () => {
-      throw boom
-    })
+    mockListTabs.mockRejectedValue(boom)
 
-    const p1 = listTabsForWorkspace('org', 'ws-1')
-    const p2 = listTabsForWorkspace('org', 'ws-2')
+    // Start both before awaiting so they share one batch.
+    const p1 = listTabsForWorkspace('ws-1')
+    const p2 = listTabsForWorkspace('ws-2')
 
     await expect(p1).rejects.toBe(boom)
     await expect(p2).rejects.toBe(boom)
   })
 
   it('starts a new batch after the previous microtask has flushed', async () => {
+    // `createBatch` clears `pendingBatch` BEFORE awaiting the RPC, so a call
+    // arriving after the flush opens a fresh batch instead of attaching to the
+    // spent one. Without that reset (or with its identity check inverted), the
+    // second call's resolver is added to a batch whose `flushBatch` has already
+    // returned -- so its promise never settles, and because `inflightCache`
+    // only deletes its key in a `finally`, every retry dedupes onto the same
+    // dead promise. The user sees a workspace's tab tree spin forever with no
+    // request in flight and no error.
     mockListTabs.mockImplementation(async ({ workspaceIds }) => ({
-      tabs: workspaceIds.map(id => tab(id, `${id}-x`)),
+      tabs: workspaceIds.map((id: string) => tab(id, 'x')),
     }))
 
-    await listTabsForWorkspace('org', 'ws-1')
-    await listTabsForWorkspace('org', 'ws-2')
+    await listTabsForWorkspace('ws-1')
+    await listTabsForWorkspace('ws-2')
 
     expect(mockListTabs).toHaveBeenCalledTimes(2)
     expect(mockListTabs.mock.calls[0][0].workspaceIds).toEqual(['ws-1'])

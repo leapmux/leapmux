@@ -115,7 +115,7 @@ type Service struct {
 	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
-	// FileTabPaths persists (org_id, tab_id) -> (workspace_id,
+	// FileTabPaths persists (user_id, tab_id) -> (workspace_id,
 	// file_path) for FILE-typed tabs. Always non-nil after New.
 	// The hub never sees these rows; clients fetch paths over E2EE.
 	FileTabPaths *FileTabPathStore

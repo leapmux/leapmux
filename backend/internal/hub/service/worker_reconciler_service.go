@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // WorkerReconcilerService implements WorkerReconcilerServiceHandler.
@@ -34,20 +35,47 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
-	rows, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, w.ID)
+	// The bearer resolves the worker AND its registrant, so the owner axis is
+	// in hand here. It is bound in the query, because workspace_tab_owned is
+	// keyed by (user_id, tab_id) and worker_id alone selects across tenants:
+	// nothing in the schema ties a row's user_id to the registrant of the
+	// worker it names.
+	//
+	// Binding it also NARROWS what the response means, and the narrowing is
+	// the point of OwnerUserId below: the reconciler on the other end reaps
+	// every local row this list omits, so a list that covers one owner must
+	// say so or it reads as a universal absence.
+	registeredBy, ok := userid.New(w.RegisteredBy)
+	if !ok {
+		// A worker row with a blank registrant cannot be scoped to an owner,
+		// so there is no answer to give -- and an empty, unscoped response is
+		// the one thing the reconciler must not act on.
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("worker %s has a blank registrant", w.ID))
+	}
+	rows, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
+		UserID:   registeredBy,
+		WorkerID: w.ID,
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list owned tabs: %w", err))
 	}
 	out := make([]*leapmuxv1.OwnedTab, 0, len(rows))
 	for _, r := range rows {
+		// UserId is redundant with OwnerUserId today (the query binds one
+		// owner) but stays per-row: it is what the reconciler keys its
+		// (tab_type, tab_id, user_id) comparison by, since a FILE tab id is
+		// unique only within a user.
 		out = append(out, &leapmuxv1.OwnedTab{
-			OrgId:       r.OrgID,
 			WorkspaceId: r.WorkspaceID,
 			TabType:     r.TabType,
 			TabId:       r.TabID,
 			TileId:      r.TileID,
 			Position:    r.Position,
+			UserId:      r.UserID,
 		})
 	}
-	return connect.NewResponse(&leapmuxv1.ListOwnedTabsForWorkerResponse{Tabs: out}), nil
+	return connect.NewResponse(&leapmuxv1.ListOwnedTabsForWorkerResponse{
+		Tabs:        out,
+		OwnerUserId: registeredBy.String(),
+	}), nil
 }

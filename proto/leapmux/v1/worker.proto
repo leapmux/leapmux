@@ -4,7 +4,6 @@ package leapmux.v1;
 import "google/protobuf/timestamp.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
-import "leapmux/v1/org_ops.proto";
 import "leapmux/v1/workspace.proto";
 
 // WorkerConnectorService is called BY Worker instances on Hub via gRPC.
@@ -31,15 +30,34 @@ message ListOwnedTabsForWorkerRequest {}
 
 message ListOwnedTabsForWorkerResponse {
   repeated OwnedTab tabs = 1;
+  // The single owner this response is authoritative for -- the calling
+  // worker's registrant. The hub's query binds it (workspace_tab_owned is
+  // keyed by (user_id, tab_id), so worker_id alone selects across tenants),
+  // which means `tabs` is a COMPLETE list for this owner and says NOTHING
+  // about any other owner's tabs.
+  //
+  // The worker's orphan reconciler infers "absent from this list means
+  // orphaned, reap it", so it must apply that inference only to local rows
+  // owned by owner_user_id; a local row owned by anyone else is simply not
+  // covered. Empty means the response declares no scope and is authoritative
+  // for nobody -- the reconciler then reaps nothing (fail closed: an
+  // undeclared scope must not read as a universal absence).
+  string owner_user_id = 2;
 }
 
 message OwnedTab {
-  string  org_id       = 1;
-  string  workspace_id = 2;
-  TabType tab_type     = 3;
-  string  tab_id       = 4;
-  string  tile_id      = 5;
-  string  position     = 6;
+  string  workspace_id = 1;
+  TabType tab_type     = 2;
+  string  tab_id       = 3;
+  string  tile_id      = 4;
+  string  position     = 5;
+  // Owner of the row in workspace_tab_owned, which is keyed by
+  // (user_id, tab_id). FILE tab ids are unique only within a user, so the
+  // worker's orphan reconciler needs the owner to match a hub row against the
+  // right local worker_file_tabs row -- without it, a row belonging to another
+  // user misses the lookup and is reaped as an orphan. AGENT/TERMINAL ids are
+  // globally unique, so their reconciliation ignores this field.
+  string  user_id      = 6;
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
@@ -58,7 +76,7 @@ service WorkerManagementService {
   rpc DeleteRegistrationKey(DeleteRegistrationKeyRequest) returns (DeleteRegistrationKeyResponse);
   // Email the registration command to the current user's verified email.
   rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse);
-  // List registered workers for the user's organization.
+  // List registered workers for the authenticated user.
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
   // Get a single worker's details.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
@@ -168,12 +186,6 @@ message Worker {
   // worker; the frontend hides the Deregister... menu item for the same
   // reason.
   bool auto_registered = 6;
-  // The org that owns the registering user. Joined on read from
-  // users.org_id; populated by the hub in GetWorker / ListWorkers so
-  // the `leapmux remote` CLI's universal resolver can derive org_id
-  // from worker_id without an extra round-trip. Workers are
-  // per-user, and users have a single org, so this is unambiguous.
-  string org_id = 7;
 }
 
 // --- Bidirectional stream envelope messages ---
@@ -210,20 +222,21 @@ message WorkspaceTabEntry {
   string tab_id = 3;
 }
 
-// WorkspaceTabsSyncResponse is the hub's per-tab classification of the
-// worker's reported state. Tabs in `orphan_tab_ids` no longer exist
-// (or have been tombstoned) in the CRDT; the worker drops the local
-// agent / terminal / file-tab. Tabs in `reassignments` exist with a
-// different workspace_id; the worker updates its local bookkeeping.
-message WorkspaceTabsSyncResponse {
-  repeated TabIdent           orphan_tab_ids = 1;
-  repeated TabReassignment    reassignments  = 2;
-}
-
-message TabReassignment {
-  TabIdent tab              = 1;
-  string   new_workspace_id = 2;
-}
+// WorkspaceTabsSyncResponse acknowledges a tab-sync. It is deliberately EMPTY:
+// its only effect on the worker is to trigger a reconcile pass.
+//
+// It once carried `orphan_tab_ids` and `reassignments`, a per-tab
+// classification the hub computed on every sync. Nothing ever consumed them --
+// the worker's OnTabSyncResponse handler discards the payload and calls
+// Trigger() -- so they were a second, silently-diverging source of truth for a
+// decision OrphanReconciler already makes from ListOwnedTabsForWorker. Worse,
+// they would have been the WRONG source: the worker's report carries no user
+// axis, so an orphan list derived from it could not be owner-scoped, while the
+// reconciler's file-tab pass is.
+//
+// If a hub-driven classification is ever wanted again, it needs an owner axis
+// on the request before the fields come back.
+message WorkspaceTabsSyncResponse {}
 
 // ConnectResponse wraps all messages from Hub to Worker.
 message ConnectResponse {

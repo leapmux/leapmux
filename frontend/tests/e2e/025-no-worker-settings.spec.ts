@@ -6,12 +6,12 @@ test.describe('Settings and /clear after Worker restart', () => {
   test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Worker Restart Settings Test', adminOrgId)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Worker Restart Settings Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for agent tab and editor

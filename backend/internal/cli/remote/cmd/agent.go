@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"io"
 	"os"
@@ -85,16 +84,15 @@ func RunAgentGet(rawCtx any, args []string) error {
 }
 
 // RunAgentProviders lists the agent providers a worker supports.
-// Worker selection accepts any universal entity input (--tab-id /
-// --worker-id / --workspace-id / ...) via the resolver.
+// Worker selection takes --worker-id (or $LEAPMUX_REMOTE_WORKER_ID)
+// or --tab-id, which the resolver walks to its host worker via
+// LocateTab. --workspace-id / --tile-id do not identify a worker.
 func RunAgentProviders(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-		HideOrg:      true,
-		HideUser:     true,
 		FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 	})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -127,10 +125,15 @@ func RunAgentProviders(rawCtx any, args []string) error {
 	})
 }
 
-// providerListerFn matches `callInnerRPCBest`'s signature so
-// resolveProvider can be unit-tested without standing up a real E2EE
-// channel or local-IPC socket.
-type providerListerFn func(ctx context.Context, c *remote.Client, workerID, method string, in proto.Message, out proto.Message) error
+// providerListerFn is the inner-RPC seam resolveProvider issues its one call
+// through, so it can be unit-tested without standing up a real E2EE channel or
+// local-IPC socket.
+//
+// It matches workerCall.Call rather than a free function: the worker and the
+// transport are already bound by the caller, so this names only the method and
+// its messages -- and there is no per-call workerID for a caller to pass
+// inconsistently with the channel it is reusing.
+type providerListerFn func(ctx context.Context, method string, in proto.Message, out proto.Message) error
 
 // resolveProvider turns the user-supplied --provider value (possibly
 // pre-filled from $LEAPMUX_REMOTE_AGENT_PROVIDER) into an
@@ -151,7 +154,7 @@ type providerListerFn func(ctx context.Context, c *remote.Client, workerID, meth
 // single provider needs no `--provider` flag at all, matching the
 // frontend's first-launch UX where the picker auto-selects when only
 // one option is available.
-func resolveProvider(ctx context.Context, c *remote.Client, workerID, raw string, list providerListerFn) (leapmuxv1.AgentProvider, error) {
+func resolveProvider(ctx context.Context, raw string, list providerListerFn) (leapmuxv1.AgentProvider, error) {
 	if raw != "" {
 		if p, ok := agentlabels.ParseProvider(raw); ok {
 			return p, nil
@@ -162,12 +165,8 @@ func resolveProvider(ctx context.Context, c *remote.Client, workerID, raw string
 		)
 	}
 	var resp leapmuxv1.ListAvailableProvidersResponse
-	if err := list(ctx, c, workerID, "ListAvailableProviders", &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
-		var coded *codedRPCError
-		if errors.As(err, &coded) {
-			return 0, remote.EmitErrorWith(coded.Code, coded.Cause)
-		}
-		return 0, remote.EmitErrorWith("rpc_failed", err)
+	if err := list(ctx, "ListAvailableProviders", &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
+		return 0, emitInnerRPCError(err)
 	}
 	switch providers := resp.GetProviders(); len(providers) {
 	case 0:

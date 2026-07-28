@@ -13,7 +13,7 @@ import (
 // helper: tombstone an entity at hlc by setting tombstone_at directly,
 // bypassing Apply. Tests use this to assemble pruning fixtures without
 // driving the full op pipeline.
-func tombstoneNodeAt(state *leapmuxv1.OrgCrdtState, nodeID string, hlc *leapmuxv1.HLC) {
+func tombstoneNodeAt(state *leapmuxv1.UserCrdtState, nodeID string, hlc *leapmuxv1.HLC) {
 	rec := state.GetNodes()[nodeID]
 	if rec == nil {
 		rec = &leapmuxv1.NodeRecord{NodeId: nodeID}
@@ -22,7 +22,7 @@ func tombstoneNodeAt(state *leapmuxv1.OrgCrdtState, nodeID string, hlc *leapmuxv
 	rec.TombstoneAt = hlc
 }
 
-func tombstoneTabAt(state *leapmuxv1.OrgCrdtState, tabID string, hlc *leapmuxv1.HLC) {
+func tombstoneTabAt(state *leapmuxv1.UserCrdtState, tabID string, hlc *leapmuxv1.HLC) {
 	rec := state.GetTabs()[tabID]
 	if rec == nil {
 		rec = &leapmuxv1.TabRecord{TabId: tabID}
@@ -31,7 +31,7 @@ func tombstoneTabAt(state *leapmuxv1.OrgCrdtState, tabID string, hlc *leapmuxv1.
 	rec.TombstoneAt = hlc
 }
 
-func tombstoneFwAt(state *leapmuxv1.OrgCrdtState, windowID string, hlc *leapmuxv1.HLC) {
+func tombstoneFwAt(state *leapmuxv1.UserCrdtState, windowID string, hlc *leapmuxv1.HLC) {
 	rec := state.GetFloatingWindows()[windowID]
 	if rec == nil {
 		rec = &leapmuxv1.FloatingWindowRecord{WindowId: windowID}
@@ -41,7 +41,7 @@ func tombstoneFwAt(state *leapmuxv1.OrgCrdtState, windowID string, hlc *leapmuxv
 }
 
 func TestPruneTombstones_DropsRecordsAtOrBelowWatermark(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	state.Nodes["live"] = &leapmuxv1.NodeRecord{NodeId: "live"}
 	tombstoneNodeAt(state, "old-node", hlcAt(5, 0, "a"))
 	tombstoneNodeAt(state, "boundary-node", hlcAt(10, 0, "a"))
@@ -61,7 +61,7 @@ func TestPruneTombstones_DropsRecordsAtOrBelowWatermark(t *testing.T) {
 }
 
 func TestPruneTombstones_ZeroWatermarkIsNoOp(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	tombstoneNodeAt(state, "n1", hlcAt(5, 0, "a"))
 
 	// Zero HLC ≤ any tombstone HLC, but pruning with a zero watermark
@@ -76,7 +76,7 @@ func TestPruneTombstones_ZeroWatermarkIsNoOp(t *testing.T) {
 }
 
 func TestPruneTombstones_PreservesLiveRecords(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	// Node with a live (non-tombstoned) record but a never-applied
 	// tombstone_at zero value — must not be pruned regardless of
 	// watermark.
@@ -92,7 +92,7 @@ func TestPruneTombstones_PreservesLiveRecords(t *testing.T) {
 }
 
 func TestPruneTombstones_HLCTiebreakerByClientId(t *testing.T) {
-	state := crdt.NewState("org")
+	state := crdt.NewState("user-1")
 	// Same physical/logical, different client ids. HLC ordering uses
 	// client_id as the tiebreaker; pruning must apply the same rule
 	// so "≤ watermark" is consistent with the rest of the CRDT.
@@ -118,13 +118,13 @@ func TestPruneTombstones_NilStateIsSafe(t *testing.T) {
 // tombstoned record entirely so a fresh bootstrap sees the tab as
 // never-existed.
 func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 1_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Add a tab.
 	_, err := mgr.Submit(t.Context(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "add", "tA", "root1", "wkr", "p1")},
 	})
 	require.NoError(t, err)
@@ -132,16 +132,16 @@ func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
 	// Tombstone the tab in a separate batch (new canonical HLC).
 	tomb := &leapmuxv1.OpBatch{
 		BatchId: "tomb-tA",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-tomb-tA",
-			Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 				TabId:   "tA",
 			}},
 		}},
 	}
 	_, err = mgr.Submit(t.Context(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tomb},
 	})
 	require.NoError(t, err)
@@ -165,13 +165,13 @@ func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
 // LWW-safe: live records sharing a workspace with tombstoned siblings
 // must survive the prune pass.
 func TestManager_CompactionDoesNotPruneLiveRecords(t *testing.T) {
-	mgr, _, _ := runManager(t, "org", allowAll{}, 1_000)
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	// Two tabs, only one gets tombstoned.
 	_, err := mgr.Submit(t.Context(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{
 			addTabBatch(t, "addA", "tA", "root1", "wkr", "p1"),
 			addTabBatch(t, "addB", "tB", "root1", "wkr", "p2"),
@@ -181,16 +181,16 @@ func TestManager_CompactionDoesNotPruneLiveRecords(t *testing.T) {
 
 	tomb := &leapmuxv1.OpBatch{
 		BatchId: "tomb-tA",
-		Ops: []*leapmuxv1.OrgOp{{
+		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-tomb-tA",
-			Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 				TabId:   "tA",
 			}},
 		}},
 	}
 	_, err = mgr.Submit(t.Context(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
 		Batches: []*leapmuxv1.OpBatch{tomb},
 	})
 	require.NoError(t, err)

@@ -27,13 +27,9 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	orgID := id.Generate()
-	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{
-		ID: orgID, Name: "org-" + id.Generate()[:6],
-	}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u-" + id.Generate()[:6],
+		ID: userID, Username: "u-" + id.Generate()[:6],
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{

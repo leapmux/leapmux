@@ -16,7 +16,7 @@ import (
 )
 
 // canonicalizeState produces a deterministic byte encoding for an
-// OrgCrdtState by sorting maps by key, marshaling each entry, and
+// UserCrdtState by sorting maps by key, marshaling each entry, and
 // concatenating the marshaled bytes. This is the recipe the plan
 // prescribes for parity comparison: protojson is non-deterministic for
 // maps, and proto's `Deterministic: true` only orders within a single
@@ -31,7 +31,7 @@ import (
 //
 // Each marshaled record is preceded by its 4-byte big-endian length so
 // the consumer can re-walk the stream without ambiguity.
-func canonicalizeState(t *testing.T, state *leapmuxv1.OrgCrdtState) []byte {
+func canonicalizeState(t *testing.T, state *leapmuxv1.UserCrdtState) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	mopts := proto.MarshalOptions{Deterministic: true}
@@ -100,8 +100,8 @@ func writeLenPrefixed(b *bytes.Buffer, data []byte) {
 // commute_test.go's `applyAll` because the parity tests require a
 // preseeded WorkspaceContentsRecord so node-tree projection is
 // observable.
-func applyAllParity(ops []*leapmuxv1.OrgOp) *leapmuxv1.OrgCrdtState {
-	state := crdt.NewState("org")
+func applyAllParity(ops []*leapmuxv1.CrdtOp) *leapmuxv1.UserCrdtState {
+	state := crdt.NewState("user-1")
 	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1", RootNodeId: "root1"}
 	for _, op := range ops {
 		crdt.Apply(state, op)
@@ -110,8 +110,8 @@ func applyAllParity(ops []*leapmuxv1.OrgOp) *leapmuxv1.OrgCrdtState {
 }
 
 // shuffledParity returns a permutation of ops driven by the supplied rng.
-func shuffledParity(ops []*leapmuxv1.OrgOp, rng *rand.Rand) []*leapmuxv1.OrgOp {
-	out := make([]*leapmuxv1.OrgOp, len(ops))
+func shuffledParity(ops []*leapmuxv1.CrdtOp, rng *rand.Rand) []*leapmuxv1.CrdtOp {
+	out := make([]*leapmuxv1.CrdtOp, len(ops))
 	copy(out, ops)
 	rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 	return out
@@ -124,7 +124,7 @@ func shuffledParity(ops []*leapmuxv1.OrgOp, rng *rand.Rand) []*leapmuxv1.OrgOp {
 // log".
 func TestParity_ManyPermutationsConverge(t *testing.T) {
 	// Build a 12-op log: a couple of tabs + node mutations + tombstones.
-	ops := []*leapmuxv1.OrgOp{
+	ops := []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
@@ -199,13 +199,13 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 // inputs differing only in zero-sign produce byte-equal canonical
 // states.
 func TestParity_NegativeZeroCanonicalizationIsByteEqual(t *testing.T) {
-	posOps := []*leapmuxv1.OrgOp{
+	posOps := []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
 			WindowId: "fw1",
 			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: 0.0},
 		}, hlcAt(1, 0, "a")),
 	}
-	negOps := []*leapmuxv1.OrgOp{
+	negOps := []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
 			WindowId: "fw1",
 			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: math.Copysign(0, -1)},

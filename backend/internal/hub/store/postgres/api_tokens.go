@@ -62,10 +62,10 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 }
 
 func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) ([]store.APIToken, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListAPITokensByUser(ctx, gendb.ListAPITokensByUserParams{
@@ -175,11 +175,11 @@ func (s *apiTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 }
 
 func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
-	owner, ok := store.OwnerFilter(userID)
+	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
 	n, err := s.conn.q.RevokeAPITokensByUserFast(ctx, owner)

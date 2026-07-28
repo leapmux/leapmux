@@ -115,14 +115,14 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 
 // accessibleWorkspaceIDs resolves the workspace-id set announced to the target
 // worker on channel open. Sessions and API tokens get every workspace the user
-// owns in their (personal) org. A delegation bearer is re-verified against
+// owns. A delegation bearer is re-verified against
 // current ownership and pinned to its single mint-scope workspace so a stolen
 // token cannot pivot the channel beyond that scope.
 func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.UserInfo) ([]string, error) {
 	if user.Credential.IsDelegation() {
 		// Re-verify the pin against current ownership so deleted / transferred
 		// workspaces are caught at channel open time.
-		hasAccess, err := auth.WorkspaceCanRead(ctx, s.store, auth.AnyOrg(), user.Credential.WorkspaceScopeID(), user.ID)
+		hasAccess, err := auth.WorkspaceCanAccess(ctx, s.store, user.Credential.WorkspaceScopeID(), user.ID)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify delegation scope: %w", err))
 		}
@@ -133,7 +133,6 @@ func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.
 	}
 	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
-		OrgID:  user.OrgID,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accessible workspaces: %w", err))

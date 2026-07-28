@@ -5,11 +5,7 @@ import { workerClient } from '~/api/clients'
 import { GitMode } from '~/hooks/useGitModeState'
 import { flush } from '~/test-support/async'
 
-const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string, orgId: string }) => Promise<GetGitInfoResponse>>()
-
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
+const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string }) => Promise<GetGitInfoResponse>>()
 
 vi.mock('~/api/clients', () => ({
   workerClient: {
@@ -27,7 +23,7 @@ vi.mock('~/stores/workerInfo.store', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: (workerId: string, req: { workerId: string, path: string, orgId: string }) =>
+  getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
     getGitInfo(workerId, req),
 }))
 

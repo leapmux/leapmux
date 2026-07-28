@@ -255,7 +255,7 @@ leapmux --version
 
 - [Configuration](/docs/operating/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
 - [Managing Workers](/docs/operating/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
-- [Admin CLI](/docs/operating/admin-cli/) — manage orgs, users, sessions, workers, OAuth providers, and the database directly.
+- [Admin CLI](/docs/operating/admin-cli/) — manage users, sessions, workers, OAuth providers, and the database directly.
 - [Installation](/docs/getting-started/installation/) — desktop app, Docker images, and building from source.
 - [Security & Threat Model](/docs/operating/security/) — trust boundaries, the E2EE relay, and solo-mode caveats.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated cheat-sheet for every subcommand.

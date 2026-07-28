@@ -11,12 +11,12 @@ codexTest.describe('Codex Interrupt', () => {
 
     // Click the interrupt/stop button — required to appear within the timeout.
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    await expect(stopBtn).toBeVisible({ timeout: 30_000 })
+    await expect(stopBtn).toBeVisible()
     await stopBtn.click()
 
     // After interrupt, the thinking indicator must clear, and at least
     // one user + partial-response bubble must be present.
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
     const bubbles = page.locator('[data-testid="message-bubble"]')
     expect(await bubbles.count()).toBeGreaterThan(1)
   })
@@ -26,10 +26,10 @@ codexTest.describe('Codex Interrupt', () => {
     await sendMessage(page, 'Write a 5000-word analysis of quantum computing with detailed chapters and citations.')
 
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    await expect(stopBtn).toBeVisible({ timeout: 30_000 })
+    await expect(stopBtn).toBeVisible()
     await stopBtn.click()
 
     // After interrupt, the thinking indicator must be gone.
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
   })
 })

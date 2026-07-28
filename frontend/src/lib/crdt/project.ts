@@ -1,10 +1,10 @@
 import type {
   FloatingWindowRecord,
   NodeRecord,
-  OrgCrdtState,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+  UserCrdtState,
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import { hlcIsZero } from './hlc'
 
 /** RenderTree mirrors the Go-side projection shape. */
@@ -21,7 +21,7 @@ export interface RenderTree {
 }
 
 export interface RenderedTab {
-  orgId: string
+  userId: string
   workspaceId: string
   tabType: TabType
   tabId: string
@@ -47,7 +47,7 @@ export interface WorkspaceProjection {
 }
 
 export interface Projection {
-  orgId: string
+  userId: string
   workspaces: Map<string, WorkspaceProjection>
   ownedTabs: RenderedTab[]
   renderedTabs: RenderedTab[]
@@ -63,7 +63,7 @@ export interface RootSet {
   roots: Map<string, string>
 }
 
-export function registeredRoots(state: OrgCrdtState): RootSet {
+export function registeredRoots(state: UserCrdtState): RootSet {
   const roots = new Map<string, string>()
   for (const [wsId, ws] of Object.entries(state.workspaces)) {
     if (ws.rootNodeId !== '')
@@ -99,7 +99,7 @@ export function registeredRoots(state: OrgCrdtState): RootSet {
  * only, so the resolved root's own NodeRecord must be re-checked for
  * a tombstone at chain-end.
  */
-function resolveTileWorkspace(state: OrgCrdtState, tileId: string, roots: RootSet): { workspaceId: string, alive: boolean } {
+function resolveTileWorkspace(state: UserCrdtState, tileId: string, roots: RootSet): { workspaceId: string, alive: boolean } {
   if (tileId === '')
     return { workspaceId: '', alive: false }
   const visited = new Set<string>()
@@ -127,7 +127,7 @@ function resolveTileWorkspace(state: OrgCrdtState, tileId: string, roots: RootSe
   }
 }
 
-function tileIsLeaf(state: OrgCrdtState, tileId: string): boolean {
+function tileIsLeaf(state: UserCrdtState, tileId: string): boolean {
   const rec = state.nodes[tileId]
   if (!rec)
     return false
@@ -141,7 +141,7 @@ function tileIsLeaf(state: OrgCrdtState, tileId: string): boolean {
  * compute the index once and feed it to
  * `floatingWindowToRendered`'s `precomputed` arg.
  */
-export function buildChildIndex(state: OrgCrdtState): Map<string, NodeRecord[]> {
+export function buildChildIndex(state: UserCrdtState): Map<string, NodeRecord[]> {
   const idx = new Map<string, NodeRecord[]>()
   for (const n of Object.values(state.nodes)) {
     if (!hlcIsZero(n.tombstoneAt))
@@ -154,7 +154,7 @@ export function buildChildIndex(state: OrgCrdtState): Map<string, NodeRecord[]> 
   return idx
 }
 
-function buildTreeFromRoot(state: OrgCrdtState, rootId: string, roots: RootSet, childIndex: Map<string, NodeRecord[]>): RenderTree {
+function buildTreeFromRoot(state: UserCrdtState, rootId: string, roots: RootSet, childIndex: Map<string, NodeRecord[]>): RenderTree {
   if (rootId === '')
     return { nodeId: '', kind: NodeKind.LEAF, direction: 0, ratios: [], rows: 0, cols: 0, rowRatios: [], colRatios: [], children: [] }
   const rec = state.nodes[rootId]
@@ -164,7 +164,7 @@ function buildTreeFromRoot(state: OrgCrdtState, rootId: string, roots: RootSet, 
   return buildTree(state, rec, roots, childIndex, new Set())
 }
 
-function buildTree(state: OrgCrdtState, rec: NodeRecord, roots: RootSet, childIndex: Map<string, NodeRecord[]>, seen: Set<string>): RenderTree {
+function buildTree(state: UserCrdtState, rec: NodeRecord, roots: RootSet, childIndex: Map<string, NodeRecord[]>, seen: Set<string>): RenderTree {
   if (seen.has(rec.nodeId)) {
     return { nodeId: rec.nodeId, kind: NodeKind.LEAF, direction: 0, ratios: [], rows: 0, cols: 0, rowRatios: [], colRatios: [], children: [] }
   }
@@ -252,9 +252,9 @@ function normalizeRatios(ratios: number[], n: number): number[] {
  * grid cells tie-broken by lower node_id, missing grid cells render
  * as virtual empty leaves, bad ratio lengths normalized.
  */
-export function project(state: OrgCrdtState): Projection {
+export function project(state: UserCrdtState): Projection {
   const out: Projection = {
-    orgId: state.orgId,
+    userId: state.userId,
     workspaces: new Map(),
     ownedTabs: [],
     renderedTabs: [],
@@ -290,7 +290,7 @@ export function project(state: OrgCrdtState): Projection {
     if (workspaceId === '')
       continue
     const row: RenderedTab = {
-      orgId: state.orgId,
+      userId: state.userId,
       workspaceId,
       tabType: t.tabType,
       tabId: t.tabId,
@@ -311,9 +311,9 @@ export function project(state: OrgCrdtState): Projection {
 /**
  * projectWorkspace returns the projection slice for a single
  * workspace. Compared to `project(state).workspaces.get(wsId)` it
- * skips every other workspace's tree build and the org-wide tab
+ * skips every other workspace's tree build and the user-wide tab
  * projection — so a memo that only needs `ws.mainTree` for the active
- * workspace doesn't pay the org-wide cost on every bridge tick.
+ * workspace doesn't pay the user-wide cost on every bridge tick.
  *
  * Floating windows owned by `workspaceId` are included so this can
  * back any consumer that wants the full workspace shape; callers
@@ -331,10 +331,10 @@ export function project(state: OrgCrdtState): Projection {
  * and filtered after.
  *
  * Used by the AppShell reconciler effect during drag/resize, where
- * pendingVersion bumps every frame and the org-wide `project` cost is
+ * pendingVersion bumps every frame and the user-wide `project` cost is
  * the hot path.
  */
-export function projectWorkspaceTabs(state: OrgCrdtState, workspaceId: string): RenderedTab[] {
+export function projectWorkspaceTabs(state: UserCrdtState, workspaceId: string): RenderedTab[] {
   // Build a workspace-scoped RootSet: just the target workspace's root
   // and any live floating-window roots that belong to it. Tabs whose
   // chain terminates at any other root resolve to workspaceId='' and
@@ -366,7 +366,7 @@ export function projectWorkspaceTabs(state: OrgCrdtState, workspaceId: string): 
     if (!alive || !tileIsLeaf(state, tile))
       continue
     out.push({
-      orgId: state.orgId,
+      userId: state.userId,
       workspaceId: resolvedWs,
       tabType: t.tabType,
       tabId: t.tabId,
@@ -379,7 +379,7 @@ export function projectWorkspaceTabs(state: OrgCrdtState, workspaceId: string): 
   return out
 }
 
-export function projectWorkspace(state: OrgCrdtState, workspaceId: string): WorkspaceProjection | undefined {
+export function projectWorkspace(state: UserCrdtState, workspaceId: string): WorkspaceProjection | undefined {
   const ws = state.workspaces[workspaceId]
   if (!ws)
     return undefined
@@ -409,7 +409,7 @@ export function projectWorkspace(state: OrgCrdtState, workspaceId: string): Work
  * over the full state.
  */
 export function floatingWindowToRendered(
-  state: OrgCrdtState,
+  state: UserCrdtState,
   fw: FloatingWindowRecord,
   precomputed?: { roots: RootSet, childIndex: Map<string, NodeRecord[]> },
 ): RenderedFloatingWindow | undefined {
@@ -433,7 +433,7 @@ export function floatingWindowToRendered(
 // tombstoned. Folded out of project()/projectWorkspace() so the field
 // list is in one place — adding a register goes to the helper, not 3
 // call sites.
-function projectFloatingWindow(state: OrgCrdtState, fw: FloatingWindowRecord, roots: RootSet, childIndex: Map<string, NodeRecord[]>): { workspaceId: string, window: RenderedFloatingWindow } | null {
+function projectFloatingWindow(state: UserCrdtState, fw: FloatingWindowRecord, roots: RootSet, childIndex: Map<string, NodeRecord[]>): { workspaceId: string, window: RenderedFloatingWindow } | null {
   if (!hlcIsZero(fw.tombstoneAt))
     return null
   return {
@@ -455,7 +455,7 @@ function projectFloatingWindow(state: OrgCrdtState, fw: FloatingWindowRecord, ro
  * is a root or absent. Mirrors the CRDT model: parent_id is set-once
  * at creation, so the answer is stable for any live node.
  */
-export function parentOf(state: OrgCrdtState, nodeId: string): string {
+export function parentOf(state: UserCrdtState, nodeId: string): string {
   return state.nodes[nodeId]?.parentId ?? ''
 }
 
@@ -470,7 +470,7 @@ export function parentOf(state: OrgCrdtState, nodeId: string): string {
  * `seen` membership.
  */
 export function descendantsLeavesFirst(
-  state: OrgCrdtState,
+  state: UserCrdtState,
   nodeId: string,
   childIndex?: Map<string, NodeRecord[]>,
 ): string[] {
@@ -481,7 +481,7 @@ export function descendantsLeavesFirst(
   return out
 }
 
-function visit(state: OrgCrdtState, nodeId: string, childIndex: Map<string, NodeRecord[]>, seen: Set<string>, out: string[]): void {
+function visit(state: UserCrdtState, nodeId: string, childIndex: Map<string, NodeRecord[]>, seen: Set<string>, out: string[]): void {
   if (seen.has(nodeId))
     return
   seen.add(nodeId)

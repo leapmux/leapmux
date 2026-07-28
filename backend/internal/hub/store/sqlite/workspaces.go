@@ -18,7 +18,6 @@ var _ store.WorkspaceStore = (*workspaceStore)(nil)
 func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 	return &store.Workspace{
 		ID:          w.ID,
-		OrgID:       w.OrgID,
 		OwnerUserID: w.OwnerUserID,
 		Title:       w.Title,
 		IsDeleted:   ptrconv.Int64ToBool(w.IsDeleted),
@@ -30,7 +29,6 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
 	return mapErr(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
 		ID:          p.ID,
-		OrgID:       p.OrgID,
 		OwnerUserID: p.OwnerUserID.String(),
 		Title:       p.Title,
 	}))
@@ -64,16 +62,13 @@ func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.W
 }
 
 func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
-	owner, ok := store.OwnerFilter(p.UserID)
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
-	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, gendb.ListAccessibleWorkspacesParams{
-		UserID: owner,
-		OrgID:  p.OrgID,
-	})
+	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, owner)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -81,10 +76,10 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 }
 
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.OwnerUserID)
+	owner, ok := userid.OwnerFilter(p.OwnerUserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
@@ -95,10 +90,10 @@ func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePara
 }
 
 func (s *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWorkspaceParams) (int64, error) {
-	owner, ok := store.OwnerFilter(p.OwnerUserID)
+	owner, ok := userid.OwnerFilter(p.OwnerUserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See store.OwnerFilter.
+		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
 	return rowsAffected(s.conn.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
@@ -108,11 +103,11 @@ func (s *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWorks
 }
 
 func (s *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID userid.UserID) error {
-	owner, ok := store.OwnerFilter(ownerUserID)
+	owner, ok := userid.OwnerFilter(ownerUserID)
 	if !ok {
 		// An unminted caller names no user, so a bulk mutation must refuse
 		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See store.OwnerFilter.
+		// having changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, owner))

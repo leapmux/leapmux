@@ -32,7 +32,7 @@ test.describe('Workspace Chat', () => {
     // "Starting …" overlay to disappear so the send takes the fast path
     // rather than going through the pending-message queue (the queue is
     // tested separately in 122).
-    await expect(page.getByText(/^Starting /)).not.toBeVisible({ timeout: 60_000 })
+    await expect(page.getByText(/^Starting /)).not.toBeVisible()
 
     // Send a message to Claude via the rich text editor
     await editor.click()
@@ -43,7 +43,7 @@ test.describe('Workspace Chat', () => {
     await expect(editor).toHaveText('')
 
     // Wait for Claude's response to appear in an assistant message bubble.
-    await expectAssistantAnswer(page, { timeout: 30000 })
+    await expectAssistantAnswer(page)
   })
 
   test('should show workspace in sidebar after creation', async ({ page, authenticatedWorkspace }) => {

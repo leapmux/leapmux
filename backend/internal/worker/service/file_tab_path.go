@@ -10,10 +10,11 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// FileTabPathStore is the worker-local store of (org_id, tab_id) →
+// FileTabPathStore is the worker-local store of (user_id, tab_id) →
 // (workspace_id, file_path). The hub never sees these rows; clients
 // fetch them via WatchWorkspacePrivateEvents (which carries the path
 // over the existing E2EE channel) or one-shot GetFileTabPath.
@@ -28,15 +29,15 @@ func NewFileTabPathStore(q *db.Queries, events *PrivateEventsBus) *FileTabPathSt
 	return &FileTabPathStore{q: q, events: events}
 }
 
-// Register persists a (org_id, tab_id, workspace_id, file_path)
+// Register persists a (user_id, tab_id, workspace_id, file_path)
 // tuple and broadcasts FileTabPathRegistered on the matching
 // workspace's private-event stream.
 func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathParams) error {
-	if p.OrgID == "" || p.TabID == "" || p.WorkspaceID == "" || p.FilePath == "" {
+	if p.UserID == "" || p.TabID == "" || p.WorkspaceID == "" || p.FilePath == "" {
 		return fmt.Errorf("register file tab path: required field empty")
 	}
 	if err := s.q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		OrgID:       p.OrgID,
+		UserID:      p.UserID,
 		TabID:       p.TabID,
 		WorkspaceID: p.WorkspaceID,
 		FilePath:    p.FilePath,
@@ -56,7 +57,7 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 	// level against the tracked worktrees. Best-effort: a path outside
 	// any tracked worktree leaves the file tab unbound, matching today's
 	// behavior for non-worktree files.
-	s.linkFileTabToWorktree(ctx, p.OrgID, p.FilePath, p.TabID)
+	s.linkFileTabToWorktree(ctx, p.UserID, p.FilePath, p.TabID)
 	if s.events != nil {
 		s.events.PublishFileTabPathRegistered(p.WorkspaceID, p.TabID, p.FilePath)
 	}
@@ -68,11 +69,11 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 // non-fatal — the file tab is still registered, it just won't count
 // toward sibling-tab checks in the last-tab close path.
 //
-// orgID is stamped onto the worktree_tabs row so worktree_tab_liveness can
-// scope its FILE-tab join by org: file tab ids are only unique within an org
-// (worker_file_tabs is keyed by (org_id, tab_id)), so without it a multi-org
-// worker could match a different org's live file tab and mark a strand live.
-func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, orgID, filePath, tabID string) {
+// userID is stamped onto the worktree_tabs row so worktree_tab_liveness can
+// scope its FILE-tab join by user: file tab ids are only unique within a user
+// (worker_file_tabs is keyed by (user_id, tab_id)), so without it a multi-user
+// worker could match a different user's live file tab and mark a strand live.
+func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, userID, filePath, tabID string) {
 	info, err := queryGitPathInfo(ctx, filepath.Dir(filePath))
 	if err != nil || info == nil || !info.IsWorktree {
 		return
@@ -89,7 +90,7 @@ func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, orgID, fil
 		WorktreeID: wt.ID,
 		TabType:    leapmuxv1.TabType_TAB_TYPE_FILE,
 		TabID:      tabID,
-		OrgID:      orgID,
+		UserID:     userID,
 	}); err != nil {
 		slog.Warn("link file tab to worktree: insert failed",
 			"tab_id", tabID, "worktree_id", wt.ID, "error", err)
@@ -126,14 +127,37 @@ func (s *FileTabPathStore) BackfillWorktreeLinks(ctx context.Context, worktreePa
 		if !pathutil.HasPathPrefix(pathutil.Canonicalize(filepath.Dir(row.FilePath)), canonicalWorktree) {
 			continue
 		}
-		s.linkFileTabToWorktree(ctx, row.OrgID, row.FilePath, row.TabID)
+		s.linkFileTabToWorktree(ctx, row.UserID, row.FilePath, row.TabID)
 	}
 }
 
 // Get returns the workspace_id and file_path for a tab, or
 // ErrFileTabPathNotFound if absent.
-func (s *FileTabPathStore) Get(ctx context.Context, orgID, tabID string) (workspaceID, filePath string, err error) {
-	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{OrgID: orgID, TabID: tabID})
+//
+// A blank userID is refused rather than bound: worker_file_tabs is keyed by
+// (user_id, tab_id), so the owner is half the identity of the row being read.
+// Register never writes a blank owner, so no legitimate row can be reached with
+// one -- but binding it would turn a caller that lost track of the tenant into a
+// silent lookup against whatever rows a future blank-owner write left behind.
+// Mirrors Register's own required-field guard.
+//
+// The refusal goes through userid.New rather than a hand-written `== ""` so it
+// is the SAME guard the hub dialects bind their owner columns through -- the
+// repo-wide store-bind rule in internal/audit recognises a minted-or-refused id
+// and nothing else. Callers hold the owner as a plain string here (the handler
+// projects its userid.UserID, the reconciler reads a column), so New is the
+// spelling of that guard on this side; owner.String() is the unwrap.
+//
+// The tabID check folds into the same disjunct: the audit rule walks `||`
+// operands, so one refusal reads as one statement. (It did not always -- the
+// rule once matched a bare `!ok` only, and this guard was split in two purely
+// to stay visible to it.)
+func (s *FileTabPathStore) Get(ctx context.Context, userID, tabID string) (workspaceID, filePath string, err error) {
+	owner, ok := userid.New(userID)
+	if !ok || tabID == "" {
+		return "", "", fmt.Errorf("get file tab path: required field empty")
+	}
+	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{UserID: owner.String(), TabID: tabID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", ErrFileTabPathNotFound
@@ -151,16 +175,22 @@ func (s *FileTabPathStore) Get(ctx context.Context, orgID, tabID string) (worksp
 // that handles the worktree-tab link (and optional `git worktree
 // remove`) consistently across AGENT, TERMINAL, and FILE.
 //
-// Returns ErrFileTabPathNotFound when no row exists.
-func (s *FileTabPathStore) RevokeRow(ctx context.Context, orgID, tabID string) error {
-	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{OrgID: orgID, TabID: tabID})
+// Returns ErrFileTabPathNotFound when no row exists. A blank userID is refused
+// for the same reason as Get -- and here the stakes are higher, since the bound
+// predicate drives a DELETE.
+func (s *FileTabPathStore) RevokeRow(ctx context.Context, userID, tabID string) error {
+	owner, ok := userid.New(userID)
+	if !ok || tabID == "" {
+		return fmt.Errorf("revoke file tab path: required field empty")
+	}
+	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{UserID: owner.String(), TabID: tabID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrFileTabPathNotFound
 		}
 		return err
 	}
-	if err := s.q.DeleteWorkerFileTab(ctx, db.DeleteWorkerFileTabParams{OrgID: orgID, TabID: tabID}); err != nil {
+	if err := s.q.DeleteWorkerFileTab(ctx, db.DeleteWorkerFileTabParams{UserID: owner.String(), TabID: tabID}); err != nil {
 		return fmt.Errorf("delete worker_file_tab: %w", err)
 	}
 	if s.events != nil {
@@ -174,8 +204,15 @@ func (s *FileTabPathStore) RevokeRow(ctx context.Context, orgID, tabID string) e
 // FileTabPathRegistered on the destination workspace's stream — there
 // is no "Relocated" event so destination workspace_id is never leaked
 // to source-only watchers.
-func (s *FileTabPathStore) Relocate(ctx context.Context, orgID, tabID, newWorkspaceID string) error {
-	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{OrgID: orgID, TabID: tabID})
+//
+// A blank userID is refused for the same reason as Get -- the bound predicate
+// drives an UPDATE that moves a row between workspaces.
+func (s *FileTabPathStore) Relocate(ctx context.Context, userID, tabID, newWorkspaceID string) error {
+	owner, ok := userid.New(userID)
+	if !ok || tabID == "" {
+		return fmt.Errorf("relocate file tab path: required field empty")
+	}
+	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{UserID: owner.String(), TabID: tabID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrFileTabPathNotFound
@@ -190,7 +227,7 @@ func (s *FileTabPathStore) Relocate(ctx context.Context, orgID, tabID, newWorksp
 	}
 	if err := s.q.UpdateWorkerFileTabWorkspace(ctx, db.UpdateWorkerFileTabWorkspaceParams{
 		WorkspaceID: newWorkspaceID,
-		OrgID:       orgID,
+		UserID:      owner.String(),
 		TabID:       tabID,
 	}); err != nil {
 		return fmt.Errorf("update worker_file_tab.workspace_id: %w", err)
@@ -204,20 +241,35 @@ func (s *FileTabPathStore) Relocate(ctx context.Context, orgID, tabID, newWorksp
 
 // SnapshotForWorkspace returns the FileTabPathRegistered events the
 // private-event subscribe path replays before going live, so a
-// late-joining client always sees the current path set. Walks every
-// row in worker_file_tabs (org boundary doesn't matter to the
-// worker — it doesn't host multiple orgs in practice) and filters
-// by workspace_id.
-func (s *FileTabPathStore) SnapshotForWorkspace(ctx context.Context, workspaceID string) ([]*leapmuxv1.WorkspacePrivateEvent, error) {
-	rows, err := s.q.ListAllWorkerFileTabs(ctx)
+// late-joining client always sees the current path set.
+//
+// Binds BOTH the caller's owner and the workspace in SQL. workspace_id alone
+// would be a real boundary -- it is unique across users and the caller has
+// already been gated on access to it -- but binding only it meant walking every
+// owner's rows on every subscribe and filtering in Go, and it left the read as
+// the one tab-keyed path that did not name its owner. Every sibling (Get /
+// RevokeRow / Relocate, the worktree_tabs deletes, and
+// OrphanReconciler.reconcileFileTabs) binds the owner, because the
+// (user_id, tab_id) key exists precisely for it: file tab ids are unique only
+// within a user (see the worker_file_tabs / worktree_tabs DDL). Binding both
+// also lets this seek idx_worker_file_tabs_workspace(user_id, workspace_id),
+// which no query could use before.
+func (s *FileTabPathStore) SnapshotForWorkspace(ctx context.Context, owner userid.UserID, workspaceID string) ([]*leapmuxv1.WorkspacePrivateEvent, error) {
+	ownerID, ok := userid.OwnerFilter(owner)
+	if !ok {
+		// An unminted owner reaches no row. Answer an empty snapshot rather
+		// than a whole-table read the caller would then have to filter.
+		return nil, nil
+	}
+	rows, err := s.q.ListWorkerFileTabsByUserAndWorkspace(ctx, db.ListWorkerFileTabsByUserAndWorkspaceParams{
+		UserID:      ownerID,
+		WorkspaceID: workspaceID,
+	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]*leapmuxv1.WorkspacePrivateEvent, 0, len(rows))
 	for _, r := range rows {
-		if r.WorkspaceID != workspaceID {
-			continue
-		}
 		out = append(out, &leapmuxv1.WorkspacePrivateEvent{
 			Event: &leapmuxv1.WorkspacePrivateEvent_FileTabPathRegistered{
 				FileTabPathRegistered: &leapmuxv1.FileTabPathRegistered{
@@ -233,7 +285,7 @@ func (s *FileTabPathStore) SnapshotForWorkspace(ctx context.Context, workspaceID
 
 // RegisterFileTabPathParams is the input shape for Register.
 type RegisterFileTabPathParams struct {
-	OrgID       string
+	UserID      string
 	TabID       string
 	WorkspaceID string
 	FilePath    string

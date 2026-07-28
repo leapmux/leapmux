@@ -1,5 +1,5 @@
-import type { OrgCrdtState } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
@@ -7,14 +7,14 @@ import {
   NodeRecordSchema,
 
   TabRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import {
 
-  OrgOpSchema,
+  CrdtOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
   TombstoneNodeOpSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
@@ -29,7 +29,7 @@ function hlc(physical: bigint, logical: bigint, clientId: string) {
  * state is invariant under op order — that's the property the parity
  * test asserts.
  */
-function canonicalize(state: OrgCrdtState): string {
+function canonicalize(state: UserCrdtState): string {
   const parts: string[] = []
   parts.push('nodes:')
   for (const k of Object.keys(state.nodes).sort()) {
@@ -51,8 +51,8 @@ function bytesToHex(bytes: Uint8Array): string {
   return out
 }
 
-function applyAll(ops: OrgOp[]): OrgCrdtState {
-  const state = newState('org')
+function applyAll(ops: CrdtOp[]): UserCrdtState {
+  const state = newState('user')
   for (const op of ops) applyOp(state, op)
   return state
 }
@@ -76,22 +76,22 @@ function mulberry32(a: number): () => number {
   }
 }
 
-function setKindOp(nodeId: string, kind: number, p: bigint, l: bigint, c: string): OrgOp {
-  return create(OrgOpSchema, {
+function setKindOp(nodeId: string, kind: number, p: bigint, l: bigint, c: string): CrdtOp {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'kind', value: kind } }) },
   })
 }
 
-function setPosOp(nodeId: string, position: string, p: bigint, l: bigint, c: string): OrgOp {
-  return create(OrgOpSchema, {
+function setPosOp(nodeId: string, position: string, p: bigint, l: bigint, c: string): CrdtOp {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'position', value: position } }) },
   })
 }
 
-function setTabTile(tabId: string, tileId: string, p: bigint, l: bigint, c: string): OrgOp {
-  return create(OrgOpSchema, {
+function setTabTile(tabId: string, tileId: string, p: bigint, l: bigint, c: string): CrdtOp {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setTabRegister',
@@ -100,8 +100,8 @@ function setTabTile(tabId: string, tileId: string, p: bigint, l: bigint, c: stri
   })
 }
 
-function tombstoneNode(nodeId: string, p: bigint, l: bigint, c: string): OrgOp {
-  return create(OrgOpSchema, {
+function tombstoneNode(nodeId: string, p: bigint, l: bigint, c: string): CrdtOp {
+  return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
   })
@@ -109,7 +109,7 @@ function tombstoneNode(nodeId: string, p: bigint, l: bigint, c: string): OrgOp {
 
 describe('commute', () => {
   it('every permutation of a 5-op stream yields byte-equal canonical state', () => {
-    const ops: OrgOp[] = [
+    const ops: CrdtOp[] = [
       setKindOp('n1', 1, 10n, 0n, 'a'),
       setPosOp('n1', 'A', 15n, 0n, 'a'),
       setPosOp('n1', 'B', 20n, 0n, 'b'),
@@ -124,7 +124,7 @@ describe('commute', () => {
   })
 
   it('set then Tombstone commutes with Tombstone then Set', () => {
-    const ops: OrgOp[] = [
+    const ops: CrdtOp[] = [
       setPosOp('n1', 'A', 10n, 0n, 'a'),
       tombstoneNode('n1', 20n, 0n, 'a'),
     ]

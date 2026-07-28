@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/org_crdt_pb'
+import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
   BatchCommittedSchema,
   BatchRejectionReason,
@@ -9,7 +9,7 @@ import {
   EntityMaterializedSchema,
   EntityRemovedSchema,
   TabIdentSchema,
-} from '~/generated/leapmux/v1/org_ops_pb'
+} from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { HLCClock } from './hlc'
 import { newBatch, setNodeKind, setTabTileId, tombstoneTab } from './ops'
@@ -17,7 +17,7 @@ import { PendingOpsManager } from './pendingOps'
 
 function makeMgr(notify?: () => void) {
   const clock = new HLCClock('clientA')
-  return new PendingOpsManager('org', clock, notify)
+  return new PendingOpsManager('user', clock, notify)
 }
 
 describe('pendingOpsManager', () => {
@@ -28,7 +28,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('submit applies the batch speculatively (canonical_hlc fallback)', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     // speculativeState should reflect n1 living as a leaf.
@@ -40,7 +40,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeRemote on an echoed batch drops it from pending and applies to confirmed', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     expect(mgr.state.pendingBatches.length).toBe(1)
@@ -54,7 +54,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeRemote on a non-echoed batch applies to confirmed and recomputes speculative', () => {
-    const op = setNodeKind({ orgId: 'org', originClientId: 'other', clock: new HLCClock('other') }, 'remote-node', NodeKind.SPLIT)
+    const op = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'remote-node', NodeKind.SPLIT)
     op.canonicalHlc = create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' })
     mgr.consumeRemote(newBatch([op]))
     expect(mgr.state.confirmedState.nodes['remote-node']?.kind?.value).toBe(NodeKind.SPLIT)
@@ -62,7 +62,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeBatchCommitted replaces clientHlc with canonicalHlc and applies to confirmed', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
     mgr.submit(batch)
     const opId = batch.ops[0].opId
@@ -80,7 +80,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeBatchRejected drops the batch and reports retryable=false for non-retryable reasons', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
@@ -95,7 +95,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeBatchRejected reports retryable=true only for EPOCH_REQUIRED', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
@@ -106,7 +106,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeBatchRejected fails safe: unknown and permanent reasons are NOT retryable', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     // The retryable set is an allowlist, so a reason absent from it -- an
     // unspecified/transport code (0), a reason added to the proto later
     // (INVALID_WORKER_REF, a permanent CanUseWorker deny), or an out-of-range
@@ -128,7 +128,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('keeps a retryable batch applied on rejection; revertPendingBatch drops it', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     mgr.submit(batch)
     expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
@@ -151,7 +151,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('a kept retryable batch is reconciled (not double-applied) when the retry commits', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
     mgr.submit(batch)
     mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
@@ -194,7 +194,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('consumeEntityRemoved drops pending ops touching that tab', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setTabTileId(ctx, TabType.AGENT, 'tDoomed', 'someTile'),
       setNodeKind(ctx, 'unrelated-node', NodeKind.LEAF),
@@ -220,7 +220,7 @@ describe('pendingOpsManager', () => {
   it('notify is invoked after every state-mutating method', () => {
     const notify = vi.fn()
     const m = makeMgr(notify)
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: m.clock }
+    const ctx = { originClientId: 'clientA', clock: m.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
     m.submit(batch)
     expect(notify).toHaveBeenCalledTimes(1)
@@ -236,7 +236,7 @@ describe('pendingOpsManager', () => {
     // first's, so optimistically tA.tile_id == 'B'. When the FIRST
     // batch commits with a canonical_hlc that's larger than the
     // second's client_hlc, recompute must yield 'A'.
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const t = TabType.AGENT
     // Initial tab placement (so tile_id register exists).
     mgr.submit(newBatch([
@@ -269,7 +269,7 @@ describe('pendingOpsManager', () => {
   })
 
   it('tombstoneTab consumed remotely propagates to confirmed and speculative states', () => {
-    const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+    const ctx = { originClientId: 'clientA', clock: mgr.clock }
     // Seed tA via a remote batch so we have a confirmed record.
     const seedOp = setTabTileId(ctx, TabType.AGENT, 'tA', 'rootTile')
     seedOp.canonicalHlc = create(HLCSchema, { physical: 50n, logical: 0n, clientId: 'remote' })
@@ -304,7 +304,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('alias holds after a remote batch lands (still empty pending)', () => {
-      const op = setNodeKind({ orgId: 'org', originClientId: 'remote', clock: new HLCClock('remote') }, 'r1', NodeKind.SPLIT)
+      const op = setNodeKind({ originClientId: 'remote', clock: new HLCClock('remote') }, 'r1', NodeKind.SPLIT)
       op.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
       mgr.consumeRemote(newBatch([op]))
       expect(mgr.state.pendingBatches.length).toBe(0)
@@ -314,7 +314,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('submit detaches the alias before applying the local op', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       // Establish the alias first via recomputeSpeculative so the
       // detach contract is observable.
       mgr.recomputeSpeculative()
@@ -330,7 +330,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('alias re-establishes after the last pending batch settles via echo', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
       mgr.submit(batch)
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
@@ -344,7 +344,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('alias re-establishes after batch-committed drains the pending queue', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n2', NodeKind.LEAF)])
       mgr.submit(batch)
       const committed = create(BatchCommittedSchema, {
@@ -359,7 +359,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('alias re-establishes after batch-rejected drains the pending queue', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n3', NodeKind.LEAF)])
       mgr.submit(batch)
       // The rejection reason is immaterial here -- this test only cares
@@ -375,7 +375,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('alias stays detached while multiple batches are pending, then re-aliases when all drain', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const b1 = newBatch([setNodeKind(ctx, 'a', NodeKind.LEAF)])
       const b2 = newBatch([setNodeKind(ctx, 'b', NodeKind.LEAF)])
       mgr.submit(b1)
@@ -397,7 +397,7 @@ describe('pendingOpsManager', () => {
       // Bootstrap rebuilds confirmedState; with empty pending, the
       // recomputeSpeculative fast-path must re-alias.
       mgr.bootstrap({
-        orgId: 'org',
+        userId: 'user',
         nodes: {},
         tabs: {},
         floatingWindows: {},
@@ -410,7 +410,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('explicit recomputeSpeculative call still aliases when pending is empty', () => {
-      // Public API: useOrgEvents calls recomputeSpeculative after
+      // Public API: useUserEvents calls recomputeSpeculative after
       // mutating confirmedState directly via EntityMaterialized /
       // EntityRemoved. Empty pending must yield the alias.
       mgr.recomputeSpeculative()
@@ -425,7 +425,7 @@ describe('pendingOpsManager', () => {
     // a per-call override to applyOp instead.
 
     it('submit leaves op.canonicalHlc unset on the persisted batch', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
       // Sanity: ops are minted with clientHlc only.
       expect(batch.ops[0].clientHlc).toBeDefined()
@@ -439,13 +439,13 @@ describe('pendingOpsManager', () => {
     })
 
     it('recomputeSpeculative does not mutate op.canonicalHlc when re-folding pending batches', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
       mgr.submit(batch)
       // A foreign remote op forces a recompute (via consumeRemote →
       // recomputeSpeculative). The pending batch's op should remain
       // canonical-less afterwards.
-      const remote = setNodeKind({ orgId: 'org', originClientId: 'other', clock: new HLCClock('other') }, 'other-node', NodeKind.SPLIT)
+      const remote = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'other-node', NodeKind.SPLIT)
       remote.canonicalHlc = create(HLCSchema, { physical: 999n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([remote]))
       expect(batch.ops[0].canonicalHlc).toBeUndefined()
@@ -454,7 +454,7 @@ describe('pendingOpsManager', () => {
     })
 
     it('consumeBatchCommitted is the only path that stamps canonicalHlc on the persisted op', () => {
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
       mgr.submit(batch)
       expect(batch.ops[0].canonicalHlc).toBeUndefined()
@@ -472,7 +472,7 @@ describe('pendingOpsManager', () => {
     it('ops with neither clientHlc nor canonicalHlc are dropped (no-op apply)', () => {
       // Edge case: a malformed op missing both HLCs. Speculative apply
       // should silently skip it rather than throw or corrupt state.
-      const ctx = { orgId: 'org', originClientId: 'clientA', clock: mgr.clock }
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
       batch.ops[0].clientHlc = undefined as never
       batch.ops[0].canonicalHlc = undefined as never

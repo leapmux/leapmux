@@ -13,7 +13,7 @@ test.describe('Branch context menu', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-menu-repo')
 
     const workspaceId = await createWorkspaceWithWorktreeViaAPI(
@@ -21,13 +21,12 @@ test.describe('Branch context menu', () => {
       adminToken,
       workerId,
       'Branch Menu WS',
-      adminOrgId,
       repoDir,
       'menu-branch',
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
@@ -52,7 +51,7 @@ test.describe('Branch context menu', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-delete-repo')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'branch-delete-repo-worktrees', 'delete-branch')
@@ -62,14 +61,13 @@ test.describe('Branch context menu', () => {
       adminToken,
       workerId,
       'Branch Delete WS',
-      adminOrgId,
       repoDir,
       'delete-branch',
     )
     expect(existsSync(worktreeDir)).toBe(true)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
@@ -103,7 +101,7 @@ test.describe('Branch context menu', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-change-repo')
 
     const workspaceId = await createWorkspaceWithWorktreeViaAPI(
@@ -111,13 +109,12 @@ test.describe('Branch context menu', () => {
       adminToken,
       workerId,
       'Branch Change WS',
-      adminOrgId,
       repoDir,
       'change-branch',
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()

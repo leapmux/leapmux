@@ -35,9 +35,9 @@ type RemoteIPCFactory interface {
 }
 
 // AgentSpawnInfo identifies a spawning agent so the IPC factory can
-// scope its bearer / socket name appropriately. UserID / OrgID /
+// scope its bearer / socket name appropriately. UserID /
 // WorkspaceID / WorkerID / TabID / WorkingDir / AgentProvider feed
-// into LEAPMUX_REMOTE_* env vars (TAB_ID, TAB_TYPE=agent, ORG_ID,
+// into LEAPMUX_REMOTE_* env vars (TAB_ID, TAB_TYPE=agent,
 // USER_ID, WORKER_ID, WORKING_DIR, AGENT_PROVIDER) so child CLI
 // invocations can default flags. Tile id isn't here — the CLI
 // derives it from the tab id at command time via the hub's LocateTab
@@ -48,7 +48,6 @@ type AgentSpawnInfo struct {
 	// rather than a string removes a String()/re-mint round-trip and makes a
 	// blank spawn identity a compile-time impossibility at every call site.
 	UserID        userid.UserID
-	OrgID         string
 	WorkspaceID   string
 	WorkerID      string
 	TabID         string // The spawned agent's id (becomes LEAPMUX_REMOTE_TAB_ID).
@@ -60,7 +59,6 @@ type AgentSpawnInfo struct {
 type TerminalSpawnInfo struct {
 	// UserID is already minted -- see AgentSpawnInfo.UserID.
 	UserID      userid.UserID
-	OrgID       string
 	WorkspaceID string
 	WorkerID    string
 	TabID       string // The spawned terminal's id (becomes LEAPMUX_REMOTE_TAB_ID).

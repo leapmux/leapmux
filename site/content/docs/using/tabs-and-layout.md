@@ -9,7 +9,7 @@ The center of every workspace is a tiling canvas. You divide it into **tiles** (
 
 The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync & Presence](/docs/using/collaboration/) for what does and doesn't sync.
 
-For the concept-level model of organizations, workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
+For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 
 ## Tabs
 

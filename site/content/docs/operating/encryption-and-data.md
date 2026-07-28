@@ -20,7 +20,7 @@ LeapMux keeps three kinds of persistent state:
 
 | Data | Where it lives | Encrypted at rest? |
 | --- | --- | --- |
-| Accounts, personal orgs, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
+| Accounts, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
 | OAuth provider client secrets and per-user OAuth access/refresh tokens | Hub database | **Yes** — encrypted with the keystore key |
 | API-token / delegation-token secrets | Hub database | No — stored as HMAC-SHA256 **hashes** (peppered), never as plaintext or reversible ciphertext |
 | Worker public keys (for the E2EE handshake) | Hub database | No — public material, stored in the clear |
@@ -41,7 +41,7 @@ Exactly three secret types are encrypted at rest in the Hub database:
 
 (Short-lived pending-signup OAuth tokens are also encrypted while a signup is in flight.)
 
-The keystore loads its versioned key ring from `encryption.key` (highest version = active) and uses it to encrypt and decrypt exactly those three columns in the Hub database; everything else — accounts, orgs, workspaces, Workers, hashed API-token secrets, and Worker public keys — is stored without the key.
+The keystore loads its versioned key ring from `encryption.key` (highest version = active) and uses it to encrypt and decrypt exactly those three columns in the Hub database; everything else — accounts, workspaces, Workers, hashed API-token secrets, and Worker public keys — is stored without the key.
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
@@ -272,7 +272,7 @@ For each Worker:
 
 ### Disaster-recovery notes
 
-- **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. Non-encrypted data (accounts, orgs, workspaces) is unaffected.
+- **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. Non-encrypted data (accounts, workspaces) is unaffected.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
 - **Lost a Worker's `state.json`:** re-register the Worker (a fresh registration key from the Hub UI). The first Frontend to reconnect after the identity changes sees the **"Worker public key changed"** dialog and must explicitly Accept the new key. See [Managing Workers](/docs/operating/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.

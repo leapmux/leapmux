@@ -8,7 +8,7 @@ import { gotoWorkspace } from './helpers/ui'
  * Two browser contexts authenticate as the same admin user, navigate
  * to the same workspace, and exercise interleaved layout mutations.
  * Both contexts must converge to the same projected tree because
- * every mutation flows through `/ws/orgevents` as a CRDT op stream.
+ * every mutation flows through `/ws/userevents` as a CRDT op stream.
  *
  * Spec: split-tile in client A → client B sees the new tile shape.
  * Then split-tile in client B → client A sees that, too. Both clients
@@ -19,9 +19,9 @@ import { gotoWorkspace } from './helpers/ui'
 
 test.describe('CRDT convergence', () => {
   test('two contexts split-tile interleaved → both converge', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Convergence', adminOrgId)
-    const workspaceUrl = `/o/admin/workspace/${wsId}`
+    const { hubUrl, adminToken } = leapmuxServer
+    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Convergence')
+    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
@@ -42,7 +42,7 @@ test.describe('CRDT convergence', () => {
       // button is mounted by `Tile.tsx` when `canSplit` is true.
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
       await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(2)
-      // Client B should pick up the same tree via /ws/orgevents.
+      // Client B should pick up the same tree via /ws/userevents.
       await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(2)
 
       // Client B: split the right tile vertically. With two tiles
@@ -53,7 +53,7 @@ test.describe('CRDT convergence', () => {
       await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(3)
 
       // Reload checkpoint: the projection lives in the CRDT, not in
-      // sessionStorage, so a refresh must replay it from `OrgMaterialized`
+      // sessionStorage, so a refresh must replay it from `UserMaterialized`
       // and re-derive the same three-tile tree. A future regression that
       // keeps the layout alive only in the local layoutStore (without
       // round-tripping through the hub) would survive in-session
@@ -73,9 +73,9 @@ test.describe('CRDT convergence', () => {
   })
 
   test('close-tile from one client tombstones in the other', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Close', adminOrgId)
-    const workspaceUrl = `/o/admin/workspace/${wsId}`
+    const { hubUrl, adminToken } = leapmuxServer
+    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Close')
+    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })

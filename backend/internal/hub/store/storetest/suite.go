@@ -14,7 +14,6 @@ type Suite struct {
 
 // Run executes all conformance test groups.
 func (s *Suite) Run(t *testing.T) {
-	t.Run("orgs", s.testOrgs)
 	t.Run("users", s.testUsers)
 	t.Run("sessions", s.testSessions)
 	t.Run("zero id mutations refused", s.testZeroIDMutationsRefused)
@@ -23,12 +22,12 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("registrations", s.testRegistrations)
 	t.Run("workspaces", s.testWorkspaces)
 	t.Run("workspace_tab_index", s.testWorkspaceTabIndex)
-	t.Run("org_op_batches", s.testOrgOpBatches)
+	t.Run("user_op_batches", s.testUserOpBatches)
 	// Note: workspace_tabs / workspace_layouts substores were removed
 	// during the CRDT migration. Their replacements (WorkspaceTabIndex
-	// — bulk read paths covered above; OrgOpBatches has a regression
+	// — bulk read paths covered above; UserOpBatches has a regression
 	// case for the empty-journal load path that exercised a SQLite
-	// sqlc codegen bug; OrgState / OrgRecentBatchIDs / LifecycleOutbox)
+	// sqlc codegen bug; UserState / UserRecentBatchIDs / LifecycleOutbox)
 	// are otherwise exercised via the manager-integration suite rather
 	// than via plain table CRUD.
 	t.Run("workspace_sections", s.testWorkspaceSections)

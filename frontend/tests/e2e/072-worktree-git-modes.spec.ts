@@ -15,7 +15,7 @@ import {
   openNewWorkspaceDialog,
   setWorkingDir,
   waitForAgentsViaAPI,
-  waitForOrgPageReady,
+  waitForAppPageReady,
   waitForPathDeleted,
   waitForWorker,
   WORKSPACE_URL_RE,
@@ -27,7 +27,7 @@ test.describe('Worktree Git Modes', () => {
   test('create worktree from existing worktree starts from correct branch', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-wt-from-wt')
     const realDataDir = realpathSync(dataDir)
 
@@ -54,7 +54,6 @@ test.describe('Worktree Git Modes', () => {
       adminToken,
       workerId,
       'WT from WT WS',
-      adminOrgId,
       firstWorktreeDir,
       'derived-branch',
     )
@@ -75,7 +74,7 @@ test.describe('Worktree Git Modes', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-agent-resolve')
     const realRepoDir = realpathSync(repoDir)
 
@@ -85,13 +84,12 @@ test.describe('Worktree Git Modes', () => {
       adminToken,
       workerId,
       'Agent Resolve WS',
-      adminOrgId,
       repoDir,
       'agent-resolve-branch',
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     // Open "New agent..." dialog via the tab menu
@@ -114,7 +112,7 @@ test.describe('Worktree Git Modes', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-terminal-resolve')
     const realRepoDir = realpathSync(repoDir)
 
@@ -124,13 +122,12 @@ test.describe('Worktree Git Modes', () => {
       adminToken,
       workerId,
       'Terminal Resolve WS',
-      adminOrgId,
       repoDir,
       'terminal-resolve-branch',
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     // Open "New terminal..." dialog via the tab menu
@@ -162,8 +159,8 @@ test.describe('Worktree Git Modes', () => {
     execSync('git branch feature-switch', { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -184,8 +181,8 @@ test.describe('Worktree Git Modes', () => {
 
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+    await expect(page.getByRole('dialog')).not.toBeVisible()
+    await expect(page).toHaveURL(WORKSPACE_URL_RE)
 
     // Verify the repo is now on the feature-switch branch
     const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
@@ -195,7 +192,7 @@ test.describe('Worktree Git Modes', () => {
   test('switch-to-branch mode via API: verifies checkout on disk', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-switch-api')
 
     // Create a second branch.
@@ -206,7 +203,7 @@ test.describe('Worktree Git Modes', () => {
     expect(before).toBe('main')
 
     // Create workspace with checkout_branch.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
       checkoutBranch: 'api-switch-target',
     })
@@ -227,8 +224,8 @@ test.describe('Worktree Git Modes', () => {
     writeFileSync(join(repoDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -249,7 +246,7 @@ test.describe('Worktree Git Modes', () => {
   test('use-existing-worktree mode via API: switches working dir to worktree', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-api')
     const realDataDir = realpathSync(dataDir)
 
@@ -259,20 +256,20 @@ test.describe('Worktree Git Modes', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using the use_worktree_path field.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
       useWorktreePath: worktreeDir,
     })
 
     // Verify the agent's working dir is the worktree path.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents[0].workingDir).toBe(worktreeDir)
   })
 
   test('use-existing-worktree on managed worktree: tracks tab correctly', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-managed')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-use-wt-managed-worktrees', 'managed-branch')
@@ -283,7 +280,6 @@ test.describe('Worktree Git Modes', () => {
       adminToken,
       workerId,
       'Managed WT WS',
-      adminOrgId,
       repoDir,
       'managed-branch',
     )
@@ -295,7 +291,7 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Close the first agent — worktree should persist because second agent still references it.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
@@ -311,7 +307,7 @@ test.describe('Worktree Git Modes', () => {
   test('use-existing-worktree on unmanaged worktree: does NOT auto-delete on close', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-unmanaged')
     const realDataDir = realpathSync(dataDir)
 
@@ -321,13 +317,13 @@ test.describe('Worktree Git Modes', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using "use existing worktree" pointing to the unmanaged worktree.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
       useWorktreePath: worktreeDir,
     })
 
     // Close the agent.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Unmanaged worktree should NOT be cleaned up.
@@ -346,8 +342,8 @@ test.describe('Worktree Git Modes', () => {
     execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-ui-wt')} -b ui-wt-branch`, { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -373,8 +369,8 @@ test.describe('Worktree Git Modes', () => {
 
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+    await expect(page.getByRole('dialog')).not.toBeVisible()
+    await expect(page).toHaveURL(WORKSPACE_URL_RE)
   })
 
   // ─── Git Mode: Use Current State ────────────────────────────────────
@@ -382,7 +378,7 @@ test.describe('Worktree Git Modes', () => {
   test('use-current-state on managed worktree: registers tab so worktree is not prematurely deleted', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-current-managed')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-current-managed-worktrees', 'current-branch')
@@ -393,7 +389,6 @@ test.describe('Worktree Git Modes', () => {
       adminToken,
       workerId,
       'Current Managed WS',
-      adminOrgId,
       repoDir,
       'current-branch',
     )
@@ -405,7 +400,7 @@ test.describe('Worktree Git Modes', () => {
     const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
 
     // Close the first agent — worktree should persist because second agent registered.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
@@ -421,7 +416,7 @@ test.describe('Worktree Git Modes', () => {
   test('use-current-state on unmanaged worktree: does NOT register or track', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-current-unmanaged')
     const realDataDir = realpathSync(dataDir)
 
@@ -431,11 +426,11 @@ test.describe('Worktree Git Modes', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using "use current state" (default) pointing at the manual worktree.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Current Unmanaged WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Current Unmanaged WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
 
     // Close the agent.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // No cleanup — unmanaged worktree should still exist.
@@ -448,7 +443,7 @@ test.describe('Worktree Git Modes', () => {
   test('create-worktree with base branch: new worktree starts from specified base', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-base-branch')
     const realDataDir = realpathSync(dataDir)
 
@@ -467,7 +462,7 @@ test.describe('Worktree Git Modes', () => {
     expect(featureHead).not.toBe(mainHead)
 
     // Create workspace with worktree based on feature-base branch.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Base Branch WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Base Branch WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
       createWorktree: true,
       worktreeBranch: 'derived-from-feature',
@@ -502,8 +497,8 @@ test.describe('Worktree Git Modes', () => {
     execSync('git checkout main', { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -536,8 +531,8 @@ test.describe('Worktree Git Modes', () => {
     await branchInput.fill('from-feature-base')
 
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+    await expect(page.getByRole('dialog')).not.toBeVisible()
+    await expect(page).toHaveURL(WORKSPACE_URL_RE)
 
     // Verify the worktree was created from the feature branch
     const worktreeDir = join(realDataDir, 'test-repo-base-branch-ui-worktrees', 'from-feature-base')

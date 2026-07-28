@@ -124,7 +124,7 @@ func flagLabelForPositionKind(k positionKind) string {
 // --before / --after target (a tab cannot reposition relative to
 // itself in a single op).
 func resolvePositionSpec(
-	state *leapmuxv1.OrgMaterialized,
+	state *leapmuxv1.UserMaterialized,
 	destTileID, movingTabID string,
 	spec positionSpec,
 ) (resolvedTileID, position string, err error) {
@@ -183,7 +183,7 @@ func resolvePositionSpec(
 // LexoRank position. excludeTabID is dropped from the result so that
 // `tab move`'s position computation isn't influenced by the moving
 // tab's pre-move record; pass "" when no exclusion is needed.
-func liveTabsOnTile(state *leapmuxv1.OrgMaterialized, tileID, excludeTabID string) []*leapmuxv1.TabRecord {
+func liveTabsOnTile(state *leapmuxv1.UserMaterialized, tileID, excludeTabID string) []*leapmuxv1.TabRecord {
 	if tileID == "" {
 		return nil
 	}

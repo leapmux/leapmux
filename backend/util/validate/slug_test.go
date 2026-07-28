@@ -77,7 +77,7 @@ func TestSanitizeSlug_FieldNameInError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "username")
 
-	_, err = SanitizeSlug("organization name", "bad_slug")
+	_, err = SanitizeSlug("display name", "bad_slug")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "organization name")
+	assert.Contains(t, err.Error(), "display name")
 }

@@ -21,7 +21,7 @@ import {
   pushBranchViaAPI,
   setWorkingDir,
   waitForAgentsViaAPI,
-  waitForOrgPageReady,
+  waitForAppPageReady,
   waitForPathDeleted,
   waitForWorker,
   WORKSPACE_URL_RE,
@@ -36,8 +36,8 @@ test.describe('Worktree Lifecycle', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-create')
 
     await loginViaToken(page, adminToken)
-    await page.goto('/o/admin')
-    await waitForOrgPageReady(page)
+    await page.goto('/')
+    await waitForAppPageReady(page)
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
@@ -61,8 +61,8 @@ test.describe('Worktree Lifecycle', () => {
 
     // Wait for the dialog to close first — this signals the API call
     // (including the git worktree creation) has completed.
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+    await expect(page.getByRole('dialog')).not.toBeVisible()
+    await expect(page).toHaveURL(WORKSPACE_URL_RE)
     await waitForWorkspaceReady(page)
 
     // Verify the worktree directory was created on disk.
@@ -75,7 +75,7 @@ test.describe('Worktree Lifecycle', () => {
   test('clean worktree last tab prompts and can be scheduled for deletion', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-autoclean')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-autoclean-worktrees', 'autoclean-branch')
@@ -86,7 +86,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Autoclean WS',
-      adminOrgId,
       repoDir,
       'autoclean-branch',
     )
@@ -95,7 +94,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Get the initial agent that was auto-created with the workspace
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
@@ -110,7 +109,7 @@ test.describe('Worktree Lifecycle', () => {
   test('worktree persists while other tabs still reference it', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-shared')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-shared-worktrees', 'shared-branch')
@@ -121,7 +120,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Shared WS',
-      adminOrgId,
       repoDir,
       'shared-branch',
     )
@@ -134,16 +132,16 @@ test.describe('Worktree Lifecycle', () => {
       'OpenTerminal',
       OpenTerminalRequestSchema,
       OpenTerminalResponseSchema,
-      { workspaceId, workerId, orgId: adminOrgId, cols: 80, rows: 24, workingDir: repoDir, useWorktreePath: worktreeDir },
+      { workspaceId, workerId, cols: 80, rows: 24, workingDir: repoDir, useWorktreePath: worktreeDir },
     )
     const terminalId = termResp2.terminalId
 
     // Close the terminal — agent still holds reference, worktree should persist
-    await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId, terminalId)
+    await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, terminalId)
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
@@ -156,7 +154,7 @@ test.describe('Worktree Lifecycle', () => {
   test('existing worktree (not created by us) can be scheduled for deletion', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-existing')
     const realDataDir = realpathSync(dataDir)
 
@@ -170,12 +168,11 @@ test.describe('Worktree Lifecycle', () => {
       hubUrl,
       adminToken,
       'Existing WT WS',
-      adminOrgId,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, manualWorktreeDir)
 
     // Get the auto-created agent
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
@@ -190,13 +187,13 @@ test.describe('Worktree Lifecycle', () => {
   test('last non-worktree tab prompts only when branch has pending git state', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-branch-prompt')
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Branch Prompt WS', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Branch Prompt WS')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     const cleanInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(cleanInspect.shouldPrompt).toBe(false)
@@ -213,7 +210,7 @@ test.describe('Worktree Lifecycle', () => {
   test('dirty worktree with uncommitted changes triggers last-tab prompt', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dirty')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-dirty-worktrees', 'dirty-branch')
@@ -224,7 +221,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Dirty WS',
-      adminOrgId,
       repoDir,
       'dirty-branch',
     )
@@ -233,7 +229,7 @@ test.describe('Worktree Lifecycle', () => {
     // Make the worktree dirty: add an uncommitted file
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
 
     expect(inspect.shouldPrompt).toBe(true)
@@ -247,7 +243,7 @@ test.describe('Worktree Lifecycle', () => {
   test('worktree with local-only commits and no upstream triggers last-tab prompt', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     // Use a plain local repo (no remote configured) so branches have no upstream.
     const repoDir = createGitRepo(dataDir, 'test-repo-no-upstream')
     const realDataDir = realpathSync(dataDir)
@@ -259,7 +255,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'No Upstream WS',
-      adminOrgId,
       repoDir,
       'no-upstream-branch',
     )
@@ -272,7 +267,7 @@ test.describe('Worktree Lifecycle', () => {
     execSync('git add .', { cwd: worktreeDir })
     execSync('git commit -m "local only"', { cwd: worktreeDir })
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
 
     expect(inspect.shouldPrompt).toBe(true)
@@ -287,7 +282,7 @@ test.describe('Worktree Lifecycle', () => {
   test('dirty worktree with uncommitted changes can commit and push before close', async ({
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const realDataDir = realpathSync(dataDir)
 
     // Create a bare "remote" and clone from it so there is an upstream
@@ -312,7 +307,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Unpushed WS',
-      adminOrgId,
       repoDir,
       'unpushed-branch',
     )
@@ -325,7 +319,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'extra.txt'), 'local only\n')
     execSync('git push -u origin unpushed-branch', { cwd: worktreeDir })
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.hasUncommittedChanges).toBe(true)
@@ -344,7 +338,7 @@ test.describe('Worktree Lifecycle', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog-cancel')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-dialog-cancel-worktrees', 'cancel-branch')
@@ -354,7 +348,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Cancel Test WS',
-      adminOrgId,
       repoDir,
       'cancel-branch',
     )
@@ -363,7 +356,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
     const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
 
@@ -404,7 +397,7 @@ test.describe('Worktree Lifecycle', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-dialog-worktrees', 'dialog-branch')
@@ -414,7 +407,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Dialog Test WS',
-      adminOrgId,
       repoDir,
       'dialog-branch',
     )
@@ -423,7 +415,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -461,7 +453,7 @@ test.describe('Worktree Lifecycle', () => {
     page,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog-keep')
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-dialog-keep-worktrees', 'keep-branch')
@@ -471,7 +463,6 @@ test.describe('Worktree Lifecycle', () => {
       adminToken,
       workerId,
       'Close Anyway Test WS',
-      adminOrgId,
       repoDir,
       'keep-branch',
     )
@@ -480,7 +471,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await page.goto(`/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')

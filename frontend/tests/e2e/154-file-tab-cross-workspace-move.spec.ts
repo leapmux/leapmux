@@ -8,7 +8,7 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel } from './
  * behind the E2EE channel; the hub never sees it. A cross-workspace
  * move is a two-step orchestration:
  *
- *   1. `RelocateFileTabPath(org_id, tab_id, new_workspace_id)` over
+ *   1. `RelocateFileTabPath(tab_id, new_workspace_id)` over
  *      the worker's E2EE channel — updates `worker_file_tabs.workspace_id`
  *      and emits `FileTabPathRevoked` on the source workspace's
  *      private-event stream + `FileTabPathRegistered` on the
@@ -28,9 +28,9 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel } from './
 
 test.describe('File-tab E2EE worker round-trip', () => {
   test('Register / Get / Relocate / Revoke round-trip honors workspace bookkeeping', async ({ leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'file-W1', adminOrgId)
-    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'file-W2', adminOrgId)
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'file-W1')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'file-W2')
 
     const channel = await getTestChannel(hubUrl, adminToken)
 
@@ -66,7 +66,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
         'RegisterFileTabPath',
         RegisterFileTabPathRequestSchema,
         RegisterFileTabPathResponseSchema,
-        { orgId: adminOrgId, tabId, workspaceId: ws1, filePath },
+        { tabId, workspaceId: ws1, filePath },
       )
 
       // 2. Get returns the path + workspace_id.
@@ -75,7 +75,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
         'GetFileTabPath',
         GetFileTabPathRequestSchema,
         GetFileTabPathResponseSchema,
-        { orgId: adminOrgId, tabId },
+        { tabId },
       )
       expect(got.workspaceId).toBe(ws1)
       expect(got.filePath).toBe(filePath)
@@ -86,7 +86,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
         'RelocateFileTabPath',
         RelocateFileTabPathRequestSchema,
         RelocateFileTabPathResponseSchema,
-        { orgId: adminOrgId, tabId, newWorkspaceId: ws2 },
+        { tabId, newWorkspaceId: ws2 },
       )
 
       // 4. Get reflects the new workspace; path unchanged.
@@ -95,7 +95,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
         'GetFileTabPath',
         GetFileTabPathRequestSchema,
         GetFileTabPathResponseSchema,
-        { orgId: adminOrgId, tabId },
+        { tabId },
       )
       expect(got2.workspaceId).toBe(ws2)
       expect(got2.filePath).toBe(filePath)
@@ -106,7 +106,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
         'RevokeFileTabPath',
         RevokeFileTabPathRequestSchema,
         RevokeFileTabPathResponseSchema,
-        { orgId: adminOrgId, tabId },
+        { tabId },
       )
       let revoked = false
       try {
@@ -115,7 +115,7 @@ test.describe('File-tab E2EE worker round-trip', () => {
           'GetFileTabPath',
           GetFileTabPathRequestSchema,
           GetFileTabPathResponseSchema,
-          { orgId: adminOrgId, tabId },
+          { tabId },
         )
       }
       catch {

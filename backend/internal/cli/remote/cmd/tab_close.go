@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/cli/remote/resolve"
 )
 
-// RunTabClose tombstones a tab via OrgCRDT.SubmitOps and dispatches
+// RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
 // worker-side teardown (CloseAgent / CloseTerminal). The hub's
 // remove-wins semantics mean the tab id is dead afterward; recreating
 // at the UI level mints a fresh id. The resolver derives workspace +
@@ -39,7 +41,7 @@ func RunTabClose(rawCtx any, args []string) error {
 	var force bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideOrg: true, HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "close even if the target is the calling tab (would kill the caller's own PTY)")
 	fs.StringVar(&worktree, "worktree", "", `worktree disposition: "keep" / "push" / "discard". Required when this is the last tab for a worktree, or the last tab on a non-worktree branch with uncommitted / unpushed changes.`)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -66,13 +68,41 @@ func RunTabClose(rawCtx any, args []string) error {
 			return err
 		}
 
+		// `tab close` on an agent/terminal tab issues up to three inner-RPCs
+		// against the SAME worker -- InspectLastTabClose, an optional
+		// PushBranch, and the CloseAgent/CloseTerminal teardown -- with the
+		// CRDT tombstone in between. Hoisting one Noise_NK channel over the
+		// sequence pays the handshake once rather than per call.
+		//
+		// Opening is best-effort on purpose: a failure must not abort the
+		// close, because a tab whose worker is gone still has to be
+		// tombstoneable. withBestEffortWorkerChannel falls back to opening per
+		// call, which reproduces the exact channel_open_failed code this
+		// command's unreachable-worker fallback keys on. File tabs are path
+		// registrations with no worker-side state, so they bind no worker at
+		// all and make no worker call.
+		bindWorker := got.WorkerID
+		if tt == leapmuxv1.TabType_TAB_TYPE_FILE {
+			bindWorker = ""
+		}
+		var w workerCall
+		if err := withBestEffortWorkerChannel(ctx, c, bindWorker, func(bound workerCall) error {
+			w = bound
+			return nil
+		}); err != nil {
+			return err
+		}
+		callWorker := func(method string, in, out proto.Message) error {
+			return w.Call(ctx, method, in, out)
+		}
+
 		// Last-tab worktree gate. Only agent / terminal tabs have worker-
 		// side worktree state; file tabs skip both the inspect and the
 		// worker-close dispatch (they're path registrations, no PTY).
 		worktreeAction := wt.worktreeAction()
 		var inspectHint string
 		if tt != leapmuxv1.TabType_TAB_TYPE_FILE {
-			inspected, ierr := inspectLastTabCloseBest(ctx, c, got.WorkerID, tt, got.TabID)
+			inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
 			if ierr != nil {
 				// Worker unreachable / not found is the same fallback the
 				// frontend uses: skip the dialog, proceed with implicit
@@ -89,8 +119,8 @@ func RunTabClose(rawCtx any, args []string) error {
 					if !inspected.GetGitState().GetCanPush() {
 						return remote.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
 					}
-					if err := callInnerRPC(ctx, c, got.WorkerID, "PushBranch", &leapmuxv1.PushBranchRequest{TabType: tt, TabId: got.TabID}, &leapmuxv1.PushBranchResponse{}); err != nil {
-						return err
+					if err := callWorker("PushBranch", &leapmuxv1.PushBranchRequest{TabType: tt, TabId: got.TabID}, &leapmuxv1.PushBranchResponse{}); err != nil {
+						return emitInnerRPCError(err)
 					}
 				}
 			}
@@ -100,7 +130,7 @@ func RunTabClose(rawCtx any, args []string) error {
 			inspectHint = inspected.GetErrorHint()
 		}
 
-		if err := cc.submitOps([]*leapmuxv1.OrgOp{opTombstoneTab(cc.bs, tt, got.TabID)}); err != nil {
+		if err := cc.submitOps([]*leapmuxv1.CrdtOp{opTombstoneTab(cc.bs, tt, got.TabID)}); err != nil {
 			return err
 		}
 
@@ -110,7 +140,7 @@ func RunTabClose(rawCtx any, args []string) error {
 		// worktree removal). callInnerRPC failures are demoted to envelope
 		// fields so the user sees both the close success and the cleanup
 		// outcome.
-		closeErr := dispatchWorkerClose(ctx, c, got, tt, worktreeAction)
+		closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
 
 		out := map[string]any{
 			"tab_id":     got.TabID,
@@ -170,9 +200,17 @@ func (c tabCloseWorktree) worktreeAction() leapmuxv1.WorktreeAction {
 	return leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED
 }
 
-func inspectLastTabCloseBest(ctx context.Context, c *remote.Client, workerID string, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
+// workerCaller issues one inner-RPC against a worker already fixed by the
+// caller -- either on a hoisted E2EE channel or through the per-call
+// transport. Taking it as a parameter is what lets `tab close` share one
+// channel across its inspect / push / teardown sequence without every helper
+// in the chain having to know which transport it got.
+type workerCaller func(method string, in proto.Message, out proto.Message) error
+
+// The context rides on the bound caller, so this takes none of its own.
+func inspectLastTabCloseBest(call workerCaller, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	resp := &leapmuxv1.InspectLastTabCloseResponse{}
-	if err := callInnerRPCBest(ctx, c, workerID, "InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{TabType: tabType, TabId: tabID}, resp); err != nil {
+	if err := call("InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{TabType: tabType, TabId: tabID}, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -228,19 +266,18 @@ func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {
 	return "branch is not pushable"
 }
 
-func dispatchWorkerClose(ctx context.Context, c *remote.Client, got resolve.Resolved, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) error {
+func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) error {
 	if got.WorkerID == "" {
 		return nil
 	}
 	switch tt {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return callInnerRPCBest(ctx, c, got.WorkerID, "CloseAgent",
+		return call("CloseAgent",
 			&leapmuxv1.CloseAgentRequest{AgentId: got.TabID, WorktreeAction: action},
 			&leapmuxv1.CloseAgentResponse{})
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return callInnerRPCBest(ctx, c, got.WorkerID, "CloseTerminal",
+		return call("CloseTerminal",
 			&leapmuxv1.CloseTerminalRequest{
-				OrgId:          got.OrgID,
 				WorkspaceId:    got.WorkspaceID,
 				TerminalId:     got.TabID,
 				WorktreeAction: action,

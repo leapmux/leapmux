@@ -9,7 +9,6 @@ import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
 import { ShellSelect } from '~/components/shell/ShellSelect'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { useOrg } from '~/context/OrgContext'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
@@ -25,7 +24,6 @@ interface NewTerminalDialogProps {
 }
 
 export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
-  const org = useOrg()
   const { submit: { submitting, error, setError, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create terminal' },
     worker: {
@@ -40,7 +38,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       const id = worker.workerId()
       if (!id)
         return null
-      return { orgId: org.orgId(), workspaceId: props.workspaceId, workerId: id }
+      return { workspaceId: props.workspaceId, workerId: id }
     },
     err => setError(formatErrorMessage(err, 'Failed to load shells')),
   )
@@ -69,7 +67,6 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   const handleSubmit = formHandler(submitDisabled, async () => {
     const resp = await workerRpc.openTerminal(worker.workerId(), {
-      orgId: org.orgId(),
       workspaceId: props.workspaceId,
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,

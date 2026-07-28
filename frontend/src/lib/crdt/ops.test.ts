@@ -27,7 +27,6 @@ import {
 
 function newCtx(clientId = 'cli-A') {
   return {
-    orgId: 'org-1',
     originClientId: clientId,
     clock: new HLCClock(clientId),
   }
@@ -46,10 +45,9 @@ describe('generateId', () => {
 })
 
 describe('op envelope', () => {
-  it('stamps orgId, originClientId, and a fresh op_id + client_hlc', () => {
+  it('stamps originClientId, and a fresh op_id + client_hlc', () => {
     const ctx = newCtx()
     const op = setNodeKind(ctx, 'node-1', 1)
-    expect(op.orgId).toBe('org-1')
     expect(op.originClientId).toBe('cli-A')
     expect(op.opId).toHaveLength(48)
     expect(op.clientHlc?.clientId).toBe('cli-A')
@@ -143,7 +141,7 @@ describe('floating window op builders', () => {
 describe('liveTabsOnTile', () => {
   it('returns tabs in user-visible (position ascending, tab_id tiebreak) order, not state.tabs insertion order', async () => {
     const { create } = await import('@bufbuild/protobuf')
-    const { OrgCrdtStateSchema, TabRecordSchema, LWWStringSchema } = await import('~/generated/leapmux/v1/org_crdt_pb')
+    const { UserCrdtStateSchema, TabRecordSchema, LWWStringSchema } = await import('~/generated/leapmux/v1/user_crdt_pb')
     const { liveTabsOnTile } = await import('./ops')
 
     // Build a state where three live tabs share a tile but their
@@ -154,8 +152,7 @@ describe('liveTabsOnTile', () => {
     const tabA = create(TabRecordSchema, { tabType: 1, tabId: 'tab-A', tileId: stamp('tile-1'), position: stamp('aaa') })
     const tabB = create(TabRecordSchema, { tabType: 1, tabId: 'tab-B', tileId: stamp('tile-1'), position: stamp('mmm') })
     const tabC = create(TabRecordSchema, { tabType: 1, tabId: 'tab-C', tileId: stamp('tile-1'), position: stamp('zzz') })
-    const state = create(OrgCrdtStateSchema, {
-      orgId: 'org-1',
+    const state = create(UserCrdtStateSchema, {
       // Intentionally insert in C, A, B order — Object.values iteration
       // would yield that order; the sort must override it.
       tabs: { 'tab-C': tabC, 'tab-A': tabA, 'tab-B': tabB },

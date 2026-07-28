@@ -1,8 +1,8 @@
 // A persisted, monotonic id sequence whose ids are also unique across concurrent
 // processes that share a sidecar.
 //
-// Both desktop relays (the channel relay via relayClaim, the org-events relay
-// via useOrgEvents) order their opens and closes by an id the Go sidecar
+// Both desktop relays (the channel relay via relayClaim, the userevents relay
+// via useUserEvents) order their opens and closes by an id the Go sidecar
 // compares, and the sidecar OUTLIVES a webview reload: a per-load counter
 // would restart below the ids the previous page already handed out, and the
 // fresh page's open -- the one that must win -- would be refused by the

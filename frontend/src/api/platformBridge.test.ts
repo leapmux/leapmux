@@ -472,7 +472,7 @@ describe('restoreWindowGeometry', () => {
 // The relay ids the sidecar fences on are only useful if they reach it: an open or
 // close that dropped its id would be indistinguishable from any other attempt's, and
 // the sidecar would be back to inferring intent from goroutine scheduling order.
-describe('orgevents relay bridge', () => {
+describe('userevents relay bridge', () => {
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
   })
@@ -482,18 +482,18 @@ describe('orgevents relay bridge', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('forwards the relay id with the org subscription on open', async () => {
+  it('forwards the relay id with the user events subscription on open', async () => {
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
       calls.push({ cmd, args })
       return null
     })
 
-    await platformBridge.openOrgEventsRelay(42, 'org-1', ['ws-1'])
+    await platformBridge.openUserEventsRelay(42, ['ws-1'])
 
     expect(calls).toEqual([{
-      cmd: 'open_orgevents_relay',
-      args: { relayId: 42, orgId: 'org-1', workspaceIds: ['ws-1'] },
+      cmd: 'open_userevents_relay',
+      args: { relayId: 42, workspaceIds: ['ws-1'] },
     }])
   })
 
@@ -504,9 +504,9 @@ describe('orgevents relay bridge', () => {
       return null
     })
 
-    await platformBridge.closeOrgEventsRelay(42)
+    await platformBridge.closeUserEventsRelay(42)
 
-    expect(calls).toEqual([{ cmd: 'close_orgevents_relay', args: { relayId: 42 } }])
+    expect(calls).toEqual([{ cmd: 'close_userevents_relay', args: { relayId: 42 } }])
   })
 })
 

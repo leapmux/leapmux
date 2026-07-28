@@ -15,7 +15,7 @@ import {
 // --- Local types (the shape every renderer + tile predicate uses) ---
 //
 // These types describe the projected, rendered tree shape. The
-// canonical state is `OrgCrdtState`; `LayoutNodeLocal` is what the
+// canonical state is `UserCrdtState`; `LayoutNodeLocal` is what the
 // projection (`~/lib/crdt/project + renderTreeToLocal`) emits for
 // downstream UI consumption. There is no longer any local-tree
 // mutator — every layout change emits CRDT op batches via the bridge,
@@ -385,7 +385,7 @@ export function cloneNode(node: LayoutNodeLocal): LayoutNodeLocal {
  * synced. There is no setLayout/initSingleTile imperative path: the
  * canonical state is on the hub, seeded by `CreateWorkspace` via the
  * lifecycle outbox; restoration on workspace switch happens via
- * `WatchOrg` re-bootstrap.
+ * `WatchUser` re-bootstrap.
  */
 export function createLayoutStore() {
   // Per-store fallback generator for test harnesses where the

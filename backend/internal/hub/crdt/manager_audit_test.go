@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/userid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,10 +39,10 @@ func newIncrementingClock(start int64) func() time.Time {
 	}
 }
 
-func (orphanTabAuthChecker) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (orphanTabAuthChecker) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (a orphanTabAuthChecker) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
+func (a orphanTabAuthChecker) CanUseWorker(_ context.Context, workerID, _ string) (bool, error) {
 	return workerID != a.badWorker, nil
 }
 
@@ -50,10 +52,10 @@ type errorWorkerAuthChecker struct {
 	failWorker string
 }
 
-func (errorWorkerAuthChecker) CanAccessWorkspace(_ context.Context, _, _, _ string) (bool, error) {
+func (errorWorkerAuthChecker) CanAccessWorkspace(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
-func (a errorWorkerAuthChecker) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
+func (a errorWorkerAuthChecker) CanUseWorker(_ context.Context, workerID, _ string) (bool, error) {
 	if workerID == a.failWorker {
 		return false, errors.New("worker lookup failed (simulated DB hiccup)")
 	}
@@ -74,7 +76,7 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 	j := newFakeJournal()
 	now := newIncrementingClock(1_000)
 	auth := orphanTabAuthChecker{badWorker: "w-gone"}
-	mgr := crdt.NewManager("org", j, auth, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -90,7 +92,6 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 	// Represents the legacy state: a tab written when "w-gone" was
 	// still accessible.
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-tab", "tab-orphan", "root-1", "w-gone", "p1")},
 	})
 	require.NoError(t, err)
@@ -101,14 +102,14 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	tombstoneBatch := &leapmuxv1.OpBatch{
 		BatchId: "ts-batch",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "ts-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "ts-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
 			}}},
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
 		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
 	})
 	require.NoError(t, err)
@@ -118,7 +119,7 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 	rec := findLogRecord(t, buf, "orphan tab tombstoned")
 	require.NotNil(t, rec, "audit log entry missing — manager.auditOrphanTabTombstones didn't fire")
 	assert.Equal(t, "WARN", rec["level"])
-	assert.Equal(t, "org", rec["org_id"])
+	assert.Equal(t, "user-1", rec["user_id"])
 	assert.Equal(t, "ws-1", rec["workspace_id"])
 	assert.Equal(t, "tab-orphan", rec["tab_id"])
 	assert.Equal(t, "w-gone", rec["worker_id"])
@@ -137,7 +138,7 @@ func TestManager_AuditSkipsNormalTombstone(t *testing.T) {
 	j := newFakeJournal()
 	now := newIncrementingClock(1_000)
 	// allowAll → CanUseWorker always returns true.
-	mgr := crdt.NewManager("org", j, allowAll{}, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -148,7 +149,6 @@ func TestManager_AuditSkipsNormalTombstone(t *testing.T) {
 
 	seedRootInternal(t, mgr, "ws-1", "root-1")
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-tab", "tab-live", "root-1", "w-ok", "p1")},
 	})
 	require.NoError(t, err)
@@ -156,14 +156,14 @@ func TestManager_AuditSkipsNormalTombstone(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "ts2",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "ts2-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "ts2-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-live",
 			}}},
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
 		Batches: []*leapmuxv1.OpBatch{tombstone},
 	})
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestManager_AuditSkipsInternalTombstone(t *testing.T) {
 	j := newFakeJournal()
 	now := newIncrementingClock(1_000)
 	auth := orphanTabAuthChecker{badWorker: "w-gone"}
-	mgr := crdt.NewManager("org", j, auth, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -195,18 +195,17 @@ func TestManager_AuditSkipsInternalTombstone(t *testing.T) {
 
 	seedRootInternal(t, mgr, "ws-1", "root-1")
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-tab", "tab-orphan", "root-1", "w-gone", "p1")},
 	})
 	require.NoError(t, err)
 
 	// Tombstone via the Internal path — hub-driven, not user.
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID: "org", PrincipalID: "hub",
+		PrincipalID: "hub",
 		Batches: []*leapmuxv1.OpBatch{{
 			BatchId: "internal-ts",
-			Ops: []*leapmuxv1.OrgOp{
-				{OpId: "internal-ts-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "internal-ts-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
 				}}},
 			},
@@ -230,7 +229,7 @@ func TestManager_AuditInconclusiveOnWorkerLookupError(t *testing.T) {
 	j := newFakeJournal()
 	now := newIncrementingClock(1_000)
 	auth := errorWorkerAuthChecker{failWorker: "w-flaky"}
-	mgr := crdt.NewManager("org", j, auth, logger, now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, auth, logger, now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
@@ -241,7 +240,6 @@ func TestManager_AuditInconclusiveOnWorkerLookupError(t *testing.T) {
 
 	seedRootInternal(t, mgr, "ws-1", "root-1")
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-tab", "tab-orphan", "root-1", "w-flaky", "p1")},
 	})
 	require.NoError(t, err)
@@ -249,14 +247,14 @@ func TestManager_AuditInconclusiveOnWorkerLookupError(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "ts-flaky",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "ts-flaky-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "ts-flaky-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
 			}}},
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
 		Batches: []*leapmuxv1.OpBatch{tombstone},
 	})
 	require.NoError(t, err)
@@ -305,10 +303,10 @@ func findLogRecord(t *testing.T, buf *bytes.Buffer, needle string) map[string]an
 // even when the auth checker never answers.
 type hangingWorkerAuthChecker struct{}
 
-func (hangingWorkerAuthChecker) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+func (hangingWorkerAuthChecker) CanAccessWorkspace(context.Context, string, string) (bool, error) {
 	return true, nil
 }
-func (hangingWorkerAuthChecker) CanUseWorker(ctx context.Context, _, _, _ string) (bool, error) {
+func (hangingWorkerAuthChecker) CanUseWorker(ctx context.Context, _, _ string) (bool, error) {
 	<-ctx.Done()
 	return false, ctx.Err()
 }
@@ -320,14 +318,13 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 
 	j := newFakeJournal()
 	now := newIncrementingClock(2_000)
-	mgr := crdt.NewManager("org", j, hangingWorkerAuthChecker{}, slog.Default(), now)
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, hangingWorkerAuthChecker{}, slog.Default(), now)
 	require.NoError(t, mgr.Bootstrap(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Start(ctx) }()
 
 	seedRootInternal(t, mgr, "ws-h", "root-h")
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		OrgID:   "org",
 		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-h", "tab-h", "root-h", "w-h", "p-h")},
 	})
 	require.NoError(t, err)
@@ -335,14 +332,14 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	tombstoneBatch := &leapmuxv1.OpBatch{
 		BatchId: "ts-h",
-		Ops: []*leapmuxv1.OrgOp{
-			{OpId: "ts-h-op", Body: &leapmuxv1.OrgOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+		Ops: []*leapmuxv1.CrdtOp{
+			{OpId: "ts-h-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-h",
 			}}},
 		},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		OrgID: "org", Epoch: epoch, PrincipalID: "alice", OriginClient: "cli",
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli",
 		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
 	})
 	require.NoError(t, err, "the tombstone must commit and spawn the audit goroutine")

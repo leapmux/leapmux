@@ -24,8 +24,7 @@ const expiringLeaseDuration = 25 * time.Millisecond
 func (s *Suite) testTokenRevocation(t *testing.T) {
 	t.Run("API refresh rotation creates one cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		tokenID := id.Generate()
 		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
@@ -69,10 +68,9 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("single token revoke creates one durable event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		apiToken := seedAPIToken(t, st, user.ID)
-		delegationToken := seedDelegationToken(t, st, orgID, user.ID)
+		delegationToken := seedDelegationToken(t, st, user.ID)
 
 		n, err := st.APITokens().Revoke(ctx, apiToken)
 		require.NoError(t, err)
@@ -96,8 +94,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("idempotent re-revoke creates no extra event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		tokenID := seedAPIToken(t, st, user.ID)
 
 		n, err := st.APITokens().Revoke(ctx, tokenID)
@@ -114,8 +111,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("bulk revoke fast-revokes live rows without per-token events", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		seedAPIToken(t, st, user.ID)
 		seedAPIToken(t, st, user.ID)
 		seedAPIToken(t, st, user.ID)
@@ -138,10 +134,9 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("user-wide bulk revoke emits only the generation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		seedAPIToken(t, st, user.ID)
-		seedDelegationToken(t, st, orgID, user.ID)
+		seedDelegationToken(t, st, user.ID)
 
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			apiCount, err := tx.APITokens().RevokeByUser(ctx, userid.MustNew(user.ID))
@@ -170,8 +165,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("user bumps create timestamped user-token events", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 
 		for range 2 {
 			n, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
@@ -197,8 +191,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("user-token revoke still fires after soft-delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		require.NoError(t, st.Users().Delete(ctx, user.ID))
 
 		// A revoke-after-soft-delete caller must still bump the generation
@@ -233,8 +226,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("admin change emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 
 		// Grant (false→true) stays on the soft user_info path.
 		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
@@ -257,8 +249,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("admin demotion (is_admin true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 
 		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
 			ID: user.ID, IsAdmin: true,
@@ -306,8 +297,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("user_info mutation on a soft-deleted user still applies", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		require.NoError(t, st.Users().Delete(ctx, user.ID)) // soft delete: sets deleted_at
 
 		// runUserInfoMutation serializes its before/after cached-field projection
@@ -346,8 +336,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("profile change emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		assertUserInfoEvent(t, st, user.ID, func() error {
 			return st.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
 				ID:          user.ID,
@@ -359,8 +348,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("display-name-only profile change emits no user_info event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		// The username (the only cached UserInfo field this mutation touches) is
 		// unchanged, so RunUserInfoMutation derives that no cached field changed
 		// (before == after projection) and suppresses the fleet-wide user_info
@@ -380,8 +368,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("email change emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		assertUserInfoEvent(t, st, user.ID, func() error {
 			return st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
 				ID:            user.ID,
@@ -393,12 +380,10 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("email_verified change emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
 		// Seed unverified so the flip to true is a grant (soft user_info path).
 		userID := id.Generate()
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID:            userID,
-			OrgID:         orgID,
 			Username:      "unverified-grant",
 			PasswordHash:  "hash",
 			DisplayName:   "Unverified",
@@ -417,11 +402,9 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("email un-verify (email_verified true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
 		userID := id.Generate()
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID:            userID,
-			OrgID:         orgID,
 			Username:      "to-unverify",
 			PasswordHash:  "hash",
 			DisplayName:   "To Unverify",
@@ -464,8 +447,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("email address change dropping verified stays on the soft user_info path", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user") // seeded email_verified = true
+		user := SeedUser(t, st, "user") // seeded email_verified = true
 
 		// Establish a distinct email+verified state via UpdateEmail (soft), drain it.
 		require.NoError(t, st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
@@ -501,8 +483,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("no-op update to a cached field emits no user_info event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user") // seeded is_admin = false, email_verified = true
+		user := SeedUser(t, st, "user") // seeded is_admin = false, email_verified = true
 		// Re-set each cached field to its current value: RunUserInfoMutation
 		// compares the before/after projection and must suppress the fleet-wide
 		// eviction when nothing a cached field observes actually changed.
@@ -522,8 +503,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("pending-email promotion emits a user_info cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		// Staging the pending email is a plain mutation (no event); only the
 		// promotion changes the cached email/email_verified and must emit.
 		expiresAt := time.Now().Add(time.Hour)
@@ -565,8 +545,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("promotion with no pending email in flight emits nothing", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		require.NoError(t, st.Users().PromotePendingEmail(ctx, user.ID))
 		published, err := st.RevocationEvents().PublishPending(ctx, 10)
 		require.NoError(t, err)
@@ -575,8 +554,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("new credentials copy current user auth generation", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 
 		_, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
@@ -586,7 +564,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), apiToken.AuthGeneration)
 
-		delegationTokenID := seedDelegationToken(t, st, orgID, user.ID)
+		delegationTokenID := seedDelegationToken(t, st, user.ID)
 		delegationToken, err := st.DelegationTokens().GetByID(ctx, delegationTokenID)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), delegationToken.AuthGeneration)
@@ -594,8 +572,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("transaction rollback removes state transition and event", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		tokenID := seedAPIToken(t, st, user.ID)
 		rollbackErr := errors.New("rollback")
 
@@ -617,8 +594,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("publish is idempotent and assigns gapless sequence pages", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		tokens := []string{
 			seedAPIToken(t, st, user.ID),
 			seedAPIToken(t, st, user.ID),
@@ -655,8 +631,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("singleton Hub lease bounds compaction and supports takeover", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
 			HolderID: "", PublishLimit: 10, LeaseDuration: time.Hour,
 		})
@@ -770,8 +745,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 	// rather than leaving it as the silent failure mode of another case.
 	t.Run("an expired Hub lease stops bounding compaction", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "org")
-		user := SeedUser(t, st, orgID, "user")
+		user := SeedUser(t, st, "user")
 
 		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
 			HolderID: "first", PublishLimit: 10, LeaseDuration: time.Hour,
@@ -830,13 +804,13 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 	return tokenID
 }
 
-func seedDelegationToken(t *testing.T, st store.Store, orgID, userID string) string {
+func seedDelegationToken(t *testing.T, st store.Store, userID string) string {
 	t.Helper()
 	worker := SeedWorker(t, st, userID)
-	wsID := SeedWorkspace(t, st, orgID, userID, "ws")
+	wsID := SeedWorkspace(t, st, userID, "ws")
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		OrgID:       orgID,
+		UserID:      userid.MustNew(userID),
 		WorkspaceID: wsID,
 		WorkerID:    worker.ID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,

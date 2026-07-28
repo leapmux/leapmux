@@ -1,7 +1,9 @@
 import { expect, test } from './fixtures'
 import { loginViaUI, logoutViaUI } from './helpers/ui'
 
-const ORG_ADMIN_URL_RE = /\/o\/admin/
+// Either landing spot for a successful login: `/`, or the `/workspace/{id}`
+// AppShell's auto-activate effect replaces it with when the account owns one.
+const APP_HOME_URL_RE = /\/(?:workspace\/[^/]+)?$/
 const LOGIN_URL_RE = /\/login/
 
 /**
@@ -17,19 +19,19 @@ const LOGIN_URL_RE = /\/login/
 test.describe('Auth Edge Cases', () => {
   test('cookie-based session survives localStorage.clear() and reload', async ({ page }) => {
     await loginViaUI(page)
-    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     // Clear localStorage entirely. If the session were localStorage-backed,
     // the next reload would bounce to /login.
     await page.evaluate(() => localStorage.clear())
 
     await page.reload()
-    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
     await expect(page).not.toHaveURL(LOGIN_URL_RE)
 
     // Logout still works after the localStorage clear (cookie is the source of truth).
     await logoutViaUI(page)
-    await page.goto('/o/admin')
+    await page.goto('/')
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   })
 })

@@ -73,7 +73,6 @@ func runUserGet(cmd adminCmdCtx, args []string) error {
 		}
 
 		fmt.Printf("ID:              %s\n", user.ID)
-		fmt.Printf("Org ID:          %s\n", user.OrgID)
 		fmt.Printf("Username:        %s\n", user.Username)
 		fmt.Printf("Display name:    %s\n", user.DisplayName)
 		fmt.Printf("Email:           %s\n", user.Email)
@@ -139,7 +138,14 @@ func runUserCreate(cmd adminCmdCtx, args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		user, err := service.CreateUserWithOrg(ctx, st, service.CreateUserParams{
+		// Name the field that collides before the write, so the operator is
+		// not left choosing between two. The unique index still backstops a
+		// concurrent insert -- see friendlyConstraintError.
+		if err := checkUserFieldsAvailable(ctx, st, slug, *email, ""); err != nil {
+			return err
+		}
+
+		user, err := service.CreateUser(ctx, st, service.CreateUserParams{
 			Username:      slug,
 			PasswordHash:  hash,
 			DisplayName:   dispName,
@@ -229,8 +235,15 @@ func runUserUpdate(cmd adminCmdCtx, args []string) error {
 				if emailVerifiedFlag != nil {
 					verified = *emailVerifiedFlag
 				}
+				// Pre-check so an email collision is reported as an email
+				// collision. This path cannot change the username, so the
+				// username is not passed -- naming it here would blame a field
+				// the command never touched.
+				if err := checkUserFieldsAvailable(ctx, tx, "", *email, user.ID); err != nil {
+					return err
+				}
 				if err := service.SetEmailAndClearCompeting(ctx, tx, user.ID, *email, verified); err != nil {
-					return friendlyConstraintError(err, user.Username, *email)
+					return friendlyConstraintError(err, "", *email)
 				}
 			} else if updateEmailVerified {
 				if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
@@ -298,8 +311,7 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, delUID); err != nil {
 				return err
 			}
-			// Users().Delete soft-deletes the personal org too, so the org name is
-			// freed for a future re-signup without a separate, easy-to-forget call.
+			// Soft-delete the user after credentials are revoked.
 			if err := tx.Users().Delete(ctx, user.ID); err != nil {
 				return fmt.Errorf("delete user: %w", err)
 			}
@@ -309,7 +321,7 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Deleted user %q (id: %s) and personal org %s\n", user.Username, user.ID, user.OrgID)
+		fmt.Printf("Deleted user %q (id: %s)\n", user.Username, user.ID)
 		return nil
 	})
 }

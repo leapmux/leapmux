@@ -39,7 +39,7 @@ There are three protocol paths, each with a different security posture:
 | Frontend → Worker | Hybrid post-quantum Noise_NK. The handshake rides Hub-relayed RPCs; the encrypted traffic that follows is multiplexed over a single relayed WebSocket | End-to-end encrypted; the Hub cannot decrypt |
 | Worker → Hub | ConnectRPC over the gRPC protocol, bidirectional streaming; the Worker always dials out (NAT-friendly, no inbound ports) | TLS in front of the Hub; channel payloads ride inside the E2EE tunnel |
 
-The key consequence: control-plane data (accounts, org/workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
+The key consequence: control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
 
 > **Note:** "End-to-end" here means the two ends are your browser (the Frontend) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/operating/running-leapmux/) for how to launch each one.
 
@@ -50,7 +50,7 @@ The two columns below are the heart of the threat model. Treat the left column a
 | The Hub **can** see | The Hub **cannot** see |
 |---------------------|------------------------|
 | Account metadata: user names, emails, password hashes, OAuth tokens, session tokens | Agent chat transcripts, tool-call arguments, or tool outputs |
-| Organization and workspace records | Terminal I/O, shell history, or PTY state |
+| Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents, diffs, or git status |
 | Worker registration data: Worker ID, composite public keys, online status, last-seen time | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
 | Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing | Any plaintext of Frontend↔Worker traffic |
@@ -62,7 +62,7 @@ A few specifics worth internalizing:
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync & Presence](/docs/using/collaboration/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers only its public composite key with the Hub. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. See [Encryption & Data](/docs/operating/encryption-and-data/) for where that data lives and how to back it up.
-- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. One thing does leak a hostname, though, and it is a different component: logging in with `leapmux remote` registers a device name so you can recognize the device later, defaulting to `user@host` from the machine's hostname and username, and the Hub stores it against the API token. That is the CLI's own machine, which is often the same box. Pass `--device-name` at login to choose the label yourself.
+- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux remote` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
 ## The E2EE protocol
 
@@ -100,19 +100,19 @@ The encrypted channel is not a fire-and-forget tunnel; it has built-in limits th
 | Max plaintext per message | 65,519 bytes | Larger payloads are chunked |
 | Nonce exhaustion | — | Past a soft threshold (2³¹ − 1) the initiator requests an in-band Noise rekey; past the hard ceiling (2³² − 1), both encryption and decryption refuse outright |
 | Session key max age | 1 hour | Initiators request an in-band rekey; the same channel id and multiplexed connections stay up |
-| Session key hard ceiling | 70 minutes | Past this per-epoch key age (reset on each successful rekey), initiators close and re-handshake instead of serving under the old key (covers one Reject backoff). Total channel/authorization lifetime is not capped here — see Hub credential expiry / identity drift below |
+| Session key hard ceiling | 70 minutes | Past this per-epoch key age (reset on each successful rekey), initiators close and re-handshake rather than serve under the old key; the margin over max age covers one refused rekey |
 | Min rekey interval | 50 minutes | Age-only rekeys inside this window are rejected (10 minutes of headroom under max age); soft-nonce still bypasses |
 | Decrypt failure | — | Treated as unrecoverable: both sides close the channel |
 
 The Hub enforces resource limits **without decrypting**: it caps the reassembled message size at the negotiated payload budget plus 64 KiB of envelope headroom (default ~16.06 MiB; operators may raise the payload budget up to 64 MiB via `max_message_size`) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
 
-**In-band rekey** rotates ChaCha20-Poly1305 transport keys without closing the channel: the initiator sends a `RekeyRequest` carrying a fresh X25519 ephemeral public key and (on post-quantum channels) a fresh ML-KEM-1024 ciphertext encapsulated under the Worker's static key, continues sending under the current key until `RekeyAck` arrives, and only then switches. The responder decapsulates the ML-KEM secret, contributes its own fresh ephemeral in the `RekeyAck`, and both sides derive the next epoch as `HKDF(HKDF(k, dh), mlkem)` — mixing fresh Diffie–Hellman *and* post-quantum entropy into the current key, so compromise of one epoch's key cannot derive the next. The rekey frames ride inside the existing AEAD-encrypted channel, so the ephemeral material is authenticated by the current cipher and needs no SLH-DSA signature; the Hub relay still never decrypts. Reject leaves both CipherStates unchanged. A short key-overlap grace window (~10 s) lets frames the peer encrypted just before the swap decrypt after rotation, so traffic keeps flowing across the round trip — this is shared by the Frontend, `leapmux remote`, cross-worker links, and the desktop app's tunnels, so port-forwards and SOCKS sessions survive hourly key rotation without a stall.
+**In-band rekey** rotates the channel's transport keys without closing it. The initiator proposes fresh key material — a new classical ephemeral and, on post-quantum channels, fresh ML-KEM material — keeps sending under the current key until the peer acknowledges, and only then switches. Both sides mix fresh Diffie–Hellman *and* post-quantum entropy into the next epoch, so compromising one epoch's key does not yield the next.
 
-Hub credential expiry still bounds bearer-token channels from the outside (CLI access tokens and delegation tokens live one hour). Desktop tunnels authorized by a sliding session cookie can stay open for days; in-band rekey is what bounds their *key epoch* lifetime without RSTing multiplexed TCP conns. Hard nonce exhaustion remains fail-closed. The Frontend evaluates age/rekey on the next `getOrOpenChannel` / send, on a one-minute idle timer (matching Go tunnel clients), and again when the page becomes visible after suspend (`visibilitychange` / `pageshow`) so a frozen monotonic clock cannot hide an over-age key. Age-only `RekeyReject` carries `retry_after_ms` so initiators wait until the worker will accept rather than guessing a fixed backoff.
+The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux remote`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
 
-Identity drift (the page's expected user no longer matches the Hub-authenticated channel user) still closes and re-handshakes — that needs a new open, not a rekey. In-band rekey does **not** re-run Hub `OpenChannel` authorization; revoked credentials are torn down by the Hub's auth-generation / revocation watcher (`CloseChannelsByUserRevocation` / `CloseChannelsByBearer` / `CloseChannelsBySession`), not by the rekey path.
+Hub credential expiry still bounds bearer-token channels from the outside: CLI access tokens and delegation tokens live one hour. Desktop tunnels authorized by a sliding session cookie can stay open for days, and rekey is what bounds their *key epoch* without resetting multiplexed TCP connections. Hard nonce exhaustion remains fail-closed. The Frontend re-checks key age the next time it uses a channel, on a one-minute idle timer, and again when the page wakes from suspend — so a frozen clock cannot hide an over-age key. A rekey refused for being too early tells the initiator how long to wait rather than leaving it to guess.
 
-> **Note:** Protocol internals, not operational knobs: the soft rekey threshold is a nonce counter of 2³¹ − 1 and the hard ceiling — at which the session refuses to encrypt *or* decrypt — is 2³² − 1, and the Hub additionally rejects interleaved chunks — a chunk for a second correlation id while one is still in progress on that channel and direction — which is what holds it to a single in-flight chunked message there. These bounds matter for the protocol but not for day-to-day operation.
+Identity drift — the page's expected user no longer matching the Hub-authenticated channel user — still closes the channel and re-handshakes; that needs a new open, not a rekey. Rekey does **not** re-run the Hub's channel authorization: revoked credentials are torn down by the Hub's revocation watcher, not by the rekey path.
 
 ### Encryption modes
 
@@ -165,7 +165,7 @@ Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 
 
 The Frontend pins this identity **TOFU** ("trust on first use"). On the first connection to a Worker, the browser records the Worker's composite public key. On every later connection it compares the key the Hub hands over against the pinned one:
 
-- **First use** — no pin exists, so the handshake proceeds and the key is recorded once it succeeds.
+- **First use** — no pin exists, so the handshake proceeds and the key is recorded once it succeeds. This is TOFU's weak point: everything afterwards is measured against whatever was pinned here, so verify the fingerprint out-of-band on first connect if you can.
 - **Match** — the connection proceeds silently.
 - **Mismatch** — the Frontend stops and asks you to decide. Reject once and that Worker is refused for the rest of the browser session without prompting again; reload to be asked afresh.
 
@@ -223,20 +223,14 @@ The key ring is managed with `leapmux admin encryption-key rotate | remove | ree
 
 If you run a Hub for a team, the security of the deployment rests largely on the host and a few files. Concrete steps:
 
-1. **Protect the Hub host.** It can read all control-plane data — accounts, org/workspace records, layout, Worker registration metadata — and it sees transport metadata for every channel (traffic analysis is in scope). Treat it as a sensitive service: minimal access, patched OS, monitored.
+1. **Protect the Hub host.** It can read all control-plane data — accounts, workspace records, layout, Worker registration metadata — and it sees transport metadata for every channel (traffic analysis is in scope). Treat it as a sensitive service: minimal access, patched OS, monitored.
 2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Running LeapMux](/docs/operating/running-leapmux/).
 3. **Guard the `encryption.key` file like a top-grade secret.** It is base64 key material in a plain text file at mode `0600` — there is no master password, KMS, or HSM wrapping, so filesystem permissions are the only thing protecting it. It holds both the encryption key ring and the token pepper, so whoever reads it can decrypt the OAuth columns *and* forge the hash of any API or delegation token. Back it up with the database, store both encrypted, and restrict access.
 4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before re-encryption has migrated every row. The exact runbook is in [Encryption & Data](/docs/operating/encryption-and-data/).
 5. **Never expose solo mode beyond loopback** for real use. If you bound it to a non-loopback address, you exposed unauthenticated admin access. Run `leapmux hub` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/operating/configuration/) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/operating/managing-workers/).
 7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject unexpected changes and verify the 4-word fingerprint out-of-band before ever accepting.
-8. **Revoke credentials when needed, and know it tears down channels.** Logout, password changes, account deletion, force-logout, and token revocation all force-close the affected user's open channels — a password change spares only the session it was made from. Use the [Admin CLI](/docs/operating/admin-cli/) for these operations.
-
-## Recommendations for security-conscious users
-
-- **Verify a Worker's fingerprint on first connect** if you can, via a trusted out-of-band channel, before you start trusting that pin.
-- **Reject, don't reflexively accept,** when the "Worker public key changed" dialog appears unexpectedly.
-- **Remember the Hub sees workspace titles and activity metadata.** Don't put secrets in workspace names, and recall that *when* and *how much* you work is observable even though the content is not.
+8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Use the [Admin CLI](/docs/operating/admin-cli/) for these operations.
 
 ## Quick reference
 

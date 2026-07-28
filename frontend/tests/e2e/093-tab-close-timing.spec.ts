@@ -179,8 +179,8 @@ async function captureCloseTimeline(
   await expect.poll(async () => {
     const r = await snapshotMarks(page)
     return r.rpcMarks.some(m => m.type === 'rpc-recv' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
-  }, { timeout: 10_000 }).toBeTruthy()
-  await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null, { timeout: 10_000 }).toBeTruthy()
+  }).toBeTruthy()
+  await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null).toBeTruthy()
   const closedTabID = findClosedTabID(srv.logLines, logsBefore)!
 
   const raw = await snapshotMarks(page)
@@ -235,7 +235,7 @@ test.describe('Tab close timing', () => {
   })
 
   test('scenario 1 — two worktree tabs on the same worktree, close one', async ({ browser }, testInfo) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = srv
+    const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn1')
 
     // createWorkspaceWithWorktreeViaAPI opens agent 1 with createWorktree=true
@@ -250,7 +250,6 @@ test.describe('Tab close timing', () => {
       adminToken,
       workerId,
       'close-timing-scn1',
-      adminOrgId,
       ctx.repoDir,
       'scn1-branch',
     )
@@ -259,7 +258,7 @@ test.describe('Tab close timing', () => {
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
       await page.locator('[data-testid^="new-agent-button"]').first().click()
@@ -293,7 +292,7 @@ test.describe('Tab close timing', () => {
   })
 
   test('scenario 2 — worktree close with "Close anyway" (KEEP)', async ({ browser }, testInfo) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = srv
+    const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn2')
 
     const workspaceId = await createWorkspaceWithWorktreeViaAPI(
@@ -301,7 +300,6 @@ test.describe('Tab close timing', () => {
       adminToken,
       workerId,
       'close-timing-scn2',
-      adminOrgId,
       ctx.repoDir,
       'scn2-branch',
     )
@@ -310,7 +308,7 @@ test.describe('Tab close timing', () => {
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
 
@@ -349,7 +347,7 @@ test.describe('Tab close timing', () => {
   })
 
   test('scenario 3 — worktree close with "Delete" (REMOVE)', async ({ browser }, testInfo) => {
-    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = srv
+    const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn3')
     const worktreeDir = ctx.synthetic
       ? join(realpathSync(dataDir), 'close-timing-scn3-worktrees', 'scn3-branch')
@@ -360,19 +358,18 @@ test.describe('Tab close timing', () => {
       adminToken,
       workerId,
       'close-timing-scn3',
-      adminOrgId,
       ctx.repoDir,
       'scn3-branch',
     )
     if (worktreeDir) {
-      await expect.poll(() => existsSync(worktreeDir), { timeout: 15_000, intervals: [100] }).toBe(true)
+      await expect.poll(() => existsSync(worktreeDir), { intervals: [100] }).toBe(true)
     }
 
     const context = await browser.newContext({ baseURL: hubUrl })
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
 

@@ -107,10 +107,10 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	link := func(wtID, tabID string, tabType leapmuxv1.TabType) {
 		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: tabType, TabID: tabID}))
 	}
-	// FILE links carry the org so worktree_tab_liveness scopes its
-	// worker_file_tabs join by (org_id, tab_id); these all use org-1.
+	// FILE links carry the user so worktree_tab_liveness scopes its
+	// worker_file_tabs join by (user_id, tab_id); these all use user-1.
 	linkFile := func(wtID, tabID string) {
-		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: tabID, OrgID: "org-1"}))
+		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: tabID, UserID: "user-1"}))
 	}
 	mkWorktree := func(id string) {
 		require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: id, WorktreePath: "/r/" + id, RepoRoot: "/r", BranchName: "b"}))
@@ -126,7 +126,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	link("wt-live-term", "t-open", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
 	mkWorktree("wt-live-file")
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{OrgID: "org-1", TabID: "f-open", WorkspaceID: "ws-1", FilePath: "/r/wt-live-file/x"}))
+	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-1", TabID: "f-open", WorkspaceID: "ws-1", FilePath: "/r/wt-live-file/x"}))
 	linkFile("wt-live-file", "f-open")
 
 	// --- strands: each counts 0, all-strand worktrees are orphan candidates ---
@@ -182,52 +182,52 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 		"only worktrees whose every link is a dead strand are orphan candidates")
 }
 
-func TestWorktreeLiveness_FileLeg_IsOrgScoped(t *testing.T) {
-	// A file tab id is unique only within an org (worker_file_tabs is keyed by
-	// (org_id, tab_id)), so the worktree_tab_liveness FILE leg must scope its
-	// join by org. Two orgs share the tab id "file-dup": org A's link is a
+func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
+	// A file tab id is unique only within a user (worker_file_tabs is keyed by
+	// (user_id, tab_id)), so the worktree_tab_liveness FILE leg must scope its
+	// join by user. Two users share the tab id "file-dup": user A's link is a
 	// strand (its worker_file_tabs row is gone -- file tabs hard-delete on
-	// close), while org B has an identically-id'd LIVE file tab. Without org
-	// scoping, org A's strand borrows org B's liveness and org A's worktree is
+	// close), while user B has an identically-id'd LIVE file tab. Without user
+	// scoping, user A's strand borrows user B's liveness and user A's worktree is
 	// never reclaimed.
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	q := svc.Queries
 	ctx := context.Background()
 
-	// Org A: worktree whose only link is a FILE strand -- no backing
+	// User A: worktree whose only link is a FILE strand -- no backing
 	// worker_file_tabs row.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-orgA", WorktreePath: "/r/orgA", RepoRoot: "/r", BranchName: "b"}))
-	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-orgA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", OrgID: "org-A"}))
+	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", BranchName: "b"}))
+	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-A"}))
 
-	// Org B: a LIVE file tab with the SAME tab id but a different org.
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{OrgID: "org-B", TabID: "file-dup", WorkspaceID: "ws-1", FilePath: "/r/orgB/x"}))
+	// User B: a LIVE file tab with the SAME tab id but a different user.
+	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-B", TabID: "file-dup", WorkspaceID: "ws-1", FilePath: "/r/userB/x"}))
 
-	// Org A's strand must read as dead -- it must NOT match org B's live tab.
-	gotA, err := q.CountLiveWorktreeRefs(ctx, "wt-orgA")
+	// User A's strand must read as dead -- it must NOT match user B's live tab.
+	gotA, err := q.CountLiveWorktreeRefs(ctx, "wt-userA")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), gotA, "org A's FILE strand must not borrow org B's live file tab")
+	assert.Equal(t, int64(0), gotA, "user A's FILE strand must not borrow user B's live file tab")
 
-	// ...so org A's all-strand worktree is a reclaimable orphan candidate.
+	// ...so user A's all-strand worktree is a reclaimable orphan candidate.
 	candidates, err := q.ListOrphanCandidateWorktrees(ctx)
 	require.NoError(t, err)
 	gotIDs := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		gotIDs = append(gotIDs, c.ID)
 	}
-	assert.Contains(t, gotIDs, "wt-orgA", "org A's all-strand worktree must be an orphan candidate")
+	assert.Contains(t, gotIDs, "wt-userA", "user A's all-strand worktree must be an orphan candidate")
 
-	// Sanity: a worktree linked to its OWN org's live file tab still counts,
-	// so the org-scoped leg is matching, not just failing closed.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-orgB", WorktreePath: "/r/orgB", RepoRoot: "/r", BranchName: "b"}))
-	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-orgB", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", OrgID: "org-B"}))
-	gotB, err := q.CountLiveWorktreeRefs(ctx, "wt-orgB")
+	// Sanity: a worktree linked to its OWN user's live file tab still counts,
+	// so the user-scoped leg is matching, not just failing closed.
+	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userB", WorktreePath: "/r/userB", RepoRoot: "/r", BranchName: "b"}))
+	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userB", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-B"}))
+	gotB, err := q.CountLiveWorktreeRefs(ctx, "wt-userB")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), gotB, "org B's link to its own live file tab counts")
+	assert.Equal(t, int64(1), gotB, "user B's link to its own live file tab counts")
 	candidates, err = q.ListOrphanCandidateWorktrees(ctx)
 	require.NoError(t, err)
 	gotIDs = gotIDs[:0]
 	for _, c := range candidates {
 		gotIDs = append(gotIDs, c.ID)
 	}
-	assert.NotContains(t, gotIDs, "wt-orgB", "a worktree with a live same-org file tab is not an orphan")
+	assert.NotContains(t, gotIDs, "wt-userB", "a worktree with a live same-user file tab is not an orphan")
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -68,6 +69,29 @@ func (h *pgTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id strin
 
 func (h *pgTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
 	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleDollar, column, id, at)
+}
+
+// ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
+// store.TestHelper.ListAllOwnedTabs for why this is test-only. The statement is
+// shared with the database/sql dialects; only the driver differs, and tab_type
+// scans as int32 because pgx maps INTEGER to Go's int32.
+func (h *pgTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {
+	rows, err := h.pool.Query(ctx, sqlutil.ListAllOwnedTabsSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.WorkspaceTabRow
+	for rows.Next() {
+		var r store.WorkspaceTabRow
+		var tabType int32
+		if err := rows.Scan(&r.UserID, &r.WorkspaceID, &tabType, &r.TabID, &r.WorkerID, &r.TileID, &r.Position); err != nil {
+			return nil, err
+		}
+		r.TabType = leapmuxv1.TabType(tabType)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (h *pgTestHelper) TruncateAll(ctx context.Context) error {

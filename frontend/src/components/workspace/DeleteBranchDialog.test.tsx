@@ -8,10 +8,6 @@ import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { DeleteBranchDialog, worktreeRemovalToast } from './DeleteBranchDialog'
 
-vi.mock('~/context/OrgContext', () => ({
-  useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
-}))
-
 vi.mock('~/api/workerRpc', () => ({
   inspectBranchDeletion: vi.fn(),
   deleteBranch: vi.fn(),

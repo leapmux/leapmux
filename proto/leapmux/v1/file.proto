@@ -2,11 +2,10 @@ syntax = "proto3";
 package leapmux.v1;
 
 message ListDirectoryRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
-  int32 max_depth = 4; // When > 0, merge single-child directories server-side up to this depth
-  bool dirs_only = 5; // When true, exclude non-directory entries before applying the entry limit
+  string worker_id = 1;
+  string path = 2;
+  int32 max_depth = 3; // When > 0, merge single-child directories server-side up to this depth
+  bool dirs_only = 4; // When true, exclude non-directory entries before applying the entry limit
 }
 
 message ListDirectoryResponse {
@@ -16,18 +15,17 @@ message ListDirectoryResponse {
 }
 
 message ReadFileRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
-  int64 offset = 4;
-  int64 limit = 5; // Max bytes; 0 = default (64KB)
+  string worker_id = 1;
+  string path = 2;
+  int64 offset = 3;
+  int64 limit = 4; // Max bytes; 0 = default (64KB)
   // When true and the file size exceeds the read window
   // (offset + effective limit), the server returns an empty content
   // payload with the file's total_size populated, skipping the actual
   // bytes. Lets the file viewer detect oversize files (e.g. images we
   // refuse to preview) in a single round trip — combining what would
   // otherwise be a StatFile + ReadFile pair.
-  bool meta_only_if_truncated = 6;
+  bool meta_only_if_truncated = 5;
 }
 
 message ReadFileResponse {
@@ -37,9 +35,8 @@ message ReadFileResponse {
 }
 
 message StatFileRequest {
-  string org_id = 1;
-  string worker_id = 2;
-  string path = 3;
+  string worker_id = 1;
+  string path = 2;
 }
 
 message StatFileResponse {

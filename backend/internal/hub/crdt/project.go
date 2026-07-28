@@ -24,7 +24,7 @@ type RenderTree struct {
 
 // RenderedTab is a tab that survives projection.
 type RenderedTab struct {
-	OrgID       string
+	UserID      string
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
@@ -57,9 +57,9 @@ type RenderedFloatingWindow struct {
 	InnerTree *RenderTree
 }
 
-// Projection holds the org-wide rendered state.
+// Projection holds the user-wide rendered state.
 type Projection struct {
-	OrgID        string
+	UserID       string
 	Workspaces   map[string]*WorkspaceProjection
 	OwnedTabs    []*OwnedTab
 	RenderedTabs []*RenderedTab
@@ -83,9 +83,9 @@ type Projection struct {
 // e.g. the per-commit `DiffProjection` call — should use
 // `ProjectOwnership` instead. It skips the render-tree walk, which is
 // the bulk of `Project`'s cost on large workspaces.
-func Project(state *leapmuxv1.OrgCrdtState) *Projection {
+func Project(state *leapmuxv1.UserCrdtState) *Projection {
 	out := &Projection{
-		OrgID:      state.GetOrgId(),
+		UserID:     state.GetUserId(),
 		Workspaces: map[string]*WorkspaceProjection{},
 	}
 
@@ -133,7 +133,7 @@ func Project(state *leapmuxv1.OrgCrdtState) *Projection {
 	return out
 }
 
-// ProjectOwnership returns a Projection populated with only OrgID,
+// ProjectOwnership returns a Projection populated with only UserID,
 // OwnedTabs, and RenderedTabs. Per-workspace MainTree and FloatingWindow
 // render trees are NOT computed — this is the hot path used by
 // `commit()` to feed `DiffProjection`, which only reads the two tab
@@ -144,11 +144,11 @@ func Project(state *leapmuxv1.OrgCrdtState) *Projection {
 // Callers that want the render trees (initial bootstrap, subscriber
 // add, RPC handlers) must still call Project. The Workspaces map on
 // the returned Projection is empty; do not iterate it.
-func ProjectOwnership(state *leapmuxv1.OrgCrdtState) *Projection {
+func ProjectOwnership(state *leapmuxv1.UserCrdtState) *Projection {
 	roots := registeredRoots(state)
 	owned, rendered := projectTabs(state, roots)
 	return &Projection{
-		OrgID:        state.GetOrgId(),
+		UserID:       state.GetUserId(),
 		Workspaces:   map[string]*WorkspaceProjection{},
 		OwnedTabs:    owned,
 		RenderedTabs: rendered,
@@ -178,7 +178,7 @@ type rootSet struct {
 	windowRoots map[string]string
 }
 
-func registeredRoots(state *leapmuxv1.OrgCrdtState) rootSet {
+func registeredRoots(state *leapmuxv1.UserCrdtState) rootSet {
 	rs := rootSet{
 		roots:          map[string]string{},
 		counts:         map[string]int{},
@@ -212,7 +212,7 @@ func registeredRoots(state *leapmuxv1.OrgCrdtState) rootSet {
 // Unlike the generic resolveParentChain helper, this one rejects
 // tombstoned intermediates outright — the leaf-reachability contract
 // is part of the projection / move-validation semantics.
-func resolveTileWorkspace(state *leapmuxv1.OrgCrdtState, tileID string, roots rootSet) (string, bool) {
+func resolveTileWorkspace(state *leapmuxv1.UserCrdtState, tileID string, roots rootSet) (string, bool) {
 	if tileID == "" {
 		return "", false
 	}
@@ -235,7 +235,7 @@ func resolveTileWorkspace(state *leapmuxv1.OrgCrdtState, tileID string, roots ro
 
 // chainAlive walks from tile_id upward and returns true if every node
 // (including the tile itself) is non-tombstoned.
-func chainAlive(state *leapmuxv1.OrgCrdtState, tileID string) bool {
+func chainAlive(state *leapmuxv1.UserCrdtState, tileID string) bool {
 	visited := map[string]bool{}
 	cur := tileID
 	for cur != "" {
@@ -261,13 +261,13 @@ func chainAlive(state *leapmuxv1.OrgCrdtState, tileID string) bool {
 // by adding the record lookup at use time.
 type childIndex map[string][]string
 
-func buildChildIndex(state *leapmuxv1.OrgCrdtState) childIndex {
+func buildChildIndex(state *leapmuxv1.UserCrdtState) childIndex {
 	return childIndex(BuildAllChildrenIndex(state))
 }
 
 // buildTreeFromRoot constructs a RenderTree rooted at rootID. Returns
 // a placeholder leaf when the root is missing/tombstoned.
-func buildTreeFromRoot(state *leapmuxv1.OrgCrdtState, rootID string, roots rootSet, idx childIndex) *RenderTree {
+func buildTreeFromRoot(state *leapmuxv1.UserCrdtState, rootID string, roots rootSet, idx childIndex) *RenderTree {
 	if rootID == "" {
 		return &RenderTree{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}
 	}
@@ -278,7 +278,7 @@ func buildTreeFromRoot(state *leapmuxv1.OrgCrdtState, rootID string, roots rootS
 	return buildTree(state, rec, roots, idx, map[string]bool{})
 }
 
-func buildTree(state *leapmuxv1.OrgCrdtState, rec *leapmuxv1.NodeRecord, roots rootSet, idx childIndex, seen map[string]bool) *RenderTree {
+func buildTree(state *leapmuxv1.UserCrdtState, rec *leapmuxv1.NodeRecord, roots rootSet, idx childIndex, seen map[string]bool) *RenderTree {
 	if seen[rec.GetNodeId()] {
 		return &RenderTree{NodeID: rec.GetNodeId(), Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}
 	}
@@ -386,7 +386,7 @@ func normalizeRatios(ratios []float64, n int) []float64 {
 // projectTabs splits the tab map into (owned, rendered). Shared by
 // Project (full projection) and ProjectOwnership (commit-path fast
 // path that only needs these two slices).
-func projectTabs(state *leapmuxv1.OrgCrdtState, roots rootSet) ([]*OwnedTab, []*RenderedTab) {
+func projectTabs(state *leapmuxv1.UserCrdtState, roots rootSet) ([]*OwnedTab, []*RenderedTab) {
 	var owned []*OwnedTab
 	var rendered []*RenderedTab
 	// Memoize tile→(workspace, leafLive) so multi-tab leaves don't
@@ -416,7 +416,7 @@ func projectTabs(state *leapmuxv1.OrgCrdtState, roots rootSet) ([]*OwnedTab, []*
 			continue
 		}
 		row := &OwnedTab{
-			OrgID:       state.GetOrgId(),
+			UserID:      state.GetUserId(),
 			WorkspaceID: wsID,
 			TabType:     t.GetTabType(),
 			TabID:       t.GetTabId(),
@@ -435,7 +435,7 @@ func projectTabs(state *leapmuxv1.OrgCrdtState, roots rootSet) ([]*OwnedTab, []*
 	return owned, rendered
 }
 
-func tileIsLeaf(state *leapmuxv1.OrgCrdtState, tileID string) bool {
+func tileIsLeaf(state *leapmuxv1.UserCrdtState, tileID string) bool {
 	rec := state.GetNodes()[tileID]
 	if rec == nil {
 		return false
@@ -448,7 +448,7 @@ func tileIsLeaf(state *leapmuxv1.OrgCrdtState, tileID string) bool {
 // tombstoned / orphaned. Used by the op-driven diff path
 // (DiffProjectionForBatch) to skip the full projectTabs scan when only
 // a handful of tab ids could have transitioned between commits.
-func projectOneTab(state *leapmuxv1.OrgCrdtState, tabID string, roots rootSet) (*OwnedTab, *RenderedTab) {
+func projectOneTab(state *leapmuxv1.UserCrdtState, tabID string, roots rootSet) (*OwnedTab, *RenderedTab) {
 	t, ok := state.GetTabs()[tabID]
 	if !ok || !HLCIsZero(t.GetTombstoneAt()) {
 		return nil, nil
@@ -459,7 +459,7 @@ func projectOneTab(state *leapmuxv1.OrgCrdtState, tabID string, roots rootSet) (
 		return nil, nil
 	}
 	row := &OwnedTab{
-		OrgID:       state.GetOrgId(),
+		UserID:      state.GetUserId(),
 		WorkspaceID: wsID,
 		TabType:     t.GetTabType(),
 		TabID:       t.GetTabId(),

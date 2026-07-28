@@ -298,7 +298,6 @@ func (h *handler) Whoami(ctx context.Context, req *connect.Request[leapmuxv1.Who
 	}
 	return connect.NewResponse(&leapmuxv1.WhoamiResponse{
 		UserId:      info.UserID.String(),
-		OrgId:       info.OrgID,
 		WorkspaceId: info.WorkspaceID,
 		WorkerId:    info.WorkerID,
 		TabId:       info.TabID,
@@ -372,9 +371,7 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 // every identifier in the spawn's context:
 //
 //   - SOCK / TOKEN — bound to this socket, immutable.
-//   - USER_ID / ORG_ID / WORKER_ID — the spawn's principal, org, and
-//     host worker. Org is included because workspaces don't move
-//     between orgs, so it's safe and avoids a round-trip.
+//   - USER_ID / WORKER_ID — the spawn's principal and host worker.
 //   - TAB_ID + TAB_TYPE — the spawned tab's id plus "agent"/"terminal"
 //     discriminator. This is the canonical anchor everything else
 //     hangs off via the hub LocateTab RPC.
@@ -392,9 +389,6 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 		"LEAPMUX_REMOTE_TOKEN=" + token,
 		"LEAPMUX_REMOTE_USER_ID=" + info.UserID.String(),
 		"LEAPMUX_REMOTE_WORKER_ID=" + info.WorkerID,
-	}
-	if info.OrgID != "" {
-		envs = append(envs, "LEAPMUX_REMOTE_ORG_ID="+info.OrgID)
 	}
 	if info.TabID != "" {
 		envs = append(envs, "LEAPMUX_REMOTE_TAB_ID="+info.TabID)

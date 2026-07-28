@@ -40,7 +40,7 @@ func (m *Manager) maybeAdvanceEpoch(ctx context.Context) {
 		return
 	}
 	newEpoch := m.state.GetCurrentEpoch() + 1
-	if err := m.journal.AdvanceEpoch(ctx, m.orgID, newEpoch, m.now()); err != nil {
+	if err := m.journal.AdvanceEpoch(ctx, m.owner.String(), newEpoch, m.now()); err != nil {
 		m.logger.Warn("advance epoch", "err", err)
 		return
 	}
@@ -63,11 +63,11 @@ func (m *Manager) maybeCompact(ctx context.Context) {
 	state := CloneState(m.state)
 	m.mu.RUnlock()
 
-	// Per-batch dedup rows are already in org_recent_batch_ids when
+	// Per-batch dedup rows are already in user_recent_batch_ids when
 	// the batch committed; the compaction step only needs to ensure
 	// the state blob carries the new watermark and the journal rows
 	// whose last canonical HLC is ≤ watermark are dropped. The
-	// retention contract on org_recent_batch_ids carries forward via
+	// retention contract on user_recent_batch_ids carries forward via
 	// the existing expires_at column (set at commit time), so no
 	// extra inserts are required here.
 	state.CompactionWatermark = HLCClone(state.GetMaxHlc())

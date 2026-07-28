@@ -82,16 +82,15 @@ async function hubPost<T>(harness: MultiWorkerHarness, path: string, body: unkno
 
 /** Authed helpers for the harness hub. */
 async function createWorkspace(harness: MultiWorkerHarness, title: string): Promise<string> {
-  // Warm the org-events subscription BEFORE issuing CreateWorkspace
+  // Warm the userevents subscription BEFORE issuing CreateWorkspace
   // so the lifecycle-broadcast of the seed `SetWorkspaceRootNode` op
   // lands on it. `seedTabIntoWorkspace` will read `rootNodeId` from
   // this subscription's state later. Mirrors what
   // `createWorkspaceViaAPI` does for the single-worker spec.
-  const { getOrgEventsSubscription } = await import('./helpers/crdt')
-  await getOrgEventsSubscription(harness.hubUrl, harness.adminToken, harness.adminOrgId)
+  const { getUserEventsSubscription } = await import('./helpers/crdt')
+  await getUserEventsSubscription(harness.hubUrl, harness.adminToken)
   const data = await hubPost<{ workspaceId?: string, workspace?: { id?: string } }>(harness, '/leapmux.v1.WorkspaceService/CreateWorkspace', {
     title,
-    orgId: harness.adminOrgId,
   })
   const id = data.workspaceId ?? data.workspace?.id
   if (!id)
@@ -114,7 +113,7 @@ async function openAgent(harness: MultiWorkerHarness, workerId: string, workspac
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../src/generated/leapmux/v1/agent_pb')
   const { createTestChannelManager } = await import('./helpers/e2e-channel')
   const { TabType } = await import('../../src/generated/leapmux/v1/workspace_pb')
-  const { getOrgEventsSubscription, seedTabIntoWorkspace } = await import('./helpers/crdt')
+  const { getUserEventsSubscription, seedTabIntoWorkspace } = await import('./helpers/crdt')
   const channel = await createTestChannelManager(harness.hubUrl, harness.adminToken)
 
   // Every cross-worker channel needs the workspace marked
@@ -133,16 +132,15 @@ async function openAgent(harness: MultiWorkerHarness, workerId: string, workspac
   // Seed the tab into the CRDT so the live frontend renders it.
   // Mirrors `openAgentViaAPI` from helpers/api.ts: SetTabRegister
   // tile_id + position + worker_id in one batch.
-  const orgEvents = await getOrgEventsSubscription(harness.hubUrl, harness.adminToken, harness.adminOrgId)
+  const userEvents = await getUserEventsSubscription(harness.hubUrl, harness.adminToken)
   await seedTabIntoWorkspace({
     hubUrl: harness.hubUrl,
     cookie: harness.adminToken,
-    orgId: harness.adminOrgId,
     workspaceId,
     tabType: TabType.AGENT,
     tabId: resp.agent.id,
     workerId,
-    orgEvents,
+    userEvents,
   })
   return resp.agent.id
 }
@@ -178,8 +176,8 @@ test.describe('remote CLI cross-worker', () => {
 
       pages = await openTwoBrowsers(browser, harness)
       await Promise.all([
-        pages.pageA.goto(`/o/admin/workspace/${workspaceId}`),
-        pages.pageB.goto(`/o/admin/workspace/${workspaceId}`),
+        pages.pageA.goto(`/workspace/${workspaceId}`),
+        pages.pageB.goto(`/workspace/${workspaceId}`),
       ])
       await Promise.all([waitForAgentTabs(pages.pageA, 1), waitForAgentTabs(pages.pageB, 1)])
       await Promise.all([

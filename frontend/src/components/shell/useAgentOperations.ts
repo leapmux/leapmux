@@ -133,7 +133,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         // `tabStore.addTab` emits the CRDT op batch (SetTabRegister
         // tile_id + position + worker_id) via the bridge so peer
-        // clients pick the tab up via /ws/orgevents.
+        // clients pick the tab up via /ws/userevents.
         void workspaceId
         void workerId
         // Focus the editor after the reactive updates propagate to the DOM.
@@ -494,7 +494,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
     // `tabStore.removeTab` above emitted the TombstoneTab op via the
     // CRDT bridge; the hub broadcasts it to peer clients via
-    // /ws/orgevents.
+    // /ws/userevents.
     if (!workerId) {
       // No worker to send the close to. The local tab is gone, but a
       // REMOVE can't reach the worker — say so rather than letting the

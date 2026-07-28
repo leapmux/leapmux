@@ -22,7 +22,7 @@ test.describe('Terminal startup loader', () => {
     // Backend's WatchEvents catch-up guarantees the READY event reaches
     // a late-subscribing watcher, so this transition is robust to the
     // open/subscribe race that motivated the registry.
-    await expect(page.locator('.xterm')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('.xterm')).toBeVisible()
     await expect(page.locator('[data-testid="terminal-startup-overlay"]')).not.toBeVisible()
   })
 })

@@ -8,12 +8,12 @@ const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('File Browser', () => {
   test('should display file entries when workspace is active', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     await loginViaToken(page, adminToken)
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Browser Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Browser Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // The Files sidebar should be visible
@@ -29,12 +29,12 @@ test.describe('File Browser', () => {
   })
 
   test('should expand a directory in the tree', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
     await loginViaToken(page, adminToken)
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Test', adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
-      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await page.goto(`/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
       // Wait for file entries to load

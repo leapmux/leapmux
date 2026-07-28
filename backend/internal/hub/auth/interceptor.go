@@ -49,9 +49,9 @@ var delegationAllowedProcedures = map[string]bool{
 	leapmuxv1connect.WorkspaceServiceGetTabProcedure:                 true,
 	leapmuxv1connect.WorkspaceServiceLocateTabProcedure:              true,
 	leapmuxv1connect.WorkspaceServiceLocateTileProcedure:             true,
-	leapmuxv1connect.OrgCRDTSubmitOpsProcedure:                       true,
-	leapmuxv1connect.OrgCRDTGetMaterializedProcedure:                 true,
-	leapmuxv1connect.OrgCRDTUpdatePresenceProcedure:                  true,
+	leapmuxv1connect.UserCRDTSubmitOpsProcedure:                      true,
+	leapmuxv1connect.UserCRDTGetMaterializedProcedure:                true,
+	leapmuxv1connect.UserCRDTUpdatePresenceProcedure:                 true,
 }
 
 // unverifiedAllowedProcedures lists RPC procedures that authenticated

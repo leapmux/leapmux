@@ -18,35 +18,35 @@ import (
 // not because some other rule fired first).
 type denyForeignWorkerChecker struct{ denied string }
 
-func (c denyForeignWorkerChecker) CanAccessWorkspace(context.Context, string, string, string) (bool, error) {
+func (c denyForeignWorkerChecker) CanAccessWorkspace(context.Context, string, string) (bool, error) {
 	return true, nil
 }
 
-func (c denyForeignWorkerChecker) CanUseWorker(_ context.Context, _, workerID, _ string) (bool, error) {
+func (c denyForeignWorkerChecker) CanUseWorker(_ context.Context, workerID, _ string) (bool, error) {
 	return workerID != c.denied, nil
 }
 
 // TestValidateWorkerRefs_GatesEveryWorkerIdField is the tripwire for the
 // "every worker_id-bearing CRDT op field is gated by validateWorkerRefs" invariant.
-// validateWorkerRefs today hard-codes a type-switch on *OrgOp_SetTabRegister +
+// validateWorkerRefs today hard-codes a type-switch on *CrdtOp_SetTabRegister +
 // *SetTabRegisterOp_WorkerId because that is the only worker_id reference the
 // protocol carries. A future CRDT op that introduces ANOTHER worker_id reference
 // (a tab rebind, a presence pin, ...) must extend that switch -- without it, a
 // client could name a worker it may not reach and produce state pointing at one.
-// This test enumerates every worker_id field across the OrgOp body messages via
+// This test enumerates every worker_id field across the CrdtOp body messages via
 // protoreflect (the proto is the source of truth) and asserts validateWorkerRefs
 // rejects each one when the principal cannot use the named worker. Adding a new
 // worker_id field without extending the switch reddens THIS test, pointing the
 // author at exactly the gate they missed.
 //
-// Scope: the scan is one level deep -- the worker_id field directly on an OrgOp
+// Scope: the scan is one level deep -- the worker_id field directly on an CrdtOp
 // body message (the SetTabRegisterOp.worker_id shape). A worker_id nested inside
 // a sub-message of an op would not be caught, but CRDT ops carry their worker
 // reference as a direct register write, so that shape is the one that matters.
 func TestValidateWorkerRefs_GatesEveryWorkerIdField(t *testing.T) {
-	orgOpDesc := (&leapmuxv1.OrgOp{}).ProtoReflect().Descriptor()
-	bodyOneof := orgOpDesc.Oneofs().ByName("body")
-	require.NotNil(t, bodyOneof, "OrgOp must have a `body` oneof")
+	crdtOpDesc := (&leapmuxv1.CrdtOp{}).ProtoReflect().Descriptor()
+	bodyOneof := crdtOpDesc.Oneofs().ByName("body")
+	require.NotNil(t, bodyOneof, "CrdtOp must have a `body` oneof")
 
 	type workerIDSite struct {
 		armName   protoreflect.Name
@@ -68,15 +68,15 @@ func TestValidateWorkerRefs_GatesEveryWorkerIdField(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, sites,
-		"expected at least one worker_id field across OrgOp body messages (SetTabRegisterOp.worker_id)")
+		"expected at least one worker_id field across CrdtOp body messages (SetTabRegisterOp.worker_id)")
 
 	for _, s := range sites {
 		t.Run(string(s.msgName)+"."+string(s.fieldName), func(t *testing.T) {
 			op := buildOpWithWorkerID(t, s.armName, s.fieldName, "foreign-worker")
 			reason, _, err := validateWorkerRefs(
 				context.Background(),
-				[]*leapmuxv1.OrgOp{op},
-				"principal", "org",
+				[]*leapmuxv1.CrdtOp{op},
+				"principal",
 				denyForeignWorkerChecker{denied: "foreign-worker"},
 			)
 			require.NoError(t, err, "a deny result must not surface as a transient lookup error")
@@ -88,17 +88,17 @@ func TestValidateWorkerRefs_GatesEveryWorkerIdField(t *testing.T) {
 	}
 }
 
-// buildOpWithWorkerID constructs an OrgOp whose body is the `armName` oneof case,
+// buildOpWithWorkerID constructs an CrdtOp whose body is the `armName` oneof case,
 // with that arm's inner message's `fieldName` (a worker_id field) set to workerID.
 // Built from the proto descriptor via dynamicpb (so it works for worker_id fields
 // that do not yet have a Go typed accessor), then marshaled across the
-// dynamic/typed boundary into a real *leapmuxv1.OrgOp that validateWorkerRefs
+// dynamic/typed boundary into a real *leapmuxv1.CrdtOp that validateWorkerRefs
 // consumes.
-func buildOpWithWorkerID(t *testing.T, armName, fieldName protoreflect.Name, workerID string) *leapmuxv1.OrgOp {
+func buildOpWithWorkerID(t *testing.T, armName, fieldName protoreflect.Name, workerID string) *leapmuxv1.CrdtOp {
 	t.Helper()
-	orgOpDesc := (&leapmuxv1.OrgOp{}).ProtoReflect().Descriptor()
-	armField := orgOpDesc.Oneofs().ByName("body").Fields().ByName(armName)
-	require.NotNil(t, armField, "OrgOp.body has no oneof case %q", armName)
+	crdtOpDesc := (&leapmuxv1.CrdtOp{}).ProtoReflect().Descriptor()
+	armField := crdtOpDesc.Oneofs().ByName("body").Fields().ByName(armName)
+	require.NotNil(t, armField, "CrdtOp.body has no oneof case %q", armName)
 
 	inner := dynamicpb.NewMessage(armField.Message())
 	workerField := inner.Descriptor().Fields().ByName(fieldName)
@@ -106,13 +106,13 @@ func buildOpWithWorkerID(t *testing.T, armName, fieldName protoreflect.Name, wor
 	// Set on a oneof-member field clears the competing case and selects this one.
 	inner.Set(workerField, protoreflect.ValueOfString(workerID))
 
-	dynOp := dynamicpb.NewMessage(orgOpDesc)
+	dynOp := dynamicpb.NewMessage(crdtOpDesc)
 	dynOp.Set(armField, protoreflect.ValueOfMessage(inner))
-	dynOp.Set(orgOpDesc.Fields().ByName("op_id"), protoreflect.ValueOfString("op-"+string(armName)))
+	dynOp.Set(crdtOpDesc.Fields().ByName("op_id"), protoreflect.ValueOfString("op-"+string(armName)))
 
 	data, err := proto.Marshal(dynOp)
 	require.NoError(t, err)
-	typed := &leapmuxv1.OrgOp{}
+	typed := &leapmuxv1.CrdtOp{}
 	require.NoError(t, proto.Unmarshal(data, typed))
 	return typed
 }
@@ -122,16 +122,16 @@ func buildOpWithWorkerID(t *testing.T, armName, fieldName protoreflect.Name, wor
 // accepted, so the tripwire's rejection is specifically about the access check
 // and not a blanket reject-all.
 func TestValidateWorkerRefs_AllowsAccessibleWorker(t *testing.T) {
-	op := &leapmuxv1.OrgOp{
+	op := &leapmuxv1.CrdtOp{
 		OpId: "op-allow",
-		Body: &leapmuxv1.OrgOp_SetTabRegister{
+		Body: &leapmuxv1.CrdtOp_SetTabRegister{
 			SetTabRegister: &leapmuxv1.SetTabRegisterOp{
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "own-worker"},
 			},
 		},
 	}
 	reason, _, err := validateWorkerRefs(
-		context.Background(), []*leapmuxv1.OrgOp{op}, "principal", "org",
+		context.Background(), []*leapmuxv1.CrdtOp{op}, "principal",
 		denyForeignWorkerChecker{denied: "foreign-worker"},
 	)
 	require.NoError(t, err)

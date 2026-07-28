@@ -452,9 +452,9 @@ describe('sanitizeSlug', () => {
       expect(err).toContain('Username')
     })
 
-    it('includes "Organization name" in error', () => {
-      const [, err] = sanitizeSlug('Organization name', 'bad_slug')
-      expect(err).toContain('Organization name')
+    it('includes "Username" in error for invalid slug', () => {
+      const [, err] = sanitizeSlug('Username', 'bad_slug')
+      expect(err).toContain('Username')
     })
   })
 })

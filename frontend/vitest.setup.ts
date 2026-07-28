@@ -7,7 +7,7 @@ import '@testing-library/jest-dom/vitest'
 
 // Install a default CRDT bridge before every test so the projection-
 // driven layout / tab / floating-window stores have a workspace +
-// root tile to render. Tests that need a different orgId / workspaceId
+// root tile to render. Tests that need a different userId / workspaceId
 // / rootTileId can override by calling installTestBridge() themselves
 // inside the test body.
 //
@@ -24,7 +24,7 @@ let disposeBridgeRoot: (() => void) | null = null
 beforeEach(() => {
   createRoot((dispose) => {
     disposeBridgeRoot = dispose
-    installTestBridge({ orgId: 'org-test', workspaceId: 'ws-test', rootTileId: 'main-tile' })
+    installTestBridge({ userId: 'user-test', workspaceId: 'ws-test', rootTileId: 'main-tile' })
   })
 })
 

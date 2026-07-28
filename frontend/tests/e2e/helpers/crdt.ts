@@ -1,13 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────
-// E2E helpers for the OrgCRDT path. Mirrors the frontend's
-// useOrgEvents/useOpsSubmitter handshake so tests can seed the CRDT
+// E2E helpers for the UserCRDT path. Mirrors the frontend's
+// useUserEvents/useOpsSubmitter handshake so tests can seed the CRDT
 // after a worker-side `OpenAgent` / `OpenTerminal` fires (those go
 // through E2EE channels and don't push into the CRDT themselves —
 // the production flow relies on the in-browser `tabStore.addTab` to
 // enqueue a SubmitOps batch).
 //
-// The browser holds ONE long-lived `/ws/orgevents` subscription per
-// org session and discovers `workspaces[wsID].rootNodeId` by
+// The browser holds ONE long-lived `/ws/userevents` subscription per
+// authenticated session and discovers `workspaces[wsID].rootNodeId` by
 // absorbing events on it. The test fixtures mirror that: open the
 // subscription BEFORE creating any workspace so the seed
 // `SetNodeRegister` + `SetWorkspaceRootNode` ops broadcast through
@@ -19,7 +19,7 @@
 
 import { fromBinary } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
-import { WatchOrgEventSchema } from '../../../src/generated/leapmux/v1/org_ops_pb'
+import { WatchUserEventSchema } from '../../../src/generated/leapmux/v1/user_ops_pb'
 import { authedHeaders } from './api'
 
 const HTTP_TO_WS_RE = /^http/i
@@ -28,12 +28,12 @@ const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 const nanoid48 = customAlphabet(ALPHABET, 48)
 
 /**
- * OrgEventsSubscription is the test-side analogue of the browser's
- * `useOrgEvents` hook. It opens one long-lived `/ws/orgevents`
+ * UserEventsSubscription is the test-side analogue of the browser's
+ * `useUserEvents` hook. It opens one long-lived `/ws/userevents`
  * WebSocket and accumulates the bits the seed-tab flow needs:
  *
  *   - `workspaces[wsID].rootNodeId` — populated either by the
- *     initial `OrgMaterialized` (for workspaces that existed at
+ *     initial `UserMaterialized` (for workspaces that existed at
  *     subscribe time) or by the raw `SetWorkspaceRootNode` op the
  *     hub broadcasts for workspaces created later (which itself
  *     requires the hub's filter-expansion fix).
@@ -45,7 +45,7 @@ const nanoid48 = customAlphabet(ALPHABET, 48)
  * workspace creation then verifies the entire seed-ops broadcast
  * path end-to-end.
  */
-export interface OrgEventsSubscription {
+export interface UserEventsSubscription {
   /** Resolves with the workspace's rootNodeId once any inbound event sets it. */
   awaitRootNodeId: (workspaceId: string, timeoutMs?: number) => Promise<string>
   /** Best-effort current epoch (from initial bootstrap, refreshed if a later frame surfaces one). */
@@ -56,17 +56,16 @@ export interface OrgEventsSubscription {
 }
 
 /**
- * Open a long-lived `/ws/orgevents?org_id=…` subscription and start
+ * Open a long-lived `/ws/userevents` subscription and start
  * accumulating workspace root_node_ids from inbound events. Resolves
- * once the initial `OrgMaterialized` frame lands so callers can rely
+ * once the initial `UserMaterialized` frame lands so callers can rely
  * on a stable bootstrap before triggering further hub state changes.
  */
-export async function openOrgEventsSubscription(
+export async function openUserEventsSubscription(
   hubUrl: string,
   cookie: string,
-  orgId: string,
-): Promise<OrgEventsSubscription> {
-  const wsUrl = `${hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/orgevents?org_id=${encodeURIComponent(orgId)}`
+): Promise<UserEventsSubscription> {
+  const wsUrl = `${hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/userevents`
   const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie } } as any)
   ws.binaryType = 'arraybuffer'
 
@@ -106,13 +105,13 @@ export async function openOrgEventsSubscription(
   await new Promise<void>((resolve, reject) => {
     const openTimer = setTimeout(() => {
       close()
-      reject(new Error('openOrgEventsSubscription: timeout waiting for initial OrgMaterialized'))
+      reject(new Error('openUserEventsSubscription: timeout waiting for initial UserMaterialized'))
     }, 10_000)
 
     ws.addEventListener('error', () => {
       clearTimeout(openTimer)
       close()
-      reject(new Error('openOrgEventsSubscription: WS error'))
+      reject(new Error('openUserEventsSubscription: WS error'))
     })
 
     ws.addEventListener('message', (ev) => {
@@ -120,10 +119,10 @@ export async function openOrgEventsSubscription(
       if (!buf || buf.length < 4)
         return
       let len: number
-      let evt: ReturnType<typeof fromBinary<typeof WatchOrgEventSchema>>
+      let evt: ReturnType<typeof fromBinary<typeof WatchUserEventSchema>>
       try {
         len = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0, false)
-        evt = fromBinary(WatchOrgEventSchema, buf.slice(4, 4 + len))
+        evt = fromBinary(WatchUserEventSchema, buf.slice(4, 4 + len))
       }
       catch (err) {
         clearTimeout(openTimer)
@@ -174,7 +173,7 @@ export async function openOrgEventsSubscription(
     if (existing)
       return Promise.resolve(existing)
     if (closed)
-      return Promise.reject(new Error(`OrgEventsSubscription closed before workspace ${workspaceId} root_node_id arrived`))
+      return Promise.reject(new Error(`UserEventsSubscription closed before workspace ${workspaceId} root_node_id arrived`))
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout>
       const onArrive = (rootNodeId: string) => {
@@ -215,34 +214,37 @@ export async function openOrgEventsSubscription(
   }
 }
 
-// Process-wide cache keyed by (hubUrl, orgId, cookie). Each Playwright
-// worker is its own Node.js process and gets one subscription per
-// (hub, org) — matching how a single browser session holds one
-// long-lived `/ws/orgevents` for the user. Reusing the subscription
+// Process-wide cache keyed by (hubUrl, cookie). Each Playwright worker is
+// its own Node.js process and gets one subscription per (hub, session) --
+// matching how a single browser session holds one long-lived
+// `/ws/userevents` for the user. Reusing the subscription
 // across `createWorkspaceViaAPI` calls is what makes the test catch a
 // regression where the hub fails to deliver seed ops to existing
 // subscribers: a fresh-per-call subscription would re-bootstrap from
 // the materialized state and silently round the bug.
-const orgEventsSubs = new Map<string, Promise<OrgEventsSubscription>>()
+const userEventsSubs = new Map<string, Promise<UserEventsSubscription>>()
 
-function orgEventsCacheKey(hubUrl: string, orgId: string, cookie: string): string {
-  return `${hubUrl}\x1F${orgId}\x1F${cookie}`
+// The cookie IS the identity: `openUserEventsSubscription` authenticates with
+// nothing else, so a user id in the key could never distinguish two entries
+// the cookie doesn't already distinguish -- it would only cost an extra
+// GetCurrentUser round-trip per caller to compute.
+function userEventsCacheKey(hubUrl: string, cookie: string): string {
+  return `${hubUrl}\x1F${cookie}`
 }
 
 /**
- * Return the cached `OrgEventsSubscription` for (hubUrl, orgId,
- * cookie), opening one if none exists. `createWorkspaceViaAPI` warms
- * this BEFORE dispatching the create RPC — so the subscription is
- * already attached when the hub processes the lifecycle outbox and
- * broadcasts the seed batch.
+ * Return the cached `UserEventsSubscription` for (hubUrl, cookie),
+ * opening one if none exists. `createWorkspaceViaAPI` warms this BEFORE
+ * dispatching the create RPC — so the subscription is already attached
+ * when the hub processes the lifecycle outbox and broadcasts the seed
+ * batch.
  */
-export function getOrgEventsSubscription(
+export function getUserEventsSubscription(
   hubUrl: string,
   cookie: string,
-  orgId: string,
-): Promise<OrgEventsSubscription> {
-  const key = orgEventsCacheKey(hubUrl, orgId, cookie)
-  const existing = orgEventsSubs.get(key)
+): Promise<UserEventsSubscription> {
+  const key = userEventsCacheKey(hubUrl, cookie)
+  const existing = userEventsSubs.get(key)
   if (existing) {
     return existing.then((sub) => {
       // A previously cached subscription may have been killed when the
@@ -251,26 +253,26 @@ export function getOrgEventsSubscription(
       // observe seed ops on a live socket.
       if (!sub.isClosed())
         return sub
-      orgEventsSubs.delete(key)
-      return getOrgEventsSubscription(hubUrl, cookie, orgId)
+      userEventsSubs.delete(key)
+      return getUserEventsSubscription(hubUrl, cookie)
     }, () => {
       // Cached promise rejected — drop it and retry.
-      orgEventsSubs.delete(key)
-      return getOrgEventsSubscription(hubUrl, cookie, orgId)
+      userEventsSubs.delete(key)
+      return getUserEventsSubscription(hubUrl, cookie)
     })
   }
-  const p = openOrgEventsSubscription(hubUrl, cookie, orgId).catch((err) => {
-    orgEventsSubs.delete(key)
+  const p = openUserEventsSubscription(hubUrl, cookie).catch((err) => {
+    userEventsSubs.delete(key)
     throw err
   })
-  orgEventsSubs.set(key, p)
+  userEventsSubs.set(key, p)
   return p
 }
 
 /** Close every cached subscription. Called from the global afterAll hook. */
-export async function closeAllOrgEventsSubscriptions(): Promise<void> {
-  const entries = [...orgEventsSubs.values()]
-  orgEventsSubs.clear()
+export async function closeAllUserEventsSubscriptions(): Promise<void> {
+  const entries = [...userEventsSubs.values()]
+  userEventsSubs.clear()
   for (const p of entries) {
     try {
       const sub = await p
@@ -284,13 +286,12 @@ export async function closeAllOrgEventsSubscriptions(): Promise<void> {
 
 /**
  * Submit a single op batch (encoded as Connect-RPC JSON) via the hub's
- * `OrgCRDT.SubmitOps` endpoint. Throws on transport failure or a
+ * `UserCRDT.SubmitOps` endpoint. Throws on transport failure or a
  * non-committed batch result.
  */
 async function submitSetTabRegisterBatch(args: {
   hubUrl: string
   cookie: string
-  orgId: string
   epoch: bigint
   tabType: number
   tabId: string
@@ -300,7 +301,6 @@ async function submitSetTabRegisterBatch(args: {
   const ops: Array<Record<string, unknown>> = []
   const pushOp = (field: Record<string, unknown>) => {
     ops.push({
-      orgId: args.orgId,
       opId: nanoid48(),
       originClientId: args.originClientId,
       setTabRegister: {
@@ -318,14 +318,13 @@ async function submitSetTabRegisterBatch(args: {
     pushOp({ workerId: args.setRegisters.workerId })
 
   const reqBody = {
-    orgId: args.orgId,
     epoch: args.epoch.toString(),
     batches: [{
       batchId: nanoid48(),
       ops,
     }],
   }
-  const resp = await fetch(`${args.hubUrl}/leapmux.v1.OrgCRDT/SubmitOps`, {
+  const resp = await fetch(`${args.hubUrl}/leapmux.v1.UserCRDT/SubmitOps`, {
     method: 'POST',
     headers: authedHeaders(args.cookie),
     body: JSON.stringify(reqBody),
@@ -350,10 +349,10 @@ async function submitSetTabRegisterBatch(args: {
  * `tabStore.addTab` flow: SetTabRegister(tile_id) + SetTabRegister(
  * position) + SetTabRegister(worker_id).
  *
- * Requires a long-lived `OrgEventsSubscription` opened BEFORE the
+ * Requires a long-lived `UserEventsSubscription` opened BEFORE the
  * workspace was created so the hub's seed-ops broadcast is what
  * delivers `rootNodeId`. This is the same path the browser takes —
- * one `/ws/orgevents` per session, populated from `SetWorkspaceRoot
+ * one `/ws/userevents` per session, populated from `SetWorkspaceRoot
  * Node` ops absorbed in flight. The old behaviour (bootstrap a fresh
  * subscription each call) would mask a hub bug where the seed ops are
  * dropped for existing subscribers; that bug shipped in production
@@ -363,23 +362,21 @@ async function submitSetTabRegisterBatch(args: {
 export async function seedTabIntoWorkspace(args: {
   hubUrl: string
   cookie: string
-  orgId: string
   workspaceId: string
   tabType: number
   tabId: string
   workerId: string
   /** Long-lived subscription opened before `createWorkspaceViaAPI`. */
-  orgEvents: OrgEventsSubscription
+  userEvents: UserEventsSubscription
   /** LexoRank position. Defaults to "M" — first slot. */
   position?: string
 }): Promise<void> {
-  const rootNodeId = await args.orgEvents.awaitRootNodeId(args.workspaceId)
-  const epoch = args.orgEvents.currentEpoch()
+  const rootNodeId = await args.userEvents.awaitRootNodeId(args.workspaceId)
+  const epoch = args.userEvents.currentEpoch()
 
   await submitSetTabRegisterBatch({
     hubUrl: args.hubUrl,
     cookie: args.cookie,
-    orgId: args.orgId,
     epoch,
     tabType: args.tabType,
     tabId: args.tabId,
@@ -399,7 +396,7 @@ export async function seedTabIntoWorkspace(args: {
     const resp = await fetch(`${args.hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
       method: 'POST',
       headers: authedHeaders(args.cookie),
-      body: JSON.stringify({ orgId: args.orgId, workspaceIds: [args.workspaceId] }),
+      body: JSON.stringify({ workspaceIds: [args.workspaceId] }),
     })
     if (resp.ok) {
       const data = await resp.json() as { tabs?: Array<{ tabId: string }> }

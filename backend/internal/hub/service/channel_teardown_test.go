@@ -38,7 +38,6 @@ type teardownEnv struct {
 	channelSvc    *service.ChannelService
 	workerMgr     *workermgr.Manager
 	userID        string
-	orgID         string
 	workspaceID   string
 	workerID      string
 	tabID         string
@@ -75,13 +74,9 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	// check has something to verify and the delegation rows are
 	// well-formed.
 	ctx := context.Background()
-	orgID := id.Generate()
-	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{
-		ID: orgID, Name: "td-org",
-	}))
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "td-user-" + id.Generate()[:6],
+		ID: userID, Username: "td-user-" + id.Generate()[:6],
 	}))
 
 	workerID := id.Generate()
@@ -97,11 +92,11 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 
 	wsID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID, OwnerUserID: userid.MustNew(userID), Title: "ws",
+		ID: wsID, OwnerUserID: userid.MustNew(userID), Title: "ws",
 	}))
 	tabID := id.Generate()
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		OrgID:       orgID,
+		UserID:      userid.MustNew(userID),
 		WorkspaceID: wsID,
 		WorkerID:    workerID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -119,7 +114,6 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 		channelSvc:    channelSvc,
 		workerMgr:     wMgr,
 		userID:        userID,
-		orgID:         orgID,
 		workspaceID:   wsID,
 		workerID:      workerID,
 		tabID:         tabID,
@@ -253,7 +247,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	// worker hosting a different user's channel.
 	otherUserID := id.Generate()
 	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID: otherUserID, OrgID: env.orgID, Username: "other-" + id.Generate()[:6],
+		ID: otherUserID, Username: "other-" + id.Generate()[:6],
 	}))
 
 	chA := id.Generate()

@@ -28,7 +28,6 @@ type sectionTestEnv struct {
 	client leapmuxv1connect.SectionServiceClient
 	store  store.Store
 	token  string
-	orgID  string
 	userID string
 }
 
@@ -61,14 +60,11 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 		connect.WithGRPC(),
 	)
 
-	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "test-org"})
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
-		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
@@ -83,7 +79,6 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 		client: client,
 		store:  st,
 		token:  token,
-		orgID:  orgID,
 		userID: userID,
 	}
 }
@@ -92,7 +87,7 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 	env := setupSectionTest(t)
 
 	resp, err := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 
 	// Should auto-create all default sections: In progress, Archived, Workers (left), Files, To-dos (right).
@@ -170,7 +165,7 @@ func TestSectionService_CreateSection(t *testing.T) {
 
 	// Trigger auto-init of default sections.
 	_, _ = env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 
 	// Create a custom section.
 	resp, err := env.client.CreateSection(context.Background(), authedReq(
@@ -181,7 +176,7 @@ func TestSectionService_CreateSection(t *testing.T) {
 
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.Len(t, listResp.Msg.GetSections(), 6)
 }
 
@@ -198,7 +193,7 @@ func TestSectionService_RenameSection(t *testing.T) {
 	env := setupSectionTest(t)
 
 	_, _ = env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 
 	// Create a section first.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
@@ -212,7 +207,7 @@ func TestSectionService_RenameSection(t *testing.T) {
 
 	// Verify the name changed.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	for _, s := range listResp.Msg.GetSections() {
 		if s.GetId() == sectionID {
 			assert.Equal(t, "New Name", s.GetName())
@@ -235,7 +230,7 @@ func TestSectionService_DeleteSection(t *testing.T) {
 	env := setupSectionTest(t)
 
 	_, _ = env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 
 	// Create a section, then delete it.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
@@ -248,7 +243,7 @@ func TestSectionService_DeleteSection(t *testing.T) {
 
 	// Verify it's gone (back to 5 default sections).
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.Len(t, listResp.Msg.GetSections(), 5)
 }
 
@@ -260,7 +255,6 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	workspaceID := id.Generate()
 	err := env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       env.orgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws for delete test",
 	})
@@ -268,7 +262,7 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 
 	// Trigger auto-init of sections.
 	listResp, err := env.client.ListSections(ctx, authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 
 	// Create a custom section and assign a workspace to it.
@@ -302,7 +296,7 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 
 	// Verify the workspace was moved to "In progress".
 	listResp2, err := env.client.ListSections(ctx, authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 	var found bool
 	for _, item := range listResp2.Msg.GetItems() {
@@ -333,21 +327,19 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 	wsInProgress := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsInProgress,
-		OrgID:       env.orgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws in progress",
 	}))
 	wsCustom := id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsCustom,
-		OrgID:       env.orgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "ws custom",
 	}))
 
 	// Auto-init.
 	listResp, err := env.client.ListSections(ctx, authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 	var inProgressID string
 	for _, s := range listResp.Msg.GetSections() {
@@ -419,7 +411,7 @@ func TestSectionService_DeleteSection_NotFoundOnBogusID(t *testing.T) {
 	env := setupSectionTest(t)
 	ctx := context.Background()
 	_, err := env.client.ListSections(ctx, authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 
 	_, err = env.client.DeleteSection(ctx, authedReq(
@@ -434,7 +426,7 @@ func TestSectionService_MoveSection(t *testing.T) {
 
 	// Trigger auto-init.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 
 	// Find the "In progress" section (should be on left sidebar).
 	var inProgressID string
@@ -457,7 +449,7 @@ func TestSectionService_MoveSection(t *testing.T) {
 
 	// Verify it's now on the right sidebar.
 	listResp2, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	for _, s := range listResp2.Msg.GetSections() {
 		if s.GetId() == inProgressID {
 			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
@@ -473,7 +465,6 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	workspaceID := id.Generate()
 	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       env.orgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "test workspace",
 	})
@@ -481,7 +472,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 
 	// Trigger auto-init of sections.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 
 	var archivedID string
 	for _, s := range listResp.Msg.GetSections() {
@@ -501,7 +492,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 
 	// Verify the item appears in the list.
 	listResp2, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	items := listResp2.Msg.GetItems()
 	require.Len(t, items, 1)
 	assert.Equal(t, archivedID, items[0].GetSectionId())
@@ -514,7 +505,6 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	workspaceID := id.Generate()
 	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
-		OrgID:       env.orgID,
 		OwnerUserID: userid.MustNew(env.userID),
 		Title:       "test workspace",
 	})
@@ -522,7 +512,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 
 	// Trigger auto-init and find section IDs.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+		&leapmuxv1.ListSectionsRequest{}, env.token))
 	var inProgressID, archivedID string
 	for _, s := range listResp.Msg.GetSections() {
 		switch s.GetSectionType() {
@@ -581,41 +571,48 @@ func TestSectionService_Unauthenticated(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-// A caller whose identity never got populated must not own a section whose
-// user_id is likewise blank.
+// A caller whose identity never got populated must not own someone else's
+// section.
 //
 // requireOwnedSection is the package's OTHER resource-ownership predicate
 // (loadOwnedWorkspaceOr403 is the first), and it compared raw strings, so two
-// empty ids matched and granted Move/Delete on that row. It now compares
-// through userid.UserID.Matches, which refuses an empty id on either side.
-// Both fixtures below are reachable: SQLite accepts "" as a TEXT primary key,
-// so a blank-id user and rows owned by it insert cleanly.
+// empty ids matched and granted Move/Delete on a blank-owner row. It now
+// compares through userid.UserID.Matches, which refuses an empty id on either
+// side.
+//
+// The blank-OWNER row that made the empty-vs-empty pairing observable is gone
+// by construction: workspace_sections.user_id is `REFERENCES users(id)` and
+// CreateUserParams.Validate refuses the blank parent, so the row cannot exist.
+// The zero CALLER stays reachable -- auth.UserInfo.ID is a zero UserID whenever
+// it was never minted -- and it is aimed at a REAL owner's section here, which
+// is what keeps the assertion non-vacuous: a predicate that stopped comparing
+// would move this section.
 func TestMoveSectionDeniesZeroCallerOnBlankOwnedSection(t *testing.T) {
 	env := setupSectionTest(t)
 	ctx := context.Background()
 
-	orgID := id.Generate()
-	require.NoError(t, env.store.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "blank-owner-org"}))
-	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: "", OrgID: orgID, Username: "blank-id-user", PasswordHash: "h",
+	require.ErrorIs(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: "", Username: "blank-id-user", PasswordHash: "h",
 		DisplayName: "Blank", PasswordSet: true,
-	}))
+	}), store.ErrInvalidArgument,
+		"the parent key a blank-owner section would need must stay unwritable")
+
 	sectionID := id.Generate()
 	require.NoError(t, env.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
-		ID: sectionID, UserID: userid.UserID{}, Name: "blank-owned", Position: "n",
+		ID: sectionID, UserID: userid.MustNew(env.userID), Name: "real-owned", Position: "n",
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
 	}))
 
 	// A UserInfo whose ID never got minted -- the zero value.
-	zeroCaller := auth.WithUser(ctx, &auth.UserInfo{OrgID: orgID, Username: "nobody"})
+	zeroCaller := auth.WithUser(ctx, &auth.UserInfo{Username: "nobody"})
 	_, err := service.NewSectionService(env.store).MoveSection(zeroCaller,
 		connect.NewRequest(&leapmuxv1.MoveSectionRequest{
 			SectionId: sectionID,
 			Position:  "z",
 			Sidebar:   leapmuxv1.Sidebar_SIDEBAR_LEFT,
 		}))
-	require.Error(t, err, "a zero caller id must not own a blank-owner section")
+	require.Error(t, err, "a zero caller id must not own another user's section")
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
 		"non-owner hits masquerade as NotFound so section ids do not leak")
 

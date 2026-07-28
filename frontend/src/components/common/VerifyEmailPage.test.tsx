@@ -62,7 +62,7 @@ function renderPage(initialPath: string) {
     <MemoryRouter history={history}>
       <Route path="/verify-email" component={VerifyEmailPage} />
       <Route path="/login" component={LoginMock} />
-      <Route path="/o/:slug" component={props => <div data-testid="org-page">{props.params.slug}</div>} />
+      <Route path="/" component={() => <div data-testid="app-home" />} />
     </MemoryRouter>
   ))
 }
@@ -106,6 +106,19 @@ describe('verifyEmailPage', () => {
     // The submitted token must be the *normalized* form (no hyphen,
     // uppercase). Auto-submit uses whatever was in the URL.
     expect(mockVerify).toHaveBeenCalledWith({ verificationToken: 'AB2CDE' })
+  })
+
+  it('redirects to / after a successful verification', async () => {
+    mockVerify.mockResolvedValueOnce({
+      user: { username: 'alice', emailVerified: true },
+    })
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    // The emailed link lands here; on success the page must hand the user off
+    // to the flat user-owned home (`/`) rather than leaving them on the form.
+    // Same landing the post-login redirect asserts in LoginPage.test.tsx.
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 
   it('manually-typed codes accept hyphen and lowercase, then normalize', async () => {

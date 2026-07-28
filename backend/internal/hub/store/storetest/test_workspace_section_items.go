@@ -31,10 +31,9 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("set and get", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-user")
+		user := SeedUser(t, st, "wsi-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+		wsID := SeedWorkspace(t, st, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID:      userid.MustNew(user.ID),
@@ -66,11 +65,10 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("list by user", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-list-user")
+		user := SeedUser(t, st, "wsi-list-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		ws1 := SeedWorkspace(t, st, orgID, user.ID, "WS 1")
-		ws2 := SeedWorkspace(t, st, orgID, user.ID, "WS 2")
+		ws1 := SeedWorkspace(t, st, user.ID, "WS 1")
+		ws2 := SeedWorkspace(t, st, user.ID, "WS 2")
 
 		for i, wsID := range []string{ws1, ws2} {
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
@@ -98,8 +96,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 	// got there.
 	t.Run("list by user stable order on position ties", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-tie-org")
-		user := SeedUser(t, st, orgID, "wsi-tie-user")
+		user := SeedUser(t, st, "wsi-tie-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
 
 		// Seed enough items that any planner-driven shuffle is likely
@@ -109,7 +106,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		const N = 8
 		seeded := make([]string, 0, N)
 		for i := 0; i < N; i++ {
-			wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+			wsID := SeedWorkspace(t, st, user.ID, "WS")
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 				UserID:      userid.MustNew(user.ID),
 				WorkspaceID: wsID,
@@ -159,10 +156,9 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-del-user")
+		user := SeedUser(t, st, "wsi-del-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+		wsID := SeedWorkspace(t, st, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID:      userid.MustNew(user.ID),
@@ -187,11 +183,10 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("delete by section", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-dbs-user")
+		user := SeedUser(t, st, "wsi-dbs-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		ws1 := SeedWorkspace(t, st, orgID, user.ID, "WS 1")
-		ws2 := SeedWorkspace(t, st, orgID, user.ID, "WS 2")
+		ws1 := SeedWorkspace(t, st, user.ID, "WS 1")
+		ws2 := SeedWorkspace(t, st, user.ID, "WS 2")
 
 		for _, wsID := range []string{ws1, ws2} {
 			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
@@ -214,12 +209,11 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("is in archived section", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-arch-user")
+		user := SeedUser(t, st, "wsi-arch-user")
 		archSec := seedSection(t, st, user.ID, "Archive", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
 		ipSec := seedSection(t, st, user.ID, "In Progress", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		wsArch := SeedWorkspace(t, st, orgID, user.ID, "Archived WS")
-		wsIP := SeedWorkspace(t, st, orgID, user.ID, "Active WS")
+		wsArch := SeedWorkspace(t, st, user.ID, "Archived WS")
+		wsIP := SeedWorkspace(t, st, user.ID, "Active WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID: userid.MustNew(user.ID), WorkspaceID: wsArch, SectionID: archSec, Position: "a0",
@@ -247,10 +241,9 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("get not found after delete", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-getnf-user")
+		user := SeedUser(t, st, "wsi-getnf-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+		wsID := SeedWorkspace(t, st, user.ID, "WS")
 
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
@@ -270,8 +263,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("list by user empty", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-listempty-user")
+		user := SeedUser(t, st, "wsi-listempty-user")
 
 		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
@@ -281,9 +273,8 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("set overwrites existing section assignment", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-overwrite-user")
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "Overwrite WS")
+		user := SeedUser(t, st, "wsi-overwrite-user")
+		wsID := SeedWorkspace(t, st, user.ID, "Overwrite WS")
 		sec1 := seedSection(t, st, user.ID, "Section A", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
 		sec2 := seedSection(t, st, user.ID, "Section B", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
 
@@ -315,10 +306,9 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("position-only update preserves section lookup", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-posonly-user")
+		user := SeedUser(t, st, "wsi-posonly-user")
 		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+		wsID := SeedWorkspace(t, st, user.ID, "WS")
 
 		// Initial assignment.
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
@@ -353,8 +343,7 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 
 	t.Run("is in archived section not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org")
-		user := SeedUser(t, st, orgID, "wsi-archnf-user")
+		user := SeedUser(t, st, "wsi-archnf-user")
 
 		isArchived, err := st.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
 			UserID:      userid.MustNew(user.ID),

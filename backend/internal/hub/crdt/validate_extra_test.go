@@ -28,7 +28,7 @@ func TestValidate_RootImmutable_FloatingWindow_RejectsRetargetingRoot(t *testing
 		WindowId: "fw",
 		Field:    &leapmuxv1.SetFloatingWindowRegisterOp_RootNodeId{RootNodeId: "another"},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true /* internal: bypass auth, not set-once */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true /* internal: bypass auth, not set-once */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, res.Reason,
 		"writing root_node_id to a pre-existing window must reject as root_immutable")
 }
@@ -38,14 +38,14 @@ func TestValidate_RootImmutable_FloatingWindow_RejectsRetargetingRoot(t *testing
 // been populated, any further SetWorkspaceRootNodeOp is rejected.
 func TestValidate_RootImmutable_WorkspaceRoot_RejectsRetargetingRoot(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
-	op := &leapmuxv1.OrgOp{
+	op := &leapmuxv1.CrdtOp{
 		OpId:         "op-retarget",
 		CanonicalHlc: hlcAt(10, 0, "a"),
-		Body: &leapmuxv1.OrgOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
 			WorkspaceId: "w1", RootNodeId: "another",
 		}},
 	}
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true /* internal */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true /* internal */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, res.Reason,
 		"writing root_node_id to a workspace whose root is already populated must reject as root_immutable")
 }
@@ -56,7 +56,7 @@ func TestValidate_RootImmutable_WorkspaceRoot_RejectsRetargetingRoot(t *testing.
 func TestValidate_RootNodeProtected_ClientCannotTombstoneWorkspaceRoot(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "root1"}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, false /* client */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false /* client */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_NODE_PROTECTED, res.Reason,
 		"clients cannot tombstone a workspace root")
 }
@@ -67,7 +67,7 @@ func TestValidate_RootNodeProtected_ClientCannotTombstoneWorkspaceRoot(t *testin
 func TestValidate_RootNodeProtected_InternalLifecycleBypassAllowed(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "root1"}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true /* internal */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true /* internal */, "p1", allowAll{})
 	assert.NotEqual(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_NODE_PROTECTED, res.Reason,
 		"internal lifecycle path bypasses root protection on workspace roots")
 }
@@ -95,7 +95,7 @@ func TestValidate_RootNodeProtected_ClientCanTombstoneEmptyFloatingWindowRoot(t 
 	// Same-batch close: tombstone the root + the window.
 	closeRoot := stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "fwroot"}, hlcAt(10, 0, "a"))
 	closeWin := stamped(&leapmuxv1.TombstoneFloatingWindowOp{WindowId: "fw"}, hlcAt(10, 1, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{closeRoot, closeWin}, false /* client */, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{closeRoot, closeWin}, false /* client */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"closing an empty floating window in a paired batch must succeed: got %v at %q", res.Reason, res.OffendingOpID)
 }
@@ -104,8 +104,8 @@ func TestValidate_RootNodeProtected_ClientCanTombstoneEmptyFloatingWindowRoot(t 
 // floating window needs to satisfy completeness validation. Callers
 // supply the window_id, root_node_id, and starting HLC; the helper
 // returns the 7 ops in stable order.
-func completeWindowOps(windowID, rootNodeID, workspaceID string, baseHLC int64) []*leapmuxv1.OrgOp {
-	return []*leapmuxv1.OrgOp{
+func completeWindowOps(windowID, rootNodeID, workspaceID string, baseHLC int64) []*leapmuxv1.CrdtOp {
+	return []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
 			WindowId: windowID,
 			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_RootNodeId{RootNodeId: rootNodeID},
@@ -199,7 +199,7 @@ func TestValidate_IncompleteRecord_TabMissingWorker(t *testing.T) {
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 1, "a"))
 	// No worker_id op → the post-batch live tab is incomplete.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tile, pos}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tile, pos}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INCOMPLETE_RECORD, res.Reason)
 }
 
@@ -212,7 +212,7 @@ func TestValidate_IncompleteRecord_SplitNodeMissingDirection(t *testing.T) {
 		NodeId: "root1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_SPLIT},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{kind}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{kind}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INCOMPLETE_RECORD, res.Reason)
 }
 
@@ -259,7 +259,7 @@ func TestValidate_FloatingMoveWithNonRootDescendants_Rejected(t *testing.T) {
 		WindowId: "fw",
 		Field:    &leapmuxv1.SetFloatingWindowRegisterOp_WorkspaceId{WorkspaceId: "w2"},
 	}, hlcAt(20, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{move}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{move}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_FLOATING_MOVE_WITH_DESCENDANTS, res.Reason)
 }
 
@@ -290,7 +290,7 @@ func TestValidate_FloatingMove_EmptyWindow_Allowed(t *testing.T) {
 		WindowId: "fw",
 		Field:    &leapmuxv1.SetFloatingWindowRegisterOp_WorkspaceId{WorkspaceId: "w2"},
 	}, hlcAt(20, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{move}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{move}, true, "p1", allowAll{})
 	require.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"empty floating window must be movable; got %v at %q", res.Reason, res.OffendingOpID)
 }
@@ -310,7 +310,7 @@ func TestValidate_ValueDomain_NegativeZero_NormalizedNotRejected(t *testing.T) {
 	// Note: this is an isolated op test; we don't expect to reach apply
 	// without the full completeness — but the value-domain rule
 	// specifically must not reject -0.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{negZero}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{negZero}, true, "p1", allowAll{})
 	assert.NotEqual(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason,
 		"-0.0 must not be rejected by value-domain validation; got %v", res.Reason)
 }
@@ -325,7 +325,7 @@ func TestValidate_ValueDomain_RejectsNaNRatios(t *testing.T) {
 			Values: []float64{math.NaN(), 0.5},
 		}},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
@@ -339,7 +339,7 @@ func TestValidate_ValueDomain_RejectsNegativeRatios(t *testing.T) {
 			Values: []float64{-0.5, 1.5},
 		}},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
@@ -350,7 +350,7 @@ func TestValidate_ValueDomain_RejectsZeroWidth(t *testing.T) {
 		WindowId: "fwnew",
 		Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Width{Width: 0},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
@@ -362,7 +362,7 @@ func TestValidate_ValueDomain_RejectsTooManyGridRows(t *testing.T) {
 		NodeId: "root1",
 		Field:  &leapmuxv1.SetNodeRegisterOp_Rows{Rows: crdt.MaxGridDimension + 1},
 	}, hlcAt(10, 0, "a"))
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{op}, true, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
@@ -384,7 +384,7 @@ func TestValidate_PureDelete_OnlyPreWorkspacePermissionRequired(t *testing.T) {
 	}, hlcAt(10, 0, "a"))
 	// Caller only has write on w1 (the pre-workspace). No other
 	// workspaces should be required.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.OrgOp{tomb}, false /* client */, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tomb}, false /* client */, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
 	require.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"pure-delete should only require pre-workspace write; got %v at %q", res.Reason, res.OffendingOpID)
 }

@@ -14,16 +14,17 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// RunEvents subscribes to OrgCRDT.WatchOrg and emits each event as a
-// single JSONL line on stdout. The first event is always
-// OrgMaterialized (the bootstrap snapshot); subsequent events are
+// RunEvents subscribes to the user CRDT WatchUser stream and emits each
+// event as a single JSONL line on stdout. The first event is always
+// UserMaterialized (the bootstrap snapshot); subsequent events are
 // canonical-HLC-tagged ops, presence updates, lifecycle events, or
 // entity-visibility transitions.
 //
 // The command runs until SIGINT/SIGTERM or the stream closes. The
-// universal resolver fills org_id from any of --tab-id,
-// --workspace-id, --worker-id, --user-id, --tile-id, or directly
-// --org-id; conflicts surface as invalid_request.
+// stream is scoped to the authenticated session's own user, so no
+// user id is resolved or sent; --workspace-id (directly, or derived
+// from --tab-id / --tile-id) only narrows which workspaces the
+// stream carries. Conflicts surface as invalid_request.
 //
 // It is the CLI surface that replaces the legacy
 // `WatchWorkspaceEvents` command from before the CRDT migration.
@@ -32,7 +33,7 @@ func RunEvents(rawCtx any, args []string) error {
 	var hub string
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{HideUser: true})
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -42,7 +43,7 @@ func RunEvents(rawCtx any, args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	got, err := runResolve(ctx, c, resolve.Need{OrgID: true}, in)
+	got, err := runResolve(ctx, c, resolve.Need{}, in)
 	if err != nil {
 		return err
 	}
@@ -51,13 +52,13 @@ func RunEvents(rawCtx any, args []string) error {
 		workspaceIDs = []string{got.WorkspaceID}
 	}
 	if c.IsLocal() {
-		return runEventsLocal(ctx, c, got.OrgID, workspaceIDs)
+		return runEventsLocal(ctx, c, workspaceIDs)
 	}
-	return runEventsHub(ctx, c, got.OrgID, workspaceIDs)
+	return runEventsHub(ctx, c, workspaceIDs)
 }
 
-func runEventsHub(ctx context.Context, c *remote.Client, orgID string, workspaceIDs []string) error {
-	stream, err := c.OpenOrgEvents(ctx, orgID, workspaceIDs)
+func runEventsHub(ctx context.Context, c *remote.Client, workspaceIDs []string) error {
+	stream, err := c.OpenUserEvents(ctx, workspaceIDs)
 	if err != nil {
 		return remote.EmitErrorWith("rpc_failed", err)
 	}
@@ -75,9 +76,9 @@ func runEventsHub(ctx context.Context, c *remote.Client, orgID string, workspace
 	}
 }
 
-func runEventsLocal(ctx context.Context, c *remote.Client, orgID string, workspaceIDs []string) error {
+func runEventsLocal(ctx context.Context, c *remote.Client, workspaceIDs []string) error {
 	enc := json.NewEncoder(remote.Out)
-	err := streamWatchOrgLocal(ctx, c, orgID, workspaceIDs, func(evt *leapmuxv1.WatchOrgEvent) (bool, error) {
+	err := streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 		_ = enc.Encode(eventToJSON(evt))
 		return false, nil
 	})
@@ -87,58 +88,58 @@ func runEventsLocal(ctx context.Context, c *remote.Client, orgID string, workspa
 	return nil
 }
 
-// eventToJSON projects a WatchOrgEvent into a JSON-friendly map. The
+// eventToJSON projects a WatchUserEvent into a JSON-friendly map. The
 // proto's oneof + nested registers don't json-marshal nicely as-is —
 // the protojson-equivalent shape would lose readability — so we emit a
 // hand-shaped envelope: `kind`, plus event-specific fields.
-func eventToJSON(evt *leapmuxv1.WatchOrgEvent) map[string]any {
+func eventToJSON(evt *leapmuxv1.WatchUserEvent) map[string]any {
 	switch e := evt.GetEvent().(type) {
-	case *leapmuxv1.WatchOrgEvent_Initial:
+	case *leapmuxv1.WatchUserEvent_Initial:
 		return map[string]any{
 			"kind":          "materialized",
-			"org_id":        e.Initial.GetOrgId(),
+			"user_id":       e.Initial.GetUserId(),
 			"current_epoch": e.Initial.GetCurrentEpoch(),
 			"max_hlc":       hlcToJSON(e.Initial.GetMaxHlc()),
 			"workspaces":    workspaceMapKeys(e.Initial.GetWorkspaces()),
 		}
-	case *leapmuxv1.WatchOrgEvent_Batch:
+	case *leapmuxv1.WatchUserEvent_Batch:
 		return map[string]any{
 			"kind":     "batch",
 			"batch_id": e.Batch.GetBatchId(),
 			"ops":      opsToJSON(e.Batch.GetOps()),
 		}
-	case *leapmuxv1.WatchOrgEvent_EntityMaterialized:
+	case *leapmuxv1.WatchUserEvent_EntityMaterialized:
 		return map[string]any{
 			"kind":   "entity_materialized",
 			"at_hlc": hlcToJSON(e.EntityMaterialized.GetAtHlc()),
 			"entity": entityKindSummary(e.EntityMaterialized),
 		}
-	case *leapmuxv1.WatchOrgEvent_EntityRemoved:
+	case *leapmuxv1.WatchUserEvent_EntityRemoved:
 		return map[string]any{
 			"kind":   "entity_removed",
 			"at_hlc": hlcToJSON(e.EntityRemoved.GetAtHlc()),
 			"entity": removedEntitySummary(e.EntityRemoved),
 		}
-	case *leapmuxv1.WatchOrgEvent_Presence:
+	case *leapmuxv1.WatchUserEvent_Presence:
 		return map[string]any{
 			"kind":             "presence",
 			"workspace_id":     e.Presence.GetWorkspaceId(),
 			"active_client_id": e.Presence.GetActiveClientId(),
 		}
-	case *leapmuxv1.WatchOrgEvent_Renamed:
+	case *leapmuxv1.WatchUserEvent_Renamed:
 		return map[string]any{
 			"kind":         "workspace_renamed",
 			"workspace_id": e.Renamed.GetWorkspaceId(),
 			"title":        e.Renamed.GetTitle(),
 		}
-	case *leapmuxv1.WatchOrgEvent_Created:
+	case *leapmuxv1.WatchUserEvent_Created:
 		return map[string]any{
 			"kind":         "workspace_created",
 			"workspace_id": e.Created.GetWorkspaceId(),
 			"title":        e.Created.GetTitle(),
 			"root_node_id": e.Created.GetRootNodeId(),
 		}
-	case *leapmuxv1.WatchOrgEvent_Deleted:
+	case *leapmuxv1.WatchUserEvent_Deleted:
 		return map[string]any{
 			"kind":         "workspace_deleted",
 			"workspace_id": e.Deleted.GetWorkspaceId(),
@@ -166,7 +167,7 @@ func workspaceMapKeys(m map[string]*leapmuxv1.WorkspaceContentsRecord) []string 
 	return out
 }
 
-func opsToJSON(ops []*leapmuxv1.OrgOp) []map[string]any {
+func opsToJSON(ops []*leapmuxv1.CrdtOp) []map[string]any {
 	out := make([]map[string]any, len(ops))
 	for i, op := range ops {
 		out[i] = map[string]any{
@@ -178,7 +179,7 @@ func opsToJSON(ops []*leapmuxv1.OrgOp) []map[string]any {
 	return out
 }
 
-func opTargetSummary(op *leapmuxv1.OrgOp) map[string]any {
+func opTargetSummary(op *leapmuxv1.CrdtOp) map[string]any {
 	out := crdt.OpTarget(op).ToJSON()
 	out["type"] = opKindName(op)
 	return out
@@ -189,25 +190,25 @@ func opTargetSummary(op *leapmuxv1.OrgOp) map[string]any {
 // Kept here (not on EntityRef) because the op shape, not the entity,
 // determines the label: a SetNodeRegister and a TombstoneNode target
 // the same EntityRef.
-func opKindName(op *leapmuxv1.OrgOp) string {
+func opKindName(op *leapmuxv1.CrdtOp) string {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.OrgOp_SetNodeRegister:
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		return "set_node_register"
-	case *leapmuxv1.OrgOp_TombstoneNode:
+	case *leapmuxv1.CrdtOp_TombstoneNode:
 		return "tombstone_node"
-	case *leapmuxv1.OrgOp_SetTabRegister:
+	case *leapmuxv1.CrdtOp_SetTabRegister:
 		return "set_tab_register"
-	case *leapmuxv1.OrgOp_TombstoneTab:
+	case *leapmuxv1.CrdtOp_TombstoneTab:
 		return "tombstone_tab"
-	case *leapmuxv1.OrgOp_SetFloatingWindowRegister:
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		return "set_floating_window_register"
-	case *leapmuxv1.OrgOp_TombstoneFloatingWindow:
+	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		return "tombstone_floating_window"
-	case *leapmuxv1.OrgOp_SetWorkspaceRootNode:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
 		return "set_workspace_root_node"
-	case *leapmuxv1.OrgOp_SetWorkspaceRegister:
+	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
 		return "set_workspace_register"
-	case *leapmuxv1.OrgOp_TombstoneWorkspace:
+	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return "tombstone_workspace"
 	}
 	return "unknown"

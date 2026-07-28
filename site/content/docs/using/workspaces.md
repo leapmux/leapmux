@@ -5,15 +5,15 @@ type: docs
 weight: 3
 ---
 
-A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Every workspace lives in your [personal organization](/docs/using/accounts/#your-personal-organization), has a single owner (the person who created it), and persists across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.
+A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Every workspace is owned by the user who created it (you see only your own), and persists across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.
 
 For the bigger picture of how workspaces fit alongside Hubs, Workers, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For everything you do *inside* a workspace — tabs, splits, grids, and floating windows — see [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ## What a workspace is
 
-- A workspace lives in your personal organization. The URL of an open workspace is `/o/{username}/workspace/{workspaceId}`.
+- A workspace is owned by the user who created it. The URL of an open workspace is `/workspace/{workspaceId}`.
 - The user who creates a workspace is its **owner**. Only the owner can rename or delete it.
-- Workspace access is strictly owner-only: you see exactly the workspaces you own.
+- Workspace access is strictly owner-only: you see exactly the workspaces you own. There is no sharing.
 - Agent and terminal state lives only in the Worker's local database and is never uploaded to the Hub. Frontend↔Worker traffic is end-to-end encrypted in transit. The Hub stores the workspace's title, tab positions, and layout geometry, but never the content. See [Security & Threat Model](/docs/operating/security/).
 
 ## Creating a workspace
@@ -118,19 +118,19 @@ To delete a workspace, open the workspace context menu and choose **Delete** (sh
 > **Delete workspace**
 > Are you sure you want to delete this workspace? This cannot be undone.
 
-On confirm, the Hub deletes the workspace and tells the Frontend which Workers hosted its tabs; the Frontend then cleans up Worker-side resources for the workspace over the encrypted channel. If the deleted workspace was the active one, you are navigated to your first non-archived workspace (or back to the org dashboard if none remain). If deletion fails, you will see a **Failed to delete workspace** toast.
+On confirm, the Hub deletes the workspace and tells the Frontend which Workers hosted its tabs; the Frontend then cleans up Worker-side resources for the workspace over the encrypted channel. If the deleted workspace was the active one, you are navigated to your first non-archived workspace (or back to `/` if none remain). If deletion fails, you will see a **Failed to delete workspace** toast.
 
 > **Warning:** Deletion is final from your point of view — there is no undelete in the UI.
 
 ## Switching workspaces
 
-Click any workspace row in the sidebar to switch to it. On mobile, this also closes the open sidebar overlay before navigating to `/o/{username}/workspace/{workspaceId}`.
+Click any workspace row in the sidebar to switch to it. On mobile, this also closes the open sidebar overlay before navigating to `/workspace/{workspaceId}`.
 
 LeapMux caches each workspace's state — its tabs, layout, and active-tab selection — as you visit it, so switching back to a workspace you have already opened restores instantly. The first time you open a workspace in a session, its tabs are fetched fresh.
 
 ## Live updates across clients
 
-Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the organization event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync & Presence](/docs/using/collaboration/).
+Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync & Presence](/docs/using/collaboration/).
 
 ## Related chapters
 

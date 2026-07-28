@@ -265,7 +265,7 @@ func TestParsePositionSpec_RejectsMutualExclusion(t *testing.T) {
 // resolvePositionSpec test helper that wraps captureEmit so test
 // authors can assert against the structured envelope instead of the
 // raw error.
-func runResolvePositionSpec(t *testing.T, state *leapmuxv1.OrgMaterialized, destTileID, movingTabID string, spec positionSpec) (tileID, position, code, message string) {
+func runResolvePositionSpec(t *testing.T, state *leapmuxv1.UserMaterialized, destTileID, movingTabID string, spec positionSpec) (tileID, position, code, message string) {
 	t.Helper()
 	code, message = captureEmit(t, func() error {
 		var rTile, rPos string

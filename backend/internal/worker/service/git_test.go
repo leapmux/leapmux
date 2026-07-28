@@ -687,7 +687,7 @@ func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	createAgentForPath(t, svc, "agent-1", wtDir)
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1")
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
 	assert.True(t, resp.GetShouldPrompt())
@@ -703,7 +703,7 @@ func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
 	repoDir := initRepo(t)
 	createAgentForPath(t, svc, "agent-branch-clean", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-clean")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-clean", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt())
@@ -715,7 +715,7 @@ func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
 	createAgentForPath(t, svc, "agent-branch-dirty", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-dirty")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-dirty", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
 	assert.True(t, resp.GetShouldPrompt())
@@ -737,7 +737,7 @@ func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {
 	run(t, repoDir, "git", "push", "origin", "--delete", "feature-missing-remote")
 	createAgentForPath(t, svc, "agent-branch-missing", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-missing")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-missing", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
 	assert.True(t, resp.GetShouldPrompt())
@@ -768,7 +768,7 @@ func TestInspectLastTabClose_WorktreeMultiTabFastPath(t *testing.T) {
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-1")
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-2")
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-1")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-1", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt(), "multi-tab worktree must not prompt")
@@ -804,7 +804,7 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file")
 
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       "file-tab-1",
 		WorkspaceID: "ws-1",
 		FilePath:    openPath,
@@ -815,7 +815,7 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), count, "file tab must be tracked as a worktree sibling")
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt(),
@@ -828,9 +828,10 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	closeResult := svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_FILE,
 		"file-tab-1",
+		"user-1",
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
 		func() {},
-		func() error { return svc.FileTabPaths.RevokeRow(context.Background(), "org-1", "file-tab-1") },
+		func() error { return svc.FileTabPaths.RevokeRow(context.Background(), "user-1", "file-tab-1") },
 	)
 	require.Equal(t, "", closeResult.GetFailureMessage(), "FILE close must not report a failure")
 	count, err = svc.Queries.CountWorktreeTabs(context.Background(), wtID)
@@ -872,7 +873,7 @@ func TestInspectLastTabClose_WorktreeDirDeletedClosesWithoutPrompt(t *testing.T)
 	// still carries wtDir, but the directory is gone on disk.
 	require.NoError(t, os.RemoveAll(wtDir))
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, "")
 	require.NoError(t, err, "close inspection must not fail when the worktree dir is gone")
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"missing worktree dir must not prompt")
@@ -898,7 +899,7 @@ func TestInspectLastTabClose_WorktreeSnapshotFailureDoesNotBlockClose(t *testing
 	// succeeds — exercising the gatherBranchSnapshot failure path.
 	require.NoError(t, os.Remove(filepath.Join(wtDir, ".git")))
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, "")
 	require.NoError(t, err, "close inspection must not fail when git is broken in the worktree")
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"broken git must not block the close")
@@ -935,7 +936,7 @@ func TestInspectLastTabClose_NonWorktreeSnapshotFailureDegradesWithHint(t *testi
 		filepath.Join(repoDir, ".git", "refs", "heads", "main"),
 		[]byte("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n"), 0o644))
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-broken-head")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-broken-head", "")
 	require.NoError(t, err, "a snapshot failure on a non-worktree tab must not block the close")
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"broken git must not fabricate a prompt target")
@@ -986,7 +987,7 @@ func TestInspectLastTabClose_SiblingCountFailureDoesNotBlockClose(t *testing.T) 
 	// no-op close that would pass regardless of which path was taken).
 	require.NoError(t, os.WriteFile(filepath.Join(closingRepo, "dirty.txt"), []byte("dirty\n"), 0o644))
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-closing")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-closing", "")
 	require.NoError(t, err, "a sibling's broken working dir must not block closing a healthy tab")
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget(),
 		"snapshot on the dirty closing repo must still drive the prompt decision")
@@ -1012,7 +1013,7 @@ func TestInspectLastTabClose_NonWorktreeNonRepoDegradesWithHint(t *testing.T) {
 	nonRepoDir := t.TempDir()
 	createAgentForPath(t, svc, "agent-non-repo", nonRepoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-non-repo")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-non-repo", "")
 	require.NoError(t, err, "a non-repo working dir must not block the close")
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"non-repo tab must not fabricate a prompt target")
@@ -1053,7 +1054,7 @@ func TestInspectLastTabClose_PushOnlyFailureKeepsDiffDrivenPrompt(t *testing.T) 
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
 	createAgentForPath(t, svc, "agent-push-broken", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-broken")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-broken", "")
 	require.NoError(t, err, "a push-only snapshot failure must not block the close")
 	assert.True(t, resp.GetShouldPrompt(),
 		"diff succeeded (dirty tree) — must still prompt despite the push-status failure")
@@ -1081,7 +1082,7 @@ func TestInspectLastTabClose_CancelledCtxDegradesWithoutSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately before the call
 
-	resp, err := svc.inspectLastTabClose(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-cancelled")
+	resp, err := svc.inspectLastTabClose(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-cancelled", "")
 	require.NoError(t, err, "a cancelled ctx must not block the close")
 	assert.False(t, resp.GetShouldPrompt(),
 		"cancelled ctx must degrade to no-prompt, not run the snapshot and prompt")
@@ -1109,7 +1110,7 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       "file-only-tab",
 		WorkspaceID: "ws-1",
 		FilePath:    openPath,
@@ -1122,9 +1123,10 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 	result := svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_FILE,
 		"file-only-tab",
+		"user-1",
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 		func() {},
-		func() error { return svc.FileTabPaths.RevokeRow(context.Background(), "org-1", "file-only-tab") },
+		func() error { return svc.FileTabPaths.RevokeRow(context.Background(), "user-1", "file-only-tab") },
 	)
 	require.Equal(t, "", result.GetFailureMessage(), "REMOVE on last FILE tab must succeed; got: %s / %s", result.GetFailureMessage(), result.GetFailureDetail())
 
@@ -1155,7 +1157,7 @@ func TestFileTabPathStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 	require.NoError(t, os.WriteFile(loosePath, []byte("loose\n"), 0o644))
 
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		OrgID:       "org-1",
+		UserID:      "user-1",
 		TabID:       "loose-file",
 		WorkspaceID: "ws-1",
 		FilePath:    loosePath,
@@ -1164,6 +1166,7 @@ func TestFileTabPathStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 	wt, err := svc.Queries.GetWorktreeForTab(context.Background(), db.GetWorktreeForTabParams{
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
 		TabID:   "loose-file",
+		UserID:  "user-1",
 	})
 	assert.True(t, errors.Is(err, sql.ErrNoRows),
 		"file tab outside any worktree must not create a worktree_tabs row (got wt=%+v, err=%v)", wt, err)
@@ -1179,7 +1182,7 @@ func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
 	createAgentForPath(t, svc, "agent-branch-mt-1", repoDir)
 	createAgentForPath(t, svc, "agent-branch-mt-2", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt())
@@ -1197,7 +1200,7 @@ func TestInspectLastTabClose_BranchTerminalKeepsBranchAlive(t *testing.T) {
 	createAgentForPath(t, svc, "agent-branch-cross-1", repoDir)
 	createTerminalForPath(t, svc, "term-branch-cross-1", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-cross-1")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-cross-1", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"sibling terminal on the same branch must keep the close routing on the fast path")
@@ -1218,7 +1221,7 @@ func TestInspectLastTabClose_ManyTabsParallelScans(t *testing.T) {
 	createTerminalForPath(t, svc, "term-mix-1", repoDir)
 	createTerminalForPath(t, svc, "term-mix-2", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mix-1")
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mix-1", "")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt(),

@@ -1,5 +1,5 @@
-import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, OrgCrdtState, TabRecord } from '~/generated/leapmux/v1/org_crdt_pb'
-import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
+import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   DoubleListSchema,
@@ -12,21 +12,21 @@ import {
   LWWStringSchema,
   LWWUint32Schema,
   NodeRecordSchema,
-  OrgCrdtStateSchema,
   TabRecordSchema,
+  UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/org_crdt_pb'
+} from '~/generated/leapmux/v1/user_crdt_pb'
 import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
 
 /**
- * NewState returns an empty OrgCrdtState seeded with the given org id.
+ * NewState returns an empty UserCrdtState seeded with the given user id.
  * Workspaces map is initialized empty; the lifecycle create/delete paths add
  * and remove entries via SetWorkspaceRegisterOp / TombstoneWorkspaceOp in the
  * op log (the same serialized pipeline every other op flows through).
  */
-export function newState(orgId: string): OrgCrdtState {
-  return create(OrgCrdtStateSchema, {
-    orgId,
+export function newState(userId: string): UserCrdtState {
+  return create(UserCrdtStateSchema, {
+    userId,
     nodes: {},
     tabs: {},
     floatingWindows: {},
@@ -46,7 +46,7 @@ export function newState(orgId: string): OrgCrdtState {
  * later assigns the real canonical HLC and the op is re-applied with
  * that value via `consumeBatchCommitted` / `recomputeSpeculative`.
  */
-export function applyOp(state: OrgCrdtState, op: OrgOp, canonOverride?: HLC): void {
+export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): void {
   const canon = canonOverride ?? op.canonicalHlc
   if (!canon)
     return
@@ -127,7 +127,7 @@ function lwwNodeKind(value: number, hlc: HLC): LWWNodeKind {
   return create(LWWNodeKindSchema, { value, hlc: hlcClone(hlc) })
 }
 
-function ensureNode(state: OrgCrdtState, id: string): NodeRecord {
+function ensureNode(state: UserCrdtState, id: string): NodeRecord {
   let rec = state.nodes[id]
   if (!rec) {
     rec = create(NodeRecordSchema, { nodeId: id })
@@ -136,7 +136,7 @@ function ensureNode(state: OrgCrdtState, id: string): NodeRecord {
   return rec
 }
 
-function ensureTab(state: OrgCrdtState, tabId: string, tabType: number): TabRecord {
+function ensureTab(state: UserCrdtState, tabId: string, tabType: number): TabRecord {
   let rec = state.tabs[tabId]
   if (!rec) {
     rec = create(TabRecordSchema, { tabType, tabId })
@@ -145,7 +145,7 @@ function ensureTab(state: OrgCrdtState, tabId: string, tabType: number): TabReco
   return rec
 }
 
-function ensureFloatingWindow(state: OrgCrdtState, id: string): FloatingWindowRecord {
+function ensureFloatingWindow(state: UserCrdtState, id: string): FloatingWindowRecord {
   let rec = state.floatingWindows[id]
   if (!rec) {
     rec = create(FloatingWindowRecordSchema, { windowId: id })
@@ -200,7 +200,7 @@ const nodeRegisterHandlers: Record<string, NodeFieldHandler> = {
   },
 }
 
-function applySetNodeRegister(state: OrgCrdtState, op: { nodeId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+function applySetNodeRegister(state: UserCrdtState, op: { nodeId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
   const rec = ensureNode(state, op.nodeId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -208,7 +208,7 @@ function applySetNodeRegister(state: OrgCrdtState, op: { nodeId: string, field: 
   nodeRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
-function applyTombstoneNode(state: OrgCrdtState, nodeId: string, hlc: HLC): void {
+function applyTombstoneNode(state: UserCrdtState, nodeId: string, hlc: HLC): void {
   applyTombstoneRecord(
     state.nodes,
     nodeId,
@@ -245,7 +245,7 @@ const tabRegisterHandlers: Record<string, TabFieldHandler> = {
   },
 }
 
-function applySetTabRegister(state: OrgCrdtState, op: { tabType: number, tabId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
   const rec = ensureTab(state, op.tabId, op.tabType)
   if (rec.tabType !== op.tabType)
     return
@@ -255,7 +255,7 @@ function applySetTabRegister(state: OrgCrdtState, op: { tabType: number, tabId: 
   tabRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
-function applyTombstoneTab(state: OrgCrdtState, tabType: number, tabId: string, hlc: HLC): void {
+function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
   applyTombstoneRecord(
     state.tabs,
     tabId,
@@ -303,7 +303,7 @@ const floatingWindowRegisterHandlers: Record<string, FloatingWindowFieldHandler>
   },
 }
 
-function applySetFloatingWindowRegister(state: OrgCrdtState, op: { windowId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+function applySetFloatingWindowRegister(state: UserCrdtState, op: { windowId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
   const rec = ensureFloatingWindow(state, op.windowId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -311,7 +311,7 @@ function applySetFloatingWindowRegister(state: OrgCrdtState, op: { windowId: str
   floatingWindowRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
-function applyTombstoneFloatingWindow(state: OrgCrdtState, windowId: string, hlc: HLC): void {
+function applyTombstoneFloatingWindow(state: UserCrdtState, windowId: string, hlc: HLC): void {
   applyTombstoneRecord(
     state.floatingWindows,
     windowId,
@@ -345,7 +345,7 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC }>(
     map[id] = init(existing)
 }
 
-function applySetWorkspaceRootNode(state: OrgCrdtState, workspaceId: string, rootNodeId: string): void {
+function applySetWorkspaceRootNode(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
   // Lazy-create the `WorkspaceContentsRecord` if this client hasn't
   // seen it yet. The hub's lifecycle create batch seeds the record via a
   // `SetWorkspaceRegisterOp` in the SAME batch as this op, so a subscriber
@@ -353,7 +353,7 @@ function applySetWorkspaceRootNode(state: OrgCrdtState, workspaceId: string, roo
   // already present when this runs. This lazy-create is the bootstrap-replay
   // safety net for op logs written before `SetWorkspaceRegisterOp` existed
   // (a `SetWorkspaceRootNode` op with no companion register), or for a
-  // subscriber whose initial `OrgMaterialized` predated the workspace and
+  // subscriber whose initial `UserMaterialized` predated the workspace and
   // whose filter misses the seed batch. Either leaves the op with no record
   // to land on — and `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap`
   // would wait forever on `state.workspaces[wsID].rootNodeId`, leaving the
@@ -374,7 +374,7 @@ function applySetWorkspaceRootNode(state: OrgCrdtState, workspaceId: string, roo
  * consume fault) never clobbers a workspace the user has since rooted or
  * populated. Mirrors backend `applySetWorkspaceRegister`.
  */
-function applySetWorkspaceRegister(state: OrgCrdtState, workspaceId: string): void {
+function applySetWorkspaceRegister(state: UserCrdtState, workspaceId: string): void {
   if (!workspaceId)
     return
   if (!state.workspaces[workspaceId]) {
@@ -388,7 +388,7 @@ function applySetWorkspaceRegister(state: OrgCrdtState, workspaceId: string): vo
  * delete batch (after a transient consume fault) is safe. Mirrors backend
  * `applyTombstoneWorkspace`.
  */
-function applyTombstoneWorkspace(state: OrgCrdtState, workspaceId: string): void {
+function applyTombstoneWorkspace(state: UserCrdtState, workspaceId: string): void {
   if (!workspaceId)
     return
   delete state.workspaces[workspaceId]

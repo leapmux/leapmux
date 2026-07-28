@@ -1,14 +1,27 @@
 // Package resolve owns the `leapmux remote` CLI's universal entity-ID
 // resolver. Every handler that consumes any of {workspace_id, tile_id,
-// worker_id, org_id, user_id, working_dir, tab_id} accepts any
-// sufficient combination of --tab-id / --tile-id / --workspace-id /
-// --worker-id / --org-id / --user-id (with matching LEAPMUX_REMOTE_*_ID
-// env-var fallbacks). Resolve walks the supplied inputs, derives the
-// missing fields via the hub's LocateTab / LocateTile / GetWorkspace /
-// GetWorker / GetUser RPCs (and ListAgents / ListTerminals for
-// working_dir), cross-checks every multi-source field for agreement,
-// and returns either a populated Resolved struct or a structured
-// invalid_request describing the conflict / missing requirement.
+// worker_id, working_dir, tab_id} accepts any sufficient combination
+// of --tab-id / --tile-id / --workspace-id / --worker-id (with
+// matching LEAPMUX_REMOTE_*_ID env-var fallbacks). Resolve walks the
+// supplied inputs, derives the missing fields via the hub's LocateTab
+// / LocateTile RPCs (and ListAgents / ListTerminals for working_dir),
+// cross-checks every multi-source field for agreement, and returns
+// either a populated Resolved struct or a structured invalid_request
+// describing the conflict / missing requirement.
+//
+// There is deliberately no user-id axis: the tenant is implied by the
+// authenticated session, so no hub RPC takes one and the CLI has no
+// --user-id flag.
+//
+// --worker-id likewise gets no confirmation RPC. Every worker-spawned
+// agent inherits $LEAPMUX_REMOTE_WORKER_ID, so such a call would fire
+// on essentially every agent-issued command -- and the only RPCs that
+// could serve it (WorkerManagementService.GetWorker / ListWorkers) are
+// deliberately absent from the hub's delegation-bearer allowlist
+// (auth.delegationAllowedProcedures). It could therefore only turn
+// legal commands into `resolve_failed`. The cmd package's
+// maybePreflightWorker keeps a best-effort check that tolerates the
+// denial instead of failing on it.
 //
 // The resolver does NOT read environment variables directly. The
 // caller is expected to bind flag defaults to the LEAPMUX_REMOTE_*_ID
@@ -34,8 +47,6 @@ type Need struct {
 	WorkspaceID bool
 	TileID      bool
 	WorkerID    bool
-	OrgID       bool
-	UserID      bool
 	TabID       bool
 	WorkingDir  bool
 }
@@ -53,8 +64,6 @@ type Inputs struct {
 	TileID       string
 	WorkspaceID  string
 	WorkerID     string
-	OrgID        string
-	UserID       string
 	FixedTabType leapmuxv1.TabType // set when the command path pins the type (agent / terminal subgroups)
 
 	// Explicit* mark which input came from a user-typed CLI flag as
@@ -73,8 +82,6 @@ type Inputs struct {
 	ExplicitTileID      bool
 	ExplicitWorkspaceID bool
 	ExplicitWorkerID    bool
-	ExplicitOrgID       bool
-	ExplicitUserID      bool
 	ExplicitTabType     bool
 
 	// flagSet is the FlagSet BindEntityFlags registered the entity
@@ -131,8 +138,6 @@ type Resolved struct {
 	TileID      string
 	WorkspaceID string
 	WorkerID    string
-	OrgID       string
-	UserID      string
 	WorkingDir  string
 }
 
@@ -151,20 +156,20 @@ type Deps struct {
 	// server matches any type and returns the actual type in the
 	// first slot; the resolver records that back into Resolved.TabType.
 	LocateTab func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (matchedTabType leapmuxv1.TabType, workspaceID, tileID, workerID string, err error)
-	// GetWorkspace resolves a workspace id to its (org, owner user).
-	GetWorkspace func(ctx context.Context, workspaceID string) (orgID, userID string, err error)
-	// GetWorker resolves a worker id to its (registering user, org).
-	GetWorker func(ctx context.Context, workerID string) (userID, orgID string, err error)
-	// LocateTile resolves a tile id to its (workspace, org).
-	LocateTile func(ctx context.Context, tileID string) (workspaceID, orgID string, err error)
-	// GetUser resolves a user id to its org.
-	GetUser func(ctx context.Context, userID string) (orgID string, err error)
+	// GetWorkspace confirms the supplied workspace id names a
+	// workspace the caller can read. The hub conflates "no such
+	// workspace" with "not yours", so a bogus --workspace-id comes
+	// back as an error rather than a negative answer -- there is no
+	// "resolved fine, but no such workspace" outcome to report.
+	GetWorkspace func(ctx context.Context, workspaceID string) error
+	// LocateTile resolves a tile id to its workspace.
+	LocateTile func(ctx context.Context, tileID string) (workspaceID string, err error)
 	// GetWorkingDir is a best-effort inner-RPC to the worker; only
 	// invoked when Need.WorkingDir is true AND we have (workerID,
 	// tabType, tabID). Failure returns "" — the caller treats
 	// working_dir as "unknown" rather than failing the whole
 	// invocation, matching the cross-worker orphan-tolerance
-	// behaviour of `agent close`.
+	// behaviour of `tab close --type=agent`.
 	GetWorkingDir func(ctx context.Context, workerID string, tabType leapmuxv1.TabType, tabID string) (workingDir string, err error)
 }
 
@@ -191,8 +196,6 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	in.TileID = strings.TrimSpace(in.TileID)
 	in.WorkspaceID = strings.TrimSpace(in.WorkspaceID)
 	in.WorkerID = strings.TrimSpace(in.WorkerID)
-	in.OrgID = strings.TrimSpace(in.OrgID)
-	in.UserID = strings.TrimSpace(in.UserID)
 
 	// Mark which inputs the user typed on the command line (vs which
 	// inherited their value from $LEAPMUX_REMOTE_*_ID env defaults).
@@ -212,10 +215,6 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 				in.ExplicitWorkspaceID = true
 			case "worker-id":
 				in.ExplicitWorkerID = true
-			case "org-id":
-				in.ExplicitOrgID = true
-			case "user-id":
-				in.ExplicitUserID = true
 			case "tab-type":
 				in.ExplicitTabType = true
 			}
@@ -265,8 +264,6 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	agg.put(fieldTileID, in.TileID, sourceFlagTile, in.ExplicitTileID)
 	agg.put(fieldWorkspaceID, in.WorkspaceID, sourceFlagWorkspace, in.ExplicitWorkspaceID)
 	agg.put(fieldWorkerID, in.WorkerID, sourceFlagWorker, in.ExplicitWorkerID)
-	agg.put(fieldOrgID, in.OrgID, sourceFlagOrg, in.ExplicitOrgID)
-	agg.put(fieldUserID, in.UserID, sourceFlagUser, in.ExplicitUserID)
 
 	// Issue every derivation whose input is supplied. Run them in
 	// parallel — the RPCs are independent and the resolver's worst-
@@ -307,49 +304,29 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		})
 	}
 
+	// GetWorkspace derives nothing -- it exists so a bogus
+	// --workspace-id fails here with a clear "get workspace X:
+	// not_found" instead of surfacing later as an opaque CRDT no-op.
+	// It is the ONLY workspace-existence check the resolver-driven
+	// CRDT commands get: GetMaterialized returns an empty projection
+	// rather than an error for a workspace the caller can't see.
+	// There is no --worker-id counterpart; see the package doc.
 	if in.WorkspaceID != "" && deps.GetWorkspace != nil {
 		g.Go(func() error {
-			org, owner, err := deps.GetWorkspace(gctx, in.WorkspaceID)
-			if err != nil {
+			if err := deps.GetWorkspace(gctx, in.WorkspaceID); err != nil {
 				return fmt.Errorf("get workspace %s: %w", in.WorkspaceID, err)
 			}
-			agg.put(fieldOrgID, org, sourceWorkspaceID, in.ExplicitWorkspaceID)
-			agg.put(fieldUserID, owner, sourceWorkspaceID, in.ExplicitWorkspaceID)
-			return nil
-		})
-	}
-
-	if in.WorkerID != "" && deps.GetWorker != nil {
-		g.Go(func() error {
-			owner, org, err := deps.GetWorker(gctx, in.WorkerID)
-			if err != nil {
-				return fmt.Errorf("get worker %s: %w", in.WorkerID, err)
-			}
-			agg.put(fieldUserID, owner, sourceWorkerID, in.ExplicitWorkerID)
-			agg.put(fieldOrgID, org, sourceWorkerID, in.ExplicitWorkerID)
 			return nil
 		})
 	}
 
 	if in.TileID != "" && deps.LocateTile != nil {
 		g.Go(func() error {
-			ws, org, err := deps.LocateTile(gctx, in.TileID)
+			ws, err := deps.LocateTile(gctx, in.TileID)
 			if err != nil {
 				return fmt.Errorf("locate tile %s: %w", in.TileID, err)
 			}
 			agg.put(fieldWorkspaceID, ws, sourceTileID, in.ExplicitTileID)
-			agg.put(fieldOrgID, org, sourceTileID, in.ExplicitTileID)
-			return nil
-		})
-	}
-
-	if in.UserID != "" && deps.GetUser != nil {
-		g.Go(func() error {
-			org, err := deps.GetUser(gctx, in.UserID)
-			if err != nil {
-				return fmt.Errorf("get user %s: %w", in.UserID, err)
-			}
-			agg.put(fieldOrgID, org, sourceUserID, in.ExplicitUserID)
 			return nil
 		})
 	}
@@ -378,8 +355,6 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		TileID:      agg.value(fieldTileID),
 		WorkspaceID: agg.value(fieldWorkspaceID),
 		WorkerID:    agg.value(fieldWorkerID),
-		OrgID:       agg.value(fieldOrgID),
-		UserID:      agg.value(fieldUserID),
 	}
 
 	// Working dir is fetched only on demand and only when we have a
@@ -429,8 +404,6 @@ const (
 	fieldTileID
 	fieldWorkspaceID
 	fieldWorkerID
-	fieldOrgID
-	fieldUserID
 )
 
 func (f field) String() string {
@@ -443,10 +416,6 @@ func (f field) String() string {
 		return "workspace_id"
 	case fieldWorkerID:
 		return "worker_id"
-	case fieldOrgID:
-		return "org_id"
-	case fieldUserID:
-		return "user_id"
 	default:
 		return fmt.Sprintf("field(%d)", f)
 	}
@@ -461,13 +430,8 @@ const (
 	sourceFlagTile      source = "--tile-id"
 	sourceFlagWorkspace source = "--workspace-id"
 	sourceFlagWorker    source = "--worker-id"
-	sourceFlagOrg       source = "--org-id"
-	sourceFlagUser      source = "--user-id"
 	sourceTabID         source = "derived from --tab-id"
 	sourceTileID        source = "derived from --tile-id"
-	sourceWorkspaceID   source = "derived from --workspace-id"
-	sourceWorkerID      source = "derived from --worker-id"
-	sourceUserID        source = "derived from --user-id"
 )
 
 // sourceEntry pairs a (value, source) record with the priority it
@@ -485,7 +449,7 @@ type aggregator struct {
 }
 
 func newAggregator() *aggregator {
-	return &aggregator{sources: make(map[field]map[string]sourceEntry, 6)}
+	return &aggregator{sources: make(map[field]map[string]sourceEntry, 4)}
 }
 
 // put records that `src` resolved `f` to `value`. When the same
@@ -595,12 +559,6 @@ func missingRequired(need Need, r Resolved) []string {
 	}
 	if need.WorkerID && r.WorkerID == "" {
 		out = append(out, "--worker-id (or pass --tab-id to derive it)")
-	}
-	if need.OrgID && r.OrgID == "" {
-		out = append(out, "--org-id (or pass --workspace-id / --tab-id / --tile-id / --worker-id / --user-id to derive it)")
-	}
-	if need.UserID && r.UserID == "" {
-		out = append(out, "--user-id (or pass --workspace-id / --tab-id / --worker-id to derive it)")
 	}
 	if need.TabID && r.TabID == "" {
 		out = append(out, "--tab-id (with --tab-type, or via LEAPMUX_REMOTE_TAB_ID + LEAPMUX_REMOTE_TAB_TYPE)")

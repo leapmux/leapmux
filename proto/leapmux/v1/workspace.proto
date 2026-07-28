@@ -14,10 +14,10 @@ enum TabType {
 }
 
 // WorkspaceService manages workspace metadata + read-only tab views.
-// Layout / tab mutations live on OrgCRDT (see org_ops.proto). The
+// Layout / tab mutations live on UserCRDT (see user_ops.proto). The
 // WorkspaceCreated / WorkspaceRenamed / WorkspaceDeleted lifecycle
-// events are broadcast on the `/ws/orgevents` WebSocket subscription
-// (see backend/internal/hub/service/ws_orgevents.go).
+// events are broadcast on the `/ws/userevents` WebSocket subscription
+// (see backend/internal/hub/service/ws_userevents.go).
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
@@ -31,15 +31,15 @@ service WorkspaceService {
   // that owns it. Reads `workspace_tab_rendered`.
   rpc GetTab(GetTabRequest) returns (GetTabResponse);
   // LocateTab resolves a tab by (tab_type, tab_id) without requiring
-  // workspace_id or org_id — the hub finds the tab across every
+  // workspace_id — the hub finds the tab across every
   // workspace the caller can access. Used by the `leapmux remote` CLI
-  // to derive the spawning tab's context (workspace, org, tile,
+  // to derive the spawning tab's context (workspace, tile,
   // worker) from a single env-injected anchor (LEAPMUX_REMOTE_TAB_ID
   // + LEAPMUX_REMOTE_TAB_TYPE). Reads `workspace_tab_rendered`.
   rpc LocateTab(LocateTabRequest) returns (LocateTabResponse);
   // LocateTile resolves a tile by tile_id without requiring
   // workspace_id. The hub walks the user's accessible CRDT state
-  // (from the in-memory `crdt.Manager` for the user's org), finds
+  // (from the in-memory `crdt.Manager` for the user), finds
   // the workspace whose tile-tree contains the node, and verifies
   // the caller can read that workspace. Returns NotFound when the
   // tile isn't visible to the caller. Used by the `leapmux remote`
@@ -50,8 +50,7 @@ service WorkspaceService {
 // --- Workspace CRUD ---
 
 message CreateWorkspaceRequest {
-  string org_id = 1;
-  string title = 2;
+  string title = 1;
 }
 
 message CreateWorkspaceResponse {
@@ -59,8 +58,7 @@ message CreateWorkspaceResponse {
 }
 
 message ListWorkspacesRequest {
-  string org_id = 1;
-  PageRequest page = 2;
+  PageRequest page = 1;
 }
 
 message ListWorkspacesResponse {
@@ -69,8 +67,7 @@ message ListWorkspacesResponse {
 }
 
 message GetWorkspaceRequest {
-  string org_id = 1;
-  string workspace_id = 2;
+  string workspace_id = 1;
 }
 
 message GetWorkspaceResponse {
@@ -79,10 +76,9 @@ message GetWorkspaceResponse {
 
 message Workspace {
   string id = 1;
-  string org_id = 2;
-  string created_by = 3;
-  string title = 4;
-  string created_at = 5;
+  string created_by = 2;
+  string title = 3;
+  string created_at = 4;
 }
 
 // --- Workspace Rename & Delete ---
@@ -100,12 +96,12 @@ message DeleteWorkspaceRequest {
 
 message DeleteWorkspaceResponse {
   // Workers that hosted tabs at delete time. The frontend calls each
-  // for cleanup. Sourced from OrgCrdtState.tabs (in-memory) so even
+  // for cleanup. Sourced from UserCrdtState.tabs (in-memory) so even
   // tabs hidden by projection-repair are included.
   repeated string worker_ids = 1;
 }
 
-// --- Workspace Tabs (read-only views; mutations via OrgCRDT) ---
+// --- Workspace Tabs (read-only views; mutations via UserCRDT) ---
 
 message WorkspaceTab {
   TabType tab_type = 1;
@@ -117,11 +113,10 @@ message WorkspaceTab {
 }
 
 message ListTabsRequest {
-  string org_id = 1;
-  // Workspaces to fetch tabs for. Empty = every workspace in the org
+  // Workspaces to fetch tabs for. Empty = every workspace
   // the caller can read. Unknown / inaccessible IDs are silently
   // dropped so stale sidebar state doesn't produce errors.
-  repeated string workspace_ids = 2;
+  repeated string workspace_ids = 1;
 }
 
 message ListTabsResponse {
@@ -286,7 +281,7 @@ message GetTabResponse {
 //
 // Like GetTab but without a workspace_id filter: the hub looks for
 // the tab across every workspace the caller owns. Used when only the
-// tab id is known — `leapmux remote` derives org / workspace / tile /
+// tab id is known — `leapmux remote` derives workspace / tile /
 // worker from this single hop. Returns NotFound when no accessible
 // workspace contains the tab.
 
@@ -307,10 +302,9 @@ message LocateTileRequest {
 
 message LocateTileResponse {
   string workspace_id = 1;
-  string org_id       = 2;
 }
 
-// --- Workspace lifecycle events (broadcast on `/ws/orgevents`) ---
+// --- Workspace lifecycle events (broadcast on `/ws/userevents`) ---
 
 message WorkspaceRenamed {
   string workspace_id = 1;

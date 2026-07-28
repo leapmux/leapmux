@@ -140,14 +140,14 @@ async function sidebarLeafLabelsForWorkspace(page: Page, workspaceId: string): P
 
 test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
   test('drag from non-active sidebar section to active workspace keeps title; survives reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     // API-seed both workspaces with an agent. We pass a known title
     // (the bug strips exactly this field; the API path defaults
     // `title=""` which would render the empty-fallback both before
     // AND after the move, masking the regression).
-    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Source', adminOrgId)
-    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Target', adminOrgId)
+    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Source')
+    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Target')
     const wsATitle = 'Source Agent'
     const wsBTitle = 'Target Agent'
     const wsAAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: wsATitle })
@@ -158,7 +158,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
 
       // Land on wsB (the destination — the user's repro had the
       // target workspace active at the moment of the drag).
-      await page.goto(`/o/admin/workspace/${wsB}`)
+      await page.goto(`/workspace/${wsB}`)
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
       const initialBLabels = await tabbarAgentLabels(page)

@@ -17,59 +17,47 @@ type crdtAuthChecker struct {
 	store store.Store
 }
 
-// NewCRDTAuthChecker returns the AuthChecker backing OrgCRDT.SubmitOps.
+// NewCRDTAuthChecker returns the AuthChecker backing UserCRDT.SubmitOps.
 func NewCRDTAuthChecker(st store.Store) crdt.AuthChecker {
 	return &crdtAuthChecker{store: st}
 }
 
-// CanAccessWorkspace defers to auth.WorkspaceCanAccessInOrg, the canonical
+// CanAccessWorkspace defers to auth.WorkspaceCanAccess, the canonical
 // owner-only predicate. It backs both the SubmitOps write gate and the
 // subscribe/broadcast read gate -- access is owner-only, so read and write
-// are the same check. The org cross-check guards against a stale subscriber
-// on org A reading a workspace that's been re-homed to org B. A
-// missing/out-of-org workspace stays a permanent FORBIDDEN deny; a transient
-// store error is surfaced so the validator retries the whole submit rather
-// than dropping the edit as permanently forbidden.
+// are the same check. A missing workspace stays a permanent FORBIDDEN deny;
+// a transient store error is surfaced so the validator retries the whole
+// submit rather than dropping the edit as permanently forbidden.
 //
 // principalID is the bare user id from SubmitOps (not the "user:"+prefixed
-// presence client id). Mint fails closed when the wire id is empty.
-func (a *crdtAuthChecker) CanAccessWorkspace(ctx context.Context, orgID, workspaceID, principalID string) (bool, error) {
+// presence client id). Mint fails closed when the wire id is empty. This
+// checker holds no tenant of its own -- hub/server.go builds one instance and
+// shares it across every per-user Manager -- so the answer comes entirely from
+// the workspace row versus principalID, never from which manager called in.
+func (a *crdtAuthChecker) CanAccessWorkspace(ctx context.Context, workspaceID, principalID string) (bool, error) {
 	uid, ok := userid.New(principalID)
 	if !ok {
 		return false, nil
 	}
-	// An empty orgID denies, exactly as the predicate's old empty-orgID prologue
-	// did -- but stated here, because this path must bind a concrete org and
-	// auth.BoundOrg is the type that enforces it.
-	bound, ok := auth.NewBoundOrg(orgID)
-	if !ok {
-		return false, nil
-	}
-	return auth.WorkspaceCanAccessInOrg(ctx, a.store, bound, workspaceID, uid)
+	return auth.WorkspaceCanAccess(ctx, a.store, workspaceID, uid)
 }
 
 // CanAccessWorkspaceForUsers is the batch form of CanAccessWorkspace (the
 // optional crdt.workspaceReaderBatch capability): it resolves access for many
 // users against one workspace in a single load, deferring to the same
-// auth.WorkspaceReadableByUsersInOrg rule that backs CanAccessWorkspace.
+// auth.WorkspaceReadableByUsers rule that backs CanAccessWorkspace.
 // Unlike the per-op CanAccessWorkspace, a store error is PROPAGATED (not
 // folded to "deny"): the caller (workspace-create subscriber expansion) must
 // retry on a transient lookup failure rather than silently drop the new
 // workspace's seed broadcast.
 //
-// That propagation is conditional on the store being REACHED. A blank org id,
-// or a subscriber list whose principals are all blank, is answered here without
-// a store call, so those return a clean empty set even while the DB is down.
-// Both are permanent input problems -- deny is the right answer and a retry
-// would not change it -- but the distinction matters when reading this contract.
-func (a *crdtAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, orgID, workspaceID string, userIDs []string) (map[string]bool, error) {
-	// An empty orgID denies every subscriber -- the empty map, not nil, so the
-	// caller reads it as "nobody may read" rather than a lookup failure. Same
-	// answer the predicate's old unbound-binding arm gave.
-	bound, ok := auth.NewBoundOrg(orgID)
-	if !ok {
-		return map[string]bool{}, nil
-	}
+// That propagation is conditional on the store being REACHED. A subscriber
+// list whose principals are all blank is answered here without a store call,
+// so those return a clean empty set even while the DB is down. Blank
+// principals are a permanent input problem -- deny is the right answer and a
+// retry would not change it -- but the distinction matters when reading this
+// contract.
+func (a *crdtAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, workspaceID string, userIDs []string) (map[string]bool, error) {
 	uids := make([]userid.UserID, 0, len(userIDs))
 	for _, id := range userIDs {
 		uid, ok := userid.New(id)
@@ -78,7 +66,10 @@ func (a *crdtAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, orgID,
 		}
 		uids = append(uids, uid)
 	}
-	return auth.WorkspaceReadableByUsersInOrg(ctx, a.store, bound, workspaceID, uids)
+	if len(uids) == 0 {
+		return map[string]bool{}, nil
+	}
+	return auth.WorkspaceReadableByUsers(ctx, a.store, workspaceID, uids)
 }
 
 // CanUseWorker gates SetTabRegisterOp.worker_id writes: only the
@@ -93,7 +84,7 @@ func (a *crdtAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, orgID,
 // Missing, deleted, and non-ACTIVE workers all fail closed. Empty
 // workerID short-circuits true so callers can clear the register
 // without an extra round-trip.
-func (a *crdtAuthChecker) CanUseWorker(ctx context.Context, _, workerID, principalID string) (bool, error) {
+func (a *crdtAuthChecker) CanUseWorker(ctx context.Context, workerID, principalID string) (bool, error) {
 	if workerID == "" {
 		return true, nil
 	}
