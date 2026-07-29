@@ -1,11 +1,11 @@
 import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { Tab } from '~/stores/tab.types'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, Show } from 'solid-js'
-import { channelClient, workspaceClient } from '~/api/clients'
+import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
+import { ensureWorkspaceAccess } from '~/api/workspaceAccess'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -25,7 +25,7 @@ import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { sanitizeName } from '~/lib/validate'
-import { protoToAgentTabFields, tabKey } from '~/stores/tab.helpers'
+import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { errorText } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
@@ -35,15 +35,12 @@ interface NewWorkspaceDialogProps {
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
   /**
-   * Workspace store registry. Pre-seeded with the new workspace's
-   * agent + tab snapshot BEFORE `onCreated` navigates, so
-   * `useWorkspaceRestore` takes its `cached.restored` fast path and
-   * renders the agent's tab immediately — instead of racing
-   * `listTabs` against the SetTabRegister echo and then letting the
-   * projection reconciler insert a bare tab (no title, no
-   * agentProvider, agent metadata missing → "Agent not found").
+   * Tab metadata store. The new workspace's agent is written here the moment
+   * `OpenAgent` returns, so its tab renders with a title and provider as soon
+   * as the projection places it — rather than appearing as a bare row until
+   * the hydrator's `listAgents` round-trip lands ("Agent not found").
    */
-  registry: WorkspaceStoreRegistryType
+  metadata: TabMetadataStore
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
@@ -91,7 +88,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       // enum 0.
       if (provider === undefined)
         throw new Error('No agent provider available')
-      await channelClient.prepareWorkspaceAccess({ workerId: wid, workspaceId: wsResp.workspaceId })
+      // The workspace was created after this page's channels opened, so no
+      // channel knows about it and OpenAgent below would be refused. Announce
+      // it through the shared announcer rather than calling the RPC directly,
+      // so the hydration and private-event repair paths inherit the fact that
+      // this pair is already announced instead of re-announcing it.
+      await ensureWorkspaceAccess(wid, wsResp.workspaceId)
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspaceId,
         agentProvider: provider,
@@ -113,48 +115,39 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         // worker but is invisible to all clients via the CRDT
         // projection — they'd render an empty workspace until the
         // user touched another tab.
-        const seed = await seedTabIntoNewWorkspace({
+        // Awaited for its ops, not its return: it emits the placement batch.
+        // The returned root/position used to seed a registry snapshot; the
+        // projection now supplies both.
+        await seedTabIntoNewWorkspace({
           workspaceId: wsResp.workspaceId,
           tabType: TabType.AGENT,
           tabId: agentResp.agent.id,
           workerId: wid,
         })
 
-        // Pre-seed the per-workspace registry snapshot so the
-        // post-navigation `useWorkspaceRestore` takes its
-        // `cached.restored` fast path. Without this, the navigation
-        // races `listTabs` against the SetTabRegister echo — when
-        // `listTabs` wins (the common case, since the seed batch is
-        // still in the opsSubmitter's 16ms aggregator), the tabStore
-        // is wiped and the CRDT-projection reconciler later re-inserts
-        // the tab with only CRDT-driven fields (tile_id / position /
-        // worker_id). The agent record from `agentResp.agent` is the
-        // only place the title / agentProvider / git metadata lives on
-        // this client; without pre-seeding, the new workspace renders
-        // the tab as the raw agent id in the sidebar and "Agent not
-        // found" in the tile.
-        if (seed) {
-          const newTab: Tab = {
-            type: TabType.AGENT,
-            id: agentResp.agent.id,
-            tileId: seed.rootNodeId,
-            position: seed.position,
-            ...protoToAgentTabFields(agentResp.agent.workerId, agentResp.agent),
-          }
-          props.registry.set(wsResp.workspaceId, {
-            workspaceId: wsResp.workspaceId,
-            tabs: [newTab],
-            activeTabKey: tabKey(newTab),
-            tileActiveTabKeys: { [seed.rootNodeId]: tabKey(newTab) },
-            // Layout state is bridge-driven (a memo over the CRDT
-            // projection for the active workspaceId); the cached
-            // value here only seeds focusedTileId so the next
-            // openAgent click lands on the right LEAF.
-            layout: { root: { type: 'leaf', id: seed.rootNodeId }, focusedTileId: seed.rootNodeId },
-            restored: true,
-            tabsLoaded: true,
-          })
-        }
+        // Seed the agent's METADATA only. Placement is already in the CRDT
+        // (`seedTab` emitted it above and pending ops apply synchronously), so
+        // the projection renders the tab as soon as the new workspace is
+        // activated -- there is no snapshot to pre-build and no race with a
+        // `listTabs` fetch to lose.
+        //
+        // The metadata still has to be seeded here because `agentResp.agent` is
+        // the only place this client has the title / provider / git fields; the
+        // worker fan-out would otherwise be the first to supply them, and until
+        // it landed the tab would render as a raw agent id.
+        //
+        // `hydrated: true` for the same reason every other local-open path
+        // sets it: the OpenAgent response IS the worker's answer for this tab.
+        // Without it the tab matches `useTabHydrators`' `!isHydrated` predicate
+        // — which now runs over every workspace in the account, not just the
+        // active one — and a `ListAgents` round-trip fires immediately for an
+        // agent this client just created. That reply is applied raw, with none
+        // of the live handler's in-flight-settings suppression, so a settings
+        // edit made in the window before it lands is silently overwritten.
+        props.metadata.patch(agentResp.agent.id, {
+          ...protoToAgentTabFields(agentResp.agent.workerId, agentResp.agent),
+          hydrated: true,
+        })
       }
 
       props.onCreated(wsResp.workspaceId)

@@ -129,32 +129,6 @@ func listAccessibleWorkers(ctx context.Context, c *remote.Client) (map[string]*l
 	return out, nil
 }
 
-// preflightWorkspace verifies workspaceID exists and the user can
-// read it. NotFound / PermissionDenied collapse to `not_found` so a
-// caller can't distinguish "no such workspace" from "no access" — the
-// hub already deliberately conflates these to avoid info-leak.
-//
-// This is the only workspace existence check the CLI has: the CRDT
-// bootstrap does NOT double as one. GetMaterialized intersects the
-// requested workspace ids with the caller's ACL and returns an empty
-// projection for anything it can't see (see
-// `auth.WorkspacesReadableByUser`), so an unknown --workspace-id
-// bootstraps "successfully" against nothing. Any command that must
-// reject a bogus workspace id has to call this helper explicitly.
-func preflightWorkspace(ctx context.Context, c *remote.Client, workspaceID string) error {
-	if workspaceID == "" {
-		return remote.EmitError("invalid_request", "--workspace-id is required")
-	}
-	var resp leapmuxv1.GetWorkspaceResponse
-	if err := hubCallUnary(ctx, c, "GetWorkspace", workspaceID, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp); err != nil {
-		if isNotFoundOrForbidden(err) {
-			return remote.EmitError("not_found", "no such workspace: "+workspaceID)
-		}
-		return remote.EmitErrorWith("preflight_failed", err)
-	}
-	return nil
-}
-
 // preflightTile returns nil when tileID names a live node belonging
 // to workspaceID. Uses the materialized state already in hand from
 // the CRDT bootstrap — no extra round-trip.
@@ -208,18 +182,6 @@ func preflightTab(state *leapmuxv1.UserMaterialized, workspaceID, tabID string, 
 		}
 	}
 	return nil
-}
-
-// preflightAgent / preflightTerminal are typed shortcuts over
-// preflightTab. The CRDT records every spawned agent / terminal as a
-// tab; the worker-side state can drift transiently but the canonical
-// "this id is reachable from the CLI" check is the tab record.
-func preflightAgent(state *leapmuxv1.UserMaterialized, workspaceID, agentID string) error {
-	return preflightTab(state, workspaceID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT)
-}
-
-func preflightTerminal(state *leapmuxv1.UserMaterialized, workspaceID, terminalID string) error {
-	return preflightTab(state, workspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 }
 
 // nodeWorkspaceFromState walks node parents until a workspace root

@@ -73,7 +73,7 @@ type TabKey struct {
 // of the per-batch cost we're trying to avoid.
 func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) IndexDiff {
 	if batchHasStructuralOp(batch) {
-		return DiffProjection(ProjectOwnership(prev), ProjectOwnership(next))
+		return DiffProjection(Project(prev), Project(next))
 	}
 	touched := touchedTabIDs(batch)
 	if len(touched) == 0 {

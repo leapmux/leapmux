@@ -432,7 +432,7 @@ export interface WorkspaceTabTreeProps {
    * (the tab bar's left-to-right order). Omit (or pass `[]`) and the
    * sort falls back to type → title.
    */
-  tileOrder?: string[]
+  tileOrder?: readonly string[]
   /**
    * Reactive lookup for worker display info. Used to disambiguate same-
    * named branches across distinct workers / clones (appending

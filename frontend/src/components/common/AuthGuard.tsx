@@ -27,8 +27,8 @@ type GuardState
     | { kind: 'redirect', to: string }
 
 /**
- * Sole gate on the authenticated app (`(app).tsx`). Everything behind it —
- * `/` and `/workspace/:workspaceId` — decides "who may see this page" here and
+ * Sole gate on the authenticated app (`(app).tsx`). Everything behind it — `/`,
+ * which is the group's only route — decides "who may see this page" here and
  * nowhere else, so no guarded route needs a redirect effect of its own.
  *
  * `isSoloMode()` / `isSetupRequired()` are plain module getters rather than

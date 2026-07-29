@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 import {
   branchExists,
   createGitRepo,
@@ -26,8 +26,7 @@ test.describe('Branch context menu', () => {
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
     await expect(branchRow).toBeVisible()
@@ -67,8 +66,7 @@ test.describe('Branch context menu', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
     await branchRow.hover()
@@ -114,8 +112,7 @@ test.describe('Branch context menu', () => {
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
     await branchRow.hover()

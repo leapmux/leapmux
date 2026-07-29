@@ -20,7 +20,11 @@ test.describe('Sign Up', () => {
   test('should show error for duplicate username', async ({ page }) => {
     // newuser is seeded by the worker-scoped fixture.
     await signUpViaUI(page, 'newuser', 'password123')
-    await expect(page.getByText('username already taken')).toBeVisible()
+    // The hub names the field AND the value it collided on (`FieldTakenError`),
+    // so pin both. A bare /already taken/ would keep passing if a regression
+    // reported the email as taken instead, which is the confusion that error
+    // type exists to prevent.
+    await expect(page.getByText(/username "newuser" is already taken/)).toBeVisible()
   })
 
   test('should link back to login page', async ({ page }) => {

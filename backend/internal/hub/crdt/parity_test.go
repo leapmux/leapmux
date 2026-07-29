@@ -2,6 +2,7 @@ package crdt_test
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -188,9 +189,53 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 	// 200 random permutations should all canonicalize to the same bytes.
 	rng := rand.New(rand.NewSource(0x1234))
 	for i := 0; i < 200; i++ {
-		got := canonicalizeState(t, applyAllParity(shuffledParity(ops, rng)))
+		state := applyAllParity(shuffledParity(ops, rng))
+		got := canonicalizeState(t, state)
 		if !bytes.Equal(canonical, got) {
 			t.Fatalf("permutation %d produced different bytes (len=%d vs %d)", i, len(canonical), len(got))
+		}
+		// Convergence alone doesn't say the projection is sane. Check the
+		// rendered-tab invariant on every permuted state too: it costs nothing
+		// here and gives the property hundreds of orderings to break on.
+		assertRenderedTabsAddressable(t, state, fmt.Sprintf("permutation %d", i))
+	}
+}
+
+// assertRenderedTabsAddressable is the invariant that makes RenderedTabs safe
+// to derive a write target from.
+//
+// `workspace_tab_rendered` backs LocateTab / GetTab / ListTabs, and the CLI
+// turns a `--tab-id` into a `--tile-id` through it before emitting
+// SetTabRegister(tile_id). `validateTabPlacement` accepts only a live LEAF, so
+// every rendered tile must BE one — and must be the tab's own tile_id, not a
+// relabelled stand-in. Relabelling is not hypothetical: an earlier frontend
+// projection remapped a collapsed SPLIT's tabs onto the parent's node id, which
+// is what made a tab render on no tile at all when a grid was closed beside it.
+// Both sides now report the raw tile_id (see the collapse cases in
+// testdata/crdt_projection_conformance.json); porting a remap here would break
+// `tab open --after-tab` in a way no existing test noticed.
+func assertRenderedTabsAddressable(t *testing.T, state *leapmuxv1.UserCrdtState, label string) {
+	t.Helper()
+	proj := crdt.Project(state)
+	for _, tab := range proj.RenderedTabs {
+		rec := state.GetTabs()[tab.TabID]
+		if rec == nil {
+			t.Fatalf("%s: rendered tab %q has no TabRecord", label, tab.TabID)
+		}
+		if raw := rec.GetTileId().GetValue(); tab.TileID != raw {
+			t.Fatalf("%s: rendered tab %q reports tile %q but its tile_id register says %q -- "+
+				"a relabelled tile is not writable", label, tab.TabID, tab.TileID, raw)
+		}
+		node := state.GetNodes()[tab.TileID]
+		if node == nil {
+			t.Fatalf("%s: rendered tab %q sits on unknown tile %q", label, tab.TabID, tab.TileID)
+		}
+		if node.GetKind().GetValue() != leapmuxv1.NodeKind_NODE_KIND_LEAF {
+			t.Fatalf("%s: rendered tab %q sits on tile %q of kind %v -- only a LEAF accepts a tab",
+				label, tab.TabID, tab.TileID, node.GetKind().GetValue())
+		}
+		if !crdt.HLCIsZero(node.GetTombstoneAt()) {
+			t.Fatalf("%s: rendered tab %q sits on tombstoned tile %q", label, tab.TabID, tab.TileID)
 		}
 	}
 }

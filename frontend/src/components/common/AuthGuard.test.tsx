@@ -61,7 +61,6 @@ function renderGuard(options: { path?: string } = {}) {
   const result = render(() => (
     <MemoryRouter history={history}>
       <Route path="/" component={Guarded} />
-      <Route path="/workspace/:workspaceId" component={Guarded} />
       <Route path="/login" component={() => <div data-testid="login-stub" />} />
       <Route path="/setup" component={() => <div data-testid="setup-stub" />} />
     </MemoryRouter>
@@ -113,15 +112,19 @@ describe('authGuard', () => {
     expect(navigations).toEqual(['/login?redirect=%2F'])
   })
 
-  it('preserves the guarded path in the login redirect', async () => {
+  // `/` is the whole guarded app, so what a redirect has to carry back is the
+  // QUERY, not a deeper path: `?newWorkspace=true&workerId=…` is a real deep
+  // link (AppShell opens the new-workspace dialog off it), and losing it on the
+  // login bounce drops the user on a plain home page instead.
+  it('preserves the guarded path and query in the login redirect', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
 
-    const { navigations } = renderGuard({ path: '/workspace/w1' })
+    const { navigations } = renderGuard({ path: '/?newWorkspace=true' })
 
     expect(await screen.findByTestId('login-stub')).toBeInTheDocument()
-    expect(navigations).toEqual(['/login?redirect=%2Fworkspace%2Fw1'])
+    expect(navigations).toEqual(['/login?redirect=%2F%3FnewWorkspace%3Dtrue'])
   })
 
   it('sends an unauthenticated visitor straight to /setup when setup is required', async () => {
@@ -137,15 +140,17 @@ describe('authGuard', () => {
     expect(navigations).toEqual(['/setup'])
   })
 
-  it('sends a deep guarded path straight to /setup when setup is required', async () => {
+  it('sends a query-bearing guarded path straight to /setup when setup is required', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
     mockIsSetupRequired.mockReturnValue(true)
 
-    const { navigations } = renderGuard({ path: '/workspace/w1' })
+    const { navigations } = renderGuard({ path: '/?newWorkspace=true' })
 
     expect(await screen.findByTestId('setup-stub')).toBeInTheDocument()
+    // Still exactly one hop, and the query is dropped on purpose: a fresh
+    // install has no workspace to create one next to.
     expect(navigations).toEqual(['/setup'])
   })
 

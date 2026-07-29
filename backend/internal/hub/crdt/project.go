@@ -1,26 +1,10 @@
 package crdt
 
 import (
-	"fmt"
 	"sort"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
-
-// RenderTree is the in-memory projection of a single tile tree (a
-// workspace's main layout, or one floating-window's inner layout).
-// It mirrors the shape the frontend expects but stays in Go land.
-type RenderTree struct {
-	NodeID    string
-	Kind      leapmuxv1.NodeKind
-	Direction leapmuxv1.SplitDirection
-	Ratios    []float64
-	Rows      uint32
-	Cols      uint32
-	RowRatios []float64
-	ColRatios []float64
-	Children  []*RenderTree
-}
 
 // RenderedTab is a tab that survives projection.
 type RenderedTab struct {
@@ -37,119 +21,43 @@ type RenderedTab struct {
 // from this set; UI reads from RenderedTabs.
 type OwnedTab = RenderedTab
 
-// WorkspaceProjection groups one workspace's projected tree, floating
-// windows, and tabs.
-type WorkspaceProjection struct {
-	WorkspaceID     string
-	MainTree        *RenderTree
-	FloatingWindows []*RenderedFloatingWindow
-	RenderedTabs    []*RenderedTab
-}
-
-// RenderedFloatingWindow is a window that survives projection.
-type RenderedFloatingWindow struct {
-	WindowID  string
-	X         float64
-	Y         float64
-	Width     float64
-	Height    float64
-	Opacity   float64
-	InnerTree *RenderTree
-}
-
-// Projection holds the user-wide rendered state.
+// Projection is the hub's view of a user's tabs.
+//
+// Deliberately NOT a rendered layout. The hub used to build a full render
+// tree here, mirroring `frontend/src/lib/crdt/project.ts` node for node, and
+// nothing ever read it -- the two consumers below want tabs, and the frontend
+// renders the layout from the same CRDT state on its own. Keeping a second
+// implementation of the tiling rules only gave them somewhere to drift apart,
+// which is exactly what happened. Layout questions belong to the client that
+// draws the layout; if the hub ever needs one, it can rebuild a tree from
+// state rather than maintain one nobody reads.
+//
+// The two slices are different questions:
+//   - OwnedTabs: every live tab. Worker reconciliation reads this.
+//   - RenderedTabs: the subset whose tile_id resolves to a live LEAF reachable
+//     from a registered root. This is an ELIGIBILITY predicate, not a layout
+//     one -- it backs `workspace_tab_rendered`, which serves LocateTab /
+//     GetTab / ListTabs, and the CLI derives a writable `--tile-id` from it.
+//     So its TileID is always the tab's own tile: the raw, addressable id that
+//     `validateTabPlacement` will accept.
 type Projection struct {
 	UserID       string
-	Workspaces   map[string]*WorkspaceProjection
 	OwnedTabs    []*OwnedTab
 	RenderedTabs []*RenderedTab
 }
 
-// Project applies the deterministic repair rules and returns the
-// renderable projection. The rules are:
-//   - tombstoned nodes are skipped
-//   - nodes whose parent_id chain doesn't terminate at a registered
-//     root (workspace or floating window) are dropped (orphans / cycles)
-//   - duplicate split-child positions tie-break by (position, node_id)
-//   - duplicate grid-cell positions: lower node_id wins, others dropped
-//   - missing grid cells render as empty leaves
-//   - bad ratio lengths are truncated/padded to 1/N at projection time
-//
-// Tab projection requires tile_id to resolve to a live LEAF reachable
-// from a registered root. Tabs that fail this drop from the rendered
-// view but remain in the owned view.
-//
-// Hot-path callers that only need the (owned, rendered) tab pair —
-// e.g. the per-commit `DiffProjection` call — should use
-// `ProjectOwnership` instead. It skips the render-tree walk, which is
-// the bulk of `Project`'s cost on large workspaces.
+// Project applies the deterministic repair rules and returns the projected
+// tabs. The rules that survive here:
+//   - tombstoned tabs are skipped
+//   - tabs whose tile_id chain doesn't terminate at a registered root
+//     (workspace or floating window) are dropped from both views as orphans
+//   - a tab renders only when its tile is a live LEAF; one that fails this
+//     stays in the owned view and leaves the rendered one
 func Project(state *leapmuxv1.UserCrdtState) *Projection {
-	out := &Projection{
-		UserID:     state.GetUserId(),
-		Workspaces: map[string]*WorkspaceProjection{},
-	}
-
-	roots := registeredRoots(state)
-	idx := buildChildIndex(state)
-
-	for wsID, wsRec := range state.GetWorkspaces() {
-		out.Workspaces[wsID] = &WorkspaceProjection{
-			WorkspaceID: wsID,
-			MainTree:    buildTreeFromRoot(state, wsRec.GetRootNodeId(), roots, idx),
-		}
-	}
-
-	for _, fw := range state.GetFloatingWindows() {
-		if !HLCIsZero(fw.GetTombstoneAt()) {
-			continue
-		}
-		wsID := fw.GetWorkspaceId().GetValue()
-		ws := out.Workspaces[wsID]
-		if ws == nil {
-			// Floating window pointing at a deleted workspace; drop.
-			continue
-		}
-		ws.FloatingWindows = append(ws.FloatingWindows, &RenderedFloatingWindow{
-			WindowID:  fw.GetWindowId(),
-			X:         fw.GetX().GetValue(),
-			Y:         fw.GetY().GetValue(),
-			Width:     fw.GetWidth().GetValue(),
-			Height:    fw.GetHeight().GetValue(),
-			Opacity:   fw.GetOpacity().GetValue(),
-			InnerTree: buildTreeFromRoot(state, fw.GetRootNodeId(), roots, idx),
-		})
-	}
-
-	// Stable order for floating windows (window_id ascending).
-	for _, ws := range out.Workspaces {
-		sort.SliceStable(ws.FloatingWindows, func(i, j int) bool {
-			return ws.FloatingWindows[i].WindowID < ws.FloatingWindows[j].WindowID
-		})
-	}
-
-	owned, rendered := projectTabs(state, roots)
-	out.OwnedTabs = owned
-	out.RenderedTabs = rendered
-	return out
-}
-
-// ProjectOwnership returns a Projection populated with only UserID,
-// OwnedTabs, and RenderedTabs. Per-workspace MainTree and FloatingWindow
-// render trees are NOT computed — this is the hot path used by
-// `commit()` to feed `DiffProjection`, which only reads the two tab
-// slices. Skipping the render-tree walk drops per-batch commit cost
-// from O(N + W·N) (with W = workspaces, each requiring a full subtree
-// build) to O(N_tabs + chain depth per tab).
-//
-// Callers that want the render trees (initial bootstrap, subscriber
-// add, RPC handlers) must still call Project. The Workspaces map on
-// the returned Projection is empty; do not iterate it.
-func ProjectOwnership(state *leapmuxv1.UserCrdtState) *Projection {
 	roots := registeredRoots(state)
 	owned, rendered := projectTabs(state, roots)
 	return &Projection{
 		UserID:       state.GetUserId(),
-		Workspaces:   map[string]*WorkspaceProjection{},
 		OwnedTabs:    owned,
 		RenderedTabs: rendered,
 	}
@@ -163,8 +71,9 @@ func ProjectOwnership(state *leapmuxv1.UserCrdtState) *Projection {
 type rootSet struct {
 	// nodeID -> workspaceID. For floating-window roots, this is the
 	// resolved workspace_id of the parent window. When `counts[id] > 1`
-	// the value is one of the colliding workspace ids, chosen
-	// non-deterministically.
+	// the winner is decided by a stated rule rather than by map order:
+	// workspaces are considered before floating windows, each in
+	// ascending id order, and the FIRST claim wins. See registeredRoots.
 	roots  map[string]string
 	counts map[string]int
 	// workspaceRoots maps root node_id -> workspace_id when the root is
@@ -185,22 +94,66 @@ func registeredRoots(state *leapmuxv1.UserCrdtState) rootSet {
 		workspaceRoots: map[string]string{},
 		windowRoots:    map[string]string{},
 	}
-	for wsID, wsRec := range state.GetWorkspaces() {
-		if id := wsRec.GetRootNodeId(); id != "" {
-			rs.roots[id] = wsID
-			rs.counts[id]++
-			rs.workspaceRoots[id] = wsID
-		}
+	// Ascending id order, FIRST claim wins -- on both sides.
+	//
+	// Two workspaces can name the same root node id. The hub's commit path
+	// rejects that (a set-once register plus validateRootAssignment), but the
+	// projection is total and still has to answer for speculative state, and
+	// the conformance harnesses apply ops raw with no validator. Ranging a Go
+	// map and letting the last writer win made the answer depend on map
+	// iteration order, so the same input could resolve a tab to a different
+	// workspace between runs -- and the corpus, which RECORDS this side's
+	// answer, cannot certify a value that is not a function of its input.
+	//
+	// Insertion order is not the fix: a Go map has none, the records arrive
+	// over the wire where protobuf leaves map ordering unspecified, and TS's
+	// object order is therefore just decode order rather than anything two
+	// clients agree on. Ordering on a value IN the data is the only property
+	// both languages can share.
+	wsIDs := make([]string, 0, len(state.GetWorkspaces()))
+	for wsID := range state.GetWorkspaces() {
+		wsIDs = append(wsIDs, wsID)
 	}
-	for _, fw := range state.GetFloatingWindows() {
+	sort.Strings(wsIDs)
+	for _, wsID := range wsIDs {
+		id := state.GetWorkspaces()[wsID].GetRootNodeId()
+		if id == "" {
+			continue
+		}
+		// `counts` records every claim, including the losing ones --
+		// validateRootAssignment needs the true occurrence count to reject a
+		// same-batch duplicate registration.
+		rs.counts[id]++
+		if _, taken := rs.roots[id]; taken {
+			continue
+		}
+		rs.roots[id] = wsID
+		rs.workspaceRoots[id] = wsID
+	}
+	// Windows are considered after workspaces, so a workspace root outranks a
+	// window root on collision. That direction is deliberate: a workspace root
+	// is protected even from internal batches, while a window root may be
+	// tombstoned by an internal sweep.
+	windowIDs := make([]string, 0, len(state.GetFloatingWindows()))
+	for windowID := range state.GetFloatingWindows() {
+		windowIDs = append(windowIDs, windowID)
+	}
+	sort.Strings(windowIDs)
+	for _, windowID := range windowIDs {
+		fw := state.GetFloatingWindows()[windowID]
 		if !HLCIsZero(fw.GetTombstoneAt()) {
 			continue
 		}
-		if id := fw.GetRootNodeId(); id != "" {
-			rs.roots[id] = fw.GetWorkspaceId().GetValue()
-			rs.counts[id]++
-			rs.windowRoots[id] = fw.GetWindowId()
+		id := fw.GetRootNodeId()
+		if id == "" {
+			continue
 		}
+		rs.counts[id]++
+		if _, taken := rs.roots[id]; taken {
+			continue
+		}
+		rs.roots[id] = fw.GetWorkspaceId().GetValue()
+		rs.windowRoots[id] = fw.GetWindowId()
 	}
 	return rs
 }
@@ -209,6 +162,25 @@ func registeredRoots(state *leapmuxv1.UserCrdtState) rootSet {
 // root and returns (workspaceID, chainAlive). The chain is "alive" iff
 // the tile itself and every ancestor up to the root are non-tombstoned.
 //
+// A SINGLE walk covers cycle detection and tombstone-along-the-chain
+// checking, mirroring frontend/src/lib/crdt/project.ts line for line.
+// The previous shape walked the same chain twice (resolveParentChain,
+// then a separate chainAlive helper) and the two walks did not agree
+// with the TS twin at the chain's end, in two ways the shared
+// conformance fixture did not cover:
+//
+//   - a registered root whose NodeRecord has not materialised yet was
+//     DEAD here and ALIVE there. It is alive: the root is registered,
+//     the record simply has not landed, and that window is exactly
+//     what the client's hold-in-place exists for.
+//   - chainAlive kept walking ABOVE the registered root to parent_id
+//     == "", so a missing or tombstoned node above a root killed the
+//     chain here only. A registered root is by definition the top of
+//     the workspace's tree; whatever sits above it is irrelevant.
+//
+// Both cases now have conformance cases pinning them, so the two
+// implementations cannot drift back apart silently.
+//
 // Unlike the generic resolveParentChain helper, this one rejects
 // tombstoned intermediates outright — the leaf-reachability contract
 // is part of the projection / move-validation semantics.
@@ -216,176 +188,36 @@ func resolveTileWorkspace(state *leapmuxv1.UserCrdtState, tileID string, roots r
 	if tileID == "" {
 		return "", false
 	}
-	ws := resolveParentChain(roots.roots, tileID, func(id string) (string, bool) {
-		node := state.GetNodes()[id]
+	visited := map[string]bool{}
+	cur := tileID
+	for {
+		if visited[cur] {
+			return "", false
+		}
+		visited[cur] = true
+		if wsID, ok := roots.roots[cur]; ok {
+			// Root reached. The chain up to here is alive (we would have
+			// returned otherwise). Workspace roots are registered without
+			// checking their NodeRecord, so re-read it: a tombstoned root
+			// kills the chain, an absent one does not.
+			rootNode := state.GetNodes()[cur]
+			alive := rootNode == nil || HLCIsZero(rootNode.GetTombstoneAt())
+			return wsID, alive
+		}
+		node := state.GetNodes()[cur]
 		if node == nil || !HLCIsZero(node.GetTombstoneAt()) {
 			return "", false
 		}
-		parent := node.GetParentId()
-		if parent == "" {
+		if node.GetParentId() == "" {
 			return "", false
-		}
-		return parent, true
-	})
-	if ws == "" {
-		return "", false
-	}
-	return ws, chainAlive(state, tileID)
-}
-
-// chainAlive walks from tile_id upward and returns true if every node
-// (including the tile itself) is non-tombstoned.
-func chainAlive(state *leapmuxv1.UserCrdtState, tileID string) bool {
-	visited := map[string]bool{}
-	cur := tileID
-	for cur != "" {
-		if visited[cur] {
-			return false
-		}
-		visited[cur] = true
-		node := state.GetNodes()[cur]
-		if node == nil {
-			return false
-		}
-		if !HLCIsZero(node.GetTombstoneAt()) {
-			return false
 		}
 		cur = node.GetParentId()
 	}
-	return true
 }
 
-// childIndex maps node_id → that node's children (live + tombstoned).
-// Backed by the shared parent→children adjacency from treeops; this
-// alias keeps projection-side call sites that iterate records readable
-// by adding the record lookup at use time.
-type childIndex map[string][]string
-
-func buildChildIndex(state *leapmuxv1.UserCrdtState) childIndex {
-	return childIndex(BuildAllChildrenIndex(state))
-}
-
-// buildTreeFromRoot constructs a RenderTree rooted at rootID. Returns
-// a placeholder leaf when the root is missing/tombstoned.
-func buildTreeFromRoot(state *leapmuxv1.UserCrdtState, rootID string, roots rootSet, idx childIndex) *RenderTree {
-	if rootID == "" {
-		return &RenderTree{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}
-	}
-	rec := state.GetNodes()[rootID]
-	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
-		return &RenderTree{NodeID: rootID, Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}
-	}
-	return buildTree(state, rec, roots, idx, map[string]bool{})
-}
-
-func buildTree(state *leapmuxv1.UserCrdtState, rec *leapmuxv1.NodeRecord, roots rootSet, idx childIndex, seen map[string]bool) *RenderTree {
-	if seen[rec.GetNodeId()] {
-		return &RenderTree{NodeID: rec.GetNodeId(), Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}
-	}
-	seen[rec.GetNodeId()] = true
-
-	tree := &RenderTree{
-		NodeID:    rec.GetNodeId(),
-		Kind:      rec.GetKind().GetValue(),
-		Direction: rec.GetDirection().GetValue(),
-		Ratios:    append([]float64(nil), rec.GetRatios().GetValue().GetValues()...),
-		Rows:      rec.GetRows().GetValue(),
-		Cols:      rec.GetCols().GetValue(),
-		RowRatios: append([]float64(nil), rec.GetRowRatios().GetValue().GetValues()...),
-		ColRatios: append([]float64(nil), rec.GetColRatios().GetValue().GetValues()...),
-	}
-
-	// Live children: dereference the precomputed id adjacency to records
-	// and filter tombstones at access time (the index keeps all children
-	// so callers that need the tombstoned ones don't re-scan).
-	siblings := idx[rec.GetNodeId()]
-	children := make([]*leapmuxv1.NodeRecord, 0, len(siblings))
-	for _, id := range siblings {
-		n := state.GetNodes()[id]
-		if n == nil || !HLCIsZero(n.GetTombstoneAt()) {
-			continue
-		}
-		children = append(children, n)
-	}
-
-	switch tree.Kind {
-	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		// Sort by (position, node_id) for stable rendering on duplicates.
-		sort.Slice(children, func(i, j int) bool {
-			pi, pj := children[i].GetPosition().GetValue(), children[j].GetPosition().GetValue()
-			if pi != pj {
-				return pi < pj
-			}
-			return children[i].GetNodeId() < children[j].GetNodeId()
-		})
-		// SPLIT with one live child renders as just that child
-		// (visual collapse). The live SPLIT node is preserved in
-		// state — clients that want the underlying register cleanup
-		// emit an in-place collapse batch.
-		if len(children) == 1 {
-			only := buildTree(state, children[0], roots, idx, seen)
-			only.NodeID = tree.NodeID
-			return only
-		}
-		for _, c := range children {
-			tree.Children = append(tree.Children, buildTree(state, c, roots, idx, seen))
-		}
-		// Pad/truncate ratios to N children, defaulting to 1/N.
-		tree.Ratios = normalizeRatios(tree.Ratios, len(tree.Children))
-	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		rows, cols := tree.Rows, tree.Cols
-		if rows == 0 || cols == 0 {
-			break
-		}
-		if uint32(len(tree.RowRatios)) != rows {
-			tree.RowRatios = normalizeRatios(tree.RowRatios, int(rows))
-		}
-		if uint32(len(tree.ColRatios)) != cols {
-			tree.ColRatios = normalizeRatios(tree.ColRatios, int(cols))
-		}
-		// Index children by their "r,c" position; lower node_id wins on duplicates.
-		grid := make(map[string]*leapmuxv1.NodeRecord)
-		for _, c := range children {
-			pos := c.GetPosition().GetValue()
-			existing, ok := grid[pos]
-			if !ok || c.GetNodeId() < existing.GetNodeId() {
-				grid[pos] = c
-			}
-		}
-		tree.Children = make([]*RenderTree, 0, int(rows)*int(cols))
-		for r := uint32(0); r < rows; r++ {
-			for col := uint32(0); col < cols; col++ {
-				key := fmt.Sprintf("%d,%d", r, col)
-				if entry, ok := grid[key]; ok {
-					tree.Children = append(tree.Children, buildTree(state, entry, roots, idx, seen))
-				} else {
-					tree.Children = append(tree.Children, &RenderTree{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF})
-				}
-			}
-		}
-	}
-	return tree
-}
-
-func normalizeRatios(ratios []float64, n int) []float64 {
-	if n <= 0 {
-		return nil
-	}
-	out := make([]float64, n)
-	for i := range out {
-		out[i] = 1.0 / float64(n)
-	}
-	for i := 0; i < n && i < len(ratios); i++ {
-		if ratios[i] >= 0 {
-			out[i] = ratios[i]
-		}
-	}
-	return out
-}
-
-// projectTabs splits the tab map into (owned, rendered). Shared by
-// Project (full projection) and ProjectOwnership (commit-path fast
-// path that only needs these two slices).
+// projectTabs splits the tab map into (owned, rendered). The per-tab rule
+// itself lives in projectTabRow, shared with projectOneTab's incremental
+// commit-path diffing.
 func projectTabs(state *leapmuxv1.UserCrdtState, roots rootSet) ([]*OwnedTab, []*RenderedTab) {
 	var owned []*OwnedTab
 	var rendered []*RenderedTab
@@ -407,26 +239,13 @@ func projectTabs(state *leapmuxv1.UserCrdtState, roots rootSet) ([]*OwnedTab, []
 		return wsID, leafLive
 	}
 	for _, t := range state.GetTabs() {
-		if !HLCIsZero(t.GetTombstoneAt()) {
+		row, renderedRow := projectTabRow(state, t, resolve)
+		if row == nil {
 			continue
-		}
-		tile := t.GetTileId().GetValue()
-		wsID, leafLive := resolve(tile)
-		if wsID == "" {
-			continue
-		}
-		row := &OwnedTab{
-			UserID:      state.GetUserId(),
-			WorkspaceID: wsID,
-			TabType:     t.GetTabType(),
-			TabID:       t.GetTabId(),
-			WorkerID:    t.GetWorkerId().GetValue(),
-			TileID:      tile,
-			Position:    t.GetPosition().GetValue(),
 		}
 		owned = append(owned, row)
-		if leafLive && tileIsLeaf(state, tile) {
-			rendered = append(rendered, row)
+		if renderedRow != nil {
+			rendered = append(rendered, renderedRow)
 		}
 	}
 	// Stable ordering for deterministic output.
@@ -450,12 +269,39 @@ func tileIsLeaf(state *leapmuxv1.UserCrdtState, tileID string) bool {
 // a handful of tab ids could have transitioned between commits.
 func projectOneTab(state *leapmuxv1.UserCrdtState, tabID string, roots rootSet) (*OwnedTab, *RenderedTab) {
 	t, ok := state.GetTabs()[tabID]
-	if !ok || !HLCIsZero(t.GetTombstoneAt()) {
+	if !ok {
+		return nil, nil
+	}
+	return projectTabRow(state, t, func(tile string) (string, bool) {
+		return resolveTileWorkspace(state, tile, roots)
+	})
+}
+
+// projectTabRow applies the per-tab projection rule to ONE record: drop it if
+// tombstoned or unowned, otherwise build its row and decide whether it also
+// renders. Returns (nil, nil) when the tab projects to nothing, and (row, row)
+// when it renders -- rendered is a strict subset of owned by construction, so
+// the two share one allocation.
+//
+// The full scan and the incremental commit-path diff both need EXACTLY these
+// rules, and used to spell them out separately -- the tombstone check, the
+// resolve, `ownershipHolds`, the seven-field literal, then `tileIsLeaf`. Two
+// hand-synced copies of the ownership rule is precisely where a Go/TS
+// projection disagreement hides, which is the bug class this file has already
+// been bitten by. `resolve` is the only genuine difference between the callers:
+// the full scan memoizes tile resolution across a whole tab map, the single-tab
+// path does not.
+func projectTabRow(
+	state *leapmuxv1.UserCrdtState,
+	t *leapmuxv1.TabRecord,
+	resolve func(tile string) (string, bool),
+) (*OwnedTab, *RenderedTab) {
+	if !HLCIsZero(t.GetTombstoneAt()) {
 		return nil, nil
 	}
 	tile := t.GetTileId().GetValue()
-	wsID, leafLive := resolveTileWorkspace(state, tile, roots)
-	if wsID == "" {
+	wsID, chainLive := resolve(tile)
+	if !ownershipHolds(state, wsID, chainLive) {
 		return nil, nil
 	}
 	row := &OwnedTab{
@@ -467,8 +313,38 @@ func projectOneTab(state *leapmuxv1.UserCrdtState, tabID string, roots rootSet) 
 		TileID:      tile,
 		Position:    t.GetPosition().GetValue(),
 	}
-	if leafLive && tileIsLeaf(state, tile) {
+	if tileIsLeaf(state, tile) {
 		return row, row
 	}
 	return row, nil
+}
+
+// ownershipHolds decides whether a tab whose tile resolved to `wsID` is the
+// user's tab at all. `rendered` then narrows `owned` by leaf-ness alone, which
+// makes rendered a strict subset by construction.
+//
+// Two conditions, both of which used to be applied unevenly:
+//
+//   - The CHAIN must be alive. The roots map is consulted before the tombstone
+//     check, so reaching a registered root short-circuits the walk even when
+//     that root node is tombstoned. Liveness therefore only gated rendering,
+//     and a tab on a tombstoned ROOT stayed owned while a tab on any other
+//     tombstoned tile dropped from both views. Same dead tile, two answers.
+//
+//   - The WORKSPACE must still exist. A floating window carries its own
+//     workspace_id and registers its root from the window record, so deleting
+//     the WorkspaceContentsRecord left the window's tabs resolving to a
+//     workspace that is no longer in the projection at all -- the client's
+//     render tree already drops such a window, so those tabs were reported as
+//     on-screen with nothing to draw them in.
+//
+// Checked here rather than in registeredRoots because that root map is shared
+// with batch validation (a parentless node is legal only if it is a registered
+// root) and with subscriber broadcast filtering; narrowing it would change both.
+func ownershipHolds(state *leapmuxv1.UserCrdtState, wsID string, chainLive bool) bool {
+	if wsID == "" || !chainLive {
+		return false
+	}
+	_, live := state.GetWorkspaces()[wsID]
+	return live
 }

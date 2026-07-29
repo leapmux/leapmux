@@ -7,8 +7,9 @@ import type { useTerminalOperations } from '~/components/shell/useTerminalOperat
 import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
@@ -25,7 +26,9 @@ import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
 import { tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
+  getActiveWorkspaceId: () => string | null
   layoutStore: ReturnType<typeof createLayoutStore>
   tabOps: ReturnType<typeof useTabOperations>
   agentOps: ReturnType<typeof useAgentOperations>
@@ -68,7 +71,9 @@ const SHOW_PREFERENCES_MENU_ID = 'show-preferences'
  */
 export function useShortcuts(props: UseShortcutsProps): void {
   const {
-    tabStore,
+    view,
+    selection,
+    getActiveWorkspaceId,
     layoutStore,
     tabOps,
     agentOps,
@@ -176,7 +181,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   function getVisibleTabs() {
     const focusedTile = layoutStore.focusedTileId()
-    return focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
+    return focusedTile ? view.forTile(focusedTile) : view.forWorkspace(getActiveWorkspaceId() ?? '')
   }
 
   for (let i = 1; i <= 9; i++) {
@@ -193,8 +198,8 @@ export function useShortcuts(props: UseShortcutsProps): void {
       return
     const focusedTile = layoutStore.focusedTileId()
     const activeKey = focusedTile
-      ? tabStore.getActiveTabKeyForTile(focusedTile)
-      : tabStore.state.activeTabKey
+      ? selection.activeKeyForTile(focusedTile)
+      : selection.activeKeyForWorkspace(getActiveWorkspaceId() ?? '')
     const idx = tabs.findIndex(t => tabKey(t) === activeKey)
     const target = tabs[(idx + direction + tabs.length) % tabs.length]
     if (target)

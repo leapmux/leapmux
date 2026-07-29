@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -45,8 +45,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load.
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -75,8 +74,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load.
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -97,8 +95,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for tree to load.
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
@@ -146,8 +143,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
@@ -174,8 +170,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
@@ -208,8 +203,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
@@ -243,8 +237,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
@@ -273,8 +266,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
@@ -294,8 +286,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
@@ -326,8 +317,7 @@ test.describe('Git File Status', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 

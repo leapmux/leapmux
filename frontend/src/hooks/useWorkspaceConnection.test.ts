@@ -1,5 +1,6 @@
 import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
-import type { AgentTab, TerminalTab } from '~/stores/tab.types'
+import type { TerminalStatusChange } from '~/generated/leapmux/v1/terminal_pb'
+import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
@@ -7,13 +8,18 @@ import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { applyAgentLifecycle, applyBackgroundAgentStatusChange, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { agentWatchEntry, applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, unsubscribeAllWatchEvents, wireSessionInfoToUpdates } from '~/hooks/useWorkspaceConnection'
+import { applyTerminalStatusChange } from '~/hooks/terminalEvents'
+import { collectWorkerOfflineTargets, reconcileLaggingTails } from '~/hooks/useWorkspaceConnection'
+import { agentWatchEntry, buildWatchTargetsKey, unsubscribeAllWatchEvents } from '~/hooks/watchTargets'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
-import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
+import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createTabStore } from '~/stores/tab.store'
+import { emitAddTab } from '~/stores/tabOps'
+import { installTestBridge } from '~/test-support/crdtBridge'
+import { createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -34,6 +40,52 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
  * comparisons (`!== 'live'`, `=== 'live'`) mirror the source instead of
  * being collapsed to a known literal by TS const-narrowing.
  */
+const WS = 'ws-test'
+
+let nextPosition = 0
+
+/**
+ * The tab stores these tests drive, over a real CRDT bridge.
+ *
+ * The hook reads tabs from the joined `view` and writes worker-sourced fields
+ * to `tabMetadata`, so a tab needs BOTH halves: a placement op (which is what
+ * puts it in the projection at all) and its metadata. `addAgent` writes both,
+ * which is the only reason this helper exists — everything these tests care
+ * about (agentStatus, title, git fields) lives on the metadata side.
+ */
+function makeTabStores(workspaceId = WS) {
+  const harness = installTestBridge({ workspaceId })
+  const stores = createTestTabStores(workspaceId)
+  return {
+    ...stores,
+    rootTileId: harness.rootTileId,
+    /** Place an agent and patch its metadata. Activates, as `addTab` used to. */
+    addAgent(id: string, meta: Record<string, unknown> = {}, opts: { tileId?: string, activate?: boolean } = {}) {
+      nextPosition += 1
+      emitAddTab({
+        type: TabType.AGENT,
+        id,
+        tileId: opts.tileId ?? harness.rootTileId,
+        position: `p${nextPosition}`,
+        workerId: (meta.workerId as string | undefined) ?? '',
+      })
+      if (Object.keys(meta).length > 0)
+        stores.metadata.patch(id, meta)
+      if (opts.activate !== false)
+        stores.selection.setActiveById(TabType.AGENT, id)
+    },
+    /** Same, for a TERMINAL tab. */
+    addTerminal(id: string, meta: Record<string, unknown> = {}) {
+      nextPosition += 1
+      emitAddTab({ type: TabType.TERMINAL, id, tileId: harness.rootTileId, position: `p${nextPosition}`, workerId: '' })
+      if (Object.keys(meta).length > 0)
+        stores.metadata.patch(id, meta)
+    },
+  }
+}
+
+type TabStores = ReturnType<typeof makeTabStores>
+
 function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
   return phase
 }
@@ -84,29 +136,22 @@ describe('watch target helpers', () => {
  * INACTIVE status should be corrected.
  */
 describe('controlRequest guard for inactive agents', () => {
-  function makeAgent(id: string, status: AgentStatus) {
-    return { id, status }
-  }
-  function asAgentTab(a: { id: string, status: AgentStatus }): AgentTab {
-    return { type: TabType.AGENT, id: a.id, agentStatus: a.status }
-  }
-
   function makeRequest(requestId: string, agentId: string) {
     return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' }, claimToken: `tok-${requestId}` }
   }
 
   it('should not add catch-up control request when agent is INACTIVE', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.INACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
 
       // Simulate the guard in useWorkspaceConnection's controlRequest handler:
       // if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE) break
       const catchUpPhase = simulatePhase('catchingUp')
-      // const agentEntry = tabStore.getAgentTab(cr.agentId)
-      const agentEntry = tabStore.getAgentTab('agent-1')
+      // const agentEntry = tabs.view.getAgentTab(cr.agentId)
+      const agentEntry = tabs.view.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
@@ -118,23 +163,23 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should revive stale INACTIVE state and add live control request', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.INACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
 
       const catchUpPhase = 'live'
       if (catchUpPhase === 'live') {
-        const current = tabStore.getAgentTab('agent-1')
+        const current = tabs.view.getAgentTab('agent-1')
         if (current?.agentStatus === AgentStatus.INACTIVE)
-          tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.ACTIVE })
+          tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.ACTIVE })
       }
-      const agentEntry = tabStore.getAgentTab('agent-1')
+      const agentEntry = tabs.view.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
-      expect(tabStore.getAgentTab('agent-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      expect(tabs.view.getAgentTab('agent-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
@@ -142,13 +187,13 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should add control request when agent is ACTIVE', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
 
       const catchUpPhase = simulatePhase('catchingUp')
-      const agentEntry = tabStore.getAgentTab('agent-1')
+      const agentEntry = tabs.view.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
@@ -160,16 +205,16 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should clear control requests when agent becomes INACTIVE', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
 
       // Simulate statusChange INACTIVE → controlStore.clearAgent()
-      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
+      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
       controlStore.clearAgent('agent-1')
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
@@ -179,17 +224,17 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should preserve pending control requests across short connection blips', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
 
       // Simulate worker-offline transition: agent goes INACTIVE but pending
       // control requests must survive transient transport blips.
-      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
+      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
@@ -198,10 +243,10 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should clear control requests on worker restart because agent processes stop', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
@@ -209,7 +254,7 @@ describe('controlRequest guard for inactive agents', () => {
       // Simulate the statusChange handler during catch-up replay after a
       // worker restart: the replayed INACTIVE statusChange triggers clearAgent
       // because the agent process no longer exists.
-      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
+      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
       controlStore.clearAgent('agent-1')
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
@@ -218,7 +263,7 @@ describe('controlRequest guard for inactive agents', () => {
       // by the controlRequest-case guard in useWorkspaceConnection: catch-up
       // replay + INACTIVE → break.
       const catchUpPhase = simulatePhase('catchingUp')
-      const agentEntry = tabStore.getAgentTab('agent-1')
+      const agentEntry = tabs.view.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
@@ -230,10 +275,10 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should preserve pending control requests across WatchEvents stream restarts', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
+      const tabs = makeTabStores()
       const controlStore = createControlStore()
 
-      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
@@ -251,99 +296,107 @@ describe('controlRequest guard for inactive agents', () => {
 })
 
 describe('background agent history trimming', () => {
-  function isAgentTabVisible(tabStore: ReturnType<typeof createTabStore>, agentId: string): boolean {
-    const key = `${TabType.AGENT}:${agentId}`
-    if (tabStore.state.activeTabKey === key)
-      return true
-    return Object.values(tabStore.state.tileActiveTabKeys).includes(key)
+  /**
+   * Driven through the real `handleAgentMessage`, deliberately.
+   *
+   * These used to re-implement the visibility predicate in the test and assert
+   * against that reimplementation, so the production guard was never executed:
+   * when it regressed from an identity check to a bare truthiness check on
+   * `activeKeyForTile` -- which heals on read and is therefore truthy for any
+   * tile holding any tab -- `trimOldestEnd` became unreachable and every suite
+   * stayed green while background chat history grew without bound.
+   */
+  function makeTrimStores() {
+    const tabs = makeTabStores()
+    return {
+      stores: {
+        controlStore: createControlStore(),
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        getActiveWorkspaceId: () => WS,
+      },
+      tabs,
+    }
   }
 
   function makeUserMessage(id: string, seq: bigint) {
     return {
       id,
       source: MessageSource.USER,
-      content: new TextEncoder().encode('{"content":"test"}'),
+      content: new TextEncoder().encode(JSON.stringify({ type: 'user', content: 'test' })),
+      contentCompression: ContentCompression.NONE,
       seq,
+      agentProvider: AgentProvider.CLAUDE_CODE,
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
-  it('trims non-active agent history when new messages arrive', () => {
+  /**
+   * Fill `agentId` to exactly the cap, then deliver ONE more through the real
+   * handler -- which both persists it and decides whether to trim.
+   */
+  function overflowThroughHandler(
+    stores: ReturnType<typeof makeTrimStores>['stores'],
+    agentId: string,
+    cap: number,
+  ) {
+    stores.chatStore.setMessages(agentId, Array.from({ length: cap }, (_, i) =>
+      makeUserMessage(`m${i + 1}`, BigInt(i + 1))))
+    handleAgentMessage(agentId, makeUserMessage(`m${cap + 1}`, BigInt(cap + 1)) as never, stores as never, undefined, 'live')
+  }
+
+  it('trims an agent the user is not looking at', () => {
     createRoot((dispose) => {
-      const chatStore = createChatStore()
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'active-agent', tileId: 'tile-1' })
+      const { stores, tabs } = makeTrimStores()
+      tabs.addAgent('active-agent')
+      tabs.addAgent('background-agent', {}, { activate: false })
+      // The user is on `active-agent`; both share the root tile.
+      tabs.selection.setActiveById(TabType.AGENT, 'active-agent')
 
-      const initial = Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, i) =>
-        makeUserMessage(`m${i + 1}`, BigInt(i + 1)))
-      chatStore.setMessages('background-agent', initial)
+      overflowThroughHandler(stores, 'background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
 
-      chatStore.addMessage('background-agent', makeUserMessage(`m${MAX_BACKGROUND_CHAT_MESSAGES + 1}`, BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1)))
-      if (
-        !isAgentTabVisible(tabStore, 'background-agent')
-        && chatStore.getMessages('background-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
-      ) {
-        chatStore.trimOldestEnd('background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
-      }
-
-      const messages = chatStore.getMessages('background-agent')
-      expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES)
+      const messages = stores.chatStore.getMessages('background-agent')
+      expect(messages, 'the cap must actually bound the backlog').toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES)
       expect(messages[0].seq).toBe(2n)
       expect(messages.at(-1)?.seq).toBe(BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1))
-      expect(chatStore.hasOlderMessages('background-agent')).toBe(true)
+      expect(stores.chatStore.hasOlderMessages('background-agent')).toBe(true)
       dispose()
     })
   })
 
-  it('does not trim the active agent in the event-handler path', () => {
+  it('does not trim the agent that is active on its own tile', () => {
     createRoot((dispose) => {
-      const chatStore = createChatStore()
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'active-agent', tileId: 'tile-1' })
+      const { stores, tabs } = makeTrimStores()
+      tabs.addAgent('active-agent')
+      tabs.selection.setActiveById(TabType.AGENT, 'active-agent')
 
-      const initial = Array.from({ length: MAX_LOADED_CHAT_MESSAGES }, (_, i) =>
-        makeUserMessage(`m${i + 1}`, BigInt(i + 1)))
-      chatStore.setMessages('active-agent', initial)
+      overflowThroughHandler(stores, 'active-agent', MAX_BACKGROUND_CHAT_MESSAGES)
 
-      chatStore.addMessage('active-agent', makeUserMessage('m151', 151n))
-      if (
-        !isAgentTabVisible(tabStore, 'active-agent')
-        && chatStore.getMessages('active-agent').length > MAX_LOADED_CHAT_MESSAGES
-      ) {
-        chatStore.trimOldestEnd('active-agent', MAX_LOADED_CHAT_MESSAGES)
-      }
-
-      const messages = chatStore.getMessages('active-agent')
-      expect(messages).toHaveLength(MAX_LOADED_CHAT_MESSAGES + 1)
-      expect(messages[0].seq).toBe(1n)
-      expect(messages.at(-1)?.seq).toBe(151n)
-      dispose()
-    })
-  })
-
-  it('does not trim an agent tab that is active in its tile even when not globally active', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'active-agent', tileId: 'tile-1' })
-      tabStore.addTab({ type: TabType.AGENT, id: 'visible-agent', tileId: 'tile-2' }, { activate: false })
-      tabStore.setActiveTabForTile('tile-2', TabType.AGENT, 'visible-agent')
-
-      const initial = Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, i) =>
-        makeUserMessage(`m${i + 1}`, BigInt(i + 1)))
-      chatStore.setMessages('visible-agent', initial)
-
-      chatStore.addMessage('visible-agent', makeUserMessage(`m${MAX_BACKGROUND_CHAT_MESSAGES + 1}`, BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1)))
-      if (
-        !isAgentTabVisible(tabStore, 'visible-agent')
-        && chatStore.getMessages('visible-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
-      ) {
-        chatStore.trimOldestEnd('visible-agent', MAX_BACKGROUND_CHAT_MESSAGES)
-      }
-
-      const messages = chatStore.getMessages('visible-agent')
+      const messages = stores.chatStore.getMessages('active-agent')
       expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 1)
       expect(messages[0].seq).toBe(1n)
-      expect(messages.at(-1)?.seq).toBe(BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1))
+      dispose()
+    })
+  })
+
+  it('does not trim a tab that is tile-active while another tab is workspace-active', () => {
+    createRoot((dispose) => {
+      const { stores, tabs } = makeTrimStores()
+      // A real second leaf: the point is a tab that is active on ITS tile while
+      // not being the workspace's active tab, so the two must differ.
+      const secondTile = tabs.layoutStore.splitTile(tabs.rootTileId, 'horizontal')!
+      tabs.addAgent('active-agent')
+      tabs.addAgent('visible-agent', {}, { tileId: secondTile, activate: false })
+      tabs.selection.setActiveById(TabType.AGENT, 'visible-agent')
+      tabs.selection.setActiveById(TabType.AGENT, 'active-agent')
+
+      overflowThroughHandler(stores, 'visible-agent', MAX_BACKGROUND_CHAT_MESSAGES)
+
+      const messages = stores.chatStore.getMessages('visible-agent')
+      expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 1)
+      expect(messages[0].seq).toBe(1n)
       dispose()
     })
   })
@@ -352,14 +405,14 @@ describe('background agent history trimming', () => {
 describe('agent tab notification keys', () => {
   it('does not notify the active agent tab when key formats match store keys', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', tileId: 'tile-1' })
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-1')
 
-      if (tabStore.state.activeTabKey !== `${TabType.AGENT}:agent-1`) {
-        tabStore.setNotification(TabType.AGENT, 'agent-1', true)
+      if (tabs.selection.activeKeyForWorkspace(WS) !== `${TabType.AGENT}:agent-1`) {
+        tabs.metadata.patch('agent-1', { hasNotification: true })
       }
 
-      expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+      expect(tabs.view.getAgentTab('agent-A')?.hasNotification).not.toBe(true)
       dispose()
     })
   })
@@ -369,28 +422,28 @@ describe('agent tab notification keys', () => {
   // so the user knows to switch over. The active tab must NOT be badged
   // (the prompt is already on screen).
   function applyControlRequestNotification(
-    tabStore: ReturnType<typeof createTabStore>,
+    tabs: TabStores,
     agentId: string,
     catchUpPhase: 'catchingUp' | 'live',
   ) {
     if (catchUpPhase !== 'live')
       return
-    if (tabStore.state.activeTabKey !== `${TabType.AGENT}:${agentId}`) {
-      tabStore.setNotification(TabType.AGENT, agentId, true)
+    if (tabs.selection.activeKeyForWorkspace(WS) !== `${TabType.AGENT}:${agentId}`) {
+      tabs.metadata.patch(agentId, { hasNotification: true })
     }
   }
 
   it('badges a background tab when a live control request arrives', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-B', tileId: 'tile-1' }, { activate: false })
-      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-A')
+      tabs.addAgent('agent-B', {}, { activate: false })
+      tabs.selection.setActiveById(TabType.AGENT, 'agent-A')
 
-      applyControlRequestNotification(tabStore, 'agent-B', 'live')
+      applyControlRequestNotification(tabs, 'agent-B', 'live')
 
-      const tabB = tabStore.state.tabs.find(t => t.id === 'agent-B')
-      const tabA = tabStore.state.tabs.find(t => t.id === 'agent-A')
+      const tabB = tabs.view.getAgentTab('agent-B')
+      const tabA = tabs.view.getAgentTab('agent-A')
       expect(tabB?.hasNotification).toBe(true)
       expect(tabA?.hasNotification).not.toBe(true)
       dispose()
@@ -399,13 +452,13 @@ describe('agent tab notification keys', () => {
 
   it('does not badge the focused tab when its own control request arrives', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
-      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-A')
+      tabs.selection.setActiveById(TabType.AGENT, 'agent-A')
 
-      applyControlRequestNotification(tabStore, 'agent-A', 'live')
+      applyControlRequestNotification(tabs, 'agent-A', 'live')
 
-      expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+      expect(tabs.view.getAgentTab('agent-A')?.hasNotification).not.toBe(true)
       dispose()
     })
   })
@@ -415,14 +468,14 @@ describe('agent tab notification keys', () => {
   // they were already aware of. Only 'live' arrivals should badge.
   it('does not badge during catch-up replay', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-B', tileId: 'tile-1' }, { activate: false })
-      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-A')
+      tabs.addAgent('agent-B', {}, { activate: false })
+      tabs.selection.setActiveById(TabType.AGENT, 'agent-A')
 
-      applyControlRequestNotification(tabStore, 'agent-B', 'catchingUp')
+      applyControlRequestNotification(tabs, 'agent-B', 'catchingUp')
 
-      const tabB = tabStore.state.tabs.find(t => t.id === 'agent-B')
+      const tabB = tabs.view.getAgentTab('agent-B')
       expect(tabB?.hasNotification).not.toBe(true)
       dispose()
     })
@@ -575,7 +628,8 @@ describe('applyNotificationMetadata usage folding', () => {
   // via extractContextUsage delegating the raw per-provider shape to Provider.contextUsageFromMessage
   // while the shared wrapper owns the neutral guards (subagent skip, prefer-normalized, cost).
   function stores() {
-    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), tabStore: createTabStore() }
+    const { view, metadata, selection } = makeTabStores()
+    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), view, metadata, selection, getActiveWorkspaceId: () => WS }
   }
   function msgOf(content: unknown, agentProvider: AgentProvider) {
     return {
@@ -771,11 +825,11 @@ describe('streaming text preservation', () => {
  */
 describe('startupMessage handling in agent statusChange', () => {
   function applyStatusChange(
-    tabStore: ReturnType<typeof createTabStore>,
+    tabs: TabStores,
     sc: { agentId: string, status: AgentStatus, startupMessage?: string },
   ) {
     const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-    tabStore.updateTab(TabType.AGENT, sc.agentId, {
+    tabs.metadata.patch(sc.agentId, {
       ...(hasStatus ? { agentStatus: sc.status } : {}),
       ...(sc.status === AgentStatus.STARTING
         ? { startupMessage: sc.startupMessage ?? '' }
@@ -785,73 +839,58 @@ describe('startupMessage handling in agent statusChange', () => {
 
   it('stores startupMessage while STARTING so the startup panel can render the phase label', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', agentStatus: AgentStatus.STARTING })
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.STARTING })
 
-      applyStatusChange(tabStore, {
+      applyStatusChange(tabs, {
         agentId: 'agent-1',
         status: AgentStatus.STARTING,
         startupMessage: 'Checking Git status…',
       })
-      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
+      expect(tabs.view.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
 
-      applyStatusChange(tabStore, {
+      applyStatusChange(tabs, {
         agentId: 'agent-1',
         status: AgentStatus.STARTING,
         startupMessage: 'Starting Claude Code…',
       })
-      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Starting Claude Code…')
+      expect(tabs.view.getAgentTab('agent-1')?.startupMessage).toBe('Starting Claude Code…')
       dispose()
     })
   })
 
   it('clears startupMessage on ACTIVE so the label does not linger after startup succeeds', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({
-        type: TabType.AGENT,
-        id: 'agent-1',
-        agentStatus: AgentStatus.STARTING,
-        startupMessage: 'Starting Claude Code…',
-      })
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.STARTING, startupMessage: 'Starting Claude Code…' })
 
-      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      applyStatusChange(tabs, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
 
-      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('')
+      expect(tabs.view.getAgentTab('agent-1')?.startupMessage).toBe('')
       dispose()
     })
   })
 
   it('clears startupMessage on STARTUP_FAILED so the error banner replaces the phase label', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({
-        type: TabType.AGENT,
-        id: 'agent-1',
-        agentStatus: AgentStatus.STARTING,
-        startupMessage: 'Checking Git status…',
-      })
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.STARTING, startupMessage: 'Checking Git status…' })
 
-      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
+      applyStatusChange(tabs, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
 
-      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('')
+      expect(tabs.view.getAgentTab('agent-1')?.startupMessage).toBe('')
       dispose()
     })
   })
 
   it('leaves startupMessage alone on status-less events (UNSPECIFIED) so catchUp sentinels do not wipe live phases', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({
-        type: TabType.AGENT,
-        id: 'agent-1',
-        agentStatus: AgentStatus.STARTING,
-        startupMessage: 'Checking Git status…',
-      })
+      const tabs = makeTabStores()
+      tabs.addAgent('agent-1', { agentStatus: AgentStatus.STARTING, startupMessage: 'Checking Git status…' })
 
-      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
+      applyStatusChange(tabs, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
 
-      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
+      expect(tabs.view.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
       dispose()
     })
   })
@@ -934,14 +973,14 @@ describe('resolveSettingsTabFields', () => {
   it('reuses the prior optionValues reference when a re-broadcast changes no current value', () => {
     // prev has no optionGroups, so the stable-group-ref step is skipped; only the
     // optionValues shallow-equal ref-reuse runs.
-    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', optionValues: { model: 'opus' } }
+    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', optionValues: { model: 'opus' } }
     const fields = resolveSettingsTabFields(prev, [group('model', 'opus')], new Set())
     // Same content -> same reference, so reactive readers of optionValues don't wake.
     expect(fields.optionValues).toBe(prev.optionValues)
   })
 
   it('keeps the optimistic value for a pending axis while applying the server value elsewhere', () => {
-    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', optionValues: { model: 'opus', permissionMode: 'default' } }
+    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', optionValues: { model: 'opus', permissionMode: 'default' } }
     const fields = resolveSettingsTabFields(
       prev,
       [group('model', 'sonnet'), group('permissionMode', 'plan')],
@@ -1038,13 +1077,78 @@ describe('drainPendingOutboundOnStart', () => {
   })
 })
 
+/**
+ * The statusChange arm for an agent the user is NOT looking at.
+ *
+ * The sidebar renders every workspace, so a background row must be as correct
+ * as a foreground one. This arm used to hand-roll a subset of the foreground
+ * patch, which is how the pending-message drain and four metadata fields fell
+ * out of it. The drain is the one with a permanent consequence: it fires on the
+ * single STARTING -> ACTIVE/STARTUP_FAILED edge, and that edge is never
+ * replayed, so a message composed against a starting agent in a background
+ * workspace was stranded at "Queued" for the life of the page.
+ */
+describe('applyBackgroundAgentStatusChange', () => {
+  function backgroundStores() {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    const chatStore = createChatStore()
+    emitAddTab({ type: TabType.AGENT, id: 'bg-1', tileId: harness.rootTileId, position: 'a', workerId: 'w1' })
+    stores.metadata.patch('bg-1', { agentStatus: AgentStatus.STARTING })
+    return { ...stores, chatStore }
+  }
+
+  it('drains a message queued against a starting agent', () => {
+    createRoot((dispose) => {
+      const { view, metadata, chatStore } = backgroundStores()
+      chatStore.pendingOutbound.enqueue('bg-1', { localId: 'l1', content: 'hi', attachments: [] })
+
+      applyBackgroundAgentStatusChange(
+        { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
+        { chatStore, view, metadata },
+        createLoadingSignal(),
+      )
+
+      expect(chatStore.pendingOutbound.take('bg-1'), 'the queue must not outlive the transition').toHaveLength(0)
+      expect(chatStore.messageErrors().l1, 'and the user has to be told why').toBe('Agent failed to start')
+      dispose()
+    })
+  })
+
+  it('writes the startup fields the foreground path writes', () => {
+    createRoot((dispose) => {
+      const { view, metadata, chatStore } = backgroundStores()
+
+      applyBackgroundAgentStatusChange(
+        { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
+        { chatStore, view, metadata },
+        createLoadingSignal(),
+      )
+
+      const tab = view.getAgentTab('bg-1')
+      expect(tab?.agentStatus).toBe(AgentStatus.STARTUP_FAILED)
+      expect(tab?.startupError, 'a hand-rolled subset dropped this').toBe('boom')
+      dispose()
+    })
+  })
+})
+
 describe('handleAgentInactive', () => {
   function makeStores() {
-    const tabStore = createTabStore()
-    tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', agentStatus: AgentStatus.INACTIVE } as unknown as Parameters<typeof tabStore.addTab>[0])
+    const tabs = makeTabStores()
+    tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
     const controlStore = createControlStore()
     controlStore.addRequest('agent-1', { requestId: 'r1', agentId: 'agent-1', payload: {}, claimToken: 'tok-r1' })
-    return { controlStore, agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), tabStore }
+    return {
+      controlStore,
+      agentSessionStore: createAgentSessionStore(),
+      chatStore: createChatStore(),
+      view: tabs.view,
+      metadata: tabs.metadata,
+      selection: tabs.selection,
+      getActiveWorkspaceId: () => WS,
+      tabs,
+    }
   }
 
   it('clears control requests and signals turn-end while LIVE', () => {
@@ -1108,32 +1212,32 @@ describe('startupMessage handling in terminal statusChange', () => {
   // same-status STARTING update with a fresh message, patch just the
   // label so a later phase broadcast refreshes the overlay text.
   function applyStarting(
-    tabStore: ReturnType<typeof createTabStore>,
+    tabs: TabStores,
     terminalId: string,
     msg: string | undefined,
   ) {
-    const existing = tabStore.state.tabs.find(
+    const existing = tabs.view.all().find(
       (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
     )
     if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
-      tabStore.updateTab(TabType.TERMINAL, terminalId, {
-        status: TerminalStatus.STARTING,
+      tabs.metadata.patch(terminalId, {
+        terminalStatus: TerminalStatus.STARTING,
         startupMessage: msg || undefined,
       })
     }
     else if (existing?.status === TerminalStatus.STARTING && msg && msg !== existing.startupMessage) {
-      tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: msg })
+      tabs.metadata.patch(terminalId, { startupMessage: msg })
     }
   }
 
   it('stores startupMessage on the initial STARTING event so the overlay renders the backend phase label', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1' })
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1')
 
-      applyStarting(tabStore, 'term-1', 'Starting zsh…')
+      applyStarting(tabs, 'term-1', 'Starting zsh…')
 
-      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabs.view.getTerminalTab('term-1')
       expect(tab?.status).toBe(TerminalStatus.STARTING)
       expect(tab?.startupMessage).toBe('Starting zsh…')
       dispose()
@@ -1142,12 +1246,12 @@ describe('startupMessage handling in terminal statusChange', () => {
 
   it('updates startupMessage on a same-status STARTING event so later phase broadcasts refresh the overlay label', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
 
-      applyStarting(tabStore, 'term-1', 'Starting fish…')
+      applyStarting(tabs, 'term-1', 'Starting fish…')
 
-      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabs.view.getTerminalTab('term-1')
       expect(tab?.startupMessage).toBe('Starting fish…')
       dispose()
     })
@@ -1159,12 +1263,12 @@ describe('startupMessage handling in terminal statusChange', () => {
   // and then transitions to STARTUP_FAILED. Both should be applied.
   it('applies the "Creating worktree" phase-0 label to the tab', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
 
-      applyStarting(tabStore, 'term-1', 'Creating worktree "feature/x"…')
+      applyStarting(tabs, 'term-1', 'Creating worktree "feature/x"…')
 
-      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabs.view.getTerminalTab('term-1')
       expect(tab?.startupMessage).toBe('Creating worktree "feature/x"…')
       dispose()
     })
@@ -1172,12 +1276,12 @@ describe('startupMessage handling in terminal statusChange', () => {
 
   it('applies a following "Rolling back worktree" label on same-status STARTING', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Creating worktree "feature/x"…' })
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Creating worktree "feature/x"…' })
 
-      applyStarting(tabStore, 'term-1', 'Rolling back worktree "feature/x"…')
+      applyStarting(tabs, 'term-1', 'Rolling back worktree "feature/x"…')
 
-      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabs.view.getTerminalTab('term-1')
       expect(tab?.startupMessage).toBe('Rolling back worktree "feature/x"…')
       dispose()
     })
@@ -1187,12 +1291,12 @@ describe('startupMessage handling in terminal statusChange', () => {
   // on any STARTING event that carries non-empty git_branch / git_origin_url,
   // update the tab so the sidebar badge matches the new worktree immediately.
   function applyGitFromStatusChange(
-    tabStore: ReturnType<typeof createTabStore>,
+    tabs: TabStores,
     terminalId: string,
     gitBranch: string,
     gitOriginUrl: string,
   ) {
-    const existing = tabStore.state.tabs.find(
+    const existing = tabs.view.all().find(
       (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
     )
     if (!existing)
@@ -1200,20 +1304,92 @@ describe('startupMessage handling in terminal statusChange', () => {
     const nextBranch = gitBranch || undefined
     const nextOrigin = gitOriginUrl || undefined
     if (existing.gitBranch !== nextBranch || existing.gitOriginUrl !== nextOrigin) {
-      tabStore.updateTab(TabType.TERMINAL, terminalId, { gitBranch: nextBranch, gitOriginUrl: nextOrigin })
+      tabs.metadata.patch(terminalId, { gitBranch: nextBranch, gitOriginUrl: nextOrigin })
     }
   }
 
   it('updates gitBranch/gitOriginUrl from a terminal statusChange event', () => {
     createRoot((dispose) => {
-      const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING })
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
 
-      applyGitFromStatusChange(tabStore, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
+      applyGitFromStatusChange(tabs, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
 
-      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabs.view.getTerminalTab('term-1')
       expect(tab?.gitBranch).toBe('feature/x')
       expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
+      dispose()
+    })
+  })
+})
+
+/**
+ * The REAL transition, not a mirror of it. The two blocks above re-implement
+ * `handleTerminalEvent`'s branches in the test file, so they cannot catch a
+ * branch that never runs — which is exactly what happened: the arm for a
+ * terminal outside the active workspace patched git fields ONLY, so a
+ * STARTING -> READY / STARTUP_FAILED transition never reached the sidebar and
+ * the row kept its startup spinner until the user switched into that
+ * workspace. Both arms now route through `applyTerminalStatusChange`.
+ */
+describe('applyTerminalStatusChange', () => {
+  function statusChange(fields: Partial<TerminalStatusChange>): TerminalStatusChange {
+    return { status: TerminalStatus.READY, gitBranch: '', gitOriginUrl: '', gitToplevel: '', gitIsWorktree: false, startupError: '', startupMessage: '', ...fields } as TerminalStatusChange
+  }
+
+  it('clears a starting terminal to READY', () => {
+    createRoot((dispose) => {
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+      applyTerminalStatusChange(
+        tabs.metadata,
+        tabs.view.getTerminalTab('term-1'),
+        'term-1',
+        statusChange({ status: TerminalStatus.READY }),
+      )
+
+      const tab = tabs.view.getTerminalTab('term-1')
+      expect(tab?.status).toBe(TerminalStatus.READY)
+      expect(tab?.startupMessage, 'the spinner label must go with it').toBe('')
+      dispose()
+    })
+  })
+
+  it('records STARTUP_FAILED with its error', () => {
+    createRoot((dispose) => {
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
+
+      applyTerminalStatusChange(
+        tabs.metadata,
+        tabs.view.getTerminalTab('term-1'),
+        'term-1',
+        statusChange({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
+      )
+
+      const tab = tabs.view.getTerminalTab('term-1')
+      expect(tab?.status).toBe(TerminalStatus.STARTUP_FAILED)
+      expect(tab?.startupError).toBe('no such shell')
+      dispose()
+    })
+  })
+
+  // A previously-alive terminal whose worker reconnected must not be dragged
+  // back to READY — the sweep marked it DISCONNECTED for a reason.
+  it('leaves a DISCONNECTED terminal alone on a READY event', () => {
+    createRoot((dispose) => {
+      const tabs = makeTabStores()
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.DISCONNECTED })
+
+      applyTerminalStatusChange(
+        tabs.metadata,
+        tabs.view.getTerminalTab('term-1'),
+        'term-1',
+        statusChange({ status: TerminalStatus.READY }),
+      )
+
+      expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.DISCONNECTED)
       dispose()
     })
   })
@@ -1363,10 +1539,14 @@ describe('agentMessage sub-handlers', () => {
 
   it('handleResultDivider fires onTurnEnd only in the live phase, not during catch-up replay', () => {
     createRoot((dispose) => {
+      const tabs = makeTabStores()
       const stores = {
         agentSessionStore: createAgentSessionStore(),
         chatStore: createChatStore(),
-        tabStore: createTabStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        getActiveWorkspaceId: () => WS,
       }
       const turnEnds: string[] = []
       const onTurnEnd = (id: string) => turnEnds.push(id)
@@ -1431,10 +1611,14 @@ describe('agentMessage sub-handlers', () => {
 
   it('handleAgentMessage does not clear a completed span stream when the row is dropped beyond the window', () => {
     createRoot((dispose) => {
+      const tabs = makeTabStores()
       const stores = {
         agentSessionStore: createAgentSessionStore(),
         chatStore: createChatStore(),
-        tabStore: createTabStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        getActiveWorkspaceId: () => WS,
       }
       stores.chatStore.setMessages('a1', Array.from({ length: 50 }, (_, i) => ({
         ...agentMessage({ type: 'assistant' }),
@@ -1611,12 +1795,19 @@ describe('reconcileLaggingTails', () => {
 // exercise the real production handlers (not a re-implementation) against live stores.
 describe('extracted handleAgentEvent arm handlers', () => {
   const enc = (s: string) => new TextEncoder().encode(s)
-  const argStores = () => ({
-    agentSessionStore: createAgentSessionStore(),
-    chatStore: createChatStore(),
-    tabStore: createTabStore(),
-    controlStore: createControlStore(),
-  })
+  const argStores = () => {
+    const tabs = makeTabStores()
+    return {
+      agentSessionStore: createAgentSessionStore(),
+      chatStore: createChatStore(),
+      view: tabs.view,
+      metadata: tabs.metadata,
+      selection: tabs.selection,
+      getActiveWorkspaceId: () => WS,
+      controlStore: createControlStore(),
+      tabs,
+    }
+  }
 
   describe('handleStreamChunk', () => {
     it('accumulates free-form streaming text when there is no spanId', () => {
@@ -1674,14 +1865,14 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('clears the free-form streaming text and badges a backgrounded tab', () => {
       createRoot((dispose) => {
         const chatStore = createChatStore()
-        const tabStore = createTabStore()
-        tabStore.addTab({ type: TabType.AGENT, id: 'a1' } as AgentTab)
-        tabStore.addTab({ type: TabType.AGENT, id: 'a2' } as AgentTab)
-        tabStore.setActiveTab(TabType.AGENT, 'a2') // a1 is backgrounded
+        const tabs = makeTabStores()
+        tabs.addAgent('a1')
+        tabs.addAgent('a2')
+        tabs.selection.setActiveById(TabType.AGENT, 'a2') // a1 is backgrounded
         chatStore.streamingText.set('a1', 'partial')
-        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, tabStore })
+        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, view: tabs.view, metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS })
         expect(chatStore.streamingText.get('a1')).toBe('')
-        expect(tabStore.getAgentTab('a1')?.hasNotification).toBe(true)
+        expect(tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
         dispose()
       })
     })
@@ -1689,11 +1880,11 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('does not badge the tab when the agent IS the active tab', () => {
       createRoot((dispose) => {
         const chatStore = createChatStore()
-        const tabStore = createTabStore()
-        tabStore.addTab({ type: TabType.AGENT, id: 'a1' } as AgentTab)
-        tabStore.setActiveTab(TabType.AGENT, 'a1')
-        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, tabStore })
-        expect(tabStore.getAgentTab('a1')?.hasNotification).toBeFalsy()
+        const tabs = makeTabStores()
+        tabs.addAgent('a1')
+        tabs.selection.setActiveById(TabType.AGENT, 'a1')
+        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, view: tabs.view, metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS })
+        expect(tabs.view.getAgentTab('a1')?.hasNotification).toBeFalsy()
         dispose()
       })
     })
@@ -1706,7 +1897,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('skips a replayed (catch-up) request for an already-INACTIVE agent', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.INACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.INACTIVE })
         handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, undefined)
         expect(s.controlStore.getRequests('a1')).toHaveLength(0)
         dispose()
@@ -1716,13 +1907,13 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('adds a live request, badges a backgrounded tab, and ends the turn', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a2' } as AgentTab)
-        s.tabStore.setActiveTab(TabType.AGENT, 'a2')
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        s.tabs.addAgent('a2')
+        s.tabs.selection.setActiveById(TabType.AGENT, 'a2')
         let ended = ''
         handleControlRequest('a1', req('a1'), 'live', s, id => void (ended = id))
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
-        expect(s.tabStore.getAgentTab('a1')?.hasNotification).toBe(true)
+        expect(s.tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
         expect(ended).toBe('a1')
         dispose()
       })
@@ -1731,7 +1922,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('adds a catch-up request for an ACTIVE agent but does NOT run the live-only turn-end', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         let ended = ''
         handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, id => void (ended = id))
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
@@ -1743,7 +1934,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('ignores a malformed JSON payload instead of throwing out of the stream handler', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         const malformed = { requestId: 'r1', agentId: 'a1', payload: enc('{not json') } as unknown as AgentControlRequest
         expect(() => handleControlRequest('a1', malformed, 'live', s, undefined)).not.toThrow()
         expect(s.controlStore.getRequests('a1')).toHaveLength(0)
@@ -1754,7 +1945,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('threads the wire claim_token into the stored request so the answer can echo it back', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         const withToken = {
           requestId: 'r1',
           agentId: 'a1',
@@ -1774,11 +1965,11 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('applies a status update and reports worker-online on a full snapshot', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.STARTING } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.STARTING })
         let online: boolean | undefined
         const sc = { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
-        expect(s.tabStore.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+        expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
         expect(online).toBe(true)
         dispose()
       })
@@ -1787,11 +1978,11 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('skips a payload-less sentinel without touching the tab or reporting worker-online', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         let online: boolean | undefined
         const sc = { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: false, optionGroups: [] } as unknown as AgentStatusChange
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
-        expect(s.tabStore.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE) // unchanged
+        expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE) // unchanged
         expect(online).toBeUndefined() // setWorkerOnline only on a full status snapshot
         dispose()
       })
@@ -1800,7 +1991,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('clears pending control requests when the agent goes INACTIVE', () => {
       createRoot((dispose) => {
         const s = argStores()
-        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         s.controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { method: 'x' }, claimToken: 'tok-r1' })
         const sc = { agentId: 'a1', status: AgentStatus.INACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), () => {}, undefined)
@@ -1955,5 +2146,70 @@ describe('retiring watch subscriptions', () => {
 
     expect(watchEventsViaChannel).toHaveBeenCalledWith('worker-1', { agents: [], terminals: [] })
     expect(close).toHaveBeenCalledOnce()
+  })
+})
+
+/**
+ * The worker-offline sweep walks `view.all()` -- every tab in the ACCOUNT, not
+ * one workspace. Both arms must therefore filter on `workerId`: a tab hosted by
+ * any other worker still has its transport, and clearing an agent's
+ * `streamingText` throws away deltas that are never resent while flipping it
+ * INACTIVE hides a thinking indicator for a turn that is still running.
+ *
+ * The agent arm was missing that filter. Before every workspace became live it
+ * was a one-workspace bug; the widening made it account-wide.
+ */
+describe('collectWorkerOfflineTargets', () => {
+  const tab = (over: Partial<Tab>): Tab => ({
+    type: TabType.AGENT,
+    id: 'a1',
+    workspaceId: 'ws-1',
+    workerId: 'w1',
+    ...over,
+  } as Tab)
+
+  it('leaves agents on OTHER workers alone', () => {
+    const { agents } = collectWorkerOfflineTargets([
+      tab({ id: 'mine', workerId: 'w1' }),
+      tab({ id: 'other-worker', workerId: 'w2' }),
+      tab({ id: 'other-ws', workspaceId: 'ws-2', workerId: 'w2' }),
+    ], 'w1')
+
+    expect(agents.map(a => a.id), 'only the offline worker loses its stream').toEqual(['mine'])
+  })
+
+  it('leaves terminals on OTHER workers alone', () => {
+    const { terminals } = collectWorkerOfflineTargets([
+      tab({ type: TabType.TERMINAL, id: 'mine', workerId: 'w1', status: TerminalStatus.READY }),
+      tab({ type: TabType.TERMINAL, id: 'theirs', workerId: 'w2', status: TerminalStatus.READY }),
+    ], 'w1')
+
+    expect([...terminals]).toEqual(['mine'])
+  })
+
+  it('only marks READY terminals', () => {
+    const { terminals } = collectWorkerOfflineTargets([
+      tab({ type: TabType.TERMINAL, id: 'ready', status: TerminalStatus.READY }),
+      tab({ type: TabType.TERMINAL, id: 'already-gone', status: TerminalStatus.DISCONNECTED }),
+      tab({ type: TabType.TERMINAL, id: 'exited', status: TerminalStatus.EXITED }),
+    ], 'w1')
+
+    expect([...terminals], 'a terminal already down has nothing to lose').toEqual(['ready'])
+  })
+
+  it('ignores tabs with no worker at all', () => {
+    const { terminals, agents } = collectWorkerOfflineTargets([
+      tab({ id: 'unhosted', workerId: undefined }),
+      tab({ type: TabType.FILE, id: 'file', workerId: 'w1' }),
+    ], 'w1')
+
+    expect(agents).toEqual([])
+    expect(terminals.size, 'a FILE tab is neither arm').toBe(0)
+  })
+
+  it('returns nothing for a worker that hosts none of these tabs', () => {
+    const { terminals, agents } = collectWorkerOfflineTargets([tab({ workerId: 'w1' })], 'w-unknown')
+    expect(agents).toEqual([])
+    expect(terminals.size).toBe(0)
   })
 })

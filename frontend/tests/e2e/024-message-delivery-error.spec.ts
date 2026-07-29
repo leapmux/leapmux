@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantBubble, loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantBubble, loginViaToken, loginViaUI, openWorkspace } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {
@@ -11,8 +11,7 @@ test.describe('Message Delivery Error', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -72,8 +71,7 @@ test.describe('Message Delivery Error', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
@@ -129,8 +127,7 @@ test.describe('Message Delivery Error', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
       await expect(editor).toBeVisible()

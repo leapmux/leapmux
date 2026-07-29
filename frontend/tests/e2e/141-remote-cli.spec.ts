@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { cliAgentOpen, mintCLITokenForAdmin, waitForAgentTabs } from './helpers/cli'
-import { loginViaToken, tabById, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, tabById } from './helpers/ui'
 
 /**
  * Extract a CLI-token source from `leapmuxServer`. Dev mode splits
@@ -56,8 +56,7 @@ test.describe('remote CLI live broadcast', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page, 60_000)
+      await openWorkspace(page, workspaceId)
       await waitForAgentTabs(page, 1)
 
       // Drive the CLI from outside the browser. The hub broadcasts a
@@ -93,10 +92,9 @@ test.describe('remote CLI live broadcast', () => {
       await loginViaToken(pageA, adminToken)
       await loginViaToken(pageB, adminToken)
       await Promise.all([
-        pageA.goto(`/workspace/${workspaceId}`),
-        pageB.goto(`/workspace/${workspaceId}`),
+        openWorkspace(pageA, workspaceId),
+        openWorkspace(pageB, workspaceId),
       ])
-      await Promise.all([waitForWorkspaceReady(pageA, 60_000), waitForWorkspaceReady(pageB, 60_000)])
       await Promise.all([waitForAgentTabs(pageA, 1), waitForAgentTabs(pageB, 1)])
 
       // CLI creates a tab; both browsers must see it via snapshot

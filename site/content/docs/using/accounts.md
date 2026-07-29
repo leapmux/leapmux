@@ -185,7 +185,7 @@ Usernames are GitHub-style slugs, enforced identically in the browser and on the
 
 ## Ownership
 
-Every account owns its own workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy — you see exactly the workspaces you create, and nobody else's. The app home is `/`; an open workspace lives at `/workspace/{id}`. See [Concepts & Architecture](/docs/getting-started/concepts/) for how ownership fits into the object hierarchy.
+Every account owns its own workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy — you see exactly the workspaces you create, and nobody else's. See [Concepts & Architecture](/docs/getting-started/concepts/) for how ownership fits into the object hierarchy.
 
 ## Sessions and signing out
 

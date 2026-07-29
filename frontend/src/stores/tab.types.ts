@@ -21,6 +21,12 @@ export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
  */
 export interface BaseTab {
   id: string
+  /**
+   * Owning workspace, resolved from `tile_id` by the projection rather than
+   * stored on the `TabRecord`. Present on every assembled tab, which is what
+   * lets a caller act on a tab without first asking which workspace it is in.
+   */
+  workspaceId: string
   title?: string
   hasNotification?: boolean
   position?: string
@@ -28,12 +34,12 @@ export interface BaseTab {
   workerId?: string
   /**
    * Local-only monotonic activation counter. Higher = more recently
-   * activated. Set when the tab is added with `activate: true` or
-   * touched via setActiveTab / setActiveTabForTile. Used to derive
-   * global + per-tile MRU order without parallel registers.
+   * activated. Stamped by `tabSelection.setActive`, which is the only
+   * writer. Used to derive global + per-tile MRU order without parallel
+   * registers.
    *
-   * Not persisted in the CRDT and not part of the rendered-tab proto;
-   * snapshots / restore round-trip it within the same client session.
+   * Not persisted in the CRDT and not part of the rendered-tab proto; it
+   * orders MRU views within a single client session only.
    */
   mru?: number
   workingDir?: string
@@ -104,16 +110,7 @@ export interface TerminalTab extends BaseTab {
   shellStartDir?: string
   /** Last-known screen snapshot for fast visual restore. */
   screen?: Uint8Array
-  /**
-   * Cumulative PTY byte offset this tab has already applied to its
-   * xterm. Seeded at hydration from the backend's screen_end_offset
-   * (the offset at the end of `screen`, which equals `screen.length`
-   * before the ring wraps and is larger once bytes fall off), then
-   * advanced monotonically as TerminalData events arrive. Echoed back
-   * to the backend as WatchTerminalEntry.after_offset on resubscribe
-   * so the handler skips bytes we already have.
-   */
-  lastOffset?: number
+  // `lastOffset` is deliberately NOT here -- see `TerminalMeta.lastOffset`.
   cols?: number
   rows?: number
   /** Error string from TerminalStatusChange when status is STARTUP_FAILED. */
@@ -178,42 +175,4 @@ export interface TabItemOps {
   onClose?: (tab: Tab) => void
   onRename?: (tab: Tab, title: string) => void
   closingKeys?: Set<string>
-}
-
-export interface TabStoreState {
-  tabs: Tab[]
-  activeTabKey: string | null
-  /** Per-tile active tab keys. */
-  tileActiveTabKeys: Record<string, string | null>
-}
-
-/**
- * Subset of `TabStoreState` required to restore the tab store.
- * Per-tab `mru` round-trips inside each Tab record; global +
- * per-tile MRU order is derived from `tabs`, so there are no
- * separate MRU registers to restore.
- */
-export type RestorableTabState
-  = Pick<TabStoreState, 'tabs' | 'activeTabKey'>
-    & Partial<Pick<TabStoreState, 'tileActiveTabKeys'>>
-
-export interface AddTabOptions {
-  activate?: boolean
-  afterKey?: string | null
-  /**
-   * Skip CRDT op emission. Used by the reconciliation path that
-   * inserts a tab learned-from-projection into local state — the
-   * canonical record is already in the CRDT, so re-emitting would
-   * thrash the wire with LWW-no-op ops.
-   */
-  silent?: boolean
-}
-
-export interface RemoveTabOptions {
-  /**
-   * Skip CRDT op emission. Used by the reconciliation path when the
-   * canonical projection no longer contains the tab (e.g. another
-   * client tombstoned it).
-   */
-  silent?: boolean
 }

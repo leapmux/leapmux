@@ -21,7 +21,6 @@ test.describe('CRDT convergence', () => {
   test('two contexts split-tile interleaved → both converge', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Convergence')
-    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
@@ -30,8 +29,8 @@ test.describe('CRDT convergence', () => {
 
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, workspaceUrl),
-        gotoWorkspace(pageB, adminToken, workspaceUrl),
+        gotoWorkspace(pageA, adminToken, wsId),
+        gotoWorkspace(pageB, adminToken, wsId),
       ])
 
       // Initial: each client sees one root leaf. Wait for both.
@@ -75,7 +74,6 @@ test.describe('CRDT convergence', () => {
   test('close-tile from one client tombstones in the other', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CRDT Close')
-    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
@@ -84,8 +82,8 @@ test.describe('CRDT convergence', () => {
 
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, workspaceUrl),
-        gotoWorkspace(pageB, adminToken, workspaceUrl),
+        gotoWorkspace(pageA, adminToken, wsId),
+        gotoWorkspace(pageB, adminToken, wsId),
       ])
 
       // Set up: split into two tiles in A.

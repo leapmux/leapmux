@@ -1,7 +1,9 @@
 import type { LayoutOwner } from './layoutOwner'
-import { createMemo, createSignal } from 'solid-js'
-import { getCRDTBridge, projectWorkspace, renderTreeToLocal, withBridge } from '~/lib/crdt'
+import type { Projection } from '~/lib/crdt'
+import { createEffect, createMemo, createSignal } from 'solid-js'
+import { renderTreeToLocal, withBridge } from '~/lib/crdt'
 import { makeIdGenerator } from '~/lib/idGenerator'
+import { sameKeys } from '~/lib/sameKeys'
 import {
   emitCloseTile,
   emitMakeGrid,
@@ -51,6 +53,62 @@ export interface GridNode {
 export type GridAxis = 'row' | 'col'
 
 export type LayoutNodeLocal = SplitNode | LeafNode | GridNode
+
+/** Element-wise number-array compare, for ratio lists. */
+function sameRatios(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length)
+    return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i])
+      return false
+  }
+  return true
+}
+
+/**
+ * Structural equality for a projected tree.
+ *
+ * `project()` allocates a fresh graph on every call, so a memo over it never
+ * dedupes by identity and re-propagates on EVERY CRDT tick -- including the
+ * ~60/s stream of geometry ops a floating-window drag emits, and every remote
+ * op in a workspace the user is not even looking at. That churn defeats two
+ * optimisations that document themselves as bounded: `useFocusInvariant`'s
+ * `on([focusedTileId, root])` and `TileRenderer`'s per-root predicate memos.
+ *
+ * Compares only what consumers actually read, which is the whole node shape --
+ * ids, kinds, ratios and child order. A genuine ratio drag still invalidates,
+ * which is correct; a tick that leaves the tree byte-identical no longer does.
+ */
+export function sameLayoutNode(a: LayoutNodeLocal, b: LayoutNodeLocal): boolean {
+  if (a === b)
+    return true
+  if (a.type !== b.type || a.id !== b.id)
+    return false
+  if (a.type === 'leaf')
+    return true
+  if (a.type === 'split') {
+    const other = b as SplitNode
+    if (a.direction !== other.direction || !sameRatios(a.ratios, other.ratios))
+      return false
+    return sameChildLists(a.children, other.children)
+  }
+  const other = b as GridNode
+  if (a.rows !== other.rows || a.cols !== other.cols)
+    return false
+  if (!sameRatios(a.rowRatios, other.rowRatios) || !sameRatios(a.colRatios, other.colRatios))
+    return false
+  return sameChildLists(a.cells, other.cells)
+}
+
+function sameChildLists(a: readonly LayoutNodeLocal[], b: readonly LayoutNodeLocal[]): boolean {
+  if (a.length !== b.length)
+    return false
+  for (let i = 0; i < a.length; i++) {
+    if (!sameLayoutNode(a[i], b[i]))
+      return false
+  }
+  return true
+}
 
 /**
  * Walk a node's structural children. Splits have `children`, grids
@@ -178,7 +236,7 @@ export function firstLeafId(node: LayoutNodeLocal): string | undefined {
 
 /**
  * Locate a node by type + id. Returns null if absent. Used by
- * `findGridById` / `findSplitById`.
+ * `findGridById`.
  */
 function findNodeByTypeAndId<T extends LayoutNodeLocal['type']>(
   root: LayoutNodeLocal,
@@ -197,10 +255,6 @@ function findNodeByTypeAndId<T extends LayoutNodeLocal['type']>(
 
 export function findGridById(root: LayoutNodeLocal, gridId: string): GridNode | null {
   return findNodeByTypeAndId(root, 'grid', gridId)
-}
-
-export function findSplitById(root: LayoutNodeLocal, splitId: string): SplitNode | null {
-  return findNodeByTypeAndId(root, 'split', splitId)
 }
 
 // --- Close-affordance + tile-predicate helpers (used by the renderer) ---
@@ -304,72 +358,12 @@ function walkPredicates(
   }
 }
 
-// --- Focus invariants ---
-
-const EMPTY_TILE_IDS: ReadonlySet<string> = new Set()
-
-/**
- * Compute the next `focusedTileId` after a disposal-style structural
- * change. `disposedTileIds` is the set of leaf ids that no longer
- * exist in `newRoot`. `replacement` is the tile id to land on iff the
- * current focus was inside that set.
- */
-export function nextFocusAfterDisposal(
-  newRoot: LayoutNodeLocal,
-  currentFocus: string | null,
-  disposedTileIds: ReadonlySet<string>,
-  replacement: string | null,
-): string | null {
-  if (currentFocus !== null && disposedTileIds.has(currentFocus) && replacement !== null)
-    return replacement
-  if (currentFocus !== null && containsTileId(newRoot, currentFocus))
-    return currentFocus
-  return firstLeafId(newRoot) ?? null
-}
-
-/**
- * Convenience for non-grid paths (`closeTile`, `setLayout`) that
- * don't carry a disposal set: keep `currentFocus` when still valid,
- * otherwise fall back to the first leaf.
- */
-export function nextFocusEnsuringValid(
-  newRoot: LayoutNodeLocal,
-  currentFocus: string | null,
-): string | null {
-  return nextFocusAfterDisposal(newRoot, currentFocus, EMPTY_TILE_IDS, null)
-}
-
 // --- Close-tile result shape (consumed by floatingWindow.store) ---
 
 export type CloseTileResult
   = | { kind: 'noop' }
     | { kind: 'changed' }
     | { kind: 'disposed', tileIds: ReadonlySet<string> }
-
-// --- Snapshot helper for backward-compat ---
-
-export function cloneNode(node: LayoutNodeLocal): LayoutNodeLocal {
-  if (node.type === 'leaf')
-    return { type: 'leaf', id: node.id }
-  if (node.type === 'grid') {
-    return {
-      type: 'grid',
-      id: node.id,
-      rows: node.rows,
-      cols: node.cols,
-      rowRatios: [...node.rowRatios],
-      colRatios: [...node.colRatios],
-      cells: node.cells.map(c => cloneNode(c)),
-    }
-  }
-  return {
-    type: 'split',
-    id: node.id,
-    direction: node.direction,
-    ratios: [...node.ratios],
-    children: node.children.map(c => cloneNode(c)),
-  }
-}
 
 // --- Store ---
 
@@ -386,8 +380,25 @@ export function cloneNode(node: LayoutNodeLocal): LayoutNodeLocal {
  * canonical state is on the hub, seeded by `CreateWorkspace` via the
  * lifecycle outbox; restoration on workspace switch happens via
  * `WatchUser` re-bootstrap.
+ *
+ * The store is workspace-agnostic. `root` is a slice of the shared user-wide
+ * projection selected by `getWorkspaceId`, and focus is held per workspace so
+ * switching away and back restores it without a snapshot. Mutators are
+ * unaffected: they address nodes by globally-unique CRDT id and never need to
+ * know which workspace a tile belongs to.
  */
-export function createLayoutStore() {
+export interface CreateLayoutStoreOpts {
+  /** Which workspace `state.root` and `state.focusedTileId` answer for. */
+  getWorkspaceId: () => string | null
+  /**
+   * Shared user-wide projection. Taking the slice from here rather than
+   * projecting one workspace per store keeps `buildChildIndex` to one pass per
+   * tick instead of one per workspace.
+   */
+  projection: () => Projection | null
+}
+
+export function createLayoutStore(opts: CreateLayoutStoreOpts) {
   // Per-store fallback generator for test harnesses where the
   // bridge isn't wired — only used to mint a placeholder leaf id so
   // the store's initial render doesn't crash. In production every
@@ -396,27 +407,91 @@ export function createLayoutStore() {
   const initialFallbackTileId = generateTileId()
   const FALLBACK_LEAF: LeafNode = { type: 'leaf', id: initialFallbackTileId }
 
-  // Start unset; the public `focusedTileId()` getter falls back to
-  // `firstLeafId(projectedRoot())` on read. That keeps the focused
-  // tile aligned with whatever the projection currently shows
-  // (placeholder when there's no bridge, real root tile when one is
-  // installed) instead of pinning to the locally-minted placeholder.
-  const [focusedTileId, setFocusedTileId] = createSignal<string | null>(null)
-
+  // Per workspace, and unset until the user focuses something: the public
+  // `focusedTileId()` getter falls back to `firstLeafId(projectedRoot())` on
+  // read. That keeps the focused tile aligned with whatever the projection
+  // currently shows (placeholder when there's no bridge, real root tile when one
+  // is installed) instead of pinning to the locally-minted placeholder.
+  //
+  // Keyed by workspace so a switch away and back restores focus. This used to
+  // ride along in the registry snapshot; with no snapshots it lives here.
+  const [focusByWorkspace, setFocusByWorkspace] = createSignal<Record<string, string | null>>({})
+  const focusedTileIdRaw = () => focusByWorkspace()[opts.getWorkspaceId() ?? ''] ?? null
+  const setFocusedTileId = (tileId: string | null, workspaceId?: string) => {
+    const wsId = workspaceId ?? opts.getWorkspaceId() ?? ''
+    setFocusByWorkspace(prev => ({ ...prev, [wsId]: tileId }))
+  }
+  // Drop a departed workspace's remembered focus.
+  //
   // Derive the local tree shape from the CRDT projection.
-  const projectedRoot = createMemo<LayoutNodeLocal>(() => {
-    const bridge = getCRDTBridge()
-    if (!bridge)
-      return FALLBACK_LEAF
-    const state = bridge.speculativeState()
-    const wsId = bridge.workspaceId()
-    if (!state || !wsId)
-      return FALLBACK_LEAF
-    const ws = projectWorkspace(state, wsId)
-    if (!ws)
-      return FALLBACK_LEAF
-    return renderTreeToLocal(ws.mainTree) ?? FALLBACK_LEAF
+  //
+  const EMPTY_TILE_ORDER: readonly string[] = []
+
+  /**
+   * Every workspace's projected tree in local shape, converted ONCE per tick.
+   *
+   * Four accessors need this — `projectedRoot` for the active workspace, plus
+   * `firstLeafIdFor`, `focusedLeafIdFor` and `tileOrderFor` for any workspace —
+   * and each used to run `renderTreeToLocal` itself, so a W-workspace sidebar
+   * paid W conversions per accessor per tick. Only one of them had a cache, a
+   * bespoke element-wise one with its own hand-written eviction.
+   *
+   * Identity is preserved per workspace across ticks when the tree is
+   * structurally unchanged. That is what `tileOrderFor`'s "returns the SAME
+   * array" promise rests on, and it now comes from one place instead of a
+   * second caching mechanism: `project()` re-allocates every `mainTree` per
+   * call, so `sameLayoutNode` is what turns a fresh graph back into a stable
+   * reference. `getAllTileIds` results hang off a WeakMap keyed by that stable
+   * node, so they self-evict with it and need no sweep of their own.
+   */
+  const previousLocalTrees = new Map<string, LayoutNodeLocal>()
+  const tileIdsByNode = new WeakMap<LayoutNodeLocal, readonly string[]>()
+
+  const localTrees = createMemo<Map<string, LayoutNodeLocal>>(() => {
+    const proj = opts.projection()
+    const out = new Map<string, LayoutNodeLocal>()
+    if (!proj) {
+      previousLocalTrees.clear()
+      return out
+    }
+    for (const [wsId, ws] of proj.workspaces) {
+      const fresh = renderTreeToLocal(ws.mainTree)
+      if (!fresh)
+        continue
+      const prev = previousLocalTrees.get(wsId)
+      out.set(wsId, prev && sameLayoutNode(prev, fresh) ? prev : fresh)
+    }
+    // A workspace that left the projection is simply absent from `out`, so
+    // replacing the map wholesale IS the eviction.
+    previousLocalTrees.clear()
+    for (const [wsId, node] of out)
+      previousLocalTrees.set(wsId, node)
+    return out
   })
+
+  const localTreeFor = (workspaceId: string): LayoutNodeLocal | undefined =>
+    localTrees().get(workspaceId)
+
+  const tileIdsFor = (node: LayoutNodeLocal): readonly string[] => {
+    const cached = tileIdsByNode.get(node)
+    if (cached)
+      return cached
+    const ids = getAllTileIds(node)
+    tileIdsByNode.set(node, ids)
+    return ids
+  }
+
+  // `equals: sameLayoutNode` because `project()` returns a fresh graph per call:
+  // without it this memo invalidates on every CRDT tick and drags the whole
+  // downstream tree walk (`allTileIds`, `hasMultipleTiles`, TileRenderer's
+  // predicate map, the focus invariant) along with it. Same reason `tabView`'s
+  // `placedTabs` carries `equals: samePlacements`.
+  const projectedRoot = createMemo<LayoutNodeLocal>(() => {
+    const wsId = opts.getWorkspaceId()
+    if (!wsId)
+      return FALLBACK_LEAF
+    return localTreeFor(wsId) ?? FALLBACK_LEAF
+  }, FALLBACK_LEAF, { equals: sameLayoutNode })
 
   const allTileIdsMemo = createMemo(() => getAllTileIds(projectedRoot()))
   const hasMultipleTilesMemo = createMemo(() => hasMultipleLeaves(projectedRoot()))
@@ -469,18 +544,137 @@ export function createLayoutStore() {
     get state(): LayoutStoreState {
       return {
         get root() { return projectedRoot() },
-        get focusedTileId() { return focusedTileId() },
+        get focusedTileId() { return focusedTileIdRaw() },
       } as LayoutStoreState
     },
 
-    setFocusedTile(tileId: string | null) {
-      if (focusedTileId() === tileId)
+    /**
+     * Focus a tile.
+     *
+     * `workspaceId` names which workspace's focus slot to write and defaults to
+     * the active one. Pass it explicitly whenever the tile belongs to a
+     * workspace the user is not currently looking at — a cross-workspace move
+     * focuses a tile in the DESTINATION, and filing that under the active
+     * workspace's key leaves the on-screen workspace focused on a tile that is
+     * not in its tree, which `useFocusInvariant` then resets to the first leaf.
+     */
+    setFocusedTile(tileId: string | null, workspaceId?: string) {
+      const targetWs = workspaceId ?? opts.getWorkspaceId() ?? ''
+      if ((focusByWorkspace()[targetWs] ?? null) === tileId)
         return
-      setFocusedTileId(tileId)
+      setFocusedTileId(tileId, targetWs)
+    },
+
+    /**
+     * Focused tile for an arbitrary workspace, or null if the user has not
+     * focused one there yet. Unlike `focusedTileId()` this does NOT fall back
+     * to the first leaf: callers use it to ask "did the user pick a tile in
+     * that workspace", and a synthesised answer would be a wrong yes.
+     */
+    focusedTileIdFor(workspaceId: string): string | null {
+      return focusByWorkspace()[workspaceId] ?? null
+    },
+
+    /**
+     * First leaf in `workspaceId`'s projected tree, in render order.
+     *
+     * Any workspace, not just the one this store projects — every tree is in
+     * the shared projection. Callers landing a tab in another workspace need a
+     * LEAF: `tile_id` may only name one, and pointing it at a SPLIT or GRID
+     * produces a batch the hub rejects, which reverts the move and drops the
+     * drag with no visible error. The workspace's `rootNodeId` is NOT a
+     * substitute — it is a SPLIT the moment the user splits their root.
+     */
+    firstLeafIdFor(workspaceId: string): string | null {
+      const local = localTreeFor(workspaceId)
+      return local ? firstLeafId(local) ?? null : null
+    },
+
+    /**
+     * Leaf ids of `workspaceId`'s projected tree, in render order.
+     *
+     * Lives here rather than in `AppShell` because it is the fourth "read
+     * another workspace's projected tree" call site, and the other three
+     * (`projectedRoot`, `firstLeafIdFor`, `focusedLeafIdFor`) are already
+     * this store's job — an owner that can share the memo, rather than a
+     * component keeping its own layout cache.
+     *
+     * Returns the SAME array while the order is unchanged, so an untouched
+     * workspace keeps its identity across ticks: `project()` allocates a fresh
+     * `mainTree` on every call, and handing back a new array would invalidate
+     * `WorkspaceTabTree`'s `buildTree` memo for every sidebar row every tick.
+     * Compared element-wise for the same reason — an identity-keyed cache could
+     * never hit. Entries for workspaces that leave the projection are dropped,
+     * so this cannot grow one row per workspace ever viewed.
+     */
+    tileOrderFor(workspaceId: string): readonly string[] {
+      const local = localTreeFor(workspaceId)
+      return local ? tileIdsFor(local) : EMPTY_TILE_ORDER
+    },
+
+    /**
+     * Drop remembered focus for every workspace not in `live`.
+     *
+     * Ids are minted from the CRDT and never reused, so an entry for a deleted
+     * workspace can never be hit again and would sit here for the life of the
+     * page. Every other per-workspace / per-window map is swept for exactly
+     * this reason: `tabSelection` sweeps `activeByWorkspace`/`activeByTile`,
+     * `floatingWindow.store` GCs `zOrder`/`focusByWindow`.
+     *
+     * The counterpart to `tabSelection.retainOnly`, and driven the same way —
+     * by `useLayoutFocusSweep`, a projection-gated effect. It used to be a
+     * WRITE hidden inside `tileOrderFor`, a read accessor called during render
+     * from every sidebar row: that both wrote a signal mid-evaluation of other
+     * computations and subscribed every row's tile-order memo to the focus map,
+     * so focusing a tile in one workspace invalidated the tile order of all of
+     * them. `useLayoutFocusSweep` owns the non-null-projection precondition,
+     * because sweeping before the bootstrap lands would erase focus
+     * `restoreTabSelection` had just written.
+     */
+    retainFocusOnly(live: ReadonlySet<string>) {
+      const stale = Object.keys(focusByWorkspace()).filter(id => !live.has(id))
+      if (stale.length === 0)
+        return
+      setFocusByWorkspace((prev) => {
+        const next = { ...prev }
+        for (const id of stale)
+          delete next[id]
+        return next
+      })
+    },
+
+    /**
+     * The focused tile of `workspaceId`, but ONLY when it is still a live leaf
+     * in that workspace's projected tree — otherwise null.
+     *
+     * The raw pointer in `focusByWorkspace` has no liveness guarantee:
+     * `useFocusInvariant` repairs only the ACTIVE workspace, so another
+     * workspace's remembered tile can name one that was since closed or turned
+     * into a SPLIT by another client. Anything feeding a stored id to `tile_id`
+     * must come through here — the hub rejects a non-leaf placement, which
+     * silently reverts the move with no visible error. Making the validated
+     * read the only way to get the value is what stops the next caller from
+     * forgetting, which the raw-pointer-plus-separate-check shape did not.
+     *
+     * Deliberately NOT folded into `focusedTileIdFor`. That pointer legitimately
+     * names a FLOATING-WINDOW tile — `tileLifecycle.focusTile` writes one — and
+     * such a tile is absent from `mainTree` but must still be persisted by
+     * `useTabPersistence`. The two consumers want different notions of valid,
+     * so one healed accessor cannot serve both.
+     */
+    focusedLeafIdFor(workspaceId: string): string | null {
+      const tileId = focusByWorkspace()[workspaceId] ?? null
+      if (!tileId)
+        return null
+      const local = localTreeFor(workspaceId)
+      // `containsTileId`, not `getAllTileIds(...).includes(...)`: it early-returns
+      // on the first match instead of materialising every leaf id first. Both
+      // match leaves only, so the answer is identical.
+      return local && containsTileId(local, tileId) ? tileId : null
     },
 
     focusedTileId(): string {
-      return focusedTileId() ?? firstLeafId(projectedRoot()) ?? ''
+      return focusedTileIdRaw() ?? firstLeafId(projectedRoot()) ?? ''
     },
 
     splitTile,
@@ -515,29 +709,59 @@ export function createLayoutStore() {
       return allTileIdsMemo()
     },
 
+    /**
+     * Is `tileId` a real tile of the CURRENT workspace's projected tree?
+     *
+     * The distinction that matters is against `FALLBACK_LEAF`: `projectedRoot`
+     * substitutes a locally-minted leaf whenever the projection has no tree, so
+     * `focusedTileId()` answers with an id the hub has never heard of rather
+     * than with nothing. Anything about to EMIT against a tile has to ask this
+     * first -- an op naming that node is rejected, and a caller that already
+     * created a worker resource is left holding an orphan.
+     */
+    hasProjectedTile(tileId: string): boolean {
+      return localTreeFor(opts.getWorkspaceId() ?? '') !== undefined
+        && containsTileId(projectedRoot(), tileId)
+    },
+
     /** True iff the layout has at least two leaves. */
     hasMultipleTiles(): boolean {
       return hasMultipleTilesMemo()
     },
 
     owner: () => layoutOwner,
-
-    /**
-     * snapshot returns the current projected tree. Under the CRDT
-     * model, snapshot/restore are mostly no-ops — the canonical
-     * state is on the hub and re-bootstraps on workspace
-     * reactivation. We still preserve the focused-tile id so the UI
-     * doesn't blink during workspaceStoreRegistry hand-off.
-     */
-    snapshot(): LayoutStoreState {
-      return {
-        root: cloneNode(projectedRoot()),
-        focusedTileId: focusedTileId(),
-      }
-    },
-
-    restore(snap: LayoutStoreState) {
-      setFocusedTileId(snap.focusedTileId)
-    },
   }
+}
+
+/**
+ * Reclaim `focusByWorkspace` entries for workspaces that have left the
+ * projection.
+ *
+ * The third of three projection-gated sweeps, alongside `useSelectionSweep` and
+ * `useMetadataSweep`, and shaped identically so the next per-workspace map has
+ * one pattern to copy. This one used to ride inside `tileOrderFor`, a read
+ * accessor — see `retainFocusOnly` for what that cost.
+ *
+ * Gated on a non-null projection: sweeping before the bootstrap lands would
+ * erase the focus `restoreTabSelection` just restored, since every workspace
+ * looks dead when the projection is empty.
+ */
+export function useLayoutFocusSweep(
+  projection: () => Projection | null,
+  layoutStore: ReturnType<typeof createLayoutStore>,
+): void {
+  const live = createMemo<ReadonlySet<string> | null>(() => {
+    const proj = projection()
+    return proj ? new Set(proj.workspaces.keys()) : null
+  }, null, {
+    // Membership only: the projection is rebuilt every tick, but which
+    // workspaces exist changes far more rarely.
+    equals: (a, b) => a === b || (!!a && !!b && sameKeys(a, b)),
+  })
+
+  createEffect(() => {
+    const ids = live()
+    if (ids)
+      layoutStore.retainFocusOnly(ids)
+  })
 }

@@ -1,9 +1,9 @@
 import { expect, test } from './fixtures'
 import { loginViaUI, logoutViaUI } from './helpers/ui'
 
-// Either landing spot for a successful login: `/`, or the `/workspace/{id}`
-// AppShell's auto-activate effect replaces it with when the account owns one.
-const APP_HOME_URL_RE = /\/(?:workspace\/[^/]+)?$/
+// Where a successful login lands, and stays: `/` is the whole app, and
+// activating a workspace no longer changes the URL.
+const APP_HOME_URL_RE = /\/$/
 const LOGIN_URL_RE = /\/login/
 
 /**

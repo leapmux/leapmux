@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 // Resolve the frontend directory for the working dir used in file browser tests.
 const frontendDir = path.resolve(import.meta.dirname, '../..')
@@ -13,8 +13,7 @@ test.describe('File Browser', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Browser Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // The Files sidebar should be visible
       await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
@@ -34,8 +33,7 @@ test.describe('File Browser', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for file entries to load
       await expect(page.getByText('src')).toBeVisible()

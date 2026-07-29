@@ -205,13 +205,15 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 -- not in two queries that must agree or the GC reaps a live worktree.
 --
 -- The agent/terminal legs match on the globally-unique row id; the file leg
--- matches on (user_id, tab_id) because worker_file_tabs is keyed that way --
--- file tab ids are unique only within a user, so matching tab_id alone would
--- let a multi-user worker borrow a different user's live file tab and mark a
--- strand live. worktree_tabs.user_id carries the link's user ('' for
--- AGENT/TERMINAL links, whose ids are globally unique and so never need it;
--- '' never matches a real worker_file_tabs row, which always has a non-empty
--- user_id).
+-- matches on (user_id, tab_id) because worker_file_tabs is keyed that way.
+-- That key is about ID UNIQUENESS, not tenancy: agent and terminal ids are
+-- minted server-side and are globally unique, while a file tab id is minted by
+-- the client as `file-<millis>-<counter>` and is therefore unique only within
+-- the client that made it. Matching tab_id alone would let one row stand in
+-- for another that happens to share an id, marking a strand live and saving a
+-- worktree that should be reaped. worktree_tabs.user_id carries the link's
+-- user ('' for AGENT/TERMINAL links, whose ids never need it; '' never matches
+-- a real worker_file_tabs row, which always has a non-empty user_id).
 CREATE VIEW worktree_tab_liveness AS
 SELECT
     t.worktree_id AS worktree_id,

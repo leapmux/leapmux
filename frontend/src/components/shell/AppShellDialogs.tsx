@@ -9,9 +9,10 @@ import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { Show } from 'solid-js'
 import { sectionClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
@@ -19,13 +20,13 @@ import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
 import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
 import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
-import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { mid } from '~/lib/lexorank'
-import { protoToAgentTabFields } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, protoToAgentTabFields } from '~/stores/tab.helpers'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
+import { openTabInFocusedTile } from './openTabInFocusedTile'
 
 export interface KeyPinConfirmState {
   workerId: string
@@ -126,13 +127,15 @@ interface AppShellDialogsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
   tabOps: ReturnType<typeof useTabOperations>
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   sectionStore: ReturnType<typeof createSectionStore>
-  registry: WorkspaceStoreRegistryType
   focusEditor: () => void
   loadWorkspaces: () => Promise<void>
-  navigate: (path: string) => void
+  /** Makes a workspace the active one. There is no per-workspace URL to go to. */
+  onSelectWorkspace: (id: string) => void
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
 }
@@ -140,23 +143,22 @@ interface AppShellDialogsProps {
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
   // Full per-agent metadata lives on the Tab record now;
   // protoToAgentTabFields also primes settingsLabelCache.
+  // `hydrated`: this `AgentInfo` came from the worker, so the hydrator has
+  // nothing to add and must not re-ask (see `TabMetadata.hydrated`).
   const addAgentTabToFocusedTile = (agent: AgentInfo) => {
-    const tileId = props.layoutStore.focusedTileId()
-    const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-    props.tabStore.addTab({
-      type: TabType.AGENT,
-      id: agent.id,
-      tileId,
-      ...protoToAgentTabFields(agent.workerId, agent),
-    }, { afterKey })
-    props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
+    openTabInFocusedTile(
+      props,
+      { type: TabType.AGENT, id: agent.id, workerId: agent.workerId },
+      { ...protoToAgentTabFields(agent.workerId, agent), hydrated: true },
+    )
   }
 
   const addTerminalTabToFocusedTile = (terminalId: string, workerId: string, workingDir: string, title: string) => {
-    const tileId = props.layoutStore.focusedTileId()
-    const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-    props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })
-    props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
+    openTabInFocusedTile(
+      props,
+      { type: TabType.TERMINAL, id: terminalId, workerId },
+      openedTerminalMetadata({ title, workingDir }),
+    )
   }
 
   return (
@@ -195,10 +197,10 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       <Show when={props.dialogs.newWorkspace.value()}>
         {payload => (
           <NewWorkspaceDialog
+            metadata={props.metadata}
             preselectedWorkerId={payload().preselectedWorkerId}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
-            registry={props.registry}
             onCreated={(workspaceId) => {
               const targetSectionId = payload().targetSectionId ?? null
               props.dialogs.newWorkspace.close()
@@ -223,7 +225,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               else {
                 refreshWorkspaces()
               }
-              props.navigate(`/workspace/${workspaceId}`)
+              props.onSelectWorkspace(workspaceId)
             }}
             onClose={() => props.dialogs.newWorkspace.close()}
           />
@@ -306,8 +308,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
             // Local-UI tab insertion only applies when the dialog's
             // target workspace IS the active one — addAgentTabToFocusedTile
-            // and addTerminalTabToFocusedTile write into the ACTIVE
-            // workspace's tabStore + layoutStore, so calling them on a
+            // and addTerminalTabToFocusedTile place the tab on the ACTIVE
+            // workspace's focused tile, so calling them on a
             // dialog opened against a non-active workspace's branch row
             // would land the new tab in the wrong workspace's tree. For
             // non-active dialogs the new tab still arrives in the target

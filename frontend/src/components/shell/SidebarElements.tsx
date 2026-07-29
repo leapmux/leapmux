@@ -1,4 +1,5 @@
 import type { Accessor, JSX } from 'solid-js'
+import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
@@ -8,10 +9,10 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { TabItemOps } from '~/stores/tab.types'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
 import { RightSidebar } from '~/components/shell/RightSidebar'
 import { relativizePath } from '~/lib/paths'
@@ -19,11 +20,16 @@ import { formatFileMention } from '~/lib/quoteUtils'
 import { insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 
 export interface SidebarElementsOpts {
+  /**
+   * Wiring for "insert this text into the MRU agent's editor", built once by
+   * AppShell and shared with the tile renderer. See `mruAgentEditorDeps`.
+   */
+  mruEditorDeps: ReturnType<typeof mruAgentEditorDeps>
   workspaces: Workspace[]
   activeWorkspaceId: string | null
   sectionStore: ReturnType<typeof createSectionStore>
-  tabStore: ReturnType<typeof createTabStore>
-  registry: WorkspaceStoreRegistryType
+  view: TabView
+  selection: TabSelectionStore
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
   onNewWorkspace: (sectionId: string | null) => void
@@ -57,9 +63,8 @@ export interface SidebarElementsOpts {
   onRegisterWorker: () => void
   onTabClick: (type: number, id: string) => void
   tabItemOps?: TabItemOps
-  onExpandWorkspace: (workspaceId: string) => void
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
-  getTileOrderForWorkspace: (workspaceId: string) => string[]
+  getTileOrderForWorkspace: (workspaceId: string) => readonly string[]
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
 }
@@ -109,7 +114,7 @@ function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDis
       ? undefined
       : (path: string) => {
           const mru = opts.getMruAgentContext()
-          insertIntoMruAgentEditor(opts.tabStore, formatFileMention(relativizePath(path, mru.workingDir, mru.homeDir)), 'inline')
+          insertIntoMruAgentEditor(opts.mruEditorDeps, formatFileMention(relativizePath(path, mru.workingDir, mru.homeDir)), 'inline')
         },
     onOpenTerminal: archived
       ? undefined
@@ -127,11 +132,10 @@ function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDis
     onAddTunnel: opts.onAddTunnel,
     onDeregisterWorker: opts.onDeregisterWorker,
     onRegisterWorker: opts.onRegisterWorker,
-    tabStore: opts.tabStore,
-    registry: opts.registry,
+    view: opts.view,
+    selection: opts.selection,
     onTabClick: opts.onTabClick,
     tabItemOps: opts.tabItemOps,
-    onExpandWorkspace: opts.onExpandWorkspace,
     getTileOrderForWorkspace: opts.getTileOrderForWorkspace,
     onChangeBranch: opts.onChangeBranch,
     onDeleteBranch: opts.onDeleteBranch,

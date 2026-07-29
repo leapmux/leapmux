@@ -12,7 +12,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
-	"github.com/leapmux/leapmux/internal/cli/remote/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -230,6 +229,14 @@ type crdtCall struct {
 // `remote.EmitError*` envelope so callers can `return err` directly
 // without re-classifying. Tenancy is the authenticated session, so no
 // user-id resolution is needed.
+//
+// This preamble does NOT validate workspaceID, and the bootstrap does not
+// double as a check. GetMaterialized resolves through
+// `auth.WorkspacesReadableByUser`, which silently skips an id with no row
+// rather than erroring, so an unknown --workspace-id bootstraps
+// "successfully" against an empty projection and every subsequent op is
+// emitted into nothing. Any command that must REJECT a bogus workspace id
+// has to check existence itself, before or after this call.
 func openCRDTCall(hub, workspaceID string) (*crdtCall, error) {
 	c, err := requireClient(hub)
 	if err != nil {
@@ -237,23 +244,6 @@ func openCRDTCall(hub, workspaceID string) (*crdtCall, error) {
 	}
 	ctx, cancel := rpcDeadline(context.Background())
 	return finishOpenCRDTCall(ctx, cancel, c, workspaceID)
-}
-
-// openCRDTCallFromResolved is openCRDTCall for handlers that already
-// ran the universal resolver (`runResolve` → resolve.Resolved): it
-// takes the workspace id from the Resolved struct and rejects an
-// unresolved one up front, instead of trusting a raw flag value.
-// Handlers chain it after `runResolve(.., Need{WorkspaceID: true}, ..)`.
-func openCRDTCallFromResolved(hub string, got resolve.Resolved) (*crdtCall, error) {
-	if got.WorkspaceID == "" {
-		return nil, remote.EmitError("invalid_request", "workspace_id required")
-	}
-	c, err := requireClient(hub)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := rpcDeadline(context.Background())
-	return finishOpenCRDTCall(ctx, cancel, c, got.WorkspaceID)
 }
 
 func finishOpenCRDTCall(ctx context.Context, cancel context.CancelFunc, c *remote.Client, workspaceID string) (*crdtCall, error) {

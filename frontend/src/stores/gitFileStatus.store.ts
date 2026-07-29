@@ -59,6 +59,16 @@ function sameFileEntries(a: readonly GitFileStatusEntry[], b: readonly GitFileSt
 
 interface GitFileStatusState {
   isGitRepo: boolean
+  /**
+   * Worker the current status was read from.
+   *
+   * A repo is identified by `(workerId, toplevel)`, not by path alone — the
+   * same absolute path is the normal case across two workers, not a
+   * pathological one. `syncGitStatusToTabs` now stamps every workspace in the
+   * account, so without this the branch label and diff badges of a repo on one
+   * worker would be written onto identically-pathed tabs on another.
+   */
+  workerId: string
   repoRoot: string
   /**
    * Working-tree root of the queried path. Equal to `repoRoot` for a
@@ -82,16 +92,27 @@ interface GitFileStatusState {
    * context menu can hint at the worker without re-probing.
    */
   isWorktree: boolean
+  /**
+   * The worker's explanation when the queried path has no git status.
+   *
+   * `GetGitFileStatusResponse` reports "not a git repo" as a SUCCESSFUL empty
+   * response carrying only this field — there is no `is_git_repo` flag on this
+   * message — so it is the only signal distinguishing "not a repo" from "a repo
+   * whose status we failed to read". Empty on every success.
+   */
+  errorHint: string
   files: GitFileStatusEntry[]
 }
 
 export function createGitFileStatusStore() {
   const [state, setState] = createStore<GitFileStatusState>({
     isGitRepo: false,
+    workerId: '',
     repoRoot: '',
     toplevel: '',
     originUrl: '',
     currentBranch: '',
+    errorHint: '',
     isWorktree: false,
     files: [],
   })
@@ -123,15 +144,29 @@ export function createGitFileStatusStore() {
       const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
       if (mine !== gen)
         return
-      // Worker may not have populated `toplevel` (older builds, or a
-      // shape regression). Fall back to repo_root in that case — the
-      // pre-fix behaviour. Once the worker reliably ships toplevel,
-      // this fallback becomes dead code; the conditional keeps the
-      // frontend tolerant rather than blanking out tabs on a mismatch.
-      const toplevel = resp.toplevel || resp.repoRoot
+      // `toplevel` is authoritative — the worker sets it on every success
+      // path (`git.go` queryGitPathInfo), and `git_test.go` pins
+      // `toplevel == repo_root` for a main-tree query. Aliasing a missing
+      // value onto `repo_root` would hand a WORKTREE tab the main tree's
+      // root, which `isSameRepo` then matches as if it were a main-tree tab.
+      const toplevel = resp.toplevel
+      // "Not a git repo" arrives as a SUCCESSFUL empty response — the worker
+      // returns `&GetGitFileStatusResponse{}` with only `errorHint` set when
+      // `queryGitPathInfo` reports `errNotGitRepo`, and this message has no
+      // `is_git_repo` field to say so directly (that one is on `GetGitInfo`).
+      // So a resolved RPC is not evidence of a repo; a resolved toplevel is.
+      // Flipping the flag on every reply left a plain directory advertising
+      // `isGitRepo: true` with empty repoRoot/toplevel/branch, which renders
+      // the git filter tab bar over a non-repo and discards the diagnostic
+      // `errorHint` was added to surface.
+      const isGitRepo = Boolean(toplevel)
       setState(produce((s) => {
-        if (!s.isGitRepo)
-          s.isGitRepo = true
+        if (s.isGitRepo !== isGitRepo)
+          s.isGitRepo = isGitRepo
+        if (s.errorHint !== resp.errorHint)
+          s.errorHint = resp.errorHint
+        if (s.workerId !== workerId)
+          s.workerId = workerId
         if (s.repoRoot !== resp.repoRoot)
           s.repoRoot = resp.repoRoot
         if (s.toplevel !== toplevel)
@@ -158,6 +193,10 @@ export function createGitFileStatusStore() {
       setState(produce((s) => {
         if (s.isGitRepo)
           s.isGitRepo = false
+        if (s.errorHint !== '')
+          s.errorHint = ''
+        if (s.workerId !== '')
+          s.workerId = ''
         if (s.repoRoot !== '')
           s.repoRoot = ''
         if (s.toplevel !== '')
@@ -182,7 +221,7 @@ export function createGitFileStatusStore() {
   }
 
   const clear = () => {
-    setState({ isGitRepo: false, repoRoot: '', toplevel: '', originUrl: '', currentBranch: '', isWorktree: false, files: [] })
+    setState({ isGitRepo: false, workerId: '', repoRoot: '', toplevel: '', originUrl: '', currentBranch: '', isWorktree: false, files: [] })
   }
 
   // Memoized so the regex runs once per repoRoot change, not once per

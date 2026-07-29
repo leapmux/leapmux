@@ -37,7 +37,7 @@ import { expect, test } from '@playwright/test'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { stopDevServer } from './helpers/devServer'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
@@ -258,8 +258,7 @@ test.describe('Tab close timing', () => {
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
       await page.locator('[data-testid^="new-agent-button"]').first().click()
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
@@ -308,8 +307,7 @@ test.describe('Tab close timing', () => {
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
 
       await installObservers(page)
@@ -369,8 +367,7 @@ test.describe('Tab close timing', () => {
     const page = await context.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
 
       await installObservers(page)

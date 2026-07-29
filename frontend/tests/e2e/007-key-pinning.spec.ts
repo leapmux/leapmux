@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 
 const KEY_PINS_STORAGE_KEY = 'leapmux:key-pins'
 
@@ -39,8 +39,7 @@ test.describe('Key Pinning', () => {
     const { adminToken, workerId } = leapmuxServer
 
     await loginViaToken(page, adminToken)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
 
     // Verify the key was pinned in the consolidated leapmux:key-pins map.
     await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
@@ -62,8 +61,7 @@ test.describe('Key Pinning', () => {
     const { adminToken, workerId } = leapmuxServer
 
     await loginViaToken(page, adminToken)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
 
     // Verify key is pinned.
     await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
@@ -114,8 +112,7 @@ test.describe('Key Pinning', () => {
     const { adminToken, workerId } = leapmuxServer
 
     await loginViaToken(page, adminToken)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
 
     await expect.poll(() => getKeyPin(page, workerId)).not.toBeNull()
 

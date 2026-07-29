@@ -14,7 +14,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { startDevServer, stopDevServer } from './helpers/devServer'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 function startServerWithFailingClaude(): Promise<DevServerHandle> {
   return startDevServer({
@@ -55,8 +55,7 @@ test.describe('Claude Code agent startup error', () => {
     )
     await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
     await loginViaToken(page, srv.adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     // The startup-error panel must appear with the formatted error.
     const errorPanel = page.locator('[data-testid="agent-startup-error"]')

@@ -65,13 +65,12 @@ func opCases(ops []*leapmuxv1.CrdtOp) []string {
 	return out
 }
 
-// TestBuildCloseTileOps_InverseSplit_EmptySibling reproduces the bug
-// the user hit: split a tile, then close the new empty leaf. Without
-// the inverse-split the SPLIT parent is left with one live child
-// (the leaf holding the original tabs), `project.ts:buildTree`
-// collapses the SPLIT to render as the parent's id, and the tabs
-// orphan because they still reference the (now hidden) sibling's
-// tile_id. The fix: detect "parent SPLIT with exactly two live
+// TestBuildCloseTileOps_InverseSplit_EmptySibling covers the common
+// close: split a tile, then close the new empty leaf. Without the
+// inverse-split the SPLIT parent is left with one live child (the
+// leaf holding the original tabs) — a node that exists only to wrap
+// a single leaf, which every later split/close then has to walk
+// around. The fix: detect "parent SPLIT with exactly two live
 // children" and emit migrate-tabs + tombstone-sibling +
 // SetNodeKind(parent=LEAF) in the same batch.
 func TestBuildCloseTileOps_InverseSplit_EmptySibling(t *testing.T) {
@@ -247,16 +246,16 @@ func TestBuildCloseTileOps_NoInverseSplit_SplitSibling(t *testing.T) {
 	}
 }
 
-// TestBuildCloseTileOps_InverseSplit_StrandedGrandparent reproduces
-// the multi-level reconciliation bug: a workspace with one tab, then
-// split horizontally, split the top vertically, close the bottom, and
-// close the top-right. After step 3 the workspace root A is left as
-// a single-child SPLIT (A → A_top → {A_TL, A_TR}); the projection
-// hides A by re-keying A_top's render to A. When the user closes
-// A_TR, the immediate undo-split target is A_top — but A_top is
-// itself the only live child of A, so projection will collapse A
-// too. Migrating tabs to A_top strands them because the rendered
-// leaf advertises A's id.
+// TestBuildCloseTileOps_InverseSplit_StrandedGrandparent covers the
+// multi-level case: a workspace with one tab, then split
+// horizontally, split the top vertically, close the bottom, and close
+// the top-right. After step 3 the workspace root A is left as a
+// single-child SPLIT (A → A_top → {A_TL, A_TR}). When the user closes
+// A_TR the immediate undo-split target is A_top — but A_top is itself
+// the only live child of A, so stopping there would leave a stack of
+// redundant single-child SPLITs for the next close to unwind. The
+// walk continues to the topmost such ancestor and collapses the whole
+// chain in one batch.
 //
 // The fix walks upward from the immediate parent and collapses the
 // entire single-child SPLIT chain in one batch: tabs migrate to the

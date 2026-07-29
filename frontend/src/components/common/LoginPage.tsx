@@ -37,8 +37,15 @@ export const LoginPage: Component = () => {
   //
   // createEffect, not onMount: it re-runs when `auth.loading()` flips, which is
   // the earliest moment the getters are answers rather than guesses.
+  //
+  // The effect body stays SYNCHRONOUS. Solid tracks reads only up to the first
+  // await, so an `async` effect silently stops tracking anything after it --
+  // here that would have made `auth.loading()` the only reliable dependency by
+  // accident rather than by design. The one async step (fetching OAuth
+  // providers) is a fire-and-forget continuation at the end, which needs no
+  // tracking: it reads nothing reactive and only writes.
   let bootstrapped = false
-  createEffect(async () => {
+  createEffect(() => {
     if (auth.loading() || bootstrapped) {
       return
     }
@@ -61,7 +68,7 @@ export const LoginPage: Component = () => {
       passwordRef.focus()
     }
 
-    setOAuthProviders(await loadOAuthProviders())
+    void loadOAuthProviders().then(setOAuthProviders)
   })
 
   const handleSubmit = async (e: Event) => {

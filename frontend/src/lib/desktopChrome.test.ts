@@ -3,13 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { hasWorkspaceDesktopChrome } from './desktopChrome'
 
 describe('hasWorkspaceDesktopChrome', () => {
-  it('returns true for flat app home and workspace detail routes', () => {
-    // Post-org removal the chrome routes are `/` and `/workspace/:id`
-    // (no `/o/{orgSlug}` prefix). Empty pathname is treated as home.
+  it('returns true for the app home only', () => {
+    // `/` is the whole authenticated app: no `/o/{orgSlug}` prefix, and no
+    // per-workspace path either. Empty pathname is treated as home.
     expect(hasWorkspaceDesktopChrome('/')).toBe(true)
     expect(hasWorkspaceDesktopChrome('')).toBe(true)
-    expect(hasWorkspaceDesktopChrome('/workspace/ws1')).toBe(true)
-    expect(hasWorkspaceDesktopChrome('/workspace/ws1/')).toBe(true)
   })
 
   it('returns false for non-workspace routes', () => {
@@ -20,13 +18,18 @@ describe('hasWorkspaceDesktopChrome', () => {
     expect(hasWorkspaceDesktopChrome('/unknown')).toBe(false)
   })
 
-  // The retired routes were `/o/{orgSlug}` and `/o/{orgSlug}/workspace/{id}`,
-  // and they used to be the ONLY paths that got the chrome. They no longer
-  // exist, so they must not match -- a regex that re-admitted them (or a
-  // partial revert of the flattening) would light this up. `/org/...` is not
-  // the retired prefix and never was; asserting on it pins nothing.
-  it('returns false for the retired org-scoped routes', () => {
+  // Two generations of retired routes, both of which USED to get the chrome:
+  // `/o/{orgSlug}[/workspace/{id}]` before the org flattening, and
+  // `/workspace/{id}` before workspaces stopped having a path at all. Either
+  // one re-admitted by a partial revert lights this up, and `/workspace/...`
+  // matters most: it now resolves to the 404 catch-all, which must render
+  // without the app titlebar and sidebar. `/org/...` is not the retired prefix
+  // and never was; asserting on it pins nothing.
+  it('returns false for the retired org-scoped and workspace routes', () => {
     expect(hasWorkspaceDesktopChrome('/o/admin')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/o/admin/workspace/ws1')).toBe(false)
+    expect(hasWorkspaceDesktopChrome('/workspace')).toBe(false)
+    expect(hasWorkspaceDesktopChrome('/workspace/ws1')).toBe(false)
+    expect(hasWorkspaceDesktopChrome('/workspace/ws1/')).toBe(false)
   })
 })

@@ -9,11 +9,10 @@ import {
   deleteWorkspaceViaAPI,
   openAgentViaAPI,
 } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 interface WorkspaceFixture {
   workspaceId: string
-  workspaceUrl: string
 }
 
 export const codexTest = base.extend<{
@@ -30,9 +29,7 @@ export const codexTest = base.extend<{
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
       agentProvider: AgentProvider.CODEX,
     })
-    const workspaceUrl = `/workspace/${workspaceId}`
-
-    await use({ workspaceId, workspaceUrl })
+    await use({ workspaceId })
 
     try {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
@@ -42,8 +39,7 @@ export const codexTest = base.extend<{
 
   authenticatedCodexWorkspace: async ({ page, codexWorkspace, leapmuxServer }, use) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto(codexWorkspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, codexWorkspace.workspaceId)
 
     await use(codexWorkspace)
   },

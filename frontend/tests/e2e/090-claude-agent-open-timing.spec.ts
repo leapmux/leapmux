@@ -18,7 +18,7 @@ import {
 } from './helpers/api'
 import { stopDevServer } from './helpers/devServer'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 /**
  * Return the agent_id of the first handler_begin marker logged after
@@ -80,8 +80,7 @@ test.describe('Claude Code agent open timing', () => {
     )
     await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
     await loginViaToken(page, srv.adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
 

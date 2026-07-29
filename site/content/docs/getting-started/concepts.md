@@ -104,11 +104,11 @@ Each tab is hosted on a Worker, optionally bound to a worktree/branch.
 
 ### Ownership
 
-You own everything you create — workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy: workspace access is strictly owner-only, and you see exactly the workspaces you own. The app home is `/`; an open workspace lives at `/workspace/{id}`. See [Accounts & Authentication](/docs/using/accounts/).
+You own everything you create — workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy: workspace access is strictly owner-only, and you see exactly the workspaces you own. See [Accounts & Authentication](/docs/using/accounts/).
 
 ### Workspace
 
-A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs and lives at `/workspace/{id}`. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
+A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs. One workspace is open at a time, and the one you were last on is remembered between visits. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
 
 ### Layout, tiles, and floating windows
 

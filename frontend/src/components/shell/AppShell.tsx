@@ -2,31 +2,22 @@ import type { Component } from 'solid-js'
 import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
-import type { BatchOutcome } from './useOpsSubmitter'
 import type { CliPathStatus } from '~/api/platformBridge'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { GetGitFileStatusResponse } from '~/generated/leapmux/v1/git_pb'
-import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
-import type { Tab } from '~/stores/tab.types'
-import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
-import { workerClient } from '~/api/clients'
+import { useLocation, useSearchParams } from '@solidjs/router'
+import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
-import { apiLoadingTimeoutMs } from '~/api/transport'
-import { channelManager, getGitFileStatus, renameAgent, setConfirmKeyPin, setExpectedUserId } from '~/api/workerRpc'
-import { NotFoundPage } from '~/components/common/NotFoundPage'
+import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
+import { renameAgent, setExpectedUserId } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
-import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
-import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
+import { setTerminalScreenSink } from '~/components/terminal/TerminalView'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
-import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog } from '~/hooks/createDialogState'
@@ -36,13 +27,10 @@ import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
-import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, KEY_CLIENT_ID, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
-import { HLCClock, PendingOpsManager, projectWorkspaceTabs, setCRDTBridge } from '~/lib/crdt'
-import { hlcIsZero } from '~/lib/crdt/hlc'
+import { assertNever } from '~/lib/assertNever'
+import { KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createFileTabPathsStore } from '~/lib/fileTabPaths'
-import { createIdentityCache } from '~/lib/identityCache'
-import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
@@ -56,81 +44,112 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
+import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabToInfo, isSameRepo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
-import { createTabStore } from '~/stores/tab.store'
-import { createTunnelStore } from '~/stores/tunnel.store'
-import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
+import { agentTabToInfo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
+import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
+import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
+import { createTabView } from '~/stores/tabView'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
-import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import { AppShellDialogs } from './AppShellDialogs'
 import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { GridPopoverHostProvider } from './GridPopoverHost'
+import { handleBranchChanged } from './handleBranchChanged'
 import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
+import { mruAgentEditorDeps } from './mruAgentEditorDeps'
+import { resolveActiveWorkspace } from './resolveActiveWorkspace'
+import { createTabSelectionRestorer } from './restoreTabSelection'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
-import { applyGitStatusToTabs, syncGitStatusToTabs, tabStoreTarget } from './syncGitStatusToTabs'
+import { syncGitStatusToTabs, tabStampTarget } from './syncGitStatusToTabs'
+import { activeWorkspaceKey } from './tabPersistenceKeys'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
+import { useCrdtRuntime } from './useCrdtRuntime'
 import { useCrossWorkspaceMove } from './useCrossWorkspaceMove'
 import { useFloatingWindowOps } from './useFloatingWindowOps'
 import { useFocusInvariant } from './useFocusInvariant'
-import { createOpsSubmitter } from './useOpsSubmitter'
 import { useTabHydrators } from './useTabHydrators'
 import { useTabOperations } from './useTabOperations'
 import { useTabPersistence } from './useTabPersistence'
 import { useTerminalOperations } from './useTerminalOperations'
 import { useTileDragDrop } from './useTileDragDrop'
 import { useTurnEnd } from './useTurnEnd'
-import { useUserEvents } from './useUserEvents'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
-import { useWorkspaceHydration } from './useWorkspaceHydration'
+import { useWorkerSection } from './useWorkerSection'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
-import { useWorkspaceRestore } from './useWorkspaceRestore'
-import { useWorkspaceSwitchSnapshot } from './useWorkspaceSwitchSnapshot'
-import { isWorkspaceNotFound } from './workspaceNotFound'
+import { createWorkspaceSwitcher } from './workspaceSwitcher'
 
-// Stable empty-array reference for the inactive-workspace tile-order
-// path. Returning a fresh `[]` per call would defeat the WeakMap-based
-// memoization that keeps `WorkspaceTabTree`'s `buildTree` memo stable.
-const EMPTY_TILE_ORDER: string[] = []
-
-const log = createLogger('AppShell')
+const log = createLogger('shell')
 
 export const AppShell: Component = () => {
   const auth = useAuth()
   const userId = () => auth.user()?.id ?? ''
   const workspace = useWorkspace()
   const preferences = usePreferences()
-  const params = useParams<{ workspaceId?: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const navigate = useNavigate()
 
   printConsoleBanner()
 
   const workspaceStore = createWorkspaceStore()
   const sectionStore = createSectionStore()
-  const registry = createWorkspaceStoreRegistry()
 
-  // Active stores: these stable instances are used throughout AppShell.
-  // On workspace switch, useWorkspaceRestore saves their state to the old
-  // bundle in the registry and restores from the new bundle (or fetches).
+  // Per-(workspace_id) active-client tracker fed by PresenceUpdate events off
+  // the `/ws/userevents` WebSocket. Created here because the CRDT runtime feeds
+  // it and `handleTurnEnd` reads it to gate the turn-end ding.
+  const activeClient = createActiveClientStore()
+
+  // Late-bound reload trigger for workspace-lifecycle events. Bound once
+  // `useWorkspaceLoader` is instantiated further down; until then a lifecycle
+  // event is a no-op, which is safe because the loader's own `onMount` seeds
+  // the initial `listWorkspaces`.
+  let reloadWorkspacesOnLifecycle: () => void = () => {}
+
+  const {
+    crdtState,
+    projection,
+    userEvents,
+    effectiveClientId,
+    ownClientId,
+    batchResultHandlers,
+  } = useCrdtRuntime({
+    userId: () => userId(),
+    getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
+    activeClient,
+    onWorkspaceLifecycleChanged: () => reloadWorkspacesOnLifecycle(),
+  })
+
+  // Stores for what the CRDT does NOT carry. Tab metadata is keyed by tab id —
+  // globally unique across the account — so one flat store holds every
+  // workspace's worker-sourced fields with no active/inactive split.
+  const tabMetadata = createTabMetadataStore()
+  const tabView = createTabView({ projection, state: crdtState, metadata: tabMetadata })
+  // Which tab is selected, per workspace and per tile. Client-local and
+  // deliberately unsynced; survives a workspace switch in memory and a reload
+  // via useTabPersistence.
+  const selection = createTabSelectionStore(tabView, tabMetadata)
   const chatStore = createChatStore()
-  const tabStore = createTabStore()
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
-  const layoutStore = createLayoutStore()
-  const floatingWindowStore = createFloatingWindowStore()
+  const layoutStore = createLayoutStore({
+    getWorkspaceId: () => workspace.activeWorkspaceId(),
+    projection,
+  })
+  const floatingWindowStore = createFloatingWindowStore({
+    getWorkspaceId: () => workspace.activeWorkspaceId(),
+    projection,
+  })
   useFocusInvariant({ layoutStore, floatingWindowStore })
   const gitFileStatusStore = createGitFileStatusStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
-  const [workspaceLoading, setWorkspaceLoading] = createSignal(true)
+  // The watchdog gave up waiting for the bootstrap. Distinct from "not ready":
+  // it only says the wait is over, never that the workspace arrived.
+  const [bootstrapTimedOut, setBootstrapTimedOut] = createSignal(false)
   const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
@@ -151,58 +170,10 @@ export const AppShell: Component = () => {
   // not-yet-checked / non-macOS).
   const [cliPathInfo, setCliPathInfo] = createSignal<(CliPathStatus & { state: 'missing' | 'mismatch' }) | null>(null)
 
-  // Worker section state
-  const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
-  const [workers, setWorkers] = createSignal<Worker[]>([])
-  const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
-  const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
-  const [showRegisterWorker, setShowRegisterWorker] = createSignal(false)
-  const tunnelStore = createTunnelStore()
-  // listWorkers() returns freshly-deserialized objects on every call.
-  // Stabilize identity by id so the sidebar's <For> doesn't unmount and
-  // remount every worker row on each refresh / WORKERS_CHANGED push.
-  const workerIdentity = createIdentityCache<Worker>({
-    keyOf: w => w.id,
+  const workerSection = useWorkerSection({
+    getUserId: () => userId(),
+    keyPinConfirmDialog,
   })
-
-  // Fetch workers list.
-  async function fetchWorkers() {
-    if (!userId())
-      return
-    try {
-      const resp = await workerClient.listWorkers({})
-      const stable = workerIdentity.stabilize(resp.workers)
-      setWorkers(stable)
-      for (const w of stable) {
-        if (w.online) {
-          workerInfoStore.fetchWorkerInfo(w.id)
-        }
-      }
-    }
-    catch {
-      // Best effort — sidebar will show empty workers list.
-    }
-  }
-
-  // Fetch workers when the authenticated user is known.
-  createEffect(() => {
-    userId() // track
-    void fetchWorkers()
-  })
-
-  // Re-fetch workers when the Hub sends a WorkersChanged control frame.
-  channelManager.onHubControl((frame) => {
-    if (frame.events.includes(HubControlEvent.WORKERS_CHANGED)) {
-      void fetchWorkers()
-    }
-  })
-
-  // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).
-  setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
-    new Promise((resolve) => {
-      keyPinConfirmDialog.open({ workerId, expectedFingerprint, actualFingerprint, resolve })
-    }),
-  )
 
   // Tell the channel manager who this page thinks it is, so an open the Hub
   // authenticates as someone else fails instead of silently driving that user's
@@ -229,232 +200,35 @@ export const AppShell: Component = () => {
   // Drives sound playback, git file status refresh, and directory tree refresh.
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
-  // Per-(workspace_id) active-client tracker fed by PresenceUpdate
-  // events off the `/ws/userevents` WebSocket (see `useUserEvents`).
-  // AppShell.handleTurnEnd consults this to gate the turn-end ding so
-  // only the focused client plays it.
-  const activeClient = createActiveClientStore()
   // Cache of file-tab paths fed by WatchWorkspacePrivateEvents
   // bootstrap replay + GetFileTabPath fallback. Components consult
   // this for FILE-tab titles instead of asking the hub.
   const fileTabPaths = createFileTabPathsStore()
 
-  // Stable client_id for this browser session. Used as the HLC author
-  // for op-stamping and as the `op_id` salt — the local random nanoid
-  // gives every pending op a deterministic identity for echo dedup.
+  // No reconciler. `tabView` joins the projection with `tabMetadata` on read, so
+  // there is no second copy of tile_id / position / worker_id to drift, nothing
+  // to drop or re-add on a remote change, and no active-workspace filter — every
+  // workspace's tabs are derived from the same state at the same time.
   //
-  // **The active-client gate does NOT compare against this.** The hub
-  // identifies subscribers by session id / bearer-token id (so it can
-  // refuse cross-tab spoofing), which never matches the local nanoid.
-  // The hub returns the subscriber's effective identity in
-  // `UserMaterialized.subscriber_client_id`; the gate compares
-  // `activeClient.activeFor(wsId)` against `effectiveClientId()`.
-  const ownClientId = (() => {
-    const cur = sessionStorageGet<string>(KEY_CLIENT_ID)
-    if (cur)
-      return cur
-    const fresh = `c-${randomUUID()}`
-    sessionStorageSet(KEY_CLIENT_ID, fresh)
-    return fresh
-  })()
-
-  // Effective identity reported by the hub via UserMaterialized; the
-  // active-client gate compares broadcast `active_client_id` against
-  // this. Empty until bootstrap; gate treats empty as "unknown — allow"
-  // so a sole client plays its ding even before the first heartbeat
-  // broadcast settles.
-  const [effectiveClientId, setEffectiveClientId] = createSignal('')
-  // Local CRDT pending manager + clock. Constructed lazily once the
-  // user id is known; useUserEvents seeds the bootstrap from
-  // UserMaterialized and useOpsSubmitter drives commits.
-  const [pendingMgr, setPendingMgr] = createSignal<PendingOpsManager | null>(null)
-  // Reactive version counter that bumps on every PendingOpsManager
-  // state mutation (submit / consumeRemote / consumeBatch* /
-  // consumeEntity* / bootstrap). Subscribed by `bridge.speculativeState`
-  // so memoized projections in the layout / floating-window / tab
-  // stores re-derive when ops land. The PendingOpsManager mutates
-  // its UserCrdtState in place; this signal is how Solid observes it.
-  const [pendingVersion, setPendingVersion] = createSignal(0)
-  const bumpPending = () => setPendingVersion(v => v + 1)
-  createEffect(() => {
-    const uid = userId()
-    if (!uid) {
-      setPendingMgr(null)
-      return
-    }
-    setPendingMgr(new PendingOpsManager(uid, new HLCClock(ownClientId), bumpPending))
-  })
-
-  // Late-bound reload trigger for workspace-lifecycle events. Bound
-  // once `useWorkspaceLoader` is instantiated later in this component;
-  // until then, lifecycle events arriving before mount complete are a
-  // no-op (the hook's own `onMount` seeds the initial `listWorkspaces`,
-  // so we don't miss the seed list).
-  let reloadWorkspacesOnLifecycle: () => void = () => {}
-
-  // Hook for batch-result callbacks (cross-workspace move rollback,
-  // etc.). Populated by the submitter and consulted by AppShell-level
-  // handlers that need to react to specific batch ids.
-  const batchResultHandlers = new Map<string, (outcome: BatchOutcome) => void>()
-
-  // Open the per-user `/ws/userevents` subscription once the user id is
-  // known. The hook stays live across workspace switches; per-
-  // workspace stores slice the materialized state instead.
-  const userEvents = useUserEvents({
-    userId: () => userId(),
-    activeClient,
-    pending: () => pendingMgr(),
-    onWorkspaceLifecycleChanged: () => reloadWorkspacesOnLifecycle(),
-    onSubscriberClientId: id => setEffectiveClientId(id),
-    onPendingDropped: () => {
-      // EntityRemoved dropped at least one pending op (a redacted
-      // entity left the visible set with a local mutation still in
-      // flight). Surface a warn-toast so the user understands their
-      // recent action didn't take effect.
-      showWarnToast('A pending change was discarded because the affected item left your view.')
-    },
-    onFatalClose: () => {
-      // The user-events stream closed with a terminal code (e.g. the session
-      // expired / access was revoked), so useUserEvents stopped retrying rather
-      // than loop. Tell the user to reload instead of silently going stale.
-      showWarnToast('Live updates disconnected. Reload the page to reconnect.')
-    },
-  })
-
-  // 16ms aggregator for op submission. Stores call into the CRDT
-  // bridge below; the submitter handles the SubmitOps RPC + per-
-  // batch commit/reject result dispatch, including:
-  //   - epoch_required → reconnect + retry (refresh currentEpoch)
-  //   - stale_epoch → reconnect + warn-toast (no auto-retry)
-  //   - any other rejection → drop + warn-toast keyed by reason
-  //   - transport timeout → retry same op_ids (principal-aware dedup)
-  const opsSubmitter = createOpsSubmitter({
-    pending: () => pendingMgr(),
-    reconnect: () => userEvents.reconnect(),
-    onBatchResult: (batchId, outcome) => {
-      const cb = batchResultHandlers.get(batchId)
-      if (cb)
-        cb(outcome)
-    },
-  })
-
-  // Wire the global CRDT bridge so the imperative stores can emit op
-  // batches without threading every dependency through their
-  // constructors. Re-installed on every reactive change to the
-  // pending manager / user id.
-  createEffect(() => {
-    const mgr = pendingMgr()
-    const uid = userId()
-    if (!mgr || !uid) {
-      setCRDTBridge(null)
-      return
-    }
-    setCRDTBridge({
-      workspaceId: () => workspace.activeWorkspaceId() ?? null,
-      enqueue: (batch) => {
-        opsSubmitter.enqueue(batch)
-        return batch.batchId
-      },
-      clock: () => mgr.clock,
-      originClientId: () => ownClientId,
-      speculativeState: () => {
-        // Read the version signal so memoized consumers re-derive on
-        // every mutation. The manager updates its state in place; the
-        // version bump is the only Solid-observable signal.
-        pendingVersion()
-        return mgr.state.speculativeState
-      },
-    })
-  })
-
-  // Snapshot the OUTGOING workspace's tabStore into the registry the
-  // moment activeWorkspaceId changes — BEFORE the reconciler effect
-  // below mutates tabStore.state.tabs to the new workspace's tabs.
-  // Without this, the reconciler runs first (it's registered earlier
-  // than useWorkspaceRestore), wipes the previous workspace's tabs
-  // from tabStore, and useWorkspaceRestore's snapshot-save then
-  // captures the NEW workspace's tabs as the OUTGOING workspace's
-  // cached state — corrupting every subsequent workspace-switch-back.
-  // (Snapshot-outgoing for the previous workspace happens inside the
-  // URL → activeWorkspaceId sync effect below, so it fires SYNCHRONOUSLY
-  // before any other effect observes the activeWorkspaceId change. This
-  // matters because Solid's effect-scheduling order for downstream
-  // signal-dependents isn't strictly "earlier-registered first" in
-  // practice — useWorkspaceRestore's createEffect was firing first and
-  // calling tabStore.clear() before the snapshot effect could read the
-  // outgoing workspace's tabs.)
-
-  // Reconcile the local `tab.store.tabs` against the CRDT projection
-  // every time the speculative state changes (op echo, remote op,
-  // bootstrap). The reconciler:
-  //   - drops tabs the projection no longer renders in the active
-  //     workspace (e.g. cross-workspace move, remote tombstone);
-  //   - adds tabs the projection has but the local store doesn't
-  //     yet (e.g. another client opened an agent / file tab);
-  //   - syncs CRDT-driven fields (tile_id, position, worker_id) when
-  //     they diverge.
-  // All mutations are silent so the reconciler doesn't re-emit ops
-  // it just absorbed.
-  createEffect(() => {
-    // Track ONLY the signals that should re-run reconciliation:
-    // pendingVersion (CRDT op applied), pendingMgr (bridge wired),
-    // activeWorkspaceId (workspace switch). Without `untrack` around
-    // the body, the `state.tabs` reads inside `reconcileFromProjection`
-    // subscribe this effect to tabStore mutations — so an optimistic
-    // `tabStore.addTab` (cross-workspace move, file open, etc.)
-    // immediately re-runs the reconciler against a CRDT projection
-    // that hasn't been updated yet. Step 1 then removes the
-    // optimistic tab as "gone from this workspace", and when the
-    // canonical move op finally lands, step 2 re-adds it as a bare
-    // tab (no title / agentProvider / git fields). Reproduces as a
-    // cross-workspace dragged tab showing its nanoid + generic icon
-    // until the user refreshes the page.
-    pendingVersion()
-    const mgr = pendingMgr()
-    const wsId = workspace.activeWorkspaceId()
-    if (!mgr || !wsId)
-      return
-    untrack(() => {
-      const state = mgr.state.speculativeState
-      if (!state)
-        return
-      const renderedTabs = projectWorkspaceTabs(state, wsId)
-      const knownIds = new Set(Object.keys(state.tabs))
-      // Identify tabs whose CRDT record is alive but whose tile_id
-      // currently points at a node we haven't installed locally yet.
-      // The hub strips newly-created node ops out of the Batch frame
-      // (they're pre-invisible / post-visible) and ships them as
-      // separate EntityMaterialized frames; between the Batch frame
-      // landing and the EntityMaterialized frames landing, the tab's
-      // tileId is a dead-end pointer. Telling the reconciler about
-      // these lets it keep the tab in the local store instead of
-      // dropping then re-adding it as a bare CRDT-only row (which
-      // throws away worker-supplied title / agent metadata and re-
-      // sorts the tabstrip by tab_id rather than position).
-      const transientUnresolvableTabIds = new Set<string>()
-      for (const t of Object.values(state.tabs)) {
-        if (!hlcIsZero(t.tombstoneAt))
-          continue
-        const tileId = t.tileId?.value ?? ''
-        if (tileId === '' || !state.nodes[tileId])
-          transientUnresolvableTabIds.add(t.tabId)
-      }
-      tabStore.reconcileFromProjection({
-        workspaceId: wsId,
-        renderedTabs,
-        crdtKnownTabIds: knownIds,
-        transientUnresolvableTabIds,
-      })
-    })
-  })
+  // A tab whose tile_id names a node this client does not have yet is handled
+  // inside `tabView`, by holding it at its last resolved placement. The hub
+  // orders a split's EntityMaterialized frames before the batch that anchors a
+  // tab to them, so the routine make-grid race is gone; see `tabView.ts` for
+  // what genuinely remains.
 
   // Hydrate CRDT-projected tabs whose worker-side metadata (file path,
   // agent record, terminal title) hasn't arrived yet. The hook fires
   // off one best-effort fetch per pending tab; see useTabHydrators for
   // the per-type predicates.
   useTabHydrators({
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
     fileTabPaths,
+    // Worker liveness, so a worker coming back re-arms the tabs that gave up on
+    // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
+    // no other way to learn it, because a worker reconnecting changes nothing
+    // about the candidate set.
+    onlineWorkerIds: () => new Set(workerSection.workers().filter(w => w.online).map(w => w.id)),
   })
 
   // Mount the input-driven heartbeat for the active workspace. The
@@ -484,8 +258,8 @@ export const AppShell: Component = () => {
   // mirrors rename / register / revoke events into the local stores.
   // See useWorkerPrivateStreams for the per-worker open/close logic.
   useWorkerPrivateStreams({
-    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
     fileTabPaths,
   })
 
@@ -507,15 +281,16 @@ export const AppShell: Component = () => {
   // Streaming connection management
   useWorkspaceConnection({
     chatStore,
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
+    selection,
     controlStore,
     agentSessionStore,
-    registry,
     settingsLoading,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getWorkerId: () => {
       const tileId = layoutStore.focusedTileId()
-      const tab = tileId ? tabStore.getActiveTabForTile(tileId) : null
+      const tab = tileId ? selection.activeTabForTile(tileId) ?? null : null
       return tab?.workerId ?? ''
     },
     onTurnEnd: handleTurnEnd,
@@ -531,14 +306,15 @@ export const AppShell: Component = () => {
     }
   })
 
-  // Constant-true today: `(app).tsx` has exactly two leaves (`/` and
-  // `/workspace/:workspaceId`) and hasWorkspaceDesktopChrome matches both, so
-  // every guard below always passes. It is kept, not inlined away, because it
-  // is the predicate the documented extension path in `(app).tsx` names: adding
-  // a non-workspace leaf under `(app)/` is a type error at the layout (AppShell
-  // takes no children), but nothing would stop these three EFFECTS from running
-  // on it -- and one of them redirects a childless route straight into a
-  // workspace. Deleting them would make that extension silently hostile.
+  // Constant-true today: `(app).tsx` has exactly one leaf (`/`) and
+  // hasWorkspaceDesktopChrome matches it, so every guard below always passes.
+  // It is kept, not inlined away, because it is the predicate the documented
+  // extension path in `(app).tsx` names: adding a non-workspace leaf under
+  // `(app)/` is a type error at the layout (AppShell takes no children), but
+  // nothing would stop these three EFFECTS from running on it -- and one of
+  // them activates a workspace, mounting the whole per-workspace machinery
+  // (CRDT bootstrap, tab fetch, presence heartbeat) on a route that wanted
+  // none of it. Deleting them would make that extension silently hostile.
   const isWorkspaceRoute = createMemo(() => hasWorkspaceDesktopChrome(location.pathname))
 
   // macOS-only: when the user enters the workspace view in Solo mode, ask
@@ -568,25 +344,24 @@ export const AppShell: Component = () => {
     })()
   })
 
-  // True when the URL has a workspace ID but it doesn't exist in the loaded
-  // list. See `isWorkspaceNotFound` for why a failed load is not "not found".
-  const workspaceNotFound = createMemo(() => isWorkspaceNotFound({
-    workspaceId: params.workspaceId,
-    userId: userId(),
-    workspaceState: workspaceStore.state,
-  }))
-
-  // Sync workspaceId from URL params to WorkspaceContext, snapshotting
-  // the outgoing workspace's stores into the registry BEFORE the
-  // activeWorkspaceId signal flips. See useWorkspaceSwitchSnapshot for
-  // why the snapshot must run before the downstream restore effects.
-  useWorkspaceSwitchSnapshot({
-    getURLWorkspaceId: () => params.workspaceId,
-    tabStore,
-    layoutStore,
-    registry,
+  // The only writer of WorkspaceContext's activeWorkspaceId. It flips the
+  // signal and persists the new selection under this user's key — see
+  // workspaceSwitcher for why the write has to happen there rather than in an
+  // effect. Terminal scrollback is NOT captured here: a workspace switch is
+  // only one of the ways a terminal's view goes away, so the capture lives in
+  // `disposeTerminalInstance`, the teardown chokepoint every path reaches.
+  const switchWorkspace = createWorkspaceSwitcher({
+    getUserId: () => userId(),
     setActiveWorkspaceId: next => workspace.setActiveWorkspaceId(next),
   })
+
+  // Where a disposing terminal's scrollback lands. Registered once, here,
+  // because `TerminalView` owns the xterm instances but must not know about the
+  // store graph — the same seam as `setCRDTBridge`. Every teardown path routes
+  // through `disposeTerminalInstance`, so a workspace switch, a tab close, a
+  // cross-workspace move and a floating-window close all preserve the buffer.
+  setTerminalScreenSink((tabId, screen) => tabMetadata.patch(tabId, { screen }))
+  onCleanup(() => setTerminalScreenSink(null))
 
   // Workspace & section loading
   const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
@@ -601,33 +376,50 @@ export const AppShell: Component = () => {
     void loadSections()
   }
 
-  // Auto-activate workspace when navigating to home with no workspace selected
+  // Keep the active workspace pointed at one this user actually has. Runs on
+  // load (nothing selected yet -> reopen where they left off) and whenever the
+  // list changes underneath the selection (a delete from another device ->
+  // fall back to a sibling, or to nothing when none is left). Since the URL no
+  // longer carries a workspace id, this effect is the whole of that policy;
+  // `resolveActiveWorkspace` holds the reasoning, including why an incomplete
+  // or failed load must never move the user.
+  //
+  // This serializes a cold load behind `listWorkspaces`: nothing activates
+  // until the list proves the saved id is still this user's. Adopting the saved
+  // id optimistically would recover that wait and is deliberately not done — a
+  // stale id would address a workspace the user no longer has, turning a silent
+  // fallback into a permission-denied toast on every cold start.
   createEffect(() => {
     if (!isWorkspaceRoute())
       return
-    if (params.workspaceId)
-      return
-    const workspaces = workspaceStore.state.workspaces
-    if (workspaces.length === 0)
-      return
     // Skip while the NewWorkspaceDialog is open. The dialog races a
     // multi-step async flow (CreateWorkspace → openAgent → seedTab →
-    // registry pre-seed) against the WorkspaceCreated event the hub
-    // broadcasts inline during CreateWorkspace; the event triggers
-    // workspaceStore refresh which would otherwise fire this effect
-    // and navigate to the new workspace BEFORE the dialog finishes
-    // its pre-seed. `useWorkspaceRestore` then runs with no cached
-    // snapshot, `tabStore.clear()`s, and the dialog's later pre-seed
-    // lands on already-emptied stores. The freshly-opened agent ends
-    // up rendered as a bare CRDT-projection tab (raw id, "Agent not
-    // found").
+    // metadata seed) against the WorkspaceCreated event the hub
+    // broadcasts inline during CreateWorkspace. Activating the new
+    // workspace mid-flow would run the one-shot selection restore
+    // against a workspace whose agent tab has not been placed yet,
+    // burning the attempt and landing the user on the fallback tab.
     if (newWorkspaceDialog.value())
       return
-    const savedId = sessionStorageGet<string>(KEY_ACTIVE_WORKSPACE)
-    const target = (savedId && workspaces.some(w => w.id === savedId))
-      ? savedId
-      : workspaces[0].id
-    navigate(`/workspace/${target}`, { replace: true })
+    const uid = userId()
+    const decision = resolveActiveWorkspace({
+      activeWorkspaceId: workspace.activeWorkspaceId(),
+      userId: uid,
+      workspaceState: workspaceStore.state,
+      savedWorkspaceId: uid ? localStorageGet<string>(activeWorkspaceKey(uid)) : undefined,
+    })
+    switch (decision.kind) {
+      case 'keep':
+        return
+      case 'adopt':
+        switchWorkspace(decision.workspaceId)
+        return
+      case 'clear':
+        switchWorkspace(null)
+        return
+      default:
+        assertNever(decision)
+    }
   })
 
   // Dynamic page title
@@ -669,7 +461,7 @@ export const AppShell: Component = () => {
   // Active tab derived state
   const activeTab = createMemo(() => {
     const tileId = layoutStore.focusedTileId()
-    return tileId ? tabStore.getActiveTabForTile(tileId) : null
+    return tileId ? selection.activeTabForTile(tileId) ?? null : null
   })
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
@@ -700,33 +492,52 @@ export const AppShell: Component = () => {
     return { workerId, workingDir: tab.workingDir ?? '', homeDir, gitToplevel }
   }
 
-  // Refresh git file status when a turn ends. Another agent's turn can
-  // fire while the active tab is still in its phase-0 window, so gate on
-  // activeTabReady — see its definition for the rationale.
+  /**
+   * Point the git-status singleton at the active tab's working tree.
+   *
+   * Two effects need exactly this — a turn ending, and the active tab's
+   * context changing — and each used to hand-write the same three steps 460
+   * lines apart. The gate is the subtle part: another agent's turn can fire
+   * while the active tab is still inside its phase-0 window, so both must
+   * defer until `activeTabReady` (see its definition for why).
+   *
+   * `clearWhenUnresolved` is the one genuine difference. A context change to a
+   * tab with no working tree means there is nothing to show and the previous
+   * repo's status must go; a turn ending in that state means nothing at all and
+   * must leave the singleton alone.
+   */
+  const refreshGitStatusForActiveTab = (opts?: { clearWhenUnresolved?: boolean }) => {
+    if (!activeTabReady())
+      return
+    const ctx = getCurrentTabContext()
+    if (ctx.workerId && ctx.workingDir)
+      gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
+    else if (opts?.clearWhenUnresolved)
+      gitFileStatusStore.clear()
+  }
+
+  // Refresh git file status when a turn ends.
   createEffect(on(
     () => turnEndTrigger(),
     (_, prev) => {
       if (prev === undefined)
         return
-      if (!activeTabReady())
-        return
-      const ctx = getCurrentTabContext()
-      if (ctx.workerId && ctx.workingDir) {
-        gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
-      }
+      refreshGitStatusForActiveTab()
     },
   ))
 
-  syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+  syncGitStatusToTabs({ gitFileStatusStore, view: tabView, metadata: tabMetadata })
 
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
     const agentPrefix = `${TabType.AGENT}:`
-    const mruKey = tabStore.findMruMatching(k => k.startsWith(agentPrefix))
+    const mruKey = tabView.mruOrder(workspace.activeWorkspaceId() ?? '')
+      .map(t => tabKey(t))
+      .find(k => k.startsWith(agentPrefix))
     if (!mruKey)
       return { workingDir: '', homeDir: '' }
     const agentId = mruKey.slice(agentPrefix.length)
-    const agent = tabStore.getAgentTab(agentId)
+    const agent = tabView.getAgentTab(agentId)
     return {
       workingDir: agent?.workingDir ?? '',
       homeDir: workerInfoStore.getHomeDir(agent?.workerId ?? ''),
@@ -749,7 +560,10 @@ export const AppShell: Component = () => {
     agentSessionStore,
     chatStore,
     controlStore,
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
+    selection,
+    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     layoutStore,
     settingsLoading,
     isActiveWorkspaceMutatable,
@@ -763,7 +577,9 @@ export const AppShell: Component = () => {
 
   // Terminal operations hook
   const termOps = useTerminalOperations({
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
+    selection,
     layoutStore,
     activeWorkspace,
     isActiveWorkspaceMutatable,
@@ -778,7 +594,9 @@ export const AppShell: Component = () => {
   // the handle into the shared `dialogs` record so AppShellDialogs sees
   // one flat dialog map.
   const tabOps = useTabOperations({
-    tabStore,
+    view: tabView,
+    metadata: tabMetadata,
+    selection,
     chatStore,
     layoutStore,
     floatingWindowStore,
@@ -790,7 +608,6 @@ export const AppShell: Component = () => {
     getScrollState: () => getScrollStateRef()?.(),
     setFileTreePath,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
-    registry,
   })
   // Build the final dialog map now that tabOps owns its handle.
   const dialogs: AppShellDialogStates = {
@@ -808,59 +625,142 @@ export const AppShell: Component = () => {
   isAgentClosing = (agentId: string) =>
     tabOps.closingTabKeys().has(tabKey({ type: TabType.AGENT, id: agentId }))
 
-  // Lazy-load tabs + agent/terminal metadata for a non-active
-  // workspace when its sidebar tree is expanded. The hook owns the
-  // inflight dedup (so two sidebar instances firing the same expand
-  // effect coalesce) and writes the full snapshot to the registry on
-  // success. Declared before useWorkspaceRestore so the restore path
-  // can fire it for sibling workspaces in the same microtask as the
-  // active workspace's ListTabs — the batcher coalesces them.
-  const { expand: handleExpandWorkspace } = useWorkspaceHydration({
-    registry,
+  // Fetch the worker-side half of a workspace's tabs: titles, agent status,
+  // terminal screens, git fields. Structure needs no fetching — the projection
+  // has every workspace's tabs already — so this is only ever about what the
+  // CRDT does not carry.
+  //
+  // `useTabHydrators` above already covers this, for EVERY workspace: its
+  // predicates run over `view.all()`, which is the whole projection now, and it
+  // carries the inflight-dedupe and per-worker exponential backoff that a
+  // fetch-on-activation effect does not. Adding a second, unguarded path here
+  // meant a worker that was still handshaking got hammered on every reactive
+  // tick until it closed the channel, which took the page down with it.
+  //
+  // So there is nothing left to trigger per workspace, and no `onExpandWorkspace`
+  // fetch: expanding a sidebar row reveals tabs the hydrator is already working
+  // on.
+
+  // Has the CRDT bootstrap delivered this workspace? Shared by the restore and
+  // the persistence writers so the two cannot disagree: whatever the reader
+  // waits for is exactly what the writer waits for, and no third signal can let
+  // one run without the other. See `useTabPersistence`'s module doc.
+  const hasWorkspace = (wsId: string) => Boolean(projection()?.workspaces.has(wsId))
+
+  // Read back the per-client pointers a reload wiped, so the user lands on the
+  // tab they left rather than watching the MRU fallback pick one and then jump.
+  const restoreTabSelection = createTabSelectionRestorer({
+    selection,
+    layoutStore,
+    view: tabView,
+    hasWorkspace,
   })
 
-  // Workspace restore (load agents/terminals/tabs/layout on workspace change)
-  useWorkspaceRestore({
-    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    getUserId: () => userId(),
-    tabStore,
+  createEffect(() => {
+    const wsId = workspace.activeWorkspaceId()
+    if (!wsId || !userId())
+      return
+    // Reads the projection, so this effect re-runs as the CRDT bootstrap lands
+    // and the restore gets a real chance rather than one against an empty tree.
+    restoreTabSelection(wsId)
+    // Only AFTER the bootstrap has actually delivered this workspace.
+    //
+    // `activeWorkspaceId` comes from the `listWorkspaces` HTTP response, which
+    // normally lands BEFORE the CRDT bootstrap arrives over the userevents
+    // socket, so clearing the flag on that first pass would paint a placeholder
+    // tree as a real one — and `DesktopLayout`'s action handlers would emit ops
+    // naming a node the hub has never heard of.
+    //
+  })
+
+  /**
+   * Has the bootstrap delivered the workspace on screen? The ONE question the
+   * tiling area paints on.
+   *
+   * Asked of the projection rather than tracked in a flag, so nothing can force
+   * it true. That distinction is the whole point: `state.root` falls back to a
+   * locally-minted placeholder leaf when the projection has no tree, and
+   * painting that as real gives its action handlers a node the hub has never
+   * heard of. The "open a new agent / terminal" affordances create the worker
+   * resource BEFORE emitting the op, so the rejected batch leaves an orphaned
+   * agent behind with no tab to reach it by.
+   */
+  const workspaceReady = createMemo(() => {
+    const wsId = workspace.activeWorkspaceId()
+    return !!wsId && hasWorkspace(wsId)
+  })
+
+  // Watchdog: never leave the shell silent forever on a bootstrap that never
+  // arrives.
+  //
+  // Every step `workspaceReady` waits on can fail without raising anything.
+  // `listWorkspaces` is plain HTTP and can succeed while the userevents socket
+  // wedges or the hub restarts between the two calls; `useUserEvents` drops a
+  // bootstrap whose user id does not match with nothing but a console warning; a
+  // blocked network reconnects on a backoff forever. In every one of those
+  // states `activeWorkspace()` is truthy while the projection stays empty, and
+  // `DesktopLayout` renders neither the tiling area nor its no-workspace
+  // fallback (that one needs no active workspace) — so the user got a blank
+  // centre panel with no spinner, no error and no toast, reproducible across
+  // reloads.
+  //
+  // This reports the FAILURE rather than forcing the gate. Clearing a shared
+  // "loading" flag was the earlier shape, and it painted the placeholder tree as
+  // real; the projection still fills in if it does eventually land, and
+  // `workspaceReady` picks it up on its own.
+  createEffect(() => {
+    const wsId = workspace.activeWorkspaceId()
+    if (!wsId || workspaceReady())
+      return
+    setBootstrapTimedOut(false)
+    const timer = setTimeout(() => {
+      log.warn('CRDT bootstrap did not deliver workspace', { workspaceId: wsId })
+      setBootstrapTimedOut(true)
+    }, workspaceBootstrapTimeoutMs())
+    onCleanup(() => clearTimeout(timer))
+  })
+
+  useMetadataSweep(() => crdtState(), tabMetadata)
+  // The tile owners, not a third walk of their trees: both stores memoize
+  // "which tiles does this workspace have" per tick, and the sweep asks the
+  // same question. Wrapped rather than passed unbound so the call site does not
+  // depend on the stores being `this`-free.
+  useSelectionSweep(() => projection(), selection, {
+    tileOrderFor: wsId => layoutStore.tileOrderFor(wsId),
+    getAllTileIdsFor: wsId => floatingWindowStore.getAllTileIdsFor(wsId),
+  })
+  useLayoutFocusSweep(() => projection(), layoutStore)
+
+  // Mirror the selection / focus pointers to sessionStorage so the restore path
+  // above can re-activate the user's last tab and tile after a refresh. Gated
+  // on the same `hasWorkspace` the restore waits for — NOT on `workspaceLoading`,
+  // which the watchdog clears on a timer: that would let a wedged bootstrap
+  // authorise writes against empty state and delete the keys the restore has
+  // not read yet.
+  useTabPersistence({
+    selection,
     layoutStore,
     floatingWindowStore,
-    chatStore,
-    controlStore,
-    agentSessionStore,
-    registry,
-    setWorkspaceLoading,
-    onExpandWorkspace: handleExpandWorkspace,
-  })
-
-  // Mirror tabStore / layoutStore view-state to sessionStorage so the
-  // restore path above can re-activate the user's last tab / tile after
-  // a refresh. Gated by `workspaceLoading` so the restore's `clear()`
-  // can't blow away the keys mid-flight.
-  useTabPersistence({
-    tabStore,
-    layoutStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    workspaceLoading,
+    hasWorkspace,
   })
 
   // Tile drag-and-drop
-  const tileDrag = useTileDragDrop({ tabStore, layoutStore, floatingWindowStore })
+  const tileDrag = useTileDragDrop({ view: tabView, selection, layoutStore, floatingWindowStore })
 
-  const focusTile = (tileId: string) => focusTileShared(layoutStore, floatingWindowStore, tileId)
+  const focusTile = (tileId: string, workspaceId?: string) =>
+    focusTileShared(layoutStore, floatingWindowStore, tileId, workspaceId)
 
   // --- Floating window tab movement operations ---
   const { handleDetachTab, handleAttachTab, handleToggleFloatingTab, handleActivateFloatingWindow }
-    = useFloatingWindowOps({ layoutStore, floatingWindowStore, tabStore })
+    = useFloatingWindowOps({ layoutStore, floatingWindowStore, view: tabView, selection })
 
   const { move: handleCrossWorkspaceMove } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    tabStore,
+    view: tabView,
+    selection,
     layoutStore,
     floatingWindowStore,
-    registry,
-    pendingMgr,
     batchResultHandlers,
     focusTile,
   })
@@ -877,23 +777,29 @@ export const AppShell: Component = () => {
 
   const showTodos = createMemo(() => activeTabType() === TabType.AGENT && activeTodos().length > 0)
 
-  // Workspace selection navigates to URL
+  // Workspace selection switches in place — there is no per-workspace URL.
   const handleSelectWorkspace = (id: string) => {
     closeAllSidebars()
-    navigate(`/workspace/${id}`)
+    switchWorkspace(id)
   }
 
   // Handle workspace deletion
   const handleDeleteWorkspace = (deletedId: string, nextWorkspaceId: string | null) => {
+    // No selection cleanup here. `useSelectionSweep` reclaims the deleted
+    // workspace's pointers off the projection, which covers the delete this
+    // client issued AND one issued on another device -- the latter arrives as a
+    // lifecycle event with no local handler at all. Doing it here also never
+    // worked: by this point the RPC and two list refreshes have been awaited,
+    // so the hub's tombstone has usually already removed the workspace and the
+    // tile-id lookup returned nothing.
     if (workspace.activeWorkspaceId() !== deletedId)
       return
-    tabStore.clear()
-    if (nextWorkspaceId) {
-      navigate(`/workspace/${nextWorkspaceId}`)
-    }
-    else {
-      navigate('/')
-    }
+    // No store to clear: the workspace's tabs leave the projection when the hub
+    // tombstones them, and their metadata is swept by `retainOnly` on the next
+    // tick. Only the selection pointer has to be dropped explicitly.
+    // A null id clears the selection, which is what surfaces the
+    // "Create a new workspace..." empty state once the last one is gone.
+    switchWorkspace(nextWorkspaceId)
   }
 
   // Promise-based confirmation callbacks for workspace operations
@@ -910,7 +816,7 @@ export const AppShell: Component = () => {
   // Post-archive cleanup
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     if (workspace.activeWorkspaceId() === workspaceId) {
-      for (const tab of tabStore.state.tabs) {
+      for (const tab of tabView.forWorkspace(workspaceId)) {
         if (tab.type === TabType.AGENT)
           controlStore.clearAgent(tab.id)
       }
@@ -918,9 +824,22 @@ export const AppShell: Component = () => {
   }
 
   // Tile renderer (tab bars, tile content, editor panel)
+  // One binding, shared by the tile renderer's quote/mention handlers and the
+  // sidebar's file mention. All three used to hand-copy the same object literal.
+  const mruEditorDeps = mruAgentEditorDeps({
+    view: tabView,
+    selection,
+    layoutStore,
+    floatingWindowStore,
+    getWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
+  })
+
   const tileRenderer = createTileRenderer({
+    mruEditorDeps,
     stores: {
-      tabStore,
+      view: tabView,
+      metadata: tabMetadata,
+      selection,
       chatStore,
       controlStore,
       layoutStore,
@@ -965,7 +884,9 @@ export const AppShell: Component = () => {
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
   useShortcuts({
-    tabStore,
+    view: tabView,
+    selection,
+    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     layoutStore,
     tabOps,
     agentOps,
@@ -993,23 +914,16 @@ export const AppShell: Component = () => {
     customKeybindings: preferences.customKeybindings,
   })
 
-  // Per-`layout.root` cache for inactive-workspace tile orders. Keyed by
-  // the layout root's object identity so each `getTileOrderForWorkspace`
-  // call returns the same array reference as long as the registry's
-  // snapshot is unchanged. Without this cache, every call would allocate
-  // a fresh array via `getAllTileIds(root).flatMap(...)`, invalidating
-  // `WorkspaceTabTree`'s `buildTree` memo on each tick.
-  const inactiveTileOrderCache = new WeakMap<object, string[]>()
-
   // Sidebar element factories
   // Use getters for reactive values so that LeftSidebar/RightSidebar props
   // remain reactive when accessed through the intermediate opts object.
   const sidebarOpts = (): SidebarElementsOpts => ({
+    mruEditorDeps,
     get workspaces() { return workspaceStore.state.workspaces },
     get activeWorkspaceId() { return workspace.activeWorkspaceId() },
     sectionStore,
-    tabStore,
-    registry,
+    view: tabView,
+    selection,
     loadSections,
     onSelectWorkspace: handleSelectWorkspace,
     onNewWorkspace: (sectionId: string | null) => {
@@ -1033,34 +947,34 @@ export const AppShell: Component = () => {
     get turnEndTrigger() { return turnEndTrigger() },
     get activeTabReady() { return activeTabReady() },
     get activeFilePath() {
-      const active = tabStore.activeTab()
+      const active = selection.activeTabForWorkspace(workspace.activeWorkspaceId() ?? '')
       return active?.type === TabType.FILE ? active.filePath : undefined
     },
     get hasActiveFileTab() {
-      const active = tabStore.activeTab()
+      const active = selection.activeTabForWorkspace(workspace.activeWorkspaceId() ?? '')
       return active?.type === TabType.FILE
     },
-    get workers() { return workers() },
-    workerInfoFn: workerInfoStore.workerInfo,
-    channelStatusFn: workerChannelStatusStore.getStatus,
-    onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
-    onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
-    onRegisterWorker: () => setShowRegisterWorker(true),
+    get workers() { return workerSection.workers() },
+    workerInfoFn: workerSection.workerInfoFn,
+    channelStatusFn: workerSection.channelStatusFn,
+    onAddTunnel: workerSection.openAddTunnel,
+    onDeregisterWorker: workerSection.openWorkerSettings,
+    onRegisterWorker: workerSection.openRegisterWorker,
     onTabClick: (type: number, id: string) => {
       // Route through the same handler as the TabBar so the sidebar inherits
       // its scroll-state save, batching, background-chat trim, and post-
       // switch focus side effects. Sidebar tabs come straight from the
       // store, so a missing lookup means the tab raced a close — bail.
-      const tab = tabStore.getTabByKey(tabKey({ type: type as TabType, id }))
+      const tab = tabView.get(tabKey({ type: type as TabType, id }))
       if (tab)
         tabOps.handleTabSelect(tab)
     },
     tabItemOps: {
       onClose: tabOps.handleTabClose,
       onRename: (tab, title) => {
-        tabStore.updateTabTitle(tab.type, tab.id, title)
+        tabMetadata.patch(tab.id, { title })
         if (tab.type === TabType.AGENT) {
-          const workerId = tabStore.getAgentTab(tab.id)?.workerId ?? ''
+          const workerId = tabView.getAgentTab(tab.id)?.workerId ?? ''
           renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
             showWarnToast('Failed to rename agent', err)
           })
@@ -1068,33 +982,11 @@ export const AppShell: Component = () => {
       },
       get closingKeys() { return tabOps.closingTabKeys() },
     },
-    onExpandWorkspace: handleExpandWorkspace,
-    // Tile order for sidebar leaf ordering. The active workspace's
-    // layout lives on `layoutStore` (the registry snapshot is taken at
-    // workspace-switch time, so it's stale for the active workspace);
-    // other workspaces read from the snapshot. The active path uses
-    // the store's memoized accessor so the WorkspaceTabTree memo
-    // downstream isn't invalidated by a fresh array on every unrelated
-    // reactive tick. The inactive path caches by `root` reference so
-    // repeated calls return the same array identity for as long as the
-    // registry snapshot's layout tree is unchanged — without that, a
-    // fresh `flatMap`-allocated array would invalidate the downstream
-    // `buildTree` memo on every render tick. Returns `[]` when no
-    // layout is loaded yet (cold registry); the tree falls back to a
-    // position-only sort.
-    getTileOrderForWorkspace: (wsId: string) => {
-      if (wsId === workspace.activeWorkspaceId())
-        return layoutStore.getAllTileIds()
-      const root = registry.get(wsId)?.layout.root
-      if (!root)
-        return EMPTY_TILE_ORDER
-      const cached = inactiveTileOrderCache.get(root)
-      if (cached)
-        return cached
-      const fresh = getAllTileIds(root)
-      inactiveTileOrderCache.set(root, fresh)
-      return fresh
-    },
+    // Tile order for sidebar leaf ordering. No active/inactive fork: every
+    // workspace's tree is in the projection. Returns `[]` when no layout is
+    // projected yet (the CRDT bootstrap hasn't landed); the tree falls back to
+    // a position-only sort.
+    getTileOrderForWorkspace: (wsId: string) => layoutStore.tileOrderFor(wsId),
     onChangeBranch: ref => changeBranchDialog.open({
       workerId: ref.workerId,
       gitToplevel: ref.gitToplevel,
@@ -1119,17 +1011,7 @@ export const AppShell: Component = () => {
       const ctx = getCurrentTabContext()
       return `${ctx.workerId}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
     },
-    () => {
-      if (!activeTabReady())
-        return
-      const ctx = getCurrentTabContext()
-      if (ctx.workerId && ctx.workingDir) {
-        gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
-      }
-      else {
-        gitFileStatusStore.clear()
-      }
-    },
+    () => refreshGitStatusForActiveTab({ clearWhenUnresolved: true }),
   ))
 
   // The layer components close over the parent's scope so the outer JSX
@@ -1137,10 +1019,10 @@ export const AppShell: Component = () => {
   // of in-scope closures (handle*, tile/agent stores, layout store, etc.)
   // through props.
   //
-  // The decision is 2-way: workspaceNotFound → NotFoundPage; otherwise the
-  // workspace shell (desktop or mobile). There is deliberately no arm for a
-  // non-workspace route, and no route outlet — see the note on the `(app)`
-  // layout, which is where a third case would have to be reintroduced.
+  // The only decision left is desktop vs mobile. The "workspace not found"
+  // arm went away with the per-workspace URL, and there is deliberately no arm
+  // for a non-workspace route and no route outlet — see the note on the `(app)`
+  // layout, which is where such a case would have to be reintroduced.
 
   const MobileShellLayer = () => (
     <MobileLayout
@@ -1182,7 +1064,8 @@ export const AppShell: Component = () => {
           onMoveSectionServer={handleMoveSectionServer}
           activeWorkspaceId={workspace.activeWorkspaceId()}
           activeWorkspace={activeWorkspace}
-          workspaceLoading={workspaceLoading()}
+          workspaceReady={workspaceReady()}
+          bootstrapTimedOut={bootstrapTimedOut()}
           getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
           onNewWorkspace={() => {
             newWorkspaceDialog.open({
@@ -1209,7 +1092,8 @@ export const AppShell: Component = () => {
           floatingWindowLayer={(
             <FloatingWindowLayer
               floatingWindowStore={floatingWindowStore}
-              tabStore={tabStore}
+              view={tabView}
+              selection={selection}
               renderTile={tileRenderer.renderTile}
               onRatioChange={(windowId, splitId, ratios) => floatingWindowStore.updateRatios(windowId, splitId, ratios)}
               onGridRatiosChange={(windowId, gridId, axis, ratios) => floatingWindowStore.updateGridRatios(windowId, gridId, axis, ratios)}
@@ -1235,17 +1119,16 @@ export const AppShell: Component = () => {
   )
 
   return (
-    <TunnelProvider store={tunnelStore}>
-      <Show
-        when={workspaceNotFound()}
-        fallback={<WorkspaceShellLayer />}
-      >
-        <NotFoundPage
-          message="The workspace you're looking for doesn't exist or you don't have access."
-          linkHref="/"
-          linkText="Go to Dashboard"
-        />
-      </Show>
+    <TunnelProvider store={workerSection.tunnelStore}>
+      {/*
+        Rendered unconditionally. There used to be a "workspace not found" arm
+        here, for a URL naming a workspace the user does not own. No URL names
+        one any more: the active id is either this user's own click on their own
+        sidebar, or a saved id that `resolveActiveWorkspace` has already checked
+        against the loaded list — so the dead-end 404 has no way to be reached,
+        and the missing-workspace case became a fallback instead of a page.
+      */}
+      <WorkspaceShellLayer />
 
       <tileRenderer.CloseDialogs />
 
@@ -1260,148 +1143,35 @@ export const AppShell: Component = () => {
 
       <AppShellDialogs
         dialogs={dialogs}
-        onBranchChanged={(workerId, workingDir, newBranch) => {
-          // Immediate branch-label stamp on every tab in
-          // (workerId, gitToplevel): the active workspace's tabStore
-          // directly, every inactive workspace's registry snapshot
-          // indirectly. Without the registry fan-out, a Change branch
-          // opened on an inactive workspace's sidebar row would update
-          // the active workspace's matching tabs (rare, but possible
-          // when the same worker hosts both repos) yet leave the
-          // INACTIVE workspace's branch label stale until next switch.
-          tabStore.stampBranchOnTabs(workerId, workingDir, newBranch)
-          const activeWsId = activeWorkspace()?.id
-          for (const snap of registry.all()) {
-            if (snap.workspaceId === activeWsId)
-              continue
-            // No-op when no tab in the snapshot matches — keeps the
-            // registry version counter from churning every reactive
-            // consumer for an empty pass.
-            if (!snap.tabs.some(t => isSameRepo(t, workerId, workingDir) && t.gitBranch !== newBranch))
-              continue
-            registry.update(snap.workspaceId, s => ({
-              ...s,
-              tabs: s.tabs.map(t =>
-                isSameRepo(t, workerId, workingDir) && t.gitBranch !== newBranch
-                  ? { ...t, gitBranch: newBranch }
-                  : t,
-              ),
-            }))
-          }
-          // Diff-stats refresh. Active repo: refresh the file-status
-          // singleton so the file tree updates and syncGitStatusToTabs
-          // cascades into the active tabStore. Inactive repo: fetch
-          // directly and stamp tabs across active tabStore + every
-          // inactive registry snapshot, but don't touch the singleton
-          // (it tracks the focused repo's file tree, and a non-focused
-          // refresh would flip the tree view to a repo the user isn't
-          // looking at).
-          //
-          // ALWAYS stamp inactive workspaces' diff stats too — that's
-          // the only way an inactive workspace's sidebar diff badges
-          // can pick up post-branch-change state without waiting for
-          // its switch-in refresh.
-          const stampInactiveFromStatus = (status: {
-            repoRoot: string
-            toplevel: string
-            originUrl: string
-            currentBranch: string
-            files: GetGitFileStatusResponse['files']
-          }) => {
-            for (const snap of registry.all()) {
-              if (snap.workspaceId === activeWsId)
-                continue
-              applyGitStatusToTabs(
-                {
-                  tabs: snap.tabs,
-                  update: (predicate, fields) => registry.update(snap.workspaceId, s => ({
-                    ...s,
-                    tabs: s.tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t),
-                  })),
-                },
-                status,
-              )
-            }
-          }
-          if (isSameRepo(getCurrentTabContext(), workerId, workingDir)) {
-            void gitFileStatusStore.refresh(workerId, workingDir)
-              .then(() => {
-                // Reuse the singleton's freshly-refreshed state for the
-                // inactive fan-out rather than firing a second getGitFileStatus.
-                stampInactiveFromStatus({
-                  repoRoot: gitFileStatusStore.state.repoRoot,
-                  toplevel: gitFileStatusStore.state.toplevel,
-                  originUrl: gitFileStatusStore.state.originUrl,
-                  currentBranch: gitFileStatusStore.state.currentBranch,
-                  files: gitFileStatusStore.state.files,
-                })
-              })
-          }
-          else {
-            void getGitFileStatus(workerId, { workerId, path: workingDir })
-              .then((resp) => {
-                // Worker fallback: pre-toplevel builds (or response-shape
-                // regressions) leave toplevel empty; treat repoRoot as
-                // toplevel so the non-worktree case keeps working. Once
-                // the worker reliably ships toplevel, this fallback is
-                // dead code.
-                const status = {
-                  repoRoot: resp.repoRoot,
-                  toplevel: resp.toplevel || resp.repoRoot,
-                  originUrl: resp.originUrl,
-                  currentBranch: resp.currentBranch,
-                  files: resp.files,
-                }
-                applyGitStatusToTabs(tabStoreTarget(tabStore), status)
-                stampInactiveFromStatus(status)
-              })
-              .catch((err) => {
-                log.warn('failed to refresh git status for non-active repo', err)
-              })
-          }
-        }}
+        onBranchChanged={(workerId, gitToplevel, newBranch) => handleBranchChanged(
+          {
+            target: tabStampTarget(tabView, tabMetadata),
+            gitFileStatusStore,
+            getCurrentTabContext,
+          },
+          workerId,
+          gitToplevel,
+          newBranch,
+        )}
         activeWorkspace={activeWorkspace}
         getCurrentTabContext={getCurrentTabContext}
         agentOps={agentOps}
         termOps={termOps}
         tabOps={tabOps}
-        tabStore={tabStore}
+        view={tabView}
+        metadata={tabMetadata}
+        selection={selection}
         layoutStore={layoutStore}
         sectionStore={sectionStore}
-        registry={registry}
         focusEditor={() => focusEditorRef()?.()}
         loadWorkspaces={loadWorkspaces}
-        navigate={path => navigate(path)}
+        onSelectWorkspace={id => handleSelectWorkspace(id)}
         availableProviders={agentOps.availableProviders()}
         onRefreshProviders={agentOps.loadAvailableProviders}
       />
 
-      <Show when={deregisterTarget()}>
-        {target => (
-          <WorkerSettingsDialog
-            worker={target()}
-            onClose={() => setDeregisterTarget(null)}
-            onDeregistered={() => {
-              setWorkers(prev => prev.filter(w => w.id !== target().id))
-              setDeregisterTarget(null)
-            }}
-          />
-        )}
-      </Show>
+      <workerSection.Dialogs />
 
-      <Show when={addTunnelTarget()}>
-        {target => (
-          <AddTunnelDialog
-            workerId={target().id}
-            onClose={() => setAddTunnelTarget(null)}
-            onCreated={() => setAddTunnelTarget(null)}
-          />
-        )}
-      </Show>
-
-      <Show when={showRegisterWorker()}>
-        <RegisterWorkerDialog onClose={() => setShowRegisterWorker(false)} />
-      </Show>
     </TunnelProvider>
   )
 }

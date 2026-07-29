@@ -351,7 +351,7 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 // produces an AffectedEntities transition {Pre: wsID, Post: ""} (the
 // record is removed, and IsTombstoneOp excludes it so the post-pin
 // override does not fire). For a subscriber admitting wsID that is a
-// pre→post OUT transition, so broadcastBatchToSubscriber calls
+// pre→post OUT transition, so batchFanout.sendTo calls
 // removed(ref). buildEntityRemovedEvent has NO EntityKindWorkspaceRoot
 // arm (the proto EntityRemoved oneof has no workspace variant), so it
 // returns nil. The removed() closure must nil-guard before wrapping
@@ -731,4 +731,66 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 	assert.Equal(t, 1, rawWindowTombstones, "subscriber must receive the raw TombstoneFloatingWindow op")
 	assert.Equal(t, 1, rawNodeTombstones, "subscriber must also receive the raw TombstoneNode op for the window root")
 	assert.Equal(t, 0, entityRemoved, "tombstone-within-workspace must not fire EntityRemoved for either the window or its root node")
+}
+
+// TestBroadcast_MaterializedPrecedesBatchThatReferencesIt pins the frame order a
+// tile split depends on.
+//
+// `emitSplitTile` creates the new tile AND moves a tab onto it in ONE batch. For
+// every subscriber the tile's ops are stripped from the batch frame -- a
+// brand-new node has Pre == "" and IsAllowed("") is false, so `keep = pre &&
+// post` drops them -- while the tab's SetTabRegister(tile_id) survives. If the
+// batch went out first the client would apply a tab whose tile_id names a node
+// it does not have, resolveTileWorkspace could not reach a root, and the tab
+// would drop out of the projection until the node frame arrived.
+func TestBroadcast_MaterializedPrecedesBatchThatReferencesIt(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 180_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+	})
+	require.NoError(t, err)
+
+	snapshot, unsub := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
+	defer unsub()
+
+	split := &leapmuxv1.OpBatch{BatchId: "split", Ops: []*leapmuxv1.CrdtOp{
+		{OpId: "op-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "childA",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+		}}},
+		{OpId: "op-parent", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "childA",
+			Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root1"},
+		}}},
+		{OpId: "op-pos", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "childA",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "m"},
+		}}},
+		{OpId: "op-tab", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "childA"},
+		}}},
+	}}
+	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{split},
+	})
+	require.NoError(t, err)
+
+	matIdx, batchIdx := -1, -1
+	for i, evt := range snapshot() {
+		if m := evt.GetEntityMaterialized(); m != nil && m.GetNode().GetNodeId() == "childA" {
+			matIdx = i
+		}
+		if b := evt.GetBatch(); b != nil && b.GetBatchId() == "split" && batchIdx < 0 {
+			batchIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, matIdx, 0, "the new tile must arrive as EntityMaterialized")
+	require.GreaterOrEqual(t, batchIdx, 0, "the tab's tile_id op must arrive in a Batch frame")
+	assert.Less(t, matIdx, batchIdx,
+		"a batch's new tile must be materialized BEFORE the batch that anchors a tab to it")
 }

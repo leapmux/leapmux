@@ -1,76 +1,92 @@
-import type { WorkspaceSnapshot } from '~/stores/workspaceStoreRegistry'
+import type { BatchOutcome } from '~/components/shell/useOpsSubmitter'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { useCrossWorkspaceMove } from '~/components/shell/useCrossWorkspaceMove'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { createLayoutStore } from '~/stores/layout.store'
-import { createTabStore } from '~/stores/tab.store'
 import { isFileTab } from '~/stores/tab.types'
-import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
+import { emitAddTab } from '~/stores/tabOps'
 import { flush } from '~/test-support/async'
-import { installTestBridge } from '~/test-support/crdtBridge'
+import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
+import { createTestFloatingWindowStore, createTestLayoutStore, createTestTabStores } from '~/test-support/tabStores'
 
 // The cross-workspace move issues a worker RPC (then a CRDT batch) -- stub the RPCs so
-// these tests assert the OPTIMISTIC local move (the part the user sees immediately) and
-// which RPC fired, without a live worker. Only useCrossWorkspaceMove consumes these
-// modules in this graph, so a scoped replacement is safe.
+// these tests assert the move as the user sees it, without a live worker. Only
+// useCrossWorkspaceMove consumes these modules in this graph, so a scoped
+// replacement is safe.
 const mockMoveTabWorkspace = vi.fn((..._args: unknown[]) => Promise.resolve({}))
 const mockRelocateFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockListTabsForWorkspace = vi.fn((..._args: unknown[]) => Promise.resolve({ tabs: [] }))
+const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   moveTabWorkspace: (...args: unknown[]) => mockMoveTabWorkspace(...args),
   relocateFileTabPath: (...args: unknown[]) => mockRelocateFileTabPath(...args),
 }))
-vi.mock('~/api/listTabsBatcher', () => ({
-  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args),
-}))
 vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: vi.fn(),
+  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
   showErrorToast: vi.fn(),
   showInfoToast: vi.fn(),
 }))
 
-/** Tab key as the store builds it: `${type}:${id}` (type is the numeric TabType enum). */
+/** Tab key as the join builds it: `${type}:${id}` (type is the numeric TabType enum). */
 function key(type: TabType, id: string): string {
   return `${type}:${id}`
 }
 
-/** A flat WorkspaceSnapshot (the current shape: `tabs` is a bare Tab[], no agents slot). */
-function makeSnapshot(workspaceId: string, overrides?: Partial<WorkspaceSnapshot>): WorkspaceSnapshot {
-  return {
-    workspaceId,
-    tabs: [],
-    activeTabKey: null,
-    layout: { root: { type: 'leaf', id: 'tile-1' }, focusedTileId: 'tile-1' },
-    restored: true,
-    tabsLoaded: true,
-    ...overrides,
-  }
-}
+const ACTIVE_WS = 'ws-active'
+const ACTIVE_TILE = 'tile-active'
+const TARGET_WS = 'ws-target'
+const TARGET_TILE = 'tile-target'
+const OTHER_WS = 'ws-other'
+const OTHER_TILE = 'tile-other'
 
-/** Stand up the real stores + the real move handler over them. */
-function setup(activeWsId = 'ws-active') {
-  installTestBridge({ rootTileId: 'tile-1' })
-  const tabStore = createTabStore()
-  const layoutStore = createLayoutStore()
-  layoutStore.setFocusedTile('tile-1')
-  const floatingWindowStore = createFloatingWindowStore()
-  const registry = createWorkspaceStoreRegistry()
+/**
+ * Stand up the real stores over a bridge holding THREE workspaces, plus the
+ * real move handler.
+ *
+ * The three exist so a move can be driven between any pair without one of them
+ * being "the active workspace" — the distinction the refactor removed. Every
+ * workspace's tabs come from the same projection, so a tab in `ws-other` is as
+ * readable as one in `ws-active`, and the assertions below read them all
+ * through the same `view`.
+ */
+function setup(activeWsId: string = ACTIVE_WS) {
+  const harness = installTestBridge({ workspaceId: ACTIVE_WS, rootTileId: ACTIVE_TILE })
+  seedWorkspace(harness, TARGET_WS, TARGET_TILE)
+  seedWorkspace(harness, OTHER_WS, OTHER_TILE)
+
+  const stores = createTestTabStores(activeWsId)
+  stores.layoutStore.setFocusedTile(ACTIVE_TILE)
+  const floatingWindowStore = createTestFloatingWindowStore()
   const focusTile = vi.fn()
+  const batchResultHandlers = new Map<string, (outcome: BatchOutcome) => void>()
+
   const { move } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => activeWsId,
-    tabStore,
-    layoutStore,
+    view: stores.view,
+    selection: stores.selection,
+    layoutStore: stores.layoutStore,
     floatingWindowStore,
-    registry,
-    pendingMgr: () => null,
-    batchResultHandlers: new Map(),
+
+    batchResultHandlers,
     focusTile,
   })
-  return { activeWsId, tabStore, layoutStore, floatingWindowStore, registry, focusTile, move }
+
+  let seq = 0
+  return {
+    ...stores,
+    harness,
+    floatingWindowStore,
+    focusTile,
+    batchResultHandlers,
+    move,
+    add(type: TabType, id: string, tileId: string, meta: Record<string, unknown> = {}) {
+      seq += 1
+      emitAddTab({ type, id, tileId, position: `p${seq}`, workerId: 'w1' })
+      if (Object.keys(meta).length > 0)
+        stores.metadata.patch(id, meta)
+    },
+  }
 }
 
 describe('useCrossWorkspaceMove', () => {
@@ -78,199 +94,300 @@ describe('useCrossWorkspaceMove', () => {
     vi.clearAllMocks()
   })
 
-  it('moves an active-workspace tab into a cached target snapshot on the target tile', async () => {
+  it('moves a tab to the target workspace focused tile and activates it there', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' })
-      h.registry.set('ws-target', makeSnapshot('ws-target', {
-        layout: { root: { type: 'leaf', id: 'target-tile' }, focusedTileId: 'target-tile' },
-      }))
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
-      h.move('ws-target', key(TabType.AGENT, 'a1'))
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
 
-      // The active store lost the tab; the target snapshot gained it, landing on the
-      // target workspace's own focused tile and becoming its active tab.
-      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))).toBeUndefined()
-      const target = h.registry.get('ws-target')!
-      expect(target.tabs.map(t => t.id)).toEqual(['a1'])
-      expect(target.tabs[0].tileId).toBe('target-tile')
-      expect(target.activeTabKey).toBe(key(TabType.AGENT, 'a1'))
-      expect(target.tileActiveTabKeys?.['target-tile']).toBe(key(TabType.AGENT, 'a1'))
-      // Worker bookkeeping flips first, via MoveTabWorkspace for an AGENT tab.
+      // Worker bookkeeping flips FIRST, before any CRDT op goes out.
       expect(mockMoveTabWorkspace).toHaveBeenCalledWith('w1', expect.objectContaining({
         tabType: TabType.AGENT,
         tabId: 'a1',
-        newWorkspaceId: 'ws-target',
+        newWorkspaceId: TARGET_WS,
       }))
       await flush()
+
+      // One tab, one place. The source workspace no longer lists it and the
+      // target does — both read off the same projection, so there is no window
+      // in which the two disagree.
+      expect(h.view.forWorkspace(ACTIVE_WS).map(t => t.id)).toEqual([])
+      expect(h.view.forWorkspace(TARGET_WS).map(t => t.id)).toEqual(['a1'])
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(TARGET_TILE)
+      expect(h.selection.activeKeyForWorkspace(TARGET_WS)).toBe(key(TabType.AGENT, 'a1'))
+      // Focus is filed under the DESTINATION workspace, not the one still on
+      // screen: `setFocusedTile` keys by workspace, so passing the active one
+      // would point this workspace at a tile outside its own tree and
+      // `useFocusInvariant` would reset it to the first leaf.
+      expect(h.focusTile).toHaveBeenCalledWith(TARGET_TILE, TARGET_WS)
       dispose()
     })
   })
 
-  it('carries agent metadata (workerId, title) on the moved tab record -- no separate agents slot', async () => {
+  // The raw focus pointer has no liveness guarantee: only the active workspace's
+  // focus is repaired by `useFocusInvariant`, so a destination the user last
+  // visited before another client closed that tile keeps a dead id. Feeding it
+  // to `tile_id` gets the batch rejected by the hub, which silently reverts the
+  // optimistic move and drops the drag with no visible error. `focusedLeafIdFor`
+  // is what makes that validation unforgettable rather than a caller's duty.
+  it('ignores a remembered focus tile that is no longer a leaf in the target', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1', title: 'Agent Olivia' })
-      h.registry.set('ws-target', makeSnapshot('ws-target'))
+      // Pretend the user once focused a tile in TARGET_WS that has since gone.
+      h.layoutStore.setFocusedTile('tile-that-was-closed', TARGET_WS)
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
-      h.move('ws-target', key(TabType.AGENT, 'a1'))
-
-      const moved = h.registry.get('ws-target')!.tabs[0]
-      expect(moved.workerId).toBe('w1')
-      expect(moved.title).toBe('Agent Olivia')
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()
+
+      // Falls through to the target's first real leaf rather than the ghost.
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(TARGET_TILE)
+      expect(h.focusTile).toHaveBeenCalledWith(TARGET_TILE, TARGET_WS)
       dispose()
     })
   })
 
-  it('moves a FILE tab via the relocate RPC, preserving its path and display mode', async () => {
+  it('still prefers a remembered focus tile that IS a live leaf', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId: 'tile-1', workerId: 'w1', filePath: '/home/user/readme.md', title: 'readme.md' })
-      h.tabStore.setTabDisplayMode(TabType.FILE, 'f1', 'split')
-      h.registry.set('ws-target', makeSnapshot('ws-target'))
+      // Split the target so it has a second real leaf to remember.
+      const targetStore = createTestLayoutStore(TARGET_WS)
+      const secondLeaf = targetStore.splitTile(TARGET_TILE, 'horizontal')!
+      h.layoutStore.setFocusedTile(secondLeaf, TARGET_WS)
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
-      h.move('ws-target', key(TabType.FILE, 'f1'))
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
 
-      const moved = h.registry.get('ws-target')!.tabs[0]
-      expect(isFileTab(moved) && moved.filePath).toBe('/home/user/readme.md')
-      expect(isFileTab(moved) && moved.displayMode).toBe('split')
-      expect(moved.title).toBe('readme.md')
-      // FILE tabs relocate via the E2EE path (RelocateFileTabPath), NOT MoveTabWorkspace.
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(secondLeaf)
+      dispose()
+    })
+  })
+
+  it('carries the tab metadata across the move', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE, { title: 'Agent Olivia' })
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
+
+      // Metadata is keyed by tab id and has no workspace dimension, so a move
+      // cannot lose it — there is nothing to copy between stores.
+      const moved = h.view.getById(TabType.AGENT, 'a1')
+      expect(moved?.title).toBe('Agent Olivia')
+      expect(moved?.workerId).toBe('w1')
+      expect(moved?.workspaceId).toBe(TARGET_WS)
+      dispose()
+    })
+  })
+
+  it('moves a FILE tab via the relocate RPC, preserving its path', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.add(TabType.FILE, 'f1', ACTIVE_TILE, { filePath: '/repo/a.ts' })
+
+      h.move(TARGET_WS, key(TabType.FILE, 'f1'))
+
+      // FILE takes RelocateFileTabPath, not MoveTabWorkspace: the path is
+      // E2EE and the hub never sees it.
       expect(mockRelocateFileTabPath).toHaveBeenCalledWith('w1', expect.objectContaining({
         tabId: 'f1',
-        newWorkspaceId: 'ws-target',
+        newWorkspaceId: TARGET_WS,
       }))
       expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
       await flush()
+
+      const moved = h.view.getById(TabType.FILE, 'f1')
+      expect(moved?.workspaceId).toBe(TARGET_WS)
+      expect(moved && isFileTab(moved) && moved.filePath).toBe('/repo/a.ts')
       dispose()
     })
   })
 
-  it('moves a tab between two non-active workspace snapshots', async () => {
-    await createRoot(async (dispose) => {
-      const h = setup() // active = ws-active; both source and target are non-active
-      h.registry.set('ws-source', makeSnapshot('ws-source', {
-        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'tile-1', workerId: 'w1' }],
-        activeTabKey: key(TabType.AGENT, 'a1'),
-      }))
-      h.registry.set('ws-target', makeSnapshot('ws-target'))
-
-      h.move('ws-target', key(TabType.AGENT, 'a1'), 'ws-source')
-
-      expect(h.registry.get('ws-source')!.tabs).toEqual([])
-      expect(h.registry.get('ws-target')!.tabs.map(t => t.id)).toEqual(['a1'])
-      await flush()
-      dispose()
-    })
-  })
-
-  it('moves a non-active snapshot tab into the active workspace and focuses its tile', async () => {
+  // The case the old implementation needed its whole isSourceActive /
+  // isTargetActive fork for: neither end is the workspace on screen.
+  it('moves a tab between two workspaces when NEITHER is the active one', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.registry.set('ws-source', makeSnapshot('ws-source', {
-        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'src-tile', workerId: 'w1' }],
-      }))
+      h.add(TabType.AGENT, 'a1', OTHER_TILE)
+      expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(OTHER_WS)
 
-      // Target is the active workspace; drop onto tile-1.
-      h.move(h.activeWsId, key(TabType.AGENT, 'a1'), 'ws-source', 'tile-1')
-
-      const active = h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))
-      expect(active?.tileId).toBe('tile-1')
-      expect(h.registry.get('ws-source')!.tabs).toEqual([])
-      expect(h.focusTile).toHaveBeenCalledWith('tile-1')
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()
+
+      expect(h.view.forWorkspace(OTHER_WS).map(t => t.id)).toEqual([])
+      expect(h.view.forWorkspace(TARGET_WS).map(t => t.id)).toEqual(['a1'])
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(TARGET_TILE)
+      dispose()
+    })
+  })
+
+  it('moves a tab from a non-active workspace INTO the active one', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.add(TabType.AGENT, 'a1', OTHER_TILE)
+
+      h.move('__active__', key(TabType.AGENT, 'a1'))
+      await flush()
+
+      expect(h.view.forWorkspace(ACTIVE_WS).map(t => t.id)).toEqual(['a1'])
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(ACTIVE_TILE)
+      expect(h.focusTile).toHaveBeenCalledWith(ACTIVE_TILE, ACTIVE_WS)
       dispose()
     })
   })
 
   it('is a no-op when source and target resolve to the same workspace', async () => {
-    await createRoot((dispose) => {
+    await createRoot(async (dispose) => {
       const h = setup()
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
-      // Target === the active source workspace -> the guard returns early.
-      h.move(h.activeWsId, key(TabType.AGENT, 'a1'))
+      h.move(ACTIVE_WS, key(TabType.AGENT, 'a1'))
+      await flush()
 
-      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))).toBeDefined()
+      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(ACTIVE_TILE)
+      dispose()
+    })
+  })
+
+  it('appends to the target tile rather than displacing what is there', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.add(TabType.AGENT, 'existing', TARGET_TILE)
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
+
+      // Appended last: `positionAtInsertIdx` is called with the tile's current
+      // length, so the arriving tab sorts after the resident one.
+      expect(h.view.forTile(TARGET_TILE).map(t => t.id)).toEqual(['existing', 'a1'])
+      dispose()
+    })
+  })
+
+  it('lands on an explicit target tile when one is given', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      // `h.layoutStore` projects the ACTIVE workspace, so it cannot address a
+      // tile in the target. A store scoped to the target workspace can — which
+      // is itself the point: the tree is in the projection, so any workspace's
+      // layout is reachable without switching to it.
+      const secondTile = createTestLayoutStore(TARGET_WS).splitTile(TARGET_TILE, 'horizontal')!
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'), undefined, secondTile)
+      await flush()
+
+      expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(secondTile)
+      dispose()
+    })
+  })
+
+  // The root fallback fires whenever the destination has no remembered focus —
+  // dragging onto a sidebar row the user has never visited, or one whose focus
+  // was never recorded. A workspace whose root has been split has a SPLIT at
+  // `rootNodeId`, and tabs may only be anchored to LEAF nodes: emitting the
+  // root id there produces a batch the hub rejects, which reverts the move and
+  // silently drops the drag.
+  it('lands on a leaf when the target workspace root is a split', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      // Split the target's root, then forget its focus so the fallback runs.
+      const targetLayout = createTestLayoutStore(TARGET_WS)
+      targetLayout.splitTile(TARGET_TILE, 'horizontal')
+      const leaves = targetLayout.getAllTileIds()
+      expect(leaves, 'the root is now a split with two leaves').toHaveLength(2)
+      expect(leaves, 'and the root id is no longer a leaf').not.toContain(TARGET_TILE)
+
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
+
+      const landedOn = h.view.getById(TabType.AGENT, 'a1')?.tileId
+      expect(landedOn, 'the tab is anchored to a real leaf').toBeTruthy()
+      expect(leaves).toContain(landedOn)
+      dispose()
+    })
+  })
+
+  it('does nothing when the dragged key names no tab', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'ghost'))
+      await flush()
+
       expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
       dispose()
     })
   })
 
-  it('appends to an existing target snapshot rather than replacing its tabs', async () => {
+  // The worker RPC runs BEFORE the CRDT op precisely so this ordering holds:
+  // a worker that refuses the move leaves the tab where it was, with no
+  // optimistic placement to unwind.
+  it('leaves the tab in place and warns when the worker RPC fails', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.registry.set('ws-target', makeSnapshot('ws-target', {
-        tabs: [{ type: TabType.AGENT, id: 'existing', position: 'a', tileId: 'tile-1' }],
-        activeTabKey: key(TabType.AGENT, 'existing'),
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+      const err = new Error('worker offline')
+      mockMoveTabWorkspace.mockRejectedValueOnce(err)
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
+
+      expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(ACTIVE_WS)
+      expect(h.view.forWorkspace(TARGET_WS)).toEqual([])
+      expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to move tab', err)
+      dispose()
+    })
+  })
+
+  // A hub rejection (e.g. no write access to the destination) reverts the CRDT
+  // half on its own; the worker's `workspace_id` has to be put back too, or the
+  // two disagree about who owns the tab.
+  it('reverses the worker-side move when the hub rejects the batch', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
+      await flush()
+
+      expect(h.batchResultHandlers.size).toBe(1)
+      const [batchId, handler] = [...h.batchResultHandlers.entries()][0]
+      mockMoveTabWorkspace.mockClear()
+      handler({ case: 'rejected' } as BatchOutcome)
+
+      expect(mockMoveTabWorkspace).toHaveBeenCalledWith('w1', expect.objectContaining({
+        tabType: TabType.AGENT,
+        tabId: 'a1',
+        newWorkspaceId: ACTIVE_WS,
       }))
-      h.tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
-
-      h.move('ws-target', key(TabType.TERMINAL, 't1'))
-
-      expect(h.registry.get('ws-target')!.tabs.map(t => t.id)).toEqual(['existing', 't1'])
-      await flush()
+      // The handler unregisters itself, so a later outcome for the same batch
+      // can't fire a second reversal.
+      expect(h.batchResultHandlers.has(batchId)).toBe(false)
       dispose()
     })
   })
 
-  it('creates a fresh, not-yet-loaded snapshot when the target workspace was never opened', async () => {
+  it('does not reverse the worker-side move when the batch is accepted', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' })
-      expect(h.registry.get('ws-new')).toBeUndefined()
+      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
-      h.move('ws-new', key(TabType.AGENT, 'a1'), undefined, 'new-tile')
-
-      // Read the optimistic snapshot synchronously, BEFORE the async ListTabs merge runs.
-      const created = h.registry.get('ws-new')
-      expect(created?.tabs.map(t => t.id)).toEqual(['a1'])
-      // tabsLoaded:false marks it for the post-move ListTabs fetch that fills the hub's
-      // existing tabs before the user switches in.
-      expect(created?.tabsLoaded).toBe(false)
-      await flush() // drain the async ListTabs merge (mocked empty)
-      dispose()
-    })
-  })
-
-  it('restores the moved tab when the target snapshot is later restored into the store', async () => {
-    await createRoot(async (dispose) => {
-      const h = setup()
-      h.registry.set('ws-a', makeSnapshot('ws-a'))
-      h.registry.set('ws-b', makeSnapshot('ws-b', {
-        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'tile-1', workerId: 'w1' }],
-      }))
-
-      // Move a1 from ws-b (non-active) to ws-a (non-active), then restore ws-a's snapshot.
-      h.move('ws-a', key(TabType.AGENT, 'a1'), 'ws-b', 'tile-1')
-      h.tabStore.restore(h.registry.get('ws-a')!)
-
-      expect(h.tabStore.state.tabs.map(t => t.id)).toEqual(['a1'])
-      expect(h.tabStore.state.tabs[0].tileId).toBe('tile-1')
-      expect(h.tabStore.state.activeTabKey).toBe(key(TabType.AGENT, 'a1'))
+      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()
-      dispose()
-    })
-  })
 
-  it('falls the source tile back to its next MRU tab when the active tab is moved out', async () => {
-    await createRoot(async (dispose) => {
-      const h = setup()
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
-      h.tabStore.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
-      h.tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
-      h.tabStore.setActiveTabForTile('tile-1', TabType.TERMINAL, 't1')
-      h.tabStore.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
-      h.tabStore.setActiveTabForTile('tile-1', TabType.AGENT, 'a2') // per-tile MRU: [a2, t1, a1]; active a2
-      h.registry.set('ws-target', makeSnapshot('ws-target'))
+      const handler = [...h.batchResultHandlers.values()][0]
+      mockMoveTabWorkspace.mockClear()
+      handler({ case: 'committed' } as BatchOutcome)
 
-      h.move('ws-target', key(TabType.AGENT, 'a2'))
-
-      // a2 left the active store; the source tile's active falls back to the next MRU (t1).
-      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a2'))).toBeUndefined()
-      expect(h.tabStore.getActiveTabKeyForTile('tile-1')).toBe(key(TabType.TERMINAL, 't1'))
-      await flush()
+      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
+      expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(TARGET_WS)
       dispose()
     })
   })

@@ -14,7 +14,14 @@ service ChannelService {
   // Close an encrypted channel.
   rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse);
   // Notify the Worker that a workspace is now accessible on the user's channels.
-  // Called by the Frontend after creating a workspace and before opening an agent.
+  //
+  // A channel's accessible set is seeded once, at OpenChannel time, and grows
+  // only through this RPC. So every workspace that comes into existence after a
+  // channel opened needs an announcement before any workspace-scoped RPC on it
+  // will be served. The Frontend calls this after creating a workspace and
+  // before opening an agent, and again as a repair whenever a Worker refuses a
+  // workspace it should be able to see (TAB_HYDRATION_STATUS_NOT_ACCESSIBLE on a
+  // hydration batch, PERMISSION_DENIED on a workspace-scoped stream).
   rpc PrepareWorkspaceAccess(PrepareWorkspaceAccessRequest) returns (PrepareWorkspaceAccessResponse);
 }
 

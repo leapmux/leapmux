@@ -24,7 +24,7 @@ import {
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 // Per-fixture PID registry written under `<dataDir>/pids.json`. The
 // global-teardown sweep picks this up so any process that survived a
@@ -65,7 +65,6 @@ export interface SeparateServerInfo {
 
 interface WorkspaceFixture {
   workspaceId: string
-  workspaceUrl: string
 }
 
 // Mutable state that tests can modify via stop/restart helpers
@@ -465,8 +464,7 @@ export const processTest = base.extend<
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const workspaceUrl = `/workspace/${workspaceId}`
-    await use({ workspaceId, workspaceUrl })
+    await use({ workspaceId })
     // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
     // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub
     // half). Without it the worker keeps every test's Claude CLI subprocess alive;
@@ -485,8 +483,7 @@ export const processTest = base.extend<
   // Authenticated workspace
   authenticatedWorkspace: async ({ page, workspace, separateHubWorker }, use) => {
     await loginViaToken(page, separateHubWorker.adminToken)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
     await use(workspace)
   },
 })

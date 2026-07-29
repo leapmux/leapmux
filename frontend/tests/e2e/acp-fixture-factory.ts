@@ -8,7 +8,7 @@ import {
   deleteWorkspaceViaAPI,
   openAgentViaAPI,
 } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 export { AgentProvider } from '../../src/generated/leapmux/v1/agent_pb'
 
@@ -26,7 +26,6 @@ export interface ACPFixtureConfig {
 
 export interface WorkspaceFixture {
   workspaceId: string
-  workspaceUrl: string
 }
 
 export function detectACPSkipReason(config: ACPFixtureConfig): string | null {
@@ -56,9 +55,7 @@ export async function createACPWorkspace(
     agentProvider: config.agentProvider,
     model: config.model,
   })
-  const workspaceUrl = `/workspace/${workspaceId}`
-
-  await use({ workspaceId, workspaceUrl })
+  await use({ workspaceId })
 
   try {
     await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
@@ -76,8 +73,7 @@ export async function authenticateACPWorkspace(
   use: (fixture: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
   await loginViaToken(page, adminToken)
-  await page.goto(workspace.workspaceUrl)
-  await waitForWorkspaceReady(page)
+  await openWorkspace(page, workspace.workspaceId)
 
   await use(workspace)
 }

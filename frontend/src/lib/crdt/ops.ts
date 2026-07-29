@@ -128,18 +128,6 @@ export function setTabWorkerId(ctx: OpBuilderCtx, tabType: TabType, tabId: strin
   return setTabRegister(ctx, tabType, tabId, { case: 'workerId', value: workerId })
 }
 
-export function setTabDisplayMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): CrdtOp {
-  return setTabRegister(ctx, tabType, tabId, { case: 'displayMode', value: mode })
-}
-
-export function setTabFileViewMode(ctx: OpBuilderCtx, tabType: TabType, tabId: string, mode: number): CrdtOp {
-  return setTabRegister(ctx, tabType, tabId, { case: 'fileViewMode', value: mode })
-}
-
-export function setTabFileDiffBase(ctx: OpBuilderCtx, tabType: TabType, tabId: string, base: string): CrdtOp {
-  return setTabRegister(ctx, tabType, tabId, { case: 'fileDiffBase', value: base })
-}
-
 export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'tombstoneTab',
@@ -201,7 +189,7 @@ export function newBatch(ops: CrdtOp[]): OpBatch {
  * the destination tile would end up reordered on every make-grid /
  * close-tile structural change. Sorting here makes the migration
  * order-preserving by construction; the tiebreak matches `tabsByTile`
- * in tab.store so the visible order is identical before and after.
+ * in the tab view so the visible order is identical before and after.
  */
 export function liveTabsOnTile(state: UserCrdtState, tileId: string): Array<{ tabType: TabType, tabId: string }> {
   const matches: Array<{ tabType: TabType, tabId: string, position: string }> = []

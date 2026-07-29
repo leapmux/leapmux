@@ -4,11 +4,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { useTileMove } from '~/components/shell/useTileMove'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { createLayoutStore } from '~/stores/layout.store'
 import { tabKey } from '~/stores/tab.helpers'
-import { createTabStore } from '~/stores/tab.store'
+import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
+import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 
 afterEach(() => setCRDTBridge(null))
 
@@ -24,32 +23,36 @@ afterEach(() => setCRDTBridge(null))
 describe('useTileMove.moveTabToTile', () => {
   function setup() {
     installTestBridge({ rootTileId: 'root-leaf' })
-    const tabStore = createTabStore()
-    const layoutStore = createLayoutStore()
-    const floatingWindowStore = createFloatingWindowStore()
-    return { tabStore, layoutStore, floatingWindowStore }
+    const stores = createTestTabStores('ws-test')
+    const floatingWindowStore = createTestFloatingWindowStore()
+    const ops = useTileMove({ ...stores, floatingWindowStore })
+    return { ...stores, floatingWindowStore, ops }
+  }
+
+  /** Place a tab through the op path and read it back off the projection. */
+  function place(view: ReturnType<typeof setup>['view'], id: string, tileId: string, position: string): AgentTab {
+    emitAddTab({ type: TabType.AGENT, id, tileId, position, workerId: 'w-1' })
+    return view.getAgentTab(id)!
   }
 
   it('happy path: takeFocus=true + cleanupSource=true moves tab, follows focus, removes empty floating source', () => {
     createRoot((dispose) => {
-      const { tabStore, layoutStore, floatingWindowStore } = setup()
+      const { view, selection, layoutStore, floatingWindowStore, ops } = setup()
       const win = floatingWindowStore.addWindow()!
       const { windowId, tileId: floatingTile } = win
       const mainTile = layoutStore.getAllTileIds()[0]
       // One tab on the floating window's root tile — moving it out
       // empties the window.
-      const tab: AgentTab = { type: TabType.AGENT, id: 'agent-1', tileId: floatingTile, workerId: 'w-1' }
-      tabStore.addTab(tab)
-      tabStore.setActiveTabForTile(floatingTile, TabType.AGENT, 'agent-1')
+      const tab = place(view, 'agent-1', floatingTile, 'a')
+      selection.setActiveById(TabType.AGENT, 'agent-1')
       layoutStore.setFocusedTile(floatingTile)
 
-      const ops = useTileMove({ tabStore, layoutStore, floatingWindowStore })
       ops.moveTabToTile(tab, mainTile, { takeFocus: true, cleanupSource: true })
 
       // Tab moved.
-      expect(tabStore.getTabByKey(tabKey(tab))?.tileId).toBe(mainTile)
+      expect(view.get(tabKey(tab))?.tileId).toBe(mainTile)
       // Destination tile activated for the moved tab.
-      expect(tabStore.getActiveTabKeyForTile(mainTile)).toBe(tabKey(tab))
+      expect(selection.activeKeyForTile(mainTile)).toBe(tabKey(tab))
       // Focus followed.
       expect(layoutStore.focusedTileId()).toBe(mainTile)
       // Empty source floating window was disposed.
@@ -60,38 +63,80 @@ describe('useTileMove.moveTabToTile', () => {
 
   it('takeFocus=false leaves focus on the original tile', () => {
     createRoot((dispose) => {
-      const { tabStore, layoutStore, floatingWindowStore } = setup()
-      const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const { view, selection, layoutStore, ops } = setup()
+      const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
-      const fromTile = tileB === otherTileId ? tileA : tileB
-      const toTile = otherTileId
-      const tab: AgentTab = { type: TabType.AGENT, id: 'a-bg', tileId: fromTile, workerId: 'w-1' }
-      tabStore.addTab(tab, { activate: false })
-      tabStore.addTab({ type: TabType.AGENT, id: 'a-active', tileId: fromTile, workerId: 'w-1' })
-      tabStore.setActiveTabForTile(fromTile, TabType.AGENT, 'a-active')
+      const fromTile = tileB === toTile ? tileA : tileB
+      const tab = place(view, 'a-bg', fromTile, 'a')
+      place(view, 'a-active', fromTile, 'b')
+      selection.setActiveById(TabType.AGENT, 'a-active')
       layoutStore.setFocusedTile(fromTile)
 
-      const ops = useTileMove({ tabStore, layoutStore, floatingWindowStore })
       ops.moveTabToTile(tab, toTile, { takeFocus: false, cleanupSource: true })
 
-      expect(tabStore.getTabByKey(tabKey(tab))?.tileId).toBe(toTile)
-      expect(tabStore.getActiveTabKeyForTile(toTile)).toBe(tabKey(tab))
+      expect(view.get(tabKey(tab))?.tileId).toBe(toTile)
+      expect(selection.activeKeyForTile(toTile)).toBe(tabKey(tab))
       // Focus stayed on source — the bg tab move shouldn't steal it.
       expect(layoutStore.focusedTileId()).toBe(fromTile)
       dispose()
     })
   })
 
+  /**
+   * The tile pointer and the WORKSPACE pointer answer different questions, and
+   * a focus-less move may only move the first. The workspace pointer feeds the
+   * notification-badge suppression in `useWorkspaceConnection`, `activeFilePath`
+   * in `AppShell`, and `resolvePreferredProvider`'s seed for a new agent — so a
+   * background drag that claimed it would badge the tab the user is reading and
+   * seed the next agent from the dragged one.
+   */
+  it('takeFocus=false does not reassign the workspace active tab', () => {
+    createRoot((dispose) => {
+      const { view, selection, layoutStore, ops } = setup()
+      const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const [tileA, tileB] = layoutStore.getAllTileIds()
+      const fromTile = tileB === toTile ? tileA : tileB
+      const dragged = place(view, 'a-bg', fromTile, 'a')
+      const reading = place(view, 'a-active', fromTile, 'b')
+      selection.setActiveById(TabType.AGENT, 'a-active')
+      expect(selection.activeKeyForWorkspace('ws-test')).toBe(tabKey(reading))
+
+      ops.moveTabToTile(dragged, toTile, { takeFocus: false, cleanupSource: true })
+
+      expect(selection.activeKeyForTile(toTile), 'destination tile fronts it').toBe(tabKey(dragged))
+      expect(
+        selection.activeKeyForWorkspace('ws-test'),
+        'the tab the user is reading keeps the workspace pointer',
+      ).toBe(tabKey(reading))
+      dispose()
+    })
+  })
+
+  it('takeFocus=true does reassign the workspace active tab', () => {
+    createRoot((dispose) => {
+      const { view, selection, layoutStore, ops } = setup()
+      const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const [tileA, tileB] = layoutStore.getAllTileIds()
+      const fromTile = tileB === toTile ? tileA : tileB
+      const dragged = place(view, 'a-bg', fromTile, 'a')
+      place(view, 'a-active', fromTile, 'b')
+      selection.setActiveById(TabType.AGENT, 'a-active')
+
+      ops.moveTabToTile(dragged, toTile, { takeFocus: true, cleanupSource: true })
+
+      expect(selection.activeKeyForWorkspace('ws-test')).toBe(tabKey(dragged))
+      dispose()
+    })
+  })
+
   it('cleanupSource=false keeps the source floating window alive even when emptied', () => {
     createRoot((dispose) => {
-      const { tabStore, layoutStore, floatingWindowStore } = setup()
+      const { view, layoutStore, floatingWindowStore, ops } = setup()
       const win = floatingWindowStore.addWindow()!
       const { windowId, tileId: floatingTile } = win
       const mainTile = layoutStore.getAllTileIds()[0]
-      const tab: AgentTab = { type: TabType.AGENT, id: 'agent-1', tileId: floatingTile, workerId: 'w-1' }
-      tabStore.addTab(tab)
+      const tab = place(view, 'agent-1', floatingTile, 'a')
 
-      const ops = useTileMove({ tabStore, layoutStore, floatingWindowStore })
       // detach passes cleanupSource=false because its source is in
       // the MAIN tree; this test pins the FALSE branch directly so
       // a future refactor that always sweeps can't silently break
@@ -99,7 +144,7 @@ describe('useTileMove.moveTabToTile', () => {
       ops.moveTabToTile(tab, mainTile, { takeFocus: true, cleanupSource: false })
 
       // Tab still moved, but the now-empty floating window stays.
-      expect(tabStore.getTabByKey(tabKey(tab))?.tileId).toBe(mainTile)
+      expect(view.get(tabKey(tab))?.tileId).toBe(mainTile)
       expect(floatingWindowStore.getWindow(windowId)).not.toBeNull()
       dispose()
     })
@@ -107,15 +152,12 @@ describe('useTileMove.moveTabToTile', () => {
 
   it('cleanupSource=true is a safe no-op when the source tile lives in the main tree', () => {
     createRoot((dispose) => {
-      const { tabStore, layoutStore, floatingWindowStore } = setup()
-      const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const { view, layoutStore, ops } = setup()
+      const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
-      const fromTile = tileB === otherTileId ? tileA : tileB
-      const toTile = otherTileId
-      const tab: AgentTab = { type: TabType.AGENT, id: 'a-1', tileId: fromTile, workerId: 'w-1' }
-      tabStore.addTab(tab)
+      const fromTile = tileB === toTile ? tileA : tileB
+      const tab = place(view, 'a-1', fromTile, 'a')
 
-      const ops = useTileMove({ tabStore, layoutStore, floatingWindowStore })
       // removeEmptyFloatingWindow short-circuits for main-tree
       // sources (floatingWindowStore.getWindowForTile returns null),
       // so this must complete without throwing or mutating the main
@@ -123,32 +165,30 @@ describe('useTileMove.moveTabToTile', () => {
       const beforeMainTiles = layoutStore.getAllTileIds().slice().sort()
       ops.moveTabToTile(tab, toTile, { takeFocus: false, cleanupSource: true })
 
-      expect(tabStore.getTabByKey(tabKey(tab))?.tileId).toBe(toTile)
+      expect(view.get(tabKey(tab))?.tileId).toBe(toTile)
       // Main layout structure preserved — fromTile still exists (it
       // just has no tabs anymore).
-      const afterMainTiles = layoutStore.getAllTileIds().slice().sort()
-      expect(afterMainTiles).toEqual(beforeMainTiles)
+      expect(layoutStore.getAllTileIds().slice().sort()).toEqual(beforeMainTiles)
       dispose()
     })
   })
 
-  it('does not crash when the tab has no source tileId (mid-restore case)', () => {
+  // `Tab.tileId` is optional in the base type even though every tab the
+  // projection assembles has one, so a caller can still hand this helper an
+  // unplaced tab literal. The `&& sourceTileId` guard is what stops the
+  // cleanup sweep from being handed `undefined`.
+  it('does not crash when the tab has no source tileId', () => {
     createRoot((dispose) => {
-      const { tabStore, layoutStore, floatingWindowStore } = setup()
+      const { view, selection, layoutStore, ops } = setup()
       const mainTile = layoutStore.getAllTileIds()[0]
-      // Synthesize a tab object with `tileId: undefined`. The store
-      // is otherwise idle; we're testing the helper's handling of the
-      // unplaced-tab edge case (mid-restore / pre-bridge).
-      const tab: AgentTab = { type: TabType.AGENT, id: 'orphan', tileId: undefined, workerId: 'w-1' }
-      tabStore.addTab(tab, { silent: true })
+      const tab: AgentTab = { type: TabType.AGENT, id: 'orphan', workspaceId: 'ws-1', tileId: undefined, workerId: 'w-1' }
 
-      const ops = useTileMove({ tabStore, layoutStore, floatingWindowStore })
       ops.moveTabToTile(tab, mainTile, { takeFocus: true, cleanupSource: true })
 
-      // Move landed on the destination; source cleanup was skipped
-      // (no sourceTileId to sweep).
-      expect(tabStore.getTabByKey(tabKey(tab))?.tileId).toBe(mainTile)
-      expect(tabStore.getActiveTabKeyForTile(mainTile)).toBe(tabKey(tab))
+      // The move op still landed — emitting it is what places the tab, so
+      // it arrives in the projection on the destination tile.
+      expect(view.get(tabKey(tab))?.tileId).toBe(mainTile)
+      expect(selection.activeKeyForTile(mainTile)).toBe(tabKey(tab))
       dispose()
     })
   })

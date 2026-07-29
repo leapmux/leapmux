@@ -5,7 +5,7 @@ import { WorktreeAction } from '../../src/generated/leapmux/v1/common_pb'
 import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 import {
   branchExists,
   closeAgentViaAPI,
@@ -18,7 +18,6 @@ import {
   waitForAppPageReady,
   waitForPathDeleted,
   waitForWorker,
-  WORKSPACE_URL_RE,
 } from './helpers/worktree'
 
 test.describe('Worktree Git Modes', () => {
@@ -89,8 +88,7 @@ test.describe('Worktree Git Modes', () => {
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     // Open "New agent..." dialog via the tab menu
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
@@ -127,8 +125,7 @@ test.describe('Worktree Git Modes', () => {
     )
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     // Open "New terminal..." dialog via the tab menu
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
@@ -182,7 +179,8 @@ test.describe('Worktree Git Modes', () => {
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(page.getByRole('dialog')).not.toBeVisible()
-    await expect(page).toHaveURL(WORKSPACE_URL_RE)
+    // Creating a workspace activates it in place; there is no URL to check.
+    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
 
     // Verify the repo is now on the feature-switch branch
     const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
@@ -370,7 +368,8 @@ test.describe('Worktree Git Modes', () => {
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(page.getByRole('dialog')).not.toBeVisible()
-    await expect(page).toHaveURL(WORKSPACE_URL_RE)
+    // Creating a workspace activates it in place; there is no URL to check.
+    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
   })
 
   // ─── Git Mode: Use Current State ────────────────────────────────────
@@ -532,7 +531,8 @@ test.describe('Worktree Git Modes', () => {
 
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(page.getByRole('dialog')).not.toBeVisible()
-    await expect(page).toHaveURL(WORKSPACE_URL_RE)
+    // Creating a workspace activates it in place; there is no URL to check.
+    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
 
     // Verify the worktree was created from the feature branch
     const worktreeDir = join(realDataDir, 'test-repo-base-branch-ui-worktrees', 'from-feature-base')

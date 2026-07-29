@@ -308,6 +308,66 @@ describe('gitFileStatusStore', () => {
     })
   })
 
+  /**
+   * "Not a git repo" is a SUCCESSFUL empty response carrying only `errorHint`
+   * -- this message has no `is_git_repo` field. Treating any resolved RPC as
+   * proof of a repo left a plain directory advertising `isGitRepo: true` with
+   * an empty toplevel, which renders the git filter tab bar over a non-repo.
+   */
+  describe('non-repo replies', () => {
+    it('does not claim a repo when the worker reports none', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          toplevel: '',
+          originUrl: '',
+          currentBranch: '',
+          isWorktree: false,
+          errorHint: 'not a git repository',
+          files: [],
+        })
+
+        await store.refresh('worker1', '/tmp/plain-dir')
+
+        expect(store.state.isGitRepo, 'an empty toplevel is not a repo').toBe(false)
+        expect(store.state.errorHint, 'the diagnostic must reach the UI').toBe('not a git repository')
+        dispose()
+      })
+    })
+
+    it('clears a previous repo when the focus moves to a non-repo directory', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          toplevel: '/repo',
+          originUrl: 'git@example.com:o/r.git',
+          currentBranch: 'main',
+          isWorktree: false,
+          errorHint: '',
+          files: [],
+        })
+        await store.refresh('worker1', '/repo')
+        expect(store.state.isGitRepo).toBe(true)
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          toplevel: '',
+          originUrl: '',
+          currentBranch: '',
+          isWorktree: false,
+          errorHint: 'not a git repository',
+          files: [],
+        })
+        await store.refresh('worker1', '/tmp/plain-dir')
+
+        expect(store.state.isGitRepo, 'the flag must fall back, not latch').toBe(false)
+        dispose()
+      })
+    })
+  })
+
   describe('getChangedFiles', () => {
     it('includes untracked files in changed and unstaged filters', async () => {
       await createRoot(async (dispose) => {
@@ -471,27 +531,29 @@ describe('gitFileStatusStore', () => {
       })
     })
 
-    it('falls back to resp.repoRoot when resp.toplevel is missing (older worker shim)', async () => {
-      // Defense-in-depth: a pre-toplevel worker (or a response-shape
-      // regression) leaves toplevel empty. The store collapses to
-      // repoRoot in that case, restoring pre-fix behaviour — the only
-      // path that would behave wrong is the worktree-cross-stamp bug
-      // we're fixing, and that requires a worker that DOES populate
-      // toplevel. Without this fallback, tab stamping would silently
-      // stop firing for every existing deployment.
+    it('does NOT alias an empty resp.toplevel onto resp.repoRoot', async () => {
+      // `toplevel` is authoritative: the worker sets it on every success
+      // path, so an empty value means "no working tree", not "old build".
+      // Aliasing it to `repoRoot` would hand a WORKTREE query the MAIN
+      // tree's root — the exact cross-stamp `toplevel` was introduced to
+      // prevent — so an empty toplevel must stay empty and let
+      // `applyGitStatusToTabs` decline to stamp.
       await createRoot(async (dispose) => {
         const store = createGitFileStatusStore()
 
         mockGetGitFileStatus.mockResolvedValueOnce({
           repoRoot: '/repo',
-          // toplevel intentionally omitted.
+          // `''`, not omitted: proto materialises an unset string as empty,
+          // so this is the shape the wire actually delivers.
+          toplevel: '',
           originUrl: '',
           currentBranch: 'main',
           isWorktree: false,
           files: [],
         })
         await store.refresh('worker1', '/repo')
-        expect(store.state.toplevel).toBe('/repo')
+        expect(store.state.toplevel).toBe('')
+        expect(store.state.repoRoot, 'repoRoot is still recorded for path resolution').toBe('/repo')
 
         dispose()
       })

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 
 /**
  * Create a git repo inside the server's data directory.
@@ -44,8 +44,7 @@ test.describe('Diff Stat Isolation', () => {
       await loginViaToken(page, adminToken)
 
       // Navigate to workspace B first to load its diff stats.
-      await page.goto(`/workspace/${wsB}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, wsB)
 
       // The DiffStatsBadge is rendered inside the workspace-item div.
       const wsBItem = page.locator(`[data-testid="workspace-item-${wsB}"]`)

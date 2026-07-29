@@ -97,3 +97,20 @@ export async function loadTimeouts(): Promise<void> {
 export function apiLoadingTimeoutMs(): number {
   return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.apiTimeoutSeconds * 1000)
 }
+
+/**
+ * How long the shell waits for the CRDT bootstrap to deliver the active
+ * workspace before it paints anyway (milliseconds).
+ *
+ * Deliberately a multiple of the RPC deadline rather than equal to it: this
+ * budget covers a socket connect, a Noise handshake and a full user-state
+ * materialization, so a value tight enough to catch a slow-but-working
+ * bootstrap would flash the empty state on every cold load. It is a watchdog
+ * against a bootstrap that will never arrive, not a latency target — nothing
+ * is cancelled when it fires, and a late bootstrap still fills the projection
+ * in. Scales with `TIMEOUT_MULTIPLIER` so CI and E2E inherit the same slack as
+ * every other deadline.
+ */
+export function workspaceBootstrapTimeoutMs(): number {
+  return apiLoadingTimeoutMs() * 3
+}

@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
   openNewAgentDialog,
@@ -128,8 +128,7 @@ test.describe('Worktree Detection', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     await openNewAgentDialog(page)
     await waitForWorker(page)
@@ -154,8 +153,7 @@ test.describe('Worktree Detection', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
     await addMenu.click()

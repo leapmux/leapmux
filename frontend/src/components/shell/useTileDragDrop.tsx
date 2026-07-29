@@ -1,27 +1,30 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { positionAtInsertIdx } from '~/lib/lexorank'
 import { tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
+import { emitReorderTabs, emitSetTabPosition } from '~/stores/tabOps'
 import * as styles from './AppShell.css'
 import { useTileMove } from './useTileMove'
 
 interface UseTileDragDropOpts {
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
 }
 
 export function useTileDragDrop(opts: UseTileDragDropOpts) {
-  const { tabStore, layoutStore, floatingWindowStore } = opts
-  const tileMove = useTileMove({ tabStore, layoutStore, floatingWindowStore })
+  const { view, selection, layoutStore, floatingWindowStore } = opts
+  const tileMove = useTileMove({ view, selection, layoutStore, floatingWindowStore })
 
   const handleIntraTileReorder = (_tileId: string, fromKey: string, toKey: string) => {
-    tabStore.reorderTabs(fromKey, toKey)
+    emitReorderTabs(view.forTile(view.get(fromKey)?.tileId ?? ''), fromKey, toKey)
   }
 
   const handleCrossTileMove = (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => {
-    const draggedTab = tabStore.getTabByKey(draggedTabKey)
+    const draggedTab = view.get(draggedTabKey)
     if (!draggedTab)
       return
     // Capture BEFORE the move: was this the active tab on the source?
@@ -31,30 +34,44 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     // their tab no longer is. If the dragged tab was inactive in its
     // source tile bar (user dragging tab Y while reading tab X), the
     // user's attention is still on X — leave focus alone.
-    const wasActiveOnSource = tabStore.getActiveTabKeyForTile(fromTileId) === draggedTabKey
+    const wasActiveOnSource = selection.activeKeyForTile(fromTileId) === draggedTabKey
+
+    // Capture the destination's occupants BEFORE the move. `moveTabToTile`
+    // applies its op to `speculativeState` synchronously, so reading afterwards
+    // would return a list that already contains the dragged tab -- at its stale
+    // SOURCE rank, since only `tile_id` changed. `positionAtInsertIdx` would
+    // then pick the tab's own rank as one of the two boundary neighbours and
+    // mint a position against itself: dropping the first tab of one tile onto
+    // the first tab of another gives `mid('n','n')` -> `'nn'`, landing it after
+    // the target and tied with the target's neighbour. `emitReorderTabs`
+    // splices the moved tab out for exactly this reason, and the
+    // `emitMergeTabsIntoTile` callers read their lists before emitting.
+    const targetTabs = view.forTile(toTileId)
 
     tileMove.moveTabToTile(draggedTab, toTileId, { takeFocus: wasActiveOnSource, cleanupSource: true })
 
-    // Resolve insertion index against the post-move tab list: when a
+    // Resolve insertion index against the pre-move tab list: when a
     // near-tab is named (drop landed on a specific tab), the dragged
     // tab takes that slot, displacing the target right; otherwise
     // append. `positionAtInsertIdx` handles all four edge cases
     // (head, tail, between, empty list) via `mid`'s documented
     // empty-string semantics.
-    const targetTabs = tabStore.getTabsForTile(toTileId)
     const nearIdx = nearTabKey
       ? targetTabs.findIndex(t => tabKey(t) === nearTabKey)
       : -1
     const insertIdx = nearIdx >= 0 ? nearIdx : targetTabs.length
-    tabStore.setTabPosition(draggedTabKey, positionAtInsertIdx(targetTabs, insertIdx))
+    // `draggedTab`, not `draggedTabKey`: the tab is already resolved above
+    // (with an early return), so re-parsing the key here only re-derived the
+    // same `type`/`id` behind an `if (parsed)` guard that could never be false.
+    emitSetTabPosition(draggedTab.type, draggedTab.id, positionAtInsertIdx(targetTabs, insertIdx))
   }
 
   const lookupTileIdForTab = (key: string): string | undefined => {
-    return tabStore.getTabByKey(key)?.tileId
+    return view.get(key)?.tileId
   }
 
   const renderDragOverlay = (key: string) => {
-    const tab = tabStore.getTabByKey(key)
+    const tab = view.get(key)
     if (!tab)
       return <></>
     return (

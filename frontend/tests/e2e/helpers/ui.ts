@@ -18,9 +18,6 @@ export async function expectAnyVisible(...locators: Locator[]) {
   }).toBe(true)
 }
 
-const NEW_WORKSPACE_RE = /New workspace/
-const WORKSPACE_URL_RE = /\/workspace\//
-
 // ──────────────────────────────────────────────
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
@@ -117,16 +114,14 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
 
-  // After login the user lands on `/` -- but only momentarily when the account
-  // owns a workspace: AppShell's auto-activate effect immediately replaces the
-  // URL with /workspace/{id}. Matching `/` EXACTLY would therefore be a race
-  // that passes today only because the fixtures used here own nothing yet, so
-  // accept either landing spot. (The pre-flat-routes version matched
-  // `/o/{username}` as a substring, which tolerated the redirect for free.)
+  // After login the user lands on `/` and stays there: `/` is the whole app,
+  // and activating a workspace no longer changes the URL. (Earlier versions had
+  // to tolerate a redirect to `/o/{username}` and then to `/workspace/{id}`;
+  // both are gone, so this can match exactly.)
   //
   // If a transient error occurs (e.g. hub DB not yet ready after restart), retry.
   // Each attempt waits 10s, for a total of 30s matching the original timeout.
-  const loggedInURL = /\/(?:workspace\/[^/]+)?$/
+  const loggedInURL = /\/$/
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await expect(page).toHaveURL(loggedInURL)
@@ -159,62 +154,6 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
   await page.getByPlaceholder('e.g. my-workstation').fill(name)
   await page.getByRole('button', { name: 'Approve' }).click()
   await expect(page.getByText('Worker Registered Successfully')).toBeVisible()
-}
-
-/**
- * Create a new workspace via the UI dialog.
- * The dialog fetches workers on mount. The Create button is disabled
- * until an online worker is selected. If the worker is temporarily
- * offline (e.g. bidi stream reconnecting), retries by clicking refresh.
- */
-export async function createWorkspaceViaUI(page: Page, title: string) {
-  // Click "+" button on a section header to open new workspace dialog
-  await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-  await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
-
-  // Scope to the dialog to avoid strict-mode violations with the sidebar
-  // "Create a new workspace..." button.
-  const dialog = page.getByRole('dialog')
-  const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
-  const refreshBtn = dialog.getByLabel('Refresh workers')
-
-  // Wait for the initial fetch to find an online worker.
-  // If not found, retry by clicking the refresh button (worker may be reconnecting).
-  for (let attempt = 0; attempt < 6; attempt++) {
-    try {
-      await expect(createBtn).toBeEnabled()
-      break
-    }
-    catch {
-      if (attempt === 5)
-        throw new Error('No online worker found after 6 attempts')
-      await refreshBtn.click()
-    }
-  }
-
-  // Fill in the form
-  if (title) {
-    await page.getByPlaceholder('New Workspace').fill(title)
-  }
-
-  // Click Create
-  await createBtn.click()
-
-  // Wait for navigation to the new workspace page (uses unique workspace ID in URL).
-  // This avoids strict-mode issues with duplicate workspace titles on retries.
-  await expect(page).toHaveURL(WORKSPACE_URL_RE)
-
-  // Wait for the dialog to fully close. With many workspaces in the sidebar,
-  // the UI re-render after workspace creation can delay dialog removal.
-  // If the dialog is still visible after a short wait, press Escape to force-close.
-  try {
-    await expect(dialog).not.toBeVisible()
-  }
-  catch {
-    // Dialog didn't close naturally — press Escape to dismiss it
-    await page.keyboard.press('Escape')
-    await expect(dialog).not.toBeVisible()
-  }
 }
 
 /**
@@ -427,15 +366,60 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
 }
 
 /**
- * Authenticate as `token`, navigate to `workspaceUrl`, and wait for
- * the workspace shell to be ready (first tile rendered). Shared
- * across the multi-context CRDT-convergence specs (150/151/152/153)
- * that all need the same setup before driving layout mutations.
+ * Load the app and make `workspaceId` the active workspace, then wait for its
+ * shell to be ready.
+ *
+ * There is no per-workspace URL to navigate to: `/` is the whole app, and which
+ * workspace it opens on is decided by `resolveActiveWorkspace` from
+ * localStorage. So this drives the same path a user does — load `/`, click the
+ * sidebar row — rather than seeding storage, which would let the specs pass
+ * against a broken restore.
+ *
+ * The click is skipped when the row is already active (a single-workspace
+ * account, or a reload that restored the one we want), so this stays a no-op
+ * rather than a redundant switch.
+ *
+ * NOTE the transit: when the target is NOT the workspace a cold start picks,
+ * that other workspace is briefly activated first — which auto-expands its
+ * sidebar row and hydrates its tabs. A spec asserting on sidebar expansion has
+ * to establish its starting state explicitly rather than assume everything but
+ * the target is collapsed (see 017's expanded-state-persists test).
  */
-export async function gotoWorkspace(page: Page, token: string, workspaceUrl: string) {
-  await loginViaToken(page, token)
-  await page.goto(workspaceUrl)
+export async function openWorkspace(page: Page, workspaceId: string) {
+  await page.goto('/')
+  const row = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+  await row.waitFor()
+  if (await row.getAttribute('data-active') !== 'true')
+    await row.click()
+  await expect(row).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)
+}
+
+/**
+ * Reload the app at `/` and assert it came back on `workspaceId` without being
+ * told to — i.e. that the persisted selection was restored.
+ *
+ * Deliberately does NOT click the sidebar row; that is the whole difference
+ * from `openWorkspace`. A broken restore has to fail here rather than be
+ * papered over by the click, which is what makes this the right helper for the
+ * reload-and-come-back specs.
+ */
+export async function reopenWorkspace(page: Page, workspaceId: string) {
+  await page.goto('/')
+  await expect(page.locator(`[data-testid="workspace-item-${workspaceId}"]`))
+    .toHaveAttribute('data-active', 'true')
+  await waitForWorkspaceReady(page)
+}
+
+/**
+ * Authenticate as `token`, open `workspaceId`, and wait for the workspace shell
+ * to be ready (first tile rendered). Shared across the multi-context
+ * CRDT-convergence specs (150/151/152/153) that all need the same setup before
+ * driving layout mutations.
+ */
+export async function gotoWorkspace(page: Page, token: string, workspaceId: string) {
+  await loginViaToken(page, token)
+  await openWorkspace(page, workspaceId)
   // Wait for the bootstrap event so subsequent mutations reach the
   // store via the WS round-trip rather than the fallback projection.
   await page.locator('[data-testid="tile"]').first().waitFor()
@@ -460,4 +444,30 @@ export async function tabbarAgentLabels(page: Page): Promise<string[]> {
 /** Locate a tab by its hub-side `tab_id`. */
 export function tabById(page: Page, tabId: string): Locator {
   return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
+}
+
+/**
+ * Bounding box of `locator`, after waiting for it to be visible.
+ *
+ * `boundingBox()` returns null for an element that is not laid out yet, and a
+ * bare `expect(...).toHaveCount(n)` beforehand does NOT guarantee layout — it
+ * settles the count, not the paint. Every drag test needs a real box to compute
+ * pointer coordinates from, so a null there surfaces as "Could not get bounding
+ * boxes" with nothing else wrong. Waiting first removes the race.
+ */
+export async function boxOf(locator: Locator): Promise<{ x: number, y: number, width: number, height: number }> {
+  // Capture the box INSIDE the poll and return that one. Checking for a box
+  // and then reading it are two round trips, and the element can detach
+  // between them — a workspace switch legitimately remounts the tile and its
+  // tab strip, and these drags run right after one, so a re-read lands
+  // mid-remount often enough to matter. `expect.poll` retries under the
+  // global expect timeout.
+  let box: { x: number, y: number, width: number, height: number } | null = null
+  await expect.poll(async () => {
+    box = await locator.boundingBox()
+    return box !== null
+  }).toBe(true)
+  if (!box)
+    throw new Error(`No bounding box for ${locator}`)
+  return box
 }

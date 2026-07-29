@@ -38,13 +38,20 @@ import { first } from '~/lib/lexorank'
  * parent is a SPLIT with exactly 2 live children — collapse the
  * parent back to a LEAF and migrate the sibling's tabs to the parent.
  *
- * Why the undo-split: `project.ts:buildTree` collapses a SPLIT with
- * exactly one live child to that child, re-keying the rendered leaf
- * to the parent's node_id. The sibling's tabs are stored with
- * tile_id=sibling, so they orphan in the rendered tree. The user sees
- * the surviving tile render empty even though the sidebar still
- * lists the tabs. Completing the inverse-split inside the same batch
- * keeps the rendered tree consistent.
+ * Why the undo-split: it is STRUCTURAL hygiene, not a rendering fix.
+ * `project.ts:buildTree` collapses a single-child SPLIT to that child
+ * under the child's own node id, so the rendered tree is already
+ * correct without any migration and the tabs stay visible on their
+ * own tile. What the inverse-split buys is that the CRDT does not
+ * accumulate a single-child SPLIT for every split/close cycle the
+ * user performs -- left alone those chains grow without bound, and
+ * every projection pass then walks them.
+ *
+ * (It used to be load-bearing for correctness: the collapse re-keyed
+ * the rendered leaf to the PARENT's node_id, so the sibling's tabs --
+ * stored with tile_id=sibling -- orphaned in the rendered tree and the
+ * surviving tile rendered empty while the sidebar still listed them.
+ * Removing that re-key is what demoted this to hygiene.)
  *
  * Caller is responsible for NOT calling this on a registered root
  * (workspace root or floating-window root). The validator rejects
@@ -89,32 +96,27 @@ export function buildCloseTileOps(
   // reference a now-dead tile chain.
   //
   // For the non-leaf-sibling case the rendered tree's single-child
-  // SPLIT collapse (just above in this file's sibling `project.ts`)
-  // already does the right thing: the surviving sub-tree's root
-  // re-keys to the parent's id and its descendants render as before.
-  // So we don't need any rewiring; just the closing-leaf tombstone is
-  // enough.
+  // SPLIT collapse (in this file's sibling `project.ts`) already does
+  // the right thing: the surviving sub-tree renders in the parent's
+  // place, under its own ids. No rewiring needed; the closing-leaf
+  // tombstone is enough.
   const sibling = state.nodes[siblingId]
   const sibKind = sibling?.kind?.value ?? NodeKind.LEAF
   if (sibKind !== NodeKind.LEAF)
     return ops
 
-  // The "natural" undo-split target is `parentId` — flip it to LEAF
-  // and migrate sibling's tabs onto it. But if `parentId` is itself
-  // already the only live child of an enclosing SPLIT, the projection
-  // will collapse that SPLIT too and re-key its rendered leaf to the
-  // ancestor's id. Migrating tabs to `parentId` then strands them on
-  // a node that doesn't appear in the rendered tree (tabs go on
-  // `parentId`, the rendered leaf advertises the ancestor's id, the
-  // renderer queries `tabs[ancestor]` and finds none).
+  // The undo-split target is `parentId` — flip it to LEAF and migrate
+  // the sibling's tabs onto it. When `parentId` is itself the only
+  // live child of an enclosing SPLIT, that enclosing SPLIT is dead
+  // weight too, and so on upward.
   //
-  // Walk upward to find the topmost SPLIT in the single-child chain
-  // and collapse the whole chain in one batch: tabs go to that
-  // ancestor, every intermediate SPLIT is tombstoned, and the
-  // topmost ancestor flips to LEAF. The walk terminates at any
-  // non-SPLIT, tombstoned, or multi-child ancestor — those don't
-  // collapse in projection so the rendered leaf would already match
-  // the migration destination there.
+  // Walk up to the topmost SPLIT in the single-child chain and collapse
+  // the whole chain in one batch: tabs go to that ancestor, every
+  // intermediate SPLIT is tombstoned, and the topmost flips to LEAF.
+  // Doing it in one batch rather than one level per close is what stops
+  // these chains accumulating. The walk terminates at any non-SPLIT,
+  // tombstoned, or multi-child ancestor — those are load-bearing nodes
+  // that must survive.
   let destId = parentId
   const intermediates: string[] = []
   let curNode = parent

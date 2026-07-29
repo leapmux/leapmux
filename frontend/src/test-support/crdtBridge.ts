@@ -35,6 +35,40 @@ export interface TestBridgeHandle {
   dispose: () => void
 }
 
+/**
+ * Seed an additional workspace, with its own LEAF root tile, into an already
+ * installed harness.
+ *
+ * `installTestBridge` seeds exactly one workspace, which is all a
+ * single-workspace test needs. Anything exercising the point of the projection
+ * -- that every workspace is live at once -- needs a second one to move tabs
+ * between and to prove a change in one reaches the other.
+ */
+export function seedWorkspace(
+  // Structurally satisfied by `TestBridgeHandle`, so existing callers are
+  // unchanged -- and by the bare manager, so `installTestBridge` can seed its
+  // own first workspace through here instead of holding a second copy of this
+  // body that has to be kept in step by eye.
+  harness: { pending: PendingOpsManager },
+  workspaceId: string,
+  rootTileId: string,
+): string {
+  harness.pending.state.confirmedState.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, {
+    workspaceId,
+    rootNodeId: rootTileId,
+  })
+  harness.pending.state.confirmedState.nodes[rootTileId] = create(NodeRecordSchema, {
+    nodeId: rootTileId,
+    parentId: '',
+    kind: create(LWWNodeKindSchema, {
+      value: NodeKind.LEAF,
+      hlc: create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'seed' }),
+    }),
+  })
+  harness.pending.recomputeSpeculative()
+  return rootTileId
+}
+
 export function installTestBridge(opts?: {
   userId?: string
   workspaceId?: string
@@ -53,19 +87,7 @@ export function installTestBridge(opts?: {
   // Seed: workspace contents record + a LEAF root node. The
   // projection's `registeredRoots` lookup will then find the
   // workspace's root and the projected tree will be a single LEAF.
-  pending.state.confirmedState.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, {
-    workspaceId,
-    rootNodeId: rootTileId,
-  })
-  pending.state.confirmedState.nodes[rootTileId] = create(NodeRecordSchema, {
-    nodeId: rootTileId,
-    parentId: '',
-    kind: create(LWWNodeKindSchema, {
-      value: NodeKind.LEAF,
-      hlc: create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'seed' }),
-    }),
-  })
-  pending.recomputeSpeculative()
+  seedWorkspace({ pending }, workspaceId, rootTileId)
   setCRDTBridge({
     workspaceId: () => workspaceId,
     enqueue: (batch) => {

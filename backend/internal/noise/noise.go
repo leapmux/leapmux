@@ -373,7 +373,7 @@ func (cs *CipherState) NeedsRekey() bool {
 // RekeyGraceWindow, so in-flight frames encrypted under it can still be
 // decrypted. When retainPrev is false (the send direction, which keeps no
 // grace window) the previous key is zeroed and dropped instead — structurally,
-// not via a follow-up clearPrev the caller must remember. The nonce resets to 0.
+// not via a follow-up clear step the caller must remember. The nonce resets to 0.
 //
 // The derivation mirrors the Noise handshake's mixKey → hybridSplit ratchet
 // (noise.go mixKey / hybridSplit), collapsed onto the transport key:
@@ -421,9 +421,12 @@ func (cs *CipherState) rekeyWithSecret(dhSecret, pqSecret []byte, retainPrev boo
 	} else {
 		// Send direction: it keeps no grace window, so the key we are about to
 		// replace is zeroed rather than retained. Doing this here (instead of
-		// promoting to prev and relying on the caller to clearPrev) makes
-		// "send never holds a previous key" a structural property — a caller
-		// cannot forget the clearPrev and leave a live prev on Send.
+		// promoting to prev and leaving the caller to clear it afterwards) makes
+		// "send never holds a previous key" a structural property — there is
+		// deliberately no caller-invoked clear step to forget. This package
+		// therefore has no clearPrev; the TypeScript mirror
+		// (frontend/src/lib/noise.ts) still exposes one, so a cross-language
+		// grep finds a helper that has no Go counterpart by design.
 		zeroBytes(cs.k[:])
 	}
 
@@ -470,18 +473,6 @@ func (s *Session) NeedsRekeyEither() bool {
 // promoting it to prev.
 func (s *Session) RekeySendWithSecret(dhSecret, pqSecret []byte) {
 	s.Send.rekeyWithSecret(dhSecret, pqSecret, false)
-}
-
-// clearPrev zeroes and drops any retained previous-epoch key. Exported for
-// tests and for any future send-direction path that needs to drop a retained
-// prev explicitly; the production send rotation goes through RekeySendWithSecret
-// (retainPrev=false) and never sets prev in the first place.
-func (cs *CipherState) clearPrev() {
-	if cs.prev != nil {
-		zeroBytes(cs.prev.k[:])
-		cs.prev = nil
-	}
-	cs.prevExpiresAt = time.Time{}
 }
 
 // RekeyReceiveWithSecret rotates the receive CipherState with fresh DH +

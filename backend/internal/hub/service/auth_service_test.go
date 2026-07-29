@@ -559,61 +559,6 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 
 // --- VerifyEmail tests ---
 
-func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	t.Helper()
-
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-
-	err = st.Migrator().Migrate(context.Background())
-	require.NoError(t, err)
-
-	hubtestutil.CreateTestAdmin(t, st)
-
-	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
-	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
-
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, st
-}
-
-func createTestUserWithPendingEmail(t *testing.T, st store.Store, username, pendingEmail, token string, expiresAt *time.Time) string {
-	t.Helper()
-	userID := id.Generate()
-	hash, err := password.Hash("testpass")
-	require.NoError(t, err)
-
-	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  username,
-		Email:        "",
-		PasswordSet:  true,
-		IsAdmin:      false,
-	})
-	require.NoError(t, err)
-
-	// Set pending email directly.
-	err = st.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          pendingEmail,
-		PendingEmailToken:     token,
-		PendingEmailExpiresAt: expiresAt,
-		ID:                    userID,
-	})
-	require.NoError(t, err)
-
-	return userID
-}
-
 // VerifyEmail moved from AuthService to UserService and is now
 // authenticated. The exhaustive coverage lives in user_service_test.go;
 // keeping this file slim avoids accidental drift between two suites

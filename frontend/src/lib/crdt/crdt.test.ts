@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import { CrdtOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { applyOp, HLCClock, hlcCmp, hlcIsZero, newState, project, projectWorkspace } from '~/lib/crdt'
+import { applyOp, HLCClock, hlcCmp, hlcIsZero, newState, project } from '~/lib/crdt'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {
   return create(HLCSchema, { physical, logical, clientId })
@@ -225,7 +225,7 @@ describe('crdt project', () => {
     expect(proj.ownedTabs.find(t => t.tabId === 't1')).toBeUndefined()
   })
 
-  it('renders single-child SPLIT as the surviving child with split nodeId preserved', () => {
+  it('renders single-child SPLIT as the surviving child, under the child own id', () => {
     const state = newState('user')
     state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
     applyOp(state, setNodeKind('root1', NodeKind.SPLIT, hlc(1n, 0n, 'a')))
@@ -234,7 +234,11 @@ describe('crdt project', () => {
     applyOp(state, setNodePosition('child', 'N', hlc(2n, 2n, 'a')))
     const proj = project(state)
     const ws = proj.workspaces.get('w1')!
-    expect(ws.mainTree.nodeId).toBe('root1')
+    // The rendered surface is the CHILD, under the child's own node id.
+    // Re-keying it to the SPLIT's id used to give one surface two identities --
+    // the leaf's real, writable CRDT id and the ancestor's -- which left tabs
+    // anchored to a tile the tree no longer advertised.
+    expect(ws.mainTree.nodeId).toBe('child')
     expect(ws.mainTree.kind).toBe(NodeKind.LEAF)
   })
 
@@ -324,45 +328,5 @@ describe('crdt project', () => {
     // (resolveTileWorkspace walks to fwRoot). The tab is rendered.
     expect(rendered).toBeDefined()
     expect(rendered!.workspaceId).toBe('w1')
-  })
-})
-
-describe('crdt projectWorkspace', () => {
-  it('returns the same WorkspaceProjection shape as project() for the named workspace', () => {
-    const state = newState('user')
-    state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
-    state.workspaces.w2 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w2', rootNodeId: 'root2' } as never
-    applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))
-    applyOp(state, setNodeKind('root2', NodeKind.LEAF, hlc(2n, 0n, 'a')))
-
-    const full = project(state).workspaces.get('w1')!
-    const narrow = projectWorkspace(state, 'w1')!
-    expect(narrow.workspaceId).toBe(full.workspaceId)
-    expect(narrow.mainTree.nodeId).toBe(full.mainTree.nodeId)
-    expect(narrow.mainTree.kind).toBe(full.mainTree.kind)
-  })
-
-  it('returns undefined for unknown workspace_id', () => {
-    const state = newState('user')
-    expect(projectWorkspace(state, 'no-such')).toBeUndefined()
-  })
-
-  it('includes only floating windows that belong to the named workspace', () => {
-    const state = newState('user')
-    state.workspaces.w1 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w1', rootNodeId: 'root1' } as never
-    state.workspaces.w2 = { $typeName: 'leapmux.v1.WorkspaceContentsRecord', workspaceId: 'w2', rootNodeId: 'root2' } as never
-    applyOp(state, setNodeKind('root1', NodeKind.LEAF, hlc(1n, 0n, 'a')))
-    applyOp(state, setNodeKind('root2', NodeKind.LEAF, hlc(2n, 0n, 'a')))
-    applyOp(state, setNodeKind('fwRoot', NodeKind.LEAF, hlc(3n, 0n, 'a')))
-    // Attach a floating window to w2 only.
-    state.floatingWindows.fw1 = {
-      $typeName: 'leapmux.v1.FloatingWindowRecord',
-      windowId: 'fw1',
-      rootNodeId: 'fwRoot',
-      workspaceId: { $typeName: 'leapmux.v1.StringRegister', value: 'w2' },
-    } as never
-
-    expect(projectWorkspace(state, 'w1')!.floatingWindows).toHaveLength(0)
-    expect(projectWorkspace(state, 'w2')!.floatingWindows).toHaveLength(1)
   })
 })

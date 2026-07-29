@@ -1,13 +1,15 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createRoot } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import type { TabMetadata } from '~/stores/tabMetadata.store'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { applyGitStatusToTabs, syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { setCRDTBridge } from '~/lib/crdt'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { tabKey } from '~/stores/tab.helpers'
-import { createTabStore } from '~/stores/tab.store'
+import { emitAddTab, emitSetTabPosition } from '~/stores/tabOps'
+import { withTestBridge } from '~/test-support/crdtBridge'
+import { createTestTabStores } from '~/test-support/tabStores'
 
 const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
@@ -28,19 +30,90 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
   }
 }
 
+afterEach(() => setCRDTBridge(null))
+
+let nextPosition = 0
+
+/**
+ * Mount the reactive effect over a real bridge and hand the body a small
+ * add/read surface.
+ *
+ * Placement (`tileId`, `position`) comes from the CRDT projection and metadata
+ * (`workingDir`, `filePath`, the git fields) from `tabMetadata`, so `add` has to
+ * write both halves — that split IS the thing under test here, since the effect
+ * reads containment paths off the join and writes git fields back to metadata.
+ */
+async function withSync(
+  body: (ctx: {
+    add: (type: TabType, id: string, meta?: TabMetadata) => void
+    get: (type: TabType, id: string) => Tab | undefined
+    /** Tab ids written since the last `resetPatches()`, in call order. */
+    patched: () => string[]
+    resetPatches: () => void
+    refresh: (workerId: string, dir: string) => Promise<unknown>
+    setPosition: (type: TabType, id: string, position: string) => void
+  }) => Promise<void>,
+): Promise<void> {
+  await withTestBridge(async (harness) => {
+    const { view, metadata } = createTestTabStores(harness.workspaceId)
+    const realPatchMatching = metadata.patchMatching.bind(metadata)
+    const gitFileStatusStore = createGitFileStatusStore()
+    // Recording which tabs get written is how "already-stamped tabs aren't
+    // rewritten" is observable now. The join assembles a fresh `Tab` object per
+    // read, so the old `expect(after).toBe(before)` proxy-identity check can no
+    // longer see a redundant write.
+    //
+    // BOTH write paths must be observed. The stamp goes through `patchMatching`
+    // (one `produce` for the whole sweep); `patch` is only how this harness
+    // seeds a tab's metadata. Watching `patch` alone would let every
+    // "the stamp must actually write" assertion pass on the seed write while
+    // the stamp itself did nothing.
+    const stamped: string[] = []
+    const patch = vi.spyOn(metadata, 'patch')
+    vi.spyOn(metadata, 'patchMatching').mockImplementation((predicate, fields) => {
+      // The production predicate closes over a fixed id set, so evaluating it
+      // here against the live rows names exactly the tabs the sweep will write.
+      for (const [tabId, meta] of Object.entries(metadata.state.byTabId)) {
+        if (predicate(meta, tabId))
+          stamped.push(tabId)
+      }
+      return realPatchMatching(predicate, fields)
+    })
+
+    syncGitStatusToTabs({ gitFileStatusStore, view, metadata })
+
+    await body({
+      // Every tab lands on `worker1`, which is the worker each test refreshes
+      // against. Repo identity is `(workerId, toplevel)` -- a status read from
+      // one worker must not stamp an identically-pathed repo on another -- so a
+      // tab with no worker matches nothing.
+      add: (type, id, meta) => {
+        nextPosition += 1
+        emitAddTab({ type, id, tileId: harness.rootTileId, position: `p${nextPosition}`, workerId: 'worker1' })
+        if (meta)
+          metadata.patch(id, meta)
+      },
+      get: (type, id) => view.getById(type, id),
+      patched: () => [...patch.mock.calls.map(c => c[0]), ...stamped],
+      resetPatches: () => {
+        patch.mockClear()
+        stamped.length = 0
+      },
+      refresh: (workerId, dir) => gitFileStatusStore.refresh(workerId, dir),
+      setPosition: (type, id, position) => emitSetTabPosition(type, id, position),
+    })
+  })
+}
+
 describe('syncGitStatusToTabs', () => {
   it('stamps git fields on terminal tabs whose workingDir sits under repoRoot', async () => {
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/sub' })
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't2', workingDir: '/elsewhere' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.TERMINAL, 't1', { workingDir: '/repo/sub' })
+      add(TabType.TERMINAL, 't2', { workingDir: '/elsewhere' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'git@example.com:org/repo.git',
         currentBranch: 'main',
         files: [
@@ -49,9 +122,9 @@ describe('syncGitStatusToTabs', () => {
         ],
       })
 
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const t1 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
+      const t1 = get(TabType.TERMINAL, 't1')
       expect(t1?.gitDiffAdded).toBe(5)
       expect(t1?.gitDiffDeleted).toBe(2)
       expect(t1?.gitDiffUntracked).toBe(1)
@@ -59,27 +132,21 @@ describe('syncGitStatusToTabs', () => {
       expect(t1?.gitBranch).toBe('main')
 
       // Tab outside the repo isn't touched.
-      const t2 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't2' }))
+      const t2 = get(TabType.TERMINAL, 't2')
       expect(t2?.gitDiffAdded).toBeUndefined()
       expect(t2?.gitOriginUrl).toBeUndefined()
-
-      dispose()
     })
   })
 
   // Per-agent metadata lives on the Tab record now, so the agent's
   // workingDir comes off the tab directly — no separate agentStore.
   it('reads agent workingDir from the tab record itself', async () => {
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', workingDir: '/repo/agent-cwd' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.AGENT, 'a1', { workingDir: '/repo/agent-cwd' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: '',
         currentBranch: '',
         files: [
@@ -87,26 +154,20 @@ describe('syncGitStatusToTabs', () => {
         ],
       })
 
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const a1 = tabStore.getTabByKey(tabKey({ type: TabType.AGENT, id: 'a1' }))
+      const a1 = get(TabType.AGENT, 'a1')
       expect(a1?.gitDiffAdded).toBe(1)
-
-      dispose()
     })
   })
 
   it('skips no-op writes when fields already match the resolved git stats', async () => {
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, patched, refresh, resetPatches }) => {
+      add(TabType.TERMINAL, 't1', { workingDir: '/repo' })
 
       mockGetGitFileStatus.mockResolvedValue({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: '',
         currentBranch: 'main',
         files: [
@@ -114,20 +175,22 @@ describe('syncGitStatusToTabs', () => {
         ],
       })
 
-      await gitFileStatusStore.refresh('worker1', '/repo')
-      const after1 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
-      const refBefore = after1
-      expect(after1?.gitDiffAdded).toBe(3)
+      await refresh('worker1', '/repo')
+      expect(get(TabType.TERMINAL, 't1')?.gitDiffAdded).toBe(3)
+      expect(patched(), 'the first refresh must actually write').toContain('t1')
 
-      // Second refresh with identical files: predicate filters out matching
-      // tabs so no `updateMatchingTabs` write fires, leaving the same proxy
-      // reference in place.
-      await gitFileStatusStore.refresh('worker1', '/repo')
-      const after2 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
-      expect(after2?.gitDiffAdded).toBe(3)
-      expect(after2).toBe(refBefore)
+      // Adding a tab changes `unstampedTabsSignature`, so the effect genuinely
+      // re-runs and re-walks BOTH tabs. `tabAlreadyMatches` is what keeps the
+      // already-correct t1 out of the write -- without it, every new tab in a
+      // repo would rewrite every existing tab's git fields, invalidating the
+      // sidebar's memos across the whole account.
+      resetPatches()
+      add(TabType.TERMINAL, 't2', { workingDir: '/repo' })
+      await Promise.resolve()
+      await Promise.resolve()
 
-      dispose()
+      expect(get(TabType.TERMINAL, 't2')?.gitDiffAdded, 'the new tab is stamped').toBe(3)
+      expect(patched()).not.toContain('t1')
     })
   })
 
@@ -139,43 +202,23 @@ describe('syncGitStatusToTabs', () => {
     // must not overwrite tab B's identity just because B's path is
     // lexically inside A's tree — otherwise the workspace tab tree
     // groups them under one repo.
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({
-        type: TabType.TERMINAL,
-        id: 'a',
-        workingDir: '/parent',
-        gitOriginUrl: 'https://example.com/a.git',
-        gitToplevel: '/parent',
-        gitBranch: 'main',
-      })
-      tabStore.addTab({
-        type: TabType.TERMINAL,
-        id: 'b',
-        workingDir: '/parent/sub',
-        gitOriginUrl: 'https://example.com/b.git',
-        gitToplevel: '/parent/sub',
-        gitBranch: 'feature',
-      })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.TERMINAL, 'a', { workingDir: '/parent', gitOriginUrl: 'https://example.com/a.git', gitToplevel: '/parent', gitBranch: 'main' })
+      add(TabType.TERMINAL, 'b', { workingDir: '/parent/sub', gitOriginUrl: 'https://example.com/b.git', gitToplevel: '/parent/sub', gitBranch: 'feature' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/parent',
+        toplevel: '/parent',
         originUrl: 'https://example.com/a.git',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/parent')
+      await refresh('worker1', '/parent')
 
-      const tabB = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 'b' }))
+      const tabB = get(TabType.TERMINAL, 'b')
       expect(tabB?.gitOriginUrl).toBe('https://example.com/b.git')
       expect(tabB?.gitToplevel).toBe('/parent/sub')
       expect(tabB?.gitBranch).toBe('feature')
-
-      dispose()
     })
   })
 
@@ -186,16 +229,12 @@ describe('syncGitStatusToTabs', () => {
     // filePath as a stand-in for the containment check — otherwise the
     // workspace tree groups the tab under the wrong repo (or in the
     // ungrouped bucket).
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.FILE, id: 'f1', filePath: '/repo/src/foo.ts' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.FILE, 'f1', { filePath: '/repo/src/foo.ts' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [
@@ -203,48 +242,40 @@ describe('syncGitStatusToTabs', () => {
         ],
       })
 
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const f1 = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'f1' }))
+      const f1 = get(TabType.FILE, 'f1')
       expect(f1?.gitOriginUrl).toBe('https://example.com/repo.git')
       expect(f1?.gitBranch).toBe('main')
       expect(f1?.gitToplevel).toBe('/repo')
       expect(f1?.gitDiffAdded).toBe(7)
       expect(f1?.gitDiffDeleted).toBe(1)
-
-      dispose()
     })
   })
 
   it('does not stamp a FILE tab whose filePath lives outside repoRoot', async () => {
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
+    await withSync(async ({ add, get, refresh }) => {
       // FILE tab outside the focused repo's tree — must stay unstamped.
-      tabStore.addTab({ type: TabType.FILE, id: 'outside', filePath: '/other-repo/src/x.ts' })
+      add(TabType.FILE, 'outside', { filePath: '/other-repo/src/x.ts' })
       // Sanity reference: an inside tab so we can assert the effect did fire.
-      tabStore.addTab({ type: TabType.FILE, id: 'inside', filePath: '/repo/y.ts' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+      add(TabType.FILE, 'inside', { filePath: '/repo/y.ts' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const outside = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'outside' }))
+      const outside = get(TabType.FILE, 'outside')
       expect(outside?.gitOriginUrl).toBeUndefined()
       expect(outside?.gitToplevel).toBeUndefined()
 
-      const inside = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'inside' }))
+      const inside = get(TabType.FILE, 'inside')
       expect(inside?.gitOriginUrl).toBe('https://example.com/repo.git')
       expect(inside?.gitToplevel).toBe('/repo')
-
-      dispose()
     })
   })
 
@@ -254,32 +285,21 @@ describe('syncGitStatusToTabs', () => {
     // workingDir first; we verify by giving the FILE tab a workingDir
     // OUTSIDE the focused repo and a filePath INSIDE — the tab must not
     // be stamped, proving workingDir won.
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({
-        type: TabType.FILE,
-        id: 'f1',
-        filePath: '/repo/inside.ts',
-        workingDir: '/elsewhere',
-      })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.FILE, 'f1', { filePath: '/repo/inside.ts', workingDir: '/elsewhere' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const f1 = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'f1' }))
+      const f1 = get(TabType.FILE, 'f1')
       expect(f1?.gitOriginUrl).toBeUndefined()
       expect(f1?.gitToplevel).toBeUndefined()
-
-      dispose()
     })
   })
 
@@ -288,28 +308,22 @@ describe('syncGitStatusToTabs', () => {
     // and the CRDT projection didn't carry workingDir. There's nothing
     // to compare against repoRoot, so the effect must leave the tab
     // alone (no false positives).
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.FILE, id: 'f1' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.FILE, 'f1')
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const f1 = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'f1' }))
+      const f1 = get(TabType.FILE, 'f1')
       expect(f1?.gitOriginUrl).toBeUndefined()
       expect(f1?.gitToplevel).toBeUndefined()
       expect(f1?.gitBranch).toBeUndefined()
-
-      dispose()
     })
   })
 
@@ -321,14 +335,10 @@ describe('syncGitStatusToTabs', () => {
     // and never got stamped — the workspace tab tree placed it under
     // "Ungrouped" until a page refresh re-ran the restore→refresh
     // sequence in the right order.
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
-
+    await withSync(async ({ add, get, refresh }) => {
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [
@@ -337,22 +347,20 @@ describe('syncGitStatusToTabs', () => {
       })
       // Populate the store first. No tabs exist yet, so the effect
       // runs and finds nothing to stamp.
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
       // Now the user opens a file — new FILE tab arrives after the
       // store already settled. The effect must still notice and stamp
       // it on the next reactive flush.
-      tabStore.addTab({ type: TabType.FILE, id: 'newly-opened', filePath: '/repo/foo.ts', workingDir: '/repo' })
+      add(TabType.FILE, 'newly-opened', { filePath: '/repo/foo.ts', workingDir: '/repo' })
       await Promise.resolve()
 
-      const tab = tabStore.getTabByKey(tabKey({ type: TabType.FILE, id: 'newly-opened' }))
+      const tab = get(TabType.FILE, 'newly-opened')
       expect(tab?.gitOriginUrl).toBe('https://example.com/repo.git')
       expect(tab?.gitBranch).toBe('main')
       expect(tab?.gitToplevel).toBe('/repo')
       expect(tab?.gitDiffAdded).toBe(4)
       expect(tab?.gitDiffDeleted).toBe(2)
-
-      dispose()
     })
   })
 
@@ -362,72 +370,64 @@ describe('syncGitStatusToTabs', () => {
     // the (type,id,workingDir,gitToplevel) tuples we sign. If the
     // signature were order-sensitive the effect would refire on every
     // drag, churning store identities for nothing.
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/a' })
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't2', workingDir: '/repo/b' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, patched, refresh, resetPatches, setPosition }) => {
+      add(TabType.TERMINAL, 't1', { workingDir: '/repo/a' })
+      add(TabType.TERMINAL, 't2', { workingDir: '/repo/b' })
 
       mockGetGitFileStatus.mockResolvedValue({
         repoRoot: '/repo',
+        toplevel: '/repo',
         originUrl: '',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      // Both tabs stamped — record their post-stamp identities.
-      const t1Before = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
-      const t2Before = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't2' }))
-      expect(t1Before?.gitToplevel).toBe('/repo')
-      expect(t2Before?.gitToplevel).toBe('/repo')
+      // Both tabs stamped.
+      expect(get(TabType.TERMINAL, 't1')?.gitToplevel).toBe('/repo')
+      expect(get(TabType.TERMINAL, 't2')?.gitToplevel).toBe('/repo')
+      expect(patched(), 'the initial stamp must actually write').toContain('t1')
+      resetPatches()
 
-      // Reorder via the public API: `position` is NOT one of the signed
-      // tuple fields, so the unstampedTabsSignature set is unchanged.
-      tabStore.setTabPosition(tabKey({ type: TabType.TERMINAL, id: 't1' }), 'z')
-      tabStore.setTabPosition(tabKey({ type: TabType.TERMINAL, id: 't2' }), 'a')
+      // Reorder by emitting position ops: `position` is NOT one of the signed
+      // tuple fields, so the unstampedTabsSignature set is unchanged even
+      // though the projection ticks and re-sorts the tab list.
+      setPosition(TabType.TERMINAL, 't1', 'z')
+      setPosition(TabType.TERMINAL, 't2', 'a')
       await Promise.resolve()
       await Promise.resolve()
 
-      // Same proxy identity → no syncGitStatusToTabs-triggered write. If
-      // the memo were order-sensitive, the effect would have refired and
-      // (even with no-op fields) would have replaced the row.
-      const t1After = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
-      const t2After = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't2' }))
-      expect(t1After).toBe(t1Before)
-      expect(t2After).toBe(t2Before)
-
-      dispose()
+      // No further writes. If the signature were order-sensitive the effect
+      // would have refired on the reorder; the recorded writes are what expose
+      // that now that each read assembles a fresh `Tab`.
+      expect(patched()).toEqual([])
+      expect(get(TabType.TERMINAL, 't1')?.gitToplevel).toBe('/repo')
+      expect(get(TabType.TERMINAL, 't2')?.gitToplevel).toBe('/repo')
     })
   })
 
-  describe('applyGitStatusToTabs (cross-workspace / registry-snapshot stamping)', () => {
-    // applyGitStatusToTabs replaces the inlined effect body so that
-    // inactive workspace snapshots can use the same containment +
+  describe('applyGitStatusToTabs (direct, non-reactive stamping)', () => {
+    // applyGitStatusToTabs is the effect body, extracted so the same
+    // containment +
     // aggregation rules as the active tabStore. The reactive
     // syncGitStatusToTabs effect routes through this helper too, so
     // these tests cover the active path indirectly; the assertions
-    // below pin the cross-workspace shape — a snapshot-shaped
-    // TabStampTarget with a custom update fn that rewrites a plain
-    // array (mimicking how AppShell stamps inactive registry
-    // snapshots).
-    it('stamps a snapshot-shaped target without going through tabStore', () => {
+    // below drive it through a plain-array TabStampTarget, with no CRDT
+    // bridge and no reactive root -- which is what the seam is for.
+    it('stamps a plain-array target with no store behind it', () => {
       let tabs: Tab[] = [
-        { type: TabType.TERMINAL, id: 't1', workingDir: '/repo' } as Tab,
-        { type: TabType.TERMINAL, id: 't2', workingDir: '/elsewhere' } as Tab,
+        { type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo' } as Tab,
+        { type: TabType.TERMINAL, id: 't2', workerId: 'w1', workingDir: '/elsewhere' } as Tab,
       ]
       applyGitStatusToTabs({
         get tabs() {
           return tabs
         },
-        update: (predicate, fields) => {
-          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
         },
       }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '/repo',
         originUrl: 'git@example.com:org/repo.git',
         currentBranch: 'feature',
@@ -452,9 +452,9 @@ describe('syncGitStatusToTabs', () => {
 
     it('is a no-op when no tab matches — does not call update()', () => {
       const update = vi.fn()
-      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workingDir: '/elsewhere' } as Tab]
+      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/elsewhere' } as Tab]
       applyGitStatusToTabs({ tabs, update }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'main',
@@ -463,11 +463,77 @@ describe('syncGitStatusToTabs', () => {
       expect(update).not.toHaveBeenCalled()
     })
 
+    // Repo identity is (workerId, toplevel). The same absolute path on two
+    // workers is the normal case -- two dev boxes, two identically-provisioned
+    // containers -- and this stamp now reaches every workspace in the account,
+    // so matching on path alone smears one worker's branch and diff badges
+    // across the other's tabs.
+    it('does not stamp a tab on a DIFFERENT worker with the same repo path', () => {
+      let tabs: Tab[] = [
+        { type: TabType.TERMINAL, id: 'mine', workerId: 'w1', workingDir: '/repo' } as Tab,
+        { type: TabType.TERMINAL, id: 'theirs', workerId: 'w2', workingDir: '/repo' } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        workerId: 'w1',
+        toplevel: '/repo',
+        originUrl: '',
+        currentBranch: 'feature',
+        files: [],
+      })
+
+      expect(tabs.find(t => t.id === 'mine')?.gitBranch).toBe('feature')
+      expect(tabs.find(t => t.id === 'theirs')?.gitBranch, 'a different worker is a different repo').toBeUndefined()
+    })
+
+    it('is a no-op when the status carries no worker (nothing to anchor to)', () => {
+      const update = vi.fn()
+      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo' } as Tab]
+      applyGitStatusToTabs({ tabs, update }, {
+        workerId: '',
+        toplevel: '/repo',
+        originUrl: '',
+        currentBranch: 'main',
+        files: [],
+      })
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    // `metadata.patch` SKIPS undefined, so a cleared branch has to be sent as
+    // `''`. Sending undefined left a detached HEAD showing its old branch
+    // forever, and re-patched every tab on every refresh without converging.
+    it('clears the branch when the repo no longer has one', () => {
+      let tabs: Tab[] = [
+        { type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo', gitBranch: 'old', gitToplevel: '/repo' } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        workerId: 'w1',
+        toplevel: '/repo',
+        originUrl: '',
+        currentBranch: '',
+        files: [],
+      })
+      expect(tabs[0].gitBranch, 'a detached HEAD must not keep the stale label').toBe('')
+    })
+
     it('is a no-op when status.toplevel is empty (no working tree to anchor)', () => {
       const update = vi.fn()
-      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workingDir: '/repo' } as Tab]
+      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo' } as Tab]
       applyGitStatusToTabs({ tabs, update }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '',
         originUrl: '',
         currentBranch: '',
@@ -490,6 +556,7 @@ describe('syncGitStatusToTabs', () => {
         {
           type: TabType.AGENT,
           id: 'main',
+          workerId: 'w1',
           workingDir: '/repo',
           gitToplevel: '/repo',
           gitBranch: 'trunk',
@@ -498,6 +565,7 @@ describe('syncGitStatusToTabs', () => {
         {
           type: TabType.AGENT,
           id: 'wt',
+          workerId: 'w1',
           workingDir: '/repo-wts/feature',
           gitToplevel: '/repo-wts/feature',
           gitBranch: 'trunk', // pre-stamp stale label
@@ -507,11 +575,11 @@ describe('syncGitStatusToTabs', () => {
         get tabs() {
           return tabs
         },
-        update: (predicate, fields) => {
-          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
         },
       }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '/repo-wts/feature',
         originUrl: '',
         currentBranch: 'feature',
@@ -528,72 +596,11 @@ describe('syncGitStatusToTabs', () => {
       expect(wt.gitToplevel).toBe('/repo-wts/feature')
     })
 
-    it('migrates a pre-PR worktree tab whose gitToplevel was stamped as repoRoot', () => {
-      // Pre-PR worker code stamped gitToplevel = repoRoot for BOTH
-      // main-tree and worktree tabs (the worktree-aware `toplevel`
-      // field didn't exist yet). After upgrade, the new worker reports
-      // toplevel = worktreeDir, so the exact-toplevel-match check
-      // would permanently skip the persisted worktree tab and freeze
-      // its branch/diff badges at the pre-upgrade values. The
-      // migration branch detects this exact case (tab.gitToplevel
-      // equals the new status.repoRoot, AND the tab's containment
-      // path sits under the new toplevel) and re-stamps once. After
-      // the re-stamp, subsequent refreshes hit the exact-match path.
-      let tabs: Tab[] = [
-        // Pre-PR worktree tab: containment path is inside the
-        // worktree, but gitToplevel still holds the (stale) repoRoot.
-        {
-          type: TabType.AGENT,
-          id: 'wt-legacy',
-          workingDir: '/repo-wts/feature/cmd',
-          gitToplevel: '/repo', // stale pre-PR stamp
-          gitBranch: 'trunk', // stale pre-PR branch label
-        } as Tab,
-        // Pre-PR main-tree tab: same stale gitToplevel, but
-        // containment path is NOT under the worktree — must NOT be
-        // re-stamped with the worktree's branch.
-        {
-          type: TabType.AGENT,
-          id: 'main-legacy',
-          workingDir: '/repo/cmd',
-          gitToplevel: '/repo',
-          gitBranch: 'trunk',
-        } as Tab,
-      ]
-      applyGitStatusToTabs({
-        get tabs() {
-          return tabs
-        },
-        update: (predicate, fields) => {
-          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
-        },
-      }, {
-        repoRoot: '/repo',
-        toplevel: '/repo-wts/feature',
-        originUrl: '',
-        currentBranch: 'feature',
-        files: [],
-      })
-
-      const wt = tabs.find(t => t.id === 'wt-legacy')!
-      const main = tabs.find(t => t.id === 'main-legacy')!
-      // Worktree tab migrated to the worktree-aware toplevel + branch.
-      expect(wt.gitToplevel).toBe('/repo-wts/feature')
-      expect(wt.gitBranch).toBe('feature')
-      // Main-tree tab untouched — containment guard rejects it
-      // (containmentPath is not under the worktree's toplevel).
-      expect(main.gitToplevel).toBe('/repo')
-      expect(main.gitBranch).toBe('trunk')
-    })
-
-    it('does NOT migrate when the status is itself a main-tree refresh', () => {
-      // The migration only fires for worktree-shaped status (toplevel
-      // != repoRoot). A main-tree refresh has toplevel === repoRoot,
-      // and pre-PR main-tree tabs already carry gitToplevel ===
-      // repoRoot — these hit the exact-match branch and re-stamp via
-      // tabAlreadyMatches' normal path. Verify that the same input
-      // doesn't trip the migration sub-branch for a sibling-repo tab
-      // that just happens to share the repoRoot value.
+    it('does NOT stamp a sibling-repo tab whose gitToplevel aliases another repo path', () => {
+      // `gitToplevel` is matched EXACTLY, so a tab whose stamp happens to
+      // equal some other repo's path is still rejected: the worktree
+      // refresh's toplevel is /repo-wts/feature and the tab's is /repo.
+      // The value-equality alias must not be enough to claim the tab.
       let tabs: Tab[] = [
         // A tab in a SIBLING repo at /other-repo whose gitToplevel
         // legitimately matches /repo (pathological alias case — same
@@ -603,6 +610,7 @@ describe('syncGitStatusToTabs', () => {
         {
           type: TabType.AGENT,
           id: 'sibling',
+          workerId: 'w1',
           workingDir: '/other-repo/cmd',
           gitToplevel: '/repo',
           gitBranch: 'trunk',
@@ -612,11 +620,11 @@ describe('syncGitStatusToTabs', () => {
         get tabs() {
           return tabs
         },
-        update: (predicate, fields) => {
-          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
         },
       }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '/repo-wts/feature',
         originUrl: '',
         currentBranch: 'feature',
@@ -624,23 +632,22 @@ describe('syncGitStatusToTabs', () => {
       })
 
       const sib = tabs.find(t => t.id === 'sibling')!
-      // Containment guard saved it: /other-repo/cmd is not under
-      // /repo-wts/feature, so the migration branch's second condition
-      // (`relativeUnder(containmentPath, toplevel) !== null`) rejects.
+      // Rejected by the exact-toplevel check: '/repo' is not
+      // '/repo-wts/feature', so the tab is never a stamping target.
       expect(sib.gitToplevel).toBe('/repo')
       expect(sib.gitBranch).toBe('trunk')
     })
 
-    it('does NOT over-stamp a nested-repo tab via the migration branch', () => {
-      // The migration branch requires `tab.gitToplevel ===
-      // status.repoRoot`. A nested-repo tab carries the INNER repo's
-      // toplevel (e.g. /repo/vendor/inner), NOT the parent's
-      // repoRoot, so the migration condition is false and the
-      // authoritative exact-match check rejects it.
+    it('does NOT over-stamp a nested-repo tab whose path sits under the outer repo', () => {
+      // A nested repo's tab carries the INNER repo's toplevel
+      // (/repo/vendor/inner). Its containment path DOES sit under the
+      // outer repo, so a path-based rule would claim it; the exact
+      // toplevel match is what keeps the two repos' badges independent.
       let tabs: Tab[] = [
         {
           type: TabType.AGENT,
           id: 'nested',
+          workerId: 'w1',
           workingDir: '/repo/vendor/inner/cmd',
           gitToplevel: '/repo/vendor/inner', // nested repo's own toplevel
           gitBranch: 'nested-branch',
@@ -650,11 +657,11 @@ describe('syncGitStatusToTabs', () => {
         get tabs() {
           return tabs
         },
-        update: (predicate, fields) => {
-          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        update: (tabIds, fields) => {
+          tabs = tabs.map(t => tabIds.has(t.id) ? { ...t, ...fields } as Tab : t)
         },
       }, {
-        repoRoot: '/repo',
+        workerId: 'w1',
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'parent-main',
@@ -673,28 +680,22 @@ describe('syncGitStatusToTabs', () => {
     // so the path-prefix check is the best we can do. After the first
     // sync, the tab carries its authoritative gitToplevel for subsequent
     // runs to compare against.
-    await createRoot(async (dispose) => {
-      const tabStore = createTabStore()
-      const gitFileStatusStore = createGitFileStatusStore()
-
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/nested' })
-
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.TERMINAL, 't1', { workingDir: '/repo/nested' })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
-        repoRoot: '/repo',
+        workerId: 'w1',
+        toplevel: '/repo',
         originUrl: 'https://example.com/repo.git',
         currentBranch: 'main',
         files: [],
       })
-      await gitFileStatusStore.refresh('worker1', '/repo')
+      await refresh('worker1', '/repo')
 
-      const t1 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
+      const t1 = get(TabType.TERMINAL, 't1')
       expect(t1?.gitOriginUrl).toBe('https://example.com/repo.git')
       expect(t1?.gitToplevel).toBe('/repo')
       expect(t1?.gitBranch).toBe('main')
-
-      dispose()
     })
   })
 })

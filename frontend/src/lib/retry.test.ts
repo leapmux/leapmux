@@ -266,4 +266,67 @@ describe('createExponentialBackoff', () => {
       expect(delay).toBeGreaterThanOrEqual(0)
     })
   })
+
+  /**
+   * `maxMs` bounds how OFTEN a key retries, not how LONG. A caller whose work
+   * can never succeed (an RPC to a deregistered worker) has no other exit, so
+   * without a cap it holds one timer per key for the life of the page.
+   */
+  describe('maxAttempts', () => {
+    it('stops arming timers once the budget is spent', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000, maxAttempts: 3 })
+      const fire = vi.fn()
+
+      for (let i = 0; i < 3; i++) {
+        expect(backoff.schedule('k', fire), `attempt ${i + 1} is within budget`).not.toBeNull()
+        vi.advanceTimersByTime(2000)
+      }
+
+      expect(backoff.schedule('k', fire), 'the fourth attempt must give up').toBeNull()
+      expect(backoff.size(), 'and leave no timer armed').toBe(0)
+      expect(fire).toHaveBeenCalledTimes(3)
+    })
+
+    it('reports exhaustion without racing the timer', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000, maxAttempts: 1 })
+      expect(backoff.isExhausted('k')).toBe(false)
+      backoff.schedule('k', () => {})
+      expect(backoff.isExhausted('k')).toBe(true)
+    })
+
+    it('restores the budget on reset, so a recovered key retries again', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000, maxAttempts: 2 })
+      backoff.schedule('k', () => {})
+      vi.advanceTimersByTime(2000)
+      backoff.schedule('k', () => {})
+      vi.advanceTimersByTime(2000)
+      expect(backoff.schedule('k', () => {})).toBeNull()
+
+      backoff.reset('k')
+
+      expect(backoff.isExhausted('k')).toBe(false)
+      expect(backoff.schedule('k', () => {}), 'a key that succeeded starts over').not.toBeNull()
+    })
+
+    it('counts each key separately', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000, maxAttempts: 1 })
+      backoff.schedule('a', () => {})
+      expect(backoff.isExhausted('a')).toBe(true)
+      expect(backoff.isExhausted('b'), 'one key exhausting must not retire another').toBe(false)
+    })
+
+    it('retries without limit when no cap is configured', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 200 })
+      for (let i = 0; i < 50; i++) {
+        expect(backoff.schedule('k', () => {})).not.toBeNull()
+        vi.advanceTimersByTime(500)
+      }
+      expect(backoff.isExhausted('k')).toBe(false)
+    })
+
+    it('rejects a cap below one', () => {
+      expect(() => createExponentialBackoff<string>({ initialMs: 100, maxMs: 200, maxAttempts: 0 }))
+        .toThrow(/maxAttempts/)
+    })
+  })
 })

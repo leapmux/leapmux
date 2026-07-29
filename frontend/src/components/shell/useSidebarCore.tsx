@@ -9,10 +9,10 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { TabItemOps } from '~/stores/tab.types'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
@@ -75,13 +75,12 @@ export interface SidebarCommonProps {
   activeTabReady: boolean
 
   // Tabs
-  tabStore?: ReturnType<typeof createTabStore>
-  registry?: WorkspaceStoreRegistryType
+  view?: TabView
+  selection?: TabSelectionStore
   onTabClick?: (type: number, id: string) => void
   tabItemOps?: TabItemOps
-  onExpandWorkspace?: (workspaceId: string) => void
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
-  getTileOrderForWorkspace?: (workspaceId: string) => string[]
+  getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
 
@@ -170,11 +169,10 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get activeWorkspaceId() { return props.activeWorkspaceId },
     onNewWorkspace: props.onNewWorkspace,
     onSelectWorkspace: props.onSelectWorkspace,
-    get tabStore() { return props.tabStore },
-    get registry() { return props.registry },
+    get view() { return props.view },
+    get selection() { return props.selection },
     get onTabClick() { return props.onTabClick },
     get tabItemOps() { return props.tabItemOps },
-    get onExpandWorkspace() { return props.onExpandWorkspace },
     get getTileOrderForWorkspace() { return props.getTileOrderForWorkspace },
     get onChangeBranch() { return props.onChangeBranch },
     get onDeleteBranch() { return props.onDeleteBranch },

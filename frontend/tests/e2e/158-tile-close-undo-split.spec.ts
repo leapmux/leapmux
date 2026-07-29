@@ -32,7 +32,14 @@ test.describe('Tile close undo-split', () => {
     void authenticatedWorkspace
     // Fixture seeds one agent. Capture its title so we can assert the
     // tab survives the undo-split path with full metadata intact.
+    //
+    // The title is worker-side metadata fetched after the tab itself renders
+    // from the CRDT projection, so snapshotting it immediately captures the
+    // bare "Agent" placeholder -- and then the post-close comparison fails
+    // against the real title that arrived in between. Wait for hydration, which
+    // is what "with full metadata intact" needs anyway.
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
+    await expect.poll(async () => (await tabbarAgentLabels(page))[0]).not.toBe('Agent')
     const initialLabels = await tabbarAgentLabels(page)
     expect(initialLabels).toHaveLength(1)
     const seededTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -77,8 +84,10 @@ test.describe('Tile close undo-split', () => {
     await page.locator('[data-testid="tile"]').first().waitFor()
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
-    const reloadLabels = await tabbarAgentLabels(page)
-    expect(reloadLabels).toEqual(initialLabels)
+    // The reload wiped the metadata store, so the title has to be re-fetched
+    // from the worker; the tab itself renders from the CRDT projection first.
+    // Poll rather than snapshot, exactly as above.
+    await expect.poll(() => tabbarAgentLabels(page)).toEqual(initialLabels)
     const reloadTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]')
       .first()
       .getAttribute('data-tab-id')

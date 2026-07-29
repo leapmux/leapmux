@@ -76,7 +76,6 @@ function makeProps() {
     registry: undefined,
     onTabClick: vi.fn(),
     tabItemOps: undefined,
-    onExpandWorkspace: vi.fn(),
     workers: [],
     workerInfoFn: vi.fn(),
     channelStatusFn: vi.fn(),

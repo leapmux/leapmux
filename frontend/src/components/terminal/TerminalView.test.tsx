@@ -1,5 +1,5 @@
 import type { TerminalInstance } from '~/lib/terminal'
-import type { Tab, TerminalTab } from '~/stores/tab.types'
+import type { TerminalTab } from '~/stores/tab.types'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { createStore } from 'solid-js/store'
@@ -11,21 +11,24 @@ import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
 import { webglPool } from '~/lib/webglTerminalPool'
 
 const mockCreateTerminalInstance = vi.fn()
+// Overridable only where a test needs to drive the disposal-capture guard; the
+// default delegates to the real implementation so every other suite is
+// unaffected.
+const mockBufferHasVisibleContent = vi.fn<(t: unknown) => boolean | undefined>(() => undefined)
+const mockSerializeXtermBuffer = vi.fn<(i: unknown) => Uint8Array | undefined>(() => undefined)
 
 vi.mock('~/lib/terminal', async () => {
   const actual = await vi.importActual<typeof import('~/lib/terminal')>('~/lib/terminal')
   return {
     ...actual,
     createTerminalInstance: (...args: unknown[]) => mockCreateTerminalInstance(...args),
+    bufferHasVisibleContent: (t: unknown) => mockBufferHasVisibleContent(t) ?? actual.bufferHasVisibleContent(t as never),
+    serializeXtermBuffer: (i: unknown) => mockSerializeXtermBuffer(i) ?? actual.serializeXtermBuffer(i as never),
   }
 })
 
-const { TerminalView, getTerminalInstance, disposeTerminalInstance, captureTerminalScreens }
+const { TerminalView, getTerminalInstance, disposeTerminalInstance, setTerminalScreenSink }
   = await import('~/components/terminal/TerminalView')
-
-// captureTerminalScreens serializes a *live* xterm, so those tests need the
-// real factory rather than the component-suite mock installed above.
-const { createTerminalInstance } = await vi.importActual<typeof import('~/lib/terminal')>('~/lib/terminal')
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -89,15 +92,6 @@ function makeMockTerminalInstance(): TerminalInstance {
   }
 }
 
-// Await xterm's async parser via the write callback so serialize sees
-// the data we just wrote.
-function writeAndWait(
-  inst: ReturnType<typeof createTerminalInstance>,
-  data: string,
-): Promise<void> {
-  return new Promise<void>(resolve => inst.terminal.write(data, () => resolve()))
-}
-
 describe('terminalView', () => {
   beforeEach(() => {
     mockCreateTerminalInstance.mockReset()
@@ -114,7 +108,7 @@ describe('terminalView', () => {
     const acquireSpy = vi.spyOn(webglPool, 'acquire')
     const releaseSpy = vi.spyOn(webglPool, 'release')
 
-    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
     render(() => (
       <PreferencesProvider>
         <TerminalView
@@ -158,6 +152,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
+            workspaceId: 'ws-1',
             screen: new TextEncoder().encode('\x07restored'),
           }]}
           activeTerminalId="term-1"
@@ -195,6 +190,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
+            workspaceId: 'ws-1',
             status: TerminalStatus.STARTING,
             startupMessage: 'Starting zsh…',
             screen: new Uint8Array(),
@@ -225,6 +221,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
+            workspaceId: 'ws-1',
             status: TerminalStatus.STARTING,
             screen: new Uint8Array(),
           }]}
@@ -254,6 +251,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-exited-empty',
             type: TabType.TERMINAL,
+            workspaceId: 'ws-1',
             status: TerminalStatus.EXITED,
             screen: new Uint8Array(),
           }]}
@@ -291,7 +289,7 @@ describe('terminalView', () => {
       .mockReturnValueOnce(instanceA)
       .mockReturnValueOnce(instanceB)
 
-    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
     const [terminals, setTerminals] = createSignal<TerminalTab[]>([
       { id: 'dispose-test-A', ...baseTab },
       { id: 'dispose-test-B', ...baseTab },
@@ -342,7 +340,7 @@ describe('terminalView', () => {
       .mockReturnValueOnce(instanceA)
       .mockReturnValueOnce(instanceB)
 
-    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
     const [activeId, setActiveId] = createSignal('switch-A')
     const acquireSpy = vi.spyOn(webglPool, 'acquire')
     const releaseSpy = vi.spyOn(webglPool, 'release')
@@ -402,7 +400,7 @@ describe('terminalView', () => {
     }) as any
 
     try {
-      const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+      const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
       render(() => (
         <PreferencesProvider>
           <TerminalView
@@ -488,7 +486,7 @@ describe('terminalView', () => {
     }) as any
 
     try {
-      const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+      const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
       render(() => (
         <PreferencesProvider>
           <TerminalView
@@ -559,6 +557,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
+            workspaceId: 'ws-1',
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-1"
@@ -600,6 +599,7 @@ describe('terminalView', () => {
     const [terminals, setTerminals] = createStore<TerminalTab[]>([{
       id: 'term-late-screen',
       type: TabType.TERMINAL,
+      workspaceId: 'ws-1',
       // screen is undefined initially — ListTerminals hasn't returned yet.
       screen: undefined,
     }])
@@ -649,6 +649,7 @@ describe('terminalView', () => {
     const [terminals, setTerminals] = createStore<TerminalTab[]>([{
       id: 'term-no-double-write',
       type: TabType.TERMINAL,
+      workspaceId: 'ws-1',
       screen,
       title: 'Initial',
     }])
@@ -683,107 +684,102 @@ describe('terminalView', () => {
   })
 })
 
-describe('captureTerminalScreens', () => {
+/**
+ * Scrollback is rescued at the teardown chokepoint, not at the workspace
+ * switch. A switch is only one of the ways a terminal's view goes away — a
+ * cross-workspace move of the tab, or closing a floating window that holds it,
+ * unmounts and disposes with no switch involved. Every one of those paths runs
+ * through `disposeTerminalInstance`, and nothing re-fetches the bytes
+ * afterwards (`hydrated` is already true), so a miss here is permanent.
+ */
+describe('disposeTerminalInstance scrollback capture', () => {
   beforeEach(() => {
-    localStorage.clear()
-    // jsdom doesn't implement matchMedia, which createTerminalInstance reads.
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
+    mockCreateTerminalInstance.mockReset()
+    mockBufferHasVisibleContent.mockReset().mockReturnValue(undefined)
+    mockSerializeXtermBuffer.mockReset().mockReturnValue(undefined)
+    webglPool.disposeAll()
+    // An earlier suite may leave matchMedia as a bare `{ matches }` stub with
+    // no addEventListener, and beforeAll has already run — restore the full
+    // shape the rendered component needs.
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }) as any
   })
 
-  it('replaces tab.screen with the live xterm serialization for TERMINAL tabs whose instance is mounted', async () => {
-    const inst = createTerminalInstance({ cols: 80, rows: 24 })
-    await writeAndWait(inst, 'live-content-here\r\n')
+  afterEach(() => {
+    setTerminalScreenSink(null)
+  })
 
-    const stale = new TextEncoder().encode('stale-initial-snapshot')
-    const tabs: Tab[] = [
-      { type: TabType.TERMINAL, id: 'term-1', screen: stale } as Tab,
-    ]
+  /** Mount one TerminalView so its instance lands in the module registry. */
+  async function mount(id: string) {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
+          activeTerminalId={id}
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getTerminalInstance(id)).toBe(instance))
+    return instance
+  }
 
-    const captured = captureTerminalScreens(tabs, id =>
-      id === 'term-1' ? inst : undefined)
+  it('hands the live buffer to the sink before tearing the instance down', async () => {
+    await mount('term-dispose')
+    mockBufferHasVisibleContent.mockReturnValue(true)
+    mockSerializeXtermBuffer.mockReturnValue(new TextEncoder().encode('scrollback-worth-keeping'))
+
+    const captured: Array<{ id: string, text: string }> = []
+    setTerminalScreenSink((id, screen) => {
+      captured.push({ id, text: new TextDecoder().decode(screen) })
+    })
+
+    disposeTerminalInstance('term-dispose')
 
     expect(captured).toHaveLength(1)
-    expect((captured[0] as TerminalTab).screen).toBeDefined()
-    const decoded = new TextDecoder().decode((captured[0] as TerminalTab).screen!)
-    expect(decoded).toContain('live-content-here')
-    // The post-initial-snapshot bytes the user has been watching must
-    // replace the stale screen captured at first hydration.
-    expect(decoded).not.toContain('stale-initial-snapshot')
-
-    inst.dispose()
+    expect(captured[0].id).toBe('term-dispose')
+    expect(captured[0].text).toBe('scrollback-worth-keeping')
+    // And the instance really is gone — capturing must not keep it alive.
+    expect(getTerminalInstance('term-dispose')).toBeUndefined()
   })
 
-  it('leaves TERMINAL tabs without a live instance unchanged (identity-preserved)', () => {
-    const stale = new TextEncoder().encode('stale-but-only-thing-we-have')
-    const tabs: Tab[] = [
-      { type: TabType.TERMINAL, id: 'term-missing', screen: stale } as Tab,
-    ]
-    const captured = captureTerminalScreens(tabs, () => undefined)
-    expect(captured[0]).toBe(tabs[0])
-    expect((captured[0] as TerminalTab).screen).toBe(stale)
+  it('writes nothing for a buffer that has not painted yet', async () => {
+    // A freshly-mounted xterm still parsing its initial snapshot serializes
+    // blank; writing that back would erase what ListTerminals returned.
+    await mount('term-blank')
+    mockBufferHasVisibleContent.mockReturnValue(false)
+
+    const captured: string[] = []
+    setTerminalScreenSink(id => captured.push(id))
+
+    disposeTerminalInstance('term-blank')
+
+    expect(captured).toEqual([])
+    expect(getTerminalInstance('term-blank')).toBeUndefined()
   })
 
-  it('leaves non-TERMINAL tabs unchanged and never invokes lookup for them', () => {
-    const tabs: Tab[] = [
-      { type: TabType.AGENT, id: 'agent-1' } as Tab,
-      { type: TabType.FILE, id: 'file-1' } as Tab,
-    ]
-    const lookup = vi.fn(() => {
-      throw new Error('lookup should not be called for non-TERMINAL tabs')
+  it('still tears down when the sink throws', async () => {
+    const instance = await mount('term-throws')
+    mockBufferHasVisibleContent.mockReturnValue(true)
+    mockSerializeXtermBuffer.mockReturnValue(new Uint8Array([1]))
+
+    setTerminalScreenSink(() => {
+      throw new Error('quota exceeded')
     })
-    const captured = captureTerminalScreens(tabs, lookup)
-    expect(captured[0]).toBe(tabs[0])
-    expect(captured[1]).toBe(tabs[1])
-    expect(lookup).not.toHaveBeenCalled()
-  })
 
-  it('preserves the original tab.screen when the live buffer has no visible content yet', () => {
-    // Simulates a workspace switch that fires before the freshly-mounted
-    // xterm has parsed its initial snapshot write — the instance exists
-    // and the lookup hits, but the buffer is blank. Overwriting with the
-    // (effectively empty) serialization would lose the bytes
-    // `ListTerminals` returned, so the helper must keep the original.
-    const blank = createTerminalInstance({ cols: 80, rows: 24 })
-    const initialScreen = new TextEncoder().encode('initial-from-listterminals')
-    const tabs: Tab[] = [
-      { type: TabType.TERMINAL, id: 'term-pending', screen: initialScreen } as Tab,
-    ]
-
-    const captured = captureTerminalScreens(tabs, id =>
-      id === 'term-pending' ? blank : undefined)
-
-    expect(captured[0]).toBe(tabs[0])
-    expect((captured[0] as TerminalTab).screen).toBe(initialScreen)
-
-    blank.dispose()
-  })
-
-  it('round-trips through applyTerminalData on a fresh instance', async () => {
-    const source = createTerminalInstance({ cols: 80, rows: 10 })
-    await writeAndWait(source, 'first line\r\n')
-    await writeAndWait(source, 'second line\r\n')
-
-    const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 'term-x' } as Tab]
-    const captured = captureTerminalScreens(tabs, () => source)
-    const screen = (captured[0] as TerminalTab).screen!
-    expect(screen.length).toBeGreaterThan(0)
-
-    // Replay into a fresh instance the same way the production restore
-    // path does (terminal.reset then write).
-    const restored = createTerminalInstance({ cols: 80, rows: 10 })
-    restored.terminal.reset()
-    await new Promise<void>(resolve =>
-      restored.terminal.write(screen, () => resolve()))
-
-    const buf = restored.terminal.buffer.active
-    let dump = ''
-    for (let i = 0; i < buf.length; i++)
-      dump += `${buf.getLine(i)?.translateToString(true) ?? ''}\n`
-
-    expect(dump).toContain('first line')
-    expect(dump).toContain('second line')
-
-    source.dispose()
-    restored.dispose()
+    expect(() => disposeTerminalInstance('term-throws')).not.toThrow()
+    expect(getTerminalInstance('term-throws'), 'the instance must not leak').toBeUndefined()
+    expect(instance.dispose).toHaveBeenCalledTimes(1)
   })
 })

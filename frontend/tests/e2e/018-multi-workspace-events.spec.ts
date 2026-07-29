@@ -1,25 +1,11 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
   await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
-}
-
-/**
- * Visit a workspace to populate its registry snapshot (tabs, agents, etc.),
- * then switch to another workspace. This is needed because the sidebar's
- * chevron expansion only works for workspaces whose tabs have been loaded.
- */
-async function preloadWorkspace(page: Page, workspaceId: string, thenSwitchTo: string) {
-  await page.locator(`[data-testid="workspace-item-${workspaceId}"]`).click()
-  await waitForWorkspaceReady(page)
-  await waitForInitialAgent(page)
-  await page.locator(`[data-testid="workspace-item-${thenSwitchTo}"]`).click()
-  await waitForWorkspaceReady(page)
-  await waitForInitialAgent(page)
 }
 
 test.describe('Multi-Workspace Events', () => {
@@ -32,12 +18,10 @@ test.describe('Multi-Workspace Events', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
-      // Visit ws2 to populate its registry snapshot, then switch back
-      await preloadWorkspace(page, ws2, ws1)
+      // No preload needed: every workspace is projected at all times.
 
       // Expand ws2 in the sidebar
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
@@ -62,12 +46,10 @@ test.describe('Multi-Workspace Events', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // Visit ws2 to populate its registry, then switch back
-      await preloadWorkspace(page, ws2, ws1)
 
       // Expand ws2 in the sidebar
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
@@ -104,8 +86,7 @@ test.describe('Multi-Workspace Events', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // All three workspaces should appear in the sidebar
@@ -113,11 +94,9 @@ test.describe('Multi-Workspace Events', () => {
       await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`)).toBeVisible()
       await expect(page.locator(`[data-testid="workspace-item-${ws3}"]`)).toBeVisible()
 
-      // Preload ws2 and ws3 so their registry snapshots are populated.
+      // No preload needed: every workspace is projected at all times.
       // Preloading auto-expands each workspace (since it becomes active),
       // and the expansion persists after switching back.
-      await preloadWorkspace(page, ws2, ws1)
-      await preloadWorkspace(page, ws3, ws1)
 
       // After preloading, all 3 workspaces are expanded:
       // ws1 active (1 leaf) + ws2 (1 leaf) + ws3 (1 leaf) = 3

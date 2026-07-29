@@ -526,10 +526,19 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// a token scope registered at request entry).
 		accessibleWsIDs := svc.AuthorizerFor(sender.ChannelID()).AccessibleSet()
 		accessible := make([]db.Agent, 0, len(agents))
+		found := make(map[string]bool, len(agents))
+		// Ids we DO hold a record for but must not serve on this channel yet.
+		// Reported as NOT_ACCESSIBLE, rather than as a bare omission the client
+		// would have to treat as permanent: it names a condition the client can
+		// repair (PrepareWorkspaceAccess) instead of one it can only wait out.
+		hidden := map[string]bool{}
 		for i := range agents {
 			if accessibleWsIDs[agents[i].WorkspaceID] {
+				found[agents[i].ID] = true
 				accessible = append(accessible, agents[i])
+				continue
 			}
+			hidden[agents[i].ID] = true
 		}
 
 		workingDirs := make([]string, len(accessible))
@@ -549,7 +558,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
-			Agents: protoAgents,
+			Agents:   protoAgents,
+			Verdicts: tabHydrationVerdicts(tabIDs, found, hidden),
 		})
 	})
 

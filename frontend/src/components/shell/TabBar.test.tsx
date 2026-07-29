@@ -90,7 +90,7 @@ const defaultProps = {
 }
 
 function makeTab(type: Tab['type'], id: string, title?: string): Tab {
-  return { type, id, title, position: '0|' }
+  return { type, id, title, workspaceId: 'ws-1', position: '0|' } as Tab
 }
 
 function getBrowserPrefs() {

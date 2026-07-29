@@ -1,8 +1,9 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
-import { tabKey } from '~/stores/tab.helpers'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
+import { emitMoveTabToTile } from '~/stores/tabOps'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
 
 /**
@@ -25,7 +26,8 @@ import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
  * because the user explicitly asked to move attention.
  */
 export interface UseTileMoveArgs {
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
 }
@@ -53,16 +55,30 @@ export interface UseTileMoveOps {
 }
 
 export function useTileMove(args: UseTileMoveArgs): UseTileMoveOps {
-  const { tabStore, layoutStore, floatingWindowStore } = args
+  const { view, selection, layoutStore, floatingWindowStore } = args
 
   function moveTabToTile(tab: Tab, destTileId: string, options: MoveTabToTileOptions): void {
     const sourceTileId = tab.tileId
-    tabStore.moveTabToTile(tabKey(tab), destTileId)
-    tabStore.setActiveTabForTile(destTileId, tab.type, tab.id)
-    if (options.takeFocus)
+    // Emitting the op IS the move: the batch lands in speculativeState
+    // synchronously, so the projection reflects the new tile before this
+    // returns and there is no local placement to update alongside it.
+    emitMoveTabToTile(tab.type, tab.id, destTileId)
+    // The destination tile always fronts the moved tab. Whether it ALSO becomes
+    // the workspace's active tab is exactly the `takeFocus` question: a drop
+    // that did not take focus came from a tab the user was not looking at
+    // (`wasActiveOnSource === false` in `useTileDragDrop`), and claiming the
+    // workspace pointer for it would badge the tab they ARE reading and seed
+    // the next new agent from the wrong provider.
+    const moved = view.getById(tab.type, tab.id) ?? tab
+    if (options.takeFocus) {
+      selection.setActive(moved)
       focusTile(layoutStore, floatingWindowStore, destTileId)
+    }
+    else {
+      selection.setActiveInTile(moved, destTileId)
+    }
     if (options.cleanupSource && sourceTileId)
-      removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, sourceTileId)
+      removeEmptyFloatingWindow(layoutStore, floatingWindowStore, view, sourceTileId)
   }
 
   return { moveTabToTile }

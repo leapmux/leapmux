@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 /**
  * Desktop-mode `/ws/userevents` streaming smoke.
@@ -28,8 +28,7 @@ test.describe('userevents WebSocket streaming', () => {
     const page = await ctx.newPage()
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${wsId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, wsId)
       // The bootstrap event hits the page within the workspace-ready
       // window; if `useUserEvents` were buffered the page wouldn't
       // render the initial tile in time. waitForWorkspaceReady

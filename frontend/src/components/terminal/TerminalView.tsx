@@ -1,12 +1,11 @@
 import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
-import type { Tab, TerminalTab } from '~/stores/tab.types'
+import type { TerminalTab } from '~/stores/tab.types'
 import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
@@ -20,6 +19,15 @@ interface TerminalViewProps {
   visible: boolean
   /** Whether the enclosing tile is the layout-focused tile. See TerminalContainer.tileFocused. */
   tileFocused: boolean
+  /**
+   * Resume cursor for a terminal, read at mount to seed its snapshot apply.
+   *
+   * A lookup rather than a field on `TerminalTab`, because it is written at
+   * PTY-read frequency and `tabView`'s join subscribes to every metadata field
+   * it reads -- carrying it on the tab made a busy terminal re-run the
+   * account-wide join per output chunk. See `TerminalMeta.lastOffset`.
+   */
+  getLastOffset?: (id: string) => number | undefined
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
@@ -41,10 +49,57 @@ const instances = new Map<string, TerminalInstance>()
 const screenApplied = new Set<string>()
 let lastActiveTerminalId: string | null = null
 
-export function disposeTerminalInstance(id: string): void {
+/**
+ * Where a disposing terminal's scrollback goes.
+ *
+ * Registered once by `AppShell` (the same module-level sink pattern as
+ * `setCRDTBridge` / `setExpectedUserId`), because this module must not depend
+ * on the store graph. Left unset in tests that render a `TerminalView` without
+ * a metadata store, where dropping the buffer is the correct behaviour.
+ */
+let screenSink: ((tabId: string, screen: Uint8Array) => void) | null = null
+
+export function setTerminalScreenSink(sink: ((tabId: string, screen: Uint8Array) => void) | null): void {
+  screenSink = sink
+}
+
+/**
+ * Tear down a terminal's xterm instance.
+ *
+ * `captureScreen` defaults to true — the buffer is serialized into the
+ * metadata store so the tab can repaint from it later. Pass `false` when the
+ * TAB ITSELF is being destroyed: there is no future reader, and the write
+ * would land on a row the retention sweep is about to reclaim (or already
+ * has), stranding a full serialized scrollback in the store.
+ */
+export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boolean }): void {
   const instance = instances.get(id)
   if (!instance)
     return
+  const captureScreen = opts?.captureScreen ?? true
+  // Serialize the live buffer BEFORE tearing the instance down.
+  //
+  // This is the right altitude for the capture: the bytes live in the xterm
+  // instance, and this is the one place every path that destroys one passes
+  // through. Hanging it off the workspace switch instead covered only that
+  // caller — a terminal tab dragged to another workspace, or a floating window
+  // closed with a terminal in it, unmounts its view and disposes here with no
+  // switch involved, losing the scrollback silently. Nothing re-fetches it
+  // either: `hydrated` is already true, so the tab comes back with whatever
+  // bytes the FIRST hydration returned.
+  //
+  // `bufferHasVisibleContent` guards a real hazard: a freshly-mounted xterm
+  // still parsing its snapshot through the write queue serializes BLANK, and
+  // writing that back would erase the bytes `ListTerminals` returned.
+  if (captureScreen && screenSink && bufferHasVisibleContent(instance.terminal)) {
+    try {
+      screenSink(id, serializeXtermBuffer(instance))
+    }
+    catch {
+      // A serialization failure must never block teardown — the WebGL context
+      // and the xterm instance below leak if we let it propagate.
+    }
+  }
   // Relinquish any pooled WebGL context first so the slot frees up for
   // another terminal. This is the single teardown chokepoint reached by every
   // path — explicit close, HMR dispose, and the unmount microtask below.
@@ -56,46 +111,6 @@ export function disposeTerminalInstance(id: string): void {
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
-}
-
-/**
- * Walk a tab list and, for each TERMINAL tab whose xterm instance is
- * still mounted, replace `screen` with a fresh serialization of the
- * live buffer (visible viewport + scrollback).
- *
- * Called from the AppShell snapshot-on-workspace-switch effect: the
- * tab store's `screen` field is only ever populated by ListTerminals
- * at first hydration and never refreshed as live PTY bytes arrive, so
- * without this pass the registry snapshot would forever carry the
- * initial-load bytes — and the xterm disposal triggered by the
- * outgoing TerminalView's unmount would erase the live buffer
- * permanently. Capturing here makes the restore path (which writes
- * `tab.screen` into a freshly reset Terminal via applyTerminalData
- * with isSnapshot=true) reproduce whatever was on screen when the
- * user switched away.
- *
- * `lookup` is parameterized for tests; production callers use the
- * default (the module-level instances map).
- */
-export function captureTerminalScreens(
-  tabs: Tab[],
-  lookup: (id: string) => TerminalInstance | undefined = getTerminalInstance,
-): Tab[] {
-  return tabs.map((tab) => {
-    if (tab.type !== TabType.TERMINAL)
-      return tab
-    const instance = lookup(tab.id)
-    if (!instance)
-      return tab
-    // A freshly-mounted xterm whose `applyTerminalData(screen, isSnapshot=true)`
-    // is still being parsed by the xterm write queue will look blank to the
-    // serialize addon, and overwriting `tab.screen` with that empty
-    // serialization would erase the bytes `ListTerminals` returned. Skip
-    // the overwrite until the buffer has actually painted something.
-    if (!bufferHasVisibleContent(instance.terminal))
-      return tab
-    return { ...tab, screen: serializeXtermBuffer(instance) }
-  })
 }
 
 // During Vite HMR the module is re-evaluated, replacing `instances` with a
@@ -534,7 +549,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   visible={props.visible}
                   tileFocused={props.tileFocused}
                   screen={terminal.screen}
-                  lastOffset={terminal.lastOffset}
+                  lastOffset={props.getLastOffset?.(terminal.id)}
                   cols={terminal.cols}
                   rows={terminal.rows}
                   fontFamily={preferences.monoFontFamily()}

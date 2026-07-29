@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { expectAnyVisible, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { expectAnyVisible, loginViaToken, openWorkspace } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
@@ -11,8 +11,7 @@ test.describe('Workspace Lifecycle', () => {
     workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma'))
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceIds[0]}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceIds[0])
 
       // All three workspaces should appear in the sidebar
       await expect(page.getByText('Lifecycle WS Alpha')).toBeVisible()
@@ -31,8 +30,7 @@ test.describe('Workspace Lifecycle', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Test - My_Workspace 2.0')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // The workspace with special characters should appear correctly in the sidebar
       await expect(page.getByText('Test - My_Workspace 2.0')).toBeVisible()

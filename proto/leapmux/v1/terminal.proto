@@ -105,6 +105,10 @@ message ListTerminalsRequest {
 
 message ListTerminalsResponse {
   repeated TerminalInfo terminals = 1;
+  // One entry per REQUESTED tab_id, so the caller can tell an omission
+  // that is transient from one that is permanent. Empty when the request
+  // named no tab_ids (the list-everything form).
+  repeated TabHydrationVerdict verdicts = 2;
 }
 
 message TerminalInfo {

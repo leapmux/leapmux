@@ -9,7 +9,7 @@ import {
 import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 import {
   branchExists,
   closeAgentViaAPI,
@@ -24,7 +24,6 @@ import {
   waitForAppPageReady,
   waitForPathDeleted,
   waitForWorker,
-  WORKSPACE_URL_RE,
 } from './helpers/worktree'
 
 test.describe('Worktree Lifecycle', () => {
@@ -62,7 +61,8 @@ test.describe('Worktree Lifecycle', () => {
     // Wait for the dialog to close first — this signals the API call
     // (including the git worktree creation) has completed.
     await expect(page.getByRole('dialog')).not.toBeVisible()
-    await expect(page).toHaveURL(WORKSPACE_URL_RE)
+    // Creating a workspace activates it in place; there is no URL to check.
+    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
     await waitForWorkspaceReady(page)
 
     // Verify the worktree directory was created on disk.
@@ -356,8 +356,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
     const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
 
     // Close the agent tab via UI
@@ -415,8 +414,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTab).toBeVisible()
@@ -471,8 +469,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
-    await page.goto(`/workspace/${workspaceId}`)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspaceId)
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTab).toBeVisible()

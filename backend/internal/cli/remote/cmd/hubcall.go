@@ -169,25 +169,8 @@ func classifyHubError(err error) string {
 	return "rpc_failed"
 }
 
-// workerUnaryEmit collapses the parallel boilerplate every worker-bound
-// inner-RPC CLI verb shares: open the client, apply the rpcDeadline,
-// invoke the worker's E2EE channel, emit the response payload. Mirrors
-// `hubUnaryEmit` but routes through `callInnerRPC` instead of the hub
-// dispatch table.
-//
-// Worker inner-RPCs return their error directly via callInnerRPC (it
-// already wraps in a coded envelope), so the caller surfaces whatever
-// `err` comes back unaltered — no `rpc_failed` re-wrap.
-func workerUnaryEmit(hub, workerID, method string, req, resp proto.Message, shape func() any) error {
-	c, err := requireClient(hub)
-	if err != nil {
-		return err
-	}
-	return workerUnaryEmitOn(c, workerID, method, req, resp, shape)
-}
-
-// workerUnaryEmitOn is workerUnaryEmit's already-have-a-client twin.
-// Callers that already opened the client (via resolveWorker) reuse it
+// workerUnaryEmitOn issues one worker RPC on a client the caller already
+// holds. Callers that opened the client (via resolveWorker) reuse it
 // instead of paying the credential-load + HTTP-transport + TOFU pin
 // store construction a second time per command.
 func workerUnaryEmitOn(c *remote.Client, workerID, method string, req, resp proto.Message, shape func() any) error {

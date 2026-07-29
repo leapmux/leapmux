@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, openWorkspace, reopenWorkspace, waitForLayoutSave } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -10,8 +10,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -37,9 +36,6 @@ test.describe('Full Hub+Worker Restart', () => {
       const userBubbles = page.locator('[data-testid="message-bubble"][data-role="user"]')
       await expect(userBubbles.first()).toContainText('1234 + 5678')
 
-      // Remember the workspace URL so we can navigate back after restart
-      const workspaceUrl = page.url()
-
       // Step 2: Stop Worker first (so agent is terminated), then stop Hub
       await stopWorker()
       await stopHub()
@@ -48,8 +44,9 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartHub(separateHubWorker)
       await restartWorker(separateHubWorker)
 
-      // Reload the page to establish fresh connections to the restarted Hub.
-      await page.goto(workspaceUrl)
+      // Reload to establish fresh connections to the restarted Hub. The app
+      // restores the workspace from localStorage — there is no URL to carry it.
+      await reopenWorkspace(page, workspaceId)
 
       // Wait for the editor to be ready after page reload
       await expect(editor).toBeVisible()
@@ -163,8 +160,6 @@ test.describe('Full Hub+Worker Restart', () => {
     // Wait for the UpdateTerminalTitle RPC to reach the backend
     await page.waitForTimeout(2000)
 
-    const workspaceUrl = page.url()
-
     // Stop worker first, then hub
     await stopWorker()
     await stopHub()
@@ -173,8 +168,8 @@ test.describe('Full Hub+Worker Restart', () => {
     await restartHub(separateHubWorker)
     await restartWorker(separateHubWorker)
 
-    // Reload the page
-    await page.goto(workspaceUrl)
+    // Reload; the app restores the workspace from localStorage.
+    await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
 
     // Verify the terminal tab is restored with the custom title
     const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -231,14 +226,12 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.keyboard.press('Control+D')
     await page.waitForTimeout(2000)
 
-    const workspaceUrl = page.url()
-
     await stopWorker()
     await stopHub()
 
     await restartHub(separateHubWorker)
 
-    await page.goto(workspaceUrl)
+    await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
     await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
 
     await restartWorker(separateHubWorker)
@@ -261,14 +254,11 @@ test.describe('Full Hub+Worker Restart', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Verify the agent tab is visible
       const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
       await expect(agentTab).toHaveCount(1)
-
-      const workspaceUrl = page.url()
 
       // Stop worker and hub
       await stopWorker()
@@ -278,9 +268,8 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartHub(separateHubWorker)
       await restartWorker(separateHubWorker)
 
-      // Reload the page
-      await page.goto(workspaceUrl)
-      await waitForWorkspaceReady(page)
+      // Reload; the app restores the workspace from localStorage.
+      await reopenWorkspace(page, workspaceId)
 
       // Agent tab should be visible after restore
       await expect(agentTab).toHaveCount(1)
@@ -309,8 +298,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
@@ -326,9 +314,6 @@ test.describe('Full Hub+Worker Restart', () => {
       const streamingText = assistantBubbles(page)
       await expectAnyVisible(thinkingIndicator, streamingText)
 
-      // Remember the workspace URL so we can navigate back after restart
-      const workspaceUrl = page.url()
-
       // Stop worker first (so agent is terminated), then stop hub — while agent is mid-turn
       await stopWorker()
       await stopHub()
@@ -337,8 +322,9 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartHub(separateHubWorker)
       await restartWorker(separateHubWorker)
 
-      // Reload the page to establish fresh connections to the restarted hub
-      await page.goto(workspaceUrl)
+      // Reload to establish fresh connections to the restarted hub. The app
+      // restores the workspace from localStorage — there is no URL to carry it.
+      await reopenWorkspace(page, workspaceId)
       await expect(editor).toBeVisible()
 
       // Thinking indicator should NOT be visible — stale ACTIVE agents

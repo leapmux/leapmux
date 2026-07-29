@@ -9,7 +9,7 @@ interface TestCtx {
 }
 
 function tab(id: string): Tab {
-  return { type: TabType.AGENT, id, tileId: 't1' }
+  return { type: TabType.AGENT, id, workspaceId: 'ws-1', tileId: 't1' }
 }
 
 describe('createCloseFlow', () => {

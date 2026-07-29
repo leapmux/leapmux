@@ -4,9 +4,10 @@ import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
-import type { TerminalTab } from '~/stores/tab.types'
+import type { TabView } from '~/stores/tabView'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
@@ -18,7 +19,9 @@ import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { monotonicNow } from '~/lib/monotonicNow'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
-import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+import { emitRemoveTab } from '~/stores/tabOps'
+import { openTabInFocusedTile } from './openTabInFocusedTile'
 
 // xterm emits Enter as a single CR byte (0x0D) on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
@@ -26,7 +29,9 @@ import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 const ENTER_KEY_CR = 0x0D
 
 export interface UseTerminalOperationsProps {
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspace: Accessor<Workspace | null>
   isActiveWorkspaceMutatable: Accessor<boolean>
@@ -94,23 +99,31 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         shellStartDir: args.shellStartDir ?? '',
       })
 
-      const tileId = props.layoutStore.focusedTileId()
-      const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      const baseTab: TerminalTab = {
-        type: TabType.TERMINAL,
-        id: resp.terminalId,
+      // The metadata is everything the CRDT has no field for. Shared with the
+      // dialog open path so the two cannot disagree about the same moment --
+      // they did, and only this one was right.
+      const meta = openedTerminalMetadata({
         title: resp.title,
-        tileId,
-        workerId: ctx.workerId,
         workingDir: ctx.workingDir,
-        status: TerminalStatus.STARTING,
-      }
-      const newTab: TerminalTab = args.shellStartDir !== undefined
-        ? { ...baseTab, shellStartDir: args.shellStartDir || ctx.workingDir }
-        : baseTab
-      const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
-      props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
-      props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
+        shellStartDir: args.shellStartDir,
+      })
+      const activeTab = props.selection.activeTabForWorkspace(ws.id)
+      // `shellStartDir` has to reach the seed resolver: `effectiveGitDir` is
+      // `shellStartDir || workingDir`, and the resolver only seeds when the
+      // new tab's git dir MATCHES the active tab's. Passing `workingDir`
+      // alone made both sides resolve to `ctx.workingDir` -- which comes from
+      // the active tab -- so the guard could never reject, and "open a
+      // terminal here" on a sibling worktree inherited the wrong repo's
+      // branch, origin and diff badges.
+      const seed = resolveOptimisticGitInfo(activeTab, {
+        shellStartDir: args.shellStartDir,
+        workingDir: ctx.workingDir,
+      })
+      openTabInFocusedTile(
+        props,
+        { type: TabType.TERMINAL, id: resp.terminalId, workerId: ctx.workerId },
+        { ...meta, ...seed },
+      )
     }
     catch (err) {
       showWarnToast('Failed to open terminal', err)
@@ -128,7 +141,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     const ws = props.activeWorkspace()
-    const tab = props.tabStore.getTerminalTab(terminalId)
+    const tab = props.view.getTerminalTab(terminalId)
     if (!ws || !tab)
       return
 
@@ -177,7 +190,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     const ws = props.activeWorkspace()
     if (!ws)
       return
-    const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
+    const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
     workerRpc.updateTerminalTitle(workerId, {
       workspaceId: ws.id,
       terminalId,
@@ -187,7 +200,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   }
 
   const handleTerminalTitleChange = (terminalId: string, title: string) => {
-    props.tabStore.updateTabTitle(TabType.TERMINAL, terminalId, title)
+    props.metadata.patch(terminalId, { title })
 
     // Debounced backend sync
     const existing = titleTimers.get(terminalId)
@@ -213,17 +226,17 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
   const handleTerminalBell = (terminalId: string) => {
     // Only notify if this terminal's tab is not active
-    const activeKey = props.tabStore.state.activeTabKey
+    const activeKey = props.selection.activeKeyForWorkspace(props.activeWorkspace()?.id ?? '')
     const bellKey = tabKey({ type: TabType.TERMINAL, id: terminalId })
     if (activeKey !== bellKey) {
-      props.tabStore.setNotification(TabType.TERMINAL, terminalId, true)
+      props.metadata.patch(terminalId, { hasNotification: true })
     }
   }
 
   const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
     try {
       const ws = props.activeWorkspace()
-      const tab = props.tabStore.getTerminalTab(terminalId)
+      const tab = props.view.getTerminalTab(terminalId)
       if (!ws || !tab)
         return
       // Mirror the live xterm dims into the tab so a later
@@ -231,7 +244,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // dims persisted at last exit. Updated on every fit() (including
       // for EXITED tabs) so the post-exit window shrink/grow is captured.
       if (tab.cols !== cols || tab.rows !== rows)
-        props.tabStore.updateTab(TabType.TERMINAL, terminalId, { cols, rows })
+        props.metadata.patch(terminalId, { cols, rows })
       // Skip the RPC once the PTY can't be the target of a SIGWINCH.
       // xterm's fitAddon.fit() in TerminalView still runs (frontend-only
       // reflow of the existing buffer for users reading dead output);
@@ -257,20 +270,29 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // the worker close RPC and Hub unregister are fire-and-forget with
   // failure surfaced via toast.
   const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
-    const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
+    const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
     const ws = props.activeWorkspace()
 
-    // Synchronous: tab disappears immediately, then release the xterm
-    // instance (WebGL context, listeners). TerminalView's per-view
-    // ownership tracking only releases ids on unmount — explicit close
-    // must dispose here so we don't leak instances when the user closes
-    // a terminal whose tile is still on-screen.
-    props.tabStore.removeTab(TabType.TERMINAL, terminalId)
-    disposeTerminalInstance(terminalId)
+    // Release the xterm instance (WebGL context, listeners) BEFORE the tab
+    // disappears. TerminalView's per-view ownership tracking only releases
+    // ids on unmount — explicit close must dispose here so we don't leak
+    // instances when the user closes a terminal whose tile is still
+    // on-screen.
+    //
+    // Order matters, and so does `captureScreen: false`. `emitRemoveTab`
+    // applies to `speculativeState` synchronously and bumps `pendingVersion`,
+    // so Solid flushes `liveTabIdSet` and the `retainOnly` sweep before the
+    // next statement runs. Disposing after it would fire the screen sink for
+    // a tab the sweep had just reclaimed, re-creating its metadata row —
+    // carrying a full serialized scrollback — with nothing left to evict it
+    // until some other tab happened to be created or closed. Capturing at all
+    // is pointless here: the tab is being destroyed, so the bytes have no
+    // future reader.
+    disposeTerminalInstance(terminalId, { captureScreen: false })
+    emitRemoveTab(TabType.TERMINAL, terminalId)
 
-    // `tabStore.removeTab` above emitted the TombstoneTab op via the
-    // CRDT bridge; the hub broadcasts it to peer clients via
-    // /ws/userevents.
+    // `emitRemoveTab` above emitted the TombstoneTab op via the CRDT
+    // bridge; the hub broadcasts it to peer clients via /ws/userevents.
     if (!workerId || !ws) {
       // Local tab is gone, but with no worker/workspace the close RPC
       // can't fire — a REMOVE therefore can't reach the worktree. Surface
