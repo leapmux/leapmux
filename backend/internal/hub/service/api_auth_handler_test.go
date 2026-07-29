@@ -1548,17 +1548,16 @@ func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
 	// Seed a worker + workspace + delegation row. The revoke endpoint
 	// must succeed and mark the delegation row revoked when the bearer
 	// id resolves to a delegation_tokens row.
-	workerID, workspaceID := seedDelegationFixtures(t, env)
+	workerID, _ := seedDelegationFixtures(t, env)
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(env.userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  env.validator.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(env.userID),
+		WorkerID:   workerID,
+		SecretHash: env.validator.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
 
@@ -1643,17 +1642,16 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 // equally here.
 func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
 	env := setupAPIAuth(t)
-	workerID, workspaceID := seedDelegationFixtures(t, env)
+	workerID, _ := seedDelegationFixtures(t, env)
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(env.userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  env.validator.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(env.userID),
+		WorkerID:   workerID,
+		SecretHash: env.validator.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 
 	attackerBearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, "wrong")

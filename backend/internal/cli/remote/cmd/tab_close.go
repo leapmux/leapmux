@@ -196,8 +196,9 @@ func (c tabCloseWorktree) worktreeAction() leapmuxv1.WorktreeAction {
 		return leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE
 	case closeWorktreeKeep, closeWorktreePush:
 		return leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP
+	default:
+		return leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED
 	}
-	return leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED
 }
 
 // workerCaller issues one inner-RPC against a worker already fixed by the
@@ -278,11 +279,14 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		return call("CloseTerminal",
 			&leapmuxv1.CloseTerminalRequest{
-				WorkspaceId:    got.WorkspaceID,
 				TerminalId:     got.TabID,
 				WorktreeAction: action,
 			},
 			&leapmuxv1.CloseTerminalResponse{})
+	default:
+		// FILE tabs have no worker-side row to close (the CRDT tombstone is the
+		// whole teardown), and UNSPECIFIED never reaches here -- the caller
+		// resolved a concrete tab before dispatching.
+		return nil
 	}
-	return nil
 }

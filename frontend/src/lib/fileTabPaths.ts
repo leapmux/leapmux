@@ -4,10 +4,10 @@ import { createSignal } from 'solid-js'
  * createFileTabPathsStore is the (tab_id → path) cache fed by the
  * private-event stream and one-shot `GetFileTabPath` E2EE worker
  * RPCs. The hub never sees these paths; everything flows over the
- * existing WatchWorkspacePrivateEvents channel.
+ * existing WatchWorkerPrivateEvents channel.
  */
 export function createFileTabPathsStore() {
-  const [byTabId, setByTabId] = createSignal<Map<string, FileTabPathEntry>>(new Map())
+  const [byTabId, setByTabId] = createSignal<Map<string, string>>(new Map())
 
   return {
     /** Reactive accessor for components. */
@@ -15,24 +15,18 @@ export function createFileTabPathsStore() {
 
     /** Path for `tabId`, or `undefined` if not yet known. */
     pathFor(tabId: string): string | undefined {
-      return byTabId().get(tabId)?.path
-    },
-
-    /** Workspace_id the worker associated with the tab. */
-    workspaceFor(tabId: string): string | undefined {
-      return byTabId().get(tabId)?.workspaceId
+      return byTabId().get(tabId)
     },
 
     /**
      * Apply a `FileTabPathRegistered` event (or a one-shot
      * `GetFileTabPath` reply). Idempotent.
      */
-    register(tabId: string, workspaceId: string, path: string): void {
-      const cur = byTabId().get(tabId)
-      if (cur && cur.path === path && cur.workspaceId === workspaceId)
+    register(tabId: string, path: string): void {
+      if (byTabId().get(tabId) === path)
         return
       const next = new Map(byTabId())
-      next.set(tabId, { workspaceId, path })
+      next.set(tabId, path)
       setByTabId(next)
     },
 
@@ -46,16 +40,11 @@ export function createFileTabPathsStore() {
       setByTabId(next)
     },
 
-    /** Drop every entry (workspace switch / logout). */
+    /** Drop every entry (logout / empty account). */
     clear(): void {
       setByTabId(new Map())
     },
   }
-}
-
-export interface FileTabPathEntry {
-  workspaceId: string
-  path: string
 }
 
 export type FileTabPathsStore = ReturnType<typeof createFileTabPathsStore>

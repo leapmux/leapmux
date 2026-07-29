@@ -109,7 +109,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // so CLI and UI paths share one pool (see worker/service/
       // tab_names.go). The response carries the resolved title back.
       const resp = await workerRpc.openAgent(workerId, {
-        workspaceId,
         agentProvider,
         workerId,
         workingDir,

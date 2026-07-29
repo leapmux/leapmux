@@ -53,7 +53,7 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cross-worker pool did not stop with its lifetime context")
 	}
-	_, err := c.channelFor(context.Background(), "worker-2", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
+	_, err := c.channelFor(context.Background(), "worker-2", DelegationScope{UserID: userid.MustNew("user-1")})
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
@@ -63,28 +63,28 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 // silently start opening unscoped channels.
 func TestChannelFor_RejectsEmptyTarget(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
+	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: userid.MustNew("user-1")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target_worker_id required")
 }
 
 func TestChannelFor_RejectsEmptyUser(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{WorkspaceID: "ws-1"})
+	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
 }
 
 // TestChannelFor_PropagatesDelegationError wires the failure path
 // through the DelegationProvider abstraction. Worker A asks for a
-// bearer for (user, workspace); if the mint endpoint refuses, the
-// channel must NOT be opened — otherwise we'd hold an unauthenticated
-// Noise channel in the pool.
+// bearer for the user; if the mint endpoint refuses, the channel must
+// NOT be opened — otherwise we'd hold an unauthenticated Noise channel
+// in the pool.
 func TestChannelFor_PropagatesDelegationError(t *testing.T) {
-	dp := &stubDelegationProvider{err: errors.New("mint refused: workspace gone")}
+	dp := &stubDelegationProvider{err: errors.New("mint refused: tab gone")}
 	c := New(context.Background(), "http://hub.test", &PinStore{}, dp)
 
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1", AgentID: "agent-1"})
+	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), AgentID: "agent-1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delegation token")
 	assert.Contains(t, err.Error(), "mint refused")
@@ -112,15 +112,15 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 // PropagatesDelegationError.
 func TestChannelFor_PoolKeyComposition(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	// Manually seed pool entries to verify key independence (worker,
-	// user, AND workspace must each contribute to the key — delegation
-	// scope is per-workspace, so two workspaces on the same (worker,
-	// user) need separate Noise sessions) and that Close() reaps them.
-	c.channels[clientKey{WorkerID: "B", UserID: "u-1", WorkspaceID: "ws-1"}] = nil
-	c.channels[clientKey{WorkerID: "B", UserID: "u-2", WorkspaceID: "ws-1"}] = nil
-	c.channels[clientKey{WorkerID: "C", UserID: "u-1", WorkspaceID: "ws-1"}] = nil
-	c.channels[clientKey{WorkerID: "B", UserID: "u-1", WorkspaceID: "ws-2"}] = nil
-	require.Len(t, c.channels, 4)
+	// Manually seed pool entries to verify key independence: worker AND user
+	// must each contribute, so two users on one worker (and one user across two
+	// workers) never share a Noise session. There is no third axis -- a
+	// delegation bearer is scoped to (user, minting worker), so two workspaces
+	// of the same user legitimately ride the same channel.
+	c.channels[clientKey{WorkerID: "B", UserID: "u-1"}] = nil
+	c.channels[clientKey{WorkerID: "B", UserID: "u-2"}] = nil
+	c.channels[clientKey{WorkerID: "C", UserID: "u-1"}] = nil
+	require.Len(t, c.channels, 3)
 
 	c.Close()
 	c.mu.Lock()
@@ -134,7 +134,7 @@ func TestChannelFor_PoolKeyComposition(t *testing.T) {
 // pool layer.
 func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "ws-1", "OpenAgent", []byte("payload"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
@@ -144,19 +144,19 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "ws-1", "WatchEvents", nil, nil)
+	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "WatchEvents", nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
 
-// TestCallInner_RequiresWorkspaceID guards the new contract: a
-// cross-worker call without a workspace id is rejected before any
-// network I/O because the delegation bearer is per-workspace.
-func TestCallInner_RequiresWorkspaceID(t *testing.T) {
+// TestCallInner_RequiresUserID guards the input contract: a cross-worker call
+// with no user is rejected before any network I/O, because the user IS the
+// delegation bearer's identity and an unminted one would mint as nobody.
+func TestCallInner_RequiresUserID(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "", "OpenAgent", []byte("p"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.UserID{}, "OpenAgent", []byte("p"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "workspace_id required")
+	assert.Contains(t, err.Error(), "user_id required")
 }
 
 // blockingDelegationProvider blocks the first (and, under single-flight, only)
@@ -205,7 +205,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			_, err := c.channelFor(context.Background(), "worker-B",
-				DelegationScope{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1"})
+				DelegationScope{UserID: userid.MustNew("user-1")})
 			errs[idx] = err
 		}(i)
 	}
@@ -233,7 +233,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 
 	// The in-flight marker and the pool must be empty after a failed shared open.
 	c.mu.Lock()
-	_, stillInflight := c.inflight[clientKey{WorkerID: "worker-B", UserID: "user-1", WorkspaceID: "ws-1"}]
+	_, stillInflight := c.inflight[clientKey{WorkerID: "worker-B", UserID: "user-1"}]
 	poolLen := len(c.channels)
 	c.mu.Unlock()
 	assert.False(t, stillInflight, "in-flight marker must clear once the open resolves")

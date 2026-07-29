@@ -46,7 +46,7 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 func delegationUser(userID, minterID string) *auth.UserInfo {
 	return &auth.UserInfo{
 		ID:         userid.MustNew(userID),
-		Credential: auth.DelegationCredential("tok-"+minterID, "ws-1", minterID),
+		Credential: auth.DelegationCredential("tok-"+minterID, minterID),
 	}
 }
 

@@ -6,9 +6,8 @@ import "fmt"
 // request or long-lived channel. The zero value represents synthetic solo-mode
 // authentication; constructors are the only way to create stored credentials.
 type CredentialIdentity struct {
-	kind        credentialKind
-	id          string
-	workspaceID string
+	kind credentialKind
+	id   string
 	// workerID is the worker that MINTED a delegation token. It bounds where the
 	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
 	// for every other kind.
@@ -39,28 +38,28 @@ func APICredential(tokenID string) CredentialIdentity {
 	return CredentialIdentity{kind: credentialAPI, id: tokenID}
 }
 
-// DelegationCredential identifies a workspace-scoped delegation_tokens row minted
-// by workerID.
+// DelegationCredential identifies a delegation_tokens row minted by workerID.
 //
-// The minting worker is part of the credential because it bounds where the token
-// may be used: a worker mints a token carrying the identity of whichever user its
-// tab was spawned for, which for a shared workspace is NOT the worker's own owner.
-// Without the minter recorded here, such a token authenticates as that user
-// everywhere -- including against that user's OWN workers, which the minting
-// worker has no business reaching. See ChannelService.verifyDelegationWorkerScope.
+// The minting worker is the credential's ONLY bound, and it is part of the
+// credential because it answers a question user-scoping cannot: WHICH MACHINE
+// may this bearer be aimed at. A worker mints a token carrying the identity of
+// the user its tab was spawned for; without the minter recorded here, a leaked
+// token would authenticate as that user against that user's OTHER workers --
+// handing out tunnels and files on a machine the minting worker was never meant
+// to reach. See ChannelService.verifyDelegationWorkerScope.
 //
-// The minter is required exactly like the other two: delegation_tokens.worker_id is
-// NOT NULL and the sole mint path always records it, so an empty one can only mean a
-// code path dropped it. Rejecting it here fails at the bug. WorkerScopeID's
+// The minter is required exactly like the token id: delegation_tokens.worker_id
+// is NOT NULL and the sole mint path always records it, so an empty one can only
+// mean a code path dropped it. Rejecting it here fails at the bug. WorkerScopeID's
 // fail-closed contract below stays as defence in depth for a credential built some
-// other way -- but a constructor that validates two of its three required fields
+// other way -- but a constructor that validates one of its two required fields
 // leaves the security-relevant one to be caught as a runtime denial that reads
 // exactly like a genuine cross-tenant refusal.
-func DelegationCredential(tokenID, workspaceID, workerID string) CredentialIdentity {
-	if tokenID == "" || workspaceID == "" || workerID == "" {
-		panic("auth: delegation credential requires token, workspace, and minting worker IDs")
+func DelegationCredential(tokenID, workerID string) CredentialIdentity {
+	if tokenID == "" || workerID == "" {
+		panic("auth: delegation credential requires token and minting worker IDs")
 	}
-	return CredentialIdentity{kind: credentialDelegation, id: tokenID, workspaceID: workspaceID, workerID: workerID}
+	return CredentialIdentity{kind: credentialDelegation, id: tokenID, workerID: workerID}
 }
 
 // WorkerScopeID returns the worker that minted a delegation credential, or an
@@ -143,22 +142,14 @@ func (c CredentialIdentity) Bearer() (BearerKind, string, bool) {
 	}
 }
 
-// WorkspaceScopeID returns the delegation workspace scope, if any.
-func (c CredentialIdentity) WorkspaceScopeID() string {
-	return c.workspaceID
-}
-
-// IsDelegation reports whether this identity is a workspace-scoped delegation
-// bearer. Equivalent to WorkspaceScopeID() != "" -- a delegation credential
-// always carries a workspace scope and no other kind ever does -- but names the
-// intent so call sites stop re-encoding "is a delegation token" as an emptiness
-// check on the scope string.
+// IsDelegation reports whether this identity is a delegation bearer -- the
+// only credential kind a worker mints and hands to a prompt-injectable agent.
 func (c CredentialIdentity) IsDelegation() bool {
 	return c.kind == credentialDelegation
 }
 
 // Matches reports whether both values identify the same credential row and
-// delegation scope.
+// minting worker.
 func (c CredentialIdentity) Matches(other CredentialIdentity) bool {
 	return c == other
 }

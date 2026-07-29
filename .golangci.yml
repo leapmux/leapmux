@@ -15,6 +15,20 @@ linters:
     - errcheck
     - staticcheck
     - unused
+    - exhaustive
+  settings:
+    exhaustive:
+      # An explicit `default` IS the handling for the remaining members, so a
+      # switch that has one is exhaustive. Without this the linter demands every
+      # member of THIRD-PARTY enums be enumerated -- all 16 `connect.Code`s, all
+      # ~26 `reflect.Kind`s -- which is both noise and a landmine, since the list
+      # grows on a dependency bump and breaks the build for no defect.
+      #
+      # The tripwire is preserved where it earns its keep: a switch over one of
+      # our own domain enums written WITHOUT a default stays fully checked, so
+      # adding an enum member turns every such switch red. Prefer that shape for
+      # a switch that must handle every case (see BuildTabSync).
+      default-signifies-exhaustive: true
 
 formatters:
   enable:

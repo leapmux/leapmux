@@ -138,7 +138,13 @@ var identityComparisonSites = map[string]string{
 	// git, tunnel, and sysinfo families. A zero id on EITHER side must refuse,
 	// because an unpopulated RegisteredBy and an unnamed caller are the same
 	// empty string.
-	"internal/worker/service.requireWorkerOwner": "TestRequireWorkerOwnerRefusesEmptyIdentities",
+	//
+	// One entry, not two: the unary and streaming gates (requireWorkerOwner /
+	// requireWorkerOwnerStream) both delegate the comparison here and differ only
+	// in how they encode the refusal, so this is the single place the decision is
+	// made. Keeping the predicate in one function is also what stops a change to
+	// it landing in one gate and missing the other.
+	"internal/worker/service.callerIsWorkerOwner": "TestRequireWorkerOwnerRefusesEmptyIdentities",
 	// Not a grant: it decides whether the Hub pushed a DIFFERENT owner than the
 	// one already recorded, and only logs. It is listed because the comparison
 	// is the same one, and because the guard that keeps it honest -- refusing an
@@ -154,4 +160,14 @@ var identityComparisonSites = map[string]string{
 	// syntax-level rule could recognise, so the sharpest decision in the worker
 	// sat outside this net while appearing to be inside it.
 	"internal/worker/service.(*OrphanReconciler).reconcileFileTabs": "TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner",
+	// The reconnect report's owner filter, and the mirror of the reap gate above:
+	// the same (user_id, tab_id) uniqueness rule, applied on the OTHER half of the
+	// same comparison. The worker's tab report carries no user axis on the wire, so
+	// the Hub attributes all of it to the connecting registrant -- meaning a row
+	// left behind by a previous owner (ClearState keeps worker.db, and
+	// workers.registered_by is never UPDATEd) would be claimed by whoever connects
+	// next, and a colliding client-minted id would suppress a tombstone the real
+	// owner's tab was due. BuildTabSync refuses an unminted owner outright rather
+	// than reporting every row on the machine.
+	"internal/worker/bootstrap.fileTabIDsForOwner": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
 }

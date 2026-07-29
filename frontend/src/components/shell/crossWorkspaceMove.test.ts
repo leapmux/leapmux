@@ -1,4 +1,3 @@
-import type { BatchOutcome } from '~/components/shell/useOpsSubmitter'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
@@ -10,23 +9,9 @@ import { flush } from '~/test-support/async'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestFloatingWindowStore, createTestLayoutStore, createTestTabStores } from '~/test-support/tabStores'
 
-// The cross-workspace move issues a worker RPC (then a CRDT batch) -- stub the RPCs so
-// these tests assert the move as the user sees it, without a live worker. Only
-// useCrossWorkspaceMove consumes these modules in this graph, so a scoped
-// replacement is safe.
-const mockMoveTabWorkspace = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockRelocateFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockShowWarnToast = vi.fn()
-
-vi.mock('~/api/workerRpc', () => ({
-  moveTabWorkspace: (...args: unknown[]) => mockMoveTabWorkspace(...args),
-  relocateFileTabPath: (...args: unknown[]) => mockRelocateFileTabPath(...args),
-}))
-vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
-  showErrorToast: vi.fn(),
-  showInfoToast: vi.fn(),
-}))
+// No worker-RPC mocks: the move is CRDT-only, which is the property that makes
+// it work with every worker offline. `~/api/workerRpc` is deliberately NOT in
+// this module graph -- if it reappears, the import itself is the regression.
 
 /** Tab key as the join builds it: `${type}:${id}` (type is the numeric TabType enum). */
 function key(type: TabType, id: string): string {
@@ -59,7 +44,6 @@ function setup(activeWsId: string = ACTIVE_WS) {
   stores.layoutStore.setFocusedTile(ACTIVE_TILE)
   const floatingWindowStore = createTestFloatingWindowStore()
   const focusTile = vi.fn()
-  const batchResultHandlers = new Map<string, (outcome: BatchOutcome) => void>()
 
   const { move } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => activeWsId,
@@ -67,8 +51,6 @@ function setup(activeWsId: string = ACTIVE_WS) {
     selection: stores.selection,
     layoutStore: stores.layoutStore,
     floatingWindowStore,
-
-    batchResultHandlers,
     focusTile,
   })
 
@@ -78,7 +60,6 @@ function setup(activeWsId: string = ACTIVE_WS) {
     harness,
     floatingWindowStore,
     focusTile,
-    batchResultHandlers,
     move,
     add(type: TabType, id: string, tileId: string, meta: Record<string, unknown> = {}) {
       seq += 1
@@ -100,13 +81,6 @@ describe('useCrossWorkspaceMove', () => {
       h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
 
       h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
-
-      // Worker bookkeeping flips FIRST, before any CRDT op goes out.
-      expect(mockMoveTabWorkspace).toHaveBeenCalledWith('w1', expect.objectContaining({
-        tabType: TabType.AGENT,
-        tabId: 'a1',
-        newWorkspaceId: TARGET_WS,
-      }))
       await flush()
 
       // One tab, one place. The source workspace no longer lists it and the
@@ -183,22 +157,17 @@ describe('useCrossWorkspaceMove', () => {
     })
   })
 
-  it('moves a FILE tab via the relocate RPC, preserving its path', async () => {
+  it('moves a FILE tab with its path intact and no worker round-trip', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
       h.add(TabType.FILE, 'f1', ACTIVE_TILE, { filePath: '/repo/a.ts' })
 
       h.move(TARGET_WS, key(TabType.FILE, 'f1'))
-
-      // FILE takes RelocateFileTabPath, not MoveTabWorkspace: the path is
-      // E2EE and the hub never sees it.
-      expect(mockRelocateFileTabPath).toHaveBeenCalledWith('w1', expect.objectContaining({
-        tabId: 'f1',
-        newWorkspaceId: TARGET_WS,
-      }))
-      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
       await flush()
 
+      // The worker stores (user_id, tab_id) -> path with no workspace, so a
+      // cross-workspace move touches nothing on it: the path row is already
+      // correct wherever the CRDT puts the tab.
       const moved = h.view.getById(TabType.FILE, 'f1')
       expect(moved?.workspaceId).toBe(TARGET_WS)
       expect(moved && isFileTab(moved) && moved.filePath).toBe('/repo/a.ts')
@@ -247,7 +216,6 @@ describe('useCrossWorkspaceMove', () => {
       h.move(ACTIVE_WS, key(TabType.AGENT, 'a1'))
       await flush()
 
-      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
       expect(h.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(ACTIVE_TILE)
       dispose()
     })
@@ -321,35 +289,17 @@ describe('useCrossWorkspaceMove', () => {
       h.move(TARGET_WS, key(TabType.AGENT, 'ghost'))
       await flush()
 
-      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
-      dispose()
-    })
-  })
-
-  // The worker RPC runs BEFORE the CRDT op precisely so this ordering holds:
-  // a worker that refuses the move leaves the tab where it was, with no
-  // optimistic placement to unwind.
-  it('leaves the tab in place and warns when the worker RPC fails', async () => {
-    await createRoot(async (dispose) => {
-      const h = setup()
-      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
-      const err = new Error('worker offline')
-      mockMoveTabWorkspace.mockRejectedValueOnce(err)
-
-      h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
-      await flush()
-
-      expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(ACTIVE_WS)
       expect(h.view.forWorkspace(TARGET_WS)).toEqual([])
-      expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to move tab', err)
       dispose()
     })
   })
 
-  // A hub rejection (e.g. no write access to the destination) reverts the CRDT
-  // half on its own; the worker's `workspace_id` has to be put back too, or the
-  // two disagree about who owns the tab.
-  it('reverses the worker-side move when the hub rejects the batch', async () => {
+  // The whole point of dropping the worker RPC: a tab whose worker is offline
+  // (or gone entirely) still moves. There is no RPC to fail, so there is no
+  // "the tab never moved" toast and nothing to unwind -- the CRDT is the only
+  // place a tab's workspace lives, and the worker learns nothing because it
+  // stores nothing.
+  it('moves a tab whose worker is unreachable', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
       h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
@@ -357,36 +307,23 @@ describe('useCrossWorkspaceMove', () => {
       h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()
 
-      expect(h.batchResultHandlers.size).toBe(1)
-      const [batchId, handler] = [...h.batchResultHandlers.entries()][0]
-      mockMoveTabWorkspace.mockClear()
-      handler({ case: 'rejected' } as BatchOutcome)
-
-      expect(mockMoveTabWorkspace).toHaveBeenCalledWith('w1', expect.objectContaining({
-        tabType: TabType.AGENT,
-        tabId: 'a1',
-        newWorkspaceId: ACTIVE_WS,
-      }))
-      // The handler unregisters itself, so a later outcome for the same batch
-      // can't fire a second reversal.
-      expect(h.batchResultHandlers.has(batchId)).toBe(false)
+      expect(h.view.forWorkspace(ACTIVE_WS)).toEqual([])
+      expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(TARGET_WS)
       dispose()
     })
   })
 
-  it('does not reverse the worker-side move when the batch is accepted', async () => {
+  // The move used to be gated on a worker RPC that a worker-less tab skipped;
+  // now there is no branch at all, so a tab the projection carries without a
+  // worker moves like any other.
+  it('moves a tab that names no worker', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      h.add(TabType.AGENT, 'a1', ACTIVE_TILE)
+      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: ACTIVE_TILE, position: 'p1' })
 
       h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()
 
-      const handler = [...h.batchResultHandlers.values()][0]
-      mockMoveTabWorkspace.mockClear()
-      handler({ case: 'committed' } as BatchOutcome)
-
-      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
       expect(h.view.getById(TabType.AGENT, 'a1')?.workspaceId).toBe(TARGET_WS)
       dispose()
     })

@@ -20,13 +20,12 @@ import (
 // has_more reports whether further messages exist in the page's direction.
 func TestListAgentMessages_AnchorPaging(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	// Seed five messages; capture their assigned (ascending) seqs.
@@ -148,10 +147,10 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 // AgentTodosChanged).
 func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID:            "msg-1",
@@ -220,13 +219,12 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 // bug).
 func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	// Seed 60 messages so the latest 50 differ from the oldest 50.
@@ -298,13 +296,12 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 // over-replaying, and that catch-up -- not WatchEvents -- fills a >50 gap.
 func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	// Seed 60 messages so the cursor-to-tail gap (54) exceeds the 50-row replay cap.
@@ -379,9 +376,9 @@ func decodeAgentEvents(w *testResponseWriter) []*leapmuxv1.AgentEvent {
 // there is no per-frame replay_has_more flag.
 func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	// 60 messages; resuming from the 6th leaves a 54-message gap > the 50-row cap.
@@ -442,9 +439,9 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 // the start-of-replay tail), so a fresh client reconciles against it.
 func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	var tail int64
@@ -491,13 +488,12 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 // wire boundary against splicing the oldest page in front of a latest window.
 func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	var seqs []int64
@@ -553,10 +549,10 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 // this replay-time snapshot.
 func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	var seqs []int64
 	for i := 0; i < 3; i++ {
@@ -612,9 +608,9 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 // live-tail.
 func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	var seqs []int64
 	for i := 0; i < 3; i++ {

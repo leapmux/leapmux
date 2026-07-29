@@ -117,6 +117,9 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 			hasTodos = true
 			assert.Equal(t, "To-dos", s.GetName())
 			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
+		default:
+			// UNSPECIFIED and WORKSPACES_CUSTOM are not seeded defaults, so the
+			// per-type assertions above do not apply to them.
 		}
 	}
 	assert.True(t, hasInProgress, "missing in_progress section")
@@ -520,6 +523,8 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 			inProgressID = s.GetId()
 		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
 			archivedID = s.GetId()
+		default:
+			// Only the two workspace sections are needed to drive this test.
 		}
 	}
 

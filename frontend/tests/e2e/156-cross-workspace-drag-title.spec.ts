@@ -216,8 +216,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       // --- Reload checkpoint (#3) ---
       //
       // The cross-workspace move emits a CRDT `SetTabRegister(tile_id)`
-      // batch and a worker-side `MoveTabWorkspace` RPC. After reload,
-      // both should be durably committed — the destination workspace
+      // batch and nothing else — the worker stores no workspace id, so
+      // there is no worker-side RPC to pair it with. After reload, the
+      // batch should be durably committed — the destination workspace
       // must still show two tabs (the original + the moved), and the
       // moved tab id must NOT have leaked back to the source.
       //

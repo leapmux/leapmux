@@ -16,11 +16,7 @@ interface BaseDialogState {
   git?: GitModeIntent
 }
 
-interface ScopedDialogState extends BaseDialogState {
-  workspaceId: string
-}
-
-interface AgentDialogState extends ScopedDialogState {
+interface AgentDialogState extends BaseDialogState {
   noProviders: boolean
   sessionIdError: string | null
 }
@@ -31,7 +27,7 @@ interface WorkspaceDialogState extends BaseDialogState {
   titleError: string | null
 }
 
-interface TerminalDialogState extends ScopedDialogState {
+interface TerminalDialogState extends BaseDialogState {
   shell: string
 }
 
@@ -89,14 +85,12 @@ export function isWorkspaceCreateDisabled(state: WorkspaceDialogState): boolean 
 
 export function isAgentCreateDisabled(state: AgentDialogState): boolean {
   return isBaseDialogInvalid(state)
-    || !state.workspaceId
     || state.noProviders
     || !!state.sessionIdError
 }
 
 export function isTerminalCreateDisabled(state: TerminalDialogState): boolean {
   return isBaseDialogInvalid(state)
-    || !state.workspaceId
     || !state.shell
 }
 

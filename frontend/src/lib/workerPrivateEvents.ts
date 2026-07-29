@@ -1,26 +1,22 @@
 // Per-worker subscriber for the worker's E2EE-only
-// `WatchWorkspacePrivateEvents` stream. Decoded events — `TabRenamed`,
+// `WatchWorkerPrivateEvents` stream. Decoded events — `TabRenamed`,
 // `FileTabPathRegistered`, `FileTabPathRevoked` — are surfaced to the
 // caller; reconnect happens transparently. The worker emits a one-shot
 // bootstrap reply at subscribe time (one `FileTabPathRegistered` per
-// existing `worker_file_tabs` row in the requested workspace) so a
-// late-joining client receives the full path cache before any live
-// events.
+// `worker_file_tabs` row the caller owns) so a late-joining client
+// receives the full path cache before any live events.
 
 import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { Code } from '@connectrpc/connect'
 import { channelManager } from '~/api/workerRpc'
-import { ensureWorkspaceAccess } from '~/api/workspaceAccess'
 import {
-  WatchWorkspacePrivateEventsRequestSchema,
-  WorkspacePrivateEventSchema,
-} from '~/generated/leapmux/v1/workspace_private_pb'
-import { ChannelError } from '~/lib/channelError'
+  WatchWorkerPrivateEventsRequestSchema,
+  WorkerPrivateEventSchema,
+} from '~/generated/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
 
-const log = createLogger('workspacePrivateEvents')
+const log = createLogger('workerPrivateEvents')
 
 // One stream per call, so a single fixed backoff key suffices.
 const RECONNECT_KEY = 'reconnect'
@@ -28,7 +24,6 @@ const RECONNECT_INITIAL_MS = 250
 const RECONNECT_MAX_MS = 8000
 
 interface OpenStreamOpts {
-  workspaceId: string
   workerId: string
   onTabRenamed: (evt: { tabId: string, tabType: TabType, title: string, originClientId: string }) => void
   /**
@@ -36,7 +31,7 @@ interface OpenStreamOpts {
    * during the bootstrap replay and on live updates. Idempotent on the
    * receiver side (the `fileTabPaths` store dedupes by (tab_id, path)).
    */
-  onFileTabPathRegistered?: (evt: { tabId: string, workspaceId: string, filePath: string }) => void
+  onFileTabPathRegistered?: (evt: { tabId: string, filePath: string }) => void
   /**
    * Optional callback for `FileTabPathRevoked` events. Receiver drops
    * the (tab_id → path) entry from the local cache.
@@ -63,36 +58,6 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
     maxMs: RECONNECT_MAX_MS,
   })
 
-  /**
-   * The worker refuses the whole stream when this channel has not been told
-   * about the workspace (`registerWorkspaceGatedStream` -> PermissionDenied).
-   * That is not a transient fault and reconnecting cannot clear it: the
-   * accessible set grows only when someone calls PrepareWorkspaceAccess, so a
-   * workspace created outside this page -- by the `leapmux remote` CLI, by
-   * another session -- would otherwise have this loop reconnect into the same
-   * refusal every 8s for the life of the page.
-   *
-   * `ChannelError.code` carries the worker's raw gRPC status (`sendStreamError`
-   * writes `int32(codes.PermissionDenied)` into `InnerStreamMessage.error_code`).
-   * Connect's `Code` enum shares gRPC's numbering, so it names the constant
-   * without a mapping table.
-   */
-  const deniedForWorkspace = (err: Error): boolean =>
-    err instanceof ChannelError && err.code === Code.PermissionDenied
-
-  /** Announce the workspace; true when this call is what changed the answer. */
-  const announceWorkspace = async (): Promise<boolean> => {
-    try {
-      return await ensureWorkspaceAccess(opts.workerId, opts.workspaceId)
-    }
-    catch (err) {
-      // Falling through to the backoff also retries the announcement, since a
-      // failure is not remembered.
-      log.debug('failed to announce workspace access', { workerId: opts.workerId, workspaceId: opts.workspaceId, err })
-      return false
-    }
-  }
-
   const start = async () => {
     // eslint-disable-next-line no-unmodified-loop-condition
     while (!stopped) {
@@ -101,7 +66,6 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
       // a live update), mirroring useUserEvents' reset-on-bootstrap so a merely
       // opened-then-immediately-dropped stream keeps backing off.
       let healthy = false
-      let denied = false
       try {
         const channelId = await channelManager.getOrOpenChannel(opts.workerId)
         // Teardown may have run while we were awaiting the (genuinely async,
@@ -112,15 +76,15 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
         // attemptDisposed guard).
         if (stopped)
           return
-        const req = create(WatchWorkspacePrivateEventsRequestSchema, { workspaceId: opts.workspaceId })
-        const payload = toBinary(WatchWorkspacePrivateEventsRequestSchema, req)
-        const handle = channelManager.stream(channelId, 'WatchWorkspacePrivateEvents', payload)
+        const req = create(WatchWorkerPrivateEventsRequestSchema, {})
+        const payload = toBinary(WatchWorkerPrivateEventsRequestSchema, req)
+        const handle = channelManager.stream(channelId, 'WatchWorkerPrivateEvents', payload)
         // LEAK: `removeStreamListener` unregisters the LOCAL listener only —
         // it sends no cancel frame, and `ChannelManager.stream` exposes none.
         // The worker's `SnapshotAndSubscribe` loop exits only on `ctx.Done()`
         // (a background ctx) or a send error, so its goroutine and buffered
-        // channel stay registered; a re-opened (workspace, worker) pair then
-        // adds a SECOND subscriber and every event is pushed twice.
+        // channel stay registered; a re-opened worker stream then adds a
+        // SECOND subscriber and every event is pushed twice.
         // Tracked: https://github.com/leapmux/leapmux/issues/337
         currentClose = () => channelManager.removeStreamListener(channelId, handle.requestId)
 
@@ -131,7 +95,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
               reconnectBackoff.reset(RECONNECT_KEY)
             }
             try {
-              const evt = fromBinary(WorkspacePrivateEventSchema, msg.payload)
+              const evt = fromBinary(WorkerPrivateEventSchema, msg.payload)
               switch (evt.event?.case) {
                 case 'tabRenamed': {
                   const r = evt.event.value
@@ -145,11 +109,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 }
                 case 'fileTabPathRegistered': {
                   const r = evt.event.value
-                  opts.onFileTabPathRegistered?.({
-                    tabId: r.tabId,
-                    workspaceId: r.workspaceId,
-                    filePath: r.filePath,
-                  })
+                  opts.onFileTabPathRegistered?.({ tabId: r.tabId, filePath: r.filePath })
                   break
                 }
                 case 'fileTabPathRevoked': {
@@ -160,30 +120,22 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
               }
             }
             catch (err) {
-              log.warn('failed to decode private event', { workerId: opts.workerId, workspaceId: opts.workspaceId, err })
+              log.warn('failed to decode private event', { workerId: opts.workerId, err })
             }
           })
           handle.onEnd(() => resolve())
           handle.onError((err) => {
-            log.debug('private event stream error', { workerId: opts.workerId, workspaceId: opts.workspaceId, err })
-            denied = deniedForWorkspace(err)
+            log.debug('private event stream error', { workerId: opts.workerId, err })
             resolve()
           })
         })
       }
       catch (err) {
-        log.debug('failed to open private event stream; will retry', { workerId: opts.workerId, workspaceId: opts.workspaceId, err })
+        log.debug('failed to open private event stream; will retry', { workerId: opts.workerId, err })
       }
       currentClose = null
       if (stopped)
         return
-      // Repair rather than re-dial: announce the workspace on this worker's
-      // channels and reconnect at once. `ensureWorkspaceAccess` answers false
-      // once the pair has already been announced, so a denial that survives the
-      // announcement falls through to the backoff instead of spinning here.
-      // Teardown during the announcement is caught by the loop condition.
-      if (denied && await announceWorkspace())
-        continue
       // Wait out the jittered backoff before retrying; teardown resolves this
       // early via wakeReconnect so a stopped stream doesn't linger.
       await new Promise<void>((resolve) => {

@@ -533,7 +533,12 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// way; CheckoutBranch is the parallel case. branchMutationTimeout
 		// still bounds the operation.
 		runBranchMutation(bgCtx(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
-			return checkoutBranchInDir(ctx, dirPath, r.GetBranch())
+			// Under the repo's index lock: a checkout and a concurrent
+			// `worktree add` from a starting agent in the same repository would
+			// otherwise make one of the two fail on index.lock.
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+				return checkoutBranchInDir(ctx, dirPath, r.GetBranch())
+			})
 		})
 	})
 
@@ -559,7 +564,16 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// branch ref alive on a working tree the user thought they
 		// rolled back from.
 		runBranchMutation(bgCtx(), sender, &leapmuxv1.CreateBranchResponse{}, func(ctx context.Context) error {
-			return createBranchInDir(ctx, dirPath, r.GetNewBranch(), r.GetBaseBranch())
+			// Under the repo's index lock, for the same reason CheckoutBranch and
+			// DeleteBranch are: `git checkout -b` mutates the index, and git fails
+			// the loser of an index.lock race outright rather than waiting. This
+			// handler was the one branch mutation left unguarded, so creating a
+			// branch while a sibling agent's startup ran `worktree add` (or a push
+			// ran `add -A`/`commit`) surfaced a raw "Unable to create
+			// '.git/index.lock': File exists." as "Failed to create branch".
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+				return createBranchInDir(ctx, dirPath, r.GetNewBranch(), r.GetBaseBranch())
+			})
 		})
 	})
 
@@ -589,7 +603,12 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// internally rather than starving the second phase by sharing a
 		// single budget with the first.
 		runBranchMutationCustom(bgCtx(), 2*branchMutationTimeout, sender, &leapmuxv1.DeleteBranchResponse{}, func(ctx context.Context) error {
-			return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
+			// One index-lock hold spans the whole switch-then-delete: releasing
+			// between them would let another command interleave into the window
+			// where HEAD has moved off the doomed branch but it is not yet gone.
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+				return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
+			})
 		})
 	})
 }
@@ -1596,27 +1615,46 @@ func (svc *Service) pushBranch(ctx context.Context, tabType leapmuxv1.TabType, t
 
 	commitDir := tabCtx.commitDir()
 
-	hasChanges, err := dirtyTreeForPush(ctx, commitDir)
-	if err != nil {
+	// The LOCAL half holds the repo's index lock: `add -A` and `commit` take git's
+	// index.lock, and a concurrent `worktree add` or `checkout` in the same
+	// repository would make one of the two fail outright rather than wait. The
+	// dirty probe and the push-status read are inside the hold too, deliberately
+	// -- the probe decides whether to commit, so releasing between probe and
+	// commit would reintroduce the read-then-act race the probe's own doc warns
+	// about, and the status read is what picks the refspec below.
+	//
+	// The NETWORK push is deliberately OUTSIDE it. Once the commit has landed the
+	// refs are fixed, and no index mutation in any worktree of this repo can
+	// change what we are about to send -- provided the refspec is pinned rather
+	// than resolved from HEAD at push time, which is why pushArgs always names the
+	// branch explicitly below. Holding across the push made every unrelated
+	// `worktree add` (a second agent starting in this repo) or `checkout` wait for
+	// up to pushBranchTimeout, and sync.Mutex is not ctx-aware, so it kept waiting
+	// even after its own startup context was cancelled.
+	var push pushStatus
+	if err := svc.withGitIndexLock(tabCtx.repoRoot, func() error {
+		hasChanges, err := dirtyTreeForPush(ctx, commitDir)
+		if err != nil {
+			return err
+		}
+		if hasChanges {
+			// Use OutputStderr so an index.lock / permission / hook failure
+			// surfaces git's actual message instead of a bare exit status.
+			stderr, err := gitutil.OutputStderr(ctx, commitDir, "add", "-A")
+			if err != nil {
+				return wrapGitErr("git add", stderr, err)
+			}
+			stderr, err = gitutil.OutputStderr(ctx, commitDir, "commit", "-m", wipCommitMessage)
+			if err != nil {
+				return wrapGitErr("commit "+wipCommitMessage, stderr, err)
+			}
+		}
+		push, err = resolvePushStatus(ctx, commitDir, tabCtx.branchName)
 		return err
-	}
-	if hasChanges {
-		// Use OutputStderr so an index.lock / permission / hook failure
-		// surfaces git's actual message instead of a bare exit status.
-		stderr, err := gitutil.OutputStderr(ctx, commitDir, "add", "-A")
-		if err != nil {
-			return wrapGitErr("git add", stderr, err)
-		}
-		stderr, err = gitutil.OutputStderr(ctx, commitDir, "commit", "-m", wipCommitMessage)
-		if err != nil {
-			return wrapGitErr("commit "+wipCommitMessage, stderr, err)
-		}
+	}); err != nil {
+		return err
 	}
 
-	push, err := resolvePushStatus(ctx, commitDir, tabCtx.branchName)
-	if err != nil {
-		return err
-	}
 	if !push.CanPush(tabCtx.branchName) {
 		if !push.OriginExists {
 			return errors.New("cannot push: remote origin does not exist")
@@ -1624,10 +1662,15 @@ func (svc *Service) pushBranch(ctx context.Context, tabType leapmuxv1.TabType, t
 		return errors.New("cannot push this branch")
 	}
 
+	// Always name the branch, even when an upstream exists. A bare `git push`
+	// resolves the refspec from the worktree's HEAD at push time, so with the lock
+	// released a concurrent checkout in this directory could redirect the push to
+	// a different branch. Naming it pins what we resolved under the lock.
 	pushArgs := []string{"push"}
 	if !push.UpstreamExists {
-		pushArgs = append(pushArgs, "-u", "origin", tabCtx.branchName)
+		pushArgs = append(pushArgs, "-u")
 	}
+	pushArgs = append(pushArgs, "origin", tabCtx.branchName)
 	stderr, err := gitutil.OutputStderr(ctx, commitDir, pushArgs...)
 	if err != nil {
 		return wrapGitErr("push", stderr, err)
@@ -2073,6 +2116,42 @@ func (s pushStatus) CanPush(branchName string) bool {
 	return s.OriginExists && branchName != "" && branchName != "HEAD"
 }
 
+// unpushedAgainstOrigin counts commits reachable from HEAD that no origin ref
+// has. It needs no branch and no configured upstream, which is what makes it
+// usable for a detached HEAD and for a branch whose upstream was pruned.
+//
+// `rev-list --count HEAD --not --remotes=origin` collapses to HEAD's full
+// ancestry when origin has zero fetched refs: `--remotes=origin` matches
+// nothing, `--not` excludes nothing, and the user sees "<N> commits not pushed"
+// over what is in fact a freshly-added remote (e.g. `git remote add origin URL`
+// without a follow-up fetch, or a `--depth=1` clone with no namespace). So
+// probe origin's refs first and answer 0 when there are none -- "unknown" is
+// closer to truth than "your entire history is unpushed".
+//
+// Errors propagate rather than degrading to 0: a silent failure would let the
+// dialog claim "no unpushed commits", and would let the orphan GC treat a real
+// git failure as permission to force-remove the directory.
+func unpushedAgainstOrigin(ctx context.Context, dir string) (int32, error) {
+	hasOriginRefs, refsErr := gitutil.HasAnyRef(ctx, dir, "refs/remotes/origin/")
+	if refsErr != nil {
+		return 0, fmt.Errorf("git for-each-ref: %w", refsErr)
+	}
+	if !hasOriginRefs {
+		return 0, nil
+	}
+	// Scope to origin's refs (the remote we just confirmed exists) so we don't
+	// walk every other remote's fetched refs.
+	out, revErr := gitutil.Output(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
+	if revErr != nil {
+		return 0, fmt.Errorf("git rev-list: %w", revErr)
+	}
+	count, scanErr := parseRevListCount(out)
+	if scanErr != nil {
+		return 0, scanErr
+	}
+	return count, nil
+}
+
 func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus, error) {
 	var s pushStatus
 
@@ -2091,6 +2170,19 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 	}
 
 	if !hasBranch {
+		// A detached HEAD has no branch.<name>.* config to consult, but "are
+		// there commits no origin ref has" is still answerable from HEAD alone --
+		// and that is the question the unsaved-work guard actually asks. Returning
+		// here with Unpushed left at 0 reported a detached worktree holding
+		// local-only commits as fully pushed, which let the orphan GC
+		// `--force` remove it.
+		if s.OriginExists {
+			count, err := unpushedAgainstOrigin(ctx, dir)
+			if err != nil {
+				return s, err
+			}
+			s.Unpushed = count
+		}
 		return s, nil
 	}
 
@@ -2098,36 +2190,11 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 	mergeRef, mergeOk := cfg["branch."+branchName+".merge"]
 	if !remoteOk || !mergeOk {
 		if s.OriginExists {
-			// `rev-list --count HEAD --not --remotes=origin` collapses to
-			// HEAD's full ancestry when origin has zero fetched refs:
-			// `--remotes=origin` matches nothing, `--not` excludes
-			// nothing, and the user sees "<N> commits not pushed" over
-			// what is in fact a freshly-added remote (e.g. `git remote
-			// add origin URL` without a follow-up fetch, or a `--depth=1`
-			// clone with no namespace). Probe origin first; if there are
-			// no fetched refs, leave Unpushed at 0 — "unknown" is closer
-			// to truth than "your entire history is unpushed".
-			hasOriginRefs, refsErr := gitutil.HasAnyRef(ctx, dir, "refs/remotes/origin/")
-			if refsErr != nil {
-				return s, fmt.Errorf("git for-each-ref: %w", refsErr)
+			count, err := unpushedAgainstOrigin(ctx, dir)
+			if err != nil {
+				return s, err
 			}
-			if hasOriginRefs {
-				// Scope to origin's refs (the remote we just confirmed exists)
-				// so we don't walk every other remote's fetched refs.
-				// Propagate the error so a `rev-list --count` failure
-				// (corrupt refs, transient I/O, permission glitch) doesn't
-				// silently leave Unpushed=0 and let the dialog claim "no
-				// unpushed commits" over a real git failure.
-				out, revErr := gitutil.Output(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
-				if revErr != nil {
-					return s, fmt.Errorf("git rev-list: %w", revErr)
-				}
-				count, scanErr := parseRevListCount(out)
-				if scanErr != nil {
-					return s, scanErr
-				}
-				s.Unpushed = count
-			}
+			s.Unpushed = count
 		}
 		return s, nil
 	}
@@ -2148,6 +2215,17 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 	found, err := gitutil.HasRefs(ctx, dir, upstreamRef)
 	if err != nil || !found[upstreamRef] {
 		s.RemoteMissing = true
+		// The configured upstream is gone (`git fetch --prune` after the remote
+		// branch was deleted or renamed), so `upstreamRef..HEAD` cannot be
+		// counted -- but the commits may still be reachable from some OTHER
+		// origin ref. Fall back to the branch-independent count rather than
+		// returning Unpushed=0, which the unsaved-work guard read as "nothing to
+		// lose" and force-removed a branch holding local-only commits.
+		count, fallbackErr := unpushedAgainstOrigin(ctx, dir)
+		if fallbackErr != nil {
+			return s, fallbackErr
+		}
+		s.Unpushed = count
 		return s, nil
 	}
 

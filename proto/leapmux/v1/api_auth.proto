@@ -82,7 +82,14 @@ message CLIRevokeResponse {}
 // DelegationService is implemented on the hub but called only by workers
 // (authenticated with their existing AuthToken). Workers mint a short-
 // lived bearer the spawned agent can present to the hub on the user's
-// behalf, scoped to a single workspace.
+// behalf.
+//
+// The bearer is scoped to the user and to the MINTING WORKER (see
+// auth.DelegationWorkerScope) -- not to a workspace. A Worker serves one
+// user and stores no workspace id, so a workspace pin narrowed nothing a
+// prompt-injectable agent could not already reach through its own
+// workspace; what it must not reach is another MACHINE of the same user,
+// which is the axis that remains.
 service DelegationService {
   rpc MintDelegationToken(MintDelegationTokenRequest) returns (MintDelegationTokenResponse);
   rpc RevokeDelegationToken(RevokeDelegationTokenRequest) returns (RevokeDelegationTokenResponse);
@@ -90,12 +97,11 @@ service DelegationService {
 
 message MintDelegationTokenRequest {
   string user_id = 1;
-  string workspace_id = 2;
-  string issued_for_tab_id = 3; // provenance only; not enforced
-  TabType issued_for_tab_type = 4;
-  string agent_id = 5;          // optional, for audit
-  string terminal_id = 6;       // optional, for audit
-  int64 ttl_seconds = 7;        // capped server-side
+  string issued_for_tab_id = 2; // provenance only; not enforced
+  TabType issued_for_tab_type = 3;
+  string agent_id = 4;          // optional, for audit
+  string terminal_id = 5;       // optional, for audit
+  int64 ttl_seconds = 6;        // capped server-side
 }
 
 message MintDelegationTokenResponse {

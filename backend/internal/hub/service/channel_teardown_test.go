@@ -130,7 +130,6 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,
-		WorkspaceID:      e.workspaceID,
 		IssuedForTabID:   e.tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       e.validator.HashSecret(secret),
@@ -170,7 +169,7 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 	// a registered bearer-keyed channel is dropped on revoke.
 	channelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(channelID, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, "test-workspace", "worker-mint"),
+		Credential: auth.DelegationCredential(tokenID, "worker-mint"),
 	}, nil)
 	require.True(t, env.channelMgr.Exists(channelID))
 
@@ -215,10 +214,10 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 	cookieCh := id.Generate()
 
 	env.channelMgr.RegisterWithAuthInfo(revokedCh, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(revokedToken, "test-workspace", "worker-mint"),
+		Credential: auth.DelegationCredential(revokedToken, "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(otherBearerCh, env.workerID, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(otherToken, "test-workspace", "worker-mint"),
+		Credential: auth.DelegationCredential(otherToken, "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(cookieCh, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)
 
@@ -261,7 +260,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	}))
 
 	env.channelMgr.RegisterWithAuthInfo(chA, workerA, env.userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, "test-workspace", "worker-mint"),
+		Credential: auth.DelegationCredential(tokenID, "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(chB, workerB, env.userID, channelmgr.AuthInfo{}, nil)
 	env.channelMgr.RegisterWithAuthInfo(chOther, workerA, otherUserID, channelmgr.AuthInfo{}, nil)

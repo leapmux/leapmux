@@ -664,22 +664,6 @@ func TestPiStaticOptionGroups_ThinkingLevelLabel(t *testing.T) {
 	assert.Equal(t, PiThinkingLevelLabel, eg.GetLabel())
 }
 
-// TestModelInfoClone_DeepCopiesSupportedEfforts verifies clone() does not alias the
-// shared static catalog's effort slice: mutating a clone's efforts must not reach the
-// original (a shallow copy would corrupt every model sharing that effort list).
-func TestModelInfoClone_DeepCopiesSupportedEfforts(t *testing.T) {
-	orig := &ModelInfo{
-		Id:               "m1",
-		SupportedEfforts: []*EffortInfo{{Id: "low", Name: "Low"}, {Id: "high", Name: "High"}},
-	}
-	c := orig.clone()
-	c.SupportedEfforts[0].Name = "MUTATED"
-	c.SupportedEfforts = append(c.SupportedEfforts, &EffortInfo{Id: "max"})
-
-	assert.Equal(t, "Low", orig.SupportedEfforts[0].Name, "the original effort element must be untouched")
-	assert.Len(t, orig.SupportedEfforts, 2, "the original effort slice length must be untouched")
-}
-
 // TestReadOnlyModelAndEffortGroups verifies the hidden-UI read-only projection: the model
 // group surfaces the HUMANIZED display name (not the raw id) while keeping the raw id as
 // the option value, the groups are non-mutable, and a concrete effort is surfaced while an

@@ -399,8 +399,7 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		Position: "a", TileID: "tile-1",
 	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		ID: id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID,
-		WorkspaceID: workspaceID, IssuedForTabID: tabID,
+		ID: id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID, IssuedForTabID: tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       []byte("hash"), ExpiresAt: time.Now().Add(time.Hour),
 	}))

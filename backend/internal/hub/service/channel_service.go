@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -27,6 +26,27 @@ type ChannelService struct {
 	pending         *workermgr.PendingRequests
 	authFreshness   AuthFreshnessChecker
 	closeDispatcher *workerCloseDispatcher
+}
+
+// workerUnreachableMetaKey marks a CodeUnavailable as the Hub's own verdict about
+// a specific WORKER, as opposed to the many transport-shaped Unavailables a client
+// also sees (an edge 503, a proxy hiccup, the Hub restarting).
+//
+// The distinction is load-bearing on the client: an offline close skips the
+// uncommitted-work dialog and commits a tombstone, so it must fire on a positive
+// "this worker is offline" and not on "something between us broke". Both arrive as
+// CodeUnavailable from the same RPC, so the client cannot tell them apart from the
+// code alone -- hence an explicit header rather than a guess about which
+// Unavailables carry response metadata. See isWorkerUnreachable in
+// frontend/src/api/workerErrors.ts, which reads it.
+const workerUnreachableMetaKey = "leapmux-worker-unreachable"
+
+// errWorkerUnreachable builds the Hub's worker-offline verdict, tagged so a client
+// may trust it as a statement about the worker.
+func errWorkerUnreachable(err error) error {
+	cErr := connect.NewError(connect.CodeUnavailable, err)
+	cErr.Meta().Set(workerUnreachableMetaKey, "1")
+	return cErr
 }
 
 func (s *ChannelService) enqueueChannelCloses(closed []channelmgr.ClosedChannel) {
@@ -113,37 +133,6 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 	}), nil
 }
 
-// accessibleWorkspaceIDs resolves the workspace-id set announced to the target
-// worker on channel open. Sessions and API tokens get every workspace the user
-// owns. A delegation bearer is re-verified against
-// current ownership and pinned to its single mint-scope workspace so a stolen
-// token cannot pivot the channel beyond that scope.
-func (s *ChannelService) accessibleWorkspaceIDs(ctx context.Context, user *auth.UserInfo) ([]string, error) {
-	if user.Credential.IsDelegation() {
-		// Re-verify the pin against current ownership so deleted / transferred
-		// workspaces are caught at channel open time.
-		hasAccess, err := auth.WorkspaceCanAccess(ctx, s.store, user.Credential.WorkspaceScopeID(), user.ID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify delegation scope: %w", err))
-		}
-		if !hasAccess {
-			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token scope is not accessible"))
-		}
-		return []string{user.Credential.WorkspaceScopeID()}, nil
-	}
-	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-		UserID: user.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accessible workspaces: %w", err))
-	}
-	ids := make([]string, len(workspaces))
-	for i, ws := range workspaces {
-		ids[i] = ws.ID
-	}
-	return ids, nil
-}
-
 func (s *ChannelService) OpenChannel(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.OpenChannelRequest],
@@ -188,11 +177,6 @@ func (s *ChannelService) OpenChannel(
 		return nil, err
 	}
 
-	// Build the accessible-workspace list announced to the target worker.
-	accessibleWSIDs, err := s.accessibleWorkspaceIDs(ctx, user)
-	if err != nil {
-		return nil, err
-	}
 	// Relay the handshake while holding the channel operation lock. Revocation
 	// teardown waits for this attempt, guaranteeing its close cannot reach the
 	// worker before a later open for the same channel. Echo validation and
@@ -215,11 +199,10 @@ func (s *ChannelService) OpenChannel(
 			resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
 					ChannelOpen: &leapmuxv1.ChannelOpenRequest{
-						ChannelId:              channelID,
-						UserId:                 user.ID.String(),
-						HandshakePayload:       req.Msg.GetHandshakePayload(),
-						AccessibleWorkspaceIds: accessibleWSIDs,
-						MaxMessageSize:         uint64(s.channelMgr.MaxMessageSize()),
+						ChannelId:        channelID,
+						UserId:           user.ID.String(),
+						HandshakePayload: req.Msg.GetHandshakePayload(),
+						MaxMessageSize:   uint64(s.channelMgr.MaxMessageSize()),
 					},
 				},
 			})
@@ -273,7 +256,7 @@ func (s *ChannelService) OpenChannel(
 		if connect.CodeOf(err) == connect.CodeUnauthenticated {
 			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker handshake failed: %w", err))
+		return nil, errWorkerUnreachable(fmt.Errorf("worker handshake failed: %w", err))
 	}
 	if openReject != nil {
 		return nil, openReject
@@ -385,92 +368,6 @@ func (s *ChannelService) CloseChannel(
 	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
 }
 
-func (s *ChannelService) PrepareWorkspaceAccess(
-	ctx context.Context,
-	req *connect.Request[leapmuxv1.PrepareWorkspaceAccessRequest],
-) (*connect.Response[leapmuxv1.PrepareWorkspaceAccessResponse], error) {
-	user, err := s.requireCurrentAuth(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	workerID := req.Msg.GetWorkerId()
-	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
-	}
-	workspaceID := req.Msg.GetWorkspaceId()
-	if workspaceID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workspace_id is required"))
-	}
-
-	// A delegation-token caller is pinned to a single workspace by
-	// design; refusing widening here keeps PrepareWorkspaceAccess from
-	// becoming a back door around the OpenChannel narrowing.
-	if delegationWorkspaceMismatch(user, workspaceID) {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot prepare access to a different workspace"))
-	}
-
-	// Workspace must exist AND the user must be its owner. Shares the read
-	// handlers' load-and-authorize core (owner-only, NotFound for a missing id
-	// vs PermissionDenied for no access) so the two paths cannot drift on what
-	// a non-owner sees. The delegation-scope guard above is kept separate
-	// because prepare-access deliberately answers a scoped-bearer mismatch
-	// with PermissionDenied, not the read loader's NotFound.
-	if _, err := loadOwnedWorkspaceOr403(ctx, s.store, workspaceID, user.ID, "no access to workspace"); err != nil {
-		return nil, err
-	}
-
-	// The workspace guards above bound WHICH workspace this call may name; they say
-	// nothing about WHICH worker. requireOnlineWorker asks the one question this
-	// package has for that -- the same one OpenChannel and GetWorkerHandshakeParams
-	// ask -- and only reaches the worker registry once it holds: prepare-access only
-	// ever updates the caller's OWN channels on that worker, which it could not have
-	// opened without passing the identical check.
-	conn, err := s.requireOnlineWorker(ctx, user, workerID)
-	if err != nil {
-		return nil, err
-	}
-	channelIDs := s.channelMgr.AuthorizedChannelIDsForUserWorker(user.ID.String(), workerID, channelWorkspaceUpdateAuthorized(user.Credential, workspaceID))
-
-	// Send a ChannelAccessUpdate to each matching channel and wait for
-	// the worker to ack before returning. Without the ack the caller
-	// races the worker's AddAccessibleWorkspaceID handler — the next
-	// inner RPC on the channel (e.g. OpenAgent / ListAgents) can arrive
-	// first and fail the worker-side requireAccessibleWorkspace check.
-	//
-	// Fan out across channels with a bounded errgroup so a user with
-	// many open agents on the same worker doesn't pay N×RTT serial
-	// latency. The worker already serializes writes on the underlying
-	// conn; pipelining only the waits is the win.
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
-	for _, chID := range channelIDs {
-		chID := chID
-		g.Go(func() error {
-			resp, err := s.pending.SendAndWait(gctx, conn, &leapmuxv1.ConnectResponse{
-				Payload: &leapmuxv1.ConnectResponse_ChannelAccessUpdate{
-					ChannelAccessUpdate: &leapmuxv1.ChannelAccessUpdate{
-						ChannelId:   chID,
-						WorkspaceId: workspaceID,
-					},
-				},
-			})
-			if err != nil {
-				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("failed to update worker: %w", err))
-			}
-			if resp.GetChannelAccessUpdateAck() == nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response from worker for channel access update"))
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return nil, err
-	}
-
-	return connect.NewResponse(&leapmuxv1.PrepareWorkspaceAccessResponse{}), nil
-}
-
 // CloseChannelsByBearer force-closes every open channel that was
 // authenticated by the given bearer token id. Used by per-token
 // revocation paths (`/worker/delegation-tokens/revoke`,
@@ -488,13 +385,6 @@ func (s *ChannelService) CloseChannelsByBearer(ref auth.BearerRef) int {
 
 func (s *ChannelService) CloseChannelsBySession(sessionID string) int {
 	return s.finishChannelClose(s.channelMgr.CloseBySession(sessionID))
-}
-
-func (s *ChannelService) CloseChannelsByUsersForWorkspace(workspaceID string, userIDs []string) int {
-	if workspaceID == "" {
-		return 0
-	}
-	return s.finishChannelClose(s.channelMgr.CloseByUsers(userIDs, channelClosedByWorkspaceRemoval(workspaceID)))
 }
 
 // CloseChannelsByUserRevocation force-closes channels owned by userID whose
@@ -569,7 +459,7 @@ func (s *ChannelService) requireOnlineWorker(ctx context.Context, user *auth.Use
 		return nil, err
 	}
 	if conn == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+		return nil, errWorkerUnreachable(errors.New("worker is offline"))
 	}
 	return conn, nil
 }

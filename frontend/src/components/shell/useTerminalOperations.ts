@@ -43,16 +43,13 @@ export interface UseTerminalOperationsProps {
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // Populates the tab-bar's "new terminal" dropdown. The hook re-fetches
-  // on workerId change and skips while the source returns null (no
-  // active workspace yet, or worker still resolving).
+  // on workerId change and skips while the source returns null (worker
+  // still resolving).
   const { shells: availableShells, defaultShell } = useAvailableShells(() => {
-    const ws = props.activeWorkspace()
-    if (!ws)
-      return null
     const ctx = props.getCurrentTabContext()
     if (!ctx.workerId)
       return null
-    return { workspaceId: ws.id, workerId: ctx.workerId }
+    return { workerId: ctx.workerId }
   })
   // Dedup concurrent restartTerminal RPCs. Held Enter (autorepeat) would
   // otherwise fire one RPC per keystroke, and the backend rejects every
@@ -90,7 +87,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     args.setLoading(true)
     try {
       const resp = await workerRpc.openTerminal(ctx.workerId, {
-        workspaceId: ws.id,
         cols: DEFAULT_TERMINAL_COLS,
         rows: DEFAULT_TERMINAL_ROWS,
         workingDir: ctx.workingDir,
@@ -140,14 +136,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     openTerminalCore({ shell, setLoading: props.setNewShellLoading })
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
-    const ws = props.activeWorkspace()
     const tab = props.view.getTerminalTab(terminalId)
-    if (!ws || !tab)
+    if (!tab)
       return
 
     if (tab.status === TerminalStatus.READY) {
       try {
-        await workerRpc.sendInput(tab.workerId ?? '', { workspaceId: ws.id, terminalId, data })
+        await workerRpc.sendInput(tab.workerId ?? '', { terminalId, data })
       }
       catch {
         // ignore input errors
@@ -165,7 +160,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       try {
         await restartInflight.run(terminalId, async () => {
           await workerRpc.restartTerminal(tab.workerId ?? '', {
-            workspaceId: ws.id,
             terminalId,
             cols: tab.cols ?? DEFAULT_TERMINAL_COLS,
             rows: tab.rows ?? DEFAULT_TERMINAL_ROWS,
@@ -187,12 +181,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const titleLastSent = new Map<string, number>()
 
   const sendTitleToBackend = (terminalId: string, title: string) => {
-    const ws = props.activeWorkspace()
-    if (!ws)
-      return
     const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
     workerRpc.updateTerminalTitle(workerId, {
-      workspaceId: ws.id,
       terminalId,
       title,
     }).catch(() => {})
@@ -235,9 +225,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
   const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
     try {
-      const ws = props.activeWorkspace()
       const tab = props.view.getTerminalTab(terminalId)
-      if (!ws || !tab)
+      if (!tab)
         return
       // Mirror the live xterm dims into the tab so a later
       // RestartTerminal sends the user's actual window size, not the
@@ -257,7 +246,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         || tab.status === TerminalStatus.STARTUP_FAILED) {
         return
       }
-      await workerRpc.resizeTerminal(tab.workerId ?? '', { workspaceId: ws.id, terminalId, cols, rows })
+      await workerRpc.resizeTerminal(tab.workerId ?? '', { terminalId, cols, rows })
     }
     catch {
       // ignore resize errors
@@ -271,8 +260,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // failure surfaced via toast.
   const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
     const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
-    const ws = props.activeWorkspace()
-
     // Release the xterm instance (WebGL context, listeners) BEFORE the tab
     // disappears. TerminalView's per-view ownership tracking only releases
     // ids on unmount — explicit close must dispose here so we don't leak
@@ -293,10 +280,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
     // `emitRemoveTab` above emitted the TombstoneTab op via the CRDT
     // bridge; the hub broadcasts it to peer clients via /ws/userevents.
-    if (!workerId || !ws) {
-      // Local tab is gone, but with no worker/workspace the close RPC
-      // can't fire — a REMOVE therefore can't reach the worktree. Surface
-      // it instead of letting the caller assume removal happened.
+    if (!workerId) {
+      // Local tab is gone, but with no worker the close RPC can't fire — a
+      // REMOVE therefore can't reach the worktree. Surface it instead of
+      // letting the caller assume removal happened.
       warnWorktreeUnreachable(worktreeAction)
       return Promise.resolve(undefined)
     }
@@ -306,7 +293,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     // worktree outcome.
     return awaitCloseResult(
       workerRpc.closeTerminal(workerId, {
-        workspaceId: ws.id,
         terminalId,
         worktreeAction,
       }),

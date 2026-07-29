@@ -26,6 +26,7 @@ import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSection
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
+import { isWorkerKnownOnline } from '~/lib/workerLiveness'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -152,6 +153,7 @@ export function buildSectionDef(
           onTabClick={ctx.onTabClick ?? (() => {})}
           tabItemOps={ctx.tabItemOps}
           workerInfoFn={ctx.workerInfoFn}
+          isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
           onChangeBranch={ctx.onChangeBranch}
           onDeleteBranch={ctx.onDeleteBranch}
         />

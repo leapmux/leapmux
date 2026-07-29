@@ -734,35 +734,6 @@ func TestExpandSubscribersForWorkspace_PropagatesLookupError(t *testing.T) {
 	assert.False(t, sub.Filter.IsAllowed("w1"), "filter must not widen when the ACL lookup failed")
 }
 
-func TestExpandSubscribersForWorkspace_RespectsImmutableWorkspaceScope(t *testing.T) {
-	j := newFakeJournal()
-	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, time.Now)
-	require.NoError(t, mgr.Bootstrap(context.Background()))
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = mgr.Start(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		mgr.Stop()
-	})
-
-	sub := &crdt.Subscriber{
-		UserID:           "delegated-user",
-		WorkspaceScopeID: "w1",
-		Filter:           crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}},
-		Send:             (&captureSubscriber{}).send,
-	}
-	_, unsub := mgr.Subscribe(sub)
-	defer unsub()
-
-	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w2"))
-	assert.False(t, sub.Filter.IsAllowed("w2"),
-		"a scoped subscriber must not widen to a sibling workspace even when its user can read it")
-
-	require.NoError(t, mgr.ExpandSubscribersForWorkspace(context.Background(), "w1"))
-	assert.True(t, sub.Filter.IsAllowed("w1"),
-		"the immutable scope must still permit expansion to the pinned workspace")
-}
-
 // TestLifecycleDelete_TombstonesAllLeftoverContent ensures that
 // deleting a workspace tombstones every live node/tab/floating window
 // in its subtree, so subsequent workspaces aren't blocked by Rule 15

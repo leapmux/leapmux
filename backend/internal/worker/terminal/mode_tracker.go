@@ -301,6 +301,8 @@ func (t *modeTracker) snapshotPrefix() []byte {
 		out = append(out, "\x1b[?2004h"...)
 	}
 	switch t.mouseTrack {
+	case mouseTrackOff:
+		// Off is the terminal default, so there is no DECSET to replay.
 	case mouseTrackX10:
 		out = append(out, "\x1b[?1000h"...)
 	case mouseTrackBtnEvent:
@@ -309,6 +311,8 @@ func (t *modeTracker) snapshotPrefix() []byte {
 		out = append(out, "\x1b[?1003h"...)
 	}
 	switch t.mouseEncoding {
+	case mouseEncOff:
+		// Default encoding needs no DECSET; X10-style reports are implied.
 	case mouseEncSGR:
 		out = append(out, "\x1b[?1006h"...)
 	case mouseEncURXVT:

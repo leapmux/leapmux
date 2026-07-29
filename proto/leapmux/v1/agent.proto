@@ -87,15 +87,16 @@ enum ContentCompression {
 // --- Agent CRUD ---
 
 message OpenAgentRequest {
-  // Target: where the agent runs.
-  string workspace_id = 1;
-  string worker_id = 2;         // Target worker (required)
-  string working_dir = 3;       // Working directory on the worker (required)
+  // Target: where the agent runs. No workspace_id -- a Worker stores none, and
+  // which workspace the tab lands in is decided by the CRDT tile the client
+  // places it on.
+  string worker_id = 1;         // Target worker (required)
+  string working_dir = 2;       // Working directory on the worker (required)
 
   // Agent configuration.
-  AgentProvider agent_provider = 4; // Coding agent provider (default: CLAUDE_CODE)
-  string title = 5;
-  string agent_session_id = 6;  // If set, resume from this session ID
+  AgentProvider agent_provider = 3; // Coding agent provider (default: CLAUDE_CODE)
+  string title = 4;
+  string agent_session_id = 5;  // If set, resume from this session ID
   // Initial option selections keyed by option-group id (e.g. "model", "effort",
   // "permissionMode", and provider-specific axes). Missing well-known ids are
   // filled with provider defaults server-side.
@@ -152,16 +153,16 @@ message RenameAgentRequest {
 message RenameAgentResponse {}
 
 message AgentInfo {
-  // Identity.
+  // Identity. No workspace_id: the Worker does not know which workspace hosts
+  // the tab -- the CRDT projection does, from the tab's tile.
   string id = 1;
-  string workspace_id = 2;
-  string title = 3;
+  string title = 2;
 
   // Worker / location.
-  string worker_id = 4;         // Worker this agent runs on
-  string worker_name = 5;       // Human-readable worker name
-  string working_dir = 6;       // Working directory on the worker
-  string home_dir = 7;          // Worker's home directory for tilde path display
+  string worker_id = 3;         // Worker this agent runs on
+  string worker_name = 4;       // Human-readable worker name
+  string working_dir = 5;       // Working directory on the worker
+  string home_dir = 6;          // Worker's home directory for tilde path display
 
   // Agent configuration.
   AgentProvider agent_provider = 8; // Coding agent provider

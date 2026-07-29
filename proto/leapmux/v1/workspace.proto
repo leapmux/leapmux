@@ -95,10 +95,25 @@ message DeleteWorkspaceRequest {
 }
 
 message DeleteWorkspaceResponse {
-  // Workers that hosted tabs at delete time. The frontend calls each
-  // for cleanup. Sourced from UserCrdtState.tabs (in-memory) so even
-  // tabs hidden by projection-repair are included.
-  repeated string worker_ids = 1;
+  // Workers that hosted tabs at delete time, and the tabs each one must tear
+  // down. Read from the workspace_tab_owned TABLE inside the delete transaction, so the
+  // worker set and the per-worker tab list are one atomic snapshot of the
+  // authoritative projection -- including tabs hidden by projection-repair.
+  //
+  // The Worker stores no workspace id, so a cleanup call has to name its tabs
+  // explicitly. Returning them here rather than making each caller resolve its
+  // own list is what removes three failure modes: a tab a peer opened between
+  // the caller's read and the delete, a read whose error degraded to "close
+  // nothing", and the fact that both callers read workspace_tab_rendered -- a
+  // strict SUBSET of the owned projection -- so a projection-hidden tab was
+  // structurally unreachable rather than merely reclaimed late.
+  repeated WorkerTabs worker_tabs = 1;
+}
+
+// WorkerTabs groups one worker's tabs for a fan-out.
+message WorkerTabs {
+  string worker_id = 1;
+  repeated TabRef tabs = 2;
 }
 
 // --- Workspace Tabs (read-only views; mutations via UserCRDT) ---
@@ -138,29 +153,35 @@ enum SplitDirection {
 
 // --- Worker Inner RPCs ---
 
+// TabRef names one tab by type and id -- the pair that identifies a tab
+// wherever the workspace is not part of the address. A Worker stores no
+// workspace id, so this is the only tab address it understands.
+message TabRef {
+  TabType tab_type = 1;
+  string tab_id = 2;
+}
+
+// CleanupWorkspaceRequest names the tabs a just-deleted workspace held on
+// the receiving Worker, so it can stop their processes and release their
+// worktrees.
+//
+// The Worker cannot derive the set itself: it tracks no workspace id. The set
+// comes from DeleteWorkspaceResponse.worker_tabs, which the Hub reads INSIDE the
+// delete transaction -- see the note there for why a caller must not resolve its
+// own list from workspace_tab_rendered instead. The Worker's orphan reconciler
+// still converges anything left over against workspace_tab_owned on its next
+// pass, so a dropped RPC costs latency rather than correctness.
 message CleanupWorkspaceRequest {
-  string workspace_id = 1;
+  repeated TabRef tabs = 1;
 }
 
 message CleanupWorkspaceResponse {
-  repeated WorktreeInfo worktrees = 1;
+  // Deliberately empty. It carried a repeated WorktreeInfo that no worker ever
+  // populated -- handleCleanupWorkspace returns a zero-value response -- while
+  // the CLI read it and emitted a `worktrees` key that could never appear.
+  // Worktree reclamation happens through the orphan reconciler, which reports
+  // nothing back on this call.
 }
-
-message WorktreeInfo {
-  string worktree_id = 1;
-  string worktree_path = 2;
-  string branch_name = 3;
-}
-
-// --- Tab Workspace Move (Worker Inner RPC) ---
-
-message MoveTabWorkspaceRequest {
-  TabType tab_type = 1;
-  string tab_id = 2;
-  string new_workspace_id = 3;
-}
-
-message MoveTabWorkspaceResponse {}
 
 // --- Event Streaming (per-agent / per-terminal) ---
 

@@ -823,7 +823,6 @@ func seedDelegationToken(t *testing.T, st store.Store, userID string) string {
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,
-		WorkspaceID:      wsID,
 		IssuedForTabID:   tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       []byte("hash"),

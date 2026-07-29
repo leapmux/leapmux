@@ -229,7 +229,7 @@ leapmux remote whoami          # who am I, where am I?
 leapmux remote version --hub https://leapmux.example.com
 ```
 
-- `whoami` from inside an agent/terminal returns `{user_id, username, workspace_id, worker_id, tab_id, tab_type, scope}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username}`.
+- `whoami` from inside an agent/terminal returns `{user_id, username, worker_id, tab_id, tab_type}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username}`.
 - `version` always emits the CLI's `{cli:{version, commit, branch, build_time, formatted}}`; when `--hub` is set it also probes the Hub's unauthenticated version endpoint and adds `hub:{...}` (or a non-fatal `hub_error`).
 
 ## Workspace commands
@@ -601,8 +601,8 @@ leapmux remote layout set --workspace-id "$WS" --file before.json
 The two transports carry different credentials and trust boundaries:
 
 - **External CLI.** Each Hub credential is a single bearer token (an `api_tokens` row, stored only as a peppered HMAC-SHA256 hash). End-to-end channels to Workers use the same Noise_NK handshake the browser uses, with each Worker's static key pinned per-hub on first use (see [Worker TOFU pins](#worker-tofu-pins)).
-- **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and workspace. When the agent or terminal closes, the socket is torn down and the token is invalidated.
-- **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token scoped to your `(user, workspace)`. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
+- **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. When the agent or terminal closes, the socket is torn down and the token is invalidated.
+- **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
 
 For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/operating/security/).
 

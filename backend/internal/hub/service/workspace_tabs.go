@@ -114,28 +114,15 @@ func (s *WorkspaceService) LocateTab(
 	if req.Msg.GetTabId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tab_id is required"))
 	}
-	var row *store.WorkspaceTabRow
-	if user.Credential.IsDelegation() {
-		if _, err := readWorkspaceOrNotFound(ctx, s.store, user.Credential.WorkspaceScopeID(), user,
-			connect.NewError(connect.CodeNotFound, fmt.Errorf("tab not found in any accessible workspace"))); err != nil {
-			return nil, err
-		}
-		// Same owner argument as GetTab: the loadWorkspaceForRead above is an
-		// owner-only check against user.ID, so a delegation bearer that reaches
-		// here IS the workspace owner and its rendered rows carry that id.
-		row, err = s.store.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID:      user.ID,
-			WorkspaceID: user.Credential.WorkspaceScopeID(),
-			TabType:     req.Msg.GetTabType(),
-			TabID:       req.Msg.GetTabId(),
-		})
-	} else {
-		row, err = s.store.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
-			UserID:  user.ID,
-			TabType: req.Msg.GetTabType(),
-			TabID:   req.Msg.GetTabId(),
-		})
-	}
+	// One lookup for every credential kind. A delegation bearer used to take a
+	// separate arm that pinned the search to its mint-scope workspace; with the
+	// workspace axis gone it is scoped exactly like a session -- to the tabs its
+	// user owns -- so the search is the same search.
+	row, err := s.store.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+		UserID:  user.ID,
+		TabType: req.Msg.GetTabType(),
+		TabID:   req.Msg.GetTabId(),
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("tab not found in any accessible workspace"))
@@ -149,15 +136,15 @@ func (s *WorkspaceService) LocateTab(
 
 // LocateTile resolves a tile_id to its workspace_id by walking the
 // in-memory CRDT state of the caller's user tenancy. After the walk
-// identifies the owning workspace, we re-verify access via
-// loadWorkspaceForRead so a delegated bearer can't discover siblings
-// outside its delegation scope and a non-owner can't resolve a tile in
-// a workspace whose grant was revoked. Returns NotFound when the tile
-// isn't visible to the caller.
+// identifies the owning workspace, we re-verify it via loadWorkspaceForRead so a
+// caller cannot resolve a tile in a workspace it does not own. Returns NotFound
+// when the tile isn't visible to the caller.
 //
-// The CRDT registry is keyed by user id, so LocateTile resolves against
-// exactly one UserCRDT manager: the caller's own (or, for a delegation
-// bearer, the workspace owner's, after verifying the pinned scope).
+// There is no delegation-scope arm any more: a delegation bearer authenticates AS
+// its owner and carries no workspace bound, so it reaches every workspace that
+// owner has -- see the note on LocateTab, and `docs/operating/security.md` for
+// what that bound now is. The CRDT registry is keyed by user id, so this always
+// resolves against exactly one UserCRDT manager: the authenticated user's own.
 //
 // The CLI's universal resolver uses this when a script only knows a tile id (e.g.,
 // from an event stream's `layout_changed` notice) and needs the workspace context
@@ -177,11 +164,6 @@ func (s *WorkspaceService) LocateTile(
 	if s.registry == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("crdt registry not configured"))
 	}
-	if err := s.verifyDelegationScope(ctx, user); err != nil {
-		return nil, err
-	}
-	// The caller's own id: see verifyDelegationScope for why a delegation
-	// bearer's tenancy is provably the same one.
 	userID := user.ID.String()
 	notFound := connect.NewError(connect.CodeNotFound, fmt.Errorf("tile not found in any accessible workspace"))
 	mgr, err := s.registry.Get(ctx, userID)
@@ -198,42 +180,15 @@ func (s *WorkspaceService) LocateTile(
 	if workspaceID == "" {
 		return nil, notFound
 	}
-	// Found the owning workspace. Verify the caller can read it
-	// (loadWorkspaceForRead also enforces the delegation scope); collapse
-	// Denied / NotFound to NotFound so we don't leak existence to a non-owner
-	// whose grant was revoked or a delegation bearer probing outside its scope.
+	// Found the owning workspace. Verify the caller can read it; collapse
+	// Denied / NotFound to NotFound so we don't leak existence to a caller
+	// whose ownership has since changed.
 	if _, err := readWorkspaceOrNotFound(ctx, s.store, workspaceID, user, notFound); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&leapmuxv1.LocateTileResponse{
 		WorkspaceId: workspaceID,
 	}), nil
-}
-
-// verifyDelegationScope checks, for a delegation bearer, that the workspace its
-// token is pinned to is still readable -- collapsing a denied or missing scope
-// to NotFound so a revoked or out-of-scope token cannot probe for existence.
-// A regular caller has nothing to verify here.
-//
-// It deliberately returns NO tenancy key. It used to, and the two arms looked
-// like a real choice: the delegation arm returned ws.OwnerUserID, the other
-// user.ID. They are provably the same value -- loadWorkspaceForRead is
-// owner-only against user.ID (loadOwnedWorkspaceOr403 -> auth.IsOwner), so a
-// bearer that gets past it IS the owner. Returning the loaded row's owner
-// advertised a cross-tenant lookup that owner-only access makes unreachable,
-// which is exactly the kind of dead discrimination a reader has to disprove
-// before trusting the call site.
-//
-// There is also deliberately no candidate LIST: workspace access is owner-only,
-// so a tile the caller may resolve can only live in one tenancy, and a miss
-// there is authoritative rather than a reason to keep scanning.
-func (s *WorkspaceService) verifyDelegationScope(ctx context.Context, user *auth.UserInfo) error {
-	if !user.Credential.IsDelegation() {
-		return nil
-	}
-	_, err := readWorkspaceOrNotFound(ctx, s.store, user.Credential.WorkspaceScopeID(), user,
-		connect.NewError(connect.CodeNotFound, fmt.Errorf("tile not found in any accessible workspace")))
-	return err
 }
 
 func workspaceTabToProto(row *store.WorkspaceTabRow) *leapmuxv1.WorkspaceTab {

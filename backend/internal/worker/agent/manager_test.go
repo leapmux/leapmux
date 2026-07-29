@@ -731,14 +731,27 @@ func TestManager_AvailableModelsFallsBackToCursorDefaults(t *testing.T) {
 	assert.Equal(t, "auto", modelGroup.GetDefaultValue())
 }
 
-// TestWithDefaultModelMarked_PreservesACPCurrentModel verifies that for a
-// provider with no configured default (registered with nil defaultModels, like
-// the ACP providers that self-mark the currently-selected model in
-// buildACPModels), withDefaultModelMarked leaves the per-agent IsDefault badge in
-// place instead of promoting the first entry. Regression guard: defaultModelForList
-// must return "" rather than falling through to "mark the first entry" when there
-// is no configured default to anchor on.
-func TestWithDefaultModelMarked_PreservesACPCurrentModel(t *testing.T) {
+// derivedModelDefault runs a model catalog through the live default-badge path --
+// modelOptionGroup's projection into the "model" option group, then
+// withModelGroupDefaultMarked's re-derivation of that group's DefaultValue via the
+// defaultModelIDForList ladder -- and returns the id the ladder badges. This is the
+// path OptionGroups takes on every read, so the ladder tests below exercise the
+// production entry point rather than a test-only adapter.
+func derivedModelDefault(t *testing.T, models []*ModelInfo, provider leapmuxv1.AgentProvider) string {
+	t.Helper()
+	group := modelOptionGroup(models, "", nil)
+	require.NotNil(t, group, "precondition: the catalog projects to a model group")
+	got := withModelGroupDefaultMarked([]*leapmuxv1.AvailableOptionGroup{group}, provider)
+	return optionids.GroupByID(got, OptionIDModel).GetDefaultValue()
+}
+
+// TestModelGroupDefault_PreservesACPCurrentModel verifies that for a provider with
+// no configured default (registered with nil defaultModels, like the ACP providers
+// that self-mark the currently-selected model in buildACPModels), the ladder leaves
+// the per-agent default in place instead of promoting the first entry. Regression
+// guard: defaultModelIDForList must return "" rather than falling through to "mark
+// the first entry" when there is no configured default to anchor on.
+func TestModelGroupDefault_PreservesACPCurrentModel(t *testing.T) {
 	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	opencode := leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE
 	require.Empty(t, DefaultModel(opencode), "precondition: opencode has no configured default")
@@ -750,18 +763,40 @@ func TestWithDefaultModelMarked_PreservesACPCurrentModel(t *testing.T) {
 		{Id: "xai/grok-z", DisplayName: "Grok Z"},
 	}
 
-	got := withDefaultModelMarked(models, opencode)
-	require.Len(t, got, 3)
-	assert.False(t, got[0].IsDefault, "first entry must not be promoted")
-	assert.True(t, got[1].IsDefault, "current model keeps its badge")
-	assert.False(t, got[2].IsDefault)
+	assert.Equal(t, "openai/gpt-y", derivedModelDefault(t, models, opencode),
+		"the current model keeps the badge; the first entry must not be promoted")
 
 	// An operator override still wins and moves the badge to the override target.
 	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "xai/grok-z")
-	got = withDefaultModelMarked(models, opencode)
-	require.Len(t, got, 3)
-	assert.False(t, got[1].IsDefault, "override clears the per-agent badge")
-	assert.True(t, got[2].IsDefault, "override target is marked")
+	assert.Equal(t, "xai/grok-z", derivedModelDefault(t, models, opencode),
+		"the override clears the per-agent badge and marks its target")
+}
+
+// TestModelGroupDefault_ToleratesNilAndHiddenEntries covers the reduction
+// withModelGroupDefaultMarked performs on a catalog carrying nil and hidden
+// entries: modelOptionGroup drops them, so "the highest-preference entry present"
+// is the first VISIBLE model, and a nil-bearing catalog must not panic.
+func TestModelGroupDefault_ToleratesNilAndHiddenEntries(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "")
+	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	require.NotEmpty(t, DefaultModel(codex), "precondition: codex has a configured default")
+
+	// No entry designates a default and the configured default is absent, so the
+	// ladder falls back to the first entry the group actually carries.
+	assert.Equal(t, "visible-a", derivedModelDefault(t, []*ModelInfo{
+		nil,
+		{Id: "hidden-one", Hidden: true},
+		{Id: "visible-a"},
+		nil,
+		{Id: "visible-b"},
+	}, codex), "nil and hidden entries are skipped when picking the fallback")
+
+	// A designated default deeper in the list still wins over that fallback.
+	assert.Equal(t, "visible-b", derivedModelDefault(t, []*ModelInfo{
+		nil,
+		{Id: "visible-a"},
+		{Id: "visible-b", IsDefault: true},
+	}, codex), "the designated default outranks the first-entry fallback")
 }
 
 // TestWithDefaultModelMarked_SentinelIsClaudeOnly verifies the DefaultModelSentinel
@@ -769,7 +804,7 @@ func TestWithDefaultModelMarked_PreservesACPCurrentModel(t *testing.T) {
 // live list happens to contain a model literally id'd "default" must NOT have its
 // self-marked current-model badge hijacked onto that entry -- the sentinel is a
 // Claude-Code concept, so for other providers "default" is just another model id.
-func TestWithDefaultModelMarked_SentinelIsClaudeOnly(t *testing.T) {
+func TestModelGroupDefault_SentinelIsClaudeOnly(t *testing.T) {
 	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "")
 	opencode := leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE
@@ -781,28 +816,24 @@ func TestWithDefaultModelMarked_SentinelIsClaudeOnly(t *testing.T) {
 		{Id: "default", DisplayName: "Some Local Default Model"},
 		{Id: "openai/gpt-y", DisplayName: "GPT Y", IsDefault: true},
 	}
-	got := withDefaultModelMarked(models, opencode)
-	require.Len(t, got, 2)
-	assert.False(t, got[0].IsDefault, "non-Claude 'default'-id model is not treated as the sentinel")
-	assert.True(t, got[1].IsDefault, "the ACP self-marked current model keeps its badge")
+	assert.Equal(t, "openai/gpt-y", derivedModelDefault(t, models, opencode),
+		"a non-Claude 'default'-id model is not the sentinel; the self-marked current model keeps the badge")
 
 	// Same list under Claude Code: the sentinel rule DOES apply, so the "default"
 	// entry is badged.
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-	got = withDefaultModelMarked(models, claude)
-	require.Len(t, got, 2)
-	assert.True(t, got[0].IsDefault, "Claude Code badges the 'default' sentinel entry")
-	assert.False(t, got[1].IsDefault)
+	assert.Equal(t, DefaultModelSentinel, derivedModelDefault(t, models, claude),
+		"Claude Code badges the 'default' sentinel entry")
 }
 
-// TestWithDefaultModelMarked_PreservesProviderDefaultWhenConfiguredAbsent verifies
-// that for a provider WITH a configured default (e.g. Codex), when that configured
-// default is absent from an account-specific list, withDefaultModelMarked respects
-// a default the provider already designated on the list itself (Codex's
-// queryAvailableModels copies the CLI's isDefault) rather than promoting the first
-// entry. Regression guard: the step-3 fallback must not move the badge off the
-// model the CLI marked just because the registry default isn't offered.
-func TestWithDefaultModelMarked_PreservesProviderDefaultWhenConfiguredAbsent(t *testing.T) {
+// TestModelGroupDefault_PreservesProviderDefaultWhenConfiguredAbsent verifies that
+// for a provider WITH a configured default (e.g. Codex), when that configured
+// default is absent from an account-specific list, the ladder respects a default the
+// provider already designated on the list itself (Codex's queryAvailableModels
+// copies the CLI's isDefault) rather than promoting the first entry. Regression
+// guard: the step-3 fallback must not move the badge off the model the CLI marked
+// just because the registry default isn't offered.
+func TestModelGroupDefault_PreservesProviderDefaultWhenConfiguredAbsent(t *testing.T) {
 	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	configured := DefaultModel(codex)
@@ -816,27 +847,23 @@ func TestWithDefaultModelMarked_PreservesProviderDefaultWhenConfiguredAbsent(t *
 	}
 	require.Nil(t, FindAvailableModel(models, configured), "precondition: configured default absent from list")
 
-	got := withDefaultModelMarked(models, codex)
-	require.Len(t, got, 2)
-	assert.False(t, got[0].IsDefault, "first entry must not be promoted over the CLI-marked default")
-	assert.True(t, got[1].IsDefault, "the provider-marked default keeps its badge")
+	assert.Equal(t, "codex-pro", derivedModelDefault(t, models, codex),
+		"the provider-marked default keeps its badge; the first entry must not be promoted")
 
 	// Sanity: with NO entry pre-marked, the badge still falls back to the first
 	// entry so the picker always shows a default.
 	unmarked := []*ModelInfo{{Id: "codex-mini"}, {Id: "codex-pro"}}
-	got = withDefaultModelMarked(unmarked, codex)
-	require.Len(t, got, 2)
-	assert.True(t, got[0].IsDefault, "no designated default -> first entry marked")
-	assert.False(t, got[1].IsDefault)
+	assert.Equal(t, "codex-mini", derivedModelDefault(t, unmarked, codex),
+		"no designated default -> first entry marked")
 }
 
-// TestWithDefaultModelMarked_EnvOverrideAbsentFallsThrough verifies that an operator
+// TestModelGroupDefault_EnvOverrideAbsentFallsThrough verifies that an operator
 // default-model override pointing at a model the (account-specific) list does not
 // contain -- or naming it with a different spelling than the catalog stores -- does
-// NOT strip every entry's badge. defaultModelForList honors the override only when it
-// resolves to a model in the list (by exact id or provider-normalized alias);
+// NOT leave the group badging nothing. defaultModelIDForList honors the override only
+// when it resolves to a model in the list (by exact id or provider-normalized alias);
 // otherwise it falls through the ladder so the picker still shows a default.
-func TestWithDefaultModelMarked_EnvOverrideAbsentFallsThrough(t *testing.T) {
+func TestModelGroupDefault_EnvOverrideAbsentFallsThrough(t *testing.T) {
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 
 	// A Claude list with the account-default sentinel present.
@@ -848,11 +875,8 @@ func TestWithDefaultModelMarked_EnvOverrideAbsentFallsThrough(t *testing.T) {
 	// Override names a model the account does not offer -> falls through to the
 	// sentinel (Claude's list-designated default); the badge is preserved.
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "opus[1m]")
-	got := withDefaultModelMarked(models, claude)
-	require.Len(t, got, 2)
-	assert.True(t, got[0].IsDefault, "absent override falls through to the sentinel")
-	assert.False(t, got[1].IsDefault)
-	require.NotEmpty(t, markedModelID(got), "some entry stays badged")
+	assert.Equal(t, DefaultModelSentinel, derivedModelDefault(t, models, claude),
+		"an absent override falls through to the sentinel rather than badging nothing")
 
 	// Override names a PRESENT model with a fully-qualified spelling: it resolves to
 	// the catalog's normalized alias and wins, moving the badge off the sentinel.
@@ -861,16 +885,14 @@ func TestWithDefaultModelMarked_EnvOverrideAbsentFallsThrough(t *testing.T) {
 		{Id: "opus[1m]", DisplayName: "Opus (1M context)"},
 	}
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "claude-opus-4-8[1m]")
-	got = withDefaultModelMarked(present, claude)
-	require.Len(t, got, 2)
-	assert.False(t, got[0].IsDefault, "override resolves to the present alias; sentinel loses the badge")
-	assert.True(t, got[1].IsDefault, "fully-qualified override matches the normalized opus[1m]")
+	assert.Equal(t, "opus[1m]", derivedModelDefault(t, present, claude),
+		"a fully-qualified override matches the normalized opus[1m] and takes the badge off the sentinel")
 }
 
 // TestWithModelGroupDefaultMarked_ReDerivesProtoModelGroupDefault is the [V26] guard for the
 // proto-shape default-marking path run on every OptionGroups read: it re-derives the model group's
-// DefaultValue via the SAME ladder as the ModelInfo path (defaultModelIDForList), without the
-// throwaway ModelInfo round-trip, and leaves non-model groups untouched by reference.
+// DefaultValue via the defaultModelIDForList ladder, straight off the group's own options, and
+// leaves non-model groups untouched by reference.
 func TestWithModelGroupDefaultMarked_ReDerivesProtoModelGroupDefault(t *testing.T) {
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	other := selectGroup("fastMode", "Fast Mode", OptionOrderProviderSecond, "off", []optDef{
@@ -907,11 +929,11 @@ func TestWithModelGroupDefaultMarked_ReDerivesProtoModelGroupDefault(t *testing.
 	assert.Same(t, correct[0], result[0], "an already-correct default returns the input unchanged, not a re-clone")
 }
 
-// TestWithDefaultModelMarked_ClaudeNoSentinelFallsBackToFirst covers the documented
-// Claude branch of defaultModelForList step 3: a Claude CLI reporting concrete models
-// but NO "default" sentinel (and no operator override) falls back to badging the first
-// model so the picker still shows a default.
-func TestWithDefaultModelMarked_ClaudeNoSentinelFallsBackToFirst(t *testing.T) {
+// TestModelGroupDefault_ClaudeNoSentinelFallsBackToFirst covers the documented
+// Claude branch of defaultModelIDForList step 3: a Claude CLI reporting concrete
+// models but NO "default" sentinel (and no operator override) falls back to badging
+// the first model so the picker still shows a default.
+func TestModelGroupDefault_ClaudeNoSentinelFallsBackToFirst(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "")
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	require.Equal(t, DefaultModelSentinel, DefaultModel(claude), "precondition: Claude's configured default is the sentinel")
@@ -922,30 +944,26 @@ func TestWithDefaultModelMarked_ClaudeNoSentinelFallsBackToFirst(t *testing.T) {
 	}
 	require.Nil(t, FindAvailableModel(models, DefaultModelSentinel), "precondition: no sentinel in the list")
 
-	got := withDefaultModelMarked(models, claude)
-	require.Len(t, got, 2)
-	assert.True(t, got[0].IsDefault, "no sentinel -> first concrete model badged")
-	assert.False(t, got[1].IsDefault)
+	assert.Equal(t, "opus", derivedModelDefault(t, models, claude),
+		"no sentinel -> first concrete model badged")
 }
 
-// TestFirstAndMarkedModelID verifies the small id-extraction helpers tolerate nil
-// entries and return the right id (or "").
-func TestFirstAndMarkedModelID(t *testing.T) {
-	models := []*ModelInfo{
-		nil,
-		{Id: "a"},
-		{Id: "b", IsDefault: true},
-		nil,
-		{Id: "c", IsDefault: true},
-	}
-	assert.Equal(t, "a", firstModelID(models), "first non-nil id, skipping nils")
-	assert.Equal(t, "b", markedModelID(models), "first IsDefault id")
+// TestModelGroupDefault_EmptyAndAllNilCatalogs covers the degenerate catalogs the
+// live path must survive: modelOptionGroup drops nil entries, so an all-nil (or
+// empty) catalog projects to NO model group at all, and withModelGroupDefaultMarked
+// must hand such a group set back untouched rather than deref a missing group.
+func TestModelGroupDefault_EmptyAndAllNilCatalogs(t *testing.T) {
+	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 
-	none := []*ModelInfo{nil, {Id: "x"}, {Id: "y"}}
-	assert.Equal(t, "", markedModelID(none), "no marked entry -> empty")
-	assert.Equal(t, "x", firstModelID(none))
+	assert.Nil(t, modelOptionGroup(nil, "", nil), "an empty catalog projects to no model group")
+	assert.Nil(t, modelOptionGroup([]*ModelInfo{nil, nil}, "", nil),
+		"an all-nil catalog projects to no model group, no panic")
 
-	assert.Equal(t, "", firstModelID([]*ModelInfo{nil, nil}), "all-nil -> empty, no panic")
-	assert.Equal(t, "", markedModelID(nil))
-	assert.Equal(t, "", firstModelID(nil))
+	other := selectGroup("fastMode", "Fast Mode", OptionOrderProviderSecond, "off", []optDef{
+		{Id: "on", Name: "On"}, {Id: "off", Name: "Off", Default: true},
+	})
+	groups := []*leapmuxv1.AvailableOptionGroup{other}
+	got := withModelGroupDefaultMarked(groups, claude)
+	require.Len(t, got, 1)
+	assert.Same(t, other, got[0], "no model group -> the input is returned untouched")
 }

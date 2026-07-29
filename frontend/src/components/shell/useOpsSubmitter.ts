@@ -30,21 +30,10 @@ const MAX_TRANSPORT_RETRIES = 5
  * the transport cap it stops a client from re-hammering SubmitOps in a
  * tight loop -- and, for an epoch-refresh reason, from re-tearing-down the
  * `/ws/userevents` socket whose async bootstrap it is waiting on -- when the
- * refresh never lands. After the cap the batch is reported as an
- * authoritative rejection so its caller (e.g. the cross-workspace-move
- * rollback) can react, with a warn toast.
+ * refresh never lands. After the cap the batch's optimistic ops are reverted
+ * and the user is warned, because the change never reached the server.
  */
 const MAX_REJECTION_RETRIES = 5
-
-/**
- * Per-batch result handed to `CreateOpsSubmitterOpts.onBatchResult` and
- * stored in `AppShell.batchResultHandlers`. Exported so callers
- * (cross-workspace move rollback, AppShell's handler map) don't have
- * to re-declare the union.
- */
-export type BatchOutcome
-  = { case: 'committed' }
-    | { case: 'rejected', rejection: BatchRejection }
 
 /**
  * createOpsSubmitter returns the batched submitter the stores call
@@ -76,14 +65,6 @@ export interface CreateOpsSubmitterOpts {
    * asynchronously and refreshes `pending.currentEpoch`.
    */
   reconnect?: () => Promise<void>
-  /**
-   * Per-batch hook fired immediately after each batch's outcome is
-   * delivered to the pending manager (after `consumeBatchCommitted` /
-   * `consumeBatchRejected`). Useful for callers that need to react to
-   * specific batch ids (e.g. cross-workspace move rollback on hub
-   * rejection).
-   */
-  onBatchResult?: (batchId: string, outcome: BatchOutcome) => void
 }
 
 export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
@@ -176,7 +157,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       const resp = await client.submitOps({ epoch, batches })
       let anyCommitted = false
       let needsReconnect = false
-      const retryableRejections: { batch: OpBatch, rejection: BatchRejection, needsEpochRefresh: boolean }[] = []
+      const retryableRejections: { batch: OpBatch, needsEpochRefresh: boolean }[] = []
       for (const result of resp.results) {
         const outcome = result.outcome
         switch (outcome.case) {
@@ -185,7 +166,6 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
             anyCommitted = true
             dropTransportRetryCounter(result.batchId)
             dropRejectionRetryCounter(result.batchId)
-            opts.onBatchResult?.(result.batchId, { case: 'committed' })
             break
           }
           case 'rejected': {
@@ -211,21 +191,18 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
               needsReconnect = true
             if (retryable) {
               // A retryable rejection is NOT a final outcome -- the batch is
-              // requeued below. Do NOT report it to onBatchResult yet: a handler
-              // (e.g. the cross-workspace-move rollback) would reverse its
-              // optimistic action while the retry is still in flight and then the
-              // retry commits, permanently diverging the worker and the CRDT. The
-              // authoritative outcome is reported on commit, or on retry give-up.
+              // requeued below, and its optimistic ops stay applied so the edit
+              // does not flicker out and back. Reverting here and then committing
+              // on the retry would be the visible bug.
               const original = batches.find(b => b.batchId === result.batchId)
               if (original)
-                retryableRejections.push({ batch: original, rejection, needsEpochRefresh })
+                retryableRejections.push({ batch: original, needsEpochRefresh })
             }
             else {
               // Permanent rejection: this IS the final outcome. Clear any retry
               // state (a batch retryable on an earlier attempt may now be
-              // terminally rejected), report it, and warn the user.
+              // terminally rejected) and warn the user.
               dropRejectionRetryCounter(result.batchId)
-              opts.onBatchResult?.(result.batchId, { case: 'rejected', rejection })
               showRejectionToast(rejection)
             }
             break
@@ -243,27 +220,23 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       // refresh-needing sibling (the forward-compat case the allowlist exists to
       // serve): a response-wide OR here would silently drop it. A refresh-needing
       // batch has already had its reconnect() awaited above.
-      for (const { batch, rejection, needsEpochRefresh } of retryableRejections) {
+      for (const { batch, needsEpochRefresh } of retryableRejections) {
         if (needsEpochRefresh && !opts.reconnect) {
           // Give up: no reconnect handler to refresh the epoch. consumeBatchRejected
-          // KEPT this batch's optimistic ops applied (it was retryable); now that it
-          // is terminal, revert them before reporting so the UI doesn't leave the
-          // edit stuck visible.
+          // KEPT this batch's optimistic ops applied (it was retryable); now that
+          // it is terminal, revert them so the UI doesn't leave the edit stuck
+          // visible.
           pending.revertPendingBatch(batch.batchId)
           dropRejectionRetryCounter(batch.batchId)
-          opts.onBatchResult?.(batch.batchId, { case: 'rejected', rejection })
           showWarnToast('Couldn\'t sync your change (your view needs to reconnect). Please retry the action manually.')
           continue
         }
         const attempts = (rejectionRetries.get(batch.batchId) ?? 0) + 1
         if (attempts > MAX_REJECTION_RETRIES) {
-          // Exhausted retries: give up. The optimistic ops were KEPT applied across
-          // the retries (retryable rejection); revert them now, then report the
-          // authoritative rejection so a registered handler (e.g. the
-          // cross-workspace-move rollback) can reverse its optimistic action.
+          // Exhausted retries: give up. The optimistic ops were KEPT applied
+          // across the retries (retryable rejection); revert them now.
           pending.revertPendingBatch(batch.batchId)
           dropRejectionRetryCounter(batch.batchId)
-          opts.onBatchResult?.(batch.batchId, { case: 'rejected', rejection })
           showWarnToast(`Couldn't sync your change after ${MAX_REJECTION_RETRIES} attempts. Please retry the action manually.`)
           continue
         }
@@ -303,10 +276,9 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         // Give up. consumeBatchRejected splices this still-pending batch and
         // recomputes speculative WITHOUT it, so its optimistic ops are
         // reverted (not preserved) — we never got an authoritative answer, so
-        // the user re-issues manually. We deliberately do NOT call
-        // opts.onBatchResult here: a transport give-up is not an authoritative
-        // rejection, so a cross-workspace-move rollback must not reverse the
-        // worker off it. Surface a toast so the failure isn't silent.
+        // the user re-issues manually. Note this is NOT an authoritative
+        // rejection: nothing may treat a transport give-up as the server having
+        // refused the change. Surface a toast so the failure isn't silent.
         pending.consumeBatchRejected(batch.batchId, { $typeName: 'leapmux.v1.BatchRejection', reason: 0, offendingOpId: '' })
         showWarnToast(`Connection failed — couldn't reach the server after ${MAX_TRANSPORT_RETRIES} retries.`, err)
         continue

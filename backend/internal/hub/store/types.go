@@ -694,24 +694,22 @@ type ListRenderedTabsByWorkspaceIDsParams struct {
 	WorkspaceIDs []string
 }
 
-// GetOwnedTabParams identifies a single owned-tab row.
+// GetOwnedTabParams identifies a single owned-tab row by its PRIMARY KEY.
 //
 // UserID is the tenancy axis and is REQUIRED: workspace_tab_owned is keyed on
-// (user_id, tab_id), and no schema constraint ties a row's user_id to
-// owner(workspace_id) -- the workspace_id column is a plain FK to
-// workspaces(id), so any user's row may name any existing workspace. Tab ids
-// are client-minted and unique only within one user (a FILE tab id is
-// `file-<millis>-<counter>` from a per-module-load counter, so two clients
-// collide readily), which makes (workspace_id, tab_id) a non-key: an
-// owner-blind :one returns whichever tenant's row the index visited first.
+// (user_id, tab_id), and tab ids are client-minted and unique only within one
+// user (a FILE tab id is `file-<millis>-<counter>` from a per-module-load
+// counter, so two clients collide readily). An owner-blind :one on tab_id
+// alone returns whichever tenant's row the index visited first.
 //
-// WorkspaceID stays as a redundant sanity predicate -- it pins the row to the
-// workspace the caller thinks it is acting in -- but it is NOT the tenancy
-// axis and never was.
+// There is no workspace predicate: the caller that needs this -- the
+// delegation mint -- is asking "does this worker host this tab for this
+// user?", which the (user, tab, worker) triple answers on its own. The row's
+// workspace_id was never the tenancy axis and pinning it added nothing the
+// key does not already give.
 type GetOwnedTabParams struct {
-	UserID      userid.UserID
-	WorkspaceID string
-	TabID       string
+	UserID userid.UserID
+	TabID  string
 }
 
 // ListOwnedTabsByWorkerParams scopes the worker-reconciliation snapshot to one
@@ -723,13 +721,25 @@ type ListOwnedTabsByWorkerParams struct {
 	WorkerID string
 }
 
-// ListDistinctWorkersByWorkspaceParams scopes the worker fan-out of a
-// workspace deletion to one owner. The DISTINCT worker_id projection carries no
-// owner column, so unlike the row-returning reads the caller cannot filter what
-// an owner-blind query over-selects -- the predicate has to be in the query.
-type ListDistinctWorkersByWorkspaceParams struct {
+// ListOwnedTabsByWorkspaceParams scopes the worker fan-out of a workspace
+// deletion to one owner. A workspace's owner does not constrain the user_id of
+// rows written against that workspace_id, so the predicate has to be in the
+// query rather than applied by the caller.
+type ListOwnedTabsByWorkspaceParams struct {
 	UserID      userid.UserID
 	WorkspaceID string
+}
+
+// OwnedTabRef is one tab a workspace holds, as the two facts a teardown needs:
+// which machine hosts it, and how to address it there.
+//
+// Deliberately narrower than WorkspaceTabRow -- the delete path has no use for
+// tile or position, and returning them would invite a caller to act on layout
+// state read from inside a delete transaction.
+type OwnedTabRef struct {
+	WorkerID string
+	TabType  leapmuxv1.TabType
+	TabID    string
 }
 
 // TabIndexKey identifies a single row in workspace_tab_owned or
@@ -988,7 +998,6 @@ type DelegationToken struct {
 	ID               string
 	UserID           string
 	WorkerID         string
-	WorkspaceID      string
 	AgentID          string
 	TerminalID       string
 	IssuedForTabID   string
@@ -1095,7 +1104,6 @@ type CreateDelegationTokenParams struct {
 	ID               string
 	UserID           userid.UserID
 	WorkerID         string
-	WorkspaceID      string
 	AgentID          string
 	TerminalID       string
 	IssuedForTabID   string

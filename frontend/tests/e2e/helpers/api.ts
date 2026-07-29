@@ -299,30 +299,15 @@ export async function openAgentViaAPI(
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
 
-  // Notify the worker that the test channel has access to this workspace
-  // BEFORE issuing any workspace-scoped RPC. getTestChannel caches a
-  // ChannelManager across tests, so on the 2nd+ test the channel's
-  // AccessibleWorkspaceIds set was frozen at handshake time and does not
-  // include the workspace created in this test. The worker's hardened
-  // requireAccessibleWorkspace check would reject OpenAgent until the
-  // ChannelAccessUpdate lands. Calling PrepareWorkspaceAccess first — which
-  // now blocks on the worker's ack — guarantees the set is up-to-date.
-  const prepResp = await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ workerId, workspaceId }),
-  })
-  if (!prepResp.ok) {
-    throw new Error(`openAgentViaAPI: PrepareWorkspaceAccess failed: ${prepResp.status}`)
-  }
-
+  // No workspace announcement. A channel carries no workspace set at all, so a
+  // workspace created after the cached ChannelManager handshook needs nothing
+  // done to it before a worker RPC on its tabs will be served.
   const resp = await channel.callWorker(
     workerId,
     'OpenAgent',
     OpenAgentRequestSchema,
     OpenAgentResponseSchema,
     {
-      workspaceId,
       workerId,
       workingDir: workingDir ?? '',
       ...(options?.title ? { title: options.title } : {}),
@@ -436,23 +421,65 @@ export async function cleanupWorkspaceViaAPI(
 ): Promise<void> {
   const { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema } = await import('../../../src/generated/leapmux/v1/workspace_pb')
   const channel = await getTestChannel(hubUrl, cookie)
-  // Refresh the channel's accessible-workspace set before the workspace-scoped RPC
-  // (the cached channel froze its set at handshake), exactly as openAgentViaAPI does.
-  const prepResp = await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ workerId, workspaceId }),
-  })
-  if (!prepResp.ok) {
-    throw new Error(`cleanupWorkspaceViaAPI: PrepareWorkspaceAccess failed: ${prepResp.status}`)
-  }
+  // The worker tracks no workspace id, so the CALLER supplies the tab list --
+  // read from the hub here, exactly as the browser reads it from its projection.
+  // Must run BEFORE the hub-side delete, while the tabs are still listable.
+  const tabs = await listTabsViaAPI(hubUrl, cookie, workspaceId)
   await channel.callWorker(
     workerId,
     'CleanupWorkspace',
     CleanupWorkspaceRequestSchema,
     CleanupWorkspaceResponseSchema,
-    { workspaceId },
+    { tabs: tabs.filter(t => t.workerId === workerId).map(t => ({ tabType: t.tabType, tabId: t.tabId })) },
   )
+}
+
+/**
+ * The tabs the hub lists for a workspace, as (tab_type, tab_id, worker_id).
+ * Used by cleanupWorkspaceViaAPI, which has to name them explicitly.
+ *
+ * `tab_type` arrives as the enum NAME, not its number: this is Connect's JSON
+ * codec (protojson), which serializes enums as `"TAB_TYPE_AGENT"`. Reading it
+ * as a number yielded a string that then failed to encode into
+ * `CleanupWorkspaceRequest`, so every teardown asked the worker to close
+ * TAB_TYPE_UNSPECIFIED tabs, the worker's switch fell to `default:`, and
+ * nothing was closed — leaving every spec's agent subprocess alive on the
+ * shared worker. Mapped back to the numeric enum here so the caller can build
+ * a real request.
+ *
+ * A failed read THROWS rather than degrading to an empty list. An empty list is
+ * a valid request meaning "close nothing", so swallowing the error would make
+ * teardown report success while leaving every process running — the precise
+ * failure this helper exists to prevent.
+ */
+async function listTabsViaAPI(
+  hubUrl: string,
+  cookie: string,
+  workspaceId: string,
+): Promise<{ tabType: number, tabId: string, workerId: string }[]> {
+  const { TabType } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const tabTypeByName: Record<string, number> = {
+    TAB_TYPE_UNSPECIFIED: TabType.UNSPECIFIED,
+    TAB_TYPE_AGENT: TabType.AGENT,
+    TAB_TYPE_TERMINAL: TabType.TERMINAL,
+    TAB_TYPE_FILE: TabType.FILE,
+  }
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ workspaceIds: [workspaceId] }),
+  })
+  if (!res.ok)
+    throw new Error(`listTabsViaAPI failed: ${res.status} ${await res.text()}`)
+  const body = await res.json() as { tabs?: { tabType?: string, tabId?: string, workerId?: string }[] }
+  return (body.tabs ?? [])
+    .filter(t => t.tabId)
+    .map((t) => {
+      const tabType = tabTypeByName[t.tabType ?? '']
+      if (tabType === undefined)
+        throw new Error(`listTabsViaAPI: unrecognized tab_type ${JSON.stringify(t.tabType)} for tab ${t.tabId}`)
+      return { tabType, tabId: t.tabId!, workerId: t.workerId ?? '' }
+    })
 }
 
 /**

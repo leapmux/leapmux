@@ -407,15 +407,16 @@ CREATE INDEX idx_api_tokens_user_created ON api_tokens(user_id, created_at DESC,
 
 -- Ephemeral, high-churn delegation tokens minted by workers when a
 -- spawned agent (or opt-in terminal) calls into the hub or a sibling
--- worker on behalf of the spawning user. Scope is (user_id,
--- workspace_id); issued_for_tab_id is provenance only.
+-- worker on behalf of the spawning user. Scope is (user_id, worker_id):
+-- the user the bearer acts as, bounded to the machines the MINTING worker
+-- may reach (see auth.DelegationWorkerScope). issued_for_tab_id is
+-- provenance only.
 --
 -- A nightly cleanup hard-deletes revoked rows older than 7d.
 CREATE TABLE delegation_tokens (
     id                            TEXT PRIMARY KEY,
     user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     worker_id                     TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    workspace_id                  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     agent_id                      TEXT NOT NULL DEFAULT '',
     terminal_id                   TEXT NOT NULL DEFAULT '',
     issued_for_tab_id             TEXT NOT NULL DEFAULT '',
@@ -431,7 +432,6 @@ CREATE TABLE delegation_tokens (
 );
 CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
 CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
-CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
 -- Keyset index for the admin ListAllDelegationTokens listing (see
 -- idx_api_tokens_created_at for the rationale).

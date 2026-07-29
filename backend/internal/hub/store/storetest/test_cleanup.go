@@ -399,7 +399,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		_, err = st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{
-			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, TabID: "f1",
+			UserID: userid.MustNew(user.ID), TabID: "f1",
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound, "the workspace delete must cascade to its owned-tab rows")
 	})

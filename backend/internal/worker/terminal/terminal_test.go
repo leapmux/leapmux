@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -533,12 +534,11 @@ func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
 // across worker restarts even when the bug-fix landed for resubscribe.
 func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
 	m := newTestManagerWithTerminal(t, Options{
-		ID:          "tm-snapshot",
-		WorkspaceID: "ws-snapshot",
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         "tm-snapshot",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	})
 	pushAltScreenPastRing(t, m, "tm-snapshot")
 
@@ -552,7 +552,7 @@ func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
 // newTestManagerWithTerminal starts a Manager + one terminal and wires
 // up the standard cleanup so callers don't repeat the StartTerminal +
 // t.Cleanup boilerplate. The Options are passed through verbatim (so
-// callers can vary WorkspaceID / Cols / Rows).
+// callers can vary Cols / Rows).
 func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
 	t.Helper()
 	id := opts.ID
@@ -600,15 +600,13 @@ func TestSnapshotTerminal(t *testing.T) {
 	var output []byte
 
 	termID := "tm-snap-single"
-	wsID := "ws-1"
 
 	err := m.StartTerminal(context.Background(), Options{
-		ID:          termID,
-		WorkspaceID: wsID,
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         termID,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	}, func(data []byte, _ int64) {
 		mu.Lock()
 		output = append(output, data...)
@@ -625,7 +623,6 @@ func TestSnapshotTerminal(t *testing.T) {
 
 	snap, ok := m.SnapshotTerminal(termID)
 	require.True(t, ok, "SnapshotTerminal should return ok=true")
-	assert.Equal(t, wsID, snap.WorkspaceID)
 	assert.Equal(t, uint32(80), snap.Cols)
 	assert.Equal(t, uint32(24), snap.Rows)
 	assert.Contains(t, string(snap.Screen), "snapshot_single")
@@ -641,26 +638,23 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 	ctx := context.Background()
 	queries := newTestDB(t)
 
-	wsID := "ws-1"
 	termID := "tm-db"
 
 	// Upsert a terminal (workspace_id is plain TEXT, no FK needed).
 	screenData := []byte("hello terminal")
 	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          termID,
-		WorkspaceID: wsID,
-		WorkingDir:  "/tmp",
-		HomeDir:     "/home/test",
-		Cols:        120,
-		Rows:        40,
-		Screen:      screenData,
+		ID:         termID,
+		WorkingDir: "/tmp",
+		HomeDir:    "/home/test",
+		Cols:       120,
+		Rows:       40,
+		Screen:     screenData,
 	}), "UpsertTerminal")
 
 	// Get it back.
 	row, err := queries.GetTerminal(ctx, termID)
 	require.NoError(t, err, "GetTerminal")
 	assert.Equal(t, termID, row.ID)
-	assert.Equal(t, wsID, row.WorkspaceID)
 	assert.Equal(t, "/tmp", row.WorkingDir)
 	assert.Equal(t, "/home/test", row.HomeDir)
 	assert.Equal(t, int64(120), row.Cols)
@@ -668,7 +662,7 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 	assert.Equal(t, screenData, row.Screen)
 
 	// Soft-delete and verify closed_at is set.
-	require.NoError(t, queries.CloseTerminal(ctx, termID), "CloseTerminal")
+	require.NoError(t, closeErr(queries.CloseTerminal(ctx, termID)), "CloseTerminal")
 	row, err = queries.GetTerminal(ctx, termID)
 	require.NoError(t, err, "GetTerminal after close")
 	assert.True(t, row.ClosedAt.Valid, "closed_at should be set")
@@ -676,27 +670,25 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 
 func TestUpdateTitle(t *testing.T) {
 	m := NewManager()
-	wsID := "ws-title"
 
 	termID := "tm-title"
 	err := m.StartTerminal(context.Background(), Options{
-		ID:          termID,
-		WorkspaceID: wsID,
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         termID,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	}, func([]byte, int64) {}, nil)
 	require.NoError(t, err)
 
-	// Initially empty title via ListByWorkspace.
-	entries := m.ListByWorkspace(wsID)
+	// Initially empty title via ListByIDs.
+	entries := m.ListByIDs([]string{termID})
 	require.Len(t, entries, 1)
 	assert.Equal(t, "", entries[0].Meta.Title)
 
 	// Update title.
 	assert.True(t, m.UpdateTitle(termID, "my terminal"))
-	entries = m.ListByWorkspace(wsID)
+	entries = m.ListByIDs([]string{termID})
 	require.Len(t, entries, 1)
 	assert.Equal(t, "my terminal", entries[0].Meta.Title)
 
@@ -712,13 +704,12 @@ func TestUpsertTerminalTitle(t *testing.T) {
 
 	termID := "tm-title-db"
 	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          termID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		Title:       "Terminal 1",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte{},
+		ID:         termID,
+		WorkingDir: "/tmp",
+		Title:      "Terminal 1",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte{},
 	}))
 
 	row, err := queries.GetTerminal(ctx, termID)
@@ -727,13 +718,12 @@ func TestUpsertTerminalTitle(t *testing.T) {
 
 	// Update title via upsert.
 	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          termID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		Title:       "My Shell",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte{},
+		ID:         termID,
+		WorkingDir: "/tmp",
+		Title:      "My Shell",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte{},
 	}))
 
 	row, err = queries.GetTerminal(ctx, termID)
@@ -839,12 +829,11 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	m := NewManager()
 	const id = "tm-restart-preserve"
 	opts := Options{
-		ID:          id,
-		WorkspaceID: "ws",
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         id,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	}
 
 	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
@@ -889,12 +878,11 @@ func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
 	const id = "tm-restart-fallback"
 	const fallback = int64(4096)
 	opts := Options{
-		ID:          id,
-		WorkspaceID: "ws",
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         id,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	}
 
 	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64) {}, nil), "RestartTerminal")
@@ -914,12 +902,11 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 	m := NewManager()
 	const id = "tm-restart-running"
 	opts := Options{
-		ID:          id,
-		WorkspaceID: "ws",
-		Shell:       testutil.TestShell(),
-		WorkingDir:  t.TempDir(),
-		Cols:        80,
-		Rows:        24,
+		ID:         id,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
 	}
 	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
@@ -930,3 +917,10 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 	assert.Contains(t, err.Error(), "still running")
 	assert.Same(t, original, m.terminals[id], "failed restart must not swap out the live *Terminal")
 }
+
+// closeErr discards the affected-row count from an :execresult tab close and
+// returns just the error, so tests that only need the side effect can keep using
+// require.NoError. CloseAgent / CloseTerminal report that count because
+// closeTabCommon uses it to tell a live close from a re-close of an
+// already-closed row.
+func closeErr(_ sql.Result, err error) error { return err }

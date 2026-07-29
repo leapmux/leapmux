@@ -166,6 +166,11 @@ func (s *WorkerConnectorService) Connect(
 		}
 		return connect.NewError(connect.CodeInternal, err)
 	}
+	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
+	// DELETED worker (`status != 3`), and a DEREGISTERING one must still be able
+	// to hold this stream -- that is how it receives the deregister instruction
+	// and wipes its local state. Refusing it here would leave the machine
+	// running with nobody able to tell it to stop.
 
 	// Register the connection. Replacement cancels this derived context to
 	// terminate the superseded handler without affecting the request context of
@@ -397,7 +402,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	// Handle workspace tab sync from worker. The response is sent
 	// back on the same bidi stream with the matching request_id so
 	// the worker can correlate it with its outbound message.
-	if tabSync := msg.GetWorkspaceTabsSync(); tabSync != nil {
+	if tabSync := msg.GetWorkerTabInventory(); tabSync != nil {
 		s.handleWorkspaceTabsSync(ctx, conn, workerID, registeredBy, msg.GetRequestId(), tabSync)
 		return nil
 	}
@@ -472,11 +477,11 @@ func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, worker
 // against the CRDT-derived workspace_tab_owned view, computes the
 // authoritative classification, and:
 //
-//   - Emits a WorkspaceTabsSyncResponse on the bidi stream listing
-//     the worker tabs the CRDT no longer knows about (orphans) and
-//     the tabs the CRDT moved to a different workspace
-//     (reassignments). The worker uses this to drop local agent /
-//     terminal / file-tab entities or update their workspace_id.
+//   - Emits an EMPTY WorkerTabInventoryResponse on the bidi stream. It carries no
+//     classification: its only effect is to make the worker trigger a reconcile
+//     pass, which derives what to drop from ListOwnedTabsForWorker instead. It
+//     once listed orphans and cross-workspace reassignments; nothing consumed
+//     them, and there is no workspace id on the worker left to reassign.
 //   - For tabs the CRDT knows about that the worker doesn't,
 //     submits a TombstoneTab op via SubmitInternal so the CRDT side
 //     converges to the worker's authoritative view (the worker is
@@ -498,7 +503,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	ctx context.Context,
 	conn *workermgr.Conn,
 	workerID, registeredBy, requestID string,
-	sync *leapmuxv1.WorkspaceTabsSync,
+	sync *leapmuxv1.WorkerTabInventory,
 ) {
 	owner, ok := userid.New(registeredBy)
 	if !ok {
@@ -532,7 +537,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 		hubByKey[tabKey{tabType: ht.TabType, tabID: ht.TabID}] = ht
 	}
 
-	resp := &leapmuxv1.WorkspaceTabsSyncResponse{}
+	resp := &leapmuxv1.WorkerTabInventoryResponse{}
 	// The scan's only remaining product is the leftovers in hubByKey. The
 	// per-tab classification the response used to carry (orphan_tab_ids,
 	// reassignments) is gone: no worker ever read it -- OnTabSyncResponse
@@ -620,8 +625,8 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	// complete.
 	if err := conn.Send(&leapmuxv1.ConnectResponse{
 		RequestId: requestID,
-		Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
-			WorkspaceTabsSyncResp: resp,
+		Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{
+			WorkerTabInventoryResp: resp,
 		},
 	}); err != nil {
 		slog.Debug("failed to send workspace tabs sync response",

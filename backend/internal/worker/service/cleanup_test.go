@@ -194,7 +194,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 
 	seedAgent := func(id string, closedAt time.Time) {
 		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
-			ID: id, WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/home", Title: id, Options: "{}",
+			ID: id, WorkingDir: "/tmp", HomeDir: "/home", Title: id, Options: "{}",
 		}))
 		_, err := sqlDB.ExecContext(ctx, "UPDATE agents SET closed_at = ? WHERE id = ?", timefmt.Format(closedAt), id)
 		require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 
 	seedTerminal := func(id string, closedAt time.Time) {
 		require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
-			ID: id, WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/home", Shell: "/bin/zsh",
+			ID: id, WorkingDir: "/tmp", HomeDir: "/home", Shell: "/bin/zsh",
 			Title: id, Cols: 80, Rows: 24, Screen: []byte{},
 			ClosedAt: sqltime.SQLiteNullTimeOf(closedAt),
 		}))
@@ -248,4 +248,115 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 	n, err = res.RowsAffected()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n, "worktrees sweep must delete exactly the strictly-older same-second row")
+}
+
+// TestCloseAgentAndCloseTerminalAreIdempotent is the regression for a leak that
+// made the retention sweep unreachable.
+//
+// The orphan reconciler re-closes rows it finds absent from the hub's list, and
+// ListAllAgentIDs / ListAllTerminalIDs return closed rows too -- so without
+// `AND closed_at IS NULL` every hourly pass re-stamped closed_at = now. The
+// retention delete matches `closed_at < cutoff`, so a row whose timestamp keeps
+// advancing can never fall past the cutoff: the rows, their cascaded messages,
+// and the terminals' 100KB screen blobs accumulate for the machine's lifetime.
+//
+// Asserted by planting an OLD closed_at and re-closing: comparing two rapid
+// closes would be flaky, since the timestamps could round to the same value and
+// pass either way.
+func TestCloseAgentAndCloseTerminalAreIdempotent(t *testing.T) {
+	sqlDB, queries := setupTestDB(t)
+	ctx := context.Background()
+	old := timefmt.Format(time.Now().Add(-30 * 24 * time.Hour))
+
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{ID: "agent-1", WorkingDir: "/tmp"}))
+	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
+		ID: "term-1", Cols: 80, Rows: 24, Screen: []byte("screen"),
+	}))
+	_, err := sqlDB.ExecContext(ctx, `UPDATE agents SET closed_at = ? WHERE id = ?`, old, "agent-1")
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, `UPDATE terminals SET closed_at = ? WHERE id = ?`, old, "term-1")
+	require.NoError(t, err)
+
+	// What the reconciler does on every pass for a row the hub no longer lists.
+	require.NoError(t, closeErr(queries.CloseAgent(ctx, "agent-1")))
+	require.NoError(t, closeErr(queries.CloseTerminal(ctx, "term-1")))
+
+	agent, err := queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, old, timefmt.Format(agent.ClosedAt.Time),
+		"re-closing must not advance closed_at, or the retention sweep can never reclaim this row")
+
+	terminal, err := queries.GetTerminal(ctx, "term-1")
+	require.NoError(t, err)
+	assert.Equal(t, old, timefmt.Format(terminal.ClosedAt.Time),
+		"same for terminals, whose rows carry the screen blob")
+
+	// And the row is now genuinely reachable by retention, which is the point.
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-cleanupRetention))
+	res, err := queries.DeleteClosedTerminalsBefore(ctx, cutoff)
+	require.NoError(t, err)
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected, "the terminal must fall past the retention cutoff")
+}
+
+// closeErr discards the affected-row count from an :execresult tab close and
+// returns just the error, so tests that only need the side effect can keep using
+// require.NoError. CloseAgent / CloseTerminal report that count because
+// closeTabCommon uses it to tell a live close from a re-close of an
+// already-closed row.
+func closeErr(_ sql.Result, err error) error { return err }
+
+// TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource pins the
+// mechanism that lets the orphan reconciler read only OPEN rows.
+//
+// A tab's row becomes durable (and therefore reapable) BEFORE spawnRemoteIPC
+// registers its cleanup. A close landing in that window used to make run() a
+// silent no-op, and the cleanup registered afterwards was fired by nobody: the
+// tab's unix-socket listener stayed open and its delegation token unrevoked for
+// the life of the worker process. The reconciler covered for it only by
+// re-tearing-down closed rows on every pass.
+func TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource(t *testing.T) {
+	var reg cleanupRegistry
+	ran := 0
+
+	// Row is durable; cleanup has not arrived yet.
+	reg.claim("tab-1")
+	// A reap lands in the window.
+	reg.run("tab-1")
+	require.Equal(t, 0, ran, "nothing to retire yet -- the resource does not exist")
+
+	// The spawn finishes and registers. It must be retired IMMEDIATELY rather
+	// than stored for a close that already happened.
+	reg.register("tab-1", func() { ran++ })
+	assert.Equal(t, 1, ran, "a cleanup arriving after its tab was closed must fire at once, not sit unreachable")
+
+	// ...and only once: a later run must not double-fire it.
+	reg.run("tab-1")
+	assert.Equal(t, 1, ran, "the cleanup must not run twice")
+}
+
+// TestCleanupRegistry_NormalOrderAndAbandonedClaim covers the two paths that
+// must NOT trigger the window behaviour: the ordinary
+// register-then-run sequence, and a spawn that aborts before registering.
+func TestCleanupRegistry_NormalOrderAndAbandonedClaim(t *testing.T) {
+	var reg cleanupRegistry
+
+	// Ordinary order: claim, register, then close.
+	ran := 0
+	reg.claim("tab-ok")
+	reg.register("tab-ok", func() { ran++ })
+	assert.Equal(t, 0, ran, "registering must not fire the cleanup on its own")
+	reg.run("tab-ok")
+	assert.Equal(t, 1, ran, "the close fires it")
+
+	// A spawn that aborts: the claim is abandoned, so a later close leaves no
+	// mark that a stray register could act on.
+	reg.claim("tab-aborted")
+	reg.abandonClaim("tab-aborted")
+	reg.run("tab-aborted")
+	late := 0
+	reg.register("tab-aborted", func() { late++ })
+	assert.Equal(t, 0, late,
+		"an abandoned claim must not make a later register fire immediately -- that id is a fresh tab, not a closed one")
 }

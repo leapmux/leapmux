@@ -21,13 +21,12 @@ var ErrTerminalNotFound = errors.New("terminal not found")
 // lets callers errors.Is instead of string-matching.
 var ErrTerminalStillRunning = errors.New("terminal still running")
 
-// TerminalMeta holds the workspace ID and dimensions for a terminal.
-// Shell is intentionally NOT mirrored here: RestartTerminal reads the
+// TerminalMeta holds the working directory, title and dimensions for a
+// terminal. Shell is intentionally NOT mirrored here: RestartTerminal reads the
 // shell from the DB row via GetTerminalForRestart, which is the single
 // source of truth (the column is written once at OpenTerminal time and
 // never updated thereafter).
 type TerminalMeta struct {
-	WorkspaceID   string
 	WorkingDir    string
 	ShellStartDir string
 	Title         string
@@ -82,7 +81,6 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 
 	m.installTerminal(opts.ID, t, exitFn, func(TerminalMeta) TerminalMeta {
 		return TerminalMeta{
-			WorkspaceID:   opts.WorkspaceID,
 			WorkingDir:    opts.WorkingDir,
 			ShellStartDir: opts.ShellStartDir,
 			Cols:          uint32(opts.Cols),
@@ -223,7 +221,6 @@ func (m *Manager) RestartTerminal(
 	}
 
 	m.installTerminal(opts.ID, t, exitFn, func(prev TerminalMeta) TerminalMeta {
-		prev.WorkspaceID = opts.WorkspaceID
 		prev.WorkingDir = opts.WorkingDir
 		prev.ShellStartDir = opts.ShellStartDir
 		prev.Cols = uint32(opts.Cols)
@@ -393,7 +390,7 @@ func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok
 		return TerminalSnapshot{}, false
 	}
 	meta, hasMeta := m.meta[terminalID]
-	if !hasMeta || meta.WorkspaceID == "" {
+	if !hasMeta {
 		return TerminalSnapshot{}, false
 	}
 	return TerminalSnapshot{
@@ -447,21 +444,6 @@ func (m *Manager) buildEntryLocked(id string, meta TerminalMeta) TerminalEntry {
 		entry.Exited = true
 	}
 	return entry
-}
-
-// ListByWorkspace returns all terminals belonging to the given workspace.
-func (m *Manager) ListByWorkspace(workspaceID string) []TerminalEntry {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var result []TerminalEntry
-	for id, meta := range m.meta {
-		if meta.WorkspaceID != workspaceID {
-			continue
-		}
-		result = append(result, m.buildEntryLocked(id, meta))
-	}
-	return result
 }
 
 // ListByIDs returns terminals matching the given IDs.

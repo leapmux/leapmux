@@ -121,30 +121,27 @@ func startTestServerNoAuth(t *testing.T, info remoteipc.TokenInfo, router *remot
 
 func TestServer_Whoami_HappyPath(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
 	info := remoteipc.TokenInfo{
-		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A", TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		UserID: userid.MustNew("u-1"), WorkerID: "worker-A", TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 	}
 	_, client := startTestServer(t, info, router)
 
 	resp, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)
 	assert.Equal(t, "u-1", resp.Msg.GetUserId())
-	assert.Equal(t, "ws-1", resp.Msg.GetWorkspaceId())
 	assert.Equal(t, "worker-A", resp.Msg.GetWorkerId())
 	assert.Equal(t, "agent-1", resp.Msg.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, resp.Msg.GetTabType())
-	require.NotNil(t, resp.Msg.GetScope())
-	assert.Equal(t, []string{"ws-1"}, resp.Msg.GetScope().GetWorkspaceIds())
 }
 
 func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
 	client := startTestServerNoAuth(t, remoteipc.TokenInfo{
-		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
+		UserID: userid.MustNew("u-1"), WorkerID: "worker-A",
 	}, router)
 	_, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.Error(t, err)
@@ -156,13 +153,13 @@ func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
 
 func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
 	sockURL := testSocketURL(t)
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
 		Token:     remoteipc.MintToken(),
-		TokenInfo: remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"},
+		TokenInfo: remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"},
 		Router:    router,
 	})
 	require.NoError(t, err)
@@ -188,11 +185,10 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
 	info := remoteipc.TokenInfo{
-		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
+		UserID: userid.MustNew("u-1"), WorkerID: "worker-A",
 	}
 	_, client := startTestServer(t, info, router)
 
@@ -200,7 +196,6 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 		Method:         "worker.OpenAgent",
 		Payload:        []byte(`{"hello":"world"}`),
 		TargetWorkerId: "worker-A",
-		WorkspaceId:    "ws-1",
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("local-resp"), resp.Msg.GetPayload())
@@ -213,17 +208,15 @@ func TestServer_CallInner_AllowsFilesystemOnSpawningWorker(t *testing.T) {
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	resp, err := client.CallInner(context.Background(), connect.NewRequest(&leapmuxv1.CallInnerRequest{
 		Method:         "worker.ReadFile",
 		Payload:        []byte(`{"path":"/etc/hosts"}`),
 		TargetWorkerId: "worker-A", // same as spawning worker
-		WorkspaceId:    "ws-1",
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("file-content"), resp.Msg.GetPayload())
@@ -236,10 +229,9 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -248,7 +240,6 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 		Method:          "worker.WatchEvents",
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
-		WorkspaceId:     "ws-1",
 		ClientRequestId: "req-stream-1",
 	}))
 	require.NoError(t, err)
@@ -273,9 +264,9 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 
 func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 
 	sockURL := testSocketURL(t)
 	rawToken := remoteipc.MintToken()
@@ -329,9 +320,9 @@ func TestServer_SocketIsMode0600(t *testing.T) {
 		t.Skip("named pipes use DACLs, not POSIX file modes")
 	}
 	router := &remoteipc.Router{
-		WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"},
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	sockPath := shortSocketPath(t)
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: "unix:" + sockPath,
@@ -349,50 +340,6 @@ func TestServer_SocketIsMode0600(t *testing.T) {
 		"socket file must be readable+writable by owner only; got %o", mode)
 }
 
-// TestServer_CallInner_RejectsCrossWorkspaceScope verifies that a
-// request whose workspace_id does not match the bearer's scope is
-// rejected before the underlying dispatcher is called. This is the
-// "cross-user / cross-workspace denied" guarantee the plan calls out
-// — the client cannot bypass scope by passing a different
-// workspace_id in the request body.
-func TestServer_CallInner_RejectsCrossWorkspaceScope(t *testing.T) {
-	disp := &fakeLocalDispatcher{respPayload: []byte("MUST-NOT-FIRE")}
-	// Router scope: only ws-1. Filter rejects anything else.
-	router := &remoteipc.Router{
-		WorkerID:        "worker-A",
-		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
-		LocalDispatcher: disp,
-		WorkspaceFilter: func(ws string) bool { return ws == "ws-1" },
-	}
-	info := remoteipc.TokenInfo{
-		UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A",
-	}
-	_, client := startTestServer(t, info, router)
-
-	_, err := client.CallInner(context.Background(), connect.NewRequest(&leapmuxv1.CallInnerRequest{
-		Method:         "worker.OpenAgent",
-		Payload:        []byte(`{}`),
-		TargetWorkerId: "worker-A",
-		WorkspaceId:    "ws-2-other-tenant", // out of scope
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	// Dispatcher must never have been touched on a denied call,
-	// otherwise the deny is informational, not enforcing.
-	assert.Equal(t, "", disp.gotMethod)
-}
-
-// TestServer_StreamInner_AuthorizerLifecycle exercises the synthetic
-// stream-id register/unregister cycle the plan calls out: when a
-// streaming RPC starts, the router registers a `localipc:...` id with
-// the LocalIPCAuthorizer; when the client cancels (or the server
-// closes), that registration must be torn down. Without this, the
-// WatchEvents handler would leak a workspace authorizer per stream.
-//
-// We use the production server (not the bare router) so the test
-// covers the ConnectRPC → router path, not just the router unit test
-// already present in router_test.go.
 func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 	disp := &fakeLocalDispatcher{
 		emitStream: [][]byte{[]byte("frame-1")},
@@ -401,11 +348,10 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 	router := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: disp,
-		Authorizers:     authorizers,
+		Streams:         authorizers,
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -413,7 +359,6 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 		Method:          "worker.WatchEvents",
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
-		WorkspaceId:     "ws-1",
 		ClientRequestId: "req-stream-life",
 	}))
 	require.NoError(t, err)
@@ -447,22 +392,18 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 }
 
 // serverAuthorizerSpy is a goroutine-safe implementation of the
-// LocalIPCAuthorizer registration interface. The router_test.go fake
-// is package-private; this duplicate keeps server_test.go independent.
+// LocalStreams release interface. The router_test.go fake is
+// package-private; this duplicate keeps server_test.go independent.
 type serverAuthorizerSpy struct {
 	mu           sync.Mutex
 	registered   []string
 	unregistered []string
 }
 
-func (s *serverAuthorizerSpy) RegisterLocalAuthorizer(streamID string, _ []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.registered = append(s.registered, streamID)
-}
 func (s *serverAuthorizerSpy) ReleaseLocalStream(streamID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.registered = append(s.registered, streamID)
 	s.unregistered = append(s.unregistered, streamID)
 }
 func (s *serverAuthorizerSpy) snapshotRegistered() []string {

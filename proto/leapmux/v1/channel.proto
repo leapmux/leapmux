@@ -13,16 +13,6 @@ service ChannelService {
   rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse);
   // Close an encrypted channel.
   rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse);
-  // Notify the Worker that a workspace is now accessible on the user's channels.
-  //
-  // A channel's accessible set is seeded once, at OpenChannel time, and grows
-  // only through this RPC. So every workspace that comes into existence after a
-  // channel opened needs an announcement before any workspace-scoped RPC on it
-  // will be served. The Frontend calls this after creating a workspace and
-  // before opening an agent, and again as a repair whenever a Worker refuses a
-  // workspace it should be able to see (TAB_HYDRATION_STATUS_NOT_ACCESSIBLE on a
-  // hydration batch, PERMISSION_DENIED on a workspace-scoped stream).
-  rpc PrepareWorkspaceAccess(PrepareWorkspaceAccessRequest) returns (PrepareWorkspaceAccessResponse);
 }
 
 // --- ChannelService RPC messages ---
@@ -70,24 +60,20 @@ message CloseChannelRequest {
 
 message CloseChannelResponse {}
 
-message PrepareWorkspaceAccessRequest {
-  string worker_id = 1;
-  string workspace_id = 2;
-}
-
-message PrepareWorkspaceAccessResponse {}
-
 // --- Channel relay messages (used between Hub and Worker via bidi stream) ---
 
 // Hub -> Worker: request to open a new channel.
+//
+// The Hub announces no workspace set. A Worker belongs to exactly one user
+// and stores no workspace id, so every row it holds is the channel user's;
+// there is nothing for a per-channel workspace list to narrow.
 message ChannelOpenRequest {
   string channel_id = 1;
   string user_id = 2; // Hub tells Worker who opened the channel
   bytes handshake_payload = 3;
-  repeated string accessible_workspace_ids = 4; // Workspaces the user can access
   // Hub's resolved max_message_size (application payload budget). Worker
   // takes min(this, its own config) as the effective per-channel budget.
-  uint64 max_message_size = 5;
+  uint64 max_message_size = 4;
 }
 
 // Worker -> Hub: response to channel open request.

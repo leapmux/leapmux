@@ -429,12 +429,11 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  tv.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: tv.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -473,12 +472,11 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  tv.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: tv.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 	_, err := st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -517,12 +515,11 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  tv.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(-time.Minute), // already expired
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: tv.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(-time.Minute), // already expired
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})

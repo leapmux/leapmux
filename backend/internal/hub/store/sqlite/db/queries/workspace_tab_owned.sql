@@ -36,17 +36,26 @@ ON CONFLICT (user_id, tab_id) DO UPDATE SET
 -- name: ListOwnedTabsByWorker :many
 SELECT * FROM workspace_tab_owned WHERE user_id = ? AND worker_id = ? ORDER BY workspace_id, position;
 
--- ListDistinctWorkersByWorkspace binds user_id as well as workspace_id.
--- A workspace's owner does not constrain the user_id of rows written
--- against that workspace_id, and the DISTINCT worker_id projection drops
--- the owner column, so the caller cannot filter what this query
--- over-selects.
--- name: ListDistinctWorkersByWorkspace :many
-SELECT DISTINCT worker_id FROM workspace_tab_owned WHERE user_id = ? AND workspace_id = ?;
+-- ListOwnedTabsByWorkspace binds user_id as well as workspace_id. A
+-- workspace's owner does not constrain the user_id of rows written against
+-- that workspace_id, so without user_id this query over-selects rows the
+-- caller cannot then filter.
+--
+-- Returns the tab ROWS, not just the distinct worker ids. The caller needs
+-- both: the worker set to fan out to, and the (tab_type, tab_id) list each
+-- worker must tear down. Reading them here -- inside the delete transaction --
+-- is what makes the two atomic. When each caller resolved its own list
+-- beforehand, a tab a peer opened in between was missed, a failed read
+-- degraded silently to "close nothing", and both callers read
+-- workspace_tab_rendered, a strict SUBSET of this table, so a
+-- projection-hidden tab was structurally unreachable rather than merely late.
+-- name: ListOwnedTabsByWorkspace :many
+SELECT worker_id, tab_type, tab_id FROM workspace_tab_owned
+WHERE user_id = ? AND workspace_id = ?
+ORDER BY worker_id, tab_id;
 
--- GetOwnedTab binds user_id as well as workspace_id and tab_id. Tab ids
--- are client-minted and unique only within one user, so (workspace_id,
--- tab_id) is not a key: without user_id this :one returns an arbitrary
--- tenant's row.
+-- GetOwnedTab is a point lookup on PRIMARY KEY (user_id, tab_id). Tab ids
+-- are client-minted and unique only within one user, so user_id is half the
+-- key, not a filter: without it this :one returns an arbitrary tenant's row.
 -- name: GetOwnedTab :one
-SELECT * FROM workspace_tab_owned WHERE user_id = ? AND workspace_id = ? AND tab_id = ?;
+SELECT * FROM workspace_tab_owned WHERE user_id = ? AND tab_id = ?;

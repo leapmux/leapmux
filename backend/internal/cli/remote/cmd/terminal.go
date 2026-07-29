@@ -54,9 +54,8 @@ func RunTerminalSend(rawCtx any, args []string) error {
 			return err
 		}
 		req := &leapmuxv1.SendInputRequest{
-			WorkspaceId: got.WorkspaceID,
-			TerminalId:  got.TabID,
-			Data:        payload,
+			TerminalId: got.TabID,
+			Data:       payload,
 		}
 		if err := callInnerRPC(ctx, c, got.WorkerID, "SendInput", req, nil); err != nil {
 			return err
@@ -164,8 +163,7 @@ func RunTerminalShells(rawCtx any, args []string) error {
 			return err
 		}
 		req := &leapmuxv1.ListAvailableShellsRequest{
-			WorkspaceId: got.WorkspaceID,
-			WorkerId:    got.WorkerID,
+			WorkerId: got.WorkerID,
 		}
 		var resp leapmuxv1.ListAvailableShellsResponse
 		if err := callInnerRPC(ctx, c, got.WorkerID, "ListAvailableShells", req, &resp); err != nil {
@@ -185,9 +183,8 @@ func RunTerminalShells(rawCtx any, args []string) error {
 // channel so live clients see the new title.
 func renameTerminalTab(ctx context.Context, c *remote.Client, got resolve.Resolved, title string) error {
 	req := &leapmuxv1.UpdateTerminalTitleRequest{
-		WorkspaceId: got.WorkspaceID,
-		TerminalId:  got.TabID,
-		Title:       title,
+		TerminalId: got.TabID,
+		Title:      title,
 	}
 	if err := callInnerRPC(ctx, c, got.WorkerID, "UpdateTerminalTitle", req, nil); err != nil {
 		return err

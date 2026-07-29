@@ -111,10 +111,6 @@ describe('isAgentCreateDisabled', () => {
     expect(isAgentCreateDisabled(valid)).toBe(false)
   })
 
-  it('returns true when workspaceId is empty', () => {
-    expect(isAgentCreateDisabled({ ...valid, workspaceId: '' })).toBe(true)
-  })
-
   it('returns true when no providers are available', () => {
     expect(isAgentCreateDisabled({ ...valid, noProviders: true })).toBe(true)
   })
@@ -280,10 +276,6 @@ describe('isTerminalCreateDisabled', () => {
 
   it('returns false when all fields are valid', () => {
     expect(isTerminalCreateDisabled(valid)).toBe(false)
-  })
-
-  it('returns true when workspaceId is empty', () => {
-    expect(isTerminalCreateDisabled({ ...valid, workspaceId: '' })).toBe(true)
   })
 
   it('returns true when submitting', () => {

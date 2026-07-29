@@ -14,6 +14,7 @@ import {
   inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
   setWorkingDir,
+  waitForAgentStartupViaAPI,
   waitForAgentsViaAPI,
   waitForAppPageReady,
   waitForPathDeleted,
@@ -206,9 +207,11 @@ test.describe('Worktree Git Modes', () => {
       checkoutBranch: 'api-switch-target',
     })
 
-    // Verify the repo is now on the target branch.
-    const after = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
-    expect(after).toBe('api-switch-target')
+    // The checkout runs on the worker's async startup goroutine, so OpenAgent has
+    // already answered by the time we get here. Poll rather than read once.
+    await expect.poll(() =>
+      execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim(),
+    ).toBe('api-switch-target')
   })
 
   test('switch-to-branch with dirty workdir shows warning in UI', async ({
@@ -288,8 +291,11 @@ test.describe('Worktree Git Modes', () => {
       useWorktreePath: worktreeDir,
     })
 
-    // Close the first agent — worktree should persist because second agent still references it.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    // Both agents must have FINISHED starting before the first is closed: the
+    // second agent's worktree_tabs link is registered on its async startup
+    // goroutine, and closing the first before that lands leaves the worktree
+    // looking unreferenced -- so the last-tab inspect below reports no prompt.
+    const agents = await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId, 2)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
@@ -398,8 +404,11 @@ test.describe('Worktree Git Modes', () => {
     // register this tab.
     const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
 
-    // Close the first agent — worktree should persist because second agent registered.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    // Both agents must have FINISHED starting before the first is closed: the
+    // second agent's worktree_tabs link is registered on its async startup
+    // goroutine, so closing the first before that lands leaves the worktree
+    // looking unreferenced and the last-tab inspect reports no prompt.
+    const agents = await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId, 2)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
@@ -467,6 +476,8 @@ test.describe('Worktree Git Modes', () => {
       worktreeBranch: 'derived-from-feature',
       worktreeBaseBranch: 'feature-base',
     })
+    // The worktree is materialized during async startup, after OpenAgent answers.
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     // Verify worktree was created.
     const worktreeDir = join(realDataDir, 'test-repo-base-branch-worktrees', 'derived-from-feature')

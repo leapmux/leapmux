@@ -160,7 +160,7 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	// Empty worker report: the worker hosts nothing, so every row the hub
 	// listed for this registrant is stale.
-	svc.handleWorkspaceTabsSync(ctx, conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkspaceTabsSync{})
+	svc.handleWorkspaceTabsSync(ctx, conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{})
 
 	assert.Equal(t, []string{userA.ID}, reg.seen(),
 		"only the registrant's manager may be resolved")
@@ -200,7 +200,7 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 		SendFn:   func(*leapmuxv1.ConnectResponse) error { sent++; return nil },
 	}
 
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkspaceTabsSync{})
+	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{})
 
 	assert.Equal(t, []string{userA.ID}, reg.seen())
 	assert.Empty(t, journal.tombstonedTabs(userA.ID), "nothing commits when the manager cannot be resolved")
@@ -221,7 +221,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	st := hubtestutil.OpenTestStore(t)
 	userA := storetest.SeedUser(t, st, "alice")
 	userB := storetest.SeedUser(t, st, "bob")
-	wsA := seedOwnedTab(t, st, userA.ID, "alice ws", "dup-tab")
+	_ = seedOwnedTab(t, st, userA.ID, "alice ws", "dup-tab")
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
@@ -233,16 +233,16 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	}}
 
 	// The worker hosts the tab, in alice's workspace, exactly as her row says.
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkspaceTabsSync{
-		Tabs: []*leapmuxv1.WorkspaceTabEntry{
-			{WorkspaceId: wsA, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "dup-tab"},
+	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{
+		Tabs: []*leapmuxv1.TabRef{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "dup-tab"},
 		},
 	})
 
 	require.Len(t, sent, 1)
-	require.NotNil(t, sent[0].GetWorkspaceTabsSyncResp(), "the sync is acknowledged")
+	require.NotNil(t, sent[0].GetWorkerTabInventoryResp(), "the sync is acknowledged")
 	// The tombstone journal is now the only observable: the response carries no
-	// per-tab classification (see WorkspaceTabsSyncResponse). Alice's tab
+	// per-tab classification (see WorkerTabInventoryResponse). Alice's tab
 	// matched her own row, so nothing of hers is stale -- and Bob's
 	// identically-named row must not be dragged in by the id collision.
 	assert.Empty(t, journal.tombstonedTabs(userA.ID))
@@ -258,7 +258,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	userA := storetest.SeedUser(t, st, "alice")
-	wsA := seedOwnedTab(t, st, userA.ID, "alice ws", "tab-a")
+	_ = seedOwnedTab(t, st, userA.ID, "alice ws", "tab-a")
 
 	logs := captureDefaultLogger(t)
 	journal := newTabSyncJournal()
@@ -266,10 +266,10 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	sent := 0
 	conn := &workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error { sent++; return nil }}
 
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkspaceTabsSync{
-		Tabs: []*leapmuxv1.WorkspaceTabEntry{
-			{WorkspaceId: wsA, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
-			{WorkspaceId: wsA, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "not-in-crdt"},
+	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkerTabInventory{
+		Tabs: []*leapmuxv1.TabRef{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "not-in-crdt"},
 		},
 	})
 

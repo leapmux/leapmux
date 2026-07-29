@@ -72,8 +72,8 @@ func (w *testResponseWriter) ChannelID() string   { return w.channelID }
 func (*testResponseWriter) MaxPayloadBudget() int { return 0 }
 
 // testChannelID is the channel id setupTestService's handshake
-// registers; every fresh testResponseWriter in this package shares it
-// so AuthorizerFor resolves the same accessible-workspace set.
+// registers; every fresh testResponseWriter in this package shares it so a
+// dispatched handler always finds the same live channel session.
 const testChannelID = "test-ch"
 
 // newTestWriter returns a testResponseWriter bound to the package's
@@ -119,15 +119,7 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 type setupOption func(*setupConfig)
 
 type setupConfig struct {
-	workspaceIDs []string
-	remoteIPC    RemoteIPCFactory
-}
-
-// withWorkspaces grants the test channel access to the given workspace
-// IDs. Without this option AccessibleWorkspaceIDs is empty, so every
-// requireAccessibleWorkspace check returns PERMISSION_DENIED.
-func withWorkspaces(ids ...string) setupOption {
-	return func(c *setupConfig) { c.workspaceIDs = ids }
+	remoteIPC RemoteIPCFactory
 }
 
 // withRemoteIPC wires the worker's RemoteIPC factory before handlers are
@@ -152,8 +144,8 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, workerdb.Migrate(sqlDB))
 
-	// Set up a channel manager with a handshake so
-	// AccessibleWorkspaceIDs returns the desired workspaces.
+	// Set up a channel manager with a completed handshake so dispatched
+	// handlers see a real session.
 	// Classical encryption keeps setupTestService cheap under -race: these
 	// tests exercise service/dispatcher behaviour, not the PQ handshake, and
 	// SLH-DSA under the race detector otherwise dominates the package runtime.
@@ -165,11 +157,10 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
 	require.NoError(t, err)
 	chmgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
-		ChannelId:              testChannelID,
-		UserId:                 "user-1",
-		HandshakePayload:       msg1,
-		AccessibleWorkspaceIds: cfg.workspaceIDs,
-		MaxMessageSize:         uint64(channelwire.MaxMessageSize),
+		ChannelId:        testChannelID,
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
 	})
 
 	// Built through service.New, not by hand.
@@ -177,7 +168,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	// A hand-rolled &Service{} is the same "declared but never wired"
 	// hazard the Config embedding exists to remove, reintroduced in the
 	// harness: it omitted PrivateEvents and FileTabPaths -- both
-	// documented "always non-nil after New" -- so WatchWorkspacePrivateEvents
+	// documented "always non-nil after New" -- so WatchWorkerPrivateEvents
 	// returned early on its own nil guard and any test dispatching it
 	// passed without exercising anything. Going through the constructor
 	// means these tests run the wiring production runs, and a field added
@@ -208,23 +199,21 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 }
 
 // startTestTerminal spawns a live PTY via svc.Terminals, persists a
-// matching DB row so access-control lookups succeed, and registers the
-// full cleanup chain. Returns the working directory assigned to the
-// terminal so tests can use it for follow-up assertions. Used by tests
-// that need a running terminal attached to an accessible workspace.
-func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id, workspaceID string) string {
+// matching DB row so the requireTerminal lookup succeeds, and registers
+// the full cleanup chain. Returns the working directory assigned to the
+// terminal so tests can use it for follow-up assertions.
+func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id string) string {
 	t.Helper()
 	workingDir := t.TempDir()
 
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
-		ID: id, WorkspaceID: workspaceID,
-		Shell: testutil.TestShell(), WorkingDir: workingDir,
+		ID: id, Shell: testutil.TestShell(), WorkingDir: workingDir,
 		Cols: 80, Rows: 24,
 	}, func([]byte, int64) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: id, WorkspaceID: workspaceID, WorkingDir: workingDir, HomeDir: "/tmp",
+		ID: id, WorkingDir: workingDir, HomeDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	return workingDir
@@ -234,12 +223,11 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id, work
 // unmarshal, and wait for the PTY to register in the manager. Returns
 // the terminal id minted by the worker. Tests that need to assert
 // against the dispatch response should call dispatch directly.
-func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workspaceID, workingDir string) string {
+func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workingDir string) string {
 	t.Helper()
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: workspaceID,
-		Shell:       testutil.TestShell(),
-		WorkingDir:  workingDir,
+		Shell:      testutil.TestShell(),
+		WorkingDir: workingDir,
 		// 200 cols rather than 80 so cmd.exe's long t.TempDir-derived
 		// prompt (e.g. `C:\Users\RUNNER~1\AppData\Local\Temp\<long
 		// test name>\<id>>` ~ 90 chars) plus the trailing input does
@@ -320,13 +308,20 @@ func drainAllInFlight(svc *Service) {
 	svc.Cleanup.Wait()
 }
 
-// dispatch is a helper that marshals a request proto and dispatches it.
+// dispatch is a helper that marshals a request proto and dispatches it as the
+// worker's own owner ("user-1", the identity setupTestService seeds).
 func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testResponseWriter) {
+	dispatchAs(d, userid.MustNew("user-1"), method, req, w)
+}
+
+// dispatchAs is dispatch with an explicit caller, for the access-control probes
+// that need someone OTHER than the worker's owner.
+func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), caller, &leapmuxv1.InnerRpcRequest{
 		Method:  method,
 		Payload: payload,
 	}, w)
@@ -334,14 +329,13 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create an agent and add a message.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID:            "msg-1",
@@ -363,7 +357,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	assert.Len(t, resp.GetMessages(), 1, "open agent should return messages")
 
 	// Close the agent.
-	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-1"))
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-1")))
 
 	// Verify empty response for closed agent.
 	w2 := newTestWriter()
@@ -379,24 +373,22 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 
 func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create two agents.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-open",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-open",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-closed",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-closed",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	// Close one agent.
-	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-closed"))
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-closed")))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"agent-open", "agent-closed"},
@@ -410,27 +402,25 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 
 func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create two terminals via DB.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-open",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("open screen"),
+		ID:         "term-open",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte("open screen"),
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-closed",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("closed screen"),
-		ClosedAt:    sqltime.SQLiteNullTimeOf(time.Now()),
+		ID:         "term-closed",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte("closed screen"),
+		ClosedAt:   sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
@@ -446,14 +436,13 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 
 func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create an agent, add a message, then close it.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-closed",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-closed",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID:            "msg-1",
@@ -464,7 +453,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
-	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-closed"))
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-closed")))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
@@ -484,18 +473,17 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 
 func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create a terminal and close it.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-closed",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("some screen"),
-		ClosedAt:    sqltime.SQLiteNullTimeOf(time.Now()),
+		ID:         "term-closed",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte("some screen"),
+		ClosedAt:   sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -512,62 +500,52 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	assert.Equal(t, 0, termWatchers, "no watcher should be registered for closed terminal")
 }
 
-// TestWatchEvents_ForeignWorkspaceAgent_NotWatched pins the access-control
-// filter for the leakiest gateSetFilter handler: an OPEN agent that lives in a
-// workspace outside the channel's accessible set must not be watched. This is a
-// different rejection branch than TestWatchEvents_ClosedAgent_NotWatched — a
-// closed agent is dropped by ListAgentsByIDs (the row never loads), whereas this
-// agent loads fine and is rejected only by the !allowedWorkspaces check. Without
-// that check a foreign workspace's live event stream would leak cross-tenant.
-func TestWatchEvents_ForeignWorkspaceAgent_NotWatched(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-
-	// Agent exists and is open, but in a workspace the channel cannot access.
-	seedAgent(t, svc, "agent-foreign", "ws-other")
+// TestWatchEvents_UnknownAgent_NotWatched pins the rejection branch that
+// survives: an id this worker holds no OPEN row for is refused, and nothing is
+// registered for it. (A CLOSED agent takes the same path -- ListAgentsByIDs
+// filters closed_at IS NULL, so the row simply never loads.)
+func TestWatchEvents_UnknownAgent_NotWatched(t *testing.T) {
+	svc, d, w := setupTestService(t)
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
-			{AgentId: "agent-foreign", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
+			{AgentId: "agent-unknown", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
 		},
 	}, w)
 
 	// All requested entities rejected => a single NOT_FOUND stream error.
-	require.Len(t, w.streams, 1, "foreign-workspace agent should produce a stream error")
+	require.Len(t, w.streams, 1, "an unknown agent should produce a stream error")
 	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
-	agentWatchers := svc.Watchers.agents.count("agent-foreign")
-	assert.Equal(t, 0, agentWatchers, "no watcher should be registered for a foreign-workspace agent")
+	assert.Equal(t, 0, svc.Watchers.agents.count("agent-unknown"),
+		"no watcher should be registered for an agent this worker does not hold")
 }
 
-// TestWatchEvents_ForeignWorkspaceTerminal_NotWatched is the terminal mirror:
-// an open terminal in an inaccessible workspace must not be watched.
-func TestWatchEvents_ForeignWorkspaceTerminal_NotWatched(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-
-	seedTerminal(t, svc, "term-foreign", "ws-other")
+// TestWatchEvents_UnknownTerminal_NotWatched is the terminal mirror.
+func TestWatchEvents_UnknownTerminal_NotWatched(t *testing.T) {
+	svc, d, w := setupTestService(t)
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-foreign"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-unknown"}},
 	}, w)
 
-	require.Len(t, w.streams, 1, "foreign-workspace terminal should produce a stream error")
+	require.Len(t, w.streams, 1, "an unknown terminal should produce a stream error")
 	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
 	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
 
-	termWatchers := svc.Watchers.terminals.count("term-foreign")
-	assert.Equal(t, 0, termWatchers, "no watcher should be registered for a foreign-workspace terminal")
+	assert.Equal(t, 0, svc.Watchers.terminals.count("term-unknown"),
+		"no watcher should be registered for a terminal this worker does not hold")
 }
 
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 
 	// Start a real terminal.
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID:            "term-1",
-		WorkspaceID:   "ws-1",
 		Shell:         testutil.TestShell(),
 		WorkingDir:    workingDir,
 		ShellStartDir: "",
@@ -579,13 +557,12 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 
 	// Persist the initial record (like OpenTerminal does).
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  workingDir,
-		HomeDir:     svc.HomeDir,
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte{},
+		ID:         "term-1",
+		WorkingDir: workingDir,
+		HomeDir:    svc.HomeDir,
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte{},
 	}))
 
 	// Send a command so the terminal has screen content.
@@ -634,9 +611,9 @@ func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 		t.Skip("cmd.exe + ConPTY does not propagate `exit N` to OS exit code on this runner")
 	}
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
-	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	// Exit with a non-zero, non-sentinel code so a regression that
 	// writes the shutdown sentinel (-1) or the zero-value default (0)
 	// is unambiguous.
@@ -656,9 +633,9 @@ func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 
 func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
-	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
 	enter := testutil.TestShellEnter()
 	w2 := newTestWriter()
@@ -713,14 +690,13 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 // the channel.
 func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	for _, id := range []string{"agent-1", "agent-2"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID:          id,
-			WorkspaceID: "ws-1",
-			WorkingDir:  "/tmp",
-			HomeDir:     "/tmp",
+			ID:         id,
+			WorkingDir: "/tmp",
+			HomeDir:    "/tmp",
 		}))
 	}
 
@@ -759,22 +735,20 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 // is retired, no error surfaces, and the terminal simply goes quiet.
 func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("s"),
+		ID:         "term-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte("s"),
 	}))
 
 	req := &leapmuxv1.WatchEventsRequest{
@@ -818,13 +792,12 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 // healthy-looking stream never trips the retry.
 func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 
 	// No prior WatchEvents on this channel: nothing is registered, exactly
@@ -864,22 +837,20 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 // forever.
 func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("s"),
+		ID:         "term-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte("s"),
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{

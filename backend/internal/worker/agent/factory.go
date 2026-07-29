@@ -348,7 +348,7 @@ func modelIDNormalizerFor(provider leapmuxv1.AgentProvider) func(string) string 
 // DefaultModelEnvOverride returns the value of the provider's
 // LEAPMUX_*_DEFAULT_MODEL environment variable, or "" if unset. It is the
 // explicit operator override that takes precedence over both a CLI-reported
-// default and the static catalog's preferred model (see withDefaultModelMarked).
+// default and the static catalog's preferred model (see defaultModelIDForList).
 func DefaultModelEnvOverride(provider leapmuxv1.AgentProvider) string {
 	reg, ok := agentFactoryRegistry[provider]
 	if !ok || reg.envModelKey == "" {
@@ -432,8 +432,8 @@ func ProviderManagesEffort(provider leapmuxv1.AgentProvider) bool {
 // (e.g. DefaultEffort) from a catalog returned by the CLI.
 func FindAvailableModel(models []*ModelInfo, id string) *ModelInfo {
 	for _, m := range models {
-		// Guard nil entries: callers (defaultModelForList, withDefaultModelMarked)
-		// already treat the slice as possibly nil-bearing, so this must too.
+		// Guard nil entries: callers (modelOptionGroup, the effort resolver) already
+		// treat the slice as possibly nil-bearing, so this must too.
 		if m != nil && m.Id == id {
 			return m
 		}

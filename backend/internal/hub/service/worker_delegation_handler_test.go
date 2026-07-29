@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,7 +59,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	// Tests don't want production-grade backoff; shrink the
 	// AddTab-race propagation window so "tab missing" cases fail fast
 	// while still exercising the polling loop.
-	h.MintTabPropagationTimeout = 50 * time.Millisecond
+	h.MintTabPropagationTimeout = testMintPropagationTimeout
 	h.MintTabPropagationStep = 5 * time.Millisecond
 	h.RegisterRoutes(mux)
 
@@ -140,12 +139,16 @@ func revokeRequest(t *testing.T, env *delegationEnv, workerAuthToken string, bod
 	return resp
 }
 
+// testMintPropagationTimeout is the tuned ownership-poll window the test env
+// installs, so a test can assert "the poll did not run" against the same value
+// the handler is using rather than a duplicated literal.
+const testMintPropagationTimeout = 50 * time.Millisecond
+
 func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
 	env := setupDelegation(t)
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":             env.userID,
-		"workspace_id":        env.workspaceID,
 		"issued_for_tab_id":   env.tabID,
 		"issued_for_tab_type": int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		"agent_id":            "agent-1",
@@ -171,14 +174,12 @@ func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
 	row, err := env.store.DelegationTokens().GetByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Equal(t, env.workerID, row.WorkerID)
-	assert.Equal(t, env.workspaceID, row.WorkspaceID)
 }
 
 func TestWorkerDelegation_Mint_RejectsMissingBearer(t *testing.T) {
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, "", map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -189,7 +190,6 @@ func TestWorkerDelegation_Mint_RejectsUnknownWorkerToken(t *testing.T) {
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, "not-a-real-worker-token", map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -200,7 +200,6 @@ func TestWorkerDelegation_Mint_RejectsMissingFields(t *testing.T) {
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		// user_id missing
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -225,7 +224,6 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 
 	resp := mintRequest(t, env, otherAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID, // hosted by env.workerID
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -242,7 +240,6 @@ func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
 	// the full production backoff.
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": "nonexistent-tab",
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -280,7 +277,6 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":             env.userID,
-		"workspace_id":        env.workspaceID,
 		"issued_for_tab_id":   lateTabID,
 		"issued_for_tab_type": int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		"agent_id":            "agent-late",
@@ -295,8 +291,7 @@ func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
 	// Seed a second user and try to mint for env.workerID.
 	otherUserID := hubtestutil.CreateTestUser(t, env.store, "other-user", "p")
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":           otherUserID,
-		"workspace_id":      env.workspaceID, // owned by admin, not other
+		"user_id":           otherUserID, // owned by admin, not other
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -304,13 +299,12 @@ func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
 }
 
 // The token authenticates as req.UserID, so the mint requires that user to be
-// exactly the calling worker's own registrant -- a local check rather than a
-// transitive consequence of owner-only tab placement. Owner-only access makes a
-// worker hosting a tab in another user's workspace unreachable through the
-// normal CRDT path, so this inserts the tab row directly to stand in for any
-// future path that lets that state arise. The tab-ownership and workspace-access
-// checks both pass (the worker hosts the tab; the foreign user owns the
-// workspace), so only the explicit registrant guard catches it.
+// exactly the calling worker's own registrant -- and with the workspace pin
+// gone, that is the WHOLE tenancy check. Owner-only access makes a worker
+// hosting a foreign user's tab unreachable through the normal CRDT path, so
+// this inserts the tab row directly to stand in for any future path that lets
+// that state arise: the tab-ownership check passes (the worker hosts the tab),
+// so only the explicit registrant guard catches it.
 func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testing.T) {
 	env := setupDelegation(t)
 	ctx := context.Background()
@@ -335,8 +329,7 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 	}))
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":           other.ID,
-		"workspace_id":      otherWS, // owned by `other`, who is NOT the worker's registrant
+		"user_id":           other.ID, // owned by `other`, who is NOT the worker's registrant
 		"issued_for_tab_id": otherTab,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -345,59 +338,41 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 	assert.Contains(t, string(body), "registrant")
 }
 
-// failWorkspaceGetStore forces Workspaces().GetByID to return a
-// non-NotFound store error, standing in for a transient DB failure during
-// the mint workspace-access check. Everything else delegates to the real store.
-type failWorkspaceGetStore struct {
-	store.Store
-	err error
-}
-
-func (s failWorkspaceGetStore) Workspaces() store.WorkspaceStore {
-	return failWorkspaceGet{WorkspaceStore: s.Store.Workspaces(), err: s.err}
-}
-
-type failWorkspaceGet struct {
-	store.WorkspaceStore
-	err error
-}
-
-func (w failWorkspaceGet) GetByID(context.Context, string) (*store.Workspace, error) {
-	return nil, w.err
-}
-
-// TestWorkerDelegation_Mint_StoreErrorIsRetryable500 pins that a transient
-// store error during the workspace-access check surfaces as a retryable 500,
-// not a permanent 403 -- a freshly-spawned agent treats 403 as a hard authz
-// denial (not retryable) and would fail the mint permanently on a brief DB blip.
-func TestWorkerDelegation_Mint_StoreErrorIsRetryable500(t *testing.T) {
+// TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling pins the ORDER of
+// the two 403 checks, not merely that a foreign user_id is refused (which
+// TestWorkerDelegation_Mint_RejectsCrossUserMint already covers).
+//
+// The ownership poll binds the caller-supplied user_id, so a foreign id can
+// never match and the poll always runs to its full timeout before the O(1)
+// registrant comparison refuses the request. That let anything holding a worker
+// auth_token pin a hub goroutine plus a stream of point lookups per call. The
+// assertion is therefore a duration: the refusal must be immediate, not
+// timeout-bound.
+//
+// The message distinguishes the two paths -- "user is not the worker's
+// registrant" can only come from the check that now runs first.
+func TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling(t *testing.T) {
 	env := setupDelegation(t)
-	failing := failWorkspaceGetStore{Store: env.store, err: errors.New("transient db failure")}
+	otherUserID := hubtestutil.CreateTestUser(t, env.store, "other-user-no-poll", "p")
 
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	h := service.NewWorkerDelegationHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, nil, nil))
-	h.MintTabPropagationTimeout = 50 * time.Millisecond
-	h.MintTabPropagationStep = 5 * time.Millisecond
-	h.RegisterRoutes(mux)
-
-	buf, err := json.Marshal(map[string]any{
-		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
-		"issued_for_tab_id": env.tabID,
+	start := time.Now()
+	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           otherUserID,
+		"issued_for_tab_id": "nonexistent-tab",
 	})
-	require.NoError(t, err)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/worker/delegation-tokens/mint", bytes.NewReader(buf))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+env.workerAuthToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	elapsed := time.Since(start)
 	defer func() { _ = resp.Body.Close() }()
 
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode,
-		"a transient store error during the access check must be a retryable 500, not a permanent 403")
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "user is not the worker's registrant",
+		"the registrant check must be the one that refuses, which means it ran first")
+	// The test env tunes the propagation window down to ~50ms, so anything at or
+	// beyond that means the poll ran. Compared against the tuned window rather
+	// than a bare constant so this cannot silently pass if the window shrinks.
+	assert.Less(t, elapsed, testMintPropagationTimeout,
+		"a foreign user_id must be refused before the ownership poll, not after it")
 }
 
 func TestWorkerDelegation_Mint_BoundsTTL(t *testing.T) {
@@ -407,7 +382,6 @@ func TestWorkerDelegation_Mint_BoundsTTL(t *testing.T) {
 	huge := int64((10 * time.Hour) / time.Second)
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 		"ttl_seconds":       huge,
 	})
@@ -425,7 +399,6 @@ func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
 	// Mint then revoke.
 	mintResp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	require.Equal(t, http.StatusOK, mintResp.StatusCode)
@@ -467,7 +440,6 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 	// Mint via env's worker.
 	mintResp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	var body map[string]any
@@ -539,7 +511,6 @@ func TestWorkerDelegation_Mint_RejectsBlankUserID(t *testing.T) {
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           "",
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -589,7 +560,6 @@ func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": foreignTabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
@@ -601,7 +571,6 @@ func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
 	// owner mismatch and not a broken fixture.
 	ok := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           env.userID,
-		"workspace_id":      env.workspaceID,
 		"issued_for_tab_id": env.tabID,
 	})
 	defer func() { _ = ok.Body.Close() }()

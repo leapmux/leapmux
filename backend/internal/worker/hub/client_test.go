@@ -332,30 +332,67 @@ func TestIsCodeUnauthenticated(t *testing.T) {
 
 // TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback pins the
 // dispatch wiring for the hub's reply to the connect-time
-// WorkspaceTabsSync. Without this case, handleMessage falls through
+// WorkerTabInventory. Without this case, handleMessage falls through
 // to the "unhandled hub message" warn — the response would be wasted
 // protocol and reconnects would have to wait for the orphan
 // reconciler's hourly tick to converge worker state.
 func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
 	c := New("http://localhost:0")
-	var captured *leapmuxv1.WorkspaceTabsSyncResponse
-	c.OnTabSyncResponse = func(resp *leapmuxv1.WorkspaceTabsSyncResponse) {
+	var captured *leapmuxv1.WorkerTabInventoryResponse
+	c.OnTabSyncResponse = func(resp *leapmuxv1.WorkerTabInventoryResponse) {
 		captured = resp
 	}
 
 	// The message is intentionally empty -- its whole contract is "a sync was
 	// handled, run a reconcile pass". What matters here is that the dispatch
 	// arm exists and hands the message to the callback.
-	resp := &leapmuxv1.WorkspaceTabsSyncResponse{}
+	resp := &leapmuxv1.WorkerTabInventoryResponse{}
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		RequestId: "req-7",
-		Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
-			WorkspaceTabsSyncResp: resp,
+		Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{
+			WorkerTabInventoryResp: resp,
 		},
 	})
 
 	require.NotNil(t, captured, "OnTabSyncResponse should be invoked")
 	assert.Same(t, resp, captured, "callback should receive the original response message verbatim")
+}
+
+// TestHandleMessage_ReconcileNudge_InvokesCallback pins the dispatch wiring for
+// the Hub's mid-session convergence nudge.
+//
+// Without this arm handleMessage falls through to the "unhandled hub message"
+// warn, and a tab close whose E2EE RPC failed -- or one a peer client or
+// `leapmux remote tab close` performed CRDT-only -- would again wait out the
+// orphan reconciler's hourly tick, leaving the agent subprocess running the
+// whole time.
+func TestHandleMessage_ReconcileNudge_InvokesCallback(t *testing.T) {
+	c := New("http://localhost:0")
+	var nudges int
+	c.OnReconcileNudge = func() { nudges++ }
+
+	// Deliberately empty and unsolicited: the nudge names no tabs, because the
+	// reconciler re-reads the hub's authoritative owned-tab list on every pass
+	// and a tab list here would be a second, staler source for the same fact.
+	c.handleMessage(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{
+			ReconcileNudge: &leapmuxv1.ReconcileNudge{},
+		},
+	})
+
+	assert.Equal(t, 1, nudges, "OnReconcileNudge should be invoked")
+}
+
+// A nil callback must be tolerated: the nudge is advisory, and a worker wired
+// without a reconciler still has to survive the message.
+func TestHandleMessage_ReconcileNudge_NilCallbackIsSafe(t *testing.T) {
+	c := New("http://localhost:0")
+	require.Nil(t, c.OnReconcileNudge)
+	c.handleMessage(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{
+			ReconcileNudge: &leapmuxv1.ReconcileNudge{},
+		},
+	})
 }
 
 // The Hub delivers the worker's owner on every connect; without this dispatch arm
@@ -402,8 +439,8 @@ func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
 
 	assert.NotPanics(t, func() {
 		c.handleMessage(&leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
-				WorkspaceTabsSyncResp: &leapmuxv1.WorkspaceTabsSyncResponse{},
+			Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{
+				WorkerTabInventoryResp: &leapmuxv1.WorkerTabInventoryResponse{},
 			},
 		})
 	})

@@ -343,19 +343,14 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 			}
 			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
 		}
-		if del.WorkspaceID == "" || del.WorkerID == "" {
-			// A delegation row must always carry a workspace scope AND the worker
-			// that minted it. An empty either is a data-integrity slip that would
-			// make DelegationCredential panic -- and this runs as the singleflight
-			// leader, so the panic re-fires into every follower collapsed onto
-			// the same bearer key. Treat the malformed row as an invalid token
-			// (permanent, not a retryable 500) instead.
-			//
-			// Both fields are guarded because the constructor requires both: the
-			// minter joined workspace_id as a required field when it became the
-			// bound on where a token may be used, and a guard that covers two of
-			// three required fields leaves the third to panic on the one input
-			// this function exists to reject cleanly.
+		if del.WorkerID == "" {
+			// A delegation row must always carry the worker that minted it: it
+			// is the one bound on where the token may be used
+			// (DelegationWorkerScope). An empty one is a data-integrity slip
+			// that would make DelegationCredential panic -- and this runs as the
+			// singleflight leader, so the panic re-fires into every follower
+			// collapsed onto the same bearer key. Treat the malformed row as an
+			// invalid token (permanent, not a retryable 500) instead.
 			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 		}
 		return loadedBearer{
@@ -370,7 +365,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				AuthGeneration: del.AuthGeneration,
 			},
 			touch:      func() { _ = v.store.DelegationTokens().Touch(ctx, del.ID) },
-			credential: DelegationCredential(tokenID, del.WorkspaceID, del.WorkerID),
+			credential: DelegationCredential(tokenID, del.WorkerID),
 		}, nil
 	}
 

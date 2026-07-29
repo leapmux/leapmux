@@ -65,15 +65,11 @@ type SubmitInput struct {
 	Batches      []*leapmuxv1.OpBatch
 	PrincipalID  string
 	OriginClient string
-	// WorkspaceScopeID, when non-empty, narrows client-auth checks to
-	// this single workspace. Delegation bearers use it so a principal
-	// owning other workspaces cannot submit ops against a sibling
-	// workspace through a scoped remote session.
-	WorkspaceScopeID string
 	// WorkerScope, when non-nil, narrows which WORKER ids this principal's ops
 	// may reference to those the delegation token's minting worker is entitled to
-	// reach. It is the sibling of WorkspaceScopeID: that one bounds WHERE a bearer
-	// may write, this one bounds WHICH MACHINE it may bind a tab to.
+	// reach. It is the ONLY narrowing a delegation bearer carries: it bounds
+	// WHICH MACHINE the bearer may bind a tab to, which is the one reach
+	// authenticating as the tab's own user does not already grant.
 	//
 	// It is a predicate rather than an id because the rule (target IS the minter,
 	// or the token's user owns the minter) lives in the auth package, which this
@@ -184,6 +180,11 @@ type Manager struct {
 	// can mutate it before NewManager finishes building the controller.
 	clearGrace time.Duration
 
+	// reconcileNudger, when set, is told which workers hosted a tab a batch
+	// just tombstoned, so each can converge immediately instead of waiting out
+	// its reconciler interval. Nil disables the nudge.
+	reconcileNudger ReconcileNudger
+
 	submitCh   chan submitJob
 	internalCh chan submitJob
 	// seedCh carries SeedStateForTest closures to the manager goroutine, so
@@ -224,6 +225,14 @@ type Manager struct {
 	// flight at shutdown still get the chance to emit their log
 	// breadcrumb instead of being silently dropped.
 	auditWG sync.WaitGroup
+
+	// nudgeWG tracks the background reconcile-nudge goroutines. Stop()
+	// deliberately does NOT wait on it: a nudge reaches a worker's Connect
+	// stream through Conn.Send, an uninterruptible blocking HTTP/2 write, so
+	// draining it would let one stalled worker hang the whole manager's
+	// shutdown. Only WaitForNudges (tests) waits, which is safe because a test
+	// nudger returns promptly.
+	nudgeWG sync.WaitGroup
 }
 
 // SubscriberFilter narrows the events a subscriber receives.
@@ -264,12 +273,7 @@ type Subscriber struct {
 	// requested all readable workspaces; a non-nil map never expands beyond
 	// those IDs when ACLs change.
 	RequestedWorkspaceIDs map[string]bool
-	// WorkspaceScopeID is the immutable upper bound on Filter for the
-	// lifetime of the subscription. Delegation-authenticated streams set
-	// it to the workspace encoded in the bearer; lifecycle ACL refreshes
-	// may add that workspace but must never add a sibling.
-	WorkspaceScopeID string
-	Filter           SubscriberFilter
+	Filter                SubscriberFilter
 	// Send delivers one event to this subscriber.
 	//
 	// Contract: Send MUST return promptly — implementations either push
@@ -289,9 +293,6 @@ type Subscriber struct {
 }
 
 func subscriberMaySeeWorkspace(sub *Subscriber, workspaceID string) bool {
-	if sub.WorkspaceScopeID != "" && sub.WorkspaceScopeID != workspaceID {
-		return false
-	}
 	return sub.RequestedWorkspaceIDs == nil || sub.RequestedWorkspaceIDs[workspaceID]
 }
 
@@ -378,6 +379,31 @@ type presenceClearJob struct {
 // time. Used today only to override timings in tests; new knobs that
 // don't belong on the required-args list can be added here.
 type ManagerOption func(*Manager)
+
+// ReconcileNudger asks a worker to run its orphan reconciler now.
+//
+// A narrow interface, injected, for the same reason AuthChecker is: the CRDT
+// manager must not depend on the worker-connection manager, and a test drives it
+// with a recorder rather than a live bidi stream.
+type ReconcileNudger interface {
+	// NudgeReconcile is best-effort and non-blocking. A worker that is offline,
+	// or whose stream is busy, simply does not get nudged -- its reconciler still
+	// converges on its next tick or reconnect, which is what the nudge
+	// accelerates rather than replaces.
+	//
+	// Takes no principal, deliberately. The nudge is a server-initiated flow, and
+	// carrying a user id through it would make the worker id look user-supplied to
+	// a reader (and to the repo's worker-reach invariant, which is right to insist
+	// on that). The reconciler re-reads its own inventory, so the worker id is the
+	// only thing the nudge needs.
+	NudgeReconcile(workerID string)
+}
+
+// WithReconcileNudger wires the convergence nudge sent when a batch tombstones a
+// tab. Left unset, tab closes converge on the reconciler's own schedule.
+func WithReconcileNudger(n ReconcileNudger) ManagerOption {
+	return func(m *Manager) { m.reconcileNudger = n }
+}
 
 // WithPresenceClearGrace overrides the deferred presence-clear grace
 // window. Tests use this to keep the grace short (tens of ms) so they
@@ -647,6 +673,15 @@ func (m *Manager) idleSince() (lastActivity time.Time, hasLiveAttachments bool) 
 // the assertion isn't racy against the async goroutine.
 func (m *Manager) WaitForAudits() {
 	m.auditWG.Wait()
+}
+
+// WaitForNudges blocks until any in-flight reconcile-nudge goroutines spawned by
+// processBatch have delivered. Tests that assert on nudge delivery call this
+// after Submit; WaitForAudits does NOT cover them, because nudges are tracked
+// separately so Stop() can decline to wait on an uninterruptible worker send
+// (see the note on nudgeWG).
+func (m *Manager) WaitForNudges() {
+	m.nudgeWG.Wait()
 }
 
 // Stop signals the goroutine to exit and waits for it. Any pending
@@ -1009,7 +1044,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	}
 
 	// 4-10. Validate against working copy.
-	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, scopedAuthChecker(m.auth, in.WorkspaceScopeID, in.WorkerScope))
+	res, working := ValidateBatch(ctx, m.state, batch.GetOps(), in.Internal, in.PrincipalID, scopedAuthChecker(m.auth, in.WorkerScope))
 	if res.Err != nil {
 		// A permission lookup failed transiently (store error), not a genuine
 		// deny: return it so Submit surfaces a retryable error instead of a
@@ -1045,7 +1080,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	// `terminal close` fallback walked it. The hub-side reconnect
 	// sweep doesn't cover this case (a deleted worker never
 	// reconnects), so this log is the only durable breadcrumb. Skip
-	// under in.Internal so the legitimate WorkspaceTabsSync path
+	// under in.Internal so the legitimate WorkerTabInventory path
 	// (worker reconnect, hub-driven tombstones) doesn't drown it
 	// out.
 	//
@@ -1056,18 +1091,76 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	// m.state's history it's immutable, so the goroutine can safely
 	// read from it after the manager mutex is released. auditWG
 	// drains on Stop() so log breadcrumbs always make it out.
-	if !in.Internal && containsTombstoneTab(batch) {
+	if containsTombstoneTab(batch) {
 		// Resolve the tombstoned tabs' worker ids from preState NOW, before
 		// spawning, so the audit goroutine captures only this small map instead
 		// of the whole (potentially multi-MB) UserCrdtState. After m.state =
 		// working below, preState is otherwise GC-eligible; capturing it in the
 		// goroutine would pin the old generation for the CanUseWorker DB lookup.
 		workerIDs := tombstonedTabWorkerIDs(batch, preState)
-		m.auditWG.Add(1)
-		go func() {
-			defer m.auditWG.Done()
-			m.auditOrphanTabTombstones(in, batch, res, workerIDs)
-		}()
+		if !in.Internal {
+			m.auditWG.Add(1)
+			go func() {
+				defer m.auditWG.Done()
+				m.auditOrphanTabTombstones(in, batch, res, workerIDs)
+			}()
+		}
+		// Nudge each affected worker to reconcile now rather than on its hourly
+		// tick. Reuses the map the audit already computed -- the tombstoned tabs'
+		// hosting workers ARE the set that has local state to release -- so this
+		// costs no extra query.
+		//
+		// NOT gated on !in.Internal the way the audit is, and the gate now sits
+		// on the audit alone so that is actually true: an internal batch is
+		// precisely how a workspace delete tombstones its tabs
+		// (applyLifecycleDelete submits via SubmitInternal), and a worker that has
+		// just told us its inventory is the one most able to act on a nudge. While
+		// the nudge sat inside the !in.Internal block, deleting a workspace never
+		// nudged its live worker at all, so the agent subprocesses ran until the
+		// worker's hourly tick -- exactly the gap the nudge exists to close, since
+		// the frontend's own per-worker CleanupWorkspace RPC is fire-and-forget.
+		//
+		// Dispatched on a goroutine because NudgeReconcile reaches a worker's
+		// Connect stream: Conn.Send holds a per-connection mutex across an HTTP/2
+		// write with no send queue and no server WriteTimeout, so a worker whose
+		// stream has stalled on TCP backpressure (asleep laptop, saturated uplink)
+		// would block this goroutine -- the ONE goroutine that serialises every
+		// CRDT submit for this user. Every later tab open/move/close, on any
+		// worker, would queue behind it. Mirrors the audit's rationale above.
+		if m.reconcileNudger != nil {
+			seen := make(map[string]struct{}, len(workerIDs))
+			targets := make([]string, 0, len(workerIDs))
+			for _, workerID := range workerIDs {
+				if workerID == "" {
+					continue
+				}
+				if _, dup := seen[workerID]; dup {
+					continue
+				}
+				seen[workerID] = struct{}{}
+				targets = append(targets, workerID)
+			}
+			if len(targets) > 0 {
+				nudger := m.reconcileNudger
+				// Deliberately NOT tracked by auditWG, unlike the audit above.
+				// auditWG is drained by Stop(), and the audit's DB lookup is
+				// bounded by OrphanAuditLookupTimeout so that drain terminates.
+				// Conn.Send has no such bound and is not ctx-aware -- it is a
+				// blocking HTTP/2 write under a per-connection mutex -- so
+				// enrolling it would trade a goroutine that unblocks when the
+				// stalled stream is torn down for a Stop() that hangs on it.
+				// A nudge is best-effort: losing one on shutdown costs only the
+				// delay until the worker's next reconcile tick. nudgeWG exists so
+				// tests can await delivery deterministically; Stop() skips it.
+				m.nudgeWG.Add(1)
+				go func() {
+					defer m.nudgeWG.Done()
+					for _, workerID := range targets {
+						nudger.NudgeReconcile(workerID)
+					}
+				}()
+			}
+		}
 	}
 
 	// 12. Per-subscriber broadcast.

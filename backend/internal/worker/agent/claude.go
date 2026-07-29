@@ -391,8 +391,8 @@ func (a *ClaudeCodeAgent) ensureSettledModelListed() {
 	// the static catalog doesn't know (a future dynamic-only id) rank last, so the
 	// resolved static model sorts ahead of them. The inserted pointer is the shared
 	// static-catalog entry, read only exactly as effortCatalog hands out
-	// claudeCodeAvailableModels directly -- withDefaultModelMarked and
-	// withModelGroupDefaultMarked both clone before touching it.
+	// claudeCodeAvailableModels directly -- modelOptionGroup projects it into fresh
+	// protos and withModelGroupDefaultMarked clones before touching them.
 	rank := canonicalModelRank(a.model)
 	insertAt := len(a.availableModels)
 	for i, m := range a.availableModels {
@@ -1464,8 +1464,8 @@ func recognizedClaudeEffortLevels(supported map[string]bool) []claudeEffortLevel
 // anything reported in unavailable_models. The DefaultModelSentinel ("default")
 // entry IS surfaced -- it is a real "let the CLI pick the account default"
 // option (the model-side analogue of EffortAuto); buildModelEffortArgs omits
-// --model for it and withDefaultModelMarked gives it the IsDefault badge.
-// IsDefault is left unset here -- the manager applies it. Returns nil when
+// --model for it and withModelGroupDefaultMarked gives its projected option the
+// default badge. IsDefault is left unset here -- the manager applies it. Returns nil when
 // models is empty so OptionGroups()'s model projection falls back to the static catalog.
 //
 // The returned entries reuse the shared effortTier* pointers, so the same
@@ -1504,7 +1504,7 @@ func convertClaudeModels(models, unavailable []claudeCodeModelInfo) []*ModelInfo
 		// lookups and the frontend's effort selector and display name.
 		id := normalizeClaudeCodeModel(m.Value)
 		// A concrete model can't claim the sentinel's reserved id: launch
-		// (buildModelEffortArgs) and the badge logic (defaultModelForList) treat
+		// (buildModelEffortArgs) and the badge logic (defaultModelIDForList) treat
 		// id=="default" as the sentinel, so a concrete model whose value merely
 		// normalizes to "default" (e.g. "default5") would be mishandled as the
 		// sentinel. Drop it -- deterministically, regardless of CLI ordering --
@@ -2082,7 +2082,7 @@ func (r effortResolver) definedEfforts(modelID string) (efforts []*EffortInfo, k
 	// dynamic entry with FEWER but non-empty efforts still wins over the fallback.
 	for _, cat := range [][]*ModelInfo{r.catalog, r.fallback} {
 		for _, m := range cat {
-			// Guard nil entries to match FindAvailableModel/withDefaultModelMarked,
+			// Guard nil entries to match FindAvailableModel/modelOptionGroup,
 			// which already treat catalogs as possibly nil-bearing; convertClaudeModels
 			// never emits nil today, but this keeps the catalog-walking helpers uniform.
 			if m != nil && m.Id == modelID {

@@ -25,7 +25,7 @@ import (
 // blocks for seconds, the OpenAgent RPC response lands in the test writer
 // within ~200 ms — the whole point of the OpenAgent split.
 func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	released := make(chan struct{})
@@ -40,7 +40,6 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 
 	start := time.Now()
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -63,7 +62,7 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 // TestOpenAgent_DelayedStartupBroadcastsActive asserts the goroutine
 // emits ACTIVE once startAgent eventually returns.
 func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	releaseAfter := 150 * time.Millisecond
@@ -74,7 +73,6 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 
 	// Subscribe before opening so the broadcast is captured.
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -112,7 +110,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 
 func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -137,7 +135,6 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}, w)
@@ -206,7 +203,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	const agentID = "agent-startup-relaunch"
@@ -224,7 +221,6 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
-		WorkspaceID:   "ws-1",
 		WorkingDir:    workingDir,
 		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
@@ -270,7 +266,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -297,7 +293,6 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -360,16 +355,15 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-late-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Title:       "late mode",
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Title:      "late mode",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
@@ -424,16 +418,15 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-pre-start-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Title:       "pre-start mode",
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Title:      "pre-start mode",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
@@ -492,16 +485,15 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 // the row stuck on the unresolved "default" sentinel.
 func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-effort-change-mid-startup"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Title:       "effort change",
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Title:      "effort change",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          agent.DefaultModelSentinel,
 			agent.OptionIDEffort:         "high",
@@ -579,14 +571,14 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 // discarded. Guarding on the column's canonical form makes the model resolution land.
 func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-cleared-default-axis"
 	// The stored column is MISSING the effort axis (a refresh cleared it). It is NOT a fixed point
 	// of resolveProviderDefaults, which would re-fill effort=auto for a Claude agent.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		Title: "cleared default axis",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          agent.DefaultModelSentinel,
@@ -630,12 +622,12 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 // catalog write is skipped and the discovered catalog survives.
 func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-catalog-cas"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		Title: "catalog cas",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "opus",
@@ -676,7 +668,7 @@ func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testin
 
 func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -686,7 +678,6 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}, w)
@@ -717,7 +708,7 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 // off the sync path and emitted via a subsequent STARTING broadcast so
 // the RPC returns without forking `git status`.
 func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	blocked := make(chan struct{})
@@ -731,7 +722,6 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	defer close(blocked)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -754,7 +744,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 // TerminalStartup registry so deriveTerminalStatus → the WatchEvents
 // catch-up replay can surface it to the just-arriving subscriber.
 func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	// Block the PTY spawn indefinitely so the terminal stays in STARTING
 	// long enough for the WatchEvents catch-up replay to read the
@@ -767,9 +757,8 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	defer close(blocked)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Shell:       "/bin/zsh",
+		WorkingDir: t.TempDir(),
+		Shell:      "/bin/zsh",
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -812,7 +801,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // generic "Starting terminal…". Regression test for the bug where the
 // label was computed from r.GetShell() before resolution.
 func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
@@ -822,9 +811,8 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 	defer close(blocked)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Shell:       "", // frontend default: let the backend resolve.
+		WorkingDir: t.TempDir(),
+		Shell:      "", // frontend default: let the backend resolve.
 	}, w)
 	require.Len(t, w.responses, 1)
 	var openResp leapmuxv1.OpenTerminalResponse
@@ -845,7 +833,7 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 // this, a client refreshing mid-startup (e.g. hard reload during PTY
 // spawn) falls back to the option "Starting terminal…" label.
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
@@ -855,9 +843,8 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	defer close(blocked)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Shell:       "/usr/bin/fish",
+		WorkingDir: t.TempDir(),
+		Shell:      "/usr/bin/fish",
 	}, w)
 	require.Len(t, w.responses, 1)
 	var openResp leapmuxv1.OpenTerminalResponse
@@ -881,7 +868,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 
 func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	releaseStart := make(chan struct{})
@@ -898,9 +885,8 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	}
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Shell:       testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Shell:      testutil.TestShell(),
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -912,9 +898,8 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	const title = "Terminal Ada"
 	wTitle := newTestWriter()
 	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
-		WorkspaceId: "ws-1",
-		TerminalId:  terminalID,
-		Title:       title,
+		TerminalId: terminalID,
+		Title:      title,
 	}, wTitle)
 	require.Empty(t, wTitle.errors)
 	rowBeforeStart, err := svc.Queries.GetTerminal(ctx, terminalID)
@@ -923,10 +908,9 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 
 	wResize := newTestWriter()
 	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
-		WorkspaceId: "ws-1",
-		TerminalId:  terminalID,
-		Cols:        100,
-		Rows:        40,
+		TerminalId: terminalID,
+		Cols:       100,
+		Rows:       40,
 	}, wResize)
 	require.Empty(t, wResize.errors)
 
@@ -953,7 +937,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 // attaches after the initial STARTING broadcast should see the current
 // phase label via catch-up replay, not an empty string.
 func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	// Block startAgent so the goroutine settles after setting phase 2
 	// ("Starting Claude Code…") and waits there — the registry entry
@@ -969,7 +953,6 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	defer close(blocked)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1019,7 +1002,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // TestBuildAgentStatusChange verifies the phase/error/gitStatus field
 // mapping directly, race-free.
 func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
@@ -1029,7 +1012,6 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1065,10 +1047,9 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 // constructors. Race-free companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus:
 // locks in the field mapping without routing through the broadcast fan-out.
 func TestBuildAgentStatusChange(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	dbAgent := &db.Agent{
 		ID:            "agent-bac",
-		WorkspaceID:   "ws-1",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "opus[1m]",
@@ -1147,14 +1128,13 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 // gitStatus computed during the pre-startAgent phase, so the frontend
 // can render branch info alongside the error.
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced startup failure")
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1194,7 +1174,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 // string visible to a subscribed watcher, and that the agent is closed.
 func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	var startCalls sync.WaitGroup
@@ -1205,7 +1185,6 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1242,7 +1221,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 // input in a real RPC, but this bypass proves the execute-side error path
 // is clean — the caller gets err, no rollback metadata, and no DB row.
 func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	bogusRoot := t.TempDir() // not a git repo
 	plan := gitModePlan{
 		Mode:         gitModeCreateWorktree,
@@ -1264,7 +1243,7 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 // (subprocess startup) fails: the tab sees "Creating worktree …" then
 // "Rolling back worktree …" then STARTUP_FAILED with the injected error.
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
@@ -1288,7 +1267,6 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	repoDir := initRepo(t)
 	branchName := "feature/rollback-label"
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,
@@ -1340,6 +1318,9 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
 			sawFailed = true
 			failedError = sc.GetStartupError()
+		default:
+			// Only the STARTING progress messages and the terminal
+			// STARTUP_FAILED matter to this assertion.
 		}
 	}
 	assert.True(t, sawPhase0, `expected STARTING "Creating worktree %q…" broadcast`, branchName)
@@ -1358,7 +1339,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 // unit-level guarantee that CloseAgent / CloseTerminal mid-phase-0 does
 // not run expensive git commands against a doomed tab.
 func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before call
 

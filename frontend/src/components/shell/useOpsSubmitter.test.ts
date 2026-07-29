@@ -1,6 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason, OpBatchSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { createOpsSubmitter } from './useOpsSubmitter'
 
@@ -156,20 +157,19 @@ describe('createopssubmitter (retry requeue)', () => {
       const pending = makeFakePending({ retryable: false, needsEpochRefresh: true })
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
       const reconnect = vi.fn(async () => {})
-      const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
         pending: () => pending as never,
         client: { submitOps } as never,
         reconnect,
-        onBatchResult,
       })
       submitter.enqueue(batch('b1'))
       await submitter.flush()
-      // Reconnect fired to refresh the epoch, and the batch was reported
-      // terminally rejected (non-retryable: the user re-issues against fresh state).
+      // Reconnect fired to refresh the epoch, and the batch was consumed as
+      // terminally rejected (non-retryable: the user re-issues against fresh
+      // state). consumeBatchRejected IS the observable outcome -- it is what
+      // reverts the optimistic ops.
       expect(reconnect).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledWith('b1', expect.objectContaining({ case: 'rejected' }))
+      expect(pending.consumeBatchRejected).toHaveBeenCalledTimes(1)
 
       // It must NOT auto-retry -- a stale_epoch batch is never requeued.
       await advancePastBackoff()
@@ -187,17 +187,14 @@ describe('createopssubmitter (retry requeue)', () => {
     await createRoot(async (dispose) => {
       const pending = makeFakePending({ retryable: false, needsEpochRefresh: true })
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
-      const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
         pending: () => pending as never,
         client: { submitOps } as never,
-        onBatchResult,
         // No reconnect handler on purpose.
       })
       submitter.enqueue(batch('b1'))
       await submitter.flush()
-      expect(onBatchResult).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledWith('b1', expect.objectContaining({ case: 'rejected' }))
+      expect(pending.consumeBatchRejected).toHaveBeenCalledTimes(1)
 
       await advancePastBackoff()
       expect(submitOps).toHaveBeenCalledTimes(1)
@@ -272,70 +269,27 @@ describe('createopssubmitter (retry requeue)', () => {
       dispose()
     })
   })
-})
 
-describe('createopssubmitter (onBatchResult reporting)', () => {
-  beforeEach(() => vi.useFakeTimers())
-  afterEach(() => vi.useRealTimers())
-
-  it('does NOT report a retryable rejection until it commits, then reports committed', async () => {
-    // Guards the cross-workspace-move rollback: a retryable rejection that later
-    // commits must not be surfaced as `rejected`, or the rollback reverses the
-    // worker while the retry lands, diverging worker + CRDT.
+  it('caps retryable-rejection retries, then reverts the optimistic ops and warns', async () => {
+    // The give-up arm. A batch drawing a retryable rejection forever must stop
+    // resending -- both to avoid hammering SubmitOps and to stop re-tearing-down
+    // the /ws/userevents socket whose async bootstrap an epoch-refresh retry
+    // awaits -- and it must then REVERT the optimistic ops it deliberately kept
+    // applied across the retries, because the change never reached the server.
+    //
+    // This coverage was lost when the `onBatchResult reporting` block was deleted
+    // along with that seam: only the onBatchResult assertions were obsolete, while
+    // the cap and the revert-and-warn tail are still live behaviour. Nothing else
+    // in this suite drives more than two attempts, and revertPendingBatch appears
+    // elsewhere only as an unasserted stub.
     await createRoot(async (dispose) => {
-      const pending = makeFakePending({ retryable: true, needsEpochRefresh: false })
-      const submitOps = vi.fn()
-        .mockResolvedValueOnce(rejectedResponse('b1'))
-        .mockResolvedValueOnce(committedResponse('b1'))
-      const onBatchResult = vi.fn()
-      const submitter = createOpsSubmitter({
-        pending: () => pending as never,
-        client: { submitOps } as never,
-        onBatchResult,
-      })
-      submitter.enqueue(batch('b1'))
-      await submitter.flush()
-      // First attempt was a retryable rejection: nothing reported yet.
-      expect(onBatchResult).not.toHaveBeenCalled()
-
-      await advancePastBackoff()
-      // Retry committed: the ONLY reported outcome is 'committed'.
-      expect(onBatchResult).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledWith('b1', { case: 'committed' })
-      dispose()
-    })
-  })
-
-  it('reports a permanent rejection immediately as rejected', async () => {
-    await createRoot(async (dispose) => {
-      const pending = makeFakePending({ retryable: false, needsEpochRefresh: false })
-      const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
-      const onBatchResult = vi.fn()
-      const submitter = createOpsSubmitter({
-        pending: () => pending as never,
-        client: { submitOps } as never,
-        onBatchResult,
-      })
-      submitter.enqueue(batch('b1'))
-      await submitter.flush()
-      expect(onBatchResult).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledWith('b1', expect.objectContaining({ case: 'rejected' }))
-      dispose()
-    })
-  })
-
-  it('caps retryable-rejection retries and reports an authoritative rejection on give-up', async () => {
-    // A batch that keeps drawing a retryable rejection must not resend forever
-    // (nor keep tearing down the socket whose bootstrap it awaits). After the
-    // cap it is reported once as rejected so a registered handler can react.
-    await createRoot(async (dispose) => {
+      // Module-level mock, so it carries calls from earlier tests in this file.
+      vi.mocked(showWarnToast).mockClear()
       const pending = makeFakePending({ retryable: true, needsEpochRefresh: false })
       const submitOps = vi.fn().mockResolvedValue(rejectedResponse('b1'))
-      const onBatchResult = vi.fn()
       const submitter = createOpsSubmitter({
         pending: () => pending as never,
         client: { submitOps } as never,
-        onBatchResult,
       })
       submitter.enqueue(batch('b1'))
       await submitter.flush()
@@ -343,11 +297,37 @@ describe('createopssubmitter (onBatchResult reporting)', () => {
       // (backoff 250,500,1000,2000,4000 -> ~7.75s), so 20s clears them all.
       await vi.advanceTimersByTimeAsync(20000)
 
-      // 1 original attempt + 5 capped retries = 6 SubmitOps, then it stops.
+      // 1 original attempt + 5 capped retries, then it STOPS.
       expect(submitOps).toHaveBeenCalledTimes(1 + 5)
-      // The give-up reports the batch as an authoritative rejection exactly once.
-      expect(onBatchResult).toHaveBeenCalledTimes(1)
-      expect(onBatchResult).toHaveBeenCalledWith('b1', expect.objectContaining({ case: 'rejected' }))
+      // ...and the kept optimistic ops are dropped exactly once, not per retry.
+      expect(pending.revertPendingBatch).toHaveBeenCalledTimes(1)
+      expect(pending.revertPendingBatch).toHaveBeenCalledWith('b1')
+      expect(showWarnToast).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('does not revert a retryable batch before its retry commits', async () => {
+    // The complement of the cap: while a retryable rejection is still being
+    // retried, the optimistic ops must stay applied so the edit does not flicker
+    // out and back. Reverting on the rejection and re-applying on the commit is
+    // the visible bug this pins against.
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending({ retryable: true, needsEpochRefresh: false })
+      const submitOps = vi.fn()
+        .mockResolvedValueOnce(rejectedResponse('b1'))
+        .mockResolvedValueOnce(committedResponse('b1'))
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+      submitter.enqueue(batch('b1'))
+      await submitter.flush()
+      await advancePastBackoff()
+
+      expect(submitOps).toHaveBeenCalledTimes(2)
+      expect(pending.revertPendingBatch).not.toHaveBeenCalled()
+      expect(pending.consumeBatchCommitted).toHaveBeenCalled()
       dispose()
     })
   })

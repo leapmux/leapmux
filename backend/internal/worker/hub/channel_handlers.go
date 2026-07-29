@@ -47,33 +47,3 @@ func (c *Client) handleChannelClose(notification *leapmuxv1.ChannelCloseNotifica
 
 	c.channelMgr.HandleClose(notification.GetChannelId())
 }
-
-func (c *Client) handleChannelAccessUpdate(requestID string, update *leapmuxv1.ChannelAccessUpdate) {
-	if c.channelMgr == nil {
-		slog.Warn("channel access update received but no channel manager configured")
-		return
-	}
-
-	c.channelMgr.AddAccessibleWorkspaceID(update.GetChannelId(), update.GetWorkspaceId())
-
-	// Ack before returning so the hub-side PrepareWorkspaceAccess caller can
-	// observe that the accessible set is updated before it issues the next
-	// inner RPC. The mutation still precedes the enqueue, which is what the
-	// hub-side ordering requires. TrySendOrReset keeps the receive loop free
-	// of network I/O; a drop cancels the connection so the hub's wait fails
-	// fast into reconnect rather than eating its full timeout.
-	if requestID == "" {
-		return
-	}
-	if !c.TrySendOrReset(&leapmuxv1.ConnectRequest{
-		RequestId: requestID,
-		Payload: &leapmuxv1.ConnectRequest_ChannelAccessUpdateAck{
-			ChannelAccessUpdateAck: &leapmuxv1.ChannelAccessUpdateAck{},
-		},
-	}) {
-		slog.Warn("dropped channel access update ack: connect writer over budget; resetting connection",
-			"channel_id", update.GetChannelId(),
-			"workspace_id", update.GetWorkspaceId(),
-		)
-	}
-}

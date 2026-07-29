@@ -20,8 +20,8 @@ ON DUPLICATE KEY UPDATE
 -- plain FK to workspaces(id), so nothing ties a row's user_id to
 -- owner(workspace_id): any user's row may name any existing workspace. Without
 -- user_id this listing returns another tenant's tabs for a workspace the caller
--- legitimately reads. Same argument as ListDistinctWorkersByWorkspace on the
--- owned view.
+-- legitimately reads. Same argument as ListOwnedTabsByWorkspace on the owned
+-- view, which states it in full.
 -- name: ListRenderedTabsByWorkspaceIDs :many
 SELECT * FROM workspace_tab_rendered
 WHERE user_id = sqlc.arg(user_id) AND workspace_id IN (sqlc.slice('workspace_ids'))

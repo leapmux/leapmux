@@ -533,7 +533,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // close it before wiring callbacks -- otherwise a superseded or torn-down
         // subscription keeps firing store mutations, and on unmount previousHandle
         // was already nulled, so nothing else would ever close it. Mirrors the
-        // disposed-check workspacePrivateEvents runs after its own channel open.
+        // disposed-check workerPrivateEvents runs after its own channel open.
         if (signal.aborted) {
           handle.close()
           return

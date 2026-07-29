@@ -58,7 +58,7 @@ type recordingHub struct {
 	methods []string
 }
 
-func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, _, method string, _ []byte) ([]byte, error) {
+func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method string, _ []byte) ([]byte, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
 	h.mu.Unlock()
@@ -106,16 +106,14 @@ func startSpawnIPC(t *testing.T, hub *recordingHub, disp remoteipc.LocalDispatch
 		SocketURL: sockURL,
 		Token:     rawToken,
 		TokenInfo: remoteipc.TokenInfo{
-			UserID:      userid.MustNew("u-spawn"),
-			WorkerID:    "worker-A",
-			WorkspaceID: "ws-1",
-			TabID:       "agent-1",
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+			UserID:   userid.MustNew("u-spawn"),
+			WorkerID: "worker-A",
+			TabID:    "agent-1",
+			TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
 		},
 		Router: &remoteipc.Router{
 			WorkerID:        "worker-A",
 			UserID:          userid.MustNew("u-spawn"),
-			WorkspaceIDs:    []string{"ws-1"},
 			Hub:             hub,
 			LocalDispatcher: disp,
 		},

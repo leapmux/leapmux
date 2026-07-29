@@ -86,7 +86,7 @@ func decodeAgentChatMessageContent(t *testing.T, msg *leapmuxv1.AgentChatMessage
 
 func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Mock a successful restart so we can validate the happy-path ordering
 	// without spawning a real agent process. context_cleared is only
@@ -97,7 +97,6 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -148,7 +147,7 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 // panel a phase label to display.
 func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Mock a successful restart so we exercise the happy path without
 	// spawning a real agent process.
@@ -158,7 +157,6 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -203,6 +201,8 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 				if activeIdx == -1 {
 					activeIdx = i
 				}
+			default:
+				// This test only orders STARTING / ACTIVE.
 			}
 		}
 	}
@@ -221,11 +221,10 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 
 func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -277,11 +276,10 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 
 func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-codex",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -324,11 +322,10 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 
 func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-claude",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,

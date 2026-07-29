@@ -299,6 +299,12 @@ func isPermissionDenied(err error) bool {
 		switch errno {
 		case syscall.EACCES, syscall.EROFS, syscall.EPERM:
 			return true
+		default:
+			// Every other errno is some other failure. Enumerating them is not an
+			// option -- syscall.Errno has over a hundred members and grows with the
+			// platform -- so this is deliberately an allowlist of the three that
+			// mean "the filesystem refused you".
+			return false
 		}
 	}
 	return false

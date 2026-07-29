@@ -42,8 +42,8 @@ func collectTerminalData(t *testing.T, w *testResponseWriter, terminalID string)
 // has, which manifests as duplicated prompt output in the live UI.
 func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "t-resub", "ws-1")
+	svc, d, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-resub")
 
 	require.NoError(t, svc.Terminals.SendInput("t-resub", []byte("echo resubscribe_test"+testutil.TestShellEnter())))
 	testutil.AssertEventually(t, func() bool {
@@ -101,8 +101,8 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 // and can't collide with the markers we assert on.
 func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "t-delta", "ws-1")
+	svc, d, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-delta")
 
 	firstMarker := []byte("FIRST_CHUNK_MARKER_BYTES\r\n")
 	require.True(t, svc.Terminals.AppendOutput("t-delta", firstMarker))
@@ -146,8 +146,8 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 // program repaints.
 func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "t-altrecover", "ws-1")
+	svc, d, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-altrecover")
 	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrecover")
 
 	w := newTestWriter()
@@ -206,8 +206,8 @@ func injectAltScreenAndFlushPastRing(t *testing.T, svc *Service, terminalID stri
 // branch of SnapshotSince in the WatchEvents handler.
 func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "t-wrap", "ws-1")
+	svc, d, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-wrap")
 
 	// Inject >100KB synthetic output directly so we don't have to wait on
 	// the shell to produce it. AppendOutput goes through the same write

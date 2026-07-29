@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ type closeTabFixture struct {
 
 func setupCloseTabFixture(t *testing.T, tabType leapmuxv1.TabType, scenario string) closeTabFixture {
 	t.Helper()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// The fixture only adds a worktree on a fresh branch named after
 	// the scenario, so a shared base repo is safe and saves ~4 git
@@ -59,10 +60,9 @@ func setupCloseTabFixture(t *testing.T, tabType leapmuxv1.TabType, scenario stri
 		createAgentForPath(t, svc, tabID, wtDir)
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
-			ID:          tabID,
-			WorkspaceID: "ws-1",
-			WorkingDir:  wtDir,
-			Screen:      []byte{},
+			ID:         tabID,
+			WorkingDir: wtDir,
+			Screen:     []byte{},
 		}))
 	default:
 		t.Fatalf("unsupported tab type: %v", tabType)
@@ -141,15 +141,14 @@ func TestCloseAgent_WithWorktreeActionUnspecified_PreservesWorktree(t *testing.T
 }
 
 func TestCloseAgent_NoWorktree_Succeeds(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Agent without any worktree association.
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          "agent-noworktree",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
+		ID:         "agent-noworktree",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
 	}))
 
 	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
@@ -291,8 +290,9 @@ func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabRes
 		agentID,
 		"",
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
+		dropWorktreeLink,
 		func() {},
-		func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
+		func() (bool, error) { return rowsAffected(svc.Queries.CloseAgent(bgCtx(), agentID)) },
 	)
 }
 
@@ -396,7 +396,7 @@ func TestRemoveWorktreeIfLastReference_RowRemovedUnderLock_SkipsDiskRemoval(t *t
 	require.NoError(t, fx.svc.Queries.DeleteWorktree(context.Background(), fx.wtID))
 
 	result := &leapmuxv1.CloseTabResult{}
-	fx.svc.removeWorktreeIfLastReference(result, &stale, leapmuxv1.TabType_TAB_TYPE_AGENT, fx.tabID, "")
+	fx.svc.removeWorktreeIfLastReference(result, &stale, leapmuxv1.TabType_TAB_TYPE_AGENT, fx.tabID, "", true)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.GetWorktreeRemoval(),
 		"an already-removed row reports the terminal REMOVED state")
@@ -437,7 +437,7 @@ func TestReapOrphanWorktree_RemovesStrandAndDropsLinks(t *testing.T) {
 	// must `git worktree remove` the dir, soft-delete the row, and drop the
 	// dead link so a future worktree at the same path counts cleanly.
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "reap-strand")
-	require.NoError(t, fx.svc.Queries.CloseAgent(context.Background(), fx.tabID))
+	require.NoError(t, closeErr(fx.svc.Queries.CloseAgent(context.Background(), fx.tabID)))
 	wt, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
 	require.NoError(t, err)
 
@@ -451,6 +451,35 @@ func TestReapOrphanWorktree_RemovesStrandAndDropsLinks(t *testing.T) {
 	count, err := fx.svc.Queries.CountWorktreeTabs(context.Background(), fx.wtID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count, "strand links dropped")
+}
+
+func TestReapOrphanWorktree_SkipsWorktreeHoldingUncommittedWork(t *testing.T) {
+	// The data-safety guard. An offline last-tab close pins KEEP, the choice
+	// never reaches this worker, the agent row closes on its own, and every
+	// worktree_tabs link becomes a strand -- exactly the shape the previous
+	// test reaps with `git worktree remove --force`. Nobody confirms that
+	// removal, so uncommitted work must stop it: the user never saw the
+	// last-tab dialog that would have warned them.
+	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "reap-dirty")
+	require.NoError(t, closeErr(fx.svc.Queries.CloseAgent(context.Background(), fx.tabID)))
+	require.NoError(t, os.WriteFile(filepath.Join(fx.wtDir, "uncommitted.txt"), []byte("work in progress\n"), 0o600))
+	wt, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
+	require.NoError(t, err)
+
+	fx.svc.ReapOrphanWorktree(context.Background(), wt)
+
+	_, statErr := os.Stat(fx.wtDir)
+	assert.NoError(t, statErr, "a worktree with uncommitted changes must survive the reap")
+	row, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid, "row must remain so the next pass re-examines it")
+	// The strand links must survive too, or ListOrphanCandidateWorktrees
+	// (which requires at least one link) would never offer this worktree
+	// again -- committing and pushing the work has to be enough to let it
+	// through later.
+	count, err := fx.svc.Queries.CountWorktreeTabs(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	assert.Positive(t, count, "strand links must survive a skipped reap")
 }
 
 func TestReapOrphanWorktree_SkipsWhenLiveRefRemains(t *testing.T) {
@@ -475,7 +504,7 @@ func TestRegisterTabForWorktreeUnlessClosed(t *testing.T) {
 	// runTerminalStartup: a tab closed during startup must NOT be linked
 	// (else it strands a worktree_tabs row whose tab is gone), while a tab
 	// that survived startup is linked normally.
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-1", WorktreePath: "/r/wt-1", RepoRoot: "/r", BranchName: "b"}))
@@ -507,7 +536,7 @@ func TestEnsureTrackedWorktree_BackfillsExistingFileTab(t *testing.T) {
 	// must link the pre-existing file tab so it ref-counts the worktree —
 	// otherwise a sibling close could `git worktree remove` the dir while
 	// that editor is still open.
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
 
 	repoDir := initRepo(t)
@@ -519,10 +548,9 @@ func TestEnsureTrackedWorktree_BackfillsExistingFileTab(t *testing.T) {
 	filePath := filepath.Join(wtDir, "file.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("x"), 0o644))
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:      "user-1",
-		TabID:       "adopt-file-tab",
-		WorkspaceID: "ws-1",
-		FilePath:    filePath,
+		UserID:   "user-1",
+		TabID:    "adopt-file-tab",
+		FilePath: filePath,
 	}))
 
 	// Adopt the worktree: creates the row and runs the backfill.
@@ -554,7 +582,7 @@ func TestEnsureTrackedWorktree_BackfillsExistingFileTab(t *testing.T) {
 }
 
 func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Create a worktree DB row pointing at a path that is NOT a git
@@ -572,10 +600,9 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	}))
 
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          "agent-fail",
-		WorkspaceID: "ws-1",
-		WorkingDir:  bogusPath,
-		HomeDir:     bogusPath,
+		ID:         "agent-fail",
+		WorkingDir: bogusPath,
+		HomeDir:    bogusPath,
 	}))
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-fail")
 
@@ -630,14 +657,13 @@ func TestCloseAgent_WorktreeRemove_DiskAlreadyGone_StillDeletesDBRow(t *testing.
 }
 
 func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          "agent-idem",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
+		ID:         "agent-idem",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
 	}))
 
 	// First close.
@@ -669,7 +695,6 @@ func TestCloseTerminal_WithWorktreeActionRemove_RemovesWorktreeSync(t *testing.T
 
 	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
 		TerminalId:     fx.tabID,
-		WorkspaceId:    "ws-1",
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
@@ -688,8 +713,7 @@ func TestCloseTerminal_WithWorktreeActionUnspecified_PreservesWorktree(t *testin
 
 	// No worktree_action = UNSPECIFIED, treated as KEEP.
 	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-		TerminalId:  fx.tabID,
-		WorkspaceId: "ws-1",
+		TerminalId: fx.tabID,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
@@ -698,19 +722,17 @@ func TestCloseTerminal_WithWorktreeActionUnspecified_PreservesWorktree(t *testin
 }
 
 func TestCloseTerminal_NoWorktree_Succeeds(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
-		ID:          "term-noworktree",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Screen:      []byte{},
+		ID:         "term-noworktree",
+		WorkingDir: t.TempDir(),
+		Screen:     []byte{},
 	}))
 
 	dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
 		TerminalId:     "term-noworktree",
-		WorkspaceId:    "ws-1",
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, w)
 
@@ -726,7 +748,6 @@ func TestCloseTerminal_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 
 	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
 		TerminalId:     fx.tabID,
-		WorkspaceId:    "ws-1",
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
 	}, fx.w)
 
@@ -738,7 +759,7 @@ func TestCloseTerminal_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 // --- removeWorktreeFromDisk direct coverage ---------------------------
 
 func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -771,7 +792,7 @@ func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
 // still on the branch, the branch must survive. Pins the in-use → keep
 // contract through the post-parallelization code path.
 func TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -799,7 +820,7 @@ func TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -832,7 +853,7 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 }
 
 func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -861,15 +882,14 @@ func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
 // --- Shutdown waiting -------------------------------------------------
 
 func TestShutdown_WaitsForInFlightClose(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	// Intentionally do NOT defer drainAllInFlight — this test invokes
 	// Shutdown explicitly, which performs the same wait.
 
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          "agent-slow",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
+		ID:         "agent-slow",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
 	}))
 
 	// Manually Add(1) to the cleanup wait-group to simulate an
@@ -903,7 +923,7 @@ func TestShutdown_WaitsForInFlightClose(t *testing.T) {
 }
 
 func TestShutdown_WaitsForCloseAfterHandlerPanic(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Simulate a handler that panics: Add(1) has been called, and the
 	// deferred Done() MUST still fire.
@@ -924,4 +944,237 @@ func TestShutdown_WaitsForCloseAfterHandlerPanic(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown hung after a handler panic")
 	}
+}
+
+// TestCleanupWorkspace_LeavesTheWorktreeReclaimable is the regression for a
+// permanent disk leak. A workspace delete closes its tabs with UNSPECIFIED,
+// which used to fall through to unregisterTab and drop the worktree's last
+// link -- and ListOrphanCandidateWorktrees requires at least one link, so a
+// zero-link worktree is excluded from orphan GC FOREVER. The directory
+// survived on disk with nothing left that could ever reclaim it.
+//
+// Asserting the link count (not just "the dir still exists") is the point:
+// the dir surviving this call is correct either way, so only the surviving
+// strand distinguishes "reclaimable later" from "stranded forever".
+func TestCleanupWorkspace_LeavesTheWorktreeReclaimable(t *testing.T) {
+	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "cleanup-reclaimable")
+
+	dispatch(fx.d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
+		Tabs: []*leapmuxv1.TabRef{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: fx.tabID},
+		},
+	}, fx.w)
+
+	require.Empty(t, fx.w.errors, "unexpected RPC errors: %+v", fx.w.errors)
+
+	count, err := fx.svc.Queries.CountWorktreeTabs(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	assert.Positive(t, count, "the worktree link must survive so the orphan reconciler can still see a candidate")
+	live, err := fx.svc.Queries.CountLiveWorktreeRefs(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	assert.Zero(t, live, "the closed tab must leave the link as a strand, not a live reference")
+
+	// And the reconciler must actually be able to finish the job.
+	wt, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	fx.svc.ReapOrphanWorktree(context.Background(), wt)
+	_, statErr := os.Stat(fx.wtDir)
+	assert.True(t, os.IsNotExist(statErr), "a clean worktree left by a workspace delete must be reclaimable")
+}
+
+// TestOrphanReconciler_ClosesAnAgentThroughTheSharedTeardown pins that the
+// OFFLINE convergence path performs the same teardown as an online CloseAgent.
+//
+// The reconciler used to run only the DB close plus StopAgent, skipping the
+// registered cleanups -- which is the spawnRemoteIPC teardown, so the tab's
+// unix-socket listener stayed open and its delegation token stayed UNREVOKED for
+// the life of the worker process. This commit made the offline path the normal
+// one for a close, which is what turned that discrepancy into a leak.
+//
+// The cleanup registry is the observable seam: it is what the remote-IPC
+// teardown registers into, so asserting it ran is asserting the socket was
+// closed and the token released.
+func TestOrphanReconciler_ClosesAnAgentThroughTheSharedTeardown(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+
+	const agentID = "reconcile-teardown-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+	}))
+	var cleanupRan atomic.Bool
+	svc.agentCleanups.register(agentID, func() { cleanupRan.Store(true) })
+
+	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", agentID)
+
+	assert.True(t, cleanupRan.Load(),
+		"the reconciler must run the tab's registered cleanups -- that is the remote-IPC teardown that closes its socket and revokes its delegation token")
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "the DB row must still be closed")
+}
+
+// TestGitIndexLock_ExcludesSameRepoOnly pins the primitive directly: two holders
+// of one repo's lock never overlap, and a different repo's lock is still
+// acquirable while the first is held.
+//
+// Tested at the lock rather than through `git worktree add`, because a
+// coarser test does not discriminate. Concurrent adds of DIFFERENT branches each
+// create their own `.git/worktrees/<name>/index.lock`, so they do not contend at
+// all -- a test built on them passes with the lock removed and proves nothing.
+// What the lock actually buys is mutual exclusion between commands that DO share
+// an index (add vs. checkout vs. commit), and that is this property.
+func TestGitIndexLock_ExcludesSameRepoOnly(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+
+	var inside atomic.Int32
+	var maxObserved atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = svc.withGitIndexLock("/repo-a", func() error {
+				n := inside.Add(1)
+				for {
+					prev := maxObserved.Load()
+					if n <= prev || maxObserved.CompareAndSwap(prev, n) {
+						break
+					}
+				}
+				// Widen the window a real git fork would occupy, so an unlocked
+				// implementation is overwhelmingly likely to be caught.
+				time.Sleep(2 * time.Millisecond)
+				inside.Add(-1)
+				return nil
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), maxObserved.Load(),
+		"two holders of the same repo's index lock overlapped, so git commands in that repo can still collide on index.lock")
+
+	// Different repos must NOT contend: over-serializing every repository behind
+	// one lock would make an unrelated agent's startup wait on this one.
+	held := svc.gitIndexLock("/repo-a")
+	held.Lock()
+	other := make(chan struct{})
+	go func() {
+		defer close(other)
+		_ = svc.withGitIndexLock("/repo-b", func() error { return nil })
+	}()
+	select {
+	case <-other:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a different repository's index lock blocked behind /repo-a's; the lock is not per-repo")
+	}
+	held.Unlock()
+}
+
+// TestExecuteCreateWorktree_RecoversFromOrphanedAdminDir is the regression for a
+// PERMANENT failure, and the reason `worktree add` prunes first.
+//
+// `git worktree add` creates the admin dir (.git/worktrees/<name>/, index and
+// lock included) BEFORE the worktree directory. A ctx cancellation in that window
+// -- an agent closed during startup, a dropped channel -- leaves the admin dir
+// with no worktree beside it. validateCreateWorktree cannot see that: it stats the
+// WORKTREE path, which does not exist. So every later add for that branch name
+// died with `Unable to create '.git/worktrees/<name>/index.lock': File exists`,
+// forever, until someone pruned by hand.
+//
+// The orphan is built the way it really arises -- a real add, then the worktree
+// directory removed -- rather than by hand-crafting files, so the test exercises
+// the state git itself leaves behind. `--detach` keeps the branch name free, which
+// is what lets the request past the validator's "branch already exists" check and
+// down to the failing add.
+func TestExecuteCreateWorktree_RecoversFromOrphanedAdminDir(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	repoDir := initRepo(t)
+	ctx := context.Background()
+
+	const branch = "orphan-admin-recover"
+	orphanPath := filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", branch)
+	run(t, repoDir, "git", "worktree", "add", "--detach", orphanPath)
+	require.NoError(t, os.RemoveAll(orphanPath), "simulate the cancelled add: the worktree dir goes, the admin dir stays")
+	adminDir := filepath.Join(repoDir, ".git", "worktrees", branch)
+	require.DirExists(t, adminDir, "the orphaned admin dir is the precondition under test")
+
+	plan, err := svc.validateGitMode(ctx, repoDir, &leapmuxv1.OpenAgentRequest{
+		CreateWorktree: true,
+		WorktreeBranch: branch,
+	})
+	require.NoError(t, err, "the validator cannot see the orphan, so it must admit this request")
+
+	result, err := svc.executeGitMode(ctx, plan)
+
+	require.NoError(t, err, "an orphaned admin dir must not permanently block the branch name")
+	assert.DirExists(t, orphanPath, "the worktree must actually be created")
+	assert.NotEmpty(t, result.WorktreeID, "and tracked, so a later REMOVE close can reach it")
+}
+
+// TestCloseTabCommon_RemoveOnAlreadyClosedTabDoesNotDiscardUnsavedWork pins the
+// guard on the unattended force-remove.
+//
+// A REMOVE that retires no LIVE row is not a user-confirmed delete: the row was
+// already closed, so the sender is a stale client -- a peer session that has not
+// converged past a workspace tombstone, or a DeleteBranchDialog whose snapshot
+// predates a CleanupWorkspace. Nobody was shown this directory's dirty state, yet
+// the close ran `git worktree remove --force` plus `git branch -D`, and
+// worktreeHoldsUnsavedWork guarded only ReapOrphanWorktree -- not this path.
+func TestCloseTabCommon_RemoveOnAlreadyClosedTabDoesNotDiscardUnsavedWork(t *testing.T) {
+	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "stale-remove")
+	ctx := context.Background()
+
+	// Uncommitted work in the worktree -- what the user would have been warned
+	// about had the dialog reached them.
+	wt, err := fx.svc.Queries.GetWorktreeByID(ctx, fx.wtID)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(wt.WorktreePath, "dirty.txt"), []byte("unsaved\n"), 0o644))
+
+	// The row is ALREADY closed, so the REMOVE below retires nothing live --
+	// exactly what a stale client produces.
+	require.NoError(t, closeErr(fx.svc.Queries.CloseAgent(ctx, fx.tabID)))
+
+	result := fx.svc.closeAgentTabCommon("", fx.tabID,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED,
+		result.GetWorktreeRemoval(),
+		"a REMOVE that retired no live row must not silently report the directory gone")
+	assert.DirExists(t, wt.WorktreePath,
+		"the worktree holds uncommitted work and nobody confirmed its deletion, so it must survive")
+
+	row, err := fx.svc.Queries.GetWorktreeByID(ctx, fx.wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid, "the row must not be soft-deleted when the removal was refused")
+}
+
+// TestCloseTabCommon_RemoveOnLiveTabStillHonoursTheUsersDelete is the other half:
+// when the close DOES retire a live row, the user saw the last-tab dialog with the
+// dirty and unpushed counts and chose Delete anyway. Second-guessing that would
+// make the button lie, so the probe must not run.
+func TestCloseTabCommon_RemoveOnLiveTabStillHonoursTheUsersDelete(t *testing.T) {
+	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "confirmed-remove")
+	ctx := context.Background()
+
+	wt, err := fx.svc.Queries.GetWorktreeByID(ctx, fx.wtID)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(wt.WorktreePath, "dirty.txt"), []byte("unsaved\n"), 0o644))
+
+	// Row is LIVE, so this close retires it: a user-confirmed delete.
+	result := fx.svc.closeAgentTabCommon("", fx.tabID,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED,
+		result.GetWorktreeRemoval(),
+		"a confirmed delete of a live tab must still remove the worktree even when dirty")
+	assert.NoDirExists(t, wt.WorktreePath, "the user asked for the directory to go")
 }

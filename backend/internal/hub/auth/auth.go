@@ -31,13 +31,13 @@ const userKey contextKey = iota
 // That is deliberately separate from credential revocation, which uses
 // AuthContextRegistry.RevokeUserAuthContextAtGeneration.
 //
-// Credential.WorkspaceScopeID is set only when the request was authenticated
+// Credential.WorkerScopeID is set only when the request was authenticated
 // by a delegation_tokens row (as opposed to a session cookie or an
-// api_tokens bearer). It pins the request to the workspace the
-// delegation was minted for; downstream authorization (notably
-// ChannelService.OpenChannel) MUST narrow accessible-workspace
-// reasoning to this single id rather than the user's full grant set,
-// so a compromised delegation bearer cannot pivot beyond its scope.
+// api_tokens bearer). It names the worker that MINTED the token, which is the
+// one axis a delegation bearer is narrowed on: downstream authorization
+// (ChannelService.verifyDelegationWorkerScope, crdt's worker-scoped auth
+// checker) refuses a bearer aimed at a different machine of the same user, so
+// a leaked token cannot pivot off the worker it was issued on.
 //
 // AuthenticatedAt is the timestamp of the stored session or bearer row that
 // authenticated the request. It is retained for auditing and diagnostics;

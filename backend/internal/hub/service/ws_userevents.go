@@ -142,7 +142,6 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserID:                user.ID.String(),
 		ClientID:              presenceClientID(user),
 		RequestedWorkspaceIDs: requested,
-		WorkspaceScopeID:      user.Credential.WorkspaceScopeID(),
 		// Filter is resolved and installed under subscribeExpandMu by
 		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {

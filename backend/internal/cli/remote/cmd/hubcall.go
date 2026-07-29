@@ -51,8 +51,8 @@ func parseHubOnly(rawCtx any, args []string, extra func(fs *flag.FlagSet)) (stri
 // used by every read-only resolver-driven CLI verb (RunWorkerGet,
 // RunTabGet, RunWorkspaceGet, …). Mirrors workerUnaryEmitOn for the
 // hub side.
-func hubCallUnaryEmitOn(ctx context.Context, c *remote.Client, method, workspaceID string, in, out proto.Message, shape func() any) error {
-	if err := hubCallUnary(ctx, c, method, workspaceID, in, out); err != nil {
+func hubCallUnaryEmitOn(ctx context.Context, c *remote.Client, method string, in, out proto.Message, shape func() any) error {
+	if err := hubCallUnary(ctx, c, method, in, out); err != nil {
 		return remote.EmitErrorWith(classifyHubError(err), err)
 	}
 	return remote.EmitData(shape())
@@ -76,14 +76,14 @@ func hubCallUnaryEmitOn(ctx context.Context, c *remote.Client, method, workspace
 // Method names map 1:1 onto `internal/hubrpc.Registry` entries, which
 // the worker-side RemoteIPC bridge also reads — one place to add or
 // rename a hub method.
-func hubCallUnary(ctx context.Context, c *remote.Client, method, workspaceID string, in proto.Message, out proto.Message) error {
+func hubCallUnary(ctx context.Context, c *remote.Client, method string, in proto.Message, out proto.Message) error {
 	if !c.IsLocal() {
 		return hubCallDirect(ctx, c, method, in, out)
 	}
-	return hubCallLocalIPC(ctx, c, method, workspaceID, in, out)
+	return hubCallLocalIPC(ctx, c, method, in, out)
 }
 
-func hubCallLocalIPC(ctx context.Context, c *remote.Client, method, workspaceID string, in proto.Message, out proto.Message) error {
+func hubCallLocalIPC(ctx context.Context, c *remote.Client, method string, in proto.Message, out proto.Message) error {
 	payload, err := proto.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("marshal %s request: %w", method, err)
@@ -93,9 +93,8 @@ func hubCallLocalIPC(ctx context.Context, c *remote.Client, method, workspaceID 
 		return err
 	}
 	resp, err := ipc.CallInner(ctx, connect.NewRequest(&leapmuxv1.CallInnerRequest{
-		Method:      "hub." + method,
-		Payload:     payload,
-		WorkspaceId: workspaceID,
+		Method:  "hub." + method,
+		Payload: payload,
 	}))
 	if err != nil {
 		return err
@@ -146,12 +145,12 @@ func hubCallDirect(ctx context.Context, c *remote.Client, method string, in prot
 // Commands that do post-RPC work (e.g. `WorkspaceDelete`'s cleanup
 // fan-out) stay on `hubCallUnary` directly so the extra logic stays
 // at the call site.
-func hubUnaryEmit(hub, method, workspaceID string, req, resp proto.Message, shape func() any) error {
+func hubUnaryEmit(hub, method string, req, resp proto.Message, shape func() any) error {
 	c, err := requireClient(hub)
 	if err != nil {
 		return err
 	}
-	if err := hubCallUnary(context.Background(), c, method, workspaceID, req, resp); err != nil {
+	if err := hubCallUnary(context.Background(), c, method, req, resp); err != nil {
 		return remote.EmitErrorWith(classifyHubError(err), err)
 	}
 	return remote.EmitData(shape())

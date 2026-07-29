@@ -4,7 +4,7 @@
 // --include agent,terminal` (multi-worker fan-out consumer) so the
 // resume-on-reconnect logic only lives in one place.
 //
-// `WatchEvents` differs from `WatchWorkspacePrivateEvents`: its
+// `WatchEvents` differs from `WatchWorkerPrivateEvents`: its
 // request pins a closed list of `(agent_id, replay, cursor_seq)` and
 // `(terminal_id, after_offset)` entries, and the worker only delivers
 // events for those specific tabs. New tabs that appear after the

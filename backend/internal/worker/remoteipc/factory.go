@@ -14,21 +14,21 @@ import (
 )
 
 // DelegationLifecycle is the worker-side hook the IPC factory uses to
-// pin the (user, workspace) delegation-token slot for the lifetime of
-// a spawn. Implemented by *crossworker.DelegationStore. Splitting it
-// from DelegationProvider keeps the per-call mint API independent
-// from the spawn-bookkeeping API and lets the factory be wired with a
-// nil lifecycle in tests / minimal configurations without forcing
+// pin the per-user delegation-token slot for the lifetime of a spawn.
+// Implemented by *crossworker.DelegationStore. Splitting it from
+// DelegationProvider keeps the per-call mint API independent from the
+// spawn-bookkeeping API and lets the factory be wired with a nil lifecycle
+// in tests / minimal configurations without forcing
 // crossworker.DelegationStore in.
 //
 // Acquire carries the spawn's tab identity (tabID, tabType) because
-// the hub's mint endpoint validates that the calling worker owns
-// (workspace_id, tab_id). The first spawn for a given (user,
-// workspace) supplies the provenance tab; concurrent spawns share
-// the same cached bearer.
+// the hub's mint endpoint validates that the calling worker owns the tab
+// -- it is the provenance recorded on the token, not a scope. The first
+// spawn for a given user supplies it; concurrent spawns share the same
+// cached bearer.
 type DelegationLifecycle interface {
-	Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32)
-	Release(ctx context.Context, userID userid.UserID, workspaceID string) error
+	Acquire(userID userid.UserID)
+	Release(ctx context.Context, userID userid.UserID) error
 }
 
 // revokeRevokeTimeout caps the hub call we make from the cleanup
@@ -46,15 +46,15 @@ type Factory struct {
 	CrossWorker *crossworker.Client
 	HubBridge   HubBridge
 	HubStreams  HubStreamer
-	// Authorizers is the worker service.Service wearing its
-	// RegisterLocalAuthorizer / ReleaseLocalStream hat. The
-	// router uses this to expose the bearer's scope to handlers.
-	Authorizers LocalAuthorizers
+	// Streams is the worker service.Service wearing its ReleaseLocalStream
+	// hat. The router uses it to retire the event subscriptions a local-IPC
+	// dispatch leaves behind.
+	Streams LocalStreams
 
-	// Delegation pins (user, workspace) bearer slots for the lifetime
-	// of every spawn so the last referencing close hits the hub
-	// revoke endpoint instead of leaving the row to expire. nil is
-	// allowed (tests) and disables the revoke-on-close path.
+	// Delegation pins the per-user bearer slot for the lifetime of every
+	// spawn so the last referencing close hits the hub revoke endpoint
+	// instead of leaving the row to expire. nil is allowed (tests) and
+	// disables the revoke-on-close path.
 	Delegation DelegationLifecycle
 }
 
@@ -63,7 +63,7 @@ type Factory struct {
 // **Why an adapter instead of extending `internal/worker/hub/client.go`
 // directly?** The plan originally proposed teaching the worker's hub
 // client to switch between the worker's own AuthToken and a
-// per-(user, workspace) delegation bearer per-call. That would have
+// per-user delegation bearer per-call. That would have
 // pushed delegation-token plumbing into the long-lived registration /
 // channel-handler client whose lifetime is process-scoped. Putting it
 // behind a narrow interface here keeps:
@@ -82,16 +82,10 @@ type Factory struct {
 // worker-self-scoped paths. The HubBridge adapter that the spawned
 // agent actually goes through lives in this package next to the rest
 // of the IPC dispatch, with `hubBridgeAdapter` translating
-// `HubClient.CallInner(userID, workspaceID, ...)` calls into
-// `CallHub(userID, workspaceID, ...)` delegation-bearer-authenticated
-// requests.
-//
-// workspaceID is the delegation scope: tokens are minted for
-// (userID, workspaceID), so the router populates it from the IPC
-// request's WorkspaceId field, falling back to the spawning agent's
-// workspace when callers omit it.
+// `HubClient.CallInner(userID, ...)` calls into `CallHub(userID, ...)`
+// delegation-bearer-authenticated requests.
 type HubBridge interface {
-	CallHub(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
+	CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
 }
 
 // spawnCommon carries the union of fields AgentSpawning and
@@ -100,7 +94,6 @@ type HubBridge interface {
 // shape so the listen/acquire/cleanup wiring is in one place.
 type spawnCommon struct {
 	UserID        userid.UserID
-	WorkspaceID   string
 	WorkerID      string
 	TabID         string
 	TabType       leapmuxv1.TabType
@@ -120,14 +113,13 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 	token := MintToken()
 	tokenInfo := TokenInfo{
 		UserID:        sc.UserID,
-		WorkspaceID:   sc.WorkspaceID,
 		WorkerID:      sc.WorkerID,
 		TabID:         sc.TabID,
 		TabType:       sc.TabType,
 		WorkingDir:    sc.WorkingDir,
 		AgentProvider: sc.AgentProvider,
 	}
-	router := f.newRouter(sc.UserID, sc.WorkspaceID)
+	router := f.newRouter(sc.UserID)
 	srv, err := Listen(Options{
 		SocketURL: socketURL,
 		Token:     token,
@@ -138,7 +130,7 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 		return nil, nil, err
 	}
 	if f.Delegation != nil {
-		f.Delegation.Acquire(sc.UserID, sc.WorkspaceID, sc.TabID, int32(sc.TabType))
+		f.Delegation.Acquire(sc.UserID)
 	}
 	cleanup := f.makeCleanup(spawnKey, sc, srv)
 	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
@@ -148,7 +140,6 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), error) {
 	return f.spawn(SocketKindAgent, "agent_id", spawnCommon{
 		UserID:        info.UserID,
-		WorkspaceID:   info.WorkspaceID,
 		WorkerID:      info.WorkerID,
 		TabID:         info.TabID,
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -160,27 +151,25 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 // TerminalSpawning satisfies service.RemoteIPCFactory.
 func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, func(), error) {
 	return f.spawn(SocketKindTerminal, "terminal_id", spawnCommon{
-		UserID:      info.UserID,
-		WorkspaceID: info.WorkspaceID,
-		WorkerID:    info.WorkerID,
-		TabID:       info.TabID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		WorkingDir:  info.WorkingDir,
+		UserID:     info.UserID,
+		WorkerID:   info.WorkerID,
+		TabID:      info.TabID,
+		TabType:    leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		WorkingDir: info.WorkingDir,
 	})
 }
 
 // makeCleanup builds the spawn-teardown function: close the local
 // listener, then drop the delegation refcount (which revokes the
-// hub-side row when this was the last referencing spawn for the
-// (user, workspace) pair).
+// hub-side row when this was the last referencing spawn for the user).
 //
 // The revoke runs synchronously with a short timeout — failures here
 // are non-fatal because the row's TTL bounds the worst-case lifetime,
 // but logging makes silent revoke leaks observable.
 //
-// It closes over the whole spawnCommon rather than the three fields it reads:
-// they all come from the same spawn, and re-listing them as bare parameters
-// invites a caller to pass one spawn's user with another's workspace.
+// It closes over the whole spawnCommon rather than the two fields it reads:
+// they both come from the same spawn, and re-listing them as bare parameters
+// invites a caller to pass one spawn's user with another's tab.
 // spawnKey stays separate -- it is the slog attribute NAME ("agent_id" /
 // "terminal_id"), not spawn data.
 func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func() {
@@ -191,25 +180,23 @@ func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func
 		if f.Delegation != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
 			defer cancel()
-			if err := f.Delegation.Release(ctx, sc.UserID, sc.WorkspaceID); err != nil {
-				slog.Warn("delegation release failed", spawnKey, sc.TabID, "user_id", sc.UserID, "workspace_id", sc.WorkspaceID, "error", err)
+			if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
+				slog.Warn("delegation release failed", spawnKey, sc.TabID, "user_id", sc.UserID, "error", err)
 			}
 		}
 	}
 }
 
-// newRouter builds a router scoped to (userID, workspaceID).
-func (f *Factory) newRouter(userID userid.UserID, workspaceID string) *Router {
+// newRouter builds a router scoped to userID.
+func (f *Factory) newRouter(userID userid.UserID) *Router {
 	return &Router{
 		WorkerID:        f.WorkerID,
 		UserID:          userID,
-		WorkspaceIDs:    []string{workspaceID},
 		LocalDispatcher: dispatcherAdapter{f.Dispatcher},
 		CrossWorker:     crossWorkerAdapter{f.CrossWorker},
 		Hub:             hubBridgeAdapter{f.HubBridge},
 		HubStreams:      f.HubStreams,
-		Authorizers:     f.Authorizers,
-		WorkspaceFilter: func(id string) bool { return id == "" || id == workspaceID },
+		Streams:         f.Streams,
 	}
 }
 
@@ -227,29 +214,27 @@ func (a dispatcherAdapter) DispatchWith(ctx context.Context, userID userid.UserI
 // crossWorkerAdapter satisfies CrossWorkerClient.
 type crossWorkerAdapter struct{ c *crossworker.Client }
 
-func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	if a.c == nil {
 		return nil, errors.New("cross-worker client not configured")
 	}
-	return a.c.CallInner(ctx, targetWorkerID, userID, workspaceID, method, payload)
+	return a.c.CallInner(ctx, targetWorkerID, userID, method, payload)
 }
 
-func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
 	if a.c == nil {
 		return errors.New("cross-worker client not configured")
 	}
-	return a.c.StreamInner(ctx, targetWorkerID, userID, workspaceID, method, payload, onMsg)
+	return a.c.StreamInner(ctx, targetWorkerID, userID, method, payload, onMsg)
 }
 
-// hubBridgeAdapter satisfies HubClient. The (userID, workspaceID)
-// pair is forwarded verbatim — the bridge needs both to mint the
-// correct delegation-token bearer (`(user_id, workspace_id)` is the
-// scope the hub validates on /worker/delegation-tokens/mint).
+// hubBridgeAdapter satisfies HubClient. The user id is forwarded verbatim --
+// it is the whole scope the hub validates on /worker/delegation-tokens/mint.
 type hubBridgeAdapter struct{ b HubBridge }
 
-func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	if a.b == nil {
 		return nil, errors.New("hub bridge not configured")
 	}
-	return a.b.CallHub(ctx, userID, workspaceID, method, payload)
+	return a.b.CallHub(ctx, userID, method, payload)
 }

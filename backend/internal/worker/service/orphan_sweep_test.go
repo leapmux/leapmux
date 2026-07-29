@@ -15,13 +15,12 @@ import (
 // open-but-inactive agent's state intact (it is retained for a possible relaunch).
 func TestSweepOrphanedAgentState(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	createAgent := func(id string) {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 			ID:            id,
-			WorkspaceID:   "ws-1",
 			WorkingDir:    t.TempDir(),
 			HomeDir:       t.TempDir(),
 			Title:         id,
@@ -38,7 +37,7 @@ func TestSweepOrphanedAgentState(t *testing.T) {
 	// A CLOSED agent whose state was orphaned (never routed through cleanup).
 	closedID := "agent-closed"
 	createAgent(closedID)
-	require.NoError(t, svc.Queries.CloseAgent(ctx, closedID))
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, closedID)))
 	svc.Output.spanTracker(closedID)
 
 	// A DELETED agent (no DB row at all) with leftover state.

@@ -40,9 +40,6 @@ message CallInnerRequest {
   // from the request body (agent_id / terminal_id / tab_id) or, for new-
   // tab ops, from worker_id in the payload.
   string target_worker_id = 3;
-  // Optional workspace_id for authorization scoping. The router rejects
-  // calls whose resolved workspace doesn't match the bearer token's scope.
-  string workspace_id = 4;
 }
 
 message CallInnerResponse {
@@ -56,9 +53,8 @@ message StreamInnerRequest {
   string method = 1;
   bytes payload = 2;
   string target_worker_id = 3;
-  string workspace_id = 4;
   // Client-assigned identifier so Cancel() can target this stream.
-  string client_request_id = 5;
+  string client_request_id = 4;
 }
 
 message StreamInnerEnvelope {
@@ -72,28 +68,16 @@ message StreamInnerEnvelope {
 
 message WhoamiRequest {}
 
+// WhoamiResponse describes the spawn context a `leapmux remote` bearer was
+// minted for. No workspace_id: the Worker stores none, and the workspace a tab
+// lives in is derivable from the stable tab id below via a single hub LocateTab
+// call -- so there is nothing here to go stale on a cross-workspace move.
 message WhoamiResponse {
   string user_id = 1;
   string username = 2;
-  string workspace_id = 3; // default workspace from spawn context
-  string worker_id = 4;    // spawning worker
-  string tab_id = 5;       // spawning tab id (agent or terminal)
-  TabType tab_type = 6;    // matches the rest of the protos
-  // Effective scope of the bearer.
-  RemoteScope scope = 7;
-}
-
-message RemoteScope {
-  // Workspace IDs the bearer is allowed to act on.
-  repeated string workspace_ids = 1;
-  // Field 2 was `cross_worker_filesystem`. Removed: workers aren't
-  // shareable, so a bearer that's authorized at all has filesystem
-  // access to every worker the user owns. Standalone CLI bearers
-  // already have the same reach via the API token; gating only the
-  // worker-spawned bearer was theatre. Reserved so re-using the tag
-  // for an unrelated boolean can't ship by accident.
-  reserved 2;
-  reserved "cross_worker_filesystem";
+  string worker_id = 3;    // spawning worker
+  string tab_id = 4;       // spawning tab id (agent or terminal)
+  TabType tab_type = 5;    // matches the rest of the protos
 }
 
 message CancelRequest {

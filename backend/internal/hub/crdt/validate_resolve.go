@@ -48,8 +48,10 @@ func workspaceForEntity(state *leapmuxv1.UserCrdtState, ref EntityRef, roots roo
 			return ""
 		}
 		return ref.WorkspaceID
+	default:
+		// EntityKindUnknown resolves to no workspace.
+		return ""
 	}
-	return ""
 }
 
 func nodeWorkspace(state *leapmuxv1.UserCrdtState, node *leapmuxv1.NodeRecord, roots rootSet) string {

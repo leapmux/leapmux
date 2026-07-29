@@ -35,18 +35,17 @@ func RunWhoami(rawCtx any, args []string) error {
 		// Hand-projected so the tab_type enum lands as a string per the
 		// CLI's enum-projection convention; encoding/json on the raw
 		// proto message would emit ordinals.
-		out := map[string]any{
-			"user_id":      resp.Msg.GetUserId(),
-			"username":     resp.Msg.GetUsername(),
-			"workspace_id": resp.Msg.GetWorkspaceId(),
-			"worker_id":    resp.Msg.GetWorkerId(),
-			"tab_id":       resp.Msg.GetTabId(),
-			"tab_type":     tabTypeName(resp.Msg.GetTabType()),
-		}
-		if scope := resp.Msg.GetScope(); scope != nil {
-			out["scope"] = map[string]any{"workspace_ids": scope.GetWorkspaceIds()}
-		}
-		return remote.EmitData(out)
+		// No workspace_id and no scope: the bearer is scoped to the user and
+		// to the minting worker, not to a workspace, and the spawn context
+		// carries the stable tab id instead -- `tab get --tab-id <id>` derives
+		// the workspace from it and stays correct across a tab move.
+		return remote.EmitData(map[string]any{
+			"user_id":   resp.Msg.GetUserId(),
+			"username":  resp.Msg.GetUsername(),
+			"worker_id": resp.Msg.GetWorkerId(),
+			"tab_id":    resp.Msg.GetTabId(),
+			"tab_type":  tabTypeName(resp.Msg.GetTabType()),
+		})
 	}
 	return remote.EmitData(map[string]any{
 		"hub_url":  c.HubURL,
@@ -70,7 +69,7 @@ func RunWorkspaceList(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.ListWorkspacesResponse
-		return hubCallUnaryEmitOn(ctx, c, "ListWorkspaces", "",
+		return hubCallUnaryEmitOn(ctx, c, "ListWorkspaces",
 			&leapmuxv1.ListWorkspacesRequest{}, &resp,
 			func() any { return resp.GetWorkspaces() })
 	})
@@ -90,7 +89,7 @@ func RunWorkspaceGet(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.GetWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetWorkspace", got.WorkspaceID,
+		return hubCallUnaryEmitOn(ctx, c, "GetWorkspace",
 			&leapmuxv1.GetWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp,
 			func() any { return resp.GetWorkspace() })
 	})
@@ -115,7 +114,7 @@ func RunWorkspaceCreate(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.CreateWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "CreateWorkspace", "",
+		return hubCallUnaryEmitOn(ctx, c, "CreateWorkspace",
 			&leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": resp.GetWorkspaceId()} })
 	})
@@ -138,7 +137,7 @@ func RunWorkspaceRename(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.RenameWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "RenameWorkspace", got.WorkspaceID,
+		return hubCallUnaryEmitOn(ctx, c, "RenameWorkspace",
 			&leapmuxv1.RenameWorkspaceRequest{WorkspaceId: got.WorkspaceID, Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": got.WorkspaceID} })
 	})
@@ -169,21 +168,29 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 			return err
 		}
 		var resp leapmuxv1.DeleteWorkspaceResponse
-		if err := hubCallUnary(ctx, c, "DeleteWorkspace", got.WorkspaceID, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
+		if err := hubCallUnary(ctx, c, "DeleteWorkspace", &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
 			return remote.EmitErrorWith(classifyHubError(err), err)
 		}
 
-		// Mirror the frontend's two-step delete: hub drops the workspace
-		// row (returning every worker that hosted a tab in it), then we
-		// fan out CleanupWorkspace over E2EE so each worker tears down
-		// its agents/terminals/worktrees. The fan-out logic is in
+		// Mirror the frontend's two-step delete: the hub drops the workspace
+		// row and returns each hosting worker WITH the tabs it must tear down
+		// (read inside the delete transaction), then we fan out
+		// CleanupWorkspace over E2EE. The fan-out logic is in
 		// runWorkspaceCleanupFanout so it can be exercised by unit tests
 		// without standing up a real E2EE worker harness.
-		status, entries := runWorkspaceCleanupFanout(ctx, got.WorkspaceID, resp.GetWorkerIds(), cliCleanupCaller(c))
+		//
+		// No pre-delete ListTabs read any more: this command used to resolve
+		// its own list beforehand and swallow that read's error to nil, which
+		// silently degraded the whole fan-out to "close nothing".
+		status, entries := runWorkspaceCleanupFanout(ctx, resp.GetWorkerTabs(), cliCleanupCaller(c))
 
+		workerIDs := make([]string, 0, len(resp.GetWorkerTabs()))
+		for _, wt := range resp.GetWorkerTabs() {
+			workerIDs = append(workerIDs, wt.GetWorkerId())
+		}
 		return remote.EmitData(map[string]any{
 			"workspace_id": got.WorkspaceID,
-			"worker_ids":   resp.GetWorkerIds(),
+			"worker_ids":   workerIDs,
 			"status":       status,
 			"cleanup":      entries,
 		})
@@ -194,14 +201,14 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 // `CleanupWorkspace` inner-RPC per worker. The CLI binds it to the
 // real Client+E2EE channel; unit tests pass a fake that exercises the
 // surrounding aggregation logic without spinning up worker plumbing.
-type cleanupCaller func(ctx context.Context, workerID, workspaceID string) (*leapmuxv1.CleanupWorkspaceResponse, error)
+type cleanupCaller func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error)
 
 // cliCleanupCaller wires runWorkspaceCleanupFanout to the production
 // transport: every worker_id gets its own E2EE channel and a
 // CleanupWorkspace inner-RPC.
 func cliCleanupCaller(c *remote.Client) cleanupCaller {
-	return func(ctx context.Context, workerID, workspaceID string) (*leapmuxv1.CleanupWorkspaceResponse, error) {
-		req := &leapmuxv1.CleanupWorkspaceRequest{WorkspaceId: workspaceID}
+	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+		req := &leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs}
 		var resp leapmuxv1.CleanupWorkspaceResponse
 		if err := callInnerRPCBest(ctx, c, workerID, "CleanupWorkspace", req, &resp); err != nil {
 			return nil, err
@@ -217,28 +224,29 @@ func cliCleanupCaller(c *remote.Client) cleanupCaller {
 // are no workers (the workspace had no tabs — the hub-side delete is
 // the only step).
 //
+// workerTabs pairs each worker with the tabs it hosts, as the hub read them
+// inside the delete transaction -- so a worker in this list always arrives with
+// its own tab list rather than depending on a separate, racier read.
+//
 // Failures DO NOT short-circuit: the user needs per-worker visibility
 // so they can decide whether to retry only the failures or rerun the
 // whole delete. errgroup.Group (no context cancellation) is used so
 // one worker's failure doesn't cancel the others' in-flight calls.
-func runWorkspaceCleanupFanout(ctx context.Context, workspaceID string, workerIDs []string, call cleanupCaller) (string, []map[string]any) {
-	entries := make([]map[string]any, len(workerIDs))
+func runWorkspaceCleanupFanout(ctx context.Context, workerTabs []*leapmuxv1.WorkerTabs, call cleanupCaller) (string, []map[string]any) {
+	entries := make([]map[string]any, len(workerTabs))
 	var failed atomic.Bool
 	var g errgroup.Group
 	g.SetLimit(8)
-	for i, wid := range workerIDs {
+	for i, wt := range workerTabs {
 		g.Go(func() error {
-			entry := map[string]any{"worker_id": wid}
-			resp, err := call(ctx, wid, workspaceID)
+			entry := map[string]any{"worker_id": wt.GetWorkerId()}
+			_, err := call(ctx, wt.GetWorkerId(), wt.GetTabs())
 			if err != nil {
 				entry["status"] = "failed"
 				entry["error"] = err.Error()
 				failed.Store(true)
 			} else {
 				entry["status"] = "ok"
-				if wts := resp.GetWorktrees(); len(wts) > 0 {
-					entry["worktrees"] = wts
-				}
 			}
 			entries[i] = entry
 			return nil

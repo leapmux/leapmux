@@ -28,9 +28,9 @@ import (
 // LexoRank — the rank is computed against the sibling tabs already on
 // the destination tile.
 //
-// The caller is responsible for any worker-side bookkeeping
-// (`MoveTabWorkspace` for agents/terminals, `RelocateFileTabPath` for
-// FILE tabs); this command only emits the CRDT op.
+// There is no worker-side bookkeeping to pair this with: a Worker stores no
+// workspace id, so the CRDT op is the entire move -- which is also why it lands
+// with the tab's Worker offline.
 func RunTabMove(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, destTileID, destWorkspaceID string

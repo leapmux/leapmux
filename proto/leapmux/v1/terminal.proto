@@ -19,15 +19,14 @@ enum TerminalStatus {
 }
 
 message OpenTerminalRequest {
-  string workspace_id = 1;
-  string worker_id = 2;
-  string working_dir = 3;
-  string shell = 4;
-  string shell_start_dir = 5;
-  uint32 cols = 6;
-  uint32 rows = 7;
-  bool create_worktree = 8;     // If true, create a git worktree before starting
-  string worktree_branch = 9;  // Branch name for the worktree
+  string worker_id = 1;
+  string working_dir = 2;
+  string shell = 3;
+  string shell_start_dir = 4;
+  uint32 cols = 5;
+  uint32 rows = 6;
+  bool create_worktree = 7;     // If true, create a git worktree before starting
+  string worktree_branch = 8;  // Branch name for the worktree
   string checkout_branch = 10;      // "Switch to branch" mode
   string use_worktree_path = 11;    // "Use existing worktree" mode
   string worktree_base_branch = 12; // Base branch for "Create new worktree" (default: current branch)
@@ -48,9 +47,8 @@ message OpenTerminalResponse {
 }
 
 message CloseTerminalRequest {
-  string workspace_id = 1;
-  string terminal_id = 2;
-  WorktreeAction worktree_action = 3;
+  string terminal_id = 1;
+  WorktreeAction worktree_action = 2;
 }
 
 // CloseTerminalResponse reports the outcome of CloseTerminal. See
@@ -66,35 +64,31 @@ message CloseTerminalResponse {
 // (including the "[Terminal process exited (N) - Press Enter to restart]"
 // notice) is preserved so the new shell's prompt appears below it.
 message RestartTerminalRequest {
-  string workspace_id = 1;
-  string terminal_id = 2;
-  uint32 cols = 3;
-  uint32 rows = 4;
+  string terminal_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
 }
 
 message RestartTerminalResponse {}
 
 message SendInputRequest {
-  string workspace_id = 1;
-  string terminal_id = 2;
-  bytes data = 3;
+  string terminal_id = 1;
+  bytes data = 2;
 }
 
 message SendInputResponse {}
 
 message ResizeTerminalRequest {
-  string workspace_id = 1;
-  string terminal_id = 2;
-  uint32 cols = 3;
-  uint32 rows = 4;
+  string terminal_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
 }
 
 message ResizeTerminalResponse {}
 
 message UpdateTerminalTitleRequest {
-  string workspace_id = 1;
-  string terminal_id = 2;
-  string title = 3;
+  string terminal_id = 1;
+  string title = 2;
 }
 
 message UpdateTerminalTitleResponse {}
@@ -172,8 +166,7 @@ message TerminalStatusChange {
 }
 
 message ListAvailableShellsRequest {
-  string workspace_id = 1;
-  string worker_id = 2;   // Which worker to query for shells (required)
+  string worker_id = 1;   // Which worker to query for shells (required)
 }
 
 message ListAvailableShellsResponse {

@@ -53,25 +53,24 @@ func (f *fakeLocalDispatcher) DispatchWith(_ context.Context, userID userid.User
 // fakeCrossWorker records cross-worker calls so the test can verify
 // the router routes correctly.
 type fakeCrossWorker struct {
-	mu            sync.Mutex
-	callTarget    string
-	callWorkspace string
-	callMethod    string
-	callPayload   []byte
-	resp          []byte
-	respErr       error
+	mu          sync.Mutex
+	callTarget  string
+	callMethod  string
+	callPayload []byte
+	resp        []byte
+	respErr     error
 }
 
-func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.callTarget, f.callWorkspace, f.callMethod, f.callPayload = target, workspaceID, method, payload
+	f.callTarget, f.callMethod, f.callPayload = target, method, payload
 	return f.resp, f.respErr
 }
 
-func (f *fakeCrossWorker) StreamInner(_ context.Context, target string, _ userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (f *fakeCrossWorker) StreamInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
 	f.mu.Lock()
-	f.callTarget, f.callWorkspace, f.callMethod, f.callPayload = target, workspaceID, method, payload
+	f.callTarget, f.callMethod, f.callPayload = target, method, payload
 	f.mu.Unlock()
 	if f.respErr != nil {
 		return f.respErr
@@ -80,41 +79,33 @@ func (f *fakeCrossWorker) StreamInner(_ context.Context, target string, _ userid
 	return nil
 }
 
-// fakeAuthorizers records register/unregister calls so the test
-// asserts the synthetic-stream-id lifecycle.
-type fakeAuthorizers struct {
-	mu            sync.Mutex
-	registered    []string
-	unregistered  []string
-	lastWorkspace []string
+// fakeStreams records the release calls so the test asserts the
+// synthetic-stream-id lifecycle. Every id the router mints must be released,
+// or the watcher registrations keyed by it leak for the worker's lifetime.
+type fakeStreams struct {
+	mu       sync.Mutex
+	released []string
 }
 
-func (f *fakeAuthorizers) RegisterLocalAuthorizer(streamID string, ws []string) {
+func (f *fakeStreams) ReleaseLocalStream(streamID string) {
 	f.mu.Lock()
-	f.registered = append(f.registered, streamID)
-	f.lastWorkspace = ws
-	f.mu.Unlock()
-}
-func (f *fakeAuthorizers) ReleaseLocalStream(streamID string) {
-	f.mu.Lock()
-	f.unregistered = append(f.unregistered, streamID)
+	f.released = append(f.released, streamID)
 	f.mu.Unlock()
 }
 
 func TestRouter_CallInner_LocalDispatch(t *testing.T) {
 	dispatcher := &fakeLocalDispatcher{respPayload: []byte("hello")}
-	authorizers := &fakeAuthorizers{}
+	streams := &fakeStreams{}
 	r := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("user-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: dispatcher,
-		Authorizers:     authorizers,
+		Streams:         streams,
 	}
 	resp, err := r.CallInner(context.Background(),
-		remoteipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkspaceID: "ws-1", WorkerID: "worker-A"},
+		remoteipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
 		"worker.OpenAgent", []byte("payload"),
-		"worker-A", "ws-1")
+		"worker-A")
 	require.NoError(t, err)
 	require.False(t, resp.GetIsError(), "unexpected error: %s", resp.GetErrorMessage())
 	assert.Equal(t, []byte("hello"), resp.GetPayload())
@@ -125,13 +116,12 @@ func TestRouter_CallInner_LocalDispatch(t *testing.T) {
 	assert.Equal(t, []byte("payload"), dispatcher.gotPayload)
 	assert.Equal(t, "user-1", dispatcher.gotUserID.String())
 
-	// The authorizer was registered with a synthetic localipc:* stream
-	// id and unregistered when dispatch finished.
-	require.Len(t, authorizers.registered, 1)
-	require.Len(t, authorizers.unregistered, 1)
-	assert.True(t, strings.HasPrefix(authorizers.registered[0], "localipc:"))
-	assert.Equal(t, authorizers.registered[0], authorizers.unregistered[0])
-	assert.Equal(t, []string{"ws-1"}, authorizers.lastWorkspace)
+	// The dispatch minted a synthetic localipc:* stream id and released it
+	// when it finished. The release is the load-bearing half: a local-IPC id
+	// never reaches the channel manager's close callback, so nothing else would
+	// ever sweep the watcher registrations keyed by it.
+	require.Len(t, streams.released, 1)
+	assert.True(t, strings.HasPrefix(streams.released[0], "localipc:"))
 }
 
 // TestRouter_LocalStreamID_IncludesTokenIdentity asserts the synthetic
@@ -149,36 +139,35 @@ func TestRouter_LocalStreamID_IncludesTokenIdentity(t *testing.T) {
 	}{
 		{
 			name:        "agent",
-			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", TabID: "agent-XYZ", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), TabID: "agent-XYZ", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
 			wantSegment: "agent-agent-XYZ", // prefix "agent-" + the TabID value.
 		},
 		{
 			name:        "terminal",
-			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", TabID: "term-7", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), TabID: "term-7", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
 			wantSegment: "terminal-term-7",
 		},
 		{
 			name:        "user-only-fallback",
-			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-9"), WorkspaceID: "ws-1"},
+			info:        remoteipc.TokenInfo{UserID: userid.MustNew("u-9")},
 			wantSegment: "user-u-9",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dispatcher := &fakeLocalDispatcher{respPayload: []byte("ok")}
-			authorizers := &fakeAuthorizers{}
+			streams := &fakeStreams{}
 			r := &remoteipc.Router{
 				WorkerID:        "worker-A",
 				UserID:          tc.info.UserID,
-				WorkspaceIDs:    []string{tc.info.WorkspaceID},
 				LocalDispatcher: dispatcher,
-				Authorizers:     authorizers,
+				Streams:         streams,
 			}
 			_, err := r.CallInner(context.Background(), tc.info,
-				"worker.OpenAgent", []byte("p"), "worker-A", tc.info.WorkspaceID)
+				"worker.OpenAgent", []byte("p"), "worker-A")
 			require.NoError(t, err)
-			require.Len(t, authorizers.registered, 1)
-			got := authorizers.registered[0]
+			require.Len(t, streams.released, 1)
+			got := streams.released[0]
 			parts := strings.SplitN(got, ":", 3)
 			require.Len(t, parts, 3, "stream id %q must have prefix:token-id:request-id shape", got)
 			assert.Equal(t, "localipc", parts[0])
@@ -195,32 +184,31 @@ func TestRouter_LocalStreamID_IncludesTokenIdentity(t *testing.T) {
 // concurrent siblings).
 func TestRouter_LocalStreamID_PerCallRequestSegmentChanges(t *testing.T) {
 	dispatcher := &fakeLocalDispatcher{respPayload: []byte("ok")}
-	authorizers := &fakeAuthorizers{}
+	streams := &fakeStreams{}
 	r := &remoteipc.Router{
 		WorkerID:        "worker-A",
 		UserID:          userid.MustNew("u-1"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: dispatcher,
-		Authorizers:     authorizers,
+		Streams:         streams,
 	}
-	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkspaceID: "ws-1", TabID: "agent-X", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
+	info := remoteipc.TokenInfo{UserID: userid.MustNew("u-1"), TabID: "agent-X", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
 	for i := 0; i < 3; i++ {
 		_, err := r.CallInner(context.Background(), info,
-			"worker.OpenAgent", []byte("p"), "worker-A", "ws-1")
+			"worker.OpenAgent", []byte("p"), "worker-A")
 		require.NoError(t, err)
 	}
-	require.Len(t, authorizers.registered, 3)
+	require.Len(t, streams.released, 3)
 	// Token-identity segment is stable; request-id segment varies.
-	for _, sid := range authorizers.registered {
+	for _, sid := range streams.released {
 		parts := strings.SplitN(sid, ":", 3)
 		require.Len(t, parts, 3)
 		assert.Equal(t, "agent-agent-X", parts[1])
 	}
 	seen := map[string]struct{}{}
-	for _, sid := range authorizers.registered {
+	for _, sid := range streams.released {
 		seen[sid] = struct{}{}
 	}
-	assert.Len(t, seen, 3, "each call must produce a unique request-id segment: %v", authorizers.registered)
+	assert.Len(t, seen, 3, "each call must produce a unique request-id segment: %v", streams.released)
 }
 
 func TestRouter_CallInner_CrossWorker(t *testing.T) {
@@ -233,7 +221,7 @@ func TestRouter_CallInner_CrossWorker(t *testing.T) {
 	resp, err := r.CallInner(context.Background(),
 		remoteipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
 		"worker.SendAgentMessage", []byte("hi"),
-		"worker-B", "ws-1")
+		"worker-B")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("from-B"), resp.GetPayload())
 	assert.Equal(t, "worker-B", cross.callTarget)
@@ -241,7 +229,6 @@ func TestRouter_CallInner_CrossWorker(t *testing.T) {
 	// The request's workspace_id must flow through the channel pool
 	// key so different workspaces don't share a delegation-scoped
 	// Noise session against the same (target, user) pair.
-	assert.Equal(t, "ws-1", cross.callWorkspace)
 }
 
 // TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally
@@ -269,7 +256,7 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 		cross.callMethod = ""
 		resp, err := r.CallInner(context.Background(),
 			remoteipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
-			method, []byte(`{}`), "worker-B", "ws-1")
+			method, []byte(`{}`), "worker-B")
 		require.NoError(t, err, method)
 		assert.Equal(t, []byte("file-bytes"), resp.GetPayload(), method)
 		assert.Equal(t, "worker-B", cross.callTarget, method)
@@ -279,14 +266,13 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 func TestRouter_CallInner_HubNamespace(t *testing.T) {
 	hub := &fakeHubClient{resp: []byte("hub-ok")}
 	r := &remoteipc.Router{
-		UserID:       userid.MustNew("user-1"),
-		WorkspaceIDs: []string{"ws-1"},
-		Hub:          hub,
+		UserID: userid.MustNew("user-1"),
+		Hub:    hub,
 	}
 	resp, err := r.CallInner(context.Background(),
 		remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
 		"hub.ListWorkspaces", []byte("{}"),
-		"", "")
+		"")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("hub-ok"), resp.GetPayload())
 	assert.Equal(t, "ListWorkspaces", hub.lastMethod)
@@ -294,36 +280,29 @@ func TestRouter_CallInner_HubNamespace(t *testing.T) {
 	// Empty request workspace falls back to the spawning agent's
 	// workspace so methods without a workspace_id field (e.g.
 	// ListWorkspaces) still get a delegation scope.
-	assert.Equal(t, "ws-1", hub.lastWorkspaceID)
 }
 
 func TestRouter_CallInner_HubNamespace_ForwardsRequestWorkspace(t *testing.T) {
 	hub := &fakeHubClient{resp: []byte("ok")}
 	r := &remoteipc.Router{
-		UserID:       userid.MustNew("user-1"),
-		WorkspaceIDs: []string{"ws-spawn"},
-		Hub:          hub,
+		UserID: userid.MustNew("user-1"),
+		Hub:    hub,
 	}
-	// Caller specifies a different workspace: scope must follow the
-	// request, not the spawning fallback.
 	_, err := r.CallInner(context.Background(),
 		remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub.GetTab", []byte("{}"), "", "ws-target")
+		"hub.GetTab", []byte("{}"), "")
 	require.NoError(t, err)
-	assert.Equal(t, "ws-target", hub.lastWorkspaceID,
-		"request workspace must override spawning fallback")
 }
 
 func TestRouter_CallInner_HubNamespace_PropagatesError(t *testing.T) {
 	hub := &fakeHubClient{respErr: errors.New("boom")}
 	r := &remoteipc.Router{
-		UserID:       userid.MustNew("user-1"),
-		WorkspaceIDs: []string{"ws-1"},
-		Hub:          hub,
+		UserID: userid.MustNew("user-1"),
+		Hub:    hub,
 	}
 	_, err := r.CallInner(context.Background(),
 		remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub.GetTab", []byte("{}"), "", "")
+		"hub.GetTab", []byte("{}"), "")
 	require.Error(t, err)
 	// An uncoded hub failure still surfaces as CodeInternal, so callers can
 	// distinguish transport failure from "no hub configured" (Unimplemented)
@@ -351,13 +330,12 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 		t.Run("hub namespace: "+tc.name, func(t *testing.T) {
 			hub := &fakeHubClient{respErr: connect.NewError(tc.code, errors.New("upstream"))}
 			r := &remoteipc.Router{
-				UserID:       userid.MustNew("user-1"),
-				WorkspaceIDs: []string{"ws-1"},
-				Hub:          hub,
+				UserID: userid.MustNew("user-1"),
+				Hub:    hub,
 			}
 			_, err := r.CallInner(context.Background(),
 				remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
-				"hub.GetTab", []byte("{}"), "", "")
+				"hub.GetTab", []byte("{}"), "")
 			require.Error(t, err)
 			assert.Equal(t, tc.code, connect.CodeOf(err),
 				"the originating code must survive the relay, not collapse to Internal")
@@ -366,14 +344,13 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 		t.Run("cross-worker namespace: "+tc.name, func(t *testing.T) {
 			cw := &fakeCrossWorker{respErr: connect.NewError(tc.code, errors.New("upstream"))}
 			r := &remoteipc.Router{
-				UserID:       userid.MustNew("user-1"),
-				WorkerID:     "wkr-self",
-				WorkspaceIDs: []string{"ws-1"},
-				CrossWorker:  cw,
+				UserID:      userid.MustNew("user-1"),
+				WorkerID:    "wkr-self",
+				CrossWorker: cw,
 			}
 			_, err := r.CallInner(context.Background(),
 				remoteipc.TokenInfo{UserID: userid.MustNew("user-1")},
-				"worker.GetTab", []byte("{}"), "wkr-other", "")
+				"worker.GetTab", []byte("{}"), "wkr-other")
 			require.Error(t, err)
 			assert.Equal(t, tc.code, connect.CodeOf(err),
 				"the originating code must survive the relay, not collapse to Internal")
@@ -382,35 +359,23 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 }
 
 func TestRouter_CallInner_HubNamespace_NotConfigured(t *testing.T) {
-	r := &remoteipc.Router{UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"}}
+	r := &remoteipc.Router{UserID: userid.MustNew("u-1")}
 	_, err := r.CallInner(context.Background(), remoteipc.TokenInfo{UserID: userid.MustNew("u-1")},
-		"hub.GetTab", []byte("{}"), "", "")
+		"hub.GetTab", []byte("{}"), "")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
 }
 
 func TestRouter_CallInner_UnknownNamespaceRejected(t *testing.T) {
 	r := &remoteipc.Router{UserID: userid.MustNew("u")}
-	_, err := r.CallInner(context.Background(), remoteipc.TokenInfo{}, "garbage.method", nil, "", "")
+	_, err := r.CallInner(context.Background(), remoteipc.TokenInfo{}, "garbage.method", nil, "")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestRouter_CallInner_WorkspaceFilterRejects(t *testing.T) {
-	r := &remoteipc.Router{
-		UserID: userid.MustNew("u"),
-		WorkspaceFilter: func(wsID string) bool {
-			return wsID == "ws-allowed"
-		},
-	}
-	_, err := r.CallInner(context.Background(), remoteipc.TokenInfo{}, "worker.X", nil, "", "ws-other")
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-}
-
 func TestRouter_CallInner_LocalDispatcher_NilReturnsUnimplemented(t *testing.T) {
 	r := &remoteipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
-	resp, err := r.CallInner(context.Background(), remoteipc.TokenInfo{}, "worker.X", nil, "A", "")
+	resp, err := r.CallInner(context.Background(), remoteipc.TokenInfo{}, "worker.X", nil, "A")
 	require.NoError(t, err)
 	assert.True(t, resp.GetIsError())
 	assert.Contains(t, resp.GetErrorMessage(), "local dispatcher not configured")
@@ -423,13 +388,12 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	dispatcher := &fakeLocalDispatcher{
 		emitStream: [][]byte{[]byte("a"), []byte("b")},
 	}
-	authorizers := &fakeAuthorizers{}
+	streams := &fakeStreams{}
 	r := &remoteipc.Router{
 		WorkerID:        "A",
 		UserID:          userid.MustNew("u"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: dispatcher,
-		Authorizers:     authorizers,
+		Streams:         streams,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -438,7 +402,7 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	got := make(chan []byte, 4)
 	streamErr := make(chan error, 1)
 	go func() {
-		streamErr <- r.StreamInner(ctx, remoteipc.TokenInfo{}, "worker.WatchEvents", []byte("{}"), "A", "ws-1", "req-1",
+		streamErr <- r.StreamInner(ctx, remoteipc.TokenInfo{}, "worker.WatchEvents", []byte("{}"), "A", "req-1",
 			func(env *leapmuxv1.StreamInnerEnvelope) error {
 				got <- env.GetPayload()
 				return nil
@@ -464,8 +428,8 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("StreamInner didn't return after ctx cancel")
 	}
-	require.Len(t, authorizers.registered, 1)
-	assert.Equal(t, authorizers.registered[0], authorizers.unregistered[0])
+	require.Len(t, streams.released, 1)
+	assert.Equal(t, streams.released[0], streams.released[0])
 }
 
 // TestRouter_StreamInner_TerminalResponsePayloadForwarded pins that a
@@ -485,15 +449,14 @@ func TestRouter_StreamInner_TerminalResponsePayloadForwarded(t *testing.T) {
 	r := &remoteipc.Router{
 		WorkerID:        "A",
 		UserID:          userid.MustNew("u"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: dispatcher,
-		Authorizers:     &fakeAuthorizers{},
+		Streams:         &fakeStreams{},
 	}
 
 	got := make(chan *leapmuxv1.StreamInnerEnvelope, 4)
 	streamErr := make(chan error, 1)
 	go func() {
-		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.OneShotStream", []byte("{}"), "A", "ws-1", "req-1",
+		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.OneShotStream", []byte("{}"), "A", "req-1",
 			func(env *leapmuxv1.StreamInnerEnvelope) error {
 				got <- env
 				return nil
@@ -527,15 +490,14 @@ func TestRouter_StreamInner_TerminalEmptyResponseNoExtraEnvelope(t *testing.T) {
 	r := &remoteipc.Router{
 		WorkerID:        "A",
 		UserID:          userid.MustNew("u"),
-		WorkspaceIDs:    []string{"ws-1"},
 		LocalDispatcher: dispatcher,
-		Authorizers:     &fakeAuthorizers{},
+		Streams:         &fakeStreams{},
 	}
 
 	received := make(chan *leapmuxv1.StreamInnerEnvelope, 32)
 	streamErr := make(chan error, 1)
 	go func() {
-		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.Slow", []byte("{}"), "A", "ws-1", "req-1",
+		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.Slow", []byte("{}"), "A", "req-1",
 			func(env *leapmuxv1.StreamInnerEnvelope) error {
 				received <- env
 				return nil
@@ -584,7 +546,7 @@ func TestRouter_StreamInner_Cancellable(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(ctx, remoteipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "A", "", "req-x",
+			"worker.WatchEvents", []byte{}, "A", "req-x",
 			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
 	}()
 	// Wait until we've seen at least a few frames so we know the
@@ -626,7 +588,7 @@ func TestRouter_CancelStream_ByClientRequestID(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "A", "", "req-cancel",
+			"worker.WatchEvents", []byte{}, "A", "req-cancel",
 			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
 	}()
 	for dispatcher.emitted.Load() < 2 {
@@ -702,7 +664,7 @@ func startStaleStream(t *testing.T, r *remoteipc.Router, clientReqID string, can
 	streamCh := make(chan error, 1)
 	go func() {
 		err := r.StreamInner(context.Background(), remoteipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "", "", clientReqID,
+			"worker.WatchEvents", []byte{}, "", clientReqID,
 			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
 		streamCh <- err
 		cancelled <- struct{}{}
@@ -716,8 +678,8 @@ func startStaleStream(t *testing.T, r *remoteipc.Router, clientReqID string, can
 
 func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
-		UserID:        userid.MustNew("u-1"),
-		WorkspaceID:   "ws-1", // present on TokenInfo for delegation scoping; intentionally NOT emitted as env
+		UserID: userid.MustNew("u-1"),
+		// present on TokenInfo for delegation scoping; intentionally NOT emitted as env
 		WorkerID:      "worker-A",
 		TabID:         "agent-1",
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -770,11 +732,10 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 
 func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
-		UserID:      userid.MustNew("u-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "term-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		UserID:   userid.MustNew("u-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 	})
 	got := map[string]string{}
 	for _, e := range envs {
@@ -795,20 +756,18 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 // --- Test fakes ---
 
 type fakeHubClient struct {
-	mu              sync.Mutex
-	lastUserID      userid.UserID
-	lastWorkspaceID string
-	lastMethod      string
-	lastPayload     []byte
-	resp            []byte
-	respErr         error
+	mu          sync.Mutex
+	lastUserID  userid.UserID
+	lastMethod  string
+	lastPayload []byte
+	resp        []byte
+	respErr     error
 }
 
-func (f *fakeHubClient) CallInner(_ context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
+func (f *fakeHubClient) CallInner(_ context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastUserID = userID
-	f.lastWorkspaceID = workspaceID
 	f.lastMethod = method
 	f.lastPayload = append([]byte(nil), payload...)
 	return f.resp, f.respErr
@@ -845,7 +804,7 @@ var (
 	_ remoteipc.LocalDispatcher   = (*slowStreamDispatcher)(nil)
 	_ remoteipc.CrossWorkerClient = (*fakeCrossWorker)(nil)
 	_ remoteipc.HubClient         = (*fakeHubClient)(nil)
-	_ remoteipc.LocalAuthorizers  = (*fakeAuthorizers)(nil)
+	_ remoteipc.LocalStreams      = (*fakeStreams)(nil)
 )
 
 // errSentinel keeps an unused-import trap from snapping shut if we ever
@@ -853,3 +812,64 @@ var (
 // tests.
 var errSentinel = errors.New("sentinel")
 var _ = errSentinel
+
+// asyncErrorDispatcher returns from the handler WITHOUT terminating the stream,
+// then delivers the terminal error frame from another goroutine -- exactly the
+// shape WatchEvents has (it "returns after registering watchers + completing
+// the synchronous replay", and live broadcasts arrive later on WatcherManager
+// goroutines), and the shape a streaming denial now has.
+type asyncErrorDispatcher struct {
+	release chan struct{}
+}
+
+func (d *asyncErrorDispatcher) DispatchWith(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	go func() {
+		<-d.release
+		_ = w.SendStream(&leapmuxv1.InnerStreamMessage{
+			IsError:      true,
+			ErrorCode:    7,
+			ErrorMessage: "boom",
+			End:          true,
+		})
+	}()
+}
+
+// TestRouter_StreamInner_AsyncTerminalErrorIsReported is the regression for a
+// lost stream error.
+//
+// streamCollector used to close its `done` channel inside finish() and assign
+// c.err AFTERWARDS, so wait() was released BEFORE the write landed: streamLocal
+// read c.err concurrently with the writer and, on the unlucky scheduling,
+// reported a failed stream to the `leapmux remote` caller as success. The type's
+// own comment claimed close-of-done supplied the happens-before edge; it
+// supplied the opposite one.
+//
+// Run under -race, which catches the unsynchronized access even on an
+// interleaving that happens to return the right value. Repeated because the
+// window is small.
+func TestRouter_StreamInner_AsyncTerminalErrorIsReported(t *testing.T) {
+	for i := range 50 {
+		release := make(chan struct{})
+		r := &remoteipc.Router{
+			WorkerID:        "A",
+			UserID:          userid.MustNew("u"),
+			LocalDispatcher: &asyncErrorDispatcher{release: release},
+			Streams:         &fakeStreams{},
+		}
+
+		streamErr := make(chan error, 1)
+		go func() {
+			streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.WatchEvents", []byte("{}"), "A", "req-1",
+				func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+		}()
+		close(release)
+
+		select {
+		case err := <-streamErr:
+			require.Error(t, err, "iteration %d: a terminal error frame must reach the caller, never be dropped as success", i)
+			assert.Contains(t, err.Error(), "boom")
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: StreamInner never returned", i)
+		}
+	}
+}

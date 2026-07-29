@@ -66,12 +66,9 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 		// (tab_type, tab_id, user_id) comparison by, since a FILE tab id is
 		// unique only within a user.
 		out = append(out, &leapmuxv1.OwnedTab{
-			WorkspaceId: r.WorkspaceID,
-			TabType:     r.TabType,
-			TabId:       r.TabID,
-			TileId:      r.TileID,
-			Position:    r.Position,
-			UserId:      r.UserID,
+			TabType: r.TabType,
+			TabId:   r.TabID,
+			UserId:  r.UserID,
 		})
 	}
 	return connect.NewResponse(&leapmuxv1.ListOwnedTabsForWorkerResponse{

@@ -27,7 +27,7 @@ import (
 
 func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree:     true,
@@ -49,7 +49,7 @@ func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 
 func TestValidateGitMode_CreateBranchHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch: "feature/fresh",
@@ -64,7 +64,7 @@ func TestValidateGitMode_CheckoutExistingLocalBranch(t *testing.T) {
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/local")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "feature/local",
@@ -81,7 +81,7 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 	run(t, remote, "git", "commit", "--allow-empty", "-m", "c")
 	run(t, local, "git", "remote", "add", "origin", remote)
 	run(t, local, "git", "fetch", "origin")
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "origin/feature/remote",
@@ -92,7 +92,7 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 
 func TestValidateGitMode_UseCurrentDefault(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{}))
 	require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 	run(t, remote, "git", "commit", "--allow-empty", "-m", "c")
 	run(t, local, "git", "remote", "add", "origin", remote)
 	run(t, local, "git", "fetch", "origin")
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree:     true,
@@ -123,7 +123,7 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 
 func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree: true,
@@ -141,7 +141,7 @@ func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 
 func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch: "feature/exec-branch",
@@ -166,7 +166,7 @@ func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
 // rollback metadata.
 func TestExecuteCreateBranch_BranchNameErrorSkipsRollback(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan := gitModePlan{
 		Mode:              gitModeCreateBranch,
@@ -194,7 +194,7 @@ func TestExecuteCreateBranch_BranchNameErrorSkipsRollback(t *testing.T) {
 // regardless of the restore outcome.
 func TestRollbackCreatedBranch_DeletesBranchEvenIfCheckoutRestoreFails(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Set the stage: create 'leftover' as a real branch on disk.
 	run(t, repoDir, "git", "checkout", "-b", "leftover")
@@ -254,7 +254,7 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "feature/deep/nest", filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"))
 	sym := filepath.Join(t.TempDir(), "symlink")
 	require.NoError(t, osSymlink(filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"), sym))
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		UseWorktreePath: sym,
@@ -292,7 +292,7 @@ func osSymlink(target, link string) error { return os.Symlink(target, link) }
 //   - No stray connect errors surface.
 
 func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return map[string]string{}, nil
@@ -301,7 +301,6 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 	repoDir := initRepo(t)
 	branch := "feature/e2e-worktree"
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branch,
@@ -329,7 +328,7 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 }
 
 func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return map[string]string{}, nil
@@ -338,7 +337,6 @@ func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 	repoDir := initRepo(t)
 	branch := "feature/e2e-branch"
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    repoDir,
 		CreateBranch:  branch,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -361,7 +359,7 @@ func TestValidateGitMode_CreateWorktreeBranchExistsTakesPrecedenceOverMissingBas
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree:     true,
@@ -380,7 +378,7 @@ func TestValidateGitMode_CreateBranchExistsTakesPrecedenceOverMissingBase(t *tes
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch:     "feature/taken",
@@ -397,7 +395,7 @@ func TestValidateGitMode_CreateBranchExistsTakesPrecedenceOverMissingBase(t *tes
 // not a repo, so the user sees the most informative error.
 func TestValidateGitMode_CreateBranchNonGitDirSurfacesRepoError(t *testing.T) {
 	notRepo := t.TempDir()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	_, err := svc.validateGitMode(context.Background(), notRepo, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch: "feature/anything",
@@ -410,7 +408,7 @@ func TestValidateGitMode_CreateBranchNonGitDirSurfacesRepoError(t *testing.T) {
 
 func TestValidateGitMode_CheckoutBranchNonGitDirSurfacesRepoError(t *testing.T) {
 	notRepo := t.TempDir()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	_, err := svc.validateGitMode(context.Background(), notRepo, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "main",
@@ -422,7 +420,7 @@ func TestValidateGitMode_CheckoutBranchNonGitDirSurfacesRepoError(t *testing.T) 
 
 func TestValidateGitMode_CheckoutBranchMissingBranchInRepo(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "nope/does-not-exist",
@@ -440,7 +438,7 @@ func TestValidateGitMode_CheckoutBranchMissingBranchInRepo(t *testing.T) {
 // surfaces ctx.Err() ahead of the probe-derived signals.
 func TestValidateGitMode_CreateBranchCancelledCtxSurfacesCancellation(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before the call
@@ -459,7 +457,7 @@ func TestValidateGitMode_CreateBranchCancelledCtxSurfacesCancellation(t *testing
 // mirrors the above for the checkout-branch validator.
 func TestValidateGitMode_CheckoutBranchCancelledCtxSurfacesCancellation(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -229,7 +229,6 @@ describe('useterminaloperations.handleopenterminal', () => {
     // Shell is empty (default-shell quick action). shellStartDir is
     // forwarded as empty string when the caller didn't pass one.
     expect(openTerminalMock.mock.calls[0][1]).toMatchObject({
-      workspaceId: 'ws-1',
       workerId: 'worker-1',
       workingDir: '/tmp',
       shell: '',
@@ -367,7 +366,6 @@ describe('useterminaloperations.handleterminalinput', () => {
     expect(restartTerminalMock).not.toHaveBeenCalled()
     const arg = sendInputMock.mock.calls[0][1]
     expect(arg.terminalId).toBe('tid-1')
-    expect(arg.workspaceId).toBe('ws-1')
   })
 
   it('calls restartTerminal when Enter (CR) is pressed on an EXITED terminal', async () => {
@@ -377,7 +375,6 @@ describe('useterminaloperations.handleterminalinput', () => {
     expect(sendInputMock).not.toHaveBeenCalled()
     const arg = restartTerminalMock.mock.calls[0][1]
     expect(arg).toMatchObject({
-      workspaceId: 'ws-1',
       terminalId: 'tid-1',
       cols: 100,
       rows: 30,
@@ -460,7 +457,7 @@ describe('useterminaloperations.handleterminalinput', () => {
 })
 
 describe('useterminaloperations.availableshells', () => {
-  it('loads shells from listAvailableShells on mount when workspace + worker are present', async () => {
+  it('loads shells from listAvailableShells on mount when a worker is present', async () => {
     listAvailableShellsMock.mockResolvedValueOnce({
       shells: ['/bin/zsh', '/bin/bash'],
       defaultShell: '/bin/zsh',
@@ -471,7 +468,7 @@ describe('useterminaloperations.availableshells', () => {
     expect(listAvailableShellsMock).toHaveBeenCalledTimes(1)
     expect(listAvailableShellsMock).toHaveBeenCalledWith(
       'worker-1',
-      expect.objectContaining({ workspaceId: 'ws-1', workerId: 'worker-1' }),
+      expect.objectContaining({ workerId: 'worker-1' }),
     )
     expect(ops.availableShells()).toEqual(['/bin/zsh', '/bin/bash'])
     expect(ops.defaultShell()).toBe('/bin/zsh')

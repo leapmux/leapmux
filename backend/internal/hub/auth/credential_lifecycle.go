@@ -162,7 +162,7 @@ func (e *CredentialLifecycleEffects) preserveSession(sessionID string, generatio
 // refused up front rather than allowed to reach a comparison that silently
 // evicts nothing while the caller reports a revocation. Same rule as
 // interceptor.go's RevokeUserAuthContextAtGeneration and channelmgr's
-// CloseByUserRevocation / CloseByUsers.
+// CloseByUserRevocation.
 func (e *CredentialLifecycleEffects) UserRevoked(userID string, userAuthGeneration int64) {
 	if e == nil {
 		return

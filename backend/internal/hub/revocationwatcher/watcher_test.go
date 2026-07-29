@@ -217,7 +217,6 @@ func (e *envT) seedDelegationToken(t *testing.T) string {
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,
-		WorkspaceID:      e.wsID,
 		IssuedForTabID:   e.tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       []byte("hash"),

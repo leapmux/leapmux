@@ -25,7 +25,7 @@ import (
 // detaching the OTHER user's still-open file tab and letting the worktree GC
 // reclaim a directory that is still mounted in an editor.
 func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
 	ctx := context.Background()
 
@@ -43,10 +43,9 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	const sharedTabID = "file-1700000000000-1"
 	for _, userID := range []string{"user-a", "user-b"} {
 		require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-			UserID:      userID,
-			TabID:       sharedTabID,
-			WorkspaceID: "ws-1",
-			FilePath:    openPath,
+			UserID:   userID,
+			TabID:    sharedTabID,
+			FilePath: openPath,
 		}))
 	}
 
@@ -56,7 +55,7 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 
 	// user-b closes its tab. KEEP so the assertion is about the link, not
 	// the worktree-removal branch.
-	result := svc.closeFileTabCommon("user-b", sharedTabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP)
+	result := svc.closeFileTabCommon("user-b", sharedTabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
 	require.Equal(t, "", result.GetFailureMessage(), "FILE close must not report a failure")
 
 	count, err = svc.Queries.CountWorktreeTabs(ctx, wtID)
@@ -80,9 +79,8 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	assert.True(t, errors.Is(err, sql.ErrNoRows), "user-b's link must be gone (err=%v)", err)
 
 	// user-a's file_tab row is untouched too.
-	wsID, path, err := svc.FileTabPaths.Get(ctx, "user-a", sharedTabID)
+	path, err := svc.FileTabPaths.Get(ctx, "user-a", sharedTabID)
 	require.NoError(t, err)
-	assert.Equal(t, "ws-1", wsID)
 	assert.Equal(t, openPath, path)
 }
 
@@ -102,7 +100,7 @@ func TestWorktreeTabUserID(t *testing.T) {
 // registerTabForWorktree wrote with user_id "". Without worktreeTabUserID this
 // silently deletes nothing and strands the worktree.
 func TestUnregisterTab_AgentLinkIsOwnerBlind(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
 
 	repoDir := initRepo(t)

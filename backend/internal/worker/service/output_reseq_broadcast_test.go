@@ -57,10 +57,9 @@ func (w *agentMessageCapturingWriter) snapshot() []*leapmuxv1.AgentChatMessage {
 // (standalone) broadcast must carry previous_seq 0 -- it is not a move.
 func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -100,10 +99,9 @@ func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 // prove the broadcast reads it from the DB rather than dropping it to UNSPECIFIED.
 func TestNotificationReseqBroadcast_CarriesMarkType(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,

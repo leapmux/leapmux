@@ -567,6 +567,8 @@ func batchTouchedIDs(batch []*leapmuxv1.CrdtOp) touchedIDs {
 			t.windows[ref.WindowID] = true
 		case EntityKindWorkspaceRoot:
 			t.workspaces[ref.WorkspaceID] = true
+		default:
+			// EntityKindUnknown names no entity, so it touches no id set.
 		}
 	}
 	return t

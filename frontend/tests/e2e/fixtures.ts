@@ -145,8 +145,9 @@ export const test = base.extend<
 
     // Teardown (best effort): stop the workspace's agents on the worker, THEN
     // soft-delete on the hub -- the same two-step cascade the browser app runs.
-    // The cleanup must precede the delete so PrepareWorkspaceAccess still resolves
-    // the (not-yet-deleted) workspace. Without the cleanup step, the worker keeps
+    // The cleanup must precede the delete because it names the workspace's tabs
+    // to the worker, and the hub can only list them while the workspace still
+    // exists. Without the cleanup step, the worker keeps
     // each test's Claude CLI subprocess alive and they accumulate across the suite,
     // starving resources and flaking later settings-menu interactions.
     try {

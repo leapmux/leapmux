@@ -32,21 +32,23 @@ type fakeDelegationLifecycle struct {
 	releases []scopedKey
 }
 
+// scopedKey records who a lifecycle call named. It is user-only: the mint's
+// provenance tab is read from the worker's live inventory, so Acquire/Release
+// carry no tab and only balance a per-user refcount.
 type scopedKey struct {
-	UserID, WorkspaceID, TabID string
-	TabType                    int32
+	UserID string
 }
 
-func (f *fakeDelegationLifecycle) Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32) {
+func (f *fakeDelegationLifecycle) Acquire(userID userid.UserID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.acquires = append(f.acquires, scopedKey{UserID: userID.String(), WorkspaceID: workspaceID, TabID: tabID, TabType: tabType})
+	f.acquires = append(f.acquires, scopedKey{UserID: userID.String()})
 }
 
-func (f *fakeDelegationLifecycle) Release(_ context.Context, userID userid.UserID, workspaceID string) error {
+func (f *fakeDelegationLifecycle) Release(_ context.Context, userID userid.UserID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.releases = append(f.releases, scopedKey{UserID: userID.String(), WorkspaceID: workspaceID})
+	f.releases = append(f.releases, scopedKey{UserID: userID.String()})
 	return nil
 }
 
@@ -77,7 +79,7 @@ func withTempSocketRoot(t *testing.T) {
 }
 
 // TestFactory_AgentSpawnAcquiresAndCleanupReleases pins the lifecycle
-// contract: AgentSpawning must Acquire the (user, workspace) slot
+// contract: AgentSpawning must Acquire the user's delegation slot
 // before the listener is in service, and the returned cleanup must
 // Release it on close. Without this pairing, agent close wouldn't
 // trigger the hub-side delegation revoke that the plan requires.
@@ -90,33 +92,31 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      userid.MustNew("user-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
 	})
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
 	acq, rel := lifecycle.snapshot()
 	require.Len(t, acq, 1)
-	assert.Equal(t, scopedKey{
-		UserID: "user-1", WorkspaceID: "ws-1",
-		TabID: "agent-1", TabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-	}, acq[0], "agent spawn must register its tab identity with the delegation slot")
+	assert.Equal(t, scopedKey{UserID: "user-1"}, acq[0],
+		"agent spawn must take a reference on its user's delegation slot")
 	require.Len(t, rel, 0, "Release must not run before cleanup is invoked")
 	assert.NotEmpty(t, envs, "spawn must produce LEAPMUX_REMOTE_* env vars")
 
 	cleanup()
 	_, rel = lifecycle.snapshot()
 	require.Len(t, rel, 1)
-	assert.Equal(t, scopedKey{UserID: "user-1", WorkspaceID: "ws-1"}, rel[0])
+	assert.Equal(t, scopedKey{UserID: "user-1"}, rel[0],
+		"cleanup must drop this spawn's reference; the mint's provenance tab comes from the live inventory, not from here")
 }
 
 // TestFactory_TerminalSpawnAcquiresAndCleanupReleases pins the lifecycle
-// contract for terminal spawns: every terminal Acquires the (user,
-// workspace) delegation slot on construction and Releases it on
-// cleanup. Mirrors the agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
+// contract for terminal spawns: every terminal Acquires the user's
+// delegation slot on construction and Releases it on cleanup. Mirrors the
+// agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
 func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}
@@ -126,10 +126,9 @@ func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	}
 
 	envs, cleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:      userid.MustNew("user-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "term-1",
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
 	})
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
@@ -137,37 +136,37 @@ func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 
 	acq, rel := lifecycle.snapshot()
 	require.Len(t, acq, 1)
-	assert.Equal(t, scopedKey{
-		UserID: "user-1", WorkspaceID: "ws-1",
-		TabID: "term-1", TabType: int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL),
-	}, acq[0], "terminal spawn must register its tab identity with the delegation slot")
+	assert.Equal(t, scopedKey{UserID: "user-1"}, acq[0],
+		"terminal spawn must take a reference on its user's delegation slot")
 	require.Len(t, rel, 0, "Release must not run before cleanup is invoked")
 
 	cleanup()
 	_, rel = lifecycle.snapshot()
 	require.Len(t, rel, 1)
-	assert.Equal(t, scopedKey{UserID: "user-1", WorkspaceID: "ws-1"}, rel[0])
+	assert.Equal(t, scopedKey{UserID: "user-1"}, rel[0],
+		"cleanup must release THIS spawn's tab, mirroring the agent side")
 }
 
-// TestFactory_AgentSpawnAdvertisesWorkspaceScope pins the
-// scope-shape contract independent of the now-removed cross-worker
-// FS knob. The bearer's Whoami must report exactly the spawn's
-// workspace_id; widening the scope here would let a delegated agent
-// reach workspaces the user might own but never opted into for this
-// spawn.
-func TestFactory_AgentSpawnAdvertisesWorkspaceScope(t *testing.T) {
+// TestFactory_AgentSpawnAdvertisesItsTabContext pins what the bearer reports
+// about itself. There is no workspace and no scope list: the tab id is the
+// anchor everything else is derived from (a single hub LocateTab call), so it
+// stays correct across a cross-workspace move where a baked-in workspace id
+// would have gone stale.
+func TestFactory_AgentSpawnAdvertisesItsTabContext(t *testing.T) {
 	withTempSocketRoot(t)
 	f := &remoteipc.Factory{WorkerID: "worker-A"}
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      userid.MustNew("user-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
 	})
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
-	scope := dialAndWhoami(t, envs)
-	assert.Equal(t, []string{"ws-1"}, scope.GetWorkspaceIds())
+	who := dialAndWhoami(t, envs)
+	assert.Equal(t, "user-1", who.GetUserId())
+	assert.Equal(t, "worker-A", who.GetWorkerId())
+	assert.Equal(t, "agent-1", who.GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, who.GetTabType())
 }
 
 // TestFactory_NilDelegationIsTolerated documents that the Delegation
@@ -178,10 +177,9 @@ func TestFactory_NilDelegationIsTolerated(t *testing.T) {
 	f := &remoteipc.Factory{WorkerID: "worker-A"}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      userid.MustNew("user-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, envs)
@@ -190,11 +188,10 @@ func TestFactory_NilDelegationIsTolerated(t *testing.T) {
 
 // dialAndWhoami parses LEAPMUX_REMOTE_SOCK / LEAPMUX_REMOTE_TOKEN
 // from a freshly-spawned envs slice, dials the per-agent IPC server,
-// and returns the Whoami response's Scope. Used by the
-// CrossWorkerFSDefault tests to verify the runtime knob actually
-// reaches the bearer (the alternative — peeking at the in-memory
-// TokenStore — couples tests to internals that may move).
-func dialAndWhoami(t *testing.T, envs []string) *leapmuxv1.RemoteScope {
+// and returns the Whoami response -- the spawn context the bearer
+// carries. Going through the socket rather than peeking at the in-memory
+// TokenStore keeps the assertion on the observable contract.
+func dialAndWhoami(t *testing.T, envs []string) *leapmuxv1.WhoamiResponse {
 	t.Helper()
 	var sock, token string
 	for _, e := range envs {
@@ -219,8 +216,7 @@ func dialAndWhoami(t *testing.T, envs []string) *leapmuxv1.RemoteScope {
 
 	resp, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)
-	require.NotNil(t, resp.Msg.GetScope())
-	return resp.Msg.GetScope()
+	return resp.Msg
 }
 
 // authHeaderInjector mirrors the production CLI's
@@ -239,8 +235,8 @@ func (i *authHeaderInjector) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // TestFactory_ConcurrentSpawnsRefcountCorrectly exercises the case
-// where two agent spawns and a terminal spawn share one
-// (user, workspace) pair: every Acquire must pair with exactly one
+// where two agent spawns and a terminal spawn share one user: every
+// Acquire must pair with exactly one
 // Release after each cleanup runs. Without the lifecycle wiring, a
 // stray Release / missing Acquire would corrupt the refcount and
 // either leak the delegation row or revoke it prematurely.
@@ -256,10 +252,9 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 	var cleanups []func()
 	for i := 0; i < 3; i++ {
 		envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-			UserID:      userid.MustNew("user-1"),
-			WorkspaceID: "ws-1",
-			WorkerID:    "worker-A",
-			TabID:       "agent-" + string(rune('A'+i)),
+			UserID:   userid.MustNew("user-1"),
+			WorkerID: "worker-A",
+			TabID:    "agent-" + string(rune('A'+i)),
 		})
 		require.NoError(t, err)
 		require.NotEmpty(t, envs)
@@ -269,10 +264,9 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 
 	// One terminal in the same scope.
 	envs, termCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:      userid.MustNew("user-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "term-1",
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, envs)
@@ -302,10 +296,9 @@ func TestFactory_SpawnRefusesEmptyUserID(t *testing.T) {
 	f := &remoteipc.Factory{WorkerID: "worker-A"}
 
 	_, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
-		UserID:      userid.UserID{},
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
+		UserID:   userid.UserID{},
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
 	})
 	require.Error(t, err, "spawn with a zero user id must fail")
 	assert.Nil(t, cleanup)
@@ -313,10 +306,9 @@ func TestFactory_SpawnRefusesEmptyUserID(t *testing.T) {
 		"the sentinel is what makes the caller treat this as fatal rather than degradable")
 
 	_, cleanup, err = f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:      userid.UserID{},
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "term-1",
+		UserID:   userid.UserID{},
+		WorkerID: "worker-A",
+		TabID:    "term-1",
 	})
 	require.Error(t, err, "terminal spawn with a zero user id must fail")
 	assert.Nil(t, cleanup)

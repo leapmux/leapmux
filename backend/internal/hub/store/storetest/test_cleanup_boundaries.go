@@ -61,18 +61,16 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "boundary-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, user.ID, "boundary-ws")
 		cutoff := boundaryCutoff()
 
 		create := func(expiresAt time.Time) string {
 			tokenID := id.Generate()
 			require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-				ID:          tokenID,
-				UserID:      userid.MustNew(user.ID),
-				WorkerID:    worker.ID,
-				WorkspaceID: wsID,
-				SecretHash:  []byte("secret"),
-				ExpiresAt:   expiresAt,
+				ID:         tokenID,
+				UserID:     userid.MustNew(user.ID),
+				WorkerID:   worker.ID,
+				SecretHash: []byte("secret"),
+				ExpiresAt:  expiresAt,
 			}))
 			return tokenID
 		}
@@ -103,7 +101,6 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "boundary-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, user.ID, "boundary-ws")
 
 		// revoked_at is written DB-side (NOW/strftime), so read the stored
 		// instant back and place cutoffs exactly on and just past it: the
@@ -134,12 +131,11 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 		delID := id.Generate()
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-			ID:          delID,
-			UserID:      userid.MustNew(user.ID),
-			WorkerID:    worker.ID,
-			WorkspaceID: wsID,
-			SecretHash:  []byte("secret"),
-			ExpiresAt:   boundaryCutoff().Add(time.Hour),
+			ID:         delID,
+			UserID:     userid.MustNew(user.ID),
+			WorkerID:   worker.ID,
+			SecretHash: []byte("secret"),
+			ExpiresAt:  boundaryCutoff().Add(time.Hour),
 		}))
 		n, err = st.DelegationTokens().Revoke(ctx, delID)
 		require.NoError(t, err)

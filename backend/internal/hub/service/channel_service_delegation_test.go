@@ -130,7 +130,6 @@ func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID, worksp
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
-		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "tab-x",
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       e.validator.HashSecret(secret),
@@ -147,8 +146,8 @@ func openMemoryStore(t *testing.T) store.Store {
 }
 
 // captureWorker registers a fake online worker that records every
-// ConnectResponse the hub sends so the test can inspect what
-// AccessibleWorkspaceIds were actually announced.
+// ConnectResponse the hub sends so the test can inspect what the hub pushed to
+// it.
 func (e *bearerChannelEnv) captureWorker(t *testing.T, workerID string) (chan *leapmuxv1.ConnectResponse, *workermgr.Conn) {
 	t.Helper()
 	ch := make(chan *leapmuxv1.ConnectResponse, 8)
@@ -175,11 +174,11 @@ func (e *bearerChannelEnv) captureWorker(t *testing.T, workerID string) (chan *l
 // sess.UserID == victim, so requireWorkerOwner passes and hands the attacker
 // tunnels and files on the victim's machine.
 // seedCrossTenantDelegation builds the cross-tenant chain the worker-scope check
-// closes and returns the victim's worker id, the workspace the bearer is pinned to,
-// plus a bearer minted by the ATTACKER's worker that authenticates as the VICTIM --
-// what a shared-workspace tab legitimately produces. The pinned workspace is
-// returned because it is readable to the token's user by design: PrepareWorkspaceAccess
-// clears every workspace guard on this chain, so only the worker bound can refuse it.
+// closes and returns the victim's worker id, a workspace of the victim's, plus a
+// bearer minted by the ATTACKER's worker that authenticates as the VICTIM. The
+// workspace is returned because it is readable to the token's user by design --
+// a delegation bearer carries its owner's reach across every workspace they own,
+// so the worker bound is the only thing left that can refuse this channel.
 func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorkerID, victimWS, bearer string) {
 	t.Helper()
 	ctx := context.Background()
@@ -287,71 +286,6 @@ func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 	}
 }
 
-// A delegation bearer is issued for ws-A; the user owns both ws-A and ws-B; the
-// OpenChannel call must announce **only** ws-A to the worker -- even though
-// ListAccessible would report both.
-func TestOpenChannel_DelegationTokenNarrowsAccessibleWorkspaces(t *testing.T) {
-	env := setupBearerChannelEnv(t)
-	userID, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
-
-	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
-
-	sent, _ := env.captureWorker(t, workerID)
-
-	shortCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	req := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
-		WorkerId:         workerID,
-		HandshakePayload: []byte("hs1"),
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.OpenChannel(shortCtx, req)
-	require.Error(t, err, "no fake worker response → expected timeout/cancel")
-
-	// The hub still SENT the ChannelOpen to the worker before
-	// timing out; that's the part we want to inspect.
-	select {
-	case msg := <-sent:
-		open := msg.GetChannelOpen()
-		require.NotNil(t, open)
-		assert.Equal(t, []string{wsA}, open.GetAccessibleWorkspaceIds(), "delegation pin must restrict the announced set to [ws-A]")
-		assert.NotContains(t, open.GetAccessibleWorkspaceIds(), wsB, "ws-B must NOT leak into the worker even though the user owns it")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected ChannelOpen to be sent to the worker")
-	}
-}
-
-// TestOpenChannel_DelegationRejectsRevokedScope verifies the OpenChannel
-// re-check: if the workspace the bearer is pinned to has been
-// transferred away (or the grant withdrawn) since the token was
-// minted, the channel must NOT open even though the bearer is still
-// formally valid.
-func TestOpenChannel_DelegationRejectsRevokedScope(t *testing.T) {
-	env := setupBearerChannelEnv(t)
-	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
-
-	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
-
-	// Yank the workspace out from under the user. SoftDelete makes
-	// GetByID return ErrNotFound which the OpenChannel re-check
-	// resolves to "no access" → CodePermissionDenied.
-	_, err := env.store.Workspaces().SoftDelete(context.Background(), store.SoftDeleteWorkspaceParams{
-		ID:          wsA,
-		OwnerUserID: userid.MustNew(userID),
-	})
-	require.NoError(t, err)
-
-	env.captureWorker(t, workerID)
-	req := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
-		WorkerId:         workerID,
-		HandshakePayload: []byte("hs1"),
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, openErr := env.channelClient.OpenChannel(context.Background(), req)
-	require.Error(t, openErr)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(openErr), "delegation pin to a workspace the user no longer accesses must be rejected")
-}
-
 func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	env := setupBearerChannelEnv(t)
 	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
@@ -362,15 +296,15 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	scopedChannelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(cookieChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
 	env.channelMgr.RegisterWithAuthInfo(otherDelegationChannelID, workerID, userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential("other-token", wsA, "worker-mint"),
+		Credential: auth.DelegationCredential("other-token", "worker-mint"),
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, wsA, "worker-mint"),
+		Credential: auth.DelegationCredential(tokenID, "worker-mint"),
 	}, nil)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(userID),
-		Credential: auth.DelegationCredential(tokenID, wsA, "worker-mint"),
+		Credential: auth.DelegationCredential(tokenID, "worker-mint"),
 	})
 
 	_, err := env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: cookieChannelID}))
@@ -386,233 +320,4 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	_, err = env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: scopedChannelID}))
 	require.NoError(t, err)
 	assert.False(t, env.channelMgr.Exists(scopedChannelID), "matching delegation channel must close")
-}
-
-func TestPrepareWorkspaceAccess_DelegationUpdatesOnlyMatchingBearerChannel(t *testing.T) {
-	env := setupBearerChannelEnv(t)
-	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
-	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
-
-	cookieChannelID := id.Generate()
-	scopedChannelID := id.Generate()
-	env.channelMgr.RegisterWithAuthInfo(cookieChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
-	env.channelMgr.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, wsA, workerID),
-	}, nil)
-
-	sent := make(chan *leapmuxv1.ConnectResponse, 4)
-	_, _ = env.workerMgr.Register(&workermgr.Conn{
-		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent <- msg
-			if msg.GetChannelAccessUpdate() != nil && msg.GetRequestId() != "" {
-				env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-					RequestId: msg.GetRequestId(),
-					Payload: &leapmuxv1.ConnectRequest_ChannelAccessUpdateAck{
-						ChannelAccessUpdateAck: &leapmuxv1.ChannelAccessUpdateAck{},
-					},
-				})
-			}
-			return nil
-		},
-	})
-
-	// The minter is the worker that actually minted this token (what the auth
-	// interceptor derives from the delegation_tokens row) -- prepare-access now
-	// runs the same worker bound as OpenChannel, and a made-up minter id would
-	// be refused as unscopeable rather than exercising the fan-out.
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userid.MustNew(userID),
-		Credential: auth.DelegationCredential(tokenID, wsA, workerID),
-	})
-	_, err := env.channelSvc.PrepareWorkspaceAccess(ctx, connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
-		WorkerId:    workerID,
-		WorkspaceId: wsA,
-	}))
-	require.NoError(t, err)
-
-	select {
-	case msg := <-sent:
-		update := msg.GetChannelAccessUpdate()
-		require.NotNil(t, update)
-		assert.Equal(t, scopedChannelID, update.GetChannelId())
-		assert.Equal(t, wsA, update.GetWorkspaceId())
-	case <-time.After(time.Second):
-		require.Fail(t, "expected ChannelAccessUpdate for matching delegation channel")
-	}
-	select {
-	case msg := <-sent:
-		require.Failf(t, "delegation caller must not update unrestricted channel", "got %v; cookie channel %s", msg, cookieChannelID)
-	default:
-	}
-}
-
-// TestOpenChannel_SessionTokenStillSeesFullAccessibleSet preserves
-// the existing behaviour: cookie/session callers must keep getting
-// the user's full accessible-workspace list. The narrowing only
-// applies when the UserInfo has a workspace-scoped delegation credential.
-func TestOpenChannel_SessionTokenStillSeesFullAccessibleSet(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
-	require.NoError(t, err)
-
-	wsA := id.Generate()
-	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsA, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-A",
-	}))
-	wsB := id.Generate()
-	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsB, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-B",
-	}))
-
-	workerID := env.createWorkerWithKey(t, token, []byte("k"))
-
-	sent := make(chan *leapmuxv1.ConnectResponse, 1)
-	_, _ = env.workerMgr.Register(&workermgr.Conn{
-		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent <- msg
-			return nil
-		},
-	})
-
-	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	_, _ = env.channelClient.OpenChannel(shortCtx, authedReq(&leapmuxv1.OpenChannelRequest{
-		WorkerId:         workerID,
-		HandshakePayload: []byte("hs"),
-	}, token))
-
-	select {
-	case msg := <-sent:
-		open := msg.GetChannelOpen()
-		require.NotNil(t, open)
-		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsA)
-		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsB, "session callers must continue to see all accessible workspaces")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected ChannelOpen to be sent to the worker")
-	}
-}
-
-// TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces pins the owner-only
-// announce: a workspace owned by ANOTHER user must never appear in the
-// accessible-workspace set announced to the worker on channel open.
-func TestOpenChannel_SessionTokenAnnouncesOnlyOwnedWorkspaces(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
-	require.NoError(t, err)
-
-	// A workspace owned by the caller (baseline).
-	wsHome := id.Generate()
-	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsHome, OwnerUserID: userid.MustNew(adminUser.ID), Title: "ws-home",
-	}))
-
-	// A workspace owned by a different user -- never announced to this caller.
-	ownerB := id.Generate()
-	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: ownerB, Username: "owner-b", DisplayName: "Owner B",
-	}))
-	wsForeign := id.Generate()
-	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsForeign, OwnerUserID: userid.MustNew(ownerB), Title: "ws-foreign",
-	}))
-
-	workerID := env.createWorkerWithKey(t, token, []byte("k"))
-	sent := make(chan *leapmuxv1.ConnectResponse, 1)
-	_, _ = env.workerMgr.Register(&workermgr.Conn{
-		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent <- msg
-			return nil
-		},
-	})
-
-	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	_, _ = env.channelClient.OpenChannel(shortCtx, authedReq(&leapmuxv1.OpenChannelRequest{
-		WorkerId:         workerID,
-		HandshakePayload: []byte("hs"),
-	}, token))
-
-	select {
-	case msg := <-sent:
-		open := msg.GetChannelOpen()
-		require.NotNil(t, open)
-		assert.Contains(t, open.GetAccessibleWorkspaceIds(), wsHome, "the caller's own workspace must be announced")
-		assert.NotContains(t, open.GetAccessibleWorkspaceIds(), wsForeign, "another user's workspace must never be announced")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected ChannelOpen to be sent to the worker")
-	}
-}
-
-// TestPrepareWorkspaceAccess_DelegationCannotWidenScope guards the
-// other side of the narrowing: PrepareWorkspaceAccess must not let a
-// delegation-pinned bearer add a *different* workspace to its
-// accessible set after channel-open. Otherwise the narrowing in
-// OpenChannel is just a speed-bump.
-func TestPrepareWorkspaceAccess_DelegationCannotWidenScope(t *testing.T) {
-	env := setupBearerChannelEnv(t)
-	userID, wsA, wsB, workerID := env.seedUserWorkspaceWorker(t)
-
-	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
-
-	// The handshake itself succeeds (we don't care about the
-	// fake-worker response here — we just need the request to reach
-	// the handler).
-	env.captureWorker(t, workerID)
-
-	req := connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
-		WorkerId:    workerID,
-		WorkspaceId: wsB, // pinned to A; B is forbidden
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.PrepareWorkspaceAccess(context.Background(), req)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-}
-
-// TestPrepareWorkspaceAccess_DelegationCannotReachAnotherUsersWorker is the
-// PrepareWorkspaceAccess arm of the minter bound. It names a worker_id and is on
-// the delegation allowlist, so a bearer minted by the ATTACKER's worker used to
-// walk straight past the workspace guards (its pin is legitimately the victim's
-// workspace) into an unfiltered workermgr lookup. It must be refused exactly
-// where OpenChannel and GetWorkerHandshakeParams refuse it -- before the worker
-// registry is touched -- and refused identically whether the victim's worker is
-// online or offline, so the Unavailable/OK split cannot be read as a liveness
-// oracle for a worker the caller cannot reach.
-func TestPrepareWorkspaceAccess_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		online bool
-	}{
-		{"victim worker offline", false},
-		{"victim worker online", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env := setupBearerChannelEnv(t)
-			victimWorkerID, victimWS, bearer := env.seedCrossTenantDelegation(t)
-
-			if tc.online {
-				env.captureWorker(t, victimWorkerID)
-			}
-
-			req := connect.NewRequest(&leapmuxv1.PrepareWorkspaceAccessRequest{
-				WorkerId:    victimWorkerID,
-				WorkspaceId: victimWS,
-			})
-			req.Header().Set("Authorization", "Bearer "+bearer)
-			_, err := env.channelClient.PrepareWorkspaceAccess(context.Background(), req)
-
-			require.Error(t, err, "a token minted by another user's worker must not reach the victim's worker")
-			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
-				"refusal must not depend on whether the unreachable worker is online")
-		})
-	}
 }

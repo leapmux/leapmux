@@ -444,8 +444,11 @@ func buildEntityMaterializedEvent(state *leapmuxv1.UserCrdtState, ref EntityRef,
 				},
 			},
 		}
+	default:
+		// EntityKindUnknown and EntityKindWorkspaceRoot have no
+		// EntityMaterialized variant; callers nil-guard the result.
+		return nil
 	}
-	return nil
 }
 
 // buildEntityRemovedEvent constructs the EntityRemoved wrapper for a
@@ -484,8 +487,11 @@ func buildEntityRemovedEvent(ref EntityRef, atHLC *leapmuxv1.HLC) *leapmuxv1.Wat
 				},
 			},
 		}
+	default:
+		// EntityKindUnknown and EntityKindWorkspaceRoot have no EntityRemoved
+		// variant, per the doc above; callers nil-guard the result.
+		return nil
 	}
-	return nil
 }
 
 func lastBatchHLC(batch *leapmuxv1.OpBatch) *leapmuxv1.HLC {
@@ -535,7 +541,7 @@ func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchUserEvent)
 // ExpandSubscribersForWorkspace re-checks the read ACL against
 // `workspaceID` for every current subscriber and, on a hit, adds the
 // workspace to that subscriber's Filter without crossing its immutable
-// WorkspaceScopeID. Idempotent — calling on an already-allowed
+// RequestedWorkspaceIDs bound. Idempotent — calling on an already-allowed
 // subscriber is a no-op.
 //
 // Why this needs to run BEFORE the lifecycle seed batch broadcasts:

@@ -101,8 +101,9 @@ func kindLabel(k leapmuxv1.NodeKind) string {
 		return "SPLIT"
 	case leapmuxv1.NodeKind_NODE_KIND_GRID:
 		return "GRID"
+	default:
+		return k.String()
 	}
-	return k.String()
 }
 
 // buildTreeJSON projects the live subtree rooted at nodeID into a
@@ -133,6 +134,9 @@ func buildTreeJSONWith(state *leapmuxv1.UserMaterialized, children map[string][]
 		out["cols"] = rec.GetCols().GetValue()
 		out["row_ratios"] = rec.GetRowRatios().GetValue().GetValues()
 		out["col_ratios"] = rec.GetColRatios().GetValue().GetValues()
+	default:
+		// LEAF carries no shape fields of its own, and a live node never holds
+		// UNSPECIFIED, so neither contributes keys beyond node_id/kind.
 	}
 	childJSON := []any{}
 	for _, childID := range children[nodeID] {

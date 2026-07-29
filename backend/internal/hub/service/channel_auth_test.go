@@ -115,38 +115,6 @@ func TestUserCanUseChannelRequiresMatchingIdentity(t *testing.T) {
 	}
 }
 
-// channelWorkspaceUpdateAuthorized carries the delegation-scope policy that used
-// to live inside the channel manager: a delegation caller may push a
-// workspace-access update only to channels opened by the SAME bearer in the SAME
-// delegated workspace, while an unscoped caller reaches any same-user channel
-// not pinned to a different delegation workspace.
-func TestChannelWorkspaceUpdateAuthorized(t *testing.T) {
-	chInfo := func(cred auth.CredentialIdentity) channelmgr.ChannelInfo {
-		return channelmgr.ChannelInfo{AuthInfo: channelmgr.AuthInfo{Credential: cred}}
-	}
-	tests := []struct {
-		name    string
-		caller  auth.CredentialIdentity
-		channel auth.CredentialIdentity
-		want    bool
-	}{
-		{"delegation caller same bearer + workspace", auth.DelegationCredential("d1", "ws-1", "worker-mint"), auth.DelegationCredential("d1", "ws-1", "worker-mint"), true},
-		{"delegation caller other bearer", auth.DelegationCredential("d1", "ws-1", "worker-mint"), auth.DelegationCredential("d2", "ws-1", "worker-mint"), false},
-		{"delegation caller other workspace", auth.DelegationCredential("d1", "ws-1", "worker-mint"), auth.DelegationCredential("d1", "ws-2", "worker-mint"), false},
-		{"delegation caller cannot reach cookie channel", auth.DelegationCredential("d1", "ws-1", "worker-mint"), auth.SessionCredential("s1"), false},
-		{"delegation caller cannot reach api channel", auth.DelegationCredential("d1", "ws-1", "worker-mint"), auth.APICredential("api-1"), false},
-		{"unscoped caller reaches cookie channel", auth.SessionCredential("s1"), auth.SessionCredential("s2"), true},
-		{"unscoped caller reaches same-workspace delegation channel", auth.SessionCredential("s1"), auth.DelegationCredential("d1", "ws-1", "worker-mint"), true},
-		{"unscoped caller skips other-workspace delegation channel", auth.SessionCredential("s1"), auth.DelegationCredential("d1", "ws-2", "worker-mint"), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			authorize := channelWorkspaceUpdateAuthorized(tt.caller, "ws-1")
-			assert.Equal(t, tt.want, authorize(chInfo(tt.channel)))
-		})
-	}
-}
-
 // verifyDelegationWorkerScope's two store-free arms.
 //
 // The cross-tenant case (target != minter, minter owned by someone else) needs a
@@ -190,22 +158,8 @@ func TestVerifyDelegationWorkerScopeStoreFreeArms(t *testing.T) {
 	// target and minter already match.
 	self := &auth.UserInfo{
 		ID:         userid.MustNew("user-1"),
-		Credential: auth.DelegationCredential("d1", "ws-1", "worker-mint"),
+		Credential: auth.DelegationCredential("d1", "worker-mint"),
 	}
 	assert.NoError(t, a.verifyDelegationWorkerScope(ctx, self, "worker-mint"),
 		"a token must always reach the worker that minted it")
-}
-
-// channelClosedByWorkspaceRemoval closes unscoped channels (they carry the
-// user's full accessible-workspace snapshot) and delegation channels pinned to
-// the removed workspace, sparing delegation channels for other workspaces.
-func TestChannelClosedByWorkspaceRemoval(t *testing.T) {
-	chInfo := func(cred auth.CredentialIdentity) channelmgr.ChannelInfo {
-		return channelmgr.ChannelInfo{AuthInfo: channelmgr.AuthInfo{Credential: cred}}
-	}
-	authorize := channelClosedByWorkspaceRemoval("ws-1")
-	assert.True(t, authorize(chInfo(auth.SessionCredential("s1"))), "unscoped cookie channel must close")
-	assert.True(t, authorize(chInfo(auth.APICredential("api-1"))), "unscoped api channel must close")
-	assert.True(t, authorize(chInfo(auth.DelegationCredential("d1", "ws-1", "worker-mint"))), "delegation channel for the removed workspace must close")
-	assert.False(t, authorize(chInfo(auth.DelegationCredential("d1", "ws-2", "worker-mint"))), "delegation channel for another workspace must survive")
 }

@@ -3,7 +3,6 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup, untrack } from 'solid-js'
 import { getFileTabPath, listAgents, listTerminals } from '~/api/workerRpc'
-import { ensureWorkspaceAccess } from '~/api/workspaceAccess'
 import { TabHydrationStatus } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -69,21 +68,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
    * what the worker SAID about each id that was asked for.
    *
    * The verdicts are not redundant with `resolved`. A batch RPC can succeed
-   * while omitting a tab for two reasons the client cannot tell apart on its
-   * own:
-   *
-   *   - the reply reflects the channel's accessible set AT REQUEST TIME, and
-   *     that set grows only when somebody calls `PrepareWorkspaceAccess`
-   *     (`AddAccessibleWorkspaceID` per ChannelAccessUpdate, read live by
-   *     `channelAuthorizer.AccessibleSet`) -- repairable, and this client is
-   *     the one that can repair it; and
-   *   - the worker holds no record for that id at all -- permanent, so
-   *     retrying is pure waste that pins a 10s timer for the life of the page.
-   *
-   * Treating a fulfilled promise as "all hydrated" would clear the backoff and
-   * strand the first kind forever, because the candidate set is unchanged and
-   * the effect never re-fires. Handing the raw verdicts to `runForBatch` keeps
-   * that classification in ONE place instead of once per spec.
+   * while omitting a tab, and the client cannot tell "the worker has no record
+   * for this id, ever" from "not yet" on its own -- so the only safe local
+   * guess is "ask again", which pins a 10s timer per unanswerable tab for the
+   * life of the page. ABSENT is the worker saying "stop asking".
    */
   interface BatchResult {
     /** Answered for; their metadata has been written. */
@@ -122,18 +110,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     // roughly a minute of backoff, long enough to ride out a handshake or a
     // worker restart; anything past that is not a transient failure.
     //
-    // The budget is restored by a success, or by a change to the candidate set
-    // for that key — the dispatch effect below does the latter explicitly. It
-    // has to: once the budget is spent `schedule` returns null, so a reset
-    // written inside a retry callback can never run, and the cap would be
-    // permanent rather than per-episode.
-    //
-    // Capping is only sound because the one condition that genuinely never
-    // resolves on its own is now repaired rather than waited out: a workspace
-    // created outside this page (the `leapmux remote` CLI, another session) is
-    // absent from an already-open channel's accessible set, and no amount of
-    // re-asking the worker changes that. NOT_ACCESSIBLE routes through
-    // `ensureWorkspaceAccess` below instead of through this budget.
+    // The budget is restored by a success, by a change to the candidate set for
+    // that key, or by the worker coming back online — the dispatch effects below
+    // do the latter two explicitly. They have to: once the budget is spent
+    // `schedule` returns null, so a reset written inside a retry callback can
+    // never run, and the cap would be permanent rather than per-episode.
     const retry = createExponentialBackoff<string>({ initialMs: 500, maxMs: 10_000, maxAttempts: 8 })
     onCleanup(() => retry.cancelAll())
 
@@ -221,53 +202,8 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       }
     }
 
-    /**
-     * Ask the hub to put `workspaceIds` on this worker's channels, then re-batch.
-     *
-     * Returns whether it handled the batch. `true` means a fresh announcement
-     * landed and the re-batch is done; the caller owes the tabs nothing further.
-     * `false` means announcing changed nothing -- the channel already knew about
-     * every blocked workspace, so the refusal has another cause -- and the
-     * caller should fall back to the backoff.
-     *
-     * The re-batch runs with repair DISABLED, which is what bounds this: a
-     * refusal that survives its own repair cannot ask for another one, so the
-     * two can never drive each other. Every blocked workspace in the batch is
-     * announced in this one pass, so nothing is left for a second pass to fix;
-     * a workspace that only becomes blocked later arrives with a changed
-     * candidate set, which restores the retry budget and repairs on its own.
-     */
-    async function grantAccessAndRebatch(workerId: string, workspaceIds: Set<string>): Promise<boolean> {
-      let announced: boolean[]
-      try {
-        announced = await Promise.all([...workspaceIds].map(wsId => ensureWorkspaceAccess(workerId, wsId)))
-      }
-      catch {
-        // The hub call is a repair, not the hydration itself: a failure here
-        // must not be terminal, and must not re-enter this branch immediately
-        // (which would be an unbounded hub-RPC loop). Hand it back to the
-        // bounded backoff, which re-asks the worker and lands here again with a
-        // fresh chance at the announcement.
-        return false
-      }
-      if (!announced.some(Boolean))
-        return false
-      const stillPending = pendingForWorker(workerId)
-      if (stillPending.length === 0)
-        retry.reset(workerId)
-      else
-        await runForBatch(workerId, stillPending, false)
-      return true
-    }
-
-    /**
-     * One batched fetch for `tabs`, plus what to do with what comes back.
-     *
-     * `mayRepair` is false only for the re-batch a repair itself issued, which
-     * is what keeps the repair from re-entering itself; see
-     * `grantAccessAndRebatch`.
-     */
-    async function runForBatch(workerId: string, tabs: Tab[], mayRepair = true): Promise<void> {
+    /** One batched fetch for `tabs`, plus what to do with what comes back. */
+    async function runForBatch(workerId: string, tabs: Tab[]): Promise<void> {
       if (spec.kind !== 'batched')
         return
       const fresh = tabs.filter(t => !inflight.has(t.id))
@@ -284,9 +220,6 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       // behaviour this had before verdicts existed, so an unknown answer
       // degrades to the safe old default rather than silently retiring a live tab.
       let pending: Tab[]
-      // Pending tabs whose workspace the channel has not been told about. Their
-      // workspaces, not their ids: the announcement is per (worker, workspace).
-      let blocked: Set<string>
       try {
         const result = await spec.fetchBatch(workerId, fresh)
         const verdict = new Map(result.verdicts.map(v => [v.tabId, v.status]))
@@ -296,11 +229,6 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         }
         pending = fresh.filter(t =>
           !result.resolved.has(t.id) && verdict.get(t.id) !== TabHydrationStatus.ABSENT)
-        blocked = new Set()
-        for (const t of pending) {
-          if (verdict.get(t.id) === TabHydrationStatus.NOT_ACCESSIBLE && t.workspaceId)
-            blocked.add(t.workspaceId)
-        }
       }
       catch {
         scheduleBatchRetry(workerId)
@@ -310,8 +238,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // Released only AFTER the metadata writes above, because each write
         // re-runs the candidate effect synchronously: holding the marks across
         // them is what stops the effect from issuing a second RPC for tabs this
-        // batch is still answering for. Released BEFORE the repair below, so the
-        // re-batch is not filtered out by this attempt's own marks.
+        // batch is still answering for.
         for (const t of fresh)
           inflight.delete(t.id)
       }
@@ -320,14 +247,6 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         retry.reset(workerId)
         return
       }
-
-      // NOT_ACCESSIBLE is the one pending verdict this client can act on rather
-      // than wait out: the worker holds the record but this channel has not been
-      // told about its workspace. Re-asking the worker is what never terminates
-      // -- the transition being waited on is one nothing else performs on this
-      // channel -- so announce the workspace and re-batch instead.
-      if (mayRepair && blocked.size > 0 && await grantAccessAndRebatch(workerId, blocked))
-        return
       scheduleBatchRetry(workerId)
     }
 
@@ -433,7 +352,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   }
 
   // FILE: GetFileTabPath populates the path/title via worker E2EE. The
-  // WatchWorkspacePrivateEvents stream's bootstrap reply covers the
+  // WatchWorkerPrivateEvents stream's bootstrap reply covers the
   // late-joiner case, but if a tab lands before the private-event
   // stream has finished its bootstrap, we issue a one-shot
   // GetFileTabPath so the title renders without a perceptible delay.
@@ -454,7 +373,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       if (!tab.workerId)
         return
       const resp = await getFileTabPath(tab.workerId, { tabId: tab.id })
-      opts.fileTabPaths.register(tab.id, resp.workspaceId, resp.filePath)
+      opts.fileTabPaths.register(tab.id, resp.filePath)
       opts.metadata.patch(tab.id, { filePath: resp.filePath })
     },
   })

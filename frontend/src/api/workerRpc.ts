@@ -58,16 +58,14 @@ import type {
   GetWorkerSystemInfoResponse,
 } from '~/generated/leapmux/v1/worker_pb'
 import type {
-  CleanupWorkspaceResponse,
-  MoveTabWorkspaceResponse,
-  WatchEventsResponse,
-} from '~/generated/leapmux/v1/workspace_pb'
-import type {
   GetFileTabPathResponse,
   RegisterFileTabPathResponse,
-  RelocateFileTabPathResponse,
   RevokeFileTabPathResponse,
-} from '~/generated/leapmux/v1/workspace_private_pb'
+} from '~/generated/leapmux/v1/worker_private_pb'
+import type {
+  CleanupWorkspaceResponse,
+  WatchEventsResponse,
+} from '~/generated/leapmux/v1/workspace_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
@@ -163,23 +161,19 @@ import {
   GetWorkerSystemInfoResponseSchema,
 } from '~/generated/leapmux/v1/worker_pb'
 import {
-  CleanupWorkspaceRequestSchema,
-  CleanupWorkspaceResponseSchema,
-  MoveTabWorkspaceRequestSchema,
-  MoveTabWorkspaceResponseSchema,
-  WatchEventsRequestSchema,
-  WatchEventsResponseSchema,
-} from '~/generated/leapmux/v1/workspace_pb'
-import {
   GetFileTabPathRequestSchema,
   GetFileTabPathResponseSchema,
   RegisterFileTabPathRequestSchema,
   RegisterFileTabPathResponseSchema,
-  RelocateFileTabPathRequestSchema,
-  RelocateFileTabPathResponseSchema,
   RevokeFileTabPathRequestSchema,
   RevokeFileTabPathResponseSchema,
-} from '~/generated/leapmux/v1/workspace_private_pb'
+} from '~/generated/leapmux/v1/worker_private_pb'
+import {
+  CleanupWorkspaceRequestSchema,
+  CleanupWorkspaceResponseSchema,
+  WatchEventsRequestSchema,
+  WatchEventsResponseSchema,
+} from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
@@ -305,10 +299,6 @@ export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof 
   return callWorker(workerId, 'CleanupWorkspace', CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, req)
 }
 
-export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof MoveTabWorkspaceRequestSchema>): Promise<MoveTabWorkspaceResponse> {
-  return callWorker(workerId, 'MoveTabWorkspace', MoveTabWorkspaceRequestSchema, MoveTabWorkspaceResponseSchema, req)
-}
-
 // ---------------------------------------------------------------------------
 // File-tab paths (E2EE-only — hub never sees the path)
 // ---------------------------------------------------------------------------
@@ -332,13 +322,6 @@ export function revokeFileTabPath(
   req: MessageInitShape<typeof RevokeFileTabPathRequestSchema>,
 ): Promise<RevokeFileTabPathResponse> {
   return callWorker(workerId, 'RevokeFileTabPath', RevokeFileTabPathRequestSchema, RevokeFileTabPathResponseSchema, req)
-}
-
-export function relocateFileTabPath(
-  workerId: string,
-  req: MessageInitShape<typeof RelocateFileTabPathRequestSchema>,
-): Promise<RelocateFileTabPathResponse> {
-  return callWorker(workerId, 'RelocateFileTabPath', RelocateFileTabPathRequestSchema, RelocateFileTabPathResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

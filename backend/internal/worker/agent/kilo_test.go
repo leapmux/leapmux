@@ -36,6 +36,41 @@ func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) j
 	)
 }
 
+// TestKiloClearContextRefreshesPrimaryAgent covers ClearContext adopting the new
+// session's model and primary agent (Kilo reports both on session/new) and
+// broadcasting one settings refresh carrying them. It lives here, beside the
+// os.Pipe-based Kilo RPC helpers, rather than in the unix-tagged ACP refresh suite:
+// nothing in it spawns a shell, so it runs on every platform.
+func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
+	agent, _ := newKiloAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{
+				"sessionId": "session-2",
+				"models": {"currentModelId": "anthropic/claude-sonnet-4"},
+				"modes":  {"currentModeId": "code"}
+			}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "anthropic/claude-opus-4"
+	agent.currentPrimaryAgent = "plan"
+	sink := &testSink{}
+	agent.sink = sink
+	agent.reapplySettings = agent.reapplyModelAndSecondary
+	agent.refreshFromSession = agent.applySessionRefresh
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	assert.Equal(t, "session-2", sessionID)
+	assert.Equal(t, "anthropic/claude-sonnet-4", agent.model)
+	assert.Equal(t, "code", agent.currentPrimaryAgent)
+
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "anthropic/claude-sonnet-4", refresh.Model)
+	assert.Equal(t, "code", refresh.Options[OptionIDPrimaryAgent])
+}
+
 func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
 	assert.Equal(t, acpMethodSessionNew, method)

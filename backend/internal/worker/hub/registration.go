@@ -93,6 +93,9 @@ func registerWithClient(
 			switch connectErr.Code() {
 			case connect.CodeUnauthenticated, connect.CodeInvalidArgument, connect.CodePermissionDenied:
 				return nil, fmt.Errorf("registration rejected: %w", err)
+			default:
+				// Every other code is treated as transient and falls through to
+				// the backoff retry below.
 			}
 		}
 

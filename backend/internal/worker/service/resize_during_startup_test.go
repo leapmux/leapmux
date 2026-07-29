@@ -31,7 +31,7 @@ import (
 // Manager, so the frontend's size is visible to the first process that
 // queries TIOCGWINSZ (e.g. vim on its first draw).
 func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Gate the real StartTerminal behind a channel so the test can
 	// dispatch ResizeTerminal while the goroutine is parked with the
@@ -50,11 +50,10 @@ func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
 	}
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
-		Shell:       testutil.TestShell(),
-		Cols:        80,
-		Rows:        24,
+		WorkingDir: t.TempDir(),
+		Shell:      testutil.TestShell(),
+		Cols:       80,
+		Rows:       24,
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)

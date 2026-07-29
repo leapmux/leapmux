@@ -150,14 +150,19 @@ See [Admin CLI](/docs/operating/admin-cli/) for token revocation and [Remote Con
 
 ### What a delegation token can reach
 
-A delegation token is minted by a Worker for the agent running in one of its tabs, and it always carries the identity of the **workspace owner** — the same user the Worker is registered to, since workspace access is owner-only. The token is bounded on two independent axes — both re-checked when a channel opens, not just when the token was minted:
+A Worker mints a delegation token for the agent running in one of its tabs. The token carries the identity of that Worker's **owner** — the single user the Worker is registered to — and is bounded to the machines it may reach: the Worker that minted it, plus that owner's other Workers. It can never be aimed at someone else's machine. The bound is re-checked every time the token opens a channel, not only when it was minted.
 
-- **Workspace.** The token is pinned to the single workspace it was minted for, and the pin is re-verified at open time, so a workspace deleted since the mint is caught at use.
-- **Worker.** The token may open a channel back to the Worker that minted it, and to the owner's other Workers. It cannot be aimed at a third party's machine.
+On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux remote` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
 
-The machine-scoped Worker RPCs — filesystem, git, tunnels, and system info — are **owner-only**: the Worker serves them solely to the user it is registered to. Their reach is the host rather than a workspace (a path is normalized and traversal-blocked, but not confined to a root), which is the owner's own access by definition and nobody else's. A delegation token carries the owner's identity and may therefore call them — that is the ordinary `leapmux remote` case.
+Every Worker RPC that touches data is **owner-only**: a Worker serves nobody but the user it is registered to. Because that is exactly one user, "the caller owns this Worker" and "the caller owns every tab this Worker holds" are the same statement. The one exception is the liveness ping, which does no work and discloses nothing.
 
-> **Note:** These bounds are defence in depth. The Hub authorizes a channel to a Worker only for that Worker's own owner, so every tab on a Worker belongs to its owner and every delegation token carries that owner's identity in the first place. The Worker enforces the bounds anyway rather than trusting the Hub to have gotten it right.
+That equivalence is also the shape of the exposure, so it is worth stating plainly: a delegation token is bounded by **owner and machine, not by workspace or tab**. An agent running in one workspace can reach every tab its owner holds on the machines it may reach — read another agent's messages, write to another terminal, close another workspace's tab — and can submit layout changes across all of that owner's workspaces.
+
+The machine bound does not narrow what the token sees at the **Hub**, either. It authenticates as its owner there, so it can list that owner's workspaces and tabs and resolve any of them by id — the whole inventory, not the workspace it was minted in. Treat a leaked delegation token as disclosing what the account contains, not just what one project does.
+
+All of one user's own work is a single trust domain from an agent's point of view. If you need a stronger boundary than that, use a separate user rather than a separate workspace.
+
+> **Note:** The Worker's check is defence in depth. The Hub already authorizes a channel to a Worker only for that Worker's own owner, so every delegation token that reaches it carries the right identity in the first place. The Worker verifies it anyway rather than trusting the Hub to have gotten it right.
 
 ## Worker identity and TOFU pinning
 

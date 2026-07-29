@@ -70,11 +70,10 @@ func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturingWriter) {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,

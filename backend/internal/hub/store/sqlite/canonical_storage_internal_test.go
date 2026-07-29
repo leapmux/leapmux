@@ -58,7 +58,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ID:               delegationID,
 		UserID:           userid.MustNew(user.ID),
 		WorkerID:         worker.ID,
-		WorkspaceID:      workspaceID,
 		SecretHash:       []byte("dt-secret"),
 		RefreshHash:      []byte("dt-refresh"),
 		ExpiresAt:        future,

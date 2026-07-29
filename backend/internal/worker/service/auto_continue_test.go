@@ -16,10 +16,9 @@ import (
 func createAutoContinueTestAgent(t *testing.T, queries *db.Queries, agentID string) {
 	t.Helper()
 	require.NoError(t, queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         agentID,
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 }
 

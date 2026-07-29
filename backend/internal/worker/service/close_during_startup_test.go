@@ -40,7 +40,7 @@ import (
 // branch is already covered by TestOpenAgent_StartupFailure* tests.
 func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Subscribe before OpenAgent so an accidental ACTIVE broadcast would
@@ -71,7 +71,6 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -134,7 +133,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	branchName := "feature/close-during-startup"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	var closeOnce sync.Once
@@ -153,7 +152,6 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,
@@ -204,7 +202,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 	branchName := "feature/close-term-during-startup"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	wWatch := newTestWriter()
@@ -230,7 +228,6 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 	}
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,

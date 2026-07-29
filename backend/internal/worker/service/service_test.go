@@ -65,7 +65,7 @@ func TestExpandTilde(t *testing.T) {
 func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 	d := channel.NewDispatcher()
 	admitted := false
-	ownerOnlyRegistrar{r: newRegistrar(d, svc)}.Register("Probe",
+	newRegistrar(d, svc).ownerOnly().Register("Probe",
 		func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 			admitted = true
 		})
@@ -384,43 +384,13 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 	}
 }
 
-// TestAuthorizerFor_RoutesLocalIPCToTheRegistry pins that a synthetic
-// local-IPC stream id resolves through the per-Service registry rather
-// than the channel manager, which knows nothing about it.
-func TestAuthorizerFor_RoutesLocalIPCToTheRegistry(t *testing.T) {
-	sqlDB := newServiceTestDB(t)
-	svc := newMinimalService(t, sqlDB)
-
-	streamID := LocalIPCStreamPrefix + "token:abc"
-	svc.RegisterLocalAuthorizer(streamID, []string{"ws-1"})
-	defer svc.ReleaseLocalStream(streamID)
-
-	auth := svc.AuthorizerFor(streamID)
-
-	assert.True(t, auth.IsAccessible("ws-1"), "registered workspace is accessible")
-	assert.False(t, auth.IsAccessible("ws-2"), "unregistered workspace is not")
-}
-
-// TestAuthorizerFor_UnregisteredLocalIPCFailsClosed pins that a missing
-// registration denies rather than falling back to the channel manager,
-// which would answer for a channel id that does not exist.
-func TestAuthorizerFor_UnregisteredLocalIPCFailsClosed(t *testing.T) {
-	sqlDB := newServiceTestDB(t)
-	svc := newMinimalService(t, sqlDB)
-
-	auth := svc.AuthorizerFor(LocalIPCStreamPrefix + "token:missing")
-
-	assert.False(t, auth.IsAccessible("ws-1"), "an unregistered stream must be denied")
-	assert.Empty(t, auth.AccessibleSet())
-}
-
 // newMinimalService builds the smallest Service New will accept: a real
 // DB plus the two fields it refuses to construct without.
 //
-// The stand-ins are deliberate. Channels is an empty manager, so
-// AuthorizerFor resolves to a channel authorizer that grants nothing —
-// which is what a test about local-IPC routing or handler registration
-// wants. Send discards, because none of those tests reads the Hub.
+// The stand-ins are deliberate. Channels is an empty manager, so no dispatched
+// handler finds a session -- which is what a test about local-IPC routing or
+// handler registration wants. Send discards, because none of those tests reads
+// the Hub.
 func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 	t.Helper()
 	return New(Config{
@@ -519,4 +489,38 @@ func TestSendProtoResponse_AnswersWhenTheChannelRefusesTheReply(t *testing.T) {
 		require.Len(t, w.responses, 1)
 		assert.Empty(t, w.errors, "a successful send must not also report an error")
 	})
+}
+
+// TestShutdown_StopsBackgroundLoopsBeforeDraining pins the ordering that keeps a
+// convergence pass from writing into a closing database.
+//
+// The orphan reconciler's teardowns are NOT registered with svc.Cleanup -- only
+// the dispatcher's tracked handlers are -- and the worker entry points call
+// Shutdown BEFORE cancelling the context the reconciler is bound to. So without
+// this hook a nudge-triggered pass could still be running its DB writes and
+// remote-IPC teardown when the caller closed the DB. Stop() blocks until the
+// in-flight pass returns, so it has to run first, ahead of the drains.
+func TestShutdown_StopsBackgroundLoopsBeforeDraining(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+
+	var order []string
+	svc.SetStopBackgroundLoops(func() { order = append(order, "stop-loops") })
+	svc.Cleanup.Add(1)
+	go func() {
+		order = append(order, "cleanup-done")
+		svc.Cleanup.Done()
+	}()
+
+	svc.Shutdown()
+
+	require.NotEmpty(t, order, "the registered stop hook must be called by Shutdown")
+	assert.Equal(t, "stop-loops", order[0],
+		"the background loops must be stopped BEFORE Shutdown drains, or a pass can outlive the drain and write into a closing DB")
+}
+
+// TestShutdown_WithoutABackgroundLoopHookIsANoop covers the shape every test that
+// never starts the loops takes: an unset hook must be skipped, not panic.
+func TestShutdown_WithoutABackgroundLoopHookIsANoop(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	assert.NotPanics(t, svc.Shutdown, "an unwired stop hook must be skipped")
 }

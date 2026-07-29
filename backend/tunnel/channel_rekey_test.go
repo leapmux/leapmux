@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -312,6 +313,53 @@ func TestChannelRekeyConcurrentCallersShareReject(t *testing.T) {
 	defer cancel()
 	_, err := channelwire.ReadChannelMessage(ctx, peerWS)
 	require.Error(t, err, "joiner must not send a second RekeyRequest")
+}
+
+// TestChannelRekeyRejectArmsBackoffBeforeWakingWaiters pins the ordering the
+// concurrent-Reject broadcast depends on: the backoff must be armed by the
+// RESOLUTION (on the recvLoop goroutine, before the waiter list is drained), not
+// by each waiting caller once it wakes up. Arming it in the waiter leaves a
+// window -- waiters drained, backoff still zero, lastRekeyAt still stale -- in
+// which a sender entering startRekeyLocked finds no in-flight rekey to join and
+// no backoff to respect, so it starts a SECOND rekey the peer just rejected.
+//
+// This is the deterministic form of the flake in
+// TestChannelRekeyConcurrentCallersShareReject: there the redundant Request went
+// unanswered by the single-outcome peer stub, so that caller blocked until the
+// sessionVerifyTimeout watchdog fired and cancelled the whole channel.
+func TestChannelRekeyRejectArmsBackoffBeforeWakingWaiters(t *testing.T) {
+	ch, _, _ := pairedRekeyChannel(t)
+	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+
+	// Stand in for an in-flight rekey whose starter has not woken yet: a
+	// registered waiter nobody is reading. This is exactly the state
+	// handleRekeyReject observes on the recvLoop goroutine.
+	waiter := make(chan rekeyOutcome, 1)
+	const reqID = uint64(7)
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.rekey.rekeyReqID = reqID
+	ch.mu.Unlock()
+
+	ch.handleRekeyReject(reqID, 0)
+
+	require.Len(t, waiter, 1, "the Reject must have resolved the in-flight rekey")
+	// assert (not require) so a regression reports BOTH the un-armed backoff and
+	// the redundant Request it lets through, rather than stopping at the state.
+	assert.False(t, ch.rekey.rekeyNotBefore.IsZero(),
+		"the resolution must arm the backoff; a waiting caller may not have run yet")
+
+	// A sender arriving in the window between the Reject resolving and the
+	// starter waking must see the backoff and start no second rekey. Call
+	// startRekeyLocked the way ensureRekeyed does (under rekeyMu) so the check
+	// covers the real decision path rather than the policy fields alone.
+	ch.rekey.rekeyMu.Lock()
+	wait, _, send, err := ch.startRekeyLocked(context.Background())
+	ch.rekey.rekeyMu.Unlock()
+	require.NoError(t, err)
+	assert.Nil(t, send, "the Reject's backoff must suppress a redundant RekeyRequest")
+	assert.Nil(t, wait, "nothing in flight to wait on after the Reject resolved")
+	assert.False(t, ch.Closed(), "a rejected rekey must not cancel the channel")
 }
 
 func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
@@ -721,4 +769,97 @@ func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 	assert.False(t, ch.Closed())
 	assert.Equal(t, uint64(0), ch.session.Send.Nonce())
 	assert.True(t, ch.rekey.rekeyNotBefore.IsZero(), "successful rekey clears reject backoff")
+}
+
+// TestChannelRekeyIgnoresAStaleAck pins the correlation check.
+//
+// resolveRekey used to be correlation-blind: the recvLoop discarded the inbound
+// correlation id, so an Ack for rekey #1 arriving after rekey #2 had registered
+// was accepted as #2's answer. It would then claim #2's freshly generated
+// material and derive against #1's responder ephemeral -- keys the peer does not
+// share -- turning a stale frame into a silently broken channel instead of a
+// clean failure.
+//
+// Asserted through the waiter, because that is what a stale Ack must NOT
+// resolve: the live rekey has to stay in flight.
+func TestChannelRekeyIgnoresAStaleAck(t *testing.T) {
+	ch, _, _ := pairedRekeyChannel(t)
+
+	waiter := make(chan rekeyOutcome, 1)
+	seed, err := noiseutil.GenerateEphemeralX25519Seed()
+	require.NoError(t, err)
+	material := &rekeySecrets{ephemeralSeed: seed, pqShared: []byte("pq")}
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.rekey.rekeyMaterial = material
+	ch.rekey.rekeyReqID = 42
+	ch.mu.Unlock()
+
+	// An Ack naming the PREVIOUS request id, carrying a well-formed ephemeral so
+	// the only thing that can reject it is the correlation check.
+	ch.handleRekeyAck(41, make([]byte, noiseutil.EphemeralPublicKeySize))
+
+	assert.Empty(t, waiter, "a stale Ack must not resolve the in-flight rekey")
+	ch.mu.Lock()
+	stillInFlight := ch.rekey.rekeyMaterial
+	ch.mu.Unlock()
+	assert.Same(t, material, stillInFlight,
+		"a stale Ack must not claim the live rekey's material")
+	assert.NoError(t, ch.ctx.Err(), "a stale Ack must not cancel the channel")
+}
+
+// TestChannelRekeyIgnoresAStaleReject is the Reject half: a stale Reject would
+// arm a backoff and drain the waiters of a rekey that is still legitimately in
+// flight, stranding its starter until the watchdog fired.
+func TestChannelRekeyIgnoresAStaleReject(t *testing.T) {
+	ch, _, _ := pairedRekeyChannel(t)
+
+	waiter := make(chan rekeyOutcome, 1)
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.rekey.rekeyReqID = 42
+	ch.mu.Unlock()
+
+	ch.handleRekeyReject(41, 0)
+
+	assert.Empty(t, waiter, "a stale Reject must not resolve the in-flight rekey")
+	assert.True(t, ch.rekey.rekeyNotBefore.IsZero(),
+		"a stale Reject must not arm the backoff against a live rekey")
+}
+
+// TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu pins the lock-order rule the
+// code used to state only in prose.
+//
+// startRekeyLocked raises a resolution while holding rekeyMu, and it survived
+// only because that one outcome happened to carry a non-nil error, which skipped
+// the backoff arm -- the single place resolveRekey takes rekeyMu. A second such
+// call site with a nil error, or an author "simplifying" the pubkey failure into
+// a plain Reject, self-deadlocked the sender with no compile-time signal.
+// resolveRekeyTerminal makes that structural: its signature cannot express the
+// arming outcome.
+func TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu(t *testing.T) {
+	ch, _, _ := pairedRekeyChannel(t)
+
+	waiter := make(chan rekeyOutcome, 1)
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ch.rekey.rekeyMu.Lock()
+		defer ch.rekey.rekeyMu.Unlock()
+		ch.resolveRekeyTerminal(errors.New("boom"))
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolveRekeyTerminal deadlocked while holding rekeyMu")
+	}
+	require.Len(t, waiter, 1, "the terminal resolution must still wake the waiters")
+	outcome := <-waiter
+	assert.False(t, outcome.accepted)
+	require.Error(t, outcome.err)
 }

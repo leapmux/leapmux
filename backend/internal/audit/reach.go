@@ -68,6 +68,13 @@ var workerReachSites = map[string]workerReachKind{
 	// from DeregisterWorker, which has already matched the row on
 	// (id, registered_by = caller) before the notifier is told anything.
 	"internal/hub/notifier.(*Notifier).SendDeregister": reachServerInitiated,
+	// The reconcile nudge is raised by the CRDT commit path, and its worker id
+	// comes from the projection of the committing batch's OWN owner -- never from
+	// a user request. It carries no principal at all (crdt.ReconcileNudger takes
+	// only a worker id), so the "no user in the path" claim is structural rather
+	// than asserted, and a send failure is swallowed so the call discloses nothing
+	// about liveness either.
+	"internal/hub/service.(*ReconcileNudger).NudgeReconcile": reachServerInitiated,
 }
 
 // registryMethodKind names WHY one exported *workermgr.Manager method that

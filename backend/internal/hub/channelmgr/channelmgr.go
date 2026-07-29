@@ -626,27 +626,6 @@ func fanOutTeardown(ids []string, work func(id string)) {
 	wg.Wait()
 }
 
-// AuthorizedChannelIDsForUserWorker returns the IDs of userID's channels on
-// workerID that satisfy authorize. The user/worker filtering is routing the
-// manager owns; the authorize predicate carries the caller's authorization
-// policy, so delegation-scope rules live in the service layer beside the other
-// channel-auth checks rather than inside this routing index.
-func (m *Manager) AuthorizedChannelIDsForUserWorker(userID, workerID string, authorize func(ChannelInfo) bool) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var ids []string
-	for id := range m.channelsByUser[userID] {
-		ch := m.channels[id]
-		if ch == nil || ch.WorkerID != workerID {
-			continue
-		}
-		if authorize == nil || authorize(channelInfo(ch)) {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
 // UnregisterByWorker removes all channels for a given worker (e.g. on disconnect).
 // Close notifications are sent to the owning frontend connection so clients can
 // detect dead channels without waiting for RPC timeouts.
@@ -757,7 +736,7 @@ func (m *Manager) closeChannelIDs(ids []string, predicate func(*channel) bool) [
 	// channel whose routed operation is wedged on an unresponsive worker cannot
 	// head-of-line-block the teardown of the others -- the same anti-HOL-blocking
 	// property expireDueChannels has. This matters most on the revocation paths
-	// (CloseByBearer / CloseBySession / CloseByUserRevocation / CloseByUsers): a
+	// (CloseByBearer / CloseBySession / CloseByUserRevocation): a
 	// revoked credential's remaining channels must stop relaying promptly rather
 	// than wait behind one channel mid-open to a stuck worker, which is a security
 	// window, not just a latency one. removeChannelIf takes each channel's opMu OFF
@@ -853,38 +832,6 @@ func (m *Manager) CloseBySession(sessionID string) []ClosedChannel {
 	}
 	ids := snapshotIndexedChannelIDs(m, m.channelsBySession, sessionID)
 	return m.closeChannelIDs(ids, nil)
-}
-
-// CloseByUsers drops channels owned by one of userIDs that satisfy authorize
-// (nil closes all of their channels). Callers scope the sweep -- e.g. to a
-// workspace whose access was removed -- through the predicate, so the manager
-// stays free of authorization policy.
-func (m *Manager) CloseByUsers(userIDs []string, authorize func(ChannelInfo) bool) []ClosedChannel {
-	if len(userIDs) == 0 {
-		return nil
-	}
-	users := make(map[string]struct{}, len(userIDs))
-	for _, userID := range userIDs {
-		if userID != "" {
-			users[userID] = struct{}{}
-		}
-	}
-	if len(users) == 0 {
-		return nil
-	}
-	channelIDSet := make(map[string]struct{})
-	m.mu.RLock()
-	for userID := range users {
-		for channelID := range m.channelsByUser[userID] {
-			channelIDSet[channelID] = struct{}{}
-		}
-	}
-	m.mu.RUnlock()
-	var predicate func(*channel) bool
-	if authorize != nil {
-		predicate = func(ch *channel) bool { return authorize(channelInfo(ch)) }
-	}
-	return m.closeChannelIDs(cloneChannelIDs(channelIDSet), predicate)
 }
 
 // CloseByUserRevocation drops channels for userID whose authentication basis

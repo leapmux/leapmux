@@ -26,6 +26,11 @@ type rollbackWorktree struct {
 }
 
 type rollbackBranch struct {
+	// RepoRoot is the MAIN repo root, the key gitIndexLocks uses. Carried on the
+	// struct rather than re-probed at rollback time: currentCheckoutTarget
+	// already has it from its own queryGitPathInfo, and a rollback runs on a
+	// failure path where an extra git fork is the last thing wanted.
+	RepoRoot         string
 	WorkingDir       string
 	CreatedBranch    string
 	OriginalBranch   string
@@ -471,7 +476,12 @@ type gitModeRequest interface {
 type gitModeResult struct {
 	WorkingDir string
 	WorktreeID string
-	Rollback   gitModeRollback
+	// RepoRoot is the MAIN repo root, recorded by attachWorktreeIfPresent from
+	// the probe it already runs. It is the gitIndexLocks key, so having it here
+	// lets the checkout paths lock without a second git fork. Empty when the
+	// working dir is not a git repo at all -- there is nothing to serialize then.
+	RepoRoot string
+	Rollback gitModeRollback
 }
 
 // executeGitMode performs the mutations described by plan. Runs on the async
@@ -506,11 +516,37 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	}
 	result := gitModeResult{Rollback: gitModeRollback{CreatedWorktree: rollback}}
 
-	if err := gitutil.Run(ctx, plan.RepoRoot, "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, plan.StartPoint); err != nil {
+	// Under the repo's index lock: a concurrent checkout / commit / second
+	// worktree add in the same repository would otherwise make one of the two
+	// fail outright on index.lock rather than wait.
+	addErr := svc.withGitIndexLock(plan.RepoRoot, func() error {
+		// Prune first, and this is not hygiene -- it is required for the add to
+		// succeed at all after an interrupted attempt.
+		//
+		// `git worktree add` creates the ADMIN dir (.git/worktrees/<name>/, index
+		// and lock included) before it creates the worktree directory. A ctx
+		// cancellation in that window -- an agent closed during startup, a channel
+		// dropped -- leaves the admin dir behind with no worktree beside it. The
+		// validator's collision check cannot see that: it stats the WORKTREE path,
+		// which does not exist. So every later add for the same branch name dies
+		// with `Unable to create '.git/worktrees/<name>/index.lock': File exists`,
+		// permanently, until someone prunes by hand.
+		//
+		// `worktree prune` removes exactly those orphaned admin entries and
+		// nothing else -- an entry whose worktree directory is still present is
+		// left alone -- so it cannot disturb a live worktree. Best effort: a prune
+		// failure should not mask the add's own error.
+		if pruneErr := gitutil.Run(ctx, plan.RepoRoot, "worktree", "prune"); pruneErr != nil {
+			slog.Warn("worktree prune before add failed; continuing",
+				"repo_root", plan.RepoRoot, "error", pruneErr)
+		}
+		return gitutil.Run(ctx, plan.RepoRoot, "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, plan.StartPoint)
+	})
+	if addErr != nil {
 		// Worktree add failed before the dir was created. Drop the
 		// rollback pointer so the caller doesn't emit a spurious
 		// "rolling back" label for a worktree that never existed.
-		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", err)
+		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", addErr)
 	}
 	slog.Info("worktree created", "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
 
@@ -555,7 +591,15 @@ func (svc *Service) executeCreateBranch(ctx context.Context, plan gitModePlan) (
 	}
 
 	currentTarget.CreatedBranch = plan.BranchName
-	if err := createBranchInDir(ctx, plan.WorkingDir, plan.BranchName, plan.BaseBranch); err != nil {
+	// `git checkout -b` mutates the index, so it runs under the repo's index
+	// lock -- currentCheckoutTarget above already resolved the main repo root, so
+	// this costs no extra fork. The comment below notes an "index race" as one
+	// reason the checkout can abort after writing the ref; this removes the
+	// worker's own contribution to that race.
+	createErr := svc.withGitIndexLock(currentTarget.RepoRoot, func() error {
+		return createBranchInDir(ctx, plan.WorkingDir, plan.BranchName, plan.BaseBranch)
+	})
+	if err := createErr; err != nil {
 		// BranchNameError aborts inside createBranchInDir before any
 		// git subprocess is invoked, so no rollback is needed and
 		// surfacing one would emit a spurious "rolling back branch X"
@@ -607,8 +651,13 @@ func (svc *Service) executeCheckoutBranch(ctx context.Context, plan gitModePlan)
 	if err := svc.attachWorktreeIfPresent(ctx, &result, plan.WorkingDir); err != nil {
 		return result, err
 	}
-	if err := checkoutBranchInDir(ctx, plan.WorkingDir, plan.CheckoutTarget); err != nil {
-		return result, err
+	// Under the repo's index lock. attachWorktreeIfPresent above recorded the
+	// main repo root from the probe it already ran, so this costs no extra fork.
+	checkoutErr := svc.withGitIndexLock(result.RepoRoot, func() error {
+		return checkoutBranchInDir(ctx, plan.WorkingDir, plan.CheckoutTarget)
+	})
+	if checkoutErr != nil {
+		return result, checkoutErr
 	}
 	// Keep the worktree row's branch_name in sync with the post-checkout
 	// HEAD. attachWorktreeIfPresent above creates the row on first
@@ -687,6 +736,9 @@ func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 		}
 		return fmt.Errorf("failed to probe worktree at %q: %w", dir, err)
 	}
+	// Recorded regardless of IsWorktree: the checkout paths need the index-lock
+	// key even when the dir is the main repo itself.
+	result.RepoRoot = info.RepoRoot
 	if !info.IsWorktree {
 		return nil
 	}
@@ -855,6 +907,17 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 		args = append(args, "--force")
 	}
 	args = append(args, wt.WorktreePath)
+	// Both git commands below run under the repo's index lock, so a concurrent
+	// startup doing `worktree add` in the same repository waits instead of
+	// failing on index.lock. Taken HERE rather than around each command: the
+	// remove and the branch delete are one logical mutation, and releasing
+	// between them would let another command interleave into exactly the window
+	// where the branch is free but not yet deleted.
+	//
+	// Safe with respect to worktreeRemovalLocks, which the callers already hold:
+	// the documented order is removal (outer) -> index (inner).
+	defer svc.lockGitIndex(wt.RepoRoot)()
+
 	// `git worktree remove` must complete before the branch cleanup: git
 	// refuses to delete a branch still checked out in a worktree. Once the
 	// worktree is gone, the branch cleanup and the DB DeleteWorktree are
@@ -926,6 +989,11 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 // strand links: worktrees soft-delete, so the worktree_tabs ON DELETE
 // CASCADE never fires for them, and the rows would otherwise over-count a
 // future worktree adopted at the same path.
+//
+// It refuses to reap a worktree holding uncommitted or unpushed work --- see
+// [Service.worktreeHoldsUnsavedWork]. That guard is what makes an offline
+// close safe: no user ever confirms this removal, so the probe stands in for
+// the last-tab dialog they never saw.
 func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
@@ -940,6 +1008,23 @@ func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
 	}
 	if live != 0 {
 		// A tab linked it after the scan — no longer an orphan.
+		return
+	}
+	// Never force-remove work the user has not saved anywhere. The reap runs
+	// `git worktree remove --force`, which discards uncommitted changes and
+	// deletes the branch, and it runs WITHOUT the user ever seeing the
+	// last-tab dialog: an offline close pins KEEP, the choice never reaches
+	// this worker, the tab's rows close, and every worktree_tabs link becomes
+	// a strand. So the only thing standing between "your laptop's channel
+	// dropped" and "your uncommitted work is gone" is this probe.
+	//
+	// Deliberately conservative in both failure directions: a probe error
+	// counts as "might hold work" and skips the reap. The worktree keeps its
+	// strand links, so it stays a GC candidate and is re-examined on the next
+	// pass -- committing and pushing the work is enough to let it through.
+	if hasWork, reason := svc.worktreeHoldsUnsavedWork(ctx, wt); hasWork {
+		slog.Info("orphan worktree GC: skipping reap, worktree may hold unsaved work",
+			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
 		return
 	}
 	if err := svc.removeWorktreeFromDisk(wt, true); err != nil {
@@ -964,6 +1049,65 @@ func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
 		"worktree_id", wt.ID, "worktree_path", wt.WorktreePath)
 }
 
+// worktreeHoldsUnsavedWork reports whether wt's directory holds work that
+// only exists there: uncommitted changes, or commits no remote has. The
+// second return value names the reason for the operator log.
+//
+// Fails CLOSED -- every error answers "yes, might hold work". A worktree
+// whose directory is already gone answers "no": there is nothing left to
+// lose, and refusing would strand the DB row forever.
+//
+// The two probes mirror what the last-tab close dialog shows the user
+// (inspectLastTabClose's dirty + unpushed counts), so an offline reap
+// applies the same standard the user would have been asked about.
+func (svc *Service) worktreeHoldsUnsavedWork(ctx context.Context, wt db.Worktree) (bool, string) {
+	if _, err := os.Stat(wt.WorktreePath); os.IsNotExist(err) {
+		return false, ""
+	}
+	dirty, err := isDirty(ctx, wt.WorktreePath)
+	if err != nil {
+		return true, fmt.Sprintf("dirty-tree probe failed: %v", err)
+	}
+	if dirty {
+		return true, "uncommitted changes"
+	}
+	// Probe the LIVE branch, not wt.BranchName. removeWorktreeFromDisk -- the
+	// thing this guard protects -- deliberately re-resolves HEAD for the same
+	// reason (an external `git checkout` from a terminal, IDE, or sibling agent,
+	// or the post-attach checkout in executeCheckoutBranch, moves HEAD without
+	// updating the row), and it is the LIVE branch it will `git branch -D`. A
+	// guard measuring the stale row could clear a branch it never examined.
+	branchName := wt.BranchName
+	if info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath); infoErr == nil {
+		branchName = info.BranchName
+	}
+	status, err := pushStatusForPath(ctx, wt.WorktreePath, branchName)
+	if err != nil {
+		return true, fmt.Sprintf("push-status probe failed: %v", err)
+	}
+	// With no origin at all, "unpushed" is not a meaningful state for this repo
+	// and only dirtiness can save the tree.
+	if !status.OriginExists {
+		return false, ""
+	}
+	// The one question that matters, and the only one that is correct for every
+	// shape: are there commits no remote has? pushStatusForPath answers it for a
+	// tracking branch, for a branch with no upstream, for a detached HEAD, and
+	// for a branch whose upstream was pruned.
+	//
+	// The predicate used to be `!status.UpstreamExists`, an upstream-CONFIG
+	// proxy, which was wrong in both directions: `git worktree add -b` gives a
+	// new branch no upstream by construction, so every worktree LeapMux itself
+	// created was reported as holding work forever and the GC reclaimed nothing
+	// it made; while the pruned-upstream case set RemoteMissing and left
+	// Unpushed at 0, which read as "nothing to lose" and force-removed
+	// local-only commits.
+	if status.Unpushed > 0 {
+		return true, fmt.Sprintf("%d unpushed commit(s)", status.Unpushed)
+	}
+	return false, ""
+}
+
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
 	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
@@ -971,6 +1115,7 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 	}
 	if info.BranchName != "" {
 		return &rollbackBranch{
+			RepoRoot:       info.RepoRoot,
 			WorkingDir:     workingDir,
 			OriginalBranch: info.BranchName,
 		}, nil
@@ -979,6 +1124,7 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 		return nil, errors.New("failed to resolve current HEAD")
 	}
 	return &rollbackBranch{
+		RepoRoot:         info.RepoRoot,
 		WorkingDir:       workingDir,
 		OriginalCommit:   info.HeadSHA,
 		OriginalDetached: true,
@@ -996,6 +1142,11 @@ func (svc *Service) rollbackGitMode(result gitModeResult) {
 
 func (svc *Service) rollbackCreatedWorktree(r rollbackWorktree) {
 	ctx := bgCtx()
+
+	// Under the repo's index lock for the same reason as removeWorktreeFromDisk:
+	// a rollback races whatever else is starting in this repository, and losing
+	// that race would leave the half-created worktree on disk.
+	defer svc.lockGitIndex(r.RepoRoot)()
 
 	// `git worktree remove` must complete before `git branch -D` — git
 	// refuses to delete a branch still checked out in a worktree. The DB
@@ -1030,6 +1181,11 @@ func (svc *Service) rollbackCreatedWorktree(r rollbackWorktree) {
 
 func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 	ctx := bgCtx()
+
+	// Under the repo's index lock. The note below already named "a stale
+	// index.lock, a sibling git fighting for the same repo" among the reasons the
+	// HEAD recovery can fail; this is what stops the worker BEING that sibling.
+	defer svc.lockGitIndex(r.RepoRoot)()
 
 	// Restore the original HEAD first so `git branch -D <created>` isn't
 	// blocked by "Cannot delete branch X checked out at …" — but ALWAYS

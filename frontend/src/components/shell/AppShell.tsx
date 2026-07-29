@@ -39,6 +39,7 @@ import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
+import { onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -116,7 +117,6 @@ export const AppShell: Component = () => {
     userEvents,
     effectiveClientId,
     ownClientId,
-    batchResultHandlers,
   } = useCrdtRuntime({
     userId: () => userId(),
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
@@ -200,7 +200,7 @@ export const AppShell: Component = () => {
   // Drives sound playback, git file status refresh, and directory tree refresh.
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
-  // Cache of file-tab paths fed by WatchWorkspacePrivateEvents
+  // Cache of file-tab paths fed by WatchWorkerPrivateEvents
   // bootstrap replay + GetFileTabPath fallback. Components consult
   // this for FILE-tab titles instead of asking the hub.
   const fileTabPaths = createFileTabPathsStore()
@@ -228,7 +228,7 @@ export const AppShell: Component = () => {
     // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
     // no other way to learn it, because a worker reconnecting changes nothing
     // about the candidate set.
-    onlineWorkerIds: () => new Set(workerSection.workers().filter(w => w.online).map(w => w.id)),
+    onlineWorkerIds: () => onlineWorkerIdSet(workerSection.workers()),
   })
 
   // Mount the input-driven heartbeat for the active workspace. The
@@ -253,9 +253,10 @@ export const AppShell: Component = () => {
     lastBootstrapped = now
   })
 
-  // One WatchWorkspacePrivateEvents subscription per worker hosting a
-  // tab in the active workspace. Drives the file-tab path cache and
-  // mirrors rename / register / revoke events into the local stores.
+  // One WatchWorkerPrivateEvents subscription per worker hosting a tab
+  // anywhere in the account -- the Worker stores no workspace id, so there
+  // is no narrower key. Drives the file-tab path cache and mirrors rename /
+  // register / revoke events into the local stores.
   // See useWorkerPrivateStreams for the per-worker open/close logic.
   useWorkerPrivateStreams({
     view: tabView,
@@ -608,6 +609,7 @@ export const AppShell: Component = () => {
     getScrollState: () => getScrollStateRef()?.(),
     setFileTreePath,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
+    workerOnlineState: workerId => workerOnlineState(workerSection.workers(), workerId),
   })
   // Build the final dialog map now that tabOps owns its handle.
   const dialogs: AppShellDialogStates = {
@@ -761,7 +763,6 @@ export const AppShell: Component = () => {
     selection,
     layoutStore,
     floatingWindowStore,
-    batchResultHandlers,
     focusTile,
   })
 

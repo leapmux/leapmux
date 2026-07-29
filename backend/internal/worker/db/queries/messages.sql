@@ -51,7 +51,7 @@ SELECT * FROM messages WHERE id = ? AND agent_id = ?;
 
 -- GetMessageByAgentIDAndSeq fetches a single message by its per-agent seq. Used by
 -- the scroll rail's dot-hover preview (GetAgentMessage RPC). Scoped to agent_id so it
--- can never read across agents/workspaces even for an authorized caller.
+-- can never read across agents even for an authorized caller.
 -- name: GetMessageByAgentIDAndSeq :one
 SELECT * FROM messages WHERE agent_id = ? AND seq = ?;
 

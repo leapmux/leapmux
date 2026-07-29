@@ -28,10 +28,14 @@ type agentScaffoldOpts struct {
 	// this.
 	noDeadline bool
 	// body runs the per-command action with the fully-resolved
-	// (ctx, client, workerID, agentID, workspaceID). workspaceID is
-	// passed through to the local-IPC transport for delegation
-	// scoping (the worker router uses it to mint the right bearer).
-	body func(ctx context.Context, c *remote.Client, workerID, agentID, workspaceID string) error
+	// (ctx, client, workerID, agentID).
+	//
+	// It used to take the resolved workspaceID too, threaded to the local-IPC
+	// transport for delegation scoping. That axis is gone: NewLocalIPCTransport
+	// and CallInner/StreamInner no longer carry a workspace, and the hub bridge
+	// mints on user_id alone -- so every implementation was already discarding
+	// the argument.
+	body func(ctx context.Context, c *remote.Client, workerID, agentID string) error
 }
 
 // withResolvedAgent runs the shared scaffold for every `agent <verb>`
@@ -92,5 +96,5 @@ func withResolvedAgent(rawCtx any, args []string, opts agentScaffoldOpts) error 
 	if err := maybePreflightWorker(ctx, c, got.WorkerID); err != nil {
 		return err
 	}
-	return opts.body(ctx, c, got.WorkerID, got.TabID, got.WorkspaceID)
+	return opts.body(ctx, c, got.WorkerID, got.TabID)
 }

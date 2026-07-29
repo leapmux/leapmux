@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,29 +19,38 @@ import (
 // touching disk/git. ReapOrphanWorktree itself (the real removal) is
 // covered by TestReapOrphanWorktree_* in close_tab_test.go.
 
-func TestReconcileWorktrees_ReapsStrandOnlyAfterTwoPasses(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+// The guard is an elapsed-time grace, not a pass counter, so these drive a fake
+// clock. A pass counter was defeated by ReconcileNudge: the hub can fire passes
+// milliseconds apart, so "seen in two consecutive passes" stopped implying "the
+// startup window has elapsed".
+func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
+	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 
+	clock := time.Now()
 	var reaped []string
 	reap := func(rctx context.Context, wt db.Worktree) {
 		reaped = append(reaped, wt.ID)
 		_ = q.DeleteWorktree(rctx, wt.ID)
 		_ = q.DeleteWorktreeTabsByWorktreeID(rctx, wt.ID)
 	}
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{ReapWorktree: reap})
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{
+		Now:          func() time.Time { return clock },
+		ReapWorktree: reap,
+		CloseTab:     svc.CloseTabForReconcile,
+	})
 
 	// Strand: the worktree's only link points at a CLOSED agent (no live
 	// reference) — the exact residue the startup guards can leave behind.
 	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", BranchName: "b"}))
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-closed", WorkspaceID: "ws-1", WorkingDir: "/r/strand", HomeDir: "/r/strand"}))
-	require.NoError(t, q.CloseAgent(ctx, "a-closed"))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-closed", WorkingDir: "/r/strand", HomeDir: "/r/strand"}))
+	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-strand", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-closed"}))
 
 	// Live: linked to an OPEN agent — never a candidate.
 	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", BranchName: "b"}))
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-open", WorkspaceID: "ws-1", WorkingDir: "/r/live", HomeDir: "/r/live"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-open", WorkingDir: "/r/live", HomeDir: "/r/live"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-live", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-open"}))
 
 	// Zero-link: freshly created, its tab hasn't linked yet (mid-creation)
@@ -48,10 +58,18 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTwoPasses(t *testing.T) {
 	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", BranchName: "b"}))
 
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "first pass records the strand but must not reap it")
+	assert.Empty(t, reaped, "first sighting starts the clock but must not reap")
 
+	// A burst of nudge-driven passes inside the window must NOT reap: this is
+	// exactly what a pass counter got wrong.
+	clock = clock.Add(time.Second)
 	rec.reconcileOnce(ctx)
-	assert.Equal(t, []string{"wt-strand"}, reaped, "only the strand that persisted across two passes is reaped")
+	rec.reconcileOnce(ctx)
+	assert.Empty(t, reaped, "passes fired inside the grace window must not reap, however many there are")
+
+	clock = clock.Add(orphanWorktreeGrace + time.Second)
+	rec.reconcileOnce(ctx)
+	assert.Equal(t, []string{"wt-strand"}, reaped, "only the strand that stayed orphaned past the grace window is reaped")
 
 	strand, err := q.GetWorktreeByID(ctx, "wt-strand")
 	require.NoError(t, err)
@@ -63,31 +81,38 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTwoPasses(t *testing.T) {
 	}
 }
 
-func TestReconcileWorktrees_SparesWorktreeReLinkedBetweenPasses(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testing.T) {
+	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 
+	clock := time.Now()
 	var reaped []string
 	reap := func(_ context.Context, wt db.Worktree) { reaped = append(reaped, wt.ID) }
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{ReapWorktree: reap})
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{
+		Now:          func() time.Time { return clock },
+		ReapWorktree: reap,
+		CloseTab:     svc.CloseTabForReconcile,
+	})
 
 	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"}))
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1-closed", WorkspaceID: "ws-1", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
-	require.NoError(t, q.CloseAgent(ctx, "a1-closed"))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1-closed", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
+	require.NoError(t, closeErr(q.CloseAgent(ctx, "a1-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1-closed"}))
 
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "first pass only records")
+	assert.Empty(t, reaped, "first sighting only starts the clock")
 
 	// Reuse race: between passes a NEW agent opens in the worktree and
 	// links it before the predecessor's strand is cleaned, so the worktree
 	// now has a live reference.
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a2-open", WorkspaceID: "ws-1", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a2-open", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a2-open"}))
 
+	clock = clock.Add(orphanWorktreeGrace + time.Second)
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "a worktree re-linked by a live tab between passes must not be reaped")
+	assert.Empty(t, reaped,
+		"a worktree re-linked by a live tab during the window must not be reaped even once the window elapses")
 	row, err := q.GetWorktreeByID(ctx, "wt-reuse")
 	require.NoError(t, err)
 	assert.False(t, row.DeletedAt.Valid, "reused worktree must remain")
@@ -100,7 +125,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	// tables: an agent/terminal counts live while closed_at IS NULL; a FILE
 	// tab counts live while its worker_file_tabs row is present (file tabs
 	// are hard-deleted on close, so a missing row is a dead link).
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 
@@ -118,26 +143,26 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 
 	// --- live references: each counts 1, never an orphan candidate ---
 	mkWorktree("wt-live-agent")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-open", WorkspaceID: "ws-1", WorkingDir: "/r/wt-live-agent", HomeDir: "/r/wt-live-agent"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-open", WorkingDir: "/r/wt-live-agent", HomeDir: "/r/wt-live-agent"}))
 	link("wt-live-agent", "a-open", leapmuxv1.TabType_TAB_TYPE_AGENT)
 
 	mkWorktree("wt-live-term")
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "t-open", WorkspaceID: "ws-1", Screen: []byte{}}))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "t-open", Screen: []byte{}}))
 	link("wt-live-term", "t-open", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
 	mkWorktree("wt-live-file")
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-1", TabID: "f-open", WorkspaceID: "ws-1", FilePath: "/r/wt-live-file/x"}))
+	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-1", TabID: "f-open", FilePath: "/r/wt-live-file/x"}))
 	linkFile("wt-live-file", "f-open")
 
 	// --- strands: each counts 0, all-strand worktrees are orphan candidates ---
 	mkWorktree("wt-dead-agent")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-closed", WorkspaceID: "ws-1", WorkingDir: "/r/wt-dead-agent", HomeDir: "/r/wt-dead-agent"}))
-	require.NoError(t, q.CloseAgent(ctx, "a-closed"))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-closed", WorkingDir: "/r/wt-dead-agent", HomeDir: "/r/wt-dead-agent"}))
+	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	link("wt-dead-agent", "a-closed", leapmuxv1.TabType_TAB_TYPE_AGENT)
 
 	mkWorktree("wt-dead-term")
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "t-closed", WorkspaceID: "ws-1", Screen: []byte{}}))
-	require.NoError(t, q.CloseTerminal(ctx, "t-closed"))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "t-closed", Screen: []byte{}}))
+	require.NoError(t, closeErr(q.CloseTerminal(ctx, "t-closed")))
 	link("wt-dead-term", "t-closed", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
 	// A FILE link whose worker_file_tabs row never existed (or was
@@ -149,10 +174,10 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	// --- mixed: a live agent + a closed-terminal strand on one worktree ->
 	// counts only the live ref, so it is NOT a candidate ---
 	mkWorktree("wt-mixed")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "m-agent", WorkspaceID: "ws-1", WorkingDir: "/r/wt-mixed", HomeDir: "/r/wt-mixed"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "m-agent", WorkingDir: "/r/wt-mixed", HomeDir: "/r/wt-mixed"}))
 	link("wt-mixed", "m-agent", leapmuxv1.TabType_TAB_TYPE_AGENT)
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "m-term", WorkspaceID: "ws-1", Screen: []byte{}}))
-	require.NoError(t, q.CloseTerminal(ctx, "m-term"))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "m-term", Screen: []byte{}}))
+	require.NoError(t, closeErr(q.CloseTerminal(ctx, "m-term")))
 	link("wt-mixed", "m-term", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
 	for _, tc := range []struct {
@@ -182,6 +207,71 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 		"only worktrees whose every link is a dead strand are orphan candidates")
 }
 
+// TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep pins the FILE
+// arm of the reconciler against the shared teardown, and pins which link policy
+// that teardown applies.
+//
+// The arm used to hand-roll its own teardown, diverging from the AGENT and
+// TERMINAL arms. It now routes through closeFileTabCommon like they do, with
+// dropWorktreeLink -- the same policy an ONLINE KEEP close uses. That is what
+// KEEP means: a zero-link worktree is excluded from
+// ListOrphanCandidateWorktrees, so the DIRECTORY SURVIVES rather than being
+// reaped. A reconciler reap is the offline half of a user's tab close, and an
+// offline close pins KEEP, so honouring it here is what stops the offline path
+// from destroying a clean worktree the identical online close would have kept.
+//
+// So: after the reconciler reaps a stale FILE tab, the worker_file_tabs row must
+// be gone, the link must be gone, and the directory must NOT be an orphan
+// candidate.
+func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-fileonly", WorktreePath: "/r/fileonly", RepoRoot: "/r", BranchName: "b",
+	}))
+	// The worktree's ONLY link is this FILE tab.
+	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
+		WorktreeID: "wt-fileonly", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-1", UserID: "user-1",
+	}))
+	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
+		UserID: "user-1", TabID: "file-1", FilePath: "/r/fileonly/a.go",
+	}))
+
+	// The hub owns nothing for this worker, so the local file tab is stale.
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
+	}
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+		CloseTab: svc.CloseTabForReconcile,
+	})
+	rec.reconcileOnce(ctx)
+
+	// The row is gone: the tab really was reaped, so this is not a no-op pass.
+	rows, err := q.ListAllWorkerFileTabs(ctx)
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.NotEqual(t, "file-1", r.TabID, "the stale file tab row must be deleted")
+	}
+
+	// ...the link is gone, which is how KEEP is expressed.
+	remaining, err := q.CountWorktreeTabs(ctx, "wt-fileonly")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), remaining, "the shared teardown drops the tab's worktree link")
+
+	// ...and with zero links the directory is NOT a GC candidate, so it survives
+	// exactly as it would after an online KEEP close.
+	candidates, err := q.ListOrphanCandidateWorktrees(ctx)
+	require.NoError(t, err)
+	gotIDs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		gotIDs = append(gotIDs, c.ID)
+	}
+	assert.NotContains(t, gotIDs, "wt-fileonly",
+		"an offline close pins KEEP, so the worktree must not become a reap candidate -- the online close keeps it indefinitely")
+}
+
 func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 	// A file tab id is unique only within a user (worker_file_tabs is keyed by
 	// (user_id, tab_id)), so the worktree_tab_liveness FILE leg must scope its
@@ -190,7 +280,7 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 	// close), while user B has an identically-id'd LIVE file tab. Without user
 	// scoping, user A's strand borrows user B's liveness and user A's worktree is
 	// never reclaimed.
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 
@@ -200,7 +290,7 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-A"}))
 
 	// User B: a LIVE file tab with the SAME tab id but a different user.
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-B", TabID: "file-dup", WorkspaceID: "ws-1", FilePath: "/r/userB/x"}))
+	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-B", TabID: "file-dup", FilePath: "/r/userB/x"}))
 
 	// User A's strand must read as dead -- it must NOT match user B's live tab.
 	gotA, err := q.CountLiveWorktreeRefs(ctx, "wt-userA")

@@ -27,7 +27,6 @@ type TokenInfo struct {
 	// string projections belong at its readers -- the Whoami proto field, the
 	// LEAPMUX_REMOTE_USER_ID env var, the local stream-id segment -- not here.
 	UserID            userid.UserID
-	WorkspaceID       string
 	WorkerID          string            // The spawning worker.
 	TabID             string            // The spawned tab (agent or terminal). Anchor for LocateTab-based derivations.
 	TabType           leapmuxv1.TabType // Determines which inner-RPC the CLI uses to derive working_dir / etc.

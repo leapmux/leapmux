@@ -330,6 +330,9 @@ func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) 
 		if rec, ok := pre.GetFloatingWindows()[ref.WindowID]; ok && !HLCIsZero(rec.GetTombstoneAt()) {
 			return op.GetOpId()
 		}
+	default:
+		// EntityKindUnknown names no record to check, and a workspace root's
+		// tombstone is governed by the root-immutable rules rather than here.
 	}
 	return ""
 }
@@ -494,6 +497,9 @@ func completenessCheck(state *leapmuxv1.UserCrdtState, roots rootSet) string {
 			if n.GetRowRatios() == nil || n.GetColRatios() == nil {
 				return id
 			}
+		default:
+			// LEAF has no shape registers to require, and UNSPECIFIED is caught
+			// by the kind check above rather than here.
 		}
 	}
 	for id, fw := range state.GetFloatingWindows() {

@@ -6,8 +6,8 @@ lint:
     - STANDARD
   except:
     # Streaming RPCs return event-style messages whose names don't fit
-    # the "<RpcName>Response" convention (WorkspaceEvent,
-    # WorkspacePrivateEvent, StreamInnerEnvelope). The naming is
+    # the "<RpcName>Response" convention (WorkerPrivateEvent,
+    # StreamInnerEnvelope). The naming is
     # intentional — these are event payloads, not request-response
     # pairs — so we suppress the lint here rather than rename them
     # everywhere.

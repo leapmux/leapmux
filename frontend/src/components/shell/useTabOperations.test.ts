@@ -5,6 +5,7 @@ import { useTabOperations } from '~/components/shell/useTabOperations'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { ChannelError } from '~/lib/channelError'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { flush } from '~/test-support/async'
@@ -85,7 +86,12 @@ function addAgent(
     stores.metadata.patch(id, meta)
 }
 
-function setup(getScrollState: () => SavedViewportScroll | undefined = DEFAULT_SCROLL_STATE) {
+function setup(
+  getScrollState: () => SavedViewportScroll | undefined = DEFAULT_SCROLL_STATE,
+  // Default ONLINE, because that is the normal state and it is the state in
+  // which a transport failure must NOT be read as "the worker is gone".
+  workerOnlineState: (workerId: string) => boolean | undefined = () => true,
+) {
   // Override the global test bridge with a known tile id so the
   // projection's root leaf is the tile these tests address.
   installTestBridge({ rootTileId: 'tile-1' })
@@ -124,6 +130,7 @@ function setup(getScrollState: () => SavedViewportScroll | undefined = DEFAULT_S
     getScrollState,
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    workerOnlineState,
   })
 
   return {
@@ -167,7 +174,6 @@ describe('useTabOperations', () => {
           const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
           expect(workerId).toBe('w-1')
           expect((req as { filePath: string }).filePath).toBe('/tmp/myfile.go')
-          expect((req as { workspaceId: string }).workspaceId).toBe('ws-test')
         }
         finally {
           dispose()
@@ -441,6 +447,91 @@ describe('useTabOperations', () => {
     })
   })
 
+  /**
+   * The offline close. A registered-but-OFFLINE worker never reaches a connect
+   * code here: the hub tears down the channels its stream was carrying, so the
+   * inspect rejects with a transport `ChannelError`. Before `isWorkerUnreachable`
+   * matched that shape the close was refused with "Failed to prepare tab close",
+   * and a user whose laptop was asleep could not retire the tab at all.
+   *
+   * The transport shape alone is NOT enough -- see the two tests below. It
+   * takes a positive offline reading from the worker list, which is what
+   * `workerOnlineState` supplies here.
+   */
+  it('offline worker: tombstones the tab with KEEP instead of refusing the close', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, handleAgentClose } = setup(DEFAULT_SCROLL_STATE, () => false)
+        const tab = view.getById(TabType.AGENT, 'agent-a')!
+        mockInspectLastTabClose.mockRejectedValueOnce(
+          new ChannelError('transport', 'channel closed by server'),
+        )
+
+        expect(await ops.handleTabClose(tab)).toBe(true)
+
+        expect(mockShowWarnToast).not.toHaveBeenCalledWith('Failed to prepare tab close', expect.anything())
+        expect(mockShowInfoToast).toHaveBeenCalledWith('Worker is unreachable; removing the tab without closing it.')
+        // KEEP, not the dialog's choice: there is no worker to run
+        // `git worktree remove`, so the removal cannot be honoured.
+        // (`handleAgentClose` is the seam that emits the CRDT tombstone; it is
+        // stubbed here, so the assertion is that the commit phase RAN at all.)
+        expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.KEEP)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  /**
+   * The bug this pair guards. `source: 'transport'` covers far more than "the
+   * worker is offline": our own hub WebSocket dropping, a WS-open timeout, an
+   * E2EE rekey timeout, the session key passing its hard ceiling, and any
+   * non-ChannelError thrown on the send path. The CRDT leg rides a different
+   * transport, so it stays healthy and the tombstone would commit -- silently
+   * retiring a tab whose worktree may hold uncommitted work, against a machine
+   * that is up and answering. Refusing the close (the user can retry) is the
+   * only safe answer when the worker is not positively known to be offline.
+   */
+  it('online worker: a transport failure refuses the close instead of retiring the tab', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, handleAgentClose } = setup(DEFAULT_SCROLL_STATE, () => true)
+        const tab = view.getById(TabType.AGENT, 'agent-a')!
+        mockInspectLastTabClose.mockRejectedValueOnce(
+          new ChannelError('transport', 'session key past hard ceiling'),
+        )
+
+        expect(await ops.handleTabClose(tab)).toBe(false)
+
+        expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to prepare tab close', expect.anything())
+        expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worker is unreachable; removing the tab without closing it.')
+        expect(handleAgentClose).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('unknown liveness: a transport failure refuses the close (fails closed)', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, handleAgentClose } = setup(DEFAULT_SCROLL_STATE, () => undefined)
+        const tab = view.getById(TabType.AGENT, 'agent-a')!
+        mockInspectLastTabClose.mockRejectedValueOnce(
+          new ChannelError('transport', 'channel closed by server'),
+        )
+
+        expect(await ops.handleTabClose(tab)).toBe(false)
+        expect(handleAgentClose).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('degraded close: error_hint surfaces a warn toast but the close still proceeds', async () => {
     await createRoot(async (dispose) => {
       try {
@@ -626,6 +717,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       setFileTreePath: vi.fn(),
       // The client is on ws-active; the seeded tab is on ws-other.
       getActiveWorkspaceId: () => 'ws-active',
+      workerOnlineState: () => true,
     })
 
     const tab = stores.view.getById(type, id)!
@@ -634,48 +726,45 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     return { ...stores, ops, tab, handleAgentClose, handleTerminalClose }
   }
 
-  it('closes an agent in another workspace via direct worker RPC and tombstones it', async () => {
+  /**
+   * A tab in an inactive workspace closes through the SHARED handler, not a
+   * bespoke RPC call. That is the fix, and the assertion: the bespoke branch
+   * skipped `clearAgent` / `clearAttachments` / `chatStore.forgetAgent`, so
+   * closing an agent tab in an inactive workspace stranded its loaded window,
+   * live tail, command streams and span index. Routing through the handler is
+   * what makes those steps unskippable.
+   */
+  it('closes an agent in another workspace through the shared handler', async () => {
     await createRoot(async (dispose) => {
-      const { ops, tab, view, handleAgentClose } = setupCrossWorkspace(TabType.AGENT, 'agent-cross')
+      const { ops, tab, handleAgentClose } = setupCrossWorkspace(TabType.AGENT, 'agent-cross')
       mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
 
       expect(await ops.handleTabClose(tab)).toBe(true)
 
-      // Active-workspace handler is bypassed; the RPC goes to the tab's
-      // own worker, not the active workspace's.
-      expect(handleAgentClose).not.toHaveBeenCalled()
-      expect(mockCloseAgent).toHaveBeenCalledTimes(1)
-      expect(mockCloseAgent.mock.calls[0][0]).toBe('w-other')
-      expect(mockCloseAgent.mock.calls[0][1]).toMatchObject({
-        agentId: 'agent-cross',
-        worktreeAction: WorktreeAction.KEEP,
-      })
-      // The tombstone is the whole cleanup: one write, and the tab is gone
-      // from every workspace's view at once. No second registry write to
-      // forget, which is what made the original bug silent.
-      expect(view.getById(TabType.AGENT, 'agent-cross')).toBeUndefined()
+      expect(handleAgentClose).toHaveBeenCalledWith('agent-cross', WorktreeAction.KEEP)
+      // And NOT by hand: a direct RPC here is exactly the duplicate that drifted.
+      expect(mockCloseAgent).not.toHaveBeenCalled()
+      // No tombstone assertion: emitting it is the shared handler's job, and the
+      // handler is stubbed here. Asserting it would only check that the stub was
+      // told to do something. Routing IS the property under test -- the old
+      // branch emitted the tombstone itself, which is precisely why it could skip
+      // the handler's other cleanup steps unnoticed.
       dispose()
     })
   })
 
-  it('closes a terminal in another workspace, addressing the RPC to that workspace', async () => {
+  // Terminal half of the same contract. The bespoke branch skipped
+  // `disposeTerminalInstance`, which after a cross-workspace move is the last
+  // chance to reclaim the terminal's pooled WebGL slot.
+  it('closes a terminal in another workspace through the shared handler', async () => {
     await createRoot(async (dispose) => {
-      const { ops, tab, view, handleTerminalClose } = setupCrossWorkspace(TabType.TERMINAL, 'term-cross')
+      const { ops, tab, handleTerminalClose } = setupCrossWorkspace(TabType.TERMINAL, 'term-cross')
       mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
 
       expect(await ops.handleTabClose(tab)).toBe(true)
 
-      expect(handleTerminalClose).not.toHaveBeenCalled()
-      expect(mockCloseTerminal).toHaveBeenCalledTimes(1)
-      expect(mockCloseTerminal.mock.calls[0][0]).toBe('w-other')
-      expect(mockCloseTerminal.mock.calls[0][1]).toMatchObject({
-        terminalId: 'term-cross',
-        // Not the active workspace: closeTerminal is scoped per workspace,
-        // so sending 'ws-active' here would close nothing.
-        workspaceId: 'ws-other',
-        worktreeAction: WorktreeAction.KEEP,
-      })
-      expect(view.getById(TabType.TERMINAL, 'term-cross')).toBeUndefined()
+      expect(handleTerminalClose).toHaveBeenCalledWith('term-cross', WorktreeAction.KEEP)
+      expect(mockCloseTerminal).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -755,6 +844,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
+        workerOnlineState: () => true,
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -801,6 +891,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
+        workerOnlineState: () => true,
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -848,6 +939,7 @@ function setupWithFloatingWindow() {
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    workerOnlineState: () => true,
   })
 
   return {
@@ -1165,44 +1257,31 @@ describe('useTabOperations.closeTabWithAction', () => {
       getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
       setFileTreePath: vi.fn(),
       getActiveWorkspaceId: () => 'ws-active',
+      workerOnlineState: () => true,
     })
     return { ...stores, ops, tab: stores.view.getById(type, id)!, handleAgentClose, handleTerminalClose }
   }
 
-  it('cross-workspace AGENT: fires closeAgent RPC directly and tombstones the tab', async () => {
+  it('cross-workspace AGENT: routes through the shared handler and tombstones the tab', async () => {
     await createRoot(async (dispose) => {
-      const { ops, tab, view, handleAgentClose } = setupCross(TabType.AGENT, 'agent-cross')
+      const { ops, tab, handleAgentClose } = setupCross(TabType.AGENT, 'agent-cross')
 
       ops.closeTabWithAction(tab, WorktreeAction.KEEP)
 
-      // Direct worker RPC, not via the active workspace's agentOps.
-      expect(handleAgentClose).not.toHaveBeenCalled()
-      expect(mockCloseAgent).toHaveBeenCalledTimes(1)
-      expect(mockCloseAgent.mock.calls[0][0]).toBe('w-cross')
-      expect(mockCloseAgent.mock.calls[0][1]).toMatchObject({
-        agentId: 'agent-cross',
-        worktreeAction: WorktreeAction.KEEP,
-      })
-      // The tombstone drops the row everywhere at once.
-      expect(view.getById(TabType.AGENT, 'agent-cross')).toBeUndefined()
+      expect(handleAgentClose).toHaveBeenCalledWith('agent-cross', WorktreeAction.KEEP)
+      expect(mockCloseAgent).not.toHaveBeenCalled()
       dispose()
     })
   })
 
-  it('cross-workspace TERMINAL: fires closeTerminal RPC with the owning workspaceId', async () => {
+  it('cross-workspace TERMINAL: routes through the shared handler', async () => {
     await createRoot(async (dispose) => {
-      const { ops, tab, view } = setupCross(TabType.TERMINAL, 'term-cross')
+      const { ops, tab, handleTerminalClose } = setupCross(TabType.TERMINAL, 'term-cross')
 
       ops.closeTabWithAction(tab, WorktreeAction.REMOVE)
 
-      expect(mockCloseTerminal).toHaveBeenCalledTimes(1)
-      expect(mockCloseTerminal.mock.calls[0][0]).toBe('w-cross')
-      expect(mockCloseTerminal.mock.calls[0][1]).toMatchObject({
-        terminalId: 'term-cross',
-        workspaceId: 'ws-other',
-        worktreeAction: WorktreeAction.REMOVE,
-      })
-      expect(view.getById(TabType.TERMINAL, 'term-cross')).toBeUndefined()
+      expect(handleTerminalClose).toHaveBeenCalledWith('term-cross', WorktreeAction.REMOVE)
+      expect(mockCloseTerminal).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -1265,6 +1344,7 @@ function setupForFocusMigration() {
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    workerOnlineState: () => true,
   })
   return { ...stores, ops, homeTileId, otherTileId, handleAgentClose, handleTerminalClose }
 }

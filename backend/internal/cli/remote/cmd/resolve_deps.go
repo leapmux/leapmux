@@ -25,7 +25,7 @@ func resolveDeps(c *remote.Client) resolve.Deps {
 	return resolve.Deps{
 		LocateTab: func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
 			var resp leapmuxv1.LocateTabResponse
-			if err := hubCallUnary(ctx, c, "LocateTab", "", &leapmuxv1.LocateTabRequest{TabType: tabType, TabId: tabID}, &resp); err != nil {
+			if err := hubCallUnary(ctx, c, "LocateTab", &leapmuxv1.LocateTabRequest{TabType: tabType, TabId: tabID}, &resp); err != nil {
 				return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", err
 			}
 			t := resp.GetTab()
@@ -33,11 +33,11 @@ func resolveDeps(c *remote.Client) resolve.Deps {
 		},
 		GetWorkspace: func(ctx context.Context, workspaceID string) error {
 			var resp leapmuxv1.GetWorkspaceResponse
-			return hubCallUnary(ctx, c, "GetWorkspace", workspaceID, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp)
+			return hubCallUnary(ctx, c, "GetWorkspace", &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp)
 		},
 		LocateTile: func(ctx context.Context, tileID string) (string, error) {
 			var resp leapmuxv1.LocateTileResponse
-			if err := hubCallUnary(ctx, c, "LocateTile", "", &leapmuxv1.LocateTileRequest{TileId: tileID}, &resp); err != nil {
+			if err := hubCallUnary(ctx, c, "LocateTile", &leapmuxv1.LocateTileRequest{TileId: tileID}, &resp); err != nil {
 				return "", err
 			}
 			return resp.GetWorkspaceId(), nil
