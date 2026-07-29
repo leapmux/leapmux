@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, openWorkspace } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
@@ -11,8 +11,7 @@ test.describe('Settings and /clear after Worker restart', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')

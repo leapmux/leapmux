@@ -1,307 +1,186 @@
 import type { BatchOutcome } from './useOpsSubmitter'
-import type { PendingOpsManager } from '~/lib/crdt'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
-import type { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
-import { listTabsForWorkspace } from '~/api/listTabsBatcher'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { moveTabWorkspace, relocateFileTabPath } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { hlcIsZero } from '~/lib/crdt'
 import { positionAtInsertIdx } from '~/lib/lexorank'
-import { firstLeafId } from '~/stores/layout.store'
-import { tabKey } from '~/stores/tab.helpers'
-import { createEmptySnapshot } from '~/stores/workspaceStoreRegistry'
+import { emitMoveTabToWorkspace } from '~/stores/tabOps'
 import { removeEmptyFloatingWindow } from './tileLifecycle'
+
+/**
+ * Point a tab's worker-side bookkeeping at `workspaceId`.
+ *
+ * AGENT / TERMINAL -> MoveTabWorkspace.
+ * FILE             -> RelocateFileTabPath (E2EE; the hub never sees the path).
+ *                     The worker emits FileTabPathRevoked on the source stream
+ *                     and FileTabPathRegistered on the destination one so peers
+ *                     update their caches.
+ *
+ * Both the forward move and the rejection rollback need this dispatch, and they
+ * differ only in which workspace id they name — so the "FILE is the
+ * path-carrying type" rule lived in two places that had to stay in step. A
+ * third such type is now a one-line change here instead of a two-site edit.
+ */
+function relocateOrMoveWorkspace(workerId: string, tab: Tab, workspaceId: string): Promise<unknown> {
+  return tab.type === TabType.FILE
+    ? relocateFileTabPath(workerId, { tabId: tab.id, newWorkspaceId: workspaceId })
+    : moveTabWorkspace(workerId, { tabType: tab.type, tabId: tab.id, newWorkspaceId: workspaceId })
+}
 
 export interface UseCrossWorkspaceMoveArgs {
   getActiveWorkspaceId: () => string | null
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
-  registry: ReturnType<typeof createWorkspaceStoreRegistry>
-  pendingMgr: () => PendingOpsManager | null
   batchResultHandlers: Map<string, (outcome: BatchOutcome) => void>
-  focusTile: (tileId: string) => void
+  focusTile: (tileId: string, workspaceId?: string) => void
 }
 
 /**
- * Cross-workspace tab move handler. Per the plan's "Cross-workspace
- * move" contract the CRDT half is a SINGLE
- * `SetTabRegister(tile_id=newTileInW2)` +
- * `SetTabRegister(position=…)` batch (NOT a tombstone-then-re-add —
- * that would be silently dropped by the hub's remove-wins tombstone
- * rule). The worker RPC must succeed BEFORE the CRDT batch goes out
- * so the worker's local `workspace_id` bookkeeping matches the
- * CRDT-resolved workspace before any subscriber observes the new
- * state.
+ * Cross-workspace tab move.
  *
- * Returns the move handler the sidebar / drag-drop callers invoke.
+ * The CRDT half is a SINGLE `SetTabRegister(tile_id)` +
+ * `SetTabRegister(position)` batch — never tombstone-then-re-add, which the
+ * hub's remove-wins rule would silently drop. The worker RPC must succeed
+ * BEFORE the CRDT batch goes out so the worker's local `workspace_id`
+ * bookkeeping matches the CRDT-resolved workspace before any subscriber
+ * observes the new state.
+ *
+ * This used to be twice as long. Every step branched on
+ * `isSourceActive` / `isTargetActive`, because a tab lived in the active
+ * `tabStore` or in a registry snapshot depending on which workspace was on
+ * screen, and the move had to read from one, write to the other, and unwind
+ * both on failure. With tabs joined from one projection there is no "which
+ * store" question: the tab is wherever its `tile_id` resolves, the optimistic
+ * update IS the op (pending ops are already in `speculativeState`), and
+ * rollback is emitting the inverse.
  */
 export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
   move: (targetWorkspaceId: string, draggedKey: string, sourceWorkspaceId?: string, targetTileId?: string) => void
 } {
   const {
     getActiveWorkspaceId,
-    tabStore,
+    view,
+    selection,
     layoutStore,
     floatingWindowStore,
-    registry,
-    pendingMgr,
     batchResultHandlers,
     focusTile,
   } = args
+
+  /**
+   * Leaf tile in `workspaceId` a moved tab should land on: the caller's choice,
+   * else that workspace's focused tile, else its first leaf.
+   *
+   * The fallback matters because dragging onto a sidebar row is often the
+   * user's first interaction with the destination, so there is no remembered
+   * focus to use. It resolves through the projected TREE rather than reading
+   * `rootNodeId` off the state: a workspace whose root has been split has a
+   * SPLIT at that id, and a `tile_id` naming a non-leaf is a batch the hub
+   * rejects — which reverts the optimistic move and drops the drag with no
+   * visible error.
+   *
+   * The remembered focus comes through `focusedLeafIdFor`, which returns it
+   * only while it is still a live leaf. The raw pointer has no such guarantee —
+   * `useFocusInvariant` repairs only the ACTIVE workspace — so a destination the
+   * user last visited before another client closed that tile would otherwise
+   * hand the hub a dead id.
+   */
+  function resolveTargetTile(workspaceId: string, explicit: string | undefined): string {
+    if (explicit)
+      return explicit
+    return layoutStore.focusedLeafIdFor(workspaceId) ?? layoutStore.firstLeafIdFor(workspaceId) ?? ''
+  }
 
   const move = (targetWorkspaceId: string, draggedKey: string, sourceWorkspaceId?: string, targetTileId?: string): void => {
     const activeWsId = getActiveWorkspaceId()
     if (!activeWsId)
       return
 
-    const resolvedSourceWsId = sourceWorkspaceId ?? activeWsId
-    const resolvedTargetWsId = targetWorkspaceId === '__active__' ? activeWsId : targetWorkspaceId
-
-    if (resolvedSourceWsId === resolvedTargetWsId)
-      return
-
-    const isSourceActive = resolvedSourceWsId === activeWsId
-    const isTargetActive = resolvedTargetWsId === activeWsId
-
-    let tab: Tab | undefined
-    if (isSourceActive) {
-      tab = tabStore.getTabByKey(draggedKey)
-    }
-    else {
-      const sourceSnap = registry.get(resolvedSourceWsId)
-      tab = sourceSnap?.tabs.find(t => tabKey(t) === draggedKey)
-    }
+    const tab = view.get(draggedKey)
     if (!tab)
       return
 
-    let workerId = tab.workerId ?? ''
-    if (!workerId && tab.type === TabType.AGENT) {
-      workerId = tabStore.getAgentTab(tab.id)?.workerId ?? ''
-    }
+    // The tab knows its own workspace — resolved from tile_id by the
+    // projection — so the caller's hint is only a fallback.
+    const resolvedSourceWsId = tab.workspaceId || sourceWorkspaceId || activeWsId
+    const resolvedTargetWsId = targetWorkspaceId === '__active__' ? activeWsId : targetWorkspaceId
+    if (resolvedSourceWsId === resolvedTargetWsId)
+      return
 
-    // Resolve the destination tile and the LexoRank position the tab
-    // will land at. Both are needed for the CRDT batch AND the
-    // optimistic local view, so compute them up front.
-    let resolvedTargetTileId: string
-    let resolvedTargetPosition: string
-    if (isTargetActive) {
-      resolvedTargetTileId = targetTileId
-        ?? (!isSourceActive ? (layoutStore.focusedTileId() ?? tab.tileId) : tab.tileId)
-        ?? ''
-      const tileTabs = resolvedTargetTileId
-        ? tabStore.getTabsForTile(resolvedTargetTileId)
-        : []
-      resolvedTargetPosition = positionAtInsertIdx(tileTabs, tileTabs.length)
-    }
-    else {
-      const targetSnap = registry.get(resolvedTargetWsId)
-      // Fall back to the CRDT projection when the target workspace has
-      // never been opened in this client session (no registry cache yet).
-      // Dragging a tab onto a sidebar workspace item is the user's first
-      // interaction with the destination; without this fallback we'd
-      // submit a SetTabRegister(tile_id='') op that the hub rejects.
-      let crdtTargetRoot = ''
-      const mgr = pendingMgr()
-      const specState = mgr?.state.speculativeState
-      if (specState) {
-        const ws = specState.workspaces[resolvedTargetWsId]
-        if (ws?.rootNodeId) {
-          // Verify the node exists and is a LEAF (the only valid
-          // tile_id for a SetTabRegister(tile_id=…) op).
-          const node = specState.nodes[ws.rootNodeId]
-          if (node && hlcIsZero(node.tombstoneAt)) {
-            crdtTargetRoot = ws.rootNodeId
-          }
-        }
-      }
-      resolvedTargetTileId = targetTileId
-        ?? targetSnap?.layout.focusedTileId
-        ?? (targetSnap ? firstLeafId(targetSnap.layout.root) : null)
-        ?? crdtTargetRoot
-      const tileTabs = (targetSnap?.tabs ?? []).filter(t => t.tileId === resolvedTargetTileId)
-      resolvedTargetPosition = positionAtInsertIdx(tileTabs, tileTabs.length)
-    }
+    const workerId = tab.workerId ?? ''
+    const sourceTileId = tab.tileId
 
-    // Optimistic UI move. SILENT so the source-side removal doesn't
-    // ship a TombstoneTab — the CRDT-side move is a single LWW write
-    // to tile_id, NOT remove-then-recreate (Rule 4 of the plan's
-    // "Apply transition rule" + the remove-wins clarification in
-    // "Concurrency convergence").
-    if (isSourceActive) {
-      tabStore.removeTab(tab.type, tab.id, { silent: true })
-    }
-    else {
-      registry.removeTab(resolvedSourceWsId, tab)
-    }
+    const resolvedTargetTileId = resolveTargetTile(resolvedTargetWsId, targetTileId)
+    if (!resolvedTargetTileId)
+      return
 
-    // If the source floating window is now empty, remove it.
-    if (isSourceActive)
-      removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, tab.tileId)
+    // 1) Worker RPC first, so the worker's workspace_id bookkeeping flips
+    //    before any subscriber sees the CRDT move.
+    //    AGENT / TERMINAL -> MoveTabWorkspace
+    //    FILE             -> RelocateFileTabPath (E2EE; the hub never sees the
+    //                        path). The worker emits FileTabPathRevoked on the
+    //                        source stream and FileTabPathRegistered on the
+    //                        destination one so peers update their caches.
+    const rpcDone: Promise<unknown> = !workerId
+      ? Promise.resolve()
+      : relocateOrMoveWorkspace(workerId, tab, resolvedTargetWsId)
 
-    if (isTargetActive) {
-      tabStore.addTab(
-        { ...tab, tileId: resolvedTargetTileId, position: resolvedTargetPosition },
-        { silent: true },
-      )
-      if (resolvedTargetTileId)
-        focusTile(resolvedTargetTileId)
-    }
-    else {
-      // Get or create a snapshot for the target workspace. Mark new
-      // snapshots NOT tabsLoaded so the post-RPC ListTabs fetch will
-      // fill in the hub's existing tabs before the user switches in.
-      const targetSnap = registry.get(resolvedTargetWsId) ?? createEmptySnapshot(resolvedTargetWsId)
-      // For AGENT tabs, the per-agent metadata travels on the Tab record
-      // itself (see `protoToAgentTabFields`), so spreading `tab` carries
-      // every field across the move.
-      const newTab = { ...tab, tileId: resolvedTargetTileId, position: resolvedTargetPosition }
-      const key = tabKey(newTab)
-      registry.set(resolvedTargetWsId, {
-        ...targetSnap,
-        tabs: [...targetSnap.tabs, newTab],
-        activeTabKey: key,
-        tileActiveTabKeys: resolvedTargetTileId
-          ? { ...(targetSnap.tileActiveTabKeys ?? {}), [resolvedTargetTileId]: key }
-          : targetSnap.tileActiveTabKeys,
-      })
-    }
+    rpcDone.then(() => {
+      // 2) Emit the canonical move. This IS the optimistic update: the batch
+      //    lands in speculativeState synchronously, so the projection — and
+      //    therefore both workspaces' views — reflect it immediately.
+      //
+      //    The position is computed HERE, not before the await. A LexoRank is
+      //    only unique relative to the tabs it was ranked against, and this
+      //    handler is fire-and-forget with no in-flight guard — so two drops
+      //    onto the same destination in quick succession (or one racing a
+      //    peer's insert) would both rank against the same pre-RPC snapshot
+      //    and mint byte-identical positions. The strip would then order those
+      //    two tabs by tab id rather than by drop order.
+      const tileTabs = view.forTile(resolvedTargetTileId)
+      const resolvedTargetPosition = positionAtInsertIdx(tileTabs, tileTabs.length)
+      const batchId = emitMoveTabToWorkspace(tab.type, tab.id, resolvedTargetTileId, resolvedTargetPosition)
 
-    // 1) Worker RPC first — the worker updates its `workspace_id`
-    //    bookkeeping so subsequent listAgents / orphan-reconciler
-    //    queries see the tab under the new workspace.
-    //    - AGENT / TERMINAL → `MoveTabWorkspace`
-    //    - FILE             → `RelocateFileTabPath` (E2EE; path stays
-    //                          on the worker, hub never sees it). The
-    //                          worker emits `FileTabPathRevoked` on the
-    //                          source workspace stream and
-    //                          `FileTabPathRegistered` on the
-    //                          destination workspace stream, so peer
-    //                          clients update their fileTabPaths cache.
-    // 2) On worker success: emit the single CRDT batch.
-    // 3) On worker failure: revert local UI optimism (no CRDT ops
-    //    have shipped yet, so no rollback there).
-    let rpcDone: Promise<unknown> = Promise.resolve()
-    if (workerId) {
-      if (tab.type === TabType.FILE) {
-        rpcDone = relocateFileTabPath(workerId, {
-          tabId: tab.id,
-          newWorkspaceId: resolvedTargetWsId,
-        })
-      }
-      else {
-        rpcDone = moveTabWorkspace(workerId, {
-          tabType: tab.type,
-          tabId: tab.id,
-          newWorkspaceId: resolvedTargetWsId,
-        })
-      }
-    }
+      // Focus the destination tile in the DESTINATION workspace's slot. The
+      // user may still be looking at the source workspace (dropping a tab onto
+      // another workspace's sidebar row does not switch), and filing this under
+      // the active workspace would point it at a tile outside its own tree —
+      // which `useFocusInvariant` then resets to the first leaf, moving the
+      // user's focus for them.
+      focusTile(resolvedTargetTileId, resolvedTargetWsId)
+      selection.setActiveById(tab.type, tab.id)
+      // The source floating window may now be empty. Named with the SOURCE
+      // workspace for the same reason `focusTile` above is named with the
+      // destination: neither is necessarily the one on screen, and the focus
+      // pointer this repairs belongs to the workspace the tile left.
+      if (sourceTileId)
+        removeEmptyFloatingWindow(layoutStore, floatingWindowStore, view, sourceTileId, resolvedSourceWsId)
 
-    rpcDone.then(async () => {
-      // Worker bookkeeping has flipped. Submit the canonical move op
-      // batch — one `SetTabRegister(tile_id)` + one
-      // `SetTabRegister(position)`. The hub resolves the new owning
-      // workspace via the new tile's ancestor chain; the
-      // reconciliation effect absorbs the canonical state on echo.
-      const batchId = tabStore.moveTabToWorkspace(tab!.type, tab!.id, resolvedTargetTileId, resolvedTargetPosition)
-      // If the hub later rejects this batch (e.g. caller lacks write
-      // access to the destination workspace), reverse the worker-side
-      // workspace_id update we just made — the worker and the CRDT
-      // must agree on which workspace owns the tab. Transport
-      // timeouts do NOT trigger this rollback because the submitter
-      // retries with the same op_ids; principal-aware dedup means the
-      // original commit (if any) is returned, and the rollback only
-      // fires on an authoritative rejection.
+      // If the hub rejects the batch (e.g. no write access to the destination),
+      // reverse the worker-side update so the worker and the CRDT agree on
+      // ownership. Transport timeouts do NOT trigger this: the submitter
+      // retries with the same op_ids and principal-aware dedup returns the
+      // original commit, so only an authoritative rejection gets here.
       if (batchId && workerId) {
         batchResultHandlers.set(batchId, (outcome) => {
           batchResultHandlers.delete(batchId)
           if (outcome.case !== 'rejected')
             return
-          // Reverse the worker-side change. We swallow the rollback
-          // RPC's own error since by this point the user has already
-          // seen the submitter's warn-toast for the rejection.
-          if (tab!.type === TabType.FILE) {
-            relocateFileTabPath(workerId, {
-              tabId: tab!.id,
-              newWorkspaceId: resolvedSourceWsId,
-            }).catch(() => {})
-          }
-          else {
-            moveTabWorkspace(workerId, {
-              tabType: tab!.type,
-              tabId: tab!.id,
-              newWorkspaceId: resolvedSourceWsId,
-            }).catch(() => {})
-          }
+          // The CRDT rejection already reverted placement; undo the worker
+          // half. Its own error is swallowed — the submitter has already
+          // warn-toasted the rejection to the user.
+          relocateOrMoveWorkspace(workerId, tab, resolvedSourceWsId).catch(() => {})
         })
       }
-
-      // If the target snapshot was newly created (not fully loaded),
-      // fetch the target workspace's existing tabs from the hub and
-      // merge them into the cached snapshot so it reflects the full
-      // tab list before the user switches into the target workspace.
-      const targetSnap = registry.get(resolvedTargetWsId)
-      if (targetSnap && !targetSnap.tabsLoaded) {
-        try {
-          const resp = await listTabsForWorkspace(resolvedTargetWsId)
-          const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
-          const extraTabs: Tab[] = []
-          for (const t of resp.tabs) {
-            // Branch on the wire enum so the resulting object's `type`
-            // is a literal matching one variant of the Tab union.
-            const base = {
-              id: t.tabId,
-              position: t.position,
-              tileId: t.tileId || targetSnap.layout.focusedTileId || '',
-              workerId: t.workerId,
-            }
-            let fetched: Tab | null = null
-            if (t.tabType === TabType.AGENT)
-              fetched = { type: TabType.AGENT, ...base }
-            else if (t.tabType === TabType.TERMINAL)
-              fetched = { type: TabType.TERMINAL, ...base }
-            else if (t.tabType === TabType.FILE)
-              fetched = { type: TabType.FILE, ...base }
-            if (fetched && !existingKeys.has(tabKey(fetched))) {
-              extraTabs.push(fetched)
-            }
-          }
-          registry.update(resolvedTargetWsId, snap => ({
-            ...snap,
-            tabs: [...snap.tabs, ...extraTabs],
-            tabsLoaded: true,
-          }))
-        }
-        catch { /* ignore — will be picked up on next restore */ }
-      }
     }).catch((err: unknown) => {
-      // Worker RPC failed — revert the optimistic UI update. No CRDT
-      // op has been emitted yet so we just undo the local move.
-      if (isTargetActive) {
-        tabStore.removeTab(tab!.type, tab!.id, { silent: true })
-      }
-      else {
-        registry.removeTab(resolvedTargetWsId, tab!)
-      }
-
-      if (isSourceActive) {
-        tabStore.addTab(tab!, { silent: true })
-      }
-      else {
-        // The Tab itself carries every per-agent field, so re-inserting
-        // it on the source snapshot is enough — no separate agent
-        // record to thread back.
-        registry.update(resolvedSourceWsId, sourceSnap => ({
-          ...sourceSnap,
-          tabs: [...sourceSnap.tabs, tab!],
-        }))
-      }
-
+      // The worker RPC failed, so no CRDT op was emitted and the tab never
+      // moved. There is nothing to unwind.
       showWarnToast('Failed to move tab', err)
     })
   }

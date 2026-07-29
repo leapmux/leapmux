@@ -65,8 +65,9 @@ interface DeleteBranchDialogProps {
 
   /**
    * Notified after a non-worktree delete with the branch the working
-   * directory was switched to. Parents route this into
-   * `tabStore.stampBranchOnTabs` (which carries the rationale).
+   * directory was switched to. Parents route this into AppShell's
+   * `onBranchChanged` handler, which stamps every tab in the same repo across
+   * every workspace (it carries the rationale).
    * Not called for the worktree path (those tabs are being removed
    * entirely).
    */

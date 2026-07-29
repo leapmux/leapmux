@@ -1,16 +1,18 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
+import type { TabMetadata, TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, untrack } from 'solid-js'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { detectFlavor, relativeUnder } from '~/lib/paths'
-import { tabKey } from '~/stores/tab.helpers'
+import { sameKeys } from '~/lib/sameKeys'
 
 export interface SyncGitStatusToTabsOpts {
   gitFileStatusStore: ReturnType<typeof createGitFileStatusStore>
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
 }
 
 /**
@@ -29,13 +31,20 @@ export interface SyncGitStatusToTabsOpts {
  * MUST use this field, not the canonical repo root — otherwise a
  * focused worktree's branch gets stamped onto every main-tree tab.
  *
- * `repoRoot` is kept separately because `files` are reported relative
- * to it (the worker's git probes resolve `-C <dir>` internally to the
- * main repo), and the file-tree consumer reads `repoRoot` for path
- * resolution.
+ * The canonical `repo_root` is deliberately NOT carried here. Stamping
+ * only ever asks "which working tree is this tab in", which `toplevel`
+ * answers exactly; a worktree query and a main-tree query return the
+ * SAME `repo_root`, so admitting it invites matching on it by mistake.
  */
 export interface GitStatusForTabStamping {
-  repoRoot: string
+  /**
+   * Worker this status came from. Repo identity is `(workerId, toplevel)` —
+   * the same absolute path on two workers is the normal case, not a
+   * pathological one, and this stamp reaches every workspace in the account.
+   * `isSameRepo` already compares the pair; matching on path alone here would
+   * smear one worker's branch and diff badges across the other's tabs.
+   */
+  workerId: string
   toplevel: string
   originUrl: string
   currentBranch: string
@@ -43,16 +52,68 @@ export interface GitStatusForTabStamping {
 }
 
 /**
- * Generic mutation surface a tab list exposes. The active workspace's
- * tabStore satisfies it directly; inactive workspaces (registry
- * snapshots) get a shim that rewrites the snapshot via
- * `WorkspaceStoreRegistry.update`. Lets `applyGitStatusToTabs` walk
- * either source with the same containment + diff-aggregation logic so
- * the active and inactive paths never drift.
+ * Project the git-status singleton onto the stamping shape.
+ *
+ * Two callers need exactly these five fields off `gitFileStatusStore.state` —
+ * the reactive effect below and `handleBranchChanged`'s same-repo branch — and
+ * each used to spell the mapping out by hand. The shape's own doc explains that
+ * it deliberately omits `repoRoot` because admitting it "invites matching on it
+ * by mistake"; a hand-copied projection re-opens exactly that the moment a
+ * sixth field lands on the store.
+ *
+ * A free adapter rather than a store method on purpose: `gitFileStatusStore` is
+ * a generic file-status store and should not learn the vocabulary of the tab
+ * stamping layer.
+ *
+ * Reads are TRACKED — callers inside a `createEffect` depend on these five
+ * fields, which is what makes the effect re-run when the focused repo changes.
+ */
+export function gitStatusFromStore(
+  state: {
+    workerId: string
+    toplevel: string
+    originUrl: string
+    currentBranch: string
+    files: readonly GitFileStatusEntry[]
+  },
+): GitStatusForTabStamping {
+  return {
+    workerId: state.workerId,
+    toplevel: state.toplevel,
+    originUrl: state.originUrl,
+    currentBranch: state.currentBranch,
+    files: state.files,
+  }
+}
+
+/**
+ * Generic "walk these tabs, write these fields" surface.
+ *
+ * It once had two implementations — the active workspace's tab store, and a
+ * shim that rewrote each inactive workspace's registry snapshot — and existed
+ * so the two could not drift. With every workspace's tabs joined from one
+ * projection there is a single implementation ({@link tabStampTarget}), and the
+ * interface survives as the seam that lets `applyGitStatusToTabs` be tested as
+ * a pure function, with no CRDT bridge and no reactive root.
  */
 export interface TabStampTarget {
   tabs: readonly Tab[]
-  update: (predicate: (t: Tab) => boolean, fields: Partial<Tab>) => void
+  /**
+   * `tabIds`, not a predicate. Both callers already walk `tabs` to decide what
+   * matches, so handing back a predicate made the sole target re-materialize
+   * the same set with a SECOND full walk of the account's tab list -- and
+   * `patchMatching` then walked the metadata map a third time. Tab ids are
+   * globally unique (`tabMetadata` is keyed by them), so the id set is the
+   * natural currency here and `tabKey` was a pure detour.
+   *
+   * `TabMetadata`, not `Partial<Tab>`: the write lands in `tabMetadata`, whose
+   * vocabulary differs from the assembled `Tab` — it has no `id`/`type`/
+   * `tileId`/`position`/`workerId` (those come from the projection) and names
+   * the terminal field `terminalStatus`, not `status`. Typed as `Partial<Tab>`
+   * a caller could write `{ status }` or `{ tileId }`, typecheck, be written by
+   * `patch`, and never be read back by `tabView.assemble`.
+   */
+  update: (tabIds: ReadonlySet<string>, fields: TabMetadata) => void
 }
 
 /**
@@ -63,11 +124,11 @@ export interface TabStampTarget {
  * Delete branch dialog opened against a non-active workspace's row)
  * call it directly to refresh diff badges on the affected repo's tabs.
  *
- * Accepts a {@link TabStampTarget} so the active tabStore AND inactive
- * registry snapshots can be stamped uniformly. AppShell stamps every
- * registry snapshot on a branch change so an inactive workspace's
- * sidebar tree picks up the new branch / diff stats without waiting
- * for a switch-in refresh.
+ * Accepts a {@link TabStampTarget} rather than the stores directly, so the
+ * helper stays a pure "match these tabs, write these fields" step that tests
+ * can drive without a CRDT bridge. The one production target spans every
+ * workspace, so a branch change refreshes a non-visible workspace's sidebar
+ * branch label and diff badges without waiting for a switch-in refresh.
  *
  * Containment / per-tab guard logic mirrors the reactive effect — see
  * that comment for why containment is path-based.
@@ -76,10 +137,12 @@ export function applyGitStatusToTabs(
   target: TabStampTarget,
   status: GitStatusForTabStamping,
 ): void {
-  const { repoRoot, toplevel, originUrl, currentBranch, files } = status
-  // toplevel is the stamping identity. Empty toplevel = nothing to
-  // anchor to (the worker didn't resolve a working tree); skip.
-  if (!toplevel)
+  const { workerId, toplevel, originUrl, currentBranch, files } = status
+  // (workerId, toplevel) is the stamping identity. Either one empty means
+  // nothing to anchor to — the worker didn't resolve a working tree, or we
+  // don't know which worker answered — and an unanchored stamp would match
+  // across workers.
+  if (!toplevel || !workerId)
     return
   let added = 0
   let deleted = 0
@@ -93,12 +156,18 @@ export function applyGitStatusToTabs(
       deleted += f.linesDeleted + f.stagedLinesDeleted
     }
   }
+  // `''`, not `undefined`, for the two clearable fields: the write goes through
+  // `metadata.patch`, which SKIPS undefined so a partial row can't blank fields
+  // another source owns. Sending undefined here means a repo that loses its
+  // branch (detached HEAD, branch deleted) or its remote keeps the stale label
+  // forever -- and, because `tabAlreadyMatches` then never holds, re-patches
+  // every tab on every refresh without ever converging.
   const gitFields = {
     gitDiffAdded: added,
     gitDiffDeleted: deleted,
     gitDiffUntracked: untracked,
-    gitOriginUrl: originUrl || undefined,
-    gitBranch: currentBranch || undefined,
+    gitOriginUrl: originUrl,
+    gitBranch: currentBranch,
     gitToplevel: toplevel,
   }
   const tabAlreadyMatches = (tab: Tab): boolean =>
@@ -109,8 +178,11 @@ export function applyGitStatusToTabs(
     && tab.gitBranch === gitFields.gitBranch
     && tab.gitToplevel === gitFields.gitToplevel
   const rootFlavor = detectFlavor(toplevel)
-  const targetKeys = new Set<string>()
+  const targetIds = new Set<string>()
   for (const tab of target.tabs) {
+    // Same repo path on a different worker is a different repo.
+    if ((tab.workerId ?? '') !== workerId)
+      continue
     const containmentPath = tab.workingDir
       ?? (tab.type === TabType.FILE ? tab.filePath : undefined)
     if (!containmentPath)
@@ -125,34 +197,8 @@ export function applyGitStatusToTabs(
       // tab in the same repo (CHANGE/Create Worktree → switch focus
       // to the new worktree's agent → main-repo branch row's label
       // flipped to the worktree's branch).
-      if (relativeUnder(tab.gitToplevel, toplevel, rootFlavor) === '') {
-        // exact toplevel match: proceed to stamping
-      }
-      else if (
-        // Pre-PR migration window: the old worker stamped
-        // gitToplevel = repoRoot for both main-tree AND worktree tabs
-        // (the toplevel field didn't exist yet). After upgrade, a
-        // worktree refresh now reports toplevel = worktreeDir but
-        // persisted tabs still hold gitToplevel = mainRepoRoot, so
-        // the exact-match check above permanently skips them. Detect
-        // this narrow case by: (a) the tab's stale stamp equals the
-        // current status.repoRoot (signature only pre-PR code could
-        // have produced — post-PR code stamps toplevel, and a tab
-        // belonging to a nested inner repo would carry the inner's
-        // own toplevel, not the parent's repoRoot), AND (b) the
-        // tab's containment path actually sits under the current
-        // toplevel. Both being true means this tab really belongs to
-        // the currently-focused working tree; re-stamp.
-        repoRoot
-        && tab.gitToplevel === repoRoot
-        && relativeUnder(containmentPath, toplevel, rootFlavor) !== null
-      ) {
-        // pre-PR migration: fall through and re-stamp with the
-        // worktree-aware gitToplevel
-      }
-      else {
+      if (relativeUnder(tab.gitToplevel, toplevel, rootFlavor) !== '')
         continue
-      }
     }
     // First-sync fallback for tabs that haven't learned their toplevel
     // yet — the path-under-toplevel check is the best we can do until
@@ -162,10 +208,10 @@ export function applyGitStatusToTabs(
     }
     if (tabAlreadyMatches(tab))
       continue
-    targetKeys.add(tabKey(tab))
+    targetIds.add(tab.id)
   }
-  if (targetKeys.size > 0)
-    target.update(t => targetKeys.has(tabKey(t)), gitFields)
+  if (targetIds.size > 0)
+    target.update(targetIds, gitFields)
 }
 
 /**
@@ -194,8 +240,8 @@ export function applyGitStatusToTabs(
  * Workspace-switch stale-data note: a workspace switch swaps the tab
  * list synchronously but `gitFileStatusStore.refresh()` is async, so
  * briefly the store still reflects the previous workspace. The
- * containment check (`relativeUnder(containmentPath, repoRoot)`)
- * filters out tabs whose paths don't sit under the old repoRoot, which
+ * containment check (`relativeUnder(containmentPath, toplevel)`)
+ * filters out tabs whose paths don't sit under the old toplevel, which
  * covers the common case. A pathological setup where two workspaces
  * share overlapping file paths could still see a brief mis-stamp before
  * the refresh resolves and re-runs the effect with correct data.
@@ -204,7 +250,7 @@ export function applyGitStatusToTabs(
  * `createRoot`).
  */
 export function syncGitStatusToTabs(opts: SyncGitStatusToTabsOpts): void {
-  const { gitFileStatusStore, tabStore } = opts
+  const { gitFileStatusStore, view, metadata } = opts
 
   // Set-of-entries that changes when a tab whose git stamp may need
   // (re)computing is added/removed/identity-shifted. Includes the
@@ -217,18 +263,18 @@ export function syncGitStatusToTabs(opts: SyncGitStatusToTabsOpts): void {
   // re-hydration in `useTabHydrators`) also write `gitToplevel`. A tab
   // that was created in a non-git dir and later `cd`-d into the focused
   // repo can have its `workingDir` stay the same while a worker re-probe
-  // flips `gitToplevel` to repoRoot — without it in the signature, the
+  // flips `gitToplevel` to the repo's root — without it in the signature, the
   // effect would not re-evaluate that tab. The self-trigger this causes
   // after the effect's own write is bounded (one O(N) walk, all skipped
   // by `tabAlreadyMatches`), and the broadcast-correctness case wins.
   //
   // Stored as a `Set<string>` so set-equality (size + membership) decides
   // whether to notify downstream — order-independent without paying for a
-  // sort on every reactive tick (drags reorder `tabStore.state.tabs` via
-  // `setTabsFromCrdt` without changing the underlying set).
+  // sort on every reactive tick (drags reorder the projected tab list on
+  // a projection tick without changing the underlying set).
   const unstampedTabsSignature = createMemo<Set<string>>(() => {
     const parts = new Set<string>()
-    for (const tab of tabStore.state.tabs) {
+    for (const tab of view.all()) {
       const containmentPath = tab.workingDir
         ?? (tab.type === TabType.FILE ? tab.filePath : undefined)
       if (!containmentPath)
@@ -237,33 +283,17 @@ export function syncGitStatusToTabs(opts: SyncGitStatusToTabsOpts): void {
     }
     return parts
   }, new Set<string>(), {
-    equals: (a, b) => {
-      if (a === b)
-        return true
-      if (a.size !== b.size)
-        return false
-      for (const item of a) {
-        if (!b.has(item))
-          return false
-      }
-      return true
-    },
+    equals: sameKeys,
   })
 
   createEffect(() => {
     // Tracked reads: re-run when any of these flip.
-    const status: GitStatusForTabStamping = {
-      repoRoot: gitFileStatusStore.state.repoRoot,
-      toplevel: gitFileStatusStore.state.toplevel,
-      originUrl: gitFileStatusStore.state.originUrl,
-      currentBranch: gitFileStatusStore.state.currentBranch,
-      files: gitFileStatusStore.state.files,
-    }
+    const status = gitStatusFromStore(gitFileStatusStore.state)
     // Track the unstamped-tabs signature so the effect fires when a new
     // tab appears even if the git store state hasn't changed.
     void unstampedTabsSignature()
-    // Untrack the inner tab walk: applyGitStatusToTabs reads tabStore.state
-    // and writes back to it, which would otherwise self-trigger this effect
+    // Untrack the inner tab walk: applyGitStatusToTabs reads the tab list
+    // and writes metadata back, which would otherwise self-trigger this effect
     // on every refresh. tabAlreadyMatches and a target-key set keep the
     // write quiet for no-op rows, so the self-trigger is bounded — but
     // explicit untrack documents the boundary.
@@ -278,20 +308,42 @@ export function syncGitStatusToTabs(opts: SyncGitStatusToTabsOpts): void {
     // focused last. Per-tab worktree disposition must come from a
     // per-tab probe (inspect RPCs); applyGitStatusToTabs intentionally
     // omits it.
-    untrack(() => applyGitStatusToTabs(tabStoreTarget(tabStore), status))
+    untrack(() => applyGitStatusToTabs(tabStampTarget(view, metadata), status))
   })
 }
 
 /**
- * {@link TabStampTarget} adapter for the active workspace's tabStore.
- * Exposed so AppShell can pass the same instance to both the reactive
- * focused-repo sync and any imperative cross-repo refresh.
+ * {@link TabStampTarget} over every workspace at once.
+ *
+ * There used to be two of these — one for the active `tabStore`, one that
+ * patched registry snapshots for every other workspace — and `TabStampTarget`
+ * existed so the two could not drift. With tabs joined from one projection
+ * there is a single target and the abstraction has one implementation; it is
+ * kept only as the test seam `applyGitStatusToTabs` is exercised through.
+ *
+ * The reach is wider than before by design: a branch rename now stamps tabs in
+ * EVERY workspace in one call, instead of the active store plus a hand-rolled
+ * fan-out across snapshots.
  */
-export function tabStoreTarget(tabStore: ReturnType<typeof createTabStore>): TabStampTarget {
+export function tabStampTarget(view: TabView, metadata: TabMetadataStore): TabStampTarget {
   return {
     get tabs() {
-      return tabStore.state.tabs
+      return view.all()
     },
-    update: (predicate, fields) => tabStore.updateMatchingTabs(predicate, fields),
+    update: (tabIds, fields) => {
+      // One `metadata.patch` per tab is one `setState` per tab, and the
+      // branch-change paths in `AppShell` run from a promise continuation with
+      // no ambient batch — so N matched tabs meant N full reactive flushes,
+      // each re-running the `byWorkspace` join over every tab in the account.
+      // One `patchMatching` is one flush.
+      //
+      // The caller resolves the id set, which also keeps the join OUT of this
+      // write: a predicate evaluated inside `patchMatching`'s `produce` would
+      // read the join and force a recompute after every write the same
+      // `produce` had already made.
+      if (tabIds.size === 0)
+        return
+      metadata.patchMatching((_meta, tabId) => tabIds.has(tabId), fields)
+    },
   }
 }

@@ -41,8 +41,8 @@ test.describe('Cross-workspace projection isolation', () => {
     const pageB = await ctxB.newPage()
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, `/workspace/${ws1}`),
-        gotoWorkspace(pageB, adminToken, `/workspace/${ws2}`),
+        gotoWorkspace(pageA, adminToken, ws1),
+        gotoWorkspace(pageB, adminToken, ws2),
       ])
 
       // Both workspaces start with one tile.
@@ -73,12 +73,12 @@ test.describe('Cross-workspace projection isolation', () => {
     const ctx = await browser.newContext({ baseURL: hubUrl })
     const page = await ctx.newPage()
     try {
-      await gotoWorkspace(page, adminToken, `/workspace/${seedWs}`)
+      await gotoWorkspace(page, adminToken, seedWs)
 
       // Create a sibling workspace via the hub API; the userevents WS
       // stream should deliver `WorkspaceCreated` and the sidebar
       // should pick it up. The sidebar's row is keyed off the
-      // workspace registry, which the UserCRDT lifecycle events feed.
+      // workspace list, which the UserCRDT lifecycle events feed.
       const newWsTitle = 'sibling-via-userevents-stream'
       const newWsId = await createWorkspaceViaAPI(hubUrl, adminToken, newWsTitle)
       try {

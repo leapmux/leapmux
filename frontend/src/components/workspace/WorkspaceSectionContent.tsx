@@ -11,7 +11,6 @@ import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
-import { activeTabKey as buildActiveTabStorageKey } from '~/components/shell/tabPersistenceKeys'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -44,22 +43,19 @@ export interface WorkspaceSectionContentProps {
   onRenameCommit: () => void
   onRenameCancel: () => void
   isWorkspaceLoading: (id: string) => boolean
-  tabs: Tab[]
-  activeTabKey: string | null
   getTabsForWorkspace: (workspaceId: string) => Tab[]
   getActiveTabKeyForWorkspace: (workspaceId: string) => string | null
   /**
    * Tile ids in their top-left-first traversal order for the given
    * workspace. Drives the in-tree leaf ordering so it tracks the live
-   * tiling layout. Returns `[]` when the workspace's layout hasn't been
-   * loaded yet (cold registry); the tree falls back to position-only
-   * order in that case.
+   * tiling layout. Returns `[]` when no layout is projected yet (the CRDT
+   * bootstrap hasn't landed); the tree falls back to position-only order in
+   * that case.
    */
-  getTileOrderForWorkspace: (workspaceId: string) => string[]
+  getTileOrderForWorkspace: (workspaceId: string) => readonly string[]
   onTabClick: (type: TabType, id: string) => void
   tabItemOps?: TabItemOps
   readOnly?: boolean
-  onExpandWorkspace?: (workspaceId: string) => void
   /**
    * Reactive lookup for worker display info. Forwarded to
    * {@link WorkspaceTabTree} to disambiguate same-name branches that
@@ -115,7 +111,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
     const activeId = props.activeWorkspaceId
-    if (activeId && props.tabs.length > 0) {
+    if (activeId && props.getTabsForWorkspace(activeId).length > 0) {
       setExpandedIds((prev) => {
         if (prev.has(activeId))
           return prev
@@ -126,29 +122,17 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     }
   })
 
-  // Trigger lazy loading for non-active workspaces restored as expanded
-  // from sessionStorage (their tabs haven't been fetched yet).
-  createEffect(() => {
-    for (const id of expandedIds()) {
-      if (id !== props.activeWorkspaceId && tabsFor(id).length === 0) {
-        props.onExpandWorkspace?.(id)
-      }
-    }
-  })
-
-  /**
-   * Get the tabs for a specific workspace, using the per-workspace lookup or
-   * falling back to the active workspace's tabs for backwards compatibility.
-   */
+  // The active workspace used to be forked onto separate `tabs` /
+  // `activeTabKey` props "for backwards compatibility". Both were wired to the
+  // very same call at the very same argument as the per-workspace lookups
+  // (`view.forWorkspace(activeWorkspaceId)`), so the fork chose between two
+  // identical answers. Every workspace is live in the projection now; there is
+  // no active/inactive distinction left to make here.
   function tabsFor(workspaceId: string): Tab[] {
-    if (workspaceId === props.activeWorkspaceId)
-      return props.tabs
     return props.getTabsForWorkspace(workspaceId)
   }
 
   function activeTabKeyFor(workspaceId: string): string | null {
-    if (workspaceId === props.activeWorkspaceId)
-      return props.activeTabKey
     return props.getActiveTabKeyForWorkspace(workspaceId)
   }
 
@@ -226,6 +210,15 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     }}
                     onDblClick={() => props.onRename(workspace())}
                     data-testid={`workspace-item-${id}`}
+                    // Which workspace is active is no longer in the URL, so this
+                    // row is the only place it is observable from outside. E2E
+                    // asserts a switch landed on it; the styling still comes
+                    // from `itemActive` above.
+                    data-active={isActive() ? 'true' : 'false'}
+                    // Collapsing only sets `visibility: hidden` on the children
+                    // wrapper, so the leaves stay in the DOM and counting them
+                    // cannot tell expanded from collapsed. Expose the bit.
+                    data-expanded={isExpanded(id) ? 'true' : 'false'}
                   >
                     <ChevronRight
                       size={14}
@@ -233,8 +226,6 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       onClick={(e) => {
                         e.stopPropagation()
                         toggleExpanded(id)
-                        if (!isActive())
-                          props.onExpandWorkspace?.(id)
                       }}
                     />
                     <Show
@@ -291,21 +282,26 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       </Show>
                     </div>
                   </div>
-                  <div class={`${shared.childrenWrapper} ${isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}>
+                  <div
+                    class={`${shared.childrenWrapper} ${isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
+                    data-testid={`workspace-children-${id}`}
+                  >
                     <div class={shared.childrenInner}>
                       <WorkspaceTabTree
                         tabs={tabsFor(id)}
                         tileOrder={props.getTileOrderForWorkspace(id)}
                         activeTabKey={activeTabKeyFor(id)}
                         onTabClick={(type, tabId) => {
-                          if (id !== props.activeWorkspaceId) {
-                            // Store desired tab so workspace restore activates it.
-                            sessionStorageSet(buildActiveTabStorageKey(id), `${type}:${tabId}`)
+                          // Select first, then switch. Both orders work now —
+                          // every workspace's tabs are in the projection, so the
+                          // clicked tab is selectable before its workspace is on
+                          // screen. This used to hand the choice off through
+                          // sessionStorage for the restore path to pick up,
+                          // because the tab did not exist in any live store
+                          // until the switch had finished loading it.
+                          props.onTabClick(type, tabId)
+                          if (id !== props.activeWorkspaceId)
                             props.onSelect(id)
-                          }
-                          else {
-                            props.onTabClick(type, tabId)
-                          }
                         }}
                         tabItemOps={props.tabItemOps}
                         readOnly={props.readOnly}

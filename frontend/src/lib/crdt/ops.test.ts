@@ -15,8 +15,6 @@ import {
   setNodePosition,
   setNodeRatios,
   setNodeRows,
-  setTabFileDiffBase,
-  setTabFileViewMode,
   setTabPosition,
   setTabTileId,
   setTabWorkerId,
@@ -104,8 +102,6 @@ describe('tab op builders', () => {
 
     expect((setTabPosition(ctx, tt, 't', 'V').body.value as { field: { case: string } }).field.case).toBe('position')
     expect((setTabWorkerId(ctx, tt, 't', 'w').body.value as { field: { case: string } }).field.case).toBe('workerId')
-    expect((setTabFileViewMode(ctx, TabType.FILE, 't', 1).body.value as { field: { case: string } }).field.case).toBe('fileViewMode')
-    expect((setTabFileDiffBase(ctx, TabType.FILE, 't', 'HEAD').body.value as { field: { case: string } }).field.case).toBe('fileDiffBase')
   })
 
   it('tombstoneTab includes tab_type so the validator can confirm uniqueness', () => {

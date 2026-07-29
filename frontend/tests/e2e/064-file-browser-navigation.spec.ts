@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -12,8 +12,7 @@ test.describe('File Browser Navigation', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // The Files sidebar should be visible in the right panel
       await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
@@ -33,8 +32,7 @@ test.describe('File Browser Navigation', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the tree to load — "src" directory should be visible
       await expect(page.getByText('src')).toBeVisible()
@@ -56,8 +54,7 @@ test.describe('File Browser Navigation', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the tree to load — "src" directory should be visible
       await expect(page.getByText('src')).toBeVisible()

@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { boxOf, loginViaToken, openWorkspace, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
@@ -24,20 +24,6 @@ async function dragTo(page: Page, source: { x: number, y: number }, target: { x:
   await page.mouse.up()
 }
 
-/**
- * Visit a workspace to populate its registry snapshot (tabs, agents, etc.),
- * then switch to another workspace. This is needed because the sidebar's
- * chevron expansion only works for workspaces whose tabs have been loaded.
- */
-async function preloadWorkspace(page: Page, workspaceId: string, thenSwitchTo: string) {
-  await page.locator(`[data-testid="workspace-item-${workspaceId}"]`).click()
-  await waitForWorkspaceReady(page)
-  await waitForInitialAgent(page)
-  await page.locator(`[data-testid="workspace-item-${thenSwitchTo}"]`).click()
-  await waitForWorkspaceReady(page)
-  await waitForInitialAgent(page)
-}
-
 test.describe('Multi-Workspace', () => {
   test('workspace switch preserves tabs in sidebar', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
@@ -48,8 +34,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
 
       // WS Alpha should be active with an agent tab visible
       await waitForInitialAgent(page)
@@ -82,8 +67,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // ws2 should be visible in the sidebar but not expanded
@@ -113,8 +97,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
 
       // ws1 should have 2 agent tabs
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
@@ -125,10 +108,8 @@ test.describe('Multi-Workspace', () => {
       // Drag the first agent tab from the tabbar to ws2 in the sidebar
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const targetWsItem = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const targetBox = await targetWsItem.boundingBox()
-      if (!sourceBox || !targetBox)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const targetBox = await boxOf(targetWsItem)
 
       await dragTo(
         page,
@@ -164,12 +145,10 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // Visit ws2 to populate its registry, then switch back to ws1
-      await preloadWorkspace(page, ws2, ws1)
 
       // Expand ws2 in the sidebar
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
@@ -188,9 +167,7 @@ test.describe('Multi-Workspace', () => {
       // stacking context (translate3d from sortable). We must dispatch pointerdown
       // directly on the leaf element rather than relying on hit-testing.
       const targetTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
-      const targetBox = await targetTab.boundingBox()
-      if (!targetBox)
-        throw new Error('Could not get target bounding box')
+      const targetBox = await boxOf(targetTab)
 
       // Perform the entire drag using programmatic PointerEvents in the browser.
       // We can't use page.mouse because the sidebar tab tree leaf is covered by
@@ -275,22 +252,38 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
+      // Read the expanded bit off the row rather than counting leaves:
+      // collapsing only sets `visibility: hidden` on the children wrapper, so
+      // the leaves stay in the DOM and a count reads the same either way.
+      const ws2Row = page.locator(`[data-testid="workspace-item-${ws2}"]`)
+      const ws2Chevron = ws2Row.locator('svg').first()
+      const ws2Leaf = page.locator(`[data-testid="workspace-children-${ws2}"] [data-testid="tab-tree-leaf"]`)
+
+      // Drive ws2 to collapsed instead of assuming it. `openWorkspace` loads
+      // `/` first, which activates whichever workspace a cold start picks and
+      // auto-expands it -- so ws2 is sometimes already expanded here, and the
+      // click below would then collapse it and test the opposite thing.
+      if (await ws2Row.getAttribute('data-expanded') === 'true')
+        await ws2Chevron.click()
+      await expect(ws2Row).toHaveAttribute('data-expanded', 'false')
+
       // Expand ws2 in the sidebar
-      const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      await ws2Item.locator('svg').first().click()
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
+      await ws2Chevron.click()
+      await expect(ws2Row).toHaveAttribute('data-expanded', 'true')
+      await expect(ws2Leaf).toBeVisible()
 
       // Reload the page
       await page.reload()
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
 
-      // ws2 should still be expanded after reload
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
+      // ws2 should still be expanded after reload, and its tabs re-fetched --
+      // the expanded bit alone would survive with an empty subtree.
+      await expect(ws2Row).toHaveAttribute('data-expanded', 'true')
+      await expect(ws2Leaf).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
@@ -307,8 +300,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // Expand ws2 in the sidebar
@@ -333,10 +325,11 @@ test.describe('Multi-Workspace', () => {
         leaf.click()
       }, ws2)
 
-      // Should navigate to ws2 — verify by checking the URL and that its agent tab is visible
+      // Should switch to ws2 -- verify the sidebar row went active and its agent tab is visible
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
+      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`))
+        .toHaveAttribute('data-active', 'true')
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     }
     finally {
@@ -355,8 +348,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
       // Set up layout save listener
@@ -365,10 +357,8 @@ test.describe('Multi-Workspace', () => {
       // Drag the first agent tab from ws1's tabbar to ws2 in the sidebar
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const targetWsItem = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const targetBox = await targetWsItem.boundingBox()
-      if (!sourceBox || !targetBox)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const targetBox = await boxOf(targetWsItem)
 
       await dragTo(
         page,
@@ -400,10 +390,11 @@ test.describe('Multi-Workspace', () => {
         leaf.click()
       }, ws2)
 
-      // Should navigate to ws2 and show the moved tab as active
+      // Should switch to ws2 and show the moved tab as active
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
+      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`))
+        .toHaveAttribute('data-active', 'true')
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
     }
     finally {
@@ -422,8 +413,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // ws1 has 1 agent tab
@@ -434,10 +424,8 @@ test.describe('Multi-Workspace', () => {
       // user clicks the moved tab before persistence completes.
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const targetWsItem = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const targetBox = await targetWsItem.boundingBox()
-      if (!sourceBox || !targetBox)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const targetBox = await boxOf(targetWsItem)
 
       await dragTo(
         page,
@@ -468,10 +456,11 @@ test.describe('Multi-Workspace', () => {
         leaf.click()
       }, ws2)
 
-      // Should navigate to ws2 and show BOTH tabs in the tabbar
+      // Should switch to ws2 and show BOTH tabs in the tabbar
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
+      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`))
+        .toHaveAttribute('data-active', 'true')
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
     }
     finally {
@@ -490,18 +479,15 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
       // Drag first agent tab to ws2
       const saved = waitForLayoutSave(page)
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const targetWsItem = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const targetBox = await targetWsItem.boundingBox()
-      if (!sourceBox || !targetBox)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const targetBox = await boxOf(targetWsItem)
 
       await dragTo(
         page,
@@ -553,18 +539,15 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
       // Drag ws1's first tab to ws2
       const saved1 = waitForLayoutSave(page)
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const ws2Box = await ws2Item.boundingBox()
-      if (!sourceBox || !ws2Box)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const ws2Box = await boxOf(ws2Item)
 
       await dragTo(
         page,
@@ -584,10 +567,8 @@ test.describe('Multi-Workspace', () => {
       const saved2 = waitForLayoutSave(page)
       const tabToDragBack = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const ws1Item = page.locator(`[data-testid="workspace-item-${ws1}"]`)
-      const tabBox = await tabToDragBack.boundingBox()
-      const ws1Box = await ws1Item.boundingBox()
-      if (!tabBox || !ws1Box)
-        throw new Error('Could not get bounding boxes')
+      const tabBox = await boxOf(tabToDragBack)
+      const ws1Box = await boxOf(ws1Item)
 
       await dragTo(
         page,
@@ -620,8 +601,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await waitForInitialAgent(page)
 
       // Expand ws2 in the sidebar
@@ -653,7 +633,8 @@ test.describe('Multi-Workspace', () => {
 
       // Should switch to ws2
       await waitForWorkspaceReady(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
+      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`))
+        .toHaveAttribute('data-active', 'true')
 
       // The clicked tab should be the active (aria-selected) tab in the tab bar
       const activeTab = page.locator('[data-testid="tab"][aria-selected="true"]')
@@ -675,8 +656,7 @@ test.describe('Multi-Workspace', () => {
 
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${ws1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, ws1)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
       // Set up layout save listener
@@ -685,10 +665,8 @@ test.describe('Multi-Workspace', () => {
       // Drag first agent tab to ws2
       const sourceTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       const targetWsItem = page.locator(`[data-testid="workspace-item-${ws2}"]`)
-      const sourceBox = await sourceTab.boundingBox()
-      const targetBox = await targetWsItem.boundingBox()
-      if (!sourceBox || !targetBox)
-        throw new Error('Could not get bounding boxes')
+      const sourceBox = await boxOf(sourceTab)
+      const targetBox = await boxOf(targetWsItem)
 
       await dragTo(
         page,

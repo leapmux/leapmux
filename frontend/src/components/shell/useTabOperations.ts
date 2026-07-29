@@ -9,9 +9,10 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
 import * as workerRpc from '~/api/workerRpc'
@@ -25,10 +26,14 @@ import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { tabKey } from '~/stores/tab.helpers'
-import { removeEmptyFloatingWindow } from './tileLifecycle'
+import { emitRemoveTab } from '~/stores/tabOps'
+import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
 
 interface UseTabOperationsOpts {
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
   chatStore: ReturnType<typeof createChatStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore?: ReturnType<typeof createFloatingWindowStore>
@@ -41,20 +46,13 @@ interface UseTabOperationsOpts {
   setFileTreePath: (path: string) => void
   /** Active workspace id used for file-tab E2EE worker RPCs. */
   getActiveWorkspaceId: () => string | undefined
-  /**
-   * Per-workspace registry. Used by `handleTabClose` to detect that a
-   * sidebar-driven close targets a tab in a non-active workspace and
-   * to remove the row from that workspace's cached snapshot. The
-   * active-workspace tabStore only knows about the currently-rendered
-   * workspace's tabs, so a cross-workspace close that goes through it
-   * is a silent no-op locally.
-   */
-  registry: WorkspaceStoreRegistryType
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
   const {
-    tabStore,
+    view,
+    metadata,
+    selection,
     chatStore,
     layoutStore,
     floatingWindowStore,
@@ -66,7 +64,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     getScrollState,
     setFileTreePath,
     getActiveWorkspaceId,
-    registry,
   } = opts
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
@@ -111,7 +108,20 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         else
           chatStore.viewportScroll.clear(prevAgentId)
       }
-      tabStore.activateTab(tab.tileId ?? '', tab.type, tab.id)
+      selection.setActive(tab)
+      // Focus follows the selection, and must: `AppShell.activeTab` reads
+      // `activeTabForTile(focusedTileId())`, so selecting a tab WITHOUT
+      // focusing its tile leaves the editor pane, `getCurrentTabContext`, the
+      // git-status gate and every tab shortcut operating on a different tab
+      // than the one the user just clicked — while that tab renders as active
+      // in its own strip. The sidebar's cross-workspace click is the sharpest
+      // case: it selects a tab in a workspace that is not on screen yet, where
+      // nothing else would ever set focus.
+      //
+      // The workspace is passed explicitly because the tile may belong to a
+      // workspace the user is not looking at yet.
+      if (tab.tileId)
+        focusTile(layoutStore, floatingWindowStore, tab.tileId, tab.workspaceId)
     })
 
     // When switching tabs within the same tile, the previous agent becomes
@@ -152,22 +162,26 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   const removeEmptyFloatingWindowForTile = (tileId: string | undefined) =>
-    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, tileId)
+    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, view, tileId)
 
   // After a tab close empties the focused tile, follow the surviving
-  // active tab to its tile. removeTab already MRU-promoted the next
-  // tab globally; leaving focus on the now-empty tile would leave
-  // the user looking at an EmptyTilePlaceholder while the work they
-  // were doing lives on another tile. Mirrors the cross-tile drag
+  // active tab to its tile. Leaving focus on the now-empty tile would
+  // leave the user looking at an EmptyTilePlaceholder while the work
+  // they were doing lives on another tile. Mirrors the cross-tile drag
   // focus-follows-tab UX.
+  //
+  // Nothing promotes a successor at CLOSE time — a close is a tombstone, not
+  // a store call. `activeTabForWorkspace` below is what does the work: the
+  // pointer it reads is healed on READ against the projection, falling through
+  // to the MRU head once the closed tab stops resolving.
   const migrateFocusAfterTabClose = (sourceTileId: string | undefined) => {
     if (!sourceTileId)
       return
     if (layoutStore.focusedTileId() !== sourceTileId)
       return
-    if (tabStore.getTabsForTile(sourceTileId).length > 0)
+    if (view.forTile(sourceTileId).length > 0)
       return
-    const active = tabStore.activeTab()
+    const active = selection.activeTabForWorkspace(getActiveWorkspaceId() ?? '')
     if (active?.tileId && active.tileId !== sourceTileId)
       layoutStore.setFocusedTile(active.tileId)
   }
@@ -176,28 +190,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * Identify the workspace that owns `tab` for a cross-workspace
    * close (sidebar middle-click on a tab in workspace B while the
    * UI is on workspace A). Returns null when the tab belongs to the
-   * active workspace or isn't tracked by any cached snapshot.
+   * active workspace.
    *
-   * For sidebar closes, the tab record itself comes from the
-   * registry snapshot of its workspace — the active `tabStore` is
-   * scoped to the visible workspace and doesn't know about it.
-   * Without this lookup the close path dispatches to
-   * `agentOps.handleAgentClose` / `termOps.handleTerminalClose`, both
-   * of which look up the worker_id via
-   * `tabStore.getAgentTab` / `tabStore.getTerminalTab` and bail when
-   * the lookup returns nothing — so the worker-side agent / terminal
-   * keeps running even though the CRDT tab is tombstoned, and the
-   * sidebar still shows the row from the stale snapshot.
+   * The tab carries the workspace the projection resolved it to, so this is a
+   * field read. It used to be a search through registry snapshots, because a
+   * tab in a non-active workspace existed only there and the active workspace's
+   * store could not answer for it.
    */
   const ownerWorkspaceFor = (tab: Tab): string | null => {
-    const active = getActiveWorkspaceId()
-    const key = tabKey(tab)
-    const snap = registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))
-    if (!snap)
-      return null
-    if (snap.workspaceId === active)
-      return null
-    return snap.workspaceId
+    return tab.workspaceId && tab.workspaceId !== getActiveWorkspaceId() ? tab.workspaceId : null
   }
 
   /**
@@ -238,13 +239,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * (idempotent close).
    */
   const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
-    // Cross-workspace branch: the tab lives in an inactive workspace's
-    // registry snapshot (DeleteBranchDialog on a non-active branch
-    // row), so the active-tabStore-bound helpers below can't find it.
-    // Mirror handleTabClose's cross-workspace path so the worker still
-    // gets a close RPC AND the source snapshot drops the row — without
-    // the registry write the inactive workspace's sidebar tree keeps
-    // showing the closed tab until the user switches into it.
+    // Cross-workspace branch: the tab belongs to a workspace that isn't the
+    // one on screen (DeleteBranchDialog opened on another workspace's branch
+    // row). The tab itself is perfectly visible -- every workspace is in the
+    // one projection -- but the agent/terminal helpers below drive the ACTIVE
+    // workspace's session and worker context, so the close RPC has to be sent
+    // directly against the tab's own workerId and workspace.
     const crossWorkspaceWsId = ownerWorkspaceFor(tab)
     if (crossWorkspaceWsId) {
       const workerId = tab.workerId ?? ''
@@ -272,12 +272,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         // and a REMOVE can't reach the worktree. Don't drop it silently.
         warnWorktreeUnreachable(worktreeAction)
       }
-      // tabStore.removeTab is a no-op for a cross-workspace tab (the
-      // active store doesn't carry it) but still emits the CRDT
-      // tombstone via the bridge — the projection drops it from peer
-      // clients regardless of which workspace is locally active.
-      tabStore.removeTab(tab.type, tab.id)
-      registry.removeTab(crossWorkspaceWsId, tab)
+      // One tombstone, wherever the tab lives. The projection drops it from
+      // every view — this client's sidebar included — and from peer clients,
+      // with no second write to keep some other representation in step.
+      emitRemoveTab(tab.type, tab.id)
       // Skip migrateFocusAfterTabClose / removeEmptyFloatingWindowForTile
       // — those operate on the ACTIVE layout, and the closed tab's
       // tileId belongs to the inactive workspace.
@@ -298,7 +296,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // server-side, so worktreeAction REMOVE actually removes the
       // worktree from disk once no other tabs reference it — matching
       // the AGENT / TERMINAL last-close behavior.
-      tabStore.removeTab(tab.type, tab.id)
+      emitRemoveTab(tab.type, tab.id)
       if (tab.workerId) {
         closeResult = handleFileClose(tab.id, tab.workerId, worktreeAction)
       }
@@ -473,11 +471,19 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     if (!ctx.workerId)
       return
 
-    const existingTab = tabStore.state.tabs.find(
+    const existingTab = view.forWorkspace(getActiveWorkspaceId() ?? '').find(
       t => t.type === TabType.FILE && t.filePath === path && t.workerId === ctx.workerId,
     )
     if (existingTab) {
-      tabStore.activateTab(existingTab.tileId ?? '', existingTab.type, existingTab.id)
+      selection.setActive(existingTab)
+      // Focus follows, for the same reason `handleTabSelect` does it: without
+      // it, the editor pane, `getCurrentTabContext` and the git-status gate all
+      // keep answering for the FOCUSED tile's tab while the file the user just
+      // clicked merely fronts in some other tile's strip. It also makes the two
+      // branches of this function agree — the new-tab branch below goes through
+      // `openTabInFocusedTile`, which always lands on the focused tile.
+      if (existingTab.tileId)
+        focusTile(layoutStore, floatingWindowStore, existingTab.tileId, existingTab.workspaceId)
       return
     }
 
@@ -494,22 +500,25 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
 
     const fileName = basename(path) || path
-    const tileId = layoutStore.focusedTileId()
-    const afterKey = tabStore.getActiveTabKeyForTile(tileId)
     const tabId = generateFileTabId()
-    tabStore.addTab({
-      type: TabType.FILE,
-      id: tabId,
-      filePath: path,
-      workerId: ctx.workerId,
-      workingDir: ctx.workingDir,
-      title: fileName,
-      tileId,
-      fileViewMode,
-      fileDiffBase,
-      fileOpenSource: openSource,
-    }, { afterKey })
-    tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
+    openTabInFocusedTile(
+      { view, layoutStore, selection, metadata },
+      { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
+      {
+        filePath: path,
+        workingDir: ctx.workingDir,
+        title: fileName,
+        fileViewMode,
+        fileDiffBase,
+        fileOpenSource: openSource,
+        // This path already knows everything the FILE hydrator would fetch, so
+        // say so — the local open paths are required to (`SharedMeta.hydrated`).
+        // Leaving it unset is why the hydrator carried a `!tab.filePath` clause,
+        // and that clause is exactly the payload sniff the flag's own doc
+        // forbids: any other writer of `filePath` can forge it.
+        hydrated: true,
+      },
+    )
 
     // E2EE worker-side path registration. The hub never sees the
     // path; the worker persists `(tab_id, workspace_id, file_path)`
@@ -527,7 +536,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         // Roll back the optimistic add so the user sees the failure
         // surface (and isn't left with a tab whose path peers can't
         // resolve).
-        tabStore.removeTab(TabType.FILE, tabId)
+        emitRemoveTab(TabType.FILE, tabId)
       })
     }
   }

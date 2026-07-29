@@ -6,6 +6,7 @@ import Plus from 'lucide-solid/icons/plus'
 import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
+import { StartupErrorBody } from '~/components/common/StartupPanel'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
 import { PREFIX_SIDEBAR, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { trailingDebounce } from '~/lib/debounce'
@@ -130,7 +131,20 @@ interface DesktopLayoutProps {
   onMoveSectionServer: (sectionId: string, sidebar: Sidebar, position: string) => void
   activeWorkspaceId: string | null | undefined
   activeWorkspace: () => { id: string } | null
-  workspaceLoading: boolean
+  /**
+   * Has the CRDT bootstrap delivered the active workspace? The tiling area
+   * paints only when this is true.
+   *
+   * Deliberately NOT `!workspaceLoading`: a watchdog clears that flag on a timer
+   * so a wedged bootstrap still renders something, and painting on it meant
+   * painting the locally-minted placeholder tree as a real one. Its action
+   * handlers then emit ops naming a node the hub has never heard of -- and the
+   * "open a new agent/terminal" affordances create the worker resource BEFORE
+   * that op, so the rejected batch leaves an orphan behind.
+   */
+  workspaceReady: boolean
+  /** The watchdog fired and the bootstrap still has not delivered a workspace. */
+  bootstrapTimedOut: boolean
   getInProgressSectionId: () => string | null
   onNewWorkspace: () => void
   setCenterPanelHeight: (v: number) => void
@@ -443,9 +457,28 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             }}
           >
             <Show
-              when={props.activeWorkspace() && !props.workspaceLoading}
+              when={props.activeWorkspace() && props.workspaceReady}
               fallback={(
-                <Show when={!props.activeWorkspace() && !props.activeWorkspaceId}>
+                <Show
+                  when={!props.activeWorkspace() && !props.activeWorkspaceId}
+                  fallback={(
+                    // A workspace IS selected but its state has not arrived. Silence
+                    // is only right while it might still be coming: once the watchdog
+                    // has given up, an outage would otherwise render identically to a
+                    // workspace with no tabs, for the rest of the page.
+                    <Show when={props.bootstrapTimedOut}>
+                      <div class={styles.emptyTileActions} data-testid="workspace-bootstrap-failed">
+                        <StartupErrorBody
+                          title="Couldn't load this workspace"
+                          error="The workspace's state never arrived. Check your connection to the hub, then reload."
+                        />
+                        <button class="outline" onClick={() => window.location.reload()}>
+                          <span class={styles.emptyTileActionContent}><span>Reload</span></span>
+                        </button>
+                      </div>
+                    </Show>
+                  )}
+                >
                   <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
                     <button
                       class="outline"
@@ -471,9 +504,9 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   re-mounts on every workspace switch. Without this,
                   Solid's <Match>/<For> reuses the prior workspace's
                   tile component and its prop bindings — and although
-                  state.root and tabStore are updated by the reconciler,
-                  the cached prop accessors (especially the
-                  `tabsByTile` memo result handed to TabBar's
+                  state.root and the tab join both re-derive from the
+                  projection, the cached prop accessors (especially the
+                  per-tile tab list handed to TabBar's
                   `<For each={props.tabs}>`) sometimes don't re-evaluate
                   in time. A fresh subtree avoids the race entirely.
                 */}

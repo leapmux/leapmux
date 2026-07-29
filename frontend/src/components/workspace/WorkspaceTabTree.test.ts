@@ -49,6 +49,7 @@ describe('formatGitOriginUrl', () => {
 function makeTab(overrides: Partial<Tab> & { id: string }): Tab {
   return {
     type: TabType.AGENT,
+    workspaceId: 'ws-1',
     title: overrides.id,
     tileId: 'tile-1',
     position: '0',

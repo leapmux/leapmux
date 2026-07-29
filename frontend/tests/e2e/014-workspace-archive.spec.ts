@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -153,8 +153,7 @@ test.describe('Workspace Archive', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree and open a file tab
       await expect(page.getByText('package.json')).toBeVisible()
@@ -197,8 +196,7 @@ test.describe('Workspace Archive', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load
       const packageJsonNode = page.getByText('package.json')
@@ -243,8 +241,7 @@ test.describe('Workspace Archive', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree and open a file tab
       await expect(page.getByText('package.json')).toBeVisible()

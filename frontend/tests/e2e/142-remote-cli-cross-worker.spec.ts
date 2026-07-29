@@ -31,7 +31,7 @@ import { authedHeaders } from './helpers/api'
 import { cliAgentOpen, CLIError, mintCLITokenForAdmin, runCLI, waitForAgentTabs } from './helpers/cli'
 import { startMultiWorkerHarness } from './helpers/multiWorker'
 import { installToastRecorder } from './helpers/toast'
-import { loginViaToken, tabById } from './helpers/ui'
+import { loginViaToken, openWorkspace, tabById } from './helpers/ui'
 
 interface CrossWorkerEnv {
   harness: MultiWorkerHarness
@@ -176,8 +176,8 @@ test.describe('remote CLI cross-worker', () => {
 
       pages = await openTwoBrowsers(browser, harness)
       await Promise.all([
-        pages.pageA.goto(`/workspace/${workspaceId}`),
-        pages.pageB.goto(`/workspace/${workspaceId}`),
+        openWorkspace(pages.pageA, workspaceId),
+        openWorkspace(pages.pageB, workspaceId),
       ])
       await Promise.all([waitForAgentTabs(pages.pageA, 1), waitForAgentTabs(pages.pageB, 1)])
       await Promise.all([

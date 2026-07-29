@@ -135,9 +135,12 @@ export class PendingOpsManager {
    *
    * Note: with per-subscriber visibility filtering, the wire batch may
    * contain only a subset of the original ops (workspace-redacted ones
-   * are stripped). For our own echo this can't happen (the originator
-   * is always pre/post-visible), so a partial echo would indicate a
-   * bug; we still apply whatever arrives and drop the pending batch.
+   * are stripped). This DOES happen for our own echo: an entity the batch
+   * CREATES has no pre-state, so `IsAllowed("")` is false for every filter
+   * including the originator's, and the hub sends it as `EntityMaterialized`
+   * instead of as a batch op. We apply whatever arrives and drop the pending
+   * batch; the stripped ops reach us through the materialized frame, which
+   * the hub emits BEFORE this one precisely so the result is consistent.
    */
   consumeRemote(batch: OpBatch): void {
     const idx = this.state.pendingBatches.findIndex(b => b.batchId === batch.batchId)

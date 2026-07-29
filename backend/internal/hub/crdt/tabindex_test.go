@@ -24,14 +24,13 @@ func projectionWithTab(workspaceID, tabID, tileID, position string) *crdt.Projec
 	}
 	return &crdt.Projection{
 		UserID:       "user-1",
-		Workspaces:   map[string]*crdt.WorkspaceProjection{},
 		OwnedTabs:    []*crdt.RenderedTab{row},
 		RenderedTabs: []*crdt.RenderedTab{row},
 	}
 }
 
 func TestDiffProjection_NewTab_GeneratesUpserts(t *testing.T) {
-	prev := &crdt.Projection{UserID: "user-1", Workspaces: map[string]*crdt.WorkspaceProjection{}}
+	prev := &crdt.Projection{UserID: "user-1"}
 	next := projectionWithTab("ws1", "t1", "tile-A", "a")
 	diff := crdt.DiffProjection(prev, next)
 	assert.Len(t, diff.OwnedUpserts, 1)
@@ -43,7 +42,7 @@ func TestDiffProjection_NewTab_GeneratesUpserts(t *testing.T) {
 
 func TestDiffProjection_RemovedTab_GeneratesDeletes(t *testing.T) {
 	prev := projectionWithTab("ws1", "t1", "tile-A", "a")
-	next := &crdt.Projection{UserID: "user-1", Workspaces: map[string]*crdt.WorkspaceProjection{}}
+	next := &crdt.Projection{UserID: "user-1"}
 	diff := crdt.DiffProjection(prev, next)
 	assert.Empty(t, diff.OwnedUpserts)
 	assert.Len(t, diff.OwnedDeletes, 1)

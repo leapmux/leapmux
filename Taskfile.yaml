@@ -76,6 +76,17 @@ tasks:
         --out frontend/src/generated frontend/src/generated
         -- buf generate -o {STAGING}
 
+  generate-conformance-corpus:
+    desc: Regenerate the differential CRDT conformance corpus (deliberate; not part of test runs)
+    deps: [generate-proto]
+    cmds:
+      # Deliberately NOT wired into `generate` or any test target. The corpus
+      # records the Go projection's answers, so regenerating it as a side effect
+      # of running tests would rubber-stamp exactly the drift it exists to catch.
+      # Run this only when you have changed the generator, and review the
+      # resulting expectation diff.
+      - cd backend && go run ./internal/hub/crdt/internal/genconformance ../testdata/crdt_projection_corpus.json
+
   generate-sqlc:
     desc: Generate all type-safe SQL code
     deps: [generate-sqlc-hub, generate-sqlc-worker]

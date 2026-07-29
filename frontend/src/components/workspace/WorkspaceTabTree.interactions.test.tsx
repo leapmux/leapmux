@@ -25,6 +25,7 @@ function makeTab(type: TabType, id: string, title?: string): Tab {
     type,
     id,
     title: title ?? id,
+    workspaceId: 'ws-1',
     tileId: 'tile-1',
     position: '0|',
   } as Tab
@@ -47,7 +48,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(screen.getByTestId('workspace-tab-close'))
 
     expect(onTabClose).toHaveBeenCalledTimes(1)
-    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.AGENT, id: 'a1' })
+    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' })
     expect(onTabClick).not.toHaveBeenCalled()
   })
 
@@ -67,7 +68,7 @@ describe('workspaceTabTree interactions', () => {
     leaf.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
 
     expect(onTabClose).toHaveBeenCalledTimes(1)
-    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.TERMINAL, id: 't1' })
+    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
   })
 
   it('hides close controls for agent and terminal tabs in readOnly mode', () => {
@@ -133,7 +134,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onRename).toHaveBeenCalledTimes(1)
-    expect(onRename).toHaveBeenCalledWith(expect.objectContaining({ type: TabType.AGENT, id: 'a1' }), 'Renamed Agent')
+    expect(onRename).toHaveBeenCalledWith(expect.objectContaining({ type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' }), 'Renamed Agent')
   })
 
   it('does not enter rename mode without tabItemOps.onRename', async () => {
@@ -172,6 +173,7 @@ describe('workspaceTabTree interactions', () => {
   function gitTab(id: string): Tab {
     return {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id,
       title: id,
       tileId: 'tile-1',
@@ -379,6 +381,7 @@ describe('workspaceTabTree interactions', () => {
   function gitTabOnBranch(id: string, branchName: string): Tab {
     return {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id,
       title: id,
       tileId: 'tile-1',
@@ -543,6 +546,7 @@ describe('workspaceTabTree interactions', () => {
   function collisionPairTabs(): [Tab, Tab] {
     const base = {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       title: 'agent',
       tileId: 'tile-1',
       position: '0',
@@ -563,6 +567,7 @@ describe('workspaceTabTree interactions', () => {
   function gitTabWithBranch(id: string, branch: string, diffAdded = 0): Tab {
     return {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id,
       title: id,
       tileId: 'tile-1',
@@ -639,6 +644,7 @@ describe('workspaceTabTree interactions', () => {
     function repoTab(id: string, originUrl: string): Tab {
       return {
         type: TabType.AGENT,
+        workspaceId: 'ws-1',
         id,
         title: id,
         tileId: 'tile-1',
@@ -695,6 +701,7 @@ describe('workspaceTabTree interactions', () => {
   it('does not re-reconcile branch rows when only non-tree fields change', async () => {
     const initial: Tab = {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id: 'a1',
       title: 'Agent original',
       tileId: 'tile-1',
@@ -737,6 +744,7 @@ describe('workspaceTabTree interactions', () => {
   it('rebuilds the branch group when a tree-relevant field (diffAdded) changes', () => {
     const base: Tab = {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id: 'a1',
       title: 'Agent',
       tileId: 'tile-1',
@@ -765,6 +773,7 @@ describe('workspaceTabTree interactions', () => {
   it('survives a tabs swap that empties every branch group without crashing', () => {
     const before: Tab[] = [{
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id: 'a1',
       title: 'Agent',
       tileId: 'tile-1',

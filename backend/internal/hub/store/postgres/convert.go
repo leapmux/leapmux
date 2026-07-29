@@ -15,13 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
-func textToPtr(t pgtype.Text) *string {
-	if t.Valid {
-		return &t.String
-	}
-	return nil
-}
-
 func ptrToText(s *string) pgtype.Text {
 	if s != nil {
 		return pgtype.Text{String: *s, Valid: true}

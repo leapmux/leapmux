@@ -79,6 +79,7 @@ export const PREFIX_WORKER_INFO = 'leapmux:worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'leapmux:local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'leapmux:files-show-hidden:'
 export const PREFIX_CHAT_ROW_HEIGHTS = 'leapmux:chat-row-heights:'
+export const PREFIX_ACTIVE_WORKSPACE = 'leapmux:activeWorkspace:'
 
 /** sessionStorage dynamic key prefixes. */
 export const PREFIX_FILE_SCROLL = 'leapmux:fileScroll:'
@@ -89,7 +90,6 @@ export const PREFIX_SIDEBAR = 'leapmux:sidebar:'
 export const PREFIX_TAB_TREE = 'leapmux:tabTree:'
 export const PREFIX_DIRECTORY_TREE = 'leapmux:directoryTree:'
 /** Singleton sessionStorage keys (exact-match in the TTL registry). */
-export const KEY_ACTIVE_WORKSPACE = 'leapmux:activeWorkspace'
 export const KEY_CLI_PATH_CHECKED = 'leapmux:cli-path-checked'
 export const KEY_EXPANDED_WORKSPACES = 'leapmux:expandedWorkspaces'
 export const KEY_CLIENT_ID = 'leapmux:client-id'
@@ -140,6 +140,13 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
   // cache: stale entries are harmless (each row's key digest must match its
   // live heightKey to hydrate), so the TTL only bounds storage growth.
   { prefix: PREFIX_CHAT_ROW_HEIGHTS, ttlMs: 7 * DAY_MS },
+  // The workspace each user was last on, keyed by user id (see
+  // activeWorkspaceKey). Templated rather than a singleton so two accounts
+  // sharing a browser keep their own last workspace instead of overwriting
+  // each other's. A year rather than the days its table-mates get: this is a
+  // user preference, not a cache -- it is the only record of where the app
+  // should reopen, since the URL no longer carries the workspace id.
+  { prefix: PREFIX_ACTIVE_WORKSPACE, ttlMs: YEAR_MS },
 ]
 
 /**
@@ -151,11 +158,11 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
  *
  * Per-workspace UI state (active tab, tile active tabs, focused tile,
  * sidebar layout, tab-tree group collapse, directory-tree expansion)
- * is restored by `useWorkspaceRestore` on page refresh. Without
+ * is restored by `restoreTabSelection` on page refresh. Without
  * registration the on-load sweep wipes these and the restore path
- * falls back to "activate the first tab" / "navigate to the first
- * workspace". 30 days lets a user return after a long break and still
- * land on their last tab.
+ * falls back to "activate the first tab" / "the first workspace".
+ * 30 days lets a user return after a long break and still land on
+ * their last tab.
  */
 export const SESSION_DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> = [
   { prefix: PREFIX_FILE_SCROLL, ttlMs: 1 * DAY_MS },
@@ -173,9 +180,11 @@ export const SESSION_DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: nu
  * accidentally begins with one of these strings can't silently inherit
  * its TTL — every singleton has to be registered by its exact value.
  *
- * - `KEY_ACTIVE_WORKSPACE` / `KEY_EXPANDED_WORKSPACES`: the workspace
- *   currently active and the set of expanded workspaces in the sidebar
- *   tree. Match the 30-day lifetime of the per-workspace UI snapshot.
+ * - `KEY_EXPANDED_WORKSPACES`: the set of expanded workspaces in the
+ *   sidebar tree. Matches the 30-day lifetime of the per-workspace UI
+ *   snapshot. Its sibling "which workspace is active" is deliberately
+ *   NOT here: that one has to survive a tab close, so it lives in
+ *   localStorage under `PREFIX_ACTIVE_WORKSPACE`.
  * - `KEY_CLIENT_ID`: per-session CRDT client identity. Long-lived so a
  *   refresh keeps the same id; the TTL bounds retention if the tab
  *   survives for weeks without being closed.
@@ -184,7 +193,6 @@ export const SESSION_DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: nu
  *   backstop in case sessionStorage is preserved across sessions.
  */
 export const SESSION_EXACT_KEY_TTLS: ReadonlyMap<string, number> = new Map([
-  [KEY_ACTIVE_WORKSPACE, 30 * DAY_MS],
   [KEY_EXPANDED_WORKSPACES, 30 * DAY_MS],
   [KEY_CLIENT_ID, 30 * DAY_MS],
   [KEY_CLI_PATH_CHECKED, 1 * DAY_MS],

@@ -11,9 +11,9 @@ interface WorkspaceStoreState {
    * `loading` alone cannot express "never asked": it starts false, and the
    * loader only flips it inside onMount, which Solid defers past the first
    * render. So `{ loading: false, workspaces: [] }` is the initial state AND
-   * the genuine "you own nothing" state, and consumers that read it as the
-   * latter render a dead-end 404 for a workspace the user owns. See
-   * isWorkspaceNotFound.
+   * the genuine "you own nothing" state, and a consumer that reads it as the
+   * latter clears the selection of a workspace the user owns. See
+   * resolveActiveWorkspace.
    */
   loaded: boolean
 }

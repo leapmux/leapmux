@@ -10,10 +10,10 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { TabItemOps } from '~/stores/tab.types'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
@@ -43,13 +43,12 @@ export interface SectionDefContext {
   activeWorkspaceId: string | null
   onNewWorkspace: (sectionId: string | null) => void
   onSelectWorkspace: (id: string) => void
-  tabStore?: ReturnType<typeof createTabStore>
-  registry?: WorkspaceStoreRegistryType
+  view?: TabView
+  selection?: TabSelectionStore
   onTabClick?: (type: number, id: string) => void
   tabItemOps?: TabItemOps
-  onExpandWorkspace?: (workspaceId: string) => void
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
-  getTileOrderForWorkspace?: (workspaceId: string) => string[]
+  getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
 
@@ -147,14 +146,11 @@ export function buildSectionDef(
           onRenameCommit={ctx.wsOps.commitRename}
           onRenameCancel={ctx.wsOps.cancelRename}
           isWorkspaceLoading={ctx.wsOps.isWorkspaceLoading}
-          tabs={ctx.tabStore?.state.tabs ?? []}
-          activeTabKey={ctx.tabStore?.state.activeTabKey ?? null}
-          getTabsForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.tabs ?? []}
-          getActiveTabKeyForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.activeTabKey ?? null}
+          getTabsForWorkspace={(wsId: string) => ctx.view?.forWorkspace(wsId) ?? []}
+          getActiveTabKeyForWorkspace={(wsId: string) => ctx.selection?.activeKeyForWorkspace(wsId) ?? null}
           getTileOrderForWorkspace={(wsId: string) => ctx.getTileOrderForWorkspace?.(wsId) ?? []}
           onTabClick={ctx.onTabClick ?? (() => {})}
           tabItemOps={ctx.tabItemOps}
-          onExpandWorkspace={ctx.onExpandWorkspace}
           workerInfoFn={ctx.workerInfoFn}
           onChangeBranch={ctx.onChangeBranch}
           onDeleteBranch={ctx.onDeleteBranch}

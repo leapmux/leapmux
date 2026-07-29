@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { firstAssistantBubble, loginViaToken, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+import { firstAssistantBubble, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -130,8 +130,7 @@ test.describe('Quote and Mention', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and the editor is ready
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -172,8 +171,7 @@ test.describe('Quote and Mention', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and click it to populate MRU
       const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -196,8 +194,12 @@ test.describe('Quote and Mention', () => {
       // Wait for file content to load
       await page.waitForTimeout(1000)
 
-      // Find the mention button in the floating toolbar
-      const mentionButton = page.locator('[data-testid="file-mention-button"]')
+      // The mention action lives in the file viewer's actions dropdown, so
+      // open that first. (This spec was still looking for a floating-toolbar
+      // `file-mention-button`, a testid that no longer exists anywhere in src;
+      // 014-workspace-archive has the current shape.)
+      await page.locator('[data-testid="file-actions-trigger"]').click()
+      const mentionButton = page.locator('[data-testid="file-actions-mention-button"]')
       await expect(mentionButton).toBeVisible()
 
       // Click the mention button
@@ -221,8 +223,7 @@ test.describe('Quote and Mention', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and click it to populate MRU
       const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -246,8 +247,10 @@ test.describe('Quote and Mention', () => {
       await expect(fileTab).toBeVisible()
       await page.waitForTimeout(1000)
 
-      // Click the mention button in the file view toolbar
-      const mentionButton = page.locator('[data-testid="file-mention-button"]')
+      // Mention lives in the file viewer's actions dropdown — see the note on
+      // the previous test for why this is not the toolbar button it once was.
+      await page.locator('[data-testid="file-actions-trigger"]').click()
+      const mentionButton = page.locator('[data-testid="file-actions-mention-button"]')
       await expect(mentionButton).toBeVisible()
       await mentionButton.click()
 
@@ -270,8 +273,7 @@ test.describe('Quote and Mention', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and the editor is ready
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -319,8 +321,7 @@ test.describe('Quote and Mention', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and click it to populate MRU
       const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')

@@ -175,6 +175,75 @@ function mkTab(tabId: string, tileId: string) {
   })
 }
 
+/**
+ * Rendered-outcome coverage for `158-tile-close-undo-split.spec.ts`.
+ *
+ * `buildCloseTileOps`' own suite below already asserts the outcome for the
+ * split-split-close-close shape, so this adds only the two cases that one
+ * doesn't reach: 158's actual scenario (a SINGLE split, close the empty half)
+ * and its mirror image (close the half that held the tab). Both are cheap; a
+ * deep case can pass for the wrong reason while the shallow one is broken.
+ *
+ * Asserting the outcome rather than the op list is what makes these survive a
+ * refactor of HOW the ops are built -- but note it is a thin margin over the
+ * op-level tests, which catch the same migration bugs. The invariant test in
+ * `lib/crdt/project.test.ts` is the one that generalises.
+ */
+describe('close-tile rendered outcome', () => {
+  /** Every leaf id the workspace's projected tree actually shows. */
+  function renderedLeaves(state: ReturnType<typeof newState>, wsId: string): string[] {
+    const tree = project(state).workspaces.get(wsId)!.mainTree
+    const out: string[] = []
+    const walk = (n: typeof tree) => {
+      if (n.children.length === 0) {
+        if (n.nodeId !== '')
+          out.push(n.nodeId)
+        return
+      }
+      n.children.forEach(walk)
+    }
+    walk(tree)
+    return out
+  }
+
+  function renderedTileOf(state: ReturnType<typeof newState>, tabId: string): string | undefined {
+    return project(state).renderedTabs.find(t => t.tabId === tabId)?.tileId
+  }
+
+  it('leaves the surviving tab on the merged leaf after closing the empty sibling', () => {
+    const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'A', 'X')
+    expect(renderedTileOf(state, 'X')).toBe('A')
+
+    // Split A: the tab rides down to A_left, A_right is empty.
+    applyBuiltOps(state, buildSplitTileOps(ctx, state, 'A', SplitDirection.HORIZONTAL, 'A_left', 'A_right'))
+    expect(renderedLeaves(state, 'w1').sort()).toEqual(['A_left', 'A_right'])
+    expect(renderedTileOf(state, 'X')).toBe('A_left')
+
+    // Close the empty half. The parent undo-splits back to a LEAF.
+    applyBuiltOps(state, buildCloseTileOps(ctx, state, 'A_right'))
+
+    const leaves = renderedLeaves(state, 'w1')
+    expect(leaves, 'the split collapsed back to one tile').toHaveLength(1)
+    const tile = renderedTileOf(state, 'X')
+    expect(tile, 'the tab is still rendered').toBeDefined()
+    expect(tile, 'and it is on the tile the user can see').toBe(leaves[0])
+  })
+
+  it('leaves the surviving tab on screen when the CLOSED half held the tab', () => {
+    // Mirror image: the user closes the half they were working in, and the
+    // empty one survives. The closing tile's own tabs are tombstoned, so
+    // nothing should render -- but the tree must still be coherent.
+    const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'A', 'X')
+    applyBuiltOps(state, buildSplitTileOps(ctx, state, 'A', SplitDirection.HORIZONTAL, 'A_left', 'A_right'))
+    expect(renderedTileOf(state, 'X')).toBe('A_left')
+
+    applyBuiltOps(state, buildCloseTileOps(ctx, state, 'A_left'))
+
+    expect(renderedLeaves(state, 'w1')).toHaveLength(1)
+    expect(renderedTileOf(state, 'X'), 'the tab was closed with its tile').toBeUndefined()
+  })
+})
+
 describe('buildCloseTileOps', () => {
   it('keeps the surviving tab visible after split → split → close → close', () => {
     // Step 0: Workspace w1 with tab X on root tile A.
@@ -190,8 +259,8 @@ describe('buildCloseTileOps', () => {
 
     // Step 3: Close A_bot. Sibling A_top is a SPLIT, so no undo-split
     // fires — A is left as a single-child SPLIT and the projection
-    // collapses A's render to its only live child A_top (re-keyed to
-    // 'A'). The CRDT structure is now A(SPLIT) → A_top(SPLIT) → {A_TL, A_TR}.
+    // collapses A's render to its only live child A_top, under A_top's
+    // OWN id. The CRDT structure is now A(SPLIT) → A_top(SPLIT) → {A_TL, A_TR}.
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'A_bot'))
 
     // Sanity: after step 3 the projection renders a single SPLIT with
@@ -199,7 +268,7 @@ describe('buildCloseTileOps', () => {
     {
       const proj = project(state)
       const ws = proj.workspaces.get('w1')!
-      expect(ws.mainTree.nodeId).toBe('A')
+      expect(ws.mainTree.nodeId).toBe('A_top')
       expect(ws.mainTree.kind).toBe(NodeKind.SPLIT)
       expect(ws.mainTree.children.map(c => c.nodeId)).toEqual(['A_TL', 'A_TR'])
       const tabX = proj.renderedTabs.find(t => t.tabId === 'X')

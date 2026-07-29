@@ -104,10 +104,3 @@ func padRight(s string, length int) string {
 func trimTrailing(s string, c byte) string {
 	return strings.TrimRight(s, string(c))
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

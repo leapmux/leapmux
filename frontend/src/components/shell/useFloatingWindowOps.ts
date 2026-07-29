@@ -1,7 +1,8 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { Tab } from '~/stores/tab.types'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { firstLeafId } from '~/stores/layout.store'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { useTileMove } from './useTileMove'
@@ -21,7 +22,8 @@ import { useTileMove } from './useTileMove'
 export interface UseFloatingWindowOpsArgs {
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
 }
 
 export interface FloatingWindowOps {
@@ -32,8 +34,8 @@ export interface FloatingWindowOps {
 }
 
 export function useFloatingWindowOps(args: UseFloatingWindowOpsArgs): FloatingWindowOps {
-  const { layoutStore, floatingWindowStore, tabStore } = args
-  const tileMove = useTileMove({ tabStore, layoutStore, floatingWindowStore })
+  const { layoutStore, floatingWindowStore, view, selection } = args
+  const tileMove = useTileMove({ view, selection, layoutStore, floatingWindowStore })
 
   const focusTile = (tileId: string): void => {
     focusTileShared(layoutStore, floatingWindowStore, tileId)
@@ -51,10 +53,9 @@ export function useFloatingWindowOps(args: UseFloatingWindowOpsArgs): FloatingWi
     // Close the source tile if it's now empty and the main layout has
     // multiple tiles — a popped-out tab leaves a hole otherwise.
     if (sourceTileId
-      && tabStore.getTabsForTile(sourceTileId).length === 0
+      && view.forTile(sourceTileId).length === 0
       && layoutStore.hasMultipleTiles()) {
       layoutStore.closeTile(sourceTileId)
-      tabStore.cleanupTile(sourceTileId)
     }
   }
 
@@ -74,7 +75,7 @@ export function useFloatingWindowOps(args: UseFloatingWindowOpsArgs): FloatingWi
     const tileId = layoutStore.focusedTileId()
     if (!tileId)
       return
-    const tab = tabStore.getActiveTabForTile(tileId)
+    const tab = selection.activeTabForTile(tileId)
     if (!tab)
       return
     if (floatingWindowStore.getWindowForTile(tileId))

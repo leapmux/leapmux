@@ -14,15 +14,17 @@
  * `onCleanup` so timers don't outlive the component / hook. There is
  * no per-key cleanup token — `reset(key)` is the per-key cancel.
  *
- * This helper deliberately does NOT:
- * - Wrap the operation being retried. Callers own the `fire` callback
- *   (and any in-flight guard / async cancellation around it). Mixing
- *   the two concerns leaks SolidJS reactivity assumptions into the
- *   helper.
- * - Implement attempt-count caps. Most retry sites in this codebase
- *   are "keep trying until something else changes" loops (the candidate
- *   set shrinks, the user navigates away, the parent unmounts). Sites
- *   that need a cap can compose with their own attempt counter.
+ * Giving up: `maxAttempts` caps the retries per key. It is opt-in because some
+ * sites genuinely are "keep trying until something else changes" loops (the
+ * candidate set shrinks, the user navigates away, the parent unmounts). But a
+ * site whose work can never succeed — an RPC to a worker that has been
+ * deregistered — has nothing else to change, and without a cap it holds a timer
+ * per key for the life of the page. Those sites pass one.
+ *
+ * This helper deliberately does NOT wrap the operation being retried. Callers
+ * own the `fire` callback (and any in-flight guard / async cancellation around
+ * it); mixing the two concerns leaks SolidJS reactivity assumptions into the
+ * helper.
  */
 export interface ExponentialBackoffOpts {
   /** First scheduled delay, in ms (before jitter). */
@@ -44,17 +46,38 @@ export interface ExponentialBackoffOpts {
    * instead of letting jittered values compound.
    */
   jitterFactor?: number
+  /**
+   * Maximum number of retries per key before `schedule` gives up and returns
+   * `null` without arming a timer. Unlimited when omitted.
+   *
+   * `maxMs` bounds how OFTEN a key retries, not how LONG: without a cap, a key
+   * whose work can never succeed — an RPC to a deregistered worker, a resource
+   * the caller will never be granted — keeps a timer armed for the life of the
+   * page, one per key. A cap turns "retry until it works" into "retry until it
+   * clearly won't", which is what every current caller actually wants.
+   *
+   * `reset(key)` clears the count along with the timer, so a key that succeeds
+   * (or whose inputs change) starts over with a full budget.
+   */
+  maxAttempts?: number
 }
 
 export interface ExponentialBackoff<K> {
   /**
    * Arm a retry timer for `key`. No-op (returns `null`) if a timer is
-   * already pending. Otherwise returns the delay that was scheduled.
+   * already pending, or if `maxAttempts` is set and `key` has exhausted it.
+   * Otherwise returns the delay that was scheduled.
    *
    * The pending-timer slot for `key` is cleared *before* `fire` runs,
    * so `fire` may re-call `schedule(key, …)` from inside itself.
    */
   schedule: (key: K, fire: () => void) => number | null
+  /**
+   * Whether `key` has used up its `maxAttempts` budget. Always false when no
+   * cap is configured. Lets a caller distinguish "still retrying" from "gave
+   * up" without racing the timer.
+   */
+  isExhausted: (key: K) => boolean
   /**
    * Cancel `key`'s pending timer (if any) and forget its last delay so
    * the next `schedule(key, …)` restarts at `initialMs`. Idempotent.
@@ -76,7 +99,7 @@ export interface ExponentialBackoff<K> {
 }
 
 export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): ExponentialBackoff<K> {
-  const { initialMs, maxMs } = opts
+  const { initialMs, maxMs, maxAttempts } = opts
   const multiplier = opts.multiplier ?? 2
   const jitterFactor = opts.jitterFactor ?? 0.2
   if (initialMs <= 0)
@@ -87,9 +110,15 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
     throw new Error(`createExponentialBackoff: multiplier must be > 1 (got ${multiplier})`)
   if (jitterFactor < 0 || jitterFactor >= 1)
     throw new Error(`createExponentialBackoff: jitterFactor must be in [0, 1) (got ${jitterFactor})`)
+  if (maxAttempts !== undefined && maxAttempts < 1)
+    throw new Error(`createExponentialBackoff: maxAttempts must be >= 1 (got ${maxAttempts})`)
 
   const timers = new Map<K, ReturnType<typeof setTimeout>>()
   const lastBaseDelays = new Map<K, number>()
+  const attempts = new Map<K, number>()
+
+  const isExhausted = (key: K): boolean =>
+    maxAttempts !== undefined && (attempts.get(key) ?? 0) >= maxAttempts
 
   const nextBaseDelayFor = (key: K): number => {
     const prev = lastBaseDelays.get(key)
@@ -113,11 +142,15 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
       timers.delete(key)
     }
     lastBaseDelays.delete(key)
+    attempts.delete(key)
   }
 
   const schedule = (key: K, fire: () => void): number | null => {
     if (timers.has(key))
       return null
+    if (isExhausted(key))
+      return null
+    attempts.set(key, (attempts.get(key) ?? 0) + 1)
     const base = nextBaseDelayFor(key)
     lastBaseDelays.set(key, base)
     const delay = applyJitter(base)
@@ -139,8 +172,10 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
         clearTimeout(t)
       timers.clear()
       lastBaseDelays.clear()
+      attempts.clear()
     },
     size: () => timers.size,
     peekNextDelay: key => (timers.has(key) ? null : nextBaseDelayFor(key)),
+    isExhausted,
   }
 }

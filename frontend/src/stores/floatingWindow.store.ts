@@ -1,9 +1,10 @@
 import type { CloseTileResult, GridAxis, LayoutNodeLocal, SplitOrientation } from './layout.store'
 import type { LayoutOwner } from './layoutOwner'
-import type { CRDTBridge } from '~/lib/crdt'
+import type { CRDTBridge, Projection } from '~/lib/crdt'
 import { createComputed, createEffect, createMemo, createSignal, mapArray, on } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
-import { buildChildIndex, floatingWindowToRendered, hlcIsZero, registeredRoots, renderTreeToLocal, withBridge } from '~/lib/crdt'
+import { renderTreeToLocal, withBridge } from '~/lib/crdt'
+import { sameKeys } from '~/lib/sameKeys'
 import {
   emitAddFloatingWindow,
   emitFwCloseTile,
@@ -104,16 +105,6 @@ function tileSetMapsEqual(
  * but produce a fresh Set instance each tick) don't notify the GC
  * effect.
  */
-function idSetsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  if (a.size !== b.size)
-    return false
-  for (const id of a) {
-    if (!b.has(id))
-      return false
-  }
-  return true
-}
-
 /**
  * createFloatingWindowStore — projection-driven floating-window store.
  * Window list + inner trees derive from `project(bridge.speculativeState())
@@ -126,7 +117,23 @@ function idSetsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * The store doesn't hold a parallel imperative `windows: []` array
  * — it derives from the projection and overlays the local z-order.
  */
-export function createFloatingWindowStore() {
+export interface CreateFloatingWindowStoreOpts {
+  /** Which workspace is on screen; its windows are the ones RENDERED. */
+  getWorkspaceId: () => string | null | undefined
+  /**
+   * The shared user-wide projection, mirroring `createLayoutStore`.
+   *
+   * Taken as an opt rather than re-derived through the global bridge because
+   * `project()` ALREADY produces every floating window's geometry and inner
+   * tree. Deriving them again here meant walking the whole CRDT state twice more
+   * per tick -- and, worse, being a second implementation of the projection's
+   * floating-window rules, which had already drifted: `project()` drops a window
+   * whose workspace record is gone, and the local walk kept it.
+   */
+  projection: () => Projection | null
+}
+
+export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   // Z-order: the array of window ids in render order (last = topmost).
   // Local-only — z-order isn't a CRDT register.
   const [zOrder, setZOrder] = createSignal<string[]>([])
@@ -138,33 +145,23 @@ export function createFloatingWindowStore() {
   // changes. The values here are throw-away refs — they feed into the
   // store reconcile below so consumers see stable refs with granular
   // field updates.
-  const rawProjection = createMemo<FloatingWindowState[]>(() => withBridge<FloatingWindowState[]>((bridge) => {
-    const state = bridge.speculativeState()
-    const wsId = bridge.workspaceId()
-    if (!state || !wsId)
+  const rawProjection = createMemo<FloatingWindowState[]>(() => {
+    const proj = opts.projection()
+    const wsId = opts.getWorkspaceId()
+    if (!proj || !wsId)
       return []
     const result: FloatingWindowState[] = []
-    // Precompute roots + child index ONCE for the whole memo run so we
-    // don't pay O(N) per floating window. Without this each
-    // floatingWindowToRendered call walks state.nodes twice
-    // (registeredRoots + buildChildIndex).
-    const precomputed = { roots: registeredRoots(state), childIndex: buildChildIndex(state) }
     const focusMap = focusByWindow()
-    for (const fw of Object.values(state.floatingWindows)) {
-      if (!hlcIsZero(fw.tombstoneAt))
-        continue
-      const ownWs = fw.workspaceId?.value ?? ''
-      if (ownWs !== wsId)
-        continue
-      const rendered = floatingWindowToRendered(state, fw, precomputed)
-      if (!rendered)
-        continue
+    // Straight off the shared projection: it already resolved every window's
+    // geometry and inner tree, through the same `floatingWindowToRendered` this
+    // used to call itself.
+    for (const rendered of proj.workspaces.get(wsId)?.floatingWindows ?? []) {
       const layoutRoot = renderTreeToLocal(rendered.innerTree)
-        ?? { type: 'leaf' as const, id: fw.rootNodeId || `__empty_${fw.windowId}` }
+        ?? { type: 'leaf' as const, id: rendered.rootNodeId || `__empty_${rendered.windowId}` }
       const fallbackFocus = firstLeafId(layoutRoot) ?? null
-      const localFocus = focusMap.get(fw.windowId)
+      const localFocus = focusMap.get(rendered.windowId)
       result.push({
-        id: fw.windowId,
+        id: rendered.windowId,
         x: rendered.x,
         y: rendered.y,
         width: rendered.width,
@@ -195,7 +192,7 @@ export function createFloatingWindowStore() {
         ordered.push(w)
     }
     return ordered
-  }, []))
+  }, [])
 
   // Store-backed projection. Solid's `<For>` keys by REFERENCE identity
   // and the CRDT bridge bumps `pendingVersion` on every mutation —
@@ -251,15 +248,125 @@ export function createFloatingWindowStore() {
     },
   } as FloatingWindowStoreState
 
+  // Per-window leaf-id sets, computed in a single pass over the
+  // reconcile-backed `projectedWindows()`. With `reconcile({merge:
+  // true})` above, each window entry's `layoutRoot` ref is preserved
+  // across CRDT ticks that don't change its inner tree, so this memo
+  // only re-runs (and only emits a new Map) when a window's tree
+  // actually mutates. The structural `equals` check below is a
+  // defense-in-depth backstop for the (rare) case where the upstream
+  // diff produces a same-content fresh ref.
+  const tileSetsByWindow = createMemo<Map<string, ReadonlySet<string>>>(
+    () => {
+      const out = new Map<string, ReadonlySet<string>>()
+      for (const w of projectedWindows())
+        out.set(w.id, new Set(getAllTileIds(w.layoutRoot)))
+      return out
+    },
+    new Map(),
+    { equals: tileSetMapsEqual },
+  )
+
+  const allFloatingTileIdsMemo = createMemo(() => {
+    const out: string[] = []
+    for (const set of tileSetsByWindow().values()) {
+      for (const id of set)
+        out.push(id)
+    }
+    return out
+  })
+
+  /**
+   * Tile -> window and workspace -> tiles, across EVERY workspace.
+   *
+   * `projectedWindows()` is deliberately the ACTIVE workspace's slice: it
+   * carries z-order and per-window focus, which only mean something for what is
+   * on screen. But three questions are not about rendering and must be
+   * answerable for any workspace:
+   *
+   *   - `getWindowForTile` — `tileLifecycle.focusTile` needs it for a
+   *     cross-workspace sidebar click, and `removeEmptyFloatingWindow` for the
+   *     SOURCE tile of a tab dragged out of a background workspace. Both
+   *     silently answered "not a floating tile" before, so the window's inner
+   *     focus was never recorded and an emptied background window was never
+   *     disposed.
+   *   - `getAllTileIdsFor(wsId)` — persistence and selection cleanup need a
+   *     workspace's floating tiles whether or not it is on screen.
+   *   - `trees` — the MUTATORS those two feed. Answering "which window owns this
+   *     tile" account-wide is useless if `setFocusedTile` and `removeIfEmpty`
+   *     then resolve the id back through the rendered slice: they would find
+   *     nothing and silently no-op, which is exactly what they did. They resolve
+   *     through this map instead, so the escape is not undone one call later.
+   *     `liveWindowIds` is derived from here for the same reason — a GC keyed on
+   *     the rendered slice would delete a background window's focus entry on the
+   *     next membership change.
+   *
+   * Built from the raw projection rather than the rendered slice, so it does
+   * not inherit the active-workspace filter it exists to escape. Geometry is
+   * ignored, so a drag does not invalidate it.
+   */
+  const floatingTileIndex = createMemo<{
+    tileToWindow: Map<string, string>
+    tilesByWorkspace: Map<string, ReadonlySet<string>>
+    trees: Map<string, LayoutNodeLocal>
+  }>(() => {
+    const tileToWindow = new Map<string, string>()
+    const tilesByWorkspace = new Map<string, Set<string>>()
+    const trees = new Map<string, LayoutNodeLocal>()
+    const proj = opts.projection()
+    if (!proj)
+      return { tileToWindow, tilesByWorkspace, trees }
+    // Every workspace's windows, from the same projection the rendered slice
+    // above reads -- so "which window owns this tile" and "what is on screen"
+    // can no longer answer from two different walks of the state.
+    for (const [wsId, ws] of proj.workspaces) {
+      for (const rendered of ws.floatingWindows) {
+        // Same empty-tree fallback as `rawProjection`, so a window with no
+        // resolvable inner tree is still LIVE here. Dropping it would make the
+        // GC below treat it as tombstoned and evict its focus entry.
+        const local = renderTreeToLocal(rendered.innerTree)
+          ?? { type: 'leaf' as const, id: rendered.rootNodeId || `__empty_${rendered.windowId}` }
+        trees.set(rendered.windowId, local)
+        let bucket = tilesByWorkspace.get(wsId)
+        if (!bucket) {
+          bucket = new Set<string>()
+          tilesByWorkspace.set(wsId, bucket)
+        }
+        for (const tileId of getAllTileIds(local)) {
+          tileToWindow.set(tileId, rendered.windowId)
+          bucket.add(tileId)
+        }
+      }
+    }
+    return { tileToWindow, tilesByWorkspace, trees }
+  })
+
+  /**
+   * A live window's inner tree, in ANY workspace; null when no such window
+   * exists. The rendered slice is preferred when it has the window so an
+   * in-flight local edit is seen at the same instant the on-screen tree is.
+   */
+  function layoutRootForWindow(windowId: string): LayoutNodeLocal | null {
+    return findWindow(windowId)?.layoutRoot ?? floatingTileIndex().trees.get(windowId) ?? null
+  }
+
   // Live window-id set, memoized with a structural-equals comparator
   // so it only changes when the set membership actually changes (a
   // peer create or tombstone) — NOT on every geometry update / drag /
   // resize tick. Drives the GC effect below so the GC only runs when
   // the GC question can actually have a new answer.
+  //
+  // Spans EVERY workspace, via `floatingTileIndex` — which is also why it is
+  // declared here rather than beside the other projection memos above: a memo
+  // body runs once at creation, so it has to follow what it reads. Keyed on
+  // the rendered slice instead, it would call a background workspace's windows
+  // dead and evict the focus entries `setFocusedTile` records for them,
+  // deleting on the next membership change exactly what the cross-workspace
+  // path just wrote.
   const liveWindowIds = createMemo<ReadonlySet<string>>(
-    () => new Set(projectedWindows().map(w => w.id)),
+    () => new Set(floatingTileIndex().trees.keys()),
     new Set(),
-    { equals: idSetsEqual },
+    { equals: sameKeys },
   )
 
   // Garbage-collect z-order and focus entries whose windows have been
@@ -299,43 +406,6 @@ export function createFloatingWindowStore() {
       }
     }),
   )
-
-  // Per-window leaf-id sets, computed in a single pass over the
-  // reconcile-backed `projectedWindows()`. With `reconcile({merge:
-  // true})` above, each window entry's `layoutRoot` ref is preserved
-  // across CRDT ticks that don't change its inner tree, so this memo
-  // only re-runs (and only emits a new Map) when a window's tree
-  // actually mutates. The structural `equals` check below is a
-  // defense-in-depth backstop for the (rare) case where the upstream
-  // diff produces a same-content fresh ref.
-  const tileSetsByWindow = createMemo<Map<string, ReadonlySet<string>>>(
-    () => {
-      const out = new Map<string, ReadonlySet<string>>()
-      for (const w of projectedWindows())
-        out.set(w.id, new Set(getAllTileIds(w.layoutRoot)))
-      return out
-    },
-    new Map(),
-    { equals: tileSetMapsEqual },
-  )
-
-  const tileToWindowId = createMemo(() => {
-    const m = new Map<string, string>()
-    for (const [winId, set] of tileSetsByWindow()) {
-      for (const tileId of set)
-        m.set(tileId, winId)
-    }
-    return m
-  })
-
-  const allFloatingTileIdsMemo = createMemo(() => {
-    const out: string[] = []
-    for (const set of tileSetsByWindow().values()) {
-      for (const id of set)
-        out.push(id)
-    }
-    return out
-  })
 
   const windowIdToIndex = createMemo(() => {
     const m = new Map<string, number>()
@@ -540,9 +610,27 @@ export function createFloatingWindowStore() {
       })
     },
 
+    /**
+     * Record which inner tile holds the cursor, for a window in ANY workspace.
+     *
+     * Resolved through `layoutRootForWindow`, not the rendered slice: the
+     * caller (`tileLifecycle.focusTile`) already looked the window up
+     * account-wide via `getWindowForTile`, and re-resolving through the
+     * active-workspace filter made this a silent no-op for a background
+     * workspace — a sidebar click into another workspace's floating window
+     * left it fronting `firstLeafId` instead of the tab the user picked.
+     */
     setFocusedTile(windowId: string, tileId: string) {
-      const w = findWindow(windowId)
-      if (!w || w.focusedTileId === tileId)
+      const root = layoutRootForWindow(windowId)
+      if (!root)
+        return
+      // Compare against the EFFECTIVE focus — the explicit entry when there is
+      // one, else the same first-leaf fallback the projection applies — so the
+      // no-op check answers the same question for an off-screen window as for
+      // an on-screen one.
+      const recorded = focusByWindow().get(windowId)
+      const effective = recorded !== undefined ? recorded : firstLeafId(root)
+      if (effective === tileId)
         return
       setFocusByWindow((m) => {
         const next = new Map(m)
@@ -591,12 +679,34 @@ export function createFloatingWindowStore() {
       }, false)
     },
 
+    /**
+     * Which floating window holds `tileId`, in ANY workspace.
+     *
+     * Not scoped to the active workspace: the callers that ask (focus, and the
+     * empty-window sweep) are reached from cross-workspace paths, where a
+     * null answer is indistinguishable from "this is a main-tree tile" and
+     * silently skips the work.
+     */
     getWindowForTile(tileId: string): string | null {
-      return tileToWindowId().get(tileId) ?? null
+      return floatingTileIndex().tileToWindow.get(tileId) ?? null
     },
 
+    /** Floating tile ids in the ACTIVE workspace (the rendered slice). */
     getAllTileIds(): string[] {
       return allFloatingTileIdsMemo()
+    },
+
+    /**
+     * Floating tile ids owned by `workspaceId`, on screen or not.
+     *
+     * Persistence and selection cleanup both need a workspace's floating tiles
+     * for a workspace that is NOT active — deleting a background workspace, or
+     * writing the per-tile selection map for one. `getAllTileIds` answers only
+     * for the rendered slice, so those paths silently saw none.
+     */
+    getAllTileIdsFor(workspaceId: string): string[] {
+      const set = floatingTileIndex().tilesByWorkspace.get(workspaceId)
+      return set ? [...set] : []
     },
 
     getWindow(id: string): FloatingWindowState | null {
@@ -615,6 +725,14 @@ export function createFloatingWindowStore() {
      * Remove a single-tile floating window when its tile becomes empty
      * (e.g. the popped-out tab is closed). Multi-tile windows are left
      * alone — the user explicitly built that structure.
+     *
+     * Resolved through `layoutRootForWindow`, not the rendered slice: the
+     * caller (`tileLifecycle.removeEmptyFloatingWindow`) already looked the
+     * window up account-wide via `getWindowForTile`, and re-resolving through
+     * the active-workspace filter made this a silent no-op for a background
+     * workspace — dragging the last tab out of a floating window in a workspace
+     * that was not on screen left a phantom empty window behind it, with this
+     * as its only collector.
      */
     removeIfEmpty(
       windowId: string,
@@ -622,12 +740,12 @@ export function createFloatingWindowStore() {
       onRemoved?: (removedTileId: string) => void,
     ): boolean {
       return withBridge<boolean>((bridge) => {
-        const win = findWindow(windowId)
-        if (!win)
+        const root = layoutRootForWindow(windowId)
+        if (!root)
           return false
-        if (hasMultipleLeaves(win.layoutRoot))
+        if (hasMultipleLeaves(root))
           return false
-        const removedTileId = firstLeafId(win.layoutRoot)
+        const removedTileId = firstLeafId(root)
         if (!removedTileId)
           return false
         if (getTabsForTile(removedTileId).length !== 0)

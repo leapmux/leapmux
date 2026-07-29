@@ -306,20 +306,6 @@ func (t *SpanTracker) depthOf(spanID string) int {
 	return depth
 }
 
-// isDescendantOf reports whether spanID is a descendant of ancestorSpanID
-// by walking the parentMap. Must be called with t.mu held.
-func (t *SpanTracker) isDescendantOf(spanID, ancestorSpanID string) bool {
-	current := spanID
-	for current != "" {
-		parent := t.parentMap[current]
-		if parent == ancestorSpanID {
-			return true
-		}
-		current = parent
-	}
-	return false
-}
-
 // Reset clears all span tracking state, returning the tracker to its
 // initial empty state. Used when the agent's context is cleared or interrupted.
 func (t *SpanTracker) Reset() {

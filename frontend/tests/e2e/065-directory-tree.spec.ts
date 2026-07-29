@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 const ABSOLUTE_PATH_RE = /^\//
@@ -15,8 +15,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // The root node should be visible
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -40,8 +39,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for root node to appear
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -70,8 +68,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load
       await expect(page.getByText('package.json')).toBeVisible()
@@ -103,8 +100,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for root node
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -137,8 +133,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for file tree
       await expect(page.getByText('package.json')).toBeVisible()
@@ -172,8 +167,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -264,8 +258,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for tree to load — root is expanded by default
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -313,8 +306,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, largeDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // The root node should be visible
       const rootNode = page.locator('[data-testid="tree-root-node"]')
@@ -336,8 +328,7 @@ test.describe('DirectoryTree', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')

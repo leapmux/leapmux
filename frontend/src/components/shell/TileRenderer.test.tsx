@@ -1,15 +1,20 @@
+import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { setCRDTBridge } from '~/lib/crdt'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { createLayoutStore } from '~/stores/layout.store'
-import { createTabStore } from '~/stores/tab.store'
+import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import { tabKey } from '~/stores/tab.helpers'
+import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { installTestBridge } from '~/test-support/crdtBridge'
+import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
+import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { createTileRenderer } from './TileRenderer'
 
 vi.mock('~/context/PreferencesContext', () => ({
@@ -30,22 +35,38 @@ vi.mock('~/components/terminal/TerminalView', () => ({
   getTerminalInstance: () => undefined,
 }))
 
-interface RendererSetup {
-  tabStore: ReturnType<typeof createTabStore>
-  layoutStore: ReturnType<typeof createLayoutStore>
+type RendererSetup = ReturnType<typeof createTestTabStores> & {
   floatingWindowStore: ReturnType<typeof createFloatingWindowStore>
   handleTabClose: ReturnType<typeof vi.fn>
+  workspaceId: string
+  /**
+   * Place a terminal tab through the op path and read the assembled `Tab`
+   * back off the join, which is the only shape the renderer ever sees.
+   */
+  addTerminal: (id: string, tileId: string, title?: string) => Tab
 }
 
 function renderRenderer(s: RendererSetup, focusedTileId: string) {
   return render(() => {
     const r = createTileRenderer({
+      // Same factory production uses, so the test exercises the real
+      // select-and-focus behaviour rather than a bare `setActive`.
+      mruEditorDeps: mruAgentEditorDeps({
+        view: s.view,
+        selection: s.selection,
+        layoutStore: s.layoutStore,
+        floatingWindowStore: undefined,
+        getWorkspaceId: () => s.workspaceId,
+      }),
       stores: {
-        tabStore: s.tabStore,
+        view: s.view,
+        metadata: s.metadata,
+        selection: s.selection,
         chatStore: createChatStore(),
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
+        gitFileStatusStore: createGitFileStatusStore(),
       },
       ops: {
         agentOps: {
@@ -113,12 +134,29 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
   })
 }
 
+afterEach(() => setCRDTBridge(null))
+
+let nextPosition = 0
+
 function createSetup(): RendererSetup {
+  const harness = installTestBridge()
+  const stores = createTestTabStores(harness.workspaceId)
   return {
-    tabStore: createTabStore(),
-    layoutStore: createLayoutStore(),
-    floatingWindowStore: createFloatingWindowStore(),
+    ...stores,
+    workspaceId: harness.workspaceId,
+    floatingWindowStore: createTestFloatingWindowStore(),
     handleTabClose: vi.fn(async (_tab: Tab) => true),
+    addTerminal(id, tileId, title = 'Terminal') {
+      nextPosition += 1
+      emitAddTab({ type: TabType.TERMINAL, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+      stores.metadata.patch(id, {
+        title,
+        workingDir: '/repo',
+        terminalStatus: TerminalStatus.READY,
+      })
+      stores.selection.setActiveById(TabType.TERMINAL, id)
+      return stores.view.getById(TabType.TERMINAL, id)!
+    },
   }
 }
 
@@ -127,17 +165,7 @@ describe('tileRenderer close-tile flow', () => {
     const s = createSetup()
     const leftTileId = s.layoutStore.focusedTileId()
     const rightTileId = s.layoutStore.splitTile(leftTileId, 'horizontal')!
-    const terminalTab: Tab = {
-      type: TabType.TERMINAL,
-      id: 'term-right',
-      title: 'Terminal',
-      tileId: rightTileId,
-      workerId: 'worker-1',
-      workingDir: '/repo',
-      status: TerminalStatus.READY,
-    }
-    s.tabStore.addTab(terminalTab)
-    s.tabStore.setActiveTabForTile(rightTileId, TabType.TERMINAL, terminalTab.id)
+    s.addTerminal('term-right', rightTileId)
 
     renderRenderer(s, rightTileId)
 
@@ -157,19 +185,8 @@ describe('tileRenderer close-tile flow', () => {
     // pre-split id is now a SPLIT (not a leaf), and TWO new leaf ids
     // are minted (childA where original tabs land, childB = rightTileId).
     // The heir of rightTileId is therefore childA, not the pre-split id.
-    const heirTileId = s.layoutStore.owner().findHeirTile(rightTileId)
-    expect(heirTileId).toBeTruthy()
-    const terminalTab: Tab = {
-      type: TabType.TERMINAL,
-      id: 'term-right',
-      title: 'Terminal',
-      tileId: rightTileId,
-      workerId: 'worker-1',
-      workingDir: '/repo',
-      status: TerminalStatus.READY,
-    }
-    s.tabStore.addTab(terminalTab)
-    s.tabStore.setActiveTabForTile(rightTileId, TabType.TERMINAL, terminalTab.id)
+    expect(s.layoutStore.owner().findHeirTile(rightTileId)).toBeTruthy()
+    s.addTerminal('term-right', rightTileId)
 
     renderRenderer(s, rightTileId)
 
@@ -181,25 +198,75 @@ describe('tileRenderer close-tile flow', () => {
       expect(s.layoutStore.getAllTileIds()).not.toContain(rightTileId)
     })
     expect(s.handleTabClose).not.toHaveBeenCalled()
-    const moved = s.tabStore.state.tabs.find(t => t.id === terminalTab.id)
-    expect(moved?.tileId).toBe(heirTileId)
+
+    // The tab survives on the one remaining leaf. Its id is asserted as
+    // "whatever is left" rather than the pre-close heir id on purpose: once
+    // the split has only one child the projection collapses it, re-keying the
+    // surviving leaf to the SPLIT's node id. The heir id read before the close
+    // is therefore stale by the time the move lands -- what matters is that the
+    // tab moved with it instead of being orphaned on the removed tile.
+    const survivors = s.layoutStore.getAllTileIds()
+    expect(survivors).toHaveLength(1)
+    const moved = s.view.getById(TabType.TERMINAL, 'term-right')
+    expect(moved?.tileId).toBe(survivors[0])
+    expect(s.view.forTile(rightTileId)).toEqual([])
+  })
+
+  /**
+   * Closing a tile carries its selection to the heir so "move tabs" lands the
+   * user on the tab they were looking at — but ONLY on that tile.
+   *
+   * `setActiveById` routes through `setActive`, which ALSO claims the
+   * workspace-wide pointer. That is wrong here: the close control stops
+   * propagation, so the closing tile is never focused on its way out, and the
+   * heir is an adjacent sibling unrelated to focus. Handing the workspace
+   * pointer to a tab in a background tile badges the tab the user is reading,
+   * seeds the next agent from the wrong repo, and is what a reload restores to.
+   * The pre-refactor store drew the same line: its `mergeTabsIntoTile` wrote
+   * only the per-tile pointer.
+   *
+   * Asserted on WHICH setter is called rather than on the resulting pointers:
+   * in a two-leaf close the heir's id is absorbed when the parent flips back to
+   * a LEAF, and the carried tab is momentarily unresolvable — so `setActiveById`
+   * happens to no-op and both spellings leave the same state behind. The call is
+   * the behaviour; the state is not, in this shape.
+   */
+  it('carries the closed tile selection with the TILE-scoped setter, not the workspace one', async () => {
+    const s = createSetup()
+    const preSplitTileId = s.layoutStore.focusedTileId()
+    const rightTileId = s.layoutStore.splitTile(preSplitTileId, 'horizontal')!
+    s.addTerminal('term-right', rightTileId)
+    s.selection.setActiveInTile(s.view.getById(TabType.TERMINAL, 'term-right')!, rightTileId)
+
+    // The workspace pointer BEFORE the merge. It must survive: the user is
+    // reading whatever it names, and a tab arriving on a background tile must
+    // not badge what they are looking at or seed the next agent from it.
+    const workspaceActiveBefore = s.selection.activeKeyForWorkspace(s.workspaceId)
+
+    renderRenderer(s, rightTileId)
+    fireEvent.click(screen.getByTestId('close-tile'))
+    await waitFor(() => screen.getByTestId('close-tile-dialog'))
+    fireEvent.click(screen.getByTestId('close-tile-move'))
+    await waitFor(() => {
+      expect(s.layoutStore.getAllTileIds()).not.toContain(rightTileId)
+    })
+
+    const heirId = s.layoutStore.getAllTileIds()[0]!
+    expect(
+      s.selection.activeKeyForTile(heirId),
+      'the carry lands on the heir TILE',
+    ).toBe(tabKey({ type: TabType.TERMINAL, id: 'term-right' }))
+    expect(
+      s.selection.activeKeyForWorkspace(s.workspaceId),
+      'and must never claim the workspace pointer',
+    ).toBe(workspaceActiveBefore)
   })
 
   it('closes tabs and removes the tile when the user confirms "Close all tabs"', async () => {
     const s = createSetup()
     const leftTileId = s.layoutStore.focusedTileId()
     const rightTileId = s.layoutStore.splitTile(leftTileId, 'horizontal')!
-    const terminalTab: Tab = {
-      type: TabType.TERMINAL,
-      id: 'term-right',
-      title: 'Terminal',
-      tileId: rightTileId,
-      workerId: 'worker-1',
-      workingDir: '/repo',
-      status: TerminalStatus.READY,
-    }
-    s.tabStore.addTab(terminalTab)
-    s.tabStore.setActiveTabForTile(rightTileId, TabType.TERMINAL, terminalTab.id)
+    const terminalTab = s.addTerminal('term-right', rightTileId)
 
     renderRenderer(s, rightTileId)
 
@@ -293,22 +360,12 @@ describe('tileRenderer close-tile flow', () => {
     s.layoutStore.setFocusedTile(rightTileId)
     s.floatingWindowStore.setFocusedTile(windowId, rightTileId)
 
-    const tabA: Tab = {
-      type: TabType.TERMINAL,
-      id: 'term-a',
-      title: 'A',
-      tileId: rightTileId,
-      workerId: 'worker-1',
-      workingDir: '/repo',
-      status: TerminalStatus.READY,
-    }
-    const tabB: Tab = { ...tabA, id: 'term-b', title: 'B' }
-    s.tabStore.addTab(tabA)
-    s.tabStore.addTab(tabB)
-    s.tabStore.setActiveTabForTile(rightTileId, TabType.TERMINAL, tabA.id)
+    const tabA = s.addTerminal('term-a', rightTileId, 'A')
+    s.addTerminal('term-b', rightTileId, 'B')
+    s.selection.setActiveById(TabType.TERMINAL, tabA.id)
 
     s.handleTabClose.mockImplementation(async (tab: Tab) => {
-      s.tabStore.removeTab(tab.type, tab.id)
+      emitRemoveTab(tab.type, tab.id)
       // Mirror `useTabOperations.handleTabClose`: try to auto-dispose if the
       // window is now single-tile-and-empty. Always a no-op here (the window
       // still has the left tile) — but a future regression that flips
@@ -316,8 +373,8 @@ describe('tileRenderer close-tile flow', () => {
       // surface as a finalize crash.
       s.floatingWindowStore.removeIfEmpty(
         windowId,
-        tId => s.tabStore.getTabsForTile(tId),
-        (removedTileId) => { s.tabStore.cleanupTile(removedTileId) },
+        tId => s.view.forTile(tId),
+        () => {},
       )
       return true
     })
@@ -336,6 +393,6 @@ describe('tileRenderer close-tile flow', () => {
     // Right tile is gone; window survives with only the left tile.
     expect(s.floatingWindowStore.getWindow(windowId)).toBeDefined()
     expect([...s.floatingWindowStore.getWindowTileIdSet(windowId) ?? []]).toEqual([leftTileId])
-    expect(s.tabStore.getTabsForTile(rightTileId)).toEqual([])
+    expect(s.view.forTile(rightTileId)).toEqual([])
   })
 })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -29,7 +30,7 @@ func (m *Manager) snapshotSubs() []*Subscriber {
 // (stable visibility for every subscriber) neither is built at all.
 //
 // Per-subscriber visibility is computed inline from each subscriber's filter
-// (see broadcastBatchToSubscriber) rather than prebuilt into a per-subscriber
+// (see batchFanout.sendTo) rather than prebuilt into a per-subscriber
 // map, keeping the hot path free of an O(affected-entities) map allocation per
 // subscriber.
 func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult) {
@@ -121,9 +122,73 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 		return evt
 	}
 
-	for _, sub := range subs {
-		m.broadcastBatchToSubscriber(sub, batch, res, wsKeys, batchEventCache, materialized, removed)
+	// Ordering is subscriber-independent, so pay for it once.
+	fan := &batchFanout{
+		batch:           batch,
+		res:             res,
+		wsKeys:          wsKeys,
+		refs:            orderedAffectedRefs(res.AffectedEntities),
+		batchEventCache: batchEventCache,
+		materialized:    materialized,
+		removed:         removed,
 	}
+	for _, sub := range subs {
+		fan.sendTo(sub)
+	}
+}
+
+// affectedRef pairs a ref with its transition so the per-subscriber
+// materialized/removed passes never re-look-up AffectedEntities.
+type affectedRef struct {
+	ref   EntityRef
+	trans EntityWorkspaceTransition
+}
+
+// materializeRank orders an EntityKind by what a client's projection needs
+// FIRST. A tab's tile_id names a node, and a floating window's root_node_id
+// names one too, so nodes lead and tabs trail. Within a kind the order is
+// irrelevant: every node is installed before any tab reads one.
+func materializeRank(k EntityKind) int {
+	switch k {
+	case EntityKindNode:
+		return 0
+	case EntityKindFloatingWindow:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// orderedAffectedRefs flattens AffectedEntities into a deterministic slice.
+//
+// Go map iteration is randomized, and frame order is a WIRE CONTRACT here (see
+// batchFanout.sendTo), so the randomization has to be removed rather
+// than merely tolerated: a cross-workspace move materializes both a node and
+// the tab anchored to it, and delivering the tab first reopens exactly the
+// window this ordering exists to close.
+func orderedAffectedRefs(affected map[EntityRef]EntityWorkspaceTransition) []affectedRef {
+	out := make([]affectedRef, 0, len(affected))
+	for ref, trans := range affected {
+		out = append(out, affectedRef{ref: ref, trans: trans})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := materializeRank(out[i].ref.Kind), materializeRank(out[j].ref.Kind)
+		if ri != rj {
+			return ri < rj
+		}
+		a, b := out[i].ref, out[j].ref
+		if a.NodeID != b.NodeID {
+			return a.NodeID < b.NodeID
+		}
+		if a.WindowID != b.WindowID {
+			return a.WindowID < b.WindowID
+		}
+		if a.TabID != b.TabID {
+			return a.TabID < b.TabID
+		}
+		return a.TabType < b.TabType
+	})
+	return out
 }
 
 // batchWorkspaceKeys returns, in first-seen order, the distinct non-empty
@@ -169,7 +234,7 @@ func subscriberWorkspaceMask(sub *Subscriber, wsKeys []string) uint64 {
 
 // batchVisibleOpsEvent filters batch to the ops the given visibility verdict
 // keeps and wraps them in a MarshaledEvent, or returns nil when none are
-// visible. Split out of broadcastBatchToSubscriber so the event can be built
+// visible. Split out of batchFanout.sendTo so the event can be built
 // once per distinct visibility bitmask and shared across subscribers.
 func batchVisibleOpsEvent(batch *leapmuxv1.OpBatch, visible func(EntityRef) subscriberVisibility) *MarshaledEvent {
 	// Lazy-allocate the visibleOps slice: subscribers with tight filters often
@@ -216,21 +281,50 @@ func batchVisibleOpsEvent(batch *leapmuxv1.OpBatch, visible func(EntityRef) subs
 
 // subscriberVisibility carries the pre/post-batch visibility flags an
 // entity has for a given subscriber filter, computed inline per subscriber
-// in broadcastBatchToSubscriber.
+// in batchFanout.sendTo.
 type subscriberVisibility struct {
 	preVisible  bool
 	postVisible bool
 }
 
-func (m *Manager) broadcastBatchToSubscriber(
-	sub *Subscriber,
-	batch *leapmuxv1.OpBatch,
-	res ValidationResult,
-	wsKeys []string,
-	batchEventCache map[uint64]*MarshaledEvent,
-	materialized func(EntityRef) *MarshaledEvent,
-	removed func(EntityRef) *MarshaledEvent,
-) {
+// batchFanout holds everything one batch broadcast keeps constant across
+// subscribers, so the per-subscriber send takes only the subscriber. Built once
+// per broadcastBatch; every field is read-only to sendTo except batchEventCache,
+// which memoizes across subscribers by design and is safe because broadcastBatch
+// holds the projection lock for the whole fan-out.
+type batchFanout struct {
+	batch           *leapmuxv1.OpBatch
+	res             ValidationResult
+	wsKeys          []string
+	refs            []affectedRef
+	batchEventCache map[uint64]*MarshaledEvent
+	materialized    func(EntityRef) *MarshaledEvent
+	removed         func(EntityRef) *MarshaledEvent
+}
+
+// batchEventFor returns this subscriber's batch frame, shared with same-mask
+// peers when the cache is enabled.
+//
+// The nil-cache arm is a SOUNDNESS gate, not an allocation one, and must not be
+// "simplified" away: subscriberWorkspaceMask packs bit i per key, and in Go a
+// uint64 shift of >= 64 evaluates to 0, so past 64 workspace keys two
+// subscribers whose verdicts differ only above bit 63 collapse onto one mask and
+// would be handed each other's filtered ops. broadcastBatch leaves the cache nil
+// in that case, which this arm keeps honouring by also skipping the mask.
+func (f *batchFanout) batchEventFor(sub *Subscriber, visible func(EntityRef) subscriberVisibility) *MarshaledEvent {
+	if f.batchEventCache == nil {
+		return batchVisibleOpsEvent(f.batch, visible)
+	}
+	mask := subscriberWorkspaceMask(sub, f.wsKeys)
+	evt, built := f.batchEventCache[mask]
+	if !built {
+		evt = batchVisibleOpsEvent(f.batch, visible)
+		f.batchEventCache[mask] = evt
+	}
+	return evt
+}
+
+func (f *batchFanout) sendTo(sub *Subscriber) {
 	// visible computes a ref's pre/post visibility for this subscriber inline
 	// from its filter, avoiding a prebuilt O(affected-entities) map per
 	// subscriber: IsAllowed is a single cheap lookup, and for a nil/all-workspaces
@@ -239,13 +333,43 @@ func (m *Manager) broadcastBatchToSubscriber(
 	// transition (Pre == Post == ""), i.e. not visible either side, matching the
 	// old map's zero value for a missing key.
 	visible := func(ref EntityRef) subscriberVisibility {
-		trans := res.AffectedEntities[ref]
+		trans := f.res.AffectedEntities[ref]
 		return subscriberVisibility{
 			preVisible:  sub.Filter.IsAllowed(trans.Pre),
 			postVisible: sub.Filter.IsAllowed(trans.Post),
 		}
 	}
 
+	// FRAME ORDER IS A CONTRACT, not an implementation detail.
+	//
+	// 1. EntityMaterialized FIRST, nodes before the tabs anchored to them.
+	//
+	// A batch that creates a tile and moves a tab onto it -- emitSplitTile, and
+	// every make-grid -- has the TILE's ops stripped from the batch frame: a
+	// brand-new node has Pre == "" and IsAllowed("") is false for every filter,
+	// so `keep = pre && post` drops them, while the tab's SetTabRegister(tile_id)
+	// survives as a stable-visibility op. Sent batch-first, the client applies a
+	// tab whose tile_id names a node it does not have, resolveTileWorkspace
+	// cannot reach a root, and the tab drops out of the projection for a tick.
+	// That is true for the ORIGINATING client too: consumeRemote splices the
+	// pending batch by id after applying only the ops that arrived.
+	//
+	// The three frames touch DISJOINT entity sets (batch keeps `pre && post`,
+	// materialized `!pre && post`, removed `pre && !post`), so materialized-first
+	// double-applies nothing.
+	//
+	// `refs` is kind-ordered so this also holds for a cross-workspace move, where
+	// the node AND the tab both materialize.
+	for _, a := range f.refs {
+		if sub.Filter.IsAllowed(a.trans.Pre) || !sub.Filter.IsAllowed(a.trans.Post) {
+			continue
+		}
+		if evt := f.materialized(a.ref); evt != nil {
+			_ = sub.Send(evt)
+		}
+	}
+
+	// 2. The batch frame.
 	// Batch event: the filtered op subset a subscriber sees is determined by its
 	// visibility verdict over the batch's workspaces, so memoize the resulting
 	// MarshaledEvent by that verdict's bitmask (when enabled). Subscribers with an
@@ -255,41 +379,23 @@ func (m *Manager) broadcastBatchToSubscriber(
 	// rebuild); a hit reuses it. The shared *MarshaledEvent is read-only to every
 	// subscriber (only its sync.Once-guarded Bytes() is called), so fanning it out
 	// is safe -- identical to how materialized/removed events are already shared.
-	if batchEventCache != nil {
-		mask := subscriberWorkspaceMask(sub, wsKeys)
-		evt, built := batchEventCache[mask]
-		if !built {
-			evt = batchVisibleOpsEvent(batch, visible)
-			batchEventCache[mask] = evt
-		}
-		if evt != nil {
-			_ = sub.Send(evt)
-		}
-	} else if evt := batchVisibleOpsEvent(batch, visible); evt != nil {
+	if evt := f.batchEventFor(sub, visible); evt != nil {
 		_ = sub.Send(evt)
 	}
 
-	// Emit one EntityMaterialized / EntityRemoved per affected entity.
-	// Range over key AND transition so the per-(subscriber × entity) visibility
-	// test does not re-hash the key the range just handed it (the `visible`
-	// closure above re-looks-up AffectedEntities[ref]; inlining the value here
-	// skips S×E redundant lookups across a broadcast).
-	// The shared event pointer is safe to fan out: subscribers treat
-	// it as read-only and the WS writer marshals on its own thread.
-	for ref, trans := range res.AffectedEntities {
-		preVisible := sub.Filter.IsAllowed(trans.Pre)
-		postVisible := sub.Filter.IsAllowed(trans.Post)
-		if preVisible == postVisible {
+	// 3. EntityRemoved LAST, and this one may NOT move: consumeEntityRemoved runs
+	// dropPendingByPredicate, so running it before consumeRemote's echo-splice
+	// would spuriously report ops this very batch is confirming as dropped and
+	// fire onPendingDropped for them.
+	//
+	// The shared event pointer is safe to fan out: subscribers treat it as
+	// read-only and the WS writer marshals on its own thread.
+	for _, a := range f.refs {
+		if !sub.Filter.IsAllowed(a.trans.Pre) || sub.Filter.IsAllowed(a.trans.Post) {
 			continue
 		}
-		if !preVisible && postVisible {
-			if evt := materialized(ref); evt != nil {
-				_ = sub.Send(evt)
-			}
-		} else if preVisible && !postVisible {
-			if evt := removed(ref); evt != nil {
-				_ = sub.Send(evt)
-			}
+		if evt := f.removed(a.ref); evt != nil {
+			_ = sub.Send(evt)
 		}
 	}
 }

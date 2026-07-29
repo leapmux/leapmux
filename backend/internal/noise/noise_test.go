@@ -309,9 +309,9 @@ func TestCipherStateRekeyGraceWindowExpiry(t *testing.T) {
 func TestCipherStateRekeySendDirectionKeepsNoPrev(t *testing.T) {
 	// SCAN-7: the send direction keeps no grace window. rekeyWithSecret with
 	// retainPrev=false must zero the replaced key and NOT retain a prev —
-	// structurally, so a caller cannot forget a follow-up clearPrev and leave a
-	// live previous key on the Send CipherState (which no Decrypt ever reads but
-	// which lingers until close).
+	// structurally, so there is no follow-up clear step for a caller to forget
+	// and leave a live previous key on the Send CipherState (which no Decrypt
+	// ever reads but which lingers until close).
 	key := [keyLen]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 	cs := &CipherState{k: key}
 	oldKey := &CipherState{k: key}

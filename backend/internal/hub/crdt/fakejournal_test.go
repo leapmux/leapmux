@@ -187,18 +187,6 @@ func (f *fakeJournal) batchCount() int {
 	return len(f.batches)
 }
 
-// fakeOutbox is a minimal LifecycleOutboxReader that never returns
-// pending rows — adequate for the tests that don't exercise the
-// outbox-driven lifecycle path.
-type fakeOutbox struct{}
-
-func (fakeOutbox) ListPendingLifecycleOutbox(_ context.Context, _ string) ([]crdt.LifecycleOutboxRow, error) {
-	return nil, nil
-}
-func (fakeOutbox) MarkLifecycleOutboxConsumed(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
-
 // errCommitFailed is the canonical commit-failure used by tests that
 // inject a journal error.
 var errCommitFailed = errors.New("test: commit failed")

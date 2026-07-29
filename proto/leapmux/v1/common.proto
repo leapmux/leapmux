@@ -83,3 +83,30 @@ message GitFileStatusEntry {
   int32 staged_lines_deleted = 7;               // Staged lines deleted
   string old_path = 8;                          // Previous path (for renames/copies)
 }
+
+// Why a hydration request did or did not return a record for one tab.
+//
+// A batch reply that simply OMITS a tab is ambiguous, and the client cannot
+// resolve the ambiguity locally: it cannot tell "this channel has not been told
+// about that tab's workspace yet" -- transient, because the hub grows the
+// channel's accessible set asynchronously -- from "this worker holds no record
+// for that id", which no amount of retrying will change. Without the
+// distinction the client must assume transient and retry forever, pinning a
+// timer per unanswerable tab for the life of the page.
+enum TabHydrationStatus {
+  TAB_HYDRATION_STATUS_UNSPECIFIED = 0;
+  // Record found; it is included in the response body.
+  TAB_HYDRATION_STATUS_FOUND = 1;
+  // A record exists but this channel may not see its workspace yet. Transient:
+  // keep asking. (This reveals only that an id the caller already named exists
+  // somewhere in the caller's OWN account -- channel scoping is per-workspace
+  // within one user, not across users.)
+  TAB_HYDRATION_STATUS_NOT_ACCESSIBLE = 2;
+  // No record for that id on this worker. Retrying cannot change the answer.
+  TAB_HYDRATION_STATUS_ABSENT = 3;
+}
+
+message TabHydrationVerdict {
+  string tab_id = 1;
+  TabHydrationStatus status = 2;
+}

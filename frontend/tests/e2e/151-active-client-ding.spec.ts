@@ -56,7 +56,6 @@ test.describe('Active-client ding gate', () => {
   test('dispatches `leapmux:turn-end-played` only when this client is the active client', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Active Client Ding')
-    const workspaceUrl = `/workspace/${wsId}`
 
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
@@ -65,8 +64,8 @@ test.describe('Active-client ding gate', () => {
 
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, workspaceUrl),
-        gotoWorkspace(pageB, adminToken, workspaceUrl),
+        gotoWorkspace(pageA, adminToken, wsId),
+        gotoWorkspace(pageB, adminToken, wsId),
       ])
 
       await recordDing(pageA)

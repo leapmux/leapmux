@@ -1,7 +1,8 @@
 import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { GridAxis } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { For } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { FloatingWindowContainer } from './FloatingWindowContainer'
@@ -10,7 +11,8 @@ import { TilingLayout } from './TilingLayout'
 
 interface FloatingWindowLayerProps {
   floatingWindowStore: FloatingWindowStoreType
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  selection: TabSelectionStore
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (windowId: string, splitId: string, ratios: number[]) => void
   onGridRatiosChange?: (windowId: string, gridId: string, axis: GridAxis, ratios: number[]) => void
@@ -36,7 +38,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
     const win = props.floatingWindowStore.getWindow(windowId)
     if (!win?.focusedTileId)
       return 'Window'
-    return props.tabStore.getActiveTabForTile(win.focusedTileId)?.title || 'Window'
+    return props.selection.activeTabForTile(win.focusedTileId)?.title || 'Window'
   }
 
   return (

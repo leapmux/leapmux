@@ -76,8 +76,8 @@ export interface TerminalInstance {
  * into a UTF-8 byte stream of ANSI escape sequences. Writing the result
  * into a freshly `terminal.reset()`-ed instance via `applyTerminalData`
  * with `isSnapshot=true` reproduces the same visible state — that's the
- * exact path used on workspace re-entry, so the bytes can be stuffed
- * straight into `tab.screen` for the registry snapshot.
+ * exact path used when a terminal's pane is re-created, so the bytes can be
+ * stored straight into the tab's `screen` metadata and replayed from there.
  */
 export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
   const encoded = new TextEncoder().encode(instance.serializeAddon.serialize())

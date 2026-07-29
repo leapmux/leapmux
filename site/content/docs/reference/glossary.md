@@ -125,7 +125,7 @@ A long-running daemon (`leapmux worker`) that runs on a developer machine and ho
 
 ### Workspace
 
-A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. Each workspace's tabs run agents and terminals on a Worker you pick. An open workspace lives at `/workspace/{id}`. See [Workspaces](/docs/using/workspaces/).
+A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. Each workspace's tabs run agents and terminals on a Worker you pick. One workspace is open at a time, and the one you were last on is remembered between visits. See [Workspaces](/docs/using/workspaces/).
 
 ### Worktree
 

@@ -20,7 +20,7 @@ import {
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 export interface ServerInfo {
   hubUrl: string
@@ -33,7 +33,6 @@ export interface ServerInfo {
 
 interface WorkspaceFixture {
   workspaceId: string
-  workspaceUrl: string
 }
 
 export const test = base.extend<
@@ -142,9 +141,7 @@ export const test = base.extend<
     // Open an initial agent — workspace creation on the hub no longer
     // auto-creates one (that was the old worker behavior).
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const workspaceUrl = `/workspace/${workspaceId}`
-
-    await use({ workspaceId, workspaceUrl })
+    await use({ workspaceId })
 
     // Teardown (best effort): stop the workspace's agents on the worker, THEN
     // soft-delete on the hub -- the same two-step cascade the browser app runs.
@@ -169,8 +166,7 @@ export const test = base.extend<
   // Authenticated workspace: logs in via token + navigates to workspace
   authenticatedWorkspace: async ({ page, workspace, leapmuxServer }, use) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
 
     await use(workspace)
     // Teardown handled by workspace fixture

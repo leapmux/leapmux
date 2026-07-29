@@ -69,9 +69,12 @@ export class KeyPinStore {
    * await that still resolves to 'reject'.
    */
   private confirmEpoch = 0
+  /** The fail-closed prompt this store was built with, restored on unregister. */
+  private readonly defaultConfirmKeyPin: KeyPinConfirmFn
 
   constructor(opts: KeyPinStoreOpts) {
     this.confirmKeyPin = opts.confirmKeyPin
+    this.defaultConfirmKeyPin = opts.confirmKeyPin
   }
 
   /**
@@ -79,11 +82,30 @@ export class KeyPinStore {
    * dialog after the singleton ChannelManager (and this store) is constructed.
    * Clears the session reject set: rejects that happened under the fail-closed
    * default stub must not poison the real UI for the rest of the tab.
+   *
+   * Returns a disposer restoring the fail-closed default, and the caller MUST
+   * run it with its owner. This store is a module-level singleton; the UI mount
+   * is not, and AppShell genuinely remounts inside one page lifetime (logout ->
+   * /login -> login -> /). A prompt closed over an UNMOUNTED dialog never
+   * settles -- nothing renders it, so its `resolve` is never called -- and
+   * `resolve` awaits it with no timeout. Worse, `enqueueConfirm` chains every
+   * prompt on `confirmChain`, which only advances when the previous one
+   * settles: one mismatch in that window would deadlock TOFU confirmation for
+   * the life of the page, including for the mount that came after. Restoring
+   * the default makes that window fail closed instead of hang.
    */
-  setConfirmKeyPin(fn: KeyPinConfirmFn): void {
+  setConfirmKeyPin(fn: KeyPinConfirmFn): () => void {
     this.confirmKeyPin = fn
     this.rejectedWorkers.clear()
     this.confirmEpoch++
+    return () => {
+      // A newer registration already won: restoring now would clobber the LIVE
+      // mount's prompt with the fail-closed stub.
+      if (this.confirmKeyPin !== fn)
+        return
+      this.confirmKeyPin = this.defaultConfirmKeyPin
+      this.confirmEpoch++
+    }
   }
 
   /**

@@ -197,8 +197,8 @@ const keyPinStore = new KeyPinStore({
 })
 
 /** Register the key-pin confirmation callback (called by AppShell). */
-export function setConfirmKeyPin(fn: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>): void {
-  keyPinStore.setConfirmKeyPin(fn)
+export function setConfirmKeyPin(fn: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>): () => void {
+  return keyPinStore.setConfirmKeyPin(fn)
 }
 
 // The identity this page believes it is authenticated as. Set by AppShell, which

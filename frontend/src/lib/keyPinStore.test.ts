@@ -72,6 +72,43 @@ describe('keyPinStore', () => {
     expect(confirmKeyPin).toHaveBeenCalledOnce()
   })
 
+  /**
+   * The prompt registration belongs to a UI mount; this store is a module-level
+   * singleton that outlives it. Without a disposer the singleton keeps a closure
+   * over the dead mount's dialog, which nothing renders — so its `resolve` is
+   * never called, and `KeyPinStore.resolve` awaits that with no timeout while
+   * `enqueueConfirm` queues every later prompt behind it. Failing closed is the
+   * only correct answer when there is no UI to ask.
+   */
+  it('restores the fail-closed default when the registration is disposed', async () => {
+    const mounted = vi.fn().mockResolvedValue('accept' as const)
+    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const dispose = store.setConfirmKeyPin(mounted)
+    ;(await store.resolve('w1', bundle(1)))()
+
+    dispose()
+
+    await expect(store.resolve('w1', bundle(9))).rejects.toBeInstanceOf(KeyPinRejectedError)
+    expect(mounted, 'a disposed prompt must never be asked').not.toHaveBeenCalled()
+  })
+
+  it('a stale disposer does not clobber a newer registration', async () => {
+    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const first = vi.fn().mockResolvedValue('reject' as const)
+    const second = vi.fn().mockResolvedValue('accept' as const)
+    const disposeFirst = store.setConfirmKeyPin(first)
+    store.setConfirmKeyPin(second)
+
+    // The old mount tears down AFTER the new one registered — the ordinary
+    // remount interleaving. It must not drag the live prompt back to the stub.
+    disposeFirst()
+
+    ;(await store.resolve('w1', bundle(1)))()
+    ;(await store.resolve('w1', bundle(9)))()
+    expect(second, 'the live mount still owns the prompt').toHaveBeenCalledOnce()
+    expect(first).not.toHaveBeenCalled()
+  })
+
   it('clearKeyPin does not clear the session reject set', async () => {
     const confirmKeyPin = vi.fn().mockResolvedValue('reject' as const)
     const store = new KeyPinStore({ confirmKeyPin })

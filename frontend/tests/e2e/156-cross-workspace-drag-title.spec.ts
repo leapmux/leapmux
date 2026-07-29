@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -158,16 +158,17 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
 
       // Land on wsB (the destination — the user's repro had the
       // target workspace active at the moment of the drag).
-      await page.goto(`/workspace/${wsB}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, wsB)
       await waitForInitialAgent(page)
-      const initialBLabels = await tabbarAgentLabels(page)
-      expect(initialBLabels).toEqual([wsBTitle])
+      // Poll: the title is worker-side metadata, fetched asynchronously after
+      // the tab itself renders from the CRDT projection. A one-shot read races
+      // that fetch. This still fails if the title never arrives.
+      await expect.poll(() => tabbarAgentLabels(page)).toEqual([wsBTitle])
 
       // Expand wsA in the sidebar so its tab-tree-leaf mounts and is
       // draggable. The chevron is the first SVG inside the workspace
       // item; clicking it fires `onExpandWorkspace`, which lazy-loads
-      // the registry snapshot for wsA.
+      // wsA's tabs, which the projection already carries.
       const wsAItem = page.locator(`[data-testid="workspace-item-${wsA}"]`)
       await wsAItem.locator('svg').first().click()
       // Two leaves expected: wsA's (the source) and wsB's (the
@@ -175,10 +176,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Verify wsA's leaf renders with its seeded title before the
-      // drag — confirms the registry-load path delivered the metadata
+      // drag — confirms the projection + hydrators delivered the metadata
       // we'll be asserting survives the move.
-      const wsALabelsBefore = await sidebarLeafLabelsForWorkspace(page, wsA)
-      expect(wsALabelsBefore).toEqual([wsATitle])
+      await expect.poll(() => sidebarLeafLabelsForWorkspace(page, wsA)).toEqual([wsATitle])
 
       // Target: drop on wsB's workspace item in the sidebar (it's the
       // active workspace, so this is a non-active → active move).

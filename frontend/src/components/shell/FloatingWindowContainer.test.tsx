@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
+import { createTestFloatingWindowStore } from '~/test-support/tabStores'
 import { FloatingWindowContainer, resolveParentSize, snapPosition } from './FloatingWindowContainer'
 
 describe('snapPosition', () => {
@@ -70,7 +70,7 @@ interface ContainerOpts {
 }
 
 function renderContainer(opts: ContainerOpts = {}) {
-  const store = createFloatingWindowStore()
+  const store = createTestFloatingWindowStore()
   const created = store.addWindow({
     x: opts.x ?? 0.1,
     y: opts.y ?? 0.1,

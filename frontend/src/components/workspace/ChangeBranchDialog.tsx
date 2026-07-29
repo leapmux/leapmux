@@ -58,8 +58,10 @@ interface ChangeBranchDialogProps {
   /**
    * Notified after a successful in-place checkout or branch creation
    * with the local branch the working directory is now on. Parents
-   * route this into `tabStore.stampBranchOnTabs` (which carries the
-   * rationale for why direct stamping is needed).
+   * route this into AppShell's `onBranchChanged` handler, which stamps the
+   * new label onto every tab in the same (workerId, gitToplevel) repo across
+   * every workspace (it carries the rationale for why direct stamping is
+   * needed rather than waiting for the next git-status poll).
    */
   onBranchChanged?: (newBranch: string) => void
   onAgentCreated?: (agent: AgentInfo) => void

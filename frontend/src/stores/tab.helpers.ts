@@ -1,4 +1,5 @@
-import type { AgentTab, BaseTab, GitTabFields, Tab, TerminalTab } from './tab.types'
+import type { AgentTab, GitTabFields, Tab, TerminalTab } from './tab.types'
+import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
@@ -23,27 +24,38 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  *  - AppShell's branch-changed routing to decide whether to refresh the
  *    gitFileStatusStore singleton (only when the changed repo is the
  *    active tab's repo).
- *  - `tabStore.stampBranchOnTabs` to find every tab in the same repo.
- * Treats undefined workerId / gitToplevel as the empty string so a tab
- * that's never been git-resolved doesn't accidentally match an empty
- * comparison.
+ *  - AppShell's branch stamp, to find every tab in the same repo.
+ *
+ * An empty `workerId` or `repoToplevel` never matches. Without those guards the
+ * `?? ''` coercions below turn each into a WILDCARD over every tab whose git
+ * identity hasn't been resolved yet: a branch change in one un-stamped repo
+ * would re-label tabs in a sibling un-stamped repo on the same worker, and an
+ * unresolved worker would match every such tab regardless of worker. Callers
+ * must resolve both first. (The stamp now spans every workspace, not just the
+ * active one, so the blast radius of that leak is the whole account.)
+ *
+ * BOTH halves are guarded HERE. The worker half used to live at one call site
+ * — `stampBranchOnTabs`, whose own doc said the two halves need the guard "for
+ * the same reason" — which left the predicate itself answering `true` for
+ * `('' === '')` and made every future caller responsible for remembering. A
+ * guard that only one caller applies is a guard the next caller does not have.
  */
 export function isSameRepo(
   tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
   workerId: string,
   repoToplevel: string,
 ): boolean {
-  if (!tabLike)
+  if (!tabLike || !workerId || !repoToplevel)
     return false
   return (tabLike.workerId ?? '') === workerId && (tabLike.gitToplevel ?? '') === repoToplevel
 }
 
 /**
- * Worker-provided fields for a terminal tab, ready to spread into a `Tab`
- * or pass to `updateTab`. Excludes layout-specific fields (`type`, `id`,
- * `tileId`, `position`) which the caller controls.
+ * Worker-provided fields for a terminal tab, ready to patch into `tabMetadata`.
+ * Excludes layout-specific fields (`type`, `id`, `tileId`, `position`), which
+ * come from the projection rather than the worker.
  */
-export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> {
+export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> {
   const status: TerminalStatus
     = term.status === TerminalStatus.READY && term.exited ? TerminalStatus.EXITED : term.status
   return {
@@ -55,26 +67,23 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     lastOffset: term.screen.length > 0 ? Number(term.screenEndOffset) : undefined,
     cols: term.cols || undefined,
     rows: term.rows || undefined,
-    gitBranch: term.gitBranch || undefined,
-    gitOriginUrl: term.gitOriginUrl || undefined,
-    gitToplevel: term.gitToplevel || undefined,
-    gitIsWorktree: term.gitIsWorktree || undefined,
+    // The four git fields as one group, through the shared normalizer, so this
+    // producer cannot answer "no answer" differently from the other two.
+    // Real values, NOT collapsed to undefined -- `tabMetadata.patch` skips
+    // undefined, and this producer runs a SECOND time over a populated row:
+    // `useTabHydrators` re-arms on DISCONNECTED, which the worker-offline sweep
+    // sets. Collapsing the negative cases means a terminal that stopped being a
+    // worktree, or finished starting, can never be told. (`title` above is
+    // deliberately NOT in this group: an empty OSC title must leave a user's
+    // rename alone.)
+    ...toGitTabFields(term.gitBranch, term.gitOriginUrl, term.gitToplevel, term.gitIsWorktree),
     status,
-    startupError: term.startupError || undefined,
-    startupMessage: term.startupMessage || undefined,
+    startupError: term.startupError,
+    startupMessage: term.startupMessage,
     // Any persisted screen means the shell already painted content; an
     // exited DB-only terminal has no future data source, so it must not
     // remain covered by the startup overlay either.
     contentReady: term.screen.length > 0 || term.exited ? true : undefined,
-  }
-}
-
-/** Build a terminal `Tab` from a `listTerminals` proto record. */
-export function protoToTerminalTab(workerId: string, term: ProtoTerminal): TerminalTab {
-  return {
-    type: TabType.TERMINAL,
-    id: term.terminalId,
-    ...protoToTerminalTabFields(workerId, term),
   }
 }
 
@@ -137,9 +146,9 @@ export function setOptionValue(map: Record<string, string> | undefined, id: stri
 }
 
 /**
- * Worker-provided fields for an agent tab, ready to spread into a `Tab`
- * or pass to `updateTab`. Excludes layout-specific fields (`type`, `id`,
- * `tileId`, `position`) which the caller controls.
+ * Worker-provided fields for an agent tab, ready to patch into `tabMetadata`.
+ * Excludes layout-specific fields (`type`, `id`, `tileId`, `position`), which
+ * come from the projection rather than the worker.
  *
  * Ingestion point: primes `settingsLabelCache` from the agent's option groups so
  * settings-related notifications can render display names without carrying the full
@@ -160,19 +169,16 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     createdAt: agent.createdAt || undefined,
     startupError: agent.startupError || undefined,
     startupMessage: agent.startupMessage || undefined,
-    gitBranch: agent.gitStatus?.branch || undefined,
-    gitOriginUrl: agent.gitStatus?.originUrl || undefined,
-    gitToplevel: agent.gitStatus?.toplevel || undefined,
-    gitIsWorktree: agent.gitStatus?.isWorktree || undefined,
-  }
-}
-
-/** Build an agent `Tab` from a `listAgents` proto record. */
-export function protoToAgentTab(workerId: string, agent: AgentInfo): AgentTab {
-  return {
-    type: TabType.AGENT,
-    id: agent.id,
-    ...protoToAgentTabFields(workerId, agent),
+    // The four git fields as one group, through the shared normalizer. Three
+    // producers of this group must agree about what "no answer" is, and the
+    // only way to make that true rather than merely asserted is for the answer
+    // to live in one place.
+    ...toGitTabFields(
+      agent.gitStatus?.branch ?? '',
+      agent.gitStatus?.originUrl ?? '',
+      agent.gitStatus?.toplevel ?? '',
+      agent.gitStatus?.isWorktree ?? false,
+    ),
   }
 }
 
@@ -310,23 +316,42 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
 }
 
 /**
- * Normalize a git-info tuple (from AgentGitStatus or a flat
- * TerminalStatusChange) into the tab shape, mapping empty strings to
- * undefined so comparisons stay sane. `isWorktree` collapses `false`
- * to `undefined`: the field is read with `?? false` everywhere on the
- * tab side (see `gitTabFieldsDiffer`, `BranchGroup.isWorktree`), so
- * `false` and `undefined` are observationally identical, and storing
- * the proto zero would just churn `===`-based equality checks without
- * adding information. Callers that need to distinguish "probed but not
- * a worktree" from "never probed" must source that distinction from a
- * dedicated probe; the broadcast/refresh path doesn't carry it.
+ * THE normalizer for the four git fields, from either producer shape
+ * (`AgentGitStatus` or a flat `TerminalStatusChange`). Returns `undefined` when
+ * the probe produced no answer at all, so callers say nothing rather than
+ * asserting a negative.
+ *
+ * Two rules, and they are the same rule applied to all four fields.
+ *
+ * NO ANSWER IS NOT A NEGATIVE. The worker leaves all four at proto zero when
+ * the probe returns nothing (`gitutil.GetGitStatus` yields nil when both
+ * porcelain probes fail, and its caller only assigns `if gs != nil`). Writing
+ * `isWorktree: false` into that is an assertion the worker never made — the tab
+ * keeps its branch but loses its worktree disposition, so the sidebar regroups
+ * it under the non-worktree branch row and ChangeBranchDialog offers an
+ * in-place checkout on a worktree, with nothing left to re-probe it. One gate
+ * over the whole group, here, so the three producers cannot each decide
+ * differently: they used to, and the comment claiming they agreed was written
+ * while they did not.
+ *
+ * AN EMPTY ANSWER IS A REAL VALUE, so the strings stay `''` rather than
+ * collapsing to `undefined`. `tabMetadata.patch` SKIPS undefined by design — a
+ * partial row must not blank fields another source owns — so a collapsed field
+ * cannot clear a populated one: `gitTabFieldsDiffer` reports a difference,
+ * `patch` drops it, nothing changes, and the next status event repeats that
+ * forever. A repo that loses its remote would keep the dead origin in the
+ * sidebar's grouping for the life of the page. `applyGitStatusToTabs` reached
+ * the same conclusion independently and already sends raw `''`; this is the
+ * other half of that agreement.
  */
-export function toGitTabFields(branch: string, originUrl: string, toplevel: string, isWorktree: boolean): GitTabFields {
+export function toGitTabFields(branch: string, originUrl: string, toplevel: string, isWorktree: boolean): GitTabFields | undefined {
+  if (!branch && !originUrl && !toplevel)
+    return undefined
   return {
-    gitBranch: branch || undefined,
-    gitOriginUrl: originUrl || undefined,
-    gitToplevel: toplevel || undefined,
-    gitIsWorktree: isWorktree || undefined,
+    gitBranch: branch,
+    gitOriginUrl: originUrl,
+    gitToplevel: toplevel,
+    gitIsWorktree: isWorktree,
   }
 }
 
@@ -336,24 +361,6 @@ export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boole
     || tab.gitOriginUrl !== next.gitOriginUrl
     || tab.gitToplevel !== next.gitToplevel
     || (tab.gitIsWorktree ?? false) !== (next.gitIsWorktree ?? false)
-}
-
-/**
- * Copy-on-write splice of `next` git fields into the first tab `match` selects,
- * returning the SAME `tabs` array when there is no match or the fields don't differ --
- * so the caller can detect "nothing changed" by reference identity and skip a
- * snapshot write (a no-op write would churn the workspace snapshot and re-render the
- * sidebar). The shared core of the background-workspace git-status updates in the
- * agent and terminal event handlers, which both must touch only the one matched tab,
- * and only when its git fields actually change.
- */
-export function spliceTabGitFields(tabs: Tab[], match: (t: Tab) => boolean, next: GitTabFields): Tab[] {
-  const i = tabs.findIndex(match)
-  if (i < 0 || !gitTabFieldsDiffer(tabs[i], next))
-    return tabs
-  const copy = tabs.slice()
-  copy[i] = { ...copy[i], ...next }
-  return copy
 }
 
 /**
@@ -368,67 +375,6 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
 }
 
 /**
- * Fills in empty gitBranch / gitOriginUrl on a fresh server-provided fields
- * record from the previous tab's values. Guards against a transient
- * git-status failure on the worker (nil gs from BatchGetGitStatus) wiping
- * out authoritative values the tab already had, which would drop the tab
- * out of its sidebar group until the next workspace reload. Per-field so
- * one legitimately-cleared field (e.g. user removed `origin` remote) still
- * updates instead of being masked by the preserved branch.
- *
- * Callers: the hydration/refresh paths that rebuild tabs from ListTerminals
- * / ListAgents responses. The TerminalStatusChange / statusChange handlers
- * already guard on `(branch || origin)` so they intentionally skip empty
- * broadcasts without needing this helper.
- */
-export function preserveNonEmptyGitFields<T extends Partial<BaseTab>>(
-  fresh: T,
-  previous: Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel' | 'gitIsWorktree'> | null | undefined,
-): T {
-  if (!previous)
-    return fresh
-  const next: T = { ...fresh }
-  if (!next.gitBranch && previous.gitBranch)
-    next.gitBranch = previous.gitBranch
-  if (!next.gitOriginUrl && previous.gitOriginUrl)
-    next.gitOriginUrl = previous.gitOriginUrl
-  // Carry gitToplevel + gitIsWorktree together: they're co-derived
-  // from a single rev-parse, so a transient probe failure that wipes
-  // toplevel must also forget the disposition (the next probe will
-  // refill both). Only restore both when the fresh record has neither.
-  if (!next.gitToplevel && previous.gitToplevel) {
-    next.gitToplevel = previous.gitToplevel
-    if (next.gitIsWorktree === undefined && previous.gitIsWorktree !== undefined)
-      next.gitIsWorktree = previous.gitIsWorktree
-  }
-  return next
-}
-
-/**
- * Preserve client-only visual state when a worker rehydration payload has
- * empty fields because the PTY vanished before shutdown could persist a
- * final snapshot. This keeps a backend restart from erasing the tab title or
- * re-showing the startup overlay over an xterm that had already painted.
- */
-export function preserveTerminalDisplayFields(
-  fresh: Partial<TerminalTab>,
-  previous: Pick<TerminalTab, 'title' | 'screen' | 'lastOffset' | 'contentReady'> | null | undefined,
-): Partial<TerminalTab> {
-  if (!previous)
-    return fresh
-  const next: Partial<TerminalTab> = { ...fresh }
-  if (!next.title && previous.title)
-    next.title = previous.title
-  if (!next.screen && previous.screen && previous.screen.length > 0)
-    next.screen = previous.screen
-  if (next.lastOffset === undefined && previous.lastOffset !== undefined)
-    next.lastOffset = previous.lastOffset
-  if (next.contentReady === undefined && previous.contentReady)
-    next.contentReady = true
-  return next
-}
-
-/**
  * Optimistic git branch/origin to seed on a freshly-opened agent or terminal
  * tab. A new tab starts with empty gitBranch/gitOriginUrl and only learns
  * them once the async phase-1 startup broadcasts TerminalStatusChange; in
@@ -439,6 +385,15 @@ export function preserveTerminalDisplayFields(
  * Only safe to seed when the active tab and the new tab resolve to the same
  * git directory — otherwise the seeded values would be wrong for the new
  * tab's repo. File tabs have no authoritative git info so they never seed.
+ *
+ * ABSENT KEYS ARE OMITTED, not set to `undefined`. Both callers spread this
+ * AFTER the worker's own fields (`{ ...agentFields, ...seed }`), and object
+ * spread copies `undefined`-valued OWN keys — so a key present-but-undefined
+ * does not "leave the value alone", it ERASES it. An active tab in the same
+ * directory whose branch has not resolved yet still passes the origin/toplevel
+ * guard above, and would have wiped the authoritative `gitBranch` the
+ * OpenAgent response just supplied. A seed whose job is to ADD information
+ * must never subtract.
  */
 export function resolveOptimisticGitInfo(
   activeTab: Tab | null | undefined,
@@ -457,12 +412,16 @@ export function resolveOptimisticGitInfo(
   const newDir = effectiveGitDir(newTab)
   if (!activeDir || activeDir !== newDir)
     return {}
-  return {
-    gitBranch: activeTab.gitBranch || undefined,
-    gitOriginUrl: activeTab.gitOriginUrl || undefined,
-    gitToplevel: activeTab.gitToplevel || undefined,
-    gitIsWorktree: activeTab.gitIsWorktree || undefined,
-  }
+  const seed: { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } = {}
+  if (activeTab.gitBranch)
+    seed.gitBranch = activeTab.gitBranch
+  if (activeTab.gitOriginUrl)
+    seed.gitOriginUrl = activeTab.gitOriginUrl
+  if (activeTab.gitToplevel)
+    seed.gitToplevel = activeTab.gitToplevel
+  if (activeTab.gitIsWorktree !== undefined)
+    seed.gitIsWorktree = activeTab.gitIsWorktree
+  return seed
 }
 
 /**
@@ -523,18 +482,6 @@ export function tabDisplayLabel(tab: Tab): string {
 }
 
 /**
- * Build an O(1) lookup map of tabs by `tabKey`. Used by hydration paths
- * that need to merge fresh server data with the previous snapshot's
- * client-only fields (preserveNonEmptyGitFields, preserveTerminalDisplayFields).
- */
-export function tabsByKey(tabs: readonly Tab[]): Map<string, Tab> {
-  const m = new Map<string, Tab>()
-  for (const t of tabs)
-    m.set(tabKey(t), t)
-  return m
-}
-
-/**
  * Inverse of `tabKey`. Returns null when the input is malformed (missing
  * colon, non-numeric type) so callers can decide how to handle stale or
  * corrupt persisted keys.
@@ -551,4 +498,60 @@ export function parseTabKey(key: string): { type: TabType, id: string } | null {
 
 export function canCloseTab(readOnly: boolean | undefined, tab: Tab): boolean {
   return !readOnly || tab.type === TabType.FILE
+}
+
+/**
+ * `protoToTerminalTabFields` mapped into `TabMetadata`'s naming.
+ *
+ * The metadata row is flat and shared by every tab kind, so the terminal's
+ * `status` cannot keep that name — an AGENT tab has its own status concept.
+ * Every caller that patches terminal metadata goes through here so the rename
+ * happens in exactly one place.
+ */
+export function terminalMetadata(workerId: string, term: ProtoTerminal) {
+  const fields = protoToTerminalTabFields(workerId, term)
+  const { status, ...rest } = fields
+  return { ...rest, terminalStatus: status }
+}
+
+/**
+ * Metadata seed for a terminal THIS client just opened via `OpenTerminal`.
+ *
+ * STARTING, never READY. `OpenTerminal` returns once the row is persisted; the
+ * PTY comes up asynchronously and the worker broadcasts STARTING phase labels
+ * and then READY or STARTUP_FAILED. A READY seed is not merely optimistic, it
+ * is STICKY: `applyTerminalStatusChange`'s STARTING arm refuses to move a tab
+ * that already reads READY, so every phase label is dropped AND the later READY
+ * arm no-ops too — the lie outlives the startup it was guessing at, and with
+ * `hydrated` set nothing re-asks. Seeding STARTING is self-correcting on every
+ * one of those paths.
+ *
+ * `hydrated`: the OpenTerminal response IS the worker's answer for this tab, so
+ * `useTabHydrators` must not immediately re-ask. Its reply would apply
+ * `listTerminals`' DB-sourced snapshot with none of the live handler's guards —
+ * dragging the terminal back to STARTING after the worker has already broadcast
+ * READY, and rewinding `lastOffset` so the next resubscribe replays bytes xterm
+ * has already drawn.
+ *
+ * One helper for both open paths (the tab-bar button and the dialogs) so the
+ * two cannot disagree about the same moment in a terminal's life — they did,
+ * and only one of them was right.
+ */
+export function openedTerminalMetadata(opts: {
+  title: string
+  workingDir: string
+  shellStartDir?: string
+}) {
+  return {
+    title: opts.title,
+    workingDir: opts.workingDir,
+    terminalStatus: TerminalStatus.STARTING,
+    hydrated: true,
+    // Only when the caller tracks one: `effectiveGitDir` is
+    // `shellStartDir || workingDir`, and writing an unconditional value would
+    // change what the optimistic git seed resolves against.
+    ...(opts.shellStartDir !== undefined
+      ? { shellStartDir: opts.shellStartDir || opts.workingDir }
+      : {}),
+  }
 }

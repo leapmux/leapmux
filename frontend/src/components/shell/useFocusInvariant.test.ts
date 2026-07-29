@@ -2,9 +2,8 @@ import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { useFocusInvariant } from '~/components/shell/useFocusInvariant'
 import { setCRDTBridge } from '~/lib/crdt'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { createLayoutStore } from '~/stores/layout.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
+import { createTestFloatingWindowStore, createTestLayoutStore } from '~/test-support/tabStores'
 
 afterEach(() => setCRDTBridge(null))
 
@@ -20,8 +19,8 @@ describe('useFocusInvariant', () => {
       createRoot((dispose) => {
         try {
           installTestBridge({ rootTileId: 'main' })
-          const layoutStore = createLayoutStore()
-          const floatingWindowStore = createFloatingWindowStore()
+          const layoutStore = createTestLayoutStore()
+          const floatingWindowStore = createTestFloatingWindowStore()
           useFocusInvariant({ layoutStore, floatingWindowStore })
 
           const created = floatingWindowStore.addWindow()
@@ -55,8 +54,8 @@ describe('useFocusInvariant', () => {
       createRoot((dispose) => {
         try {
           installTestBridge({ rootTileId: 'main' })
-          const layoutStore = createLayoutStore()
-          const floatingWindowStore = createFloatingWindowStore()
+          const layoutStore = createTestLayoutStore()
+          const floatingWindowStore = createTestFloatingWindowStore()
           useFocusInvariant({ layoutStore, floatingWindowStore })
 
           layoutStore.setFocusedTile('ghost-tile')
@@ -86,8 +85,8 @@ describe('useFocusInvariant', () => {
       createRoot((dispose) => {
         try {
           installTestBridge({ rootTileId: 'main' })
-          const layoutStore = createLayoutStore()
-          const floatingWindowStore = createFloatingWindowStore()
+          const layoutStore = createTestLayoutStore()
+          const floatingWindowStore = createTestFloatingWindowStore()
           useFocusInvariant({ layoutStore, floatingWindowStore })
 
           layoutStore.setFocusedTile('main')
@@ -126,8 +125,8 @@ describe('useFocusInvariant', () => {
       createRoot((dispose) => {
         try {
           installTestBridge({ rootTileId: 'main' })
-          const layoutStore = createLayoutStore()
-          const floatingWindowStore = createFloatingWindowStore()
+          const layoutStore = createTestLayoutStore()
+          const floatingWindowStore = createTestFloatingWindowStore()
           const realGetWindowForTile = floatingWindowStore.getWindowForTile
           let calls = 0
           floatingWindowStore.getWindowForTile = (tileId: string) => {

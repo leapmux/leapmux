@@ -54,12 +54,14 @@ func FindRootWorkspace(
 // without a root) and whether the current id existed; missing nodes
 // abort the walk.
 //
-// This is the shared core for the three callers that need to know
+// This is the shared core for the two callers that need to know
 // "which workspace does this node/tile/window root live in":
-// FindRootWorkspace (external CLI / hub locate), nodeWorkspace
-// (validate), resolveTileWorkspace (project). Intermediate tombstones
-// are NOT a stop condition — callers that need liveness pair the
-// result with chainAlive.
+// FindRootWorkspace (external CLI / hub locate) and nodeWorkspace
+// (validate). Intermediate tombstones are NOT a stop condition, and
+// this function reports no liveness at all — a caller that needs it
+// must check the chain itself. `project.go`'s resolveTileWorkspace
+// used to be the third caller and now does its own single walk,
+// precisely so it can answer placement and liveness together.
 func resolveParentChain(roots map[string]string, startID string, parentOf func(id string) (string, bool)) string {
 	visited := map[string]bool{}
 	cur := startID

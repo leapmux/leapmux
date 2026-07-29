@@ -35,11 +35,21 @@ func handleMoveTabWorkspace(svc *Service) channel.HandlerFunc {
 		}
 
 		// Verify the **source** tab's current workspace is accessible on this
-		// channel. Without this check, a user could steal a tab from another
-		// user's workspace by calling MoveTabWorkspace with tabID=<theirs>,
-		// newWorkspaceId=<mine>. requireAccessibleAgentID / TerminalID also
-		// return NOT_FOUND when the tab id is unknown; the id-only variants
-		// suffice because only the authorization decision is needed here.
+		// channel, not just the destination.
+		//
+		// The caller is not necessarily the user. A worker belongs to exactly
+		// one user (`workers.registered_by`), so this is not a cross-user
+		// boundary -- it constrains a caller holding NARROWER authority than
+		// its owner. An agent this worker spawned talks to it over local IPC
+		// with a bearer scoped to specific workspace ids
+		// (`LocalIPCAuthorizer`, populated from that token), so without a
+		// source check an agent running in workspace A could pull a tab out of
+		// workspace B by naming A as the destination -- reaching a workspace
+		// its token never granted.
+		//
+		// requireAccessibleAgentID / TerminalID also return NOT_FOUND when the
+		// tab id is unknown; the id-only variants suffice because only the
+		// authorization decision is needed here.
 		switch r.GetTabType() {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
 			if !svc.requireAccessibleAgentID(sender, tabID) {

@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { CloseFlow } from './closeFlow'
+import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
@@ -18,8 +19,10 @@ import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore, SplitOrientation, TilePredicates } from '~/stores/layout.store'
 import type { LayoutOwner } from '~/stores/layoutOwner'
-import type { createTabStore } from '~/stores/tab.store'
 import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
@@ -43,6 +46,7 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo } from '~/stores/tab.helpers'
+import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
@@ -60,7 +64,9 @@ import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tile
 interface TileRendererOpts {
   /** Reactive shell stores; stable for the renderer's lifetime. */
   stores: {
-    tabStore: ReturnType<typeof createTabStore>
+    view: TabView
+    metadata: TabMetadataStore
+    selection: TabSelectionStore
     chatStore: ReturnType<typeof createChatStore>
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
@@ -80,6 +86,12 @@ interface TileRendererOpts {
     getCurrentTabContext: () => TabContext
     getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   }
+  /**
+   * Wiring for "insert this text into the MRU agent's editor", built once by
+   * AppShell. See `mruAgentEditorDeps` — the quote and mention handlers below
+   * used to hand-copy this object literal.
+   */
+  mruEditorDeps: ReturnType<typeof mruAgentEditorDeps>
   /** Per-tab handlers + in-flight close set. */
   tab: {
     handleTabSelect: (tab: Tab) => void
@@ -119,7 +131,9 @@ interface TileRendererOpts {
 
 export function createTileRenderer(opts: TileRendererOpts) {
   const {
-    tabStore,
+    view,
+    metadata,
+    selection,
     chatStore,
     controlStore,
     layoutStore,
@@ -127,6 +141,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     gitFileStatusStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
+  const mruEditorDeps = opts.mruEditorDeps
   const {
     isActiveWorkspaceMutatable,
     isActiveWorkspaceArchived,
@@ -153,21 +168,22 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const terminalHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void, write: (data: string) => void }>()
 
   const getActiveTabForTile = (tileId: string): Tab | null =>
-    tabStore.getActiveTabForTile(tileId)
+    selection.activeTabForTile(tileId) ?? null
 
   const getWindowIdForTile = (tileId: string) => floatingWindowStore?.getWindowForTile(tileId) ?? null
 
   const focusTile = (tileId: string) => focusTileShared(layoutStore, floatingWindowStore, tileId)
 
-  // Main-layout strategy: close the tile, scrub its tab-store records.
+  // Main-layout strategy: close the tile. Its per-tile selection entry is
+  // reclaimed by `useSelectionSweep` once the tile leaves the projection.
   const removeTileFromMain = (tileId: string) => {
     layoutStore.closeTile(tileId)
-    tabStore.cleanupTile(tileId)
   }
 
   // Floating-window strategy: closeTile may dispose the entire window when
-  // its last tile is removed; scrub every disposed tile and migrate focus
-  // back to the main layout if needed.
+  // its last tile is removed, in which case focus migrates back to the main
+  // layout. Per-tile selection entries for the disposed tiles are reclaimed by
+  // `useSelectionSweep` when the window leaves the projection.
   const removeTileFromWindow = (tileId: string, windowId: string) => {
     const fws = floatingWindowStore
     if (!fws)
@@ -187,7 +203,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       // `closeTile` would return `noop`), so it's already in `tileIds`;
       // the helper covers both the "focus was on the closed tile" and
       // "focus was on a sibling that got swept up by the disposal" cases.
-      cleanupAfterWindowDisposal(layoutStore, tabStore, result.tileIds)
+      cleanupAfterWindowDisposal(layoutStore, result.tileIds)
     }
     else {
       if (focusedTileId === tileId) {
@@ -195,7 +211,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
         if (replacementTileId)
           layoutStore.setFocusedTile(replacementTileId)
       }
-      tabStore.cleanupTile(tileId)
     }
   }
 
@@ -223,11 +238,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return layoutStore.owner().findHeirTile(tileId)
   }
 
-  // handleTabClose mutates tabStore synchronously while we iterate; snapshot
-  // the tab arrays once at request time so the close-all loop walks a stable
-  // list. Used by all three close flows (tile / window / grid).
+  // handleTabClose emits ops that land in `speculativeState` synchronously
+  // while we iterate, so the join re-derives mid-loop; snapshot the tab arrays
+  // once at request time and walk a stable list. Used by all three close flows
+  // (tile / window / grid).
   const collectTabsFromTiles = (tileIds: readonly string[]) =>
-    tileIds.flatMap(id => [...tabStore.getTabsForTile(id)])
+    tileIds.flatMap(id => [...view.forTile(id)])
 
   // Tile-close flow.
   interface ClosingTile {
@@ -246,8 +262,22 @@ export function createTileRenderer(opts: TileRendererOpts) {
         tabs: collectTabsFromTiles([ctx.tileId]),
         merge: () => {
           const heirId = findHeirForTile(ctx.tileId)
-          if (heirId)
-            tabStore.mergeTabsIntoTile(ctx.tileId, heirId)
+          if (heirId) {
+            // Carry the source tile's selection to the heir when the heir has
+            // none of its own, so "move tabs" lands the user on the tab they
+            // were looking at rather than on the heir's first tab.
+            //
+            // `setActiveInTile`, NOT `setActiveById`: closing a tile does not
+            // move focus (the close control stops propagation, so the tile is
+            // never focused on its way out, and the heir is an adjacent
+            // sibling unrelated to focus). Claiming the workspace pointer here
+            // would hand it to a tab in a background tile while the user is
+            // still reading another one — badging what they are looking at and
+            // seeding the next agent from the wrong repo.
+            const sourceActive = selection.activeTabForTile(ctx.tileId)
+            emitMergeTabsIntoTile(view.forTile(ctx.tileId), view.forTile(heirId), heirId)
+            selection.claimTileIfUnclaimed(sourceActive, heirId)
+          }
         },
         dispose: () => removeTileFromLayout(ctx.tileId, originalWindowId),
       })
@@ -261,7 +291,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // tabs back to the main layout or close them. Lives here (not in AppShell)
   // because TileRenderer owns the close-tile / close-grid flows and the
   // floating-window close path needs the same dependencies — handleTabClose,
-  // tabStore, floatingWindowStore.
+  // the tab view, selection and floatingWindowStore.
   interface ClosingFloatingWindow {
     windowId: string
   }
@@ -275,7 +305,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     if (!fws || !fws.getWindow(windowId))
       return
     fws.removeWindow(windowId)
-    cleanupAfterWindowDisposal(layoutStore, tabStore, tileIds)
+    cleanupAfterWindowDisposal(layoutStore, tileIds)
   }
 
   const closeFloatingWindowFlow = createCloseFlow<ClosingFloatingWindow>({
@@ -293,8 +323,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
         merge: () => {
           const targetTileId = layoutStore.owner().firstLeafId()
           if (targetTileId) {
+            // The window's focused tile holds the tab the user was last on;
+            // carry that selection to the destination when it has none.
+            const focusedSourceTile = fws.getWindow(ctx.windowId)?.focusedTileId ?? tileIds[0]
+            const sourceActive = focusedSourceTile ? selection.activeTabForTile(focusedSourceTile) : undefined
             for (const t of tileIds)
-              tabStore.mergeTabsIntoTile(t, targetTileId)
+              emitMergeTabsIntoTile(view.forTile(t), view.forTile(targetTileId), targetTileId)
+            if (sourceActive && !selection.state.activeByTile[targetTileId])
+              selection.setActiveById(sourceActive.type, sourceActive.id)
           }
         },
         dispose: () => finishCloseFloatingWindow(ctx.windowId, tileIds),
@@ -364,13 +400,34 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return {
         tabs: collectTabsFromTiles(tileIds),
         preserve: () => {
+          // Carry the selection of the cell the user was IN onto the
+          // replacement leaf, the same way the tile-merge path above does.
+          // `newTileId` is a fresh leaf (or the grid's own id) and so never
+          // has an `activeByTile` entry; without this the surviving tile falls
+          // through to `mruHead`, which right after a reload is plain position
+          // order — `mru` is client-local and never persisted — so the user
+          // lands on the leftmost merged tab instead of the one they had open.
+          //
+          // Prefer the FOCUSED cell, then the one whose close button was
+          // clicked, then any: "the tab I was looking at" is a specific cell's
+          // question, not the grid's.
+          const focused = layoutStore.focusedTileId()
+          const preferredOrder = [
+            ...(tileIds.includes(focused) ? [focused] : []),
+            ...(tileIds.includes(ctx.ownerTileId) ? [ctx.ownerTileId] : []),
+            ...tileIds,
+          ]
+          const sourceActive = preferredOrder
+            .map(id => selection.activeTabForTile(id))
+            .find(tab => tab !== undefined)
           const newTileId = owner.replaceGridWithLeaf(ctx.gridId)
-          if (newTileId)
-            tabStore.reassignTabsToTile(tileIds, newTileId)
+          if (newTileId) {
+            emitReassignTabsToTile(view.all(), tileIds, newTileId)
+            selection.claimTileIfUnclaimed(sourceActive, newTileId)
+          }
         },
         finalize: () => {
           owner.removeGrid(ctx.gridId)
-          tabStore.cleanupTiles(tileIds)
         },
       }
     },
@@ -410,7 +467,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   }
 
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
-    agentTabToInfo(tabStore.getAgentTab(agentId)),
+    agentTabToInfo(view.getAgentTab(agentId)),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
     chatStore.streamingText.get(agentId),
@@ -428,8 +485,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return (
       <TabBar
         tileId={tileId}
-        tabs={tabStore.getTabsForTile(tileId)}
-        activeTabKey={tabStore.getActiveTabKeyForTile(tileId)}
+        tabs={view.forTile(tileId)}
+        activeTabKey={selection.activeKeyForTile(tileId)}
         readOnly={isActiveWorkspaceArchived()}
         closingTabKeys={closingTabKeys()}
         isEditingRef={(fn) => { setIsTabEditing(fn) }}
@@ -439,9 +496,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => {
-          tabStore.updateTabTitle(tab.type, tab.id, title)
+          metadata.patch(tab.id, { title })
           if (tab.type === TabType.AGENT) {
-            const renameWorkerId = tabStore.getAgentTab(tab.id)?.workerId ?? ''
+            const renameWorkerId = view.getAgentTab(tab.id)?.workerId ?? ''
             workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
               showWarnToast('Failed to rename agent', err)
             })
@@ -508,6 +565,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       >
         <TerminalView
           terminals={props.terminals}
+          getLastOffset={id => metadata.get(id)?.lastOffset}
           activeTerminalId={props.activeTerminalId}
           visible={props.visible}
           tileFocused={props.tileFocused}
@@ -515,7 +573,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onResize={termOps.handleTerminalResize}
           onTitleChange={termOps.handleTerminalTitleChange}
           onBell={termOps.handleTerminalBell}
-          onContentReady={id => tabStore.markTerminalContentReady(id)}
+          onContentReady={id => metadata.patch(id, { contentReady: true })}
           pageScrollRef={(fn) => {
             terminalPageScroll = fn
             syncTerminalHandler()
@@ -531,8 +589,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const renderTileContent = (tileId: string) => {
     // Memoised so the per-tile JSX bindings below can read `tab()` (and the
-    // discriminated wrappers) many times per render without re-walking the
-    // tab store on each access.
+    // discriminated wrappers) many times per render without re-resolving the
+    // tile's active tab through the projection on each access.
     const tab = createMemo(() => getActiveTabForTile(tileId))
     const agentTab = () => {
       const t = tab()
@@ -553,7 +611,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const agent: AgentTab[] = []
       const file: FileTab[] = []
       const terminal: TerminalTab[] = []
-      for (const t of tabStore.getTabsForTile(tileId)) {
+      for (const t of view.forTile(tileId)) {
         if (t.type === TabType.AGENT)
           agent.push(t)
         else if (t.type === TabType.FILE)
@@ -582,7 +640,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
-            const agent = createMemo(() => tabStore.getAgentTab(agentId))
+            const agent = createMemo(() => view.getAgentTab(agentId))
             // The per-agent reactive lookups ChatView's renderers / entry cache / height
             // estimator consult. Built ONCE here (the <For> child runs once per agent),
             // so `props.lookups` is a stable object -- a fresh object per access would
@@ -740,25 +798,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   rootPath={getMruAgentContext().workingDir}
                   homeDir={getMruAgentContext().homeDir}
                   displayMode={ft.displayMode}
-                  onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
+                  onDisplayModeChange={mode => metadata.patch(ft.id, { displayMode: mode })}
                   onQuote={isActiveWorkspaceArchived()
                     ? undefined
                     : (text, startLine, endLine) => {
                         if (startLine != null && endLine != null) {
-                          insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                          insertIntoMruAgentEditor(mruEditorDeps, formatFileQuote(fileRelPath(), startLine, endLine, text))
                         }
                       }}
                   onMention={isActiveWorkspaceArchived()
                     ? undefined
                     : () => {
-                        insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
+                        insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
                       }}
                   fileViewMode={ft.fileViewMode}
                   fileDiffBase={ft.fileDiffBase}
                   gitFileStatus={gitEntry()}
                   hasStagedAndUnstaged={hasStagedAndUnstaged()}
-                  onFileViewModeChange={mode => tabStore.setTabFileViewMode(ft.type, ft.id, mode)}
-                  onFileDiffBaseChange={base => tabStore.setTabFileDiffBase(ft.type, ft.id, base)}
+                  onFileViewModeChange={mode => metadata.patch(ft.id, { fileViewMode: mode })}
+                  onFileDiffBaseChange={base => metadata.patch(ft.id, { fileDiffBase: base })}
                 />
               </div>
             )
@@ -826,14 +884,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return (
       <AgentEditorPanel
         agentId={agentId()}
-        agent={agentTabToInfo(tabStore.getAgentTab(agentId()))}
+        agent={agentTabToInfo(view.getAgentTab(agentId()))}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)
             return
           forceScrollToBottomRef()?.()
-          const sendAgent = tabStore.getAgentTab(id)
+          const sendAgent = view.getAgentTab(id)
           const status = sendAgent?.agentStatus
 
           // Build optimistic message JSON with attachment data so retry can
@@ -960,7 +1018,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           focusTile(tileId)
           const tab = activeTab()
           if (tab) {
-            tabStore.setActiveTab(tab.type, tab.id)
+            selection.setActive(tab)
           }
         }}
         pop={pop()}
@@ -1027,7 +1085,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           noun="grid"
           tabCount={ctx => ownerOf(ctx.ownerTileId)
             .collectTileIdsInGrid(ctx.gridId)
-            .reduce((n, id) => n + tabStore.getTabsForTile(id).length, 0)}
+            .reduce((n, id) => n + view.forTile(id).length, 0)}
         />
         <CloseFlowDialog
           flow={closeTileFlow}
@@ -1036,7 +1094,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           confirmLabel="Move tabs to neighbor"
           confirmTestIdSuffix="move"
           noun="tile"
-          tabCount={ctx => tabStore.getTabsForTile(ctx.tileId).length}
+          tabCount={ctx => view.forTile(ctx.tileId).length}
         />
         <CloseFlowDialog
           flow={closeFloatingWindowFlow}
@@ -1054,7 +1112,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               return 0
             let n = 0
             for (const t of set)
-              n += tabStore.getTabsForTile(t).length
+              n += view.forTile(t).length
             return n
           }}
         />

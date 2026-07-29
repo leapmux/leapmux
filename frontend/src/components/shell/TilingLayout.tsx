@@ -115,7 +115,7 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
           // captures the leaf id as a closure constant — so without
           // this Show, the Tile stays bound to its first id forever
           // and lookups like `mainPredicates().get(tileId)` and
-          // `tabStore.getTabsForTile(tileId)` keep targeting the
+          // `view.forTile(tileId)` keep targeting the
           // placeholder. Keying on leaf().id re-mounts the Tile
           // exactly when the id changes, picking up the freshly
           // installed predicate and tab list.

@@ -236,6 +236,33 @@ func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 	assert.Empty(t, resp.GetTerminals())
 }
 
+// TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent pins that a
+// DB read failure fails the WHOLE call instead of falling through to the
+// verdict pass.
+//
+// Falling through is not a partial success: `seen` would hold only the ids
+// the in-memory manager happens to have, so tabHydrationVerdicts stamps every
+// other requested id ABSENT. ABSENT is the one verdict the client treats as
+// permanent -- retryableFrom drops those ids, the candidate-set hash never
+// changes, and the tabs stay blank until a full page reload. ListAgents
+// already fails the call on the same error; this asserts ListTerminals does
+// too.
+func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T) {
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+
+	// Closing the pool is the deterministic way to induce the failure this
+	// handler must survive: a read error on an otherwise well-formed request.
+	require.NoError(t, svc.DB.Close())
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t1", "t2"},
+	}, w)
+
+	assert.Empty(t, w.responses, "a DB read failure must not produce a success response")
+	require.Len(t, w.errors, 1, "the failure must reach the client as an error so its backoff keeps retrying")
+	assert.Equal(t, int32(codes.Internal), w.errors[0].code)
+}
+
 func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))

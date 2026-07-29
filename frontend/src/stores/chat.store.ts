@@ -1577,11 +1577,14 @@ export function createChatStore() {
      * a dead agent -- the very per-agent leak forgetAgent exists to prevent.
      *
      * Gate on the SAME store's load-state (initialLoadComplete, which forgetAgent
-     * clears) rather than a tabStore-liveness check: the tab is scoped OUT of state.tabs
-     * on a WORKSPACE SWITCH (getAgentTab would read undefined) even though forgetAgent
-     * never ran and the chat window survives -- so a tab check would wrongly drop the
-     * switch-away save and strand the reader at the tail on switch-back. The load-state
-     * stays true across that switch, so the reading position round-trips.
+     * clears) rather than a tab-liveness check. The two answer different questions:
+     * a tab outlives the chat window it was read in, so "the tab still exists" does
+     * not mean "this reader's position is still meaningful", and only forgetAgent
+     * knows the window is gone. (The tab check was also wrong for a second reason
+     * that no longer applies: tabs used to be scoped out of the active store on a
+     * workspace switch, so it dropped the switch-away save entirely. The join now
+     * spans every workspace and would answer -- the load-state gate is the right
+     * question either way.)
      */
     saveViewportScrollForRemount(agentId: string, scroll: SavedViewportScroll) {
       if (state.initialLoadComplete[agentId])

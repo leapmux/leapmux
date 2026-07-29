@@ -1,6 +1,5 @@
 import type { Tab } from '~/stores/tab.types'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { tabKey } from '~/stores/tab.helpers'
 
 export interface EditorRef {
   get: () => string
@@ -75,19 +74,21 @@ export function appendText(agentId: string, text: string): void {
  * Activates the agent tab and focuses the editor.
  */
 export function insertIntoMruAgentEditor(
-  tabStore: {
-    findMruMatching: (predicate: (key: string) => boolean) => string | undefined
-    getTabByKey: (key: string) => Tab | undefined
-    activateTab: (tileId: string, type: TabType, id: string) => void
+  deps: {
+    /**
+     * EVERY tab in the workspace on screen, most-recently-used first — not
+     * pre-filtered to agents. The narrowing below is the only one.
+     */
+    mruTabs: () => Tab[]
+    activate: (tab: Tab) => void
   },
   text: string,
   mode: 'block' | 'inline' = 'block',
 ): void {
-  const agentPrefix = `${TabType.AGENT}:`
-  const mruKey = tabStore.findMruMatching(k => k.startsWith(agentPrefix))
-  if (!mruKey)
+  const target = deps.mruTabs().find(t => t.type === TabType.AGENT)
+  if (!target)
     return
-  const agentId = mruKey.slice(agentPrefix.length)
+  const agentId = target.id
 
   // Try to insert directly if the ref is available (same-tab scenario).
   const ref = registry.get(agentId)
@@ -104,7 +105,6 @@ export function insertIntoMruAgentEditor(
     pendingInserts.set(agentId, existing)
   }
 
-  // Activate the agent tab (global + per-tile).
-  const tab = tabStore.getTabByKey(tabKey({ type: TabType.AGENT, id: agentId }))
-  tabStore.activateTab(tab?.tileId ?? '', TabType.AGENT, agentId)
+  // Activate the agent tab (workspace + per-tile).
+  deps.activate(target)
 }

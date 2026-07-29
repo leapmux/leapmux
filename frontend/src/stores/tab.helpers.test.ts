@@ -1,26 +1,28 @@
 import type { Tab } from './tab.types'
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalInfoSchema, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, preserveNonEmptyGitFields, setOptionValue, spliceTabGitFields, tabDisplayLabel, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, terminalMetadata, toGitTabFields } from './tab.helpers'
+import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
 // AND in the workspace tree?" helper. Three call sites depend on its
 // fallback order (title → FILE basename → type-default), so each branch
 // gets its own test to guard against silent drift.
 function file(overrides: Partial<Extract<Tab, { type: TabType.FILE }>> = {}): Tab {
-  return { type: TabType.FILE, id: 'f1', ...overrides }
+  return { type: TabType.FILE, id: 'f1', workspaceId: 'ws-1', ...overrides }
 }
 
 function agent(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
-  return { type: TabType.AGENT, id: 'a1', ...overrides }
+  return { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', ...overrides }
 }
 
 function terminal(overrides: Partial<Extract<Tab, { type: TabType.TERMINAL }>> = {}): Tab {
-  return { type: TabType.TERMINAL, id: 't1', ...overrides }
+  return { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', ...overrides }
 }
 
 describe('tabDisplayLabel', () => {
@@ -82,7 +84,8 @@ describe('tabDisplayLabel', () => {
 
 // `isSameRepo` is the single source of truth for matching a
 // (workerId, repoToplevel) pair against a Tab-shaped value. It backs
-// the AppShell branch-changed routing AND tabStore.stampBranchOnTabs;
+// both AppShell branch-changed call sites -- the singleton-refresh
+// decision and the metadata branch stamp;
 // every behavior listed here represents a contract those callers rely on.
 describe('isSameRepo', () => {
   it('matches when workerId and gitToplevel both equal', () => {
@@ -99,21 +102,33 @@ describe('isSameRepo', () => {
     expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo-a' }, 'w1', '/repo-b')).toBe(false)
   })
 
-  it('treats undefined workerId as empty string', () => {
-    // A freshly-created tab may not have a workerId yet. Without the
-    // ?? '' normalization, `undefined === ''` would be false and an
-    // "empty/empty" query would also fail — but neither case should
-    // match anything meaningful.
-    expect(isSameRepo({ gitToplevel: '/repo' }, '', '/repo')).toBe(true)
+  it('rejects an empty workerId instead of matching every unresolved tab', () => {
+    // A freshly-created tab may not have a workerId yet, and `?? ''` would
+    // then make an empty QUERY match every one of them regardless of worker —
+    // the symmetric half of the empty-toplevel wildcard below. The guard used
+    // to live at one call site (`stampBranchOnTabs`), so the predicate itself
+    // answered `('' === '')` -> true and every other caller was on its own.
+    expect(isSameRepo({ gitToplevel: '/repo' }, '', '/repo')).toBe(false)
+    expect(isSameRepo({ workerId: '', gitToplevel: '/repo' }, '', '/repo')).toBe(false)
     expect(isSameRepo({ gitToplevel: '/repo' }, 'w1', '/repo')).toBe(false)
   })
 
-  it('treats undefined gitToplevel as empty string', () => {
-    // A tab outside any git repo has gitToplevel=undefined. It must
-    // only match an explicit empty-string query, never an arbitrary
-    // path.
-    expect(isSameRepo({ workerId: 'w1' }, 'w1', '')).toBe(true)
+  // Regression guard, and the reason an empty `repoToplevel` is rejected
+  // outright: `?? ''` normalization would otherwise make the empty query a
+  // WILDCARD over every tab whose git identity hasn't resolved yet. A branch
+  // change on one un-stamped repo would then re-label tabs in a sibling
+  // un-stamped repo on the same worker — and since the stamp now spans every
+  // workspace rather than just the active one, across the whole account.
+  it('never matches an empty repoToplevel, even against an unresolved tab', () => {
+    expect(isSameRepo({ workerId: 'w1' }, 'w1', '')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '' }, 'w1', '')).toBe(false)
     expect(isSameRepo({ workerId: 'w1' }, 'w1', '/repo')).toBe(false)
+  })
+
+  it('rejects an empty repoToplevel before the workerId comparison', () => {
+    // Not reachable via a workerId mismatch — the guard has to fire on its
+    // own, or a same-worker query would still leak.
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, 'w1', '')).toBe(false)
   })
 
   it('returns false for null / undefined input', () => {
@@ -122,9 +137,6 @@ describe('isSameRepo', () => {
   })
 
   it('returns false when only one side is unset (no accidental empty-empty matches)', () => {
-    // Worth pinning: an unset tab paired with an unset query DOES match
-    // by the helper's spec, but mismatched cases must not. The two-arg
-    // identity rule is symmetric.
     expect(isSameRepo({ workerId: 'w1' }, '', '/repo')).toBe(false)
     expect(isSameRepo({ gitToplevel: '/repo' }, 'w1', '')).toBe(false)
   })
@@ -139,6 +151,7 @@ describe('isSameRepo', () => {
   it('accepts a full Tab object (the common production call shape)', () => {
     const tab: Tab = {
       type: TabType.AGENT,
+      workspaceId: 'ws-1',
       id: 'a1',
       workerId: 'w1',
       gitToplevel: '/repo',
@@ -153,15 +166,27 @@ describe('isSameRepo', () => {
 // three; pin its inclusion so a future "factor out branch+origin" refactor
 // can't quietly drop it.
 describe('toGitTabFields', () => {
-  it('maps every input field, collapsing empty strings to undefined', () => {
-    // Empty strings on the wire mean "not set"; the tab convention is
-    // undefined so equality checks against tabs that never carried a
-    // value don't churn on '' vs undefined.
-    expect(toGitTabFields('', '', '', false)).toEqual({
-      gitBranch: undefined,
-      gitOriginUrl: undefined,
-      gitToplevel: undefined,
-      gitIsWorktree: undefined,
+  it('answers undefined when the probe returned nothing at all', () => {
+    // All four at proto zero is the worker saying "I could not tell you"
+    // (`gitutil.GetGitStatus` yields nil when both porcelain probes fail).
+    // Emitting `isWorktree: false` there asserts a negative the worker never
+    // made, and the tab loses a worktree disposition it can never re-probe.
+    expect(toGitTabFields('', '', '', false)).toBeUndefined()
+    expect(toGitTabFields('', '', '', true)).toBeUndefined()
+  })
+
+  // Regression: these three used to collapse to `undefined` while
+  // `gitIsWorktree` did not. `tabMetadata.patch` SKIPS undefined, so a
+  // collapsed field cannot CLEAR a populated one -- `gitTabFieldsDiffer` sees
+  // a difference, `patch` drops it, and the next status event repeats that
+  // forever. A repo that loses its remote kept the dead origin for the life of
+  // the page, and the sidebar kept grouping the tab under it.
+  it('emits an empty string, not undefined, for a field the repo has lost', () => {
+    expect(toGitTabFields('main', '', '/repo', false)).toEqual({
+      gitBranch: 'main',
+      gitOriginUrl: '',
+      gitToplevel: '/repo',
+      gitIsWorktree: false,
     })
   })
 
@@ -174,11 +199,32 @@ describe('toGitTabFields', () => {
     })
   })
 
-  it('collapses isWorktree=false to undefined (proto default = "not a worktree")', () => {
-    // A wire-default `false` is the most common case — keep it
-    // undefined so the field doesn't surface as a meaningful "value
-    // present" signal on tabs that haven't been resolved yet.
-    expect(toGitTabFields('main', '', '/repo', false).gitIsWorktree).toBeUndefined()
+  /**
+   * `false` must survive as `false`. `tabMetadata.patch` SKIPS undefined
+   * values, so collapsing the negative case means a tab that stops being a
+   * worktree can never be told: the patch drops the field, the value never
+   * changes, and `gitTabFieldsDiffer` keeps reporting a difference on every
+   * subsequent event — a write loop that never converges, with the sidebar
+   * stuck showing the worktree badge.
+   */
+  it('keeps isWorktree=false as a real false, so a tab can stop being a worktree', () => {
+    expect(toGitTabFields('main', '', '/repo', false)!.gitIsWorktree).toBe(false)
+  })
+
+  it('converges: a true -> false transition actually lands through patch', () => {
+    const metadata = createTabMetadataStore()
+    metadata.patch('t1', toGitTabFields('main', '', '/repo', true)!)
+    expect(metadata.get('t1')?.gitIsWorktree).toBe(true)
+
+    const next = toGitTabFields('main', '', '/repo', false)!
+    expect(gitTabFieldsDiffer(metadata.get('t1')!, next), 'the diff fires once').toBe(true)
+    metadata.patch('t1', next)
+
+    expect(metadata.get('t1')?.gitIsWorktree, 'the write actually landed').toBe(false)
+    expect(
+      gitTabFieldsDiffer(metadata.get('t1')!, next),
+      'and does not fire again - the loop converges',
+    ).toBe(false)
   })
 })
 
@@ -210,78 +256,15 @@ describe('gitTabFieldsDiffer', () => {
     expect(gitTabFieldsDiffer(base, { ...base, gitIsWorktree: true })).toBe(true)
   })
 
-  it('treats undefined and false isWorktree as equal (no churn on proto-zero default)', () => {
-    // Proto-zero `false` arrives from the wire as undefined in the tab
-    // (toGitTabFields collapses), so the comparator must not flag a
-    // false→undefined transition as a change — every refresh would
-    // otherwise allocate a new tab object.
+  it('treats undefined and false isWorktree as equal (no churn against a never-stamped row)', () => {
+    // The producers all write a REAL `false` now, but a row that has never been
+    // stamped still holds `undefined`. Those two mean the same thing — "not a
+    // worktree" — so the comparator must not report a difference, or the first
+    // refresh after a tab appears would patch every such tab for nothing.
     expect(gitTabFieldsDiffer({ ...base, gitIsWorktree: undefined }, { ...base, gitIsWorktree: false })).toBe(false)
   })
 })
 
-describe('spliceTabGitFields', () => {
-  const agentTab = (id: string, branch?: string): Tab =>
-    ({ type: TabType.AGENT, id, gitBranch: branch }) as Tab
-
-  it('returns the SAME array (no copy) when the matched tab git fields are unchanged', () => {
-    const tabs = [agentTab('a', 'main')]
-    const next = toGitTabFields('main', '', '', false)
-    expect(spliceTabGitFields(tabs, t => t.id === 'a', next)).toBe(tabs)
-  })
-
-  it('returns the SAME array when no tab matches', () => {
-    const tabs = [agentTab('a', 'main')]
-    const next = toGitTabFields('feature', '', '', false)
-    expect(spliceTabGitFields(tabs, t => t.id === 'missing', next)).toBe(tabs)
-  })
-
-  it('copy-on-writes only the matched tab when its git fields differ', () => {
-    const tabs = [agentTab('a', 'main'), agentTab('b', 'main')]
-    const next = toGitTabFields('feature', '', '', false)
-    const out = spliceTabGitFields(tabs, t => t.id === 'b', next)
-    expect(out).not.toBe(tabs) // fresh array
-    expect(out[0]).toBe(tabs[0]) // untouched tab keeps its reference
-    expect(out[1]).not.toBe(tabs[1]) // matched tab replaced
-    expect(out[1].gitBranch).toBe('feature')
-    expect(tabs[1].gitBranch).toBe('main') // original not mutated
-  })
-})
-
-describe('preserveNonEmptyGitFields', () => {
-  it('carries gitIsWorktree forward when fresh has no toplevel', () => {
-    // A transient probe failure (or a partial proto from a different
-    // code path) leaves `fresh.gitToplevel` unset; the preserve helper
-    // restores BOTH `gitToplevel` and `gitIsWorktree` from the prior
-    // snapshot since they're co-derived.
-    const out = preserveNonEmptyGitFields<{
-      gitBranch?: string
-      gitToplevel?: string
-      gitIsWorktree?: boolean
-    }>(
-      { gitBranch: 'main' },
-      { gitBranch: 'main', gitOriginUrl: 'o', gitToplevel: '/r', gitIsWorktree: true },
-    )
-    expect(out.gitToplevel).toBe('/r')
-    expect(out.gitIsWorktree).toBe(true)
-  })
-
-  it('lets fresh override gitIsWorktree when fresh has a toplevel', () => {
-    // The preserve helper must NOT mask a legitimate update from a fresh
-    // probe — if the worker now reports a non-worktree where it used
-    // to report a worktree, the new value wins.
-    const out = preserveNonEmptyGitFields(
-      { gitToplevel: '/r', gitIsWorktree: false },
-      { gitToplevel: '/r', gitIsWorktree: true },
-    )
-    expect(out.gitIsWorktree).toBe(false)
-  })
-})
-
-// agentTabToInfo projects the optimistic per-tab settings onto the option-group
-// catalog. The interesting case is a model switch: each model carries its own
-// model-dependent groups (effort tiers + the extended-thinking label) in
-// `subGroups`, and an in-flight switch must swap those in immediately rather
-// than waiting for the worker's relaunch round-trip.
 describe('agentTabToInfo model-dependent option groups', () => {
   function opt(id: string, name: string, subGroups: AvailableOptionGroup[] = []) {
     return create(AvailableOptionSchema, { id, name, subGroups })
@@ -465,5 +448,228 @@ describe('setOptionValue', () => {
     expect(out).not.toBe(input)
     expect(input).toEqual({ model: 'sonnet' })
     expect(setOptionValue(undefined, 'model', 'sonnet')).toEqual({ model: 'sonnet' })
+  })
+})
+
+// Ported from the deleted `tab.store.test.ts`. `isTabReadyForGitStatus` never
+// belonged to the store -- it is a pure predicate over a tab plus its agent
+// record -- and it is still live in AppShell, gating the git-status refresh.
+// It lost every one of its tests when the store was deleted.
+describe('isTabReadyForGitStatus', () => {
+  // Minimal agent fixture; only the three fields the helper reads matter.
+  function agent(p: Partial<Pick<AgentInfo, 'status' | 'startupMessage' | 'gitStatus'>>): AgentInfo {
+    return {
+      status: AgentStatus.STARTING,
+      startupMessage: '',
+      gitStatus: undefined,
+      ...p,
+    } as AgentInfo
+  }
+
+  const agentTab: Tab = { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' }
+
+  it('treats file tabs as always ready', () => {
+    const fileTab: Tab = { type: TabType.FILE, id: 'f1', workspaceId: 'ws-1' }
+    expect(isTabReadyForGitStatus(fileTab, null)).toBe(true)
+  })
+
+  it('treats a non-STARTING terminal tab as ready', () => {
+    const ready: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.READY }
+    const exited: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.EXITED }
+    const failed: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.STARTUP_FAILED }
+    const undef: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' }
+    expect(isTabReadyForGitStatus(ready, null)).toBe(true)
+    expect(isTabReadyForGitStatus(exited, null)).toBe(true)
+    expect(isTabReadyForGitStatus(failed, null)).toBe(true)
+    expect(isTabReadyForGitStatus(undef, null)).toBe(true)
+  })
+
+  it('defers a fresh STARTING terminal tab with no startupMessage', () => {
+    // OpenTerminal's response leaves the tab in STARTING with no
+    // phase-0 broadcast yet — same race window as agents.
+    const tab: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.STARTING }
+    expect(isTabReadyForGitStatus(tab, null)).toBe(false)
+  })
+
+  it('defers a STARTING terminal tab even with a phase-0 startupMessage', () => {
+    // The "Creating worktree …" label is broadcast BEFORE executeGitMode
+    // runs (terminal.go runTerminalPhase0), so a non-empty startupMessage
+    // is not proof that the worktree is on disk. Defer until the tab
+    // leaves STARTING entirely.
+    const tab: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workspaceId: 'ws-1',
+      status: TerminalStatus.STARTING,
+      startupMessage: 'Creating worktree "feature"…',
+    }
+    expect(isTabReadyForGitStatus(tab, null)).toBe(false)
+  })
+
+  it('treats null/undefined tab as ready', () => {
+    expect(isTabReadyForGitStatus(null, null)).toBe(true)
+    expect(isTabReadyForGitStatus(undefined, null)).toBe(true)
+  })
+
+  it('treats an agent tab with no matching agent as ready', () => {
+    expect(isTabReadyForGitStatus(agentTab, null)).toBe(true)
+    expect(isTabReadyForGitStatus(agentTab, undefined)).toBe(true)
+  })
+
+  it('defers in the initial STARTING state — no startupMessage and no gitStatus', () => {
+    // The window between OpenAgent's response and any broadcast.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: '', gitStatus: undefined }),
+      ),
+    ).toBe(false)
+  })
+
+  it('defers a STARTING agent with a phase-0 startupMessage', () => {
+    // Phase 0 broadcasts "Creating worktree …" BEFORE executeGitMode
+    // runs, so a non-empty startupMessage means nothing about disk state.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: 'Creating worktree "feature"…' }),
+      ),
+    ).toBe(false)
+  })
+
+  it('defers a STARTING agent in the phase-1 window', () => {
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: 'Checking Git status…' }),
+      ),
+    ).toBe(false)
+  })
+
+  it('defers a STARTING agent in the phase-2 window even with gitStatus set', () => {
+    // gitStatus arrives at the start of phase 2, before the worktree is
+    // reliably observable to a separate process — see the helper docstring.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({
+          status: AgentStatus.STARTING,
+          startupMessage: 'Starting Claude Code…',
+          gitStatus: { branch: 'main' } as AgentInfo['gitStatus'],
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('is ready in any non-STARTING state regardless of message/gitStatus', () => {
+    for (const status of [AgentStatus.ACTIVE, AgentStatus.INACTIVE, AgentStatus.STARTUP_FAILED]) {
+      expect(
+        isTabReadyForGitStatus(
+          agentTab,
+          agent({ status, startupMessage: '', gitStatus: undefined }),
+        ),
+      ).toBe(true)
+    }
+  })
+})
+
+/**
+ * Every producer of the git/startup fields must write REAL negatives.
+ * `tabMetadata.patch` skips `undefined`, and these producers run a SECOND time
+ * over a populated row -- `useTabHydrators` re-arms on DISCONNECTED, which the
+ * worker-offline sweep sets -- so a collapsed negative can never be delivered.
+ */
+describe('terminalMetadata convergence', () => {
+  it('delivers a false gitIsWorktree and empty startup fields on a re-hydration', () => {
+    const metadata = createTabMetadataStore()
+    metadata.patch('t1', { gitIsWorktree: true, startupMessage: 'Creating worktree...' })
+
+    metadata.patch('t1', terminalMetadata('w1', create(TerminalInfoSchema, {
+      terminalId: 't1',
+      status: TerminalStatus.READY,
+      // A REAL negative carries a toplevel: the dir is still a git repo, it
+      // just stopped being a worktree. Without one this fixture would be the
+      // failed-probe shape below, which must behave the opposite way.
+      gitToplevel: '/repo',
+      gitIsWorktree: false,
+    })))
+
+    expect(metadata.get('t1')?.gitIsWorktree, 'the tab stopped being a worktree').toBe(false)
+    expect(metadata.get('t1')?.startupMessage, 'the phase label must not outlive the phase').toBe('')
+  })
+
+  // The other half of the same rule. `gitIsWorktree` is the one field whose
+  // negative is indistinguishable from "no answer": the worker leaves all four
+  // git fields at proto zero when the probe returns nothing (gitutil yields nil
+  // when both porcelain probes fail, and the caller only assigns `if gs != nil`).
+  // Writing a bare `false` there while branch/origin/toplevel collapse to
+  // undefined and are SKIPPED splits a pair that has to travel together -- the
+  // tab keeps its branch but loses its worktree disposition, so the sidebar
+  // regroups it under the non-worktree branch row and ChangeBranchDialog offers
+  // an in-place checkout on a worktree, with nothing left to re-probe it.
+  it('preserves the worktree disposition when the git probe returned nothing', () => {
+    const metadata = createTabMetadataStore()
+    metadata.patch('t1', { gitBranch: 'feature', gitToplevel: '/repo', gitIsWorktree: true })
+
+    metadata.patch('t1', terminalMetadata('w1', create(TerminalInfoSchema, {
+      terminalId: 't1',
+      status: TerminalStatus.READY,
+      // All four git fields at proto zero -- a failed probe, not an answer.
+    })))
+
+    expect(metadata.get('t1')?.gitIsWorktree, 'a failed probe must not assert "not a worktree"').toBe(true)
+    expect(metadata.get('t1')?.gitBranch, 'the branch it could not re-probe survives').toBe('feature')
+    expect(metadata.get('t1')?.gitToplevel, 'and so does the toplevel it travels with').toBe('/repo')
+  })
+})
+
+describe('resolveOptimisticGitInfo', () => {
+  // The seed is a FALLBACK, spread AFTER the worker's own fields. Object spread
+  // copies `undefined`-valued OWN keys, so a key present-but-undefined does not
+  // "leave the value alone" -- it ERASES it.
+  it('omits keys it has no value for, so it cannot subtract from the payload', () => {
+    const active = agent({ gitOriginUrl: 'o', gitToplevel: '/r', workingDir: '/r' })
+    const seed = resolveOptimisticGitInfo(active, { workingDir: '/r' })
+
+    expect('gitBranch' in seed, 'an unresolved branch must not be spread as undefined').toBe(false)
+    expect({ gitBranch: 'main', ...seed }.gitBranch, 'the authoritative value survives').toBe('main')
+  })
+
+  it('still seeds the values it does have', () => {
+    const seed = resolveOptimisticGitInfo(
+      agent({ gitBranch: 'feature', gitOriginUrl: 'o', gitToplevel: '/r', workingDir: '/r' }),
+      { workingDir: '/r' },
+    )
+    expect(seed.gitBranch).toBe('feature')
+    expect(seed.gitToplevel).toBe('/r')
+  })
+})
+
+/**
+ * The seed for a terminal this client just opened. Both open paths (the tab-bar
+ * button and the two dialogs) go through here so they cannot disagree about the
+ * same moment in a terminal's life — they did, and the dialog path was wrong.
+ */
+describe('openedTerminalMetadata', () => {
+  // A READY seed is not merely optimistic, it is STICKY: applyTerminalStatusChange's
+  // STARTING arm refuses to move a tab that already reads READY, so every phase
+  // label is dropped AND the later READY arm no-ops too. With `hydrated` set,
+  // nothing re-asks. STARTING is self-correcting on all of those paths.
+  it('seeds STARTING so a later phase broadcast is not blocked', () => {
+    expect(openedTerminalMetadata({ title: 'Terminal Ada', workingDir: '/w' }).terminalStatus)
+      .toBe(TerminalStatus.STARTING)
+  })
+
+  it('marks the tab hydrated, because the OpenTerminal response IS the answer', () => {
+    expect(openedTerminalMetadata({ title: 't', workingDir: '/w' }).hydrated).toBe(true)
+  })
+
+  // `effectiveGitDir` is `shellStartDir || workingDir`, so writing the key
+  // unconditionally would change what the optimistic git seed resolves against
+  // for the caller that does not track one.
+  it('omits shellStartDir when the caller has none, and defaults it to workingDir when it does', () => {
+    expect('shellStartDir' in openedTerminalMetadata({ title: 't', workingDir: '/w' })).toBe(false)
+    expect(openedTerminalMetadata({ title: 't', workingDir: '/w', shellStartDir: '' }).shellStartDir).toBe('/w')
+    expect(openedTerminalMetadata({ title: 't', workingDir: '/w', shellStartDir: '/s' }).shellStartDir).toBe('/s')
   })
 })

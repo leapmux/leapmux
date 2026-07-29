@@ -112,16 +112,6 @@ func (j *memJournal) dedupRow(batchID string) *crdt.RecentBatchRecord {
 	return &clone
 }
 
-// memOutbox is a no-op LifecycleOutboxReader for the service tests.
-type memOutbox struct{}
-
-func (memOutbox) ListPendingLifecycleOutbox(_ context.Context, _ string) ([]crdt.LifecycleOutboxRow, error) {
-	return nil, nil
-}
-func (memOutbox) MarkLifecycleOutboxConsumed(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
-
 // allowAllAuth lets every (user, workspace, principal) write — the
 // service-layer tests are about the wire-level stamping, not the auth
 // matrix (that's covered inside crdt/validate_test.go).

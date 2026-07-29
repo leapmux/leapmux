@@ -7,7 +7,9 @@ import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
 
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on } from 'solid-js'
@@ -24,13 +26,18 @@ import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
+import { emitRemoveTab } from '~/stores/tabOps'
+import { openTabInFocusedTile } from './openTabInFocusedTile'
 import '~/components/chat/providers'
 
 export interface UseAgentOperationsProps {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
+  getActiveWorkspaceId: () => string | null
   layoutStore: ReturnType<typeof createLayoutStore>
   settingsLoading: {
     start: (key?: string, axes?: readonly string[]) => void
@@ -74,9 +81,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     },
   ))
 
-  /** Look up the workerId for a given agent from the tab store. */
+  /** Look up the workerId for a given agent from the projection join. */
   const getAgentWorkerId = (agentId: string): string => {
-    return props.tabStore.getAgentTab(agentId)?.workerId ?? ''
+    return props.view.getAgentTab(agentId)?.workerId ?? ''
   }
 
   const resolvePreferredProvider = (): AgentProvider | null => {
@@ -84,7 +91,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     if (available.length === 0)
       return null
 
-    const activeTab = props.tabStore.activeTab()
+    const activeTab = props.selection.activeTabForWorkspace(props.getActiveWorkspaceId() ?? '')
     if (activeTab?.type === TabType.AGENT && activeTab.agentProvider && available.includes(activeTab.agentProvider))
       return activeTab.agentProvider
 
@@ -110,32 +117,27 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
-        const tileId = props.layoutStore.focusedTileId()
-        const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-        // Build the agent tab from the OpenAgent response. protoToAgent
-        // TabFields populates every per-agent column on the tab record
-        // and primes the settings-label cache with the agent's catalogs.
+        // Everything the OpenAgent response carries that the CRDT does not:
+        // title, provider, status, session, option catalogs. This also primes
+        // the settings-label cache with the agent's catalogs.
         const agentFields = protoToAgentTabFields(resp.agent.workerId, resp.agent)
         // Seed git branch / origin from the active tab when both resolve to
         // the same directory; the authoritative values arrive later on the
         // agent's first status update. Agent tabs have no shellStartDir —
         // effectiveGitDir collapses to workingDir for them.
-        const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), {
+        const seed = resolveOptimisticGitInfo(props.selection.activeTabForWorkspace(workspaceId), {
           workingDir: agentFields.workingDir,
         })
-        props.tabStore.addTab({
-          type: TabType.AGENT,
-          id: resp.agent.id,
-          tileId,
-          ...agentFields,
-          ...seed,
-        }, { afterKey })
-        props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
-        // `tabStore.addTab` emits the CRDT op batch (SetTabRegister
-        // tile_id + position + worker_id) via the bridge so peer
-        // clients pick the tab up via /ws/userevents.
-        void workspaceId
-        void workerId
+        // `hydrated`: the OpenAgent response IS the worker's answer for this
+        // tab, so `useTabHydrators` must not immediately re-ask. Its reply
+        // would land without the pending-axis suppression the live settings
+        // path applies, overwriting an optimistic edit made during the
+        // round-trip.
+        openTabInFocusedTile(
+          props,
+          { type: TabType.AGENT, id: resp.agent.id, workerId: resp.agent.workerId },
+          { ...agentFields, ...seed, hydrated: true },
+        )
         // Focus the editor after the reactive updates propagate to the DOM.
         requestAnimationFrame(() => props.focusEditor?.())
       }
@@ -251,7 +253,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     confirmed: Record<string, string>,
     expectedEffort: string | undefined,
   ) => {
-    const curValues = props.tabStore.getAgentTab(agentId)?.optionValues || {}
+    const curValues = props.view.getAgentTab(agentId)?.optionValues || {}
     const settled: Record<string, string> = {}
     // Snap the MODEL only when the optimistic click was the account-default sentinel:
     // a relaunch resolves it to a concrete model. A concrete model the user explicitly
@@ -269,7 +271,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       settled[OPTION_ID_EFFORT] = confirmed[OPTION_ID_EFFORT]
     if (Object.keys(settled).length === 0)
       return
-    props.tabStore.updateTab(TabType.AGENT, agentId, {
+    props.metadata.patch(agentId, {
       optionValues: { ...curValues, ...settled },
     })
   }
@@ -291,7 +293,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const keys = Object.keys(sets)
     if (keys.length === 0)
       return
-    const agent = props.tabStore.getAgentTab(agentId)
+    const agent = props.view.getAgentTab(agentId)
     if (!agent || !agent.workerId)
       return
     // Refuse a change for an agent that has reported no option catalog yet: there is no group to
@@ -322,14 +324,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // concurrent effort edit (its own in-flight RPC) wins instead of being clobbered.
     const expectedEffort = OPTION_ID_EFFORT in sets ? sets[OPTION_ID_EFFORT] : agent.optionValues?.[OPTION_ID_EFFORT]
 
-    // Optimistic update -- apply EVERY axis in one updateTab so a multi-axis change shows its
+    // Optimistic update -- apply EVERY axis in one patch so a multi-axis change shows its
     // combined state atomically. setOptionValue preserves the other axes' optimistic values and
     // enforces the "never store empty" invariant (an empty value deletes the key rather than
     // blanking the group with a spurious '' override).
     let optimistic = agent.optionValues
     for (const key of keys)
       optimistic = setOptionValue(optimistic, key, sets[key])
-    props.tabStore.updateTab(TabType.AGENT, agentId, { optionValues: optimistic })
+    props.metadata.patch(agentId, { optionValues: optimistic })
 
     // Scope the in-flight marker to THIS agent AND to the axes this change touches, so the
     // statusChange handler suppresses optimistic-value overwrites only for these axes on this
@@ -353,7 +355,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // newer change to the same key (a rapid re-click) may have overwritten it while this RPC
       // was in flight; restoring this change's stale `previous` would revert the user's newer
       // selection out from under its own in-flight request.
-      const current = props.tabStore.getAgentTab(agentId)
+      const current = props.view.getAgentTab(agentId)
       const rolledBack = { ...(current?.optionValues || {}) }
       let didRollback = false
       for (const { key, hadPrevious, previous } of priors) {
@@ -366,7 +368,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           delete rolledBack[key]
       }
       if (didRollback)
-        props.tabStore.updateTab(TabType.AGENT, agentId, { optionValues: rolledBack })
+        props.metadata.patch(agentId, { optionValues: rolledBack })
       props.settingsLoading.stop(agentId, keys)
       showWarnToast(`Failed to change ${keys.map(key => optionGroupLabel(agent.optionGroups, key)).join(', ')}`, err)
       return
@@ -490,10 +492,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // saved scroll). The store only trims within a window, never on close, so
     // without this a long open/close session leaks one entry per agent.
     props.chatStore.forgetAgent(agentId)
-    props.tabStore.removeTab(TabType.AGENT, agentId)
+    emitRemoveTab(TabType.AGENT, agentId)
 
-    // `tabStore.removeTab` above emitted the TombstoneTab op via the
-    // CRDT bridge; the hub broadcasts it to peer clients via
+    // The TombstoneTab op above is the removal: the tab leaves the projection
+    // and therefore every view, and the hub broadcasts it to peer clients via
     // /ws/userevents.
     if (!workerId) {
       // No worker to send the close to. The local tab is gone, but a

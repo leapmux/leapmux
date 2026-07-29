@@ -5,13 +5,11 @@ import { ctxFromBridge, getCRDTBridge, newBatch, setTabPosition, setTabTileId, s
 /**
  * Result of `seedTabIntoNewWorkspace`. `rootNodeId` is the new
  * workspace's seed-root LEAF the seed batch placed the tab under;
- * the caller uses it to pre-seed per-workspace stores (registry
- * snapshot, tabStore tileId) so the freshly-created workspace
- * renders with the new tab immediately, instead of waiting for the
- * CRDT-projection reconciler — which would re-insert the tab with
- * only its CRDT-driven fields (tile_id, position, worker_id) and
- * none of the agent metadata (title, agentProvider, …) the caller
- * already has from the OpenAgent response.
+ * it is retained for callers that need to know where the seed landed.
+ * The projection now supplies both fields to every consumer, so
+ * `NewWorkspaceDialog` — the only production caller — discards the
+ * result; the agent metadata it holds from the OpenAgent response is
+ * written straight to `tabMetadata`, which the CRDT never carries.
  *
  * `position` is the LexoRank the seed batch used. Tab list ordering
  * needs to match what other clients will project from the CRDT.

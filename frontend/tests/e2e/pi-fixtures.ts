@@ -12,11 +12,10 @@ import {
   deleteWorkspaceViaAPI,
   openAgentViaAPI,
 } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 interface WorkspaceFixture {
   workspaceId: string
-  workspaceUrl: string
 }
 
 /**
@@ -48,9 +47,7 @@ export const piTest = base.extend<{
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
       agentProvider: AgentProvider.PI,
     })
-    const workspaceUrl = `/workspace/${workspaceId}`
-
-    await use({ workspaceId, workspaceUrl })
+    await use({ workspaceId })
 
     try {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
@@ -60,8 +57,7 @@ export const piTest = base.extend<{
 
   authenticatedPiWorkspace: async ({ page, piWorkspace, leapmuxServer }, use) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto(piWorkspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, piWorkspace.workspaceId)
 
     await use(piWorkspace)
   },

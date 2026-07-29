@@ -1149,8 +1149,8 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 	// common case: user-triggered tab open/move/close) re-project only
 	// the tabs they explicitly name; structural batches fall back to
 	// full Project + Diff. The latter is at most as expensive as the
-	// pre-existing path (two ProjectOwnership calls), so this is a
-	// strict improvement.
+	// pre-existing path (which projected both states unconditionally), so
+	// this is a strict improvement.
 	diff := DiffProjectionForBatch(m.state, working, batch.GetOps())
 
 	hash, err := BatchBodyHash(batch)

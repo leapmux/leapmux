@@ -6,8 +6,7 @@ import {
   findHeirTileId,
   getAllTileIds,
   MAX_DEPTH,
-  nextFocusAfterDisposal,
-  nextFocusEnsuringValid,
+  sameLayoutNode,
 } from '~/stores/layout.store'
 
 // Pure-utility tests for the surviving exports of `~/stores/layout.store`.
@@ -278,60 +277,56 @@ describe('buildTilePredicateMap', () => {
   })
 })
 
-// --- Focus helpers ---
-
-describe('nextFocusAfterDisposal', () => {
-  const root = split('s', 'horizontal', [0.5, 0.5], leaf('A'), leaf('B'))
-
-  it('returns the replacement when current focus was inside the disposed set', () => {
-    expect(nextFocusAfterDisposal(root, 'X', new Set(['X', 'Y']), 'A')).toBe('A')
+/**
+ * Structural equality for the projected tree.
+ *
+ * `project()` allocates a fresh graph per call, so a memo over it never dedupes
+ * by identity and re-propagates on EVERY CRDT tick -- including the ~60/s
+ * stream a floating-window drag emits and every remote op in a workspace the
+ * user is not looking at. That churn silently defeated `useFocusInvariant`'s
+ * `on([focusedTileId, root])` and `TileRenderer`'s per-root predicate memos,
+ * both of which document themselves as bounded.
+ */
+describe('sameLayoutNode', () => {
+  it('treats a structurally identical rebuild as equal', () => {
+    const a = split('s', 'horizontal', equalRatios(2), leaf('A'), leaf('B'))
+    const b = split('s', 'horizontal', equalRatios(2), leaf('A'), leaf('B'))
+    expect(a).not.toBe(b)
+    expect(sameLayoutNode(a, b)).toBe(true)
   })
 
-  it('falls back to firstLeafId when focus was disposed but no replacement is provided', () => {
-    expect(nextFocusAfterDisposal(root, 'X', new Set(['X']), null)).toBe('A')
+  it('is not fooled by a changed ratio', () => {
+    const a = split('s', 'horizontal', [0.5, 0.5], leaf('A'), leaf('B'))
+    const b = split('s', 'horizontal', [0.7, 0.3], leaf('A'), leaf('B'))
+    expect(sameLayoutNode(a, b), 'a real drag must still invalidate').toBe(false)
   })
 
-  it('keeps the existing focus when it was not disposed and is still in the new tree', () => {
-    expect(nextFocusAfterDisposal(root, 'B', new Set(['X']), 'A')).toBe('B')
+  it('is not fooled by a renamed, reordered, or added leaf', () => {
+    const base = split('s', 'horizontal', equalRatios(2), leaf('A'), leaf('B'))
+    expect(sameLayoutNode(base, split('s', 'horizontal', equalRatios(2), leaf('A'), leaf('C')))).toBe(false)
+    expect(sameLayoutNode(base, split('s', 'horizontal', equalRatios(2), leaf('B'), leaf('A')))).toBe(false)
+    expect(sameLayoutNode(base, split('s', 'horizontal', equalRatios(3), leaf('A'), leaf('B'), leaf('C')))).toBe(false)
   })
 
-  it('falls back to firstLeafId when focus was not disposed but is no longer in the new tree', () => {
-    expect(nextFocusAfterDisposal(root, 'orphan', new Set(['X']), 'A')).toBe('A')
+  it('distinguishes a changed direction and a changed kind', () => {
+    const h = split('s', 'horizontal', equalRatios(2), leaf('A'), leaf('B'))
+    const v = split('s', 'vertical', equalRatios(2), leaf('A'), leaf('B'))
+    expect(sameLayoutNode(h, v)).toBe(false)
+    expect(sameLayoutNode(leaf('A'), split('A', 'horizontal', [], leaf('X')))).toBe(false)
   })
 
-  it('returns firstLeafId when current focus is null, even when a replacement is provided', () => {
-    expect(nextFocusAfterDisposal(root, null, new Set(['X']), 'B')).toBe('A')
+  it('compares grid geometry, not just cells', () => {
+    const g = (rows: number, cols: number, rowRatios: number[]) =>
+      grid('g', rows, cols, rowRatios, equalRatios(2), leaf('A'), leaf('B'))
+    expect(sameLayoutNode(g(1, 2, equalRatios(1)), g(1, 2, equalRatios(1)))).toBe(true)
+    expect(sameLayoutNode(g(1, 2, equalRatios(1)), g(2, 1, equalRatios(1)))).toBe(false)
+    expect(sameLayoutNode(g(1, 2, [1]), g(1, 2, [0.4]))).toBe(false)
   })
 
-  it('returns firstLeafId when focus is null and replacement is null', () => {
-    expect(nextFocusAfterDisposal(root, null, new Set(['X']), null)).toBe('A')
-  })
-
-  it('returns null when the new tree is empty (no leaves to fall back to)', () => {
-    const empty = split('s', 'horizontal', [])
-    expect(nextFocusAfterDisposal(empty, 'X', new Set(['X']), null)).toBeNull()
-    expect(nextFocusAfterDisposal(empty, null, new Set([]), null)).toBeNull()
-  })
-})
-
-describe('nextFocusEnsuringValid', () => {
-  const root = split('s', 'horizontal', [0.5, 0.5], leaf('A'), leaf('B'))
-
-  it('keeps the existing focus when it is still in the tree', () => {
-    expect(nextFocusEnsuringValid(root, 'B')).toBe('B')
-  })
-
-  it('falls back to firstLeafId when focus is no longer in the tree', () => {
-    expect(nextFocusEnsuringValid(root, 'gone')).toBe('A')
-  })
-
-  it('falls back to firstLeafId when focus is null', () => {
-    expect(nextFocusEnsuringValid(root, null)).toBe('A')
-  })
-
-  it('returns null when the tree has no leaves', () => {
-    const empty = split('s', 'horizontal', [])
-    expect(nextFocusEnsuringValid(empty, null)).toBeNull()
-    expect(nextFocusEnsuringValid(empty, 'gone')).toBeNull()
+  it('detects a change nested deep in the tree', () => {
+    const nest = (inner: string) =>
+      split('root', 'horizontal', equalRatios(2), leaf('A'), split('s2', 'vertical', equalRatios(2), leaf('B'), leaf(inner)))
+    expect(sameLayoutNode(nest('C'), nest('C'))).toBe(true)
+    expect(sameLayoutNode(nest('C'), nest('D'))).toBe(false)
   })
 })

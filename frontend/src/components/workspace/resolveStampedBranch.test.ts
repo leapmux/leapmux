@@ -7,7 +7,7 @@ function entry(name: string, isRemote: boolean): GitBranchEntry {
   return { $typeName: 'leapmux.v1.GitBranchEntry', name, isRemote } as GitBranchEntry
 }
 
-// The dialog passes the chosen branch name back into stampBranchOnTabs;
+// The dialog passes the chosen branch name back to AppShell's branch stamp;
 // the worker's checkoutBranchInDir leaves the working directory on the
 // LOCAL branch (creating a tracking branch from a remote ref, or
 // checking out the local name verbatim). resolveStampedBranch decides

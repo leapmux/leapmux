@@ -315,13 +315,13 @@ func isGridCell(state *leapmuxv1.UserMaterialized, nodeID string) (gridID string
 // frontend's `tileOps.ts:buildCloseTileOps`. The undo-split logic is
 // the load-bearing part: when the closing tile's parent is a SPLIT
 // with exactly two live children, leaving the parent with one live
-// child triggers the projection's single-child collapse — the
-// rendered tree re-keys to the parent's id, but the surviving
-// sibling's tabs still reference the (now hidden) sibling id, so
-// they orphan visually. The fix is to migrate the sibling's tabs to
-// the parent, tombstone the sibling, and flip the parent's kind back
-// to LEAF in the same batch, so the rendered tree's tile id matches
-// the tabs' tile_id.
+// child leaves a SPLIT that exists only to wrap a single leaf. The
+// renderer collapses it visually, rendering the survivor under its
+// OWN node id, so nothing orphans — but the CRDT tree keeps a
+// redundant interior node that every later split/close has to walk
+// around. So this migrates the sibling's tabs to the parent,
+// tombstones the sibling, and flips the parent back to LEAF in one
+// batch: structural hygiene, not a rendering fix.
 //
 // Callers must guarantee tileID is not a registered workspace /
 // floating-window root — the validator rejects root tombstones with
@@ -384,9 +384,9 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 	// tabs reference a now-dead tile chain.
 	//
 	// For the non-leaf-sibling case we rely on `project.ts:buildTree`
-	// (and its Go mirror): a SPLIT with a single live child collapses
-	// in the rendered tree, with the surviving sub-tree's root
-	// re-keyed to the parent's id. Tabs on the sub-tree's leaves keep
+	// (the hub has no render tree of its own): a SPLIT with a single
+	// live child collapses in the rendered tree, and the surviving
+	// sub-tree renders under its OWN node id. Tabs on its leaves keep
 	// their own tile_id and render correctly, so no rewiring is
 	// needed in the op batch.
 	sibling := state.GetNodes()[siblingID]
@@ -396,13 +396,12 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 	}
 
 	// The "natural" undo-split target is parentID — flip it to LEAF
-	// and migrate the sibling's tabs there. But if parentID is itself
-	// already the only live child of an enclosing SPLIT, the
-	// projection's single-child collapse will re-key that SPLIT to
-	// the ancestor's id. Migrating tabs to parentID then strands them
-	// on a node that doesn't appear in the rendered tree (tabs sit
-	// on parentID, the rendered leaf advertises the ancestor's id,
-	// the renderer queries tabs[ancestor] and finds none).
+	// and migrate the sibling's tabs there. Walking further up when
+	// parentID is itself the only live child of an enclosing SPLIT is
+	// structural hygiene: it collapses the whole redundant chain in
+	// one batch instead of leaving a stack of single-child SPLITs for
+	// the next close to unwind. Placement stays correct either way,
+	// since every leaf renders under its own node id.
 	//
 	// Walk upward to find the topmost SPLIT in the single-child chain
 	// and collapse the whole chain in one batch: tabs go to that

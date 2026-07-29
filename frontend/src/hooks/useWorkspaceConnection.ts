@@ -1,859 +1,71 @@
-import type { Provider } from '~/components/chat/providers/registry'
-import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
+import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
-import type { createTabStore } from '~/stores/tab.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
+import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabView } from '~/stores/tabView'
+
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { channelManager, sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
-import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
-import { pluginFor, providerFor } from '~/components/chat/providers/registry'
-import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
+import { watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { AgentStatus, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { waitForStreamCompletion } from '~/hooks/streamCompletion'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { createExponentialBackoff } from '~/lib/retry'
-import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
-import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { shallowEqual } from '~/lib/shallowEqual'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
-import { compactionContextUsage } from '~/stores/agentSession.store'
-import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { deriveOptionGroupTabFields, gitTabFieldsDiffer, spliceTabGitFields, tabKey, toGitTabFields } from '~/stores/tab.helpers'
-import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
+import { parseTabKey } from '~/stores/tab.helpers'
+import {
+  applyBackgroundAgentStatusChange,
+  handleAgentMessage,
+  handleAgentStatusChange,
+  handleControlRequest,
+  handleStreamChunk,
+  handleStreamEnd,
+} from './agentEvents'
+import { applyTerminalStatusChange, markTerminalExited } from './terminalEvents'
+import { agentWatchEntry, buildWatchTargetsKey, unsubscribeAllWatchEvents } from './watchTargets'
 
 const log = createLogger('workspace')
-const TEXT_DECODER = new TextDecoder()
 
 /**
- * Build a WatchEvents agent entry from a resume cursor. A resume seq of 0n means
- * nothing has been observed yet, so subscribe fresh (LATEST: replay the most
- * recent page); a positive seq resumes AFTER_CURSOR from it. Mirrors the worker
- * and CLI `AgentWatchEntry` mapping so the wire request is explicit -- no 0/sign
- * overload disambiguating fresh from resume.
+ * Which tabs a worker going offline affects.
+ *
+ * Both arms filter on `workerId`, and that is the whole point: this walks
+ * `view.all()` — every tab in the ACCOUNT, not one workspace — so a tab hosted
+ * by any other worker is still perfectly connected. Clearing an agent's
+ * `streamingText` discards deltas that will never be resent, and flipping it to
+ * INACTIVE hides a thinking indicator for a turn that is still running. The
+ * agent arm was missing the filter, which the account-wide widening turned from
+ * a one-workspace bug into an account-wide one.
+ *
+ * Only READY terminals are affected: one already DISCONNECTED or EXITED has
+ * nothing to lose, and re-patching it would churn the join for no reason.
+ *
+ * Pure and exported so the filter is testable without mounting the connection
+ * hook, whose sweep is a reactive effect.
  */
-export function agentWatchEntry(agentId: string, resumeSeq: bigint): WatchAgentEntry {
-  return (resumeSeq > 0n
-    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR, cursorSeq: resumeSeq }
-    : { agentId, replay: WatchReplayMode.LATEST, cursorSeq: BigInt(0) }) as WatchAgentEntry
-}
-
-/**
- * Tell the worker this channel is watching nothing.
- *
- * Closing a WatchEvents handle is purely client-local: it removes a stream
- * listener and produces no frame the worker can see. So when the last tab on a
- * worker goes away there is nothing to retire its subscriptions, and the worker
- * keeps marshalling, encrypting and shipping every event for tabs nobody is
- * listening to for the life of the pooled channel.
- *
- * The worker reads a WatchEvents request as the channel's whole current
- * interest, so an empty one IS the unsubscribe.
- *
- * `stillWanted` is re-checked immediately before the send, and that check is
- * the point of the seam. Opening the channel can block behind a handshake, so
- * between deciding to unsubscribe and reaching the wire the user may well have
- * opened a new tab and subscribed. Landing afterwards, this request would then
- * be read as "watching nothing" and wipe the subscription that tab just made --
- * silently, because an empty request is a legitimate one that answers with no
- * error, so nothing would ever re-subscribe.
- */
-export async function unsubscribeAllWatchEvents(
+export function collectWorkerOfflineTargets(
+  tabs: readonly Tab[],
   workerId: string,
-  stillWanted: () => boolean = () => true,
-): Promise<void> {
-  try {
-    if (!stillWanted())
-      return
-    // No channel, nothing to retire. Checked before opening one, because
-    // a channel that does not exist holds no subscriptions -- opening one
-    // (a full Noise_NK + ML-KEM handshake plus a hub round trip) purely
-    // to say nothing is wanted is cost with no effect. The watch effect
-    // reaches here on ordinary paths that never had a channel: a resolved
-    // workerId before tabs hydrate, or a workspace whose only tab on that
-    // worker is a FILE tab.
-    if (!channelManager.hasOpenChannelForWorker(workerId))
-      return
-    // Open (in practice, resolve the existing) channel first, then
-    // re-check. The open is the part that can block; everything
-    // watchEventsViaChannel does after it is synchronous, so re-checking
-    // here shrinks the race window from a hub round trip to a microtask.
-    await channelManager.getOrOpenChannel(workerId)
-    if (!stillWanted())
-      return
-    const handle = await watchEventsViaChannel(workerId, { agents: [], terminals: [] })
-    handle.close()
-  }
-  catch (err) {
-    // A closed channel retires the subscriptions on its own, so that case is
-    // genuinely nothing to do. Logged rather than swallowed silently because
-    // any OTHER failure leaves the worker shipping events to nobody for the
-    // pooled channel's remaining life, and that is invisible from the UI.
-    log.debug('unsubscribe-all WatchEvents did not reach the worker', { workerId, error: String(err) })
-  }
-}
-
-export function buildWatchTargetsKey(
-  workerId: string,
-  agentEntries: readonly WatchAgentEntry[],
-  terminalIds: readonly string[],
-  nonActiveAgentIds: ReadonlySet<string>,
-  nonActiveTerminalIds: ReadonlySet<string>,
-): string {
-  if (!workerId)
-    return ''
-  const activeAgentIds = agentEntries
-    .map(e => e.agentId)
-    .filter(id => !nonActiveAgentIds.has(id))
-    .toSorted()
-  const passiveAgentIds = agentEntries
-    .map(e => e.agentId)
-    .filter(id => nonActiveAgentIds.has(id))
-    .toSorted()
-  const activeTerminalIds = terminalIds
-    .filter(id => !nonActiveTerminalIds.has(id))
-    .toSorted()
-  const passiveTerminalIds = terminalIds
-    .filter(id => nonActiveTerminalIds.has(id))
-    .toSorted()
-  return `${workerId}|aa:${activeAgentIds.join(',')}|pa:${passiveAgentIds.join(',')}|at:${activeTerminalIds.join(',')}|pt:${passiveTerminalIds.join(',')}`
-}
-
-/**
- * Translate a snake_case `rate_limits` broadcast payload to the camelCase
- * `RateLimitInfo` shape that the agent-session store and rate-limit utils
- * consume. The wire format is provider-agnostic snake_case (Claude/Codex
- * both emit it that way); the frontend keeps idiomatic camelCase types.
- */
-function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | undefined {
-  if (typeof value !== 'object' || value === null)
-    return undefined
-  const out: Record<string, RateLimitInfo> = {}
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof raw !== 'object' || raw === null)
+): { terminals: Set<string>, agents: AgentTab[] } {
+  const terminals = new Set<string>()
+  const agents: AgentTab[] = []
+  for (const tab of tabs) {
+    if (tab.workerId !== workerId)
       continue
-    const tier = raw as Record<string, unknown>
-    const info: RateLimitInfo = {}
-    if (typeof tier.rate_limit_type === 'string')
-      info.rateLimitType = tier.rate_limit_type
-    if (typeof tier.status === 'string')
-      info.status = tier.status
-    if (typeof tier.utilization === 'number')
-      info.utilization = tier.utilization
-    if (typeof tier.resets_at === 'number')
-      info.resetsAt = tier.resets_at
-    if (typeof tier.surpassed_threshold === 'number')
-      info.surpassedThreshold = tier.surpassed_threshold
-    if (typeof tier.overage_status === 'string')
-      info.overageStatus = tier.overage_status
-    if (typeof tier.overage_resets_at === 'number')
-      info.overageResetsAt = tier.overage_resets_at
-    if (typeof tier.is_using_overage === 'boolean')
-      info.isUsingOverage = tier.is_using_overage
-    out[key] = info
+    if (tab.type === TabType.TERMINAL && tab.status === TerminalStatus.READY)
+      terminals.add(tab.id)
+    else if (tab.type === TabType.AGENT)
+      agents.push(tab)
   }
-  return out
-}
-
-/**
- * Translate an `agent_session_info` wire payload (provider-agnostic snake_case)
- * into the store's camelCase `AgentSessionInfo` updates. Each field carries its
- * own predicate + transform and is included only when present/valid, so a
- * provider that omits keys (or sends a dropped-only payload) produces an empty
- * object and the caller skips the store write. Pure and exported so the
- * wire->camel boundary can be unit-tested directly without a live connection.
- */
-export function wireSessionInfoToUpdates(
-  info: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const updates: Record<string, unknown> = {}
-  if (!info)
-    return updates
-  if (typeof info.total_cost_usd === 'number')
-    updates.totalCostUsd = info.total_cost_usd
-  const contextUsage = normalizeContextUsage(info.context_usage)
-  if (contextUsage)
-    updates.contextUsage = contextUsage
-  if (info.rate_limits !== undefined)
-    updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
-  if (info.codex_turn_id !== undefined)
-    updates.codexTurnId = info.codex_turn_id as string
-  if (info.streaming_type !== undefined)
-    updates.streamingType = info.streaming_type as string
-  // Only positive estimates: `> 0` rejects both the zero-estimate first delta
-  // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
-  // false), so the indicator never has to defend against "0 tokens" or a NaN
-  // serialized to null in storage.
-  if (typeof info.thinking_tokens === 'number' && info.thinking_tokens > 0)
-    updates.thinkingTokens = info.thinking_tokens
-  return updates
-}
-
-// shouldClearThinkingTokensForMessage decides whether a persisted message should
-// drop the live thinking-token estimate. Non-AGENT entries (user echoes such as
-// queued input or tool_result, and LeapMux notifications) can land mid-think and
-// must never clear a climbing counter, so they are rejected here universally. For
-// AGENT messages the per-provider policy is delegated to the provider plugin's
-// clearsThinkingTokensForMessage hook; the default (no hook) is "main-scope only"
-// -- clear when parentSpanId === '' -- so a collab subagent's nested commit does
-// not reset the primary counter (Claude overrides to always clear). The resolved
-// plugin is passed in so this stays a pure, registry-free unit.
-export function shouldClearThinkingTokensForMessage(
-  msg: { source: MessageSource, parentSpanId: string },
-  plugin: Pick<Provider, 'clearsThinkingTokensForMessage'> | undefined,
-): boolean {
-  if (msg.source !== MessageSource.AGENT)
-    return false
-  if (plugin?.clearsThinkingTokensForMessage)
-    return plugin.clearsThinkingTokensForMessage(msg)
-  return msg.parentSpanId === ''
-}
-
-/**
- * The hook-scoped stores the agentMessage sub-handlers below write to. Passed
- * explicitly so each handler is a module-level unit (no closure over the hook), which
- * is what makes the three concerns of the agentMessage arm independently testable.
- */
-export interface AgentMessageStores {
-  agentSessionStore: ReturnType<typeof createAgentSessionStore>
-  chatStore: ReturnType<typeof createChatStore>
-  tabStore: ReturnType<typeof createTabStore>
-}
-
-/**
- * Intercept an ephemeral agent_session_info message (broadcast by the Worker without
- * persisting). The broadcast wire is snake_case across all providers; translate to the
- * frontend store's camelCase shape at this boundary so JS consumers (RateLimitInfo,
- * ContextUsageInfo, AgentSessionInfo) can stay idiomatic without forcing snake_case
- * identifiers throughout the frontend. Returns true when it consumed the message, so
- * the agentMessage arm breaks before the persisted-message processing below.
- */
-export function handleAgentSessionInfo(
-  agentId: string,
-  parsed: ParsedMessageContent,
-  agentSessionStore: AgentMessageStores['agentSessionStore'],
-): boolean {
-  if (!(parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === 'agent_session_info'))
-    return false
-  const info = parsed.topLevel.info as Record<string, unknown> | undefined
-  const updates = wireSessionInfoToUpdates(info)
-  // A zero (or, defensively, negative) thinking-token estimate is the backend's
-  // per-phase reset signal -- the first delta of a thinking phase reports 0. Honor it
-  // as a clear so a stale count from a prior phase/turn can't linger; the positive path
-  // keeps streaming via `updates`. wireSessionInfoToUpdates only forwards positive
-  // estimates, so a 0 never arrives as an update and must be handled here.
-  if (typeof info?.thinking_tokens === 'number' && info.thinking_tokens <= 0)
-    agentSessionStore.clearThinkingTokens(agentId)
-  // Pi (and any future provider) may broadcast session_info payloads whose keys are all
-  // dropped here -- skip the store write so reactive consumers aren't woken for nothing.
-  if (Object.keys(updates).length > 0)
-    agentSessionStore.updateInfo(agentId, updates)
-  return true
-}
-
-/**
- * Pull notification metadata out of any message regardless of source -- Codex
- * token-usage / rate-limit notifications arrive as AGENT, while LeapMux-injected
- * settings_changed / context_cleared arrive as LEAPMUX. Each branch self-gates so an
- * unrelated message (e.g. a Pi assistant message) falls through cheaply: the
- * context_cleared / settings_changed / plan branches match on the inner type, the
- * provider usage/rate-limit hooks return null for a frame they don't recognize, the
- * compaction scan self-filters by shape (isCompactBoundary), and usage folding
- * additionally requires an AGENT-source row.
- */
-export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores): void {
-  if (parsed.topLevel === null)
-    return
-  const { agentSessionStore, chatStore, tabStore } = stores
-  const plugin = providerFor(msg.agentProvider)
-  const innerMsg = getInnerMessage(parsed)
-  const innerType = innerMsg?.type as string | undefined
-
-  if (innerType === 'context_cleared') {
-    agentSessionStore.clearContextUsage(agentId)
-    chatStore.todos.clear(agentId)
-    // The conversation was wiped; drop any in-flight thinking-token estimate too. The
-    // backend resets its own estimator on a context clear, but that reset is in-memory
-    // only (no broadcast), so the counter would otherwise linger frozen on its last
-    // value until the next turn produces a delta or a clear of its own.
-    agentSessionStore.clearThinkingTokens(agentId)
-  }
-
-  // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
-  // frame they don't recognize), so no rate_limit_event / account-rateLimits / tokenUsage wire
-  // token is matched here.
-  const rls = plugin?.rateLimitsFromMessage?.(parsed)
-  if (rls && rls.length > 0) {
-    const rateLimits: Record<string, RateLimitInfo> = {}
-    for (const rl of rls)
-      rateLimits[rl.key] = rl.info
-    agentSessionStore.updateInfo(agentId, { rateLimits })
-  }
-
-  // Usage metadata (context usage + cumulative cost) for every AGENT-source message, in one pass:
-  // the neutral wrapper owns the subagent-skip / cost / normalized-context_usage guards and delegates
-  // the raw per-provider shape (Codex tokenUsage notification, Claude/Pi message.usage) to the plugin.
-  // This is the sole call site, so a provider implements contextUsageFromMessage once and the guards
-  // never live in a plugin. The AGENT-source gate is authoritative: every provider's usage frame
-  // (Claude assistant, Pi message_end, Codex thread/tokenUsage/updated) is persisted AGENT-source, so
-  // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
-  // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
-  if (msg.source === MessageSource.AGENT) {
-    const usage = extractContextUsage(parsed, p => plugin?.contextUsageFromMessage?.(p) ?? null)
-    if (usage)
-      agentSessionStore.updateInfo(agentId, usage)
-  }
-
-  // A completed compaction boundary makes the prior context-usage reading stale: the
-  // grid would keep showing the pre-compaction size until the next assistant/result
-  // message overwrites it. Refresh it straight from the boundary's post-compaction
-  // token count (post_tokens, or pre - tokens_saved), and reset the component fields
-  // since the boundary carries no input/cache breakdown -- contextTokens is
-  // authoritative for the grid. Preserve the known context window so the percentage
-  // denominator survives. isCompactBoundary is a neutral shape-based scan; it returns
-  // undefined (a no-op) for the common assistant message that carries no boundary.
-  const postTokens = extractCompactionContextTokens(parsed)
-  if (postTokens !== undefined) {
-    const existing = agentSessionStore.getInfo(agentId).contextUsage
-    agentSessionStore.updateInfo(agentId, {
-      contextUsage: compactionContextUsage(postTokens, existing),
-    })
-  }
-
-  if (innerType === 'settings_changed') {
-    const sc = extractSettingsChanges(parsed)
-    if (sc)
-      emitSettingsChanged(sc)
-  }
-
-  // plan_execution / plan_updated may also appear inside a notification wrapper that
-  // holds multiple message types, so wrapper messages always run the walk; non-wrapper
-  // messages gate on the inner type to skip the call entirely.
-  if (parsed.wrapper !== null || innerType === 'plan_execution') {
-    const planFile = extractPlanFilePath(parsed)
-    if (planFile)
-      agentSessionStore.updateInfo(agentId, { planFilePath: planFile })
-  }
-  if (parsed.wrapper !== null || innerType === 'plan_updated') {
-    const planUpdate = extractPlanUpdated(parsed)
-    if (planUpdate) {
-      if (planUpdate.planFilePath)
-        agentSessionStore.updateInfo(agentId, { planFilePath: planUpdate.planFilePath })
-      if (planUpdate.updateAgentTitle && planUpdate.planTitle)
-        tabStore.updateTabTitle(TabType.AGENT, agentId, planUpdate.planTitle)
-    }
-  }
-}
-
-/**
- * Handle a turn-end result divider (the caller gates on category.kind ===
- * 'result_divider'). Play the turn-end sound via onTurnEnd, clear the per-turn
- * thinking-token estimate, and rehydrate contextWindow / total_cost_usd. Each provider
- * plugin classifies its terminal envelope (Claude type:"result", Codex turn/completed,
- * ACP stopReason, Pi agent_end) as `result_divider`, so this is provider-agnostic.
- */
-export function handleResultDivider(
-  agentId: string,
-  msg: AgentChatMessage,
-  parsed: ParsedMessageContent,
-  stores: AgentMessageStores,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-  catchUpPhase: 'catchingUp' | 'live',
-): void {
-  const { agentSessionStore, chatStore, tabStore } = stores
-  // Clear the per-turn thinking-token estimate on the turn-end divider itself, not just
-  // via the AGENT-message clear above. The divider is the structural turn boundary for
-  // every provider; gating the clear on message source/status would miss a terminal
-  // envelope whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
-  // onTurnEnd is skipped -- leaving the counter frozen on its last value.
-  agentSessionStore.clearThinkingTokens(agentId)
-  // Resolve the context-window hint from the CONFIRMED catalog current value, not the
-  // optimistic optionValues: a result divider is post-relaunch ground truth for a turn
-  // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
-  // not-yet-relaunched id) would mis-key the primary-model lookup. The confirmed
-  // currentValue is the model the completed turn actually used.
-  const plugin = providerFor(msg.agentProvider)
-  const modelId = optionGroup(tabStore.getAgentTab(agentId)?.optionGroups, OPTION_ID_MODEL)?.currentValue
-  const meta = extractResultMetadata(parsed, modelId, p => plugin?.resultSubtype?.(p))
-  if (!meta)
-    return
-  // A persisted turn-end result divider clears the provider's tracked live turn-id
-  // (only Codex tracks one), so the thinking indicator stops after a reconnect or
-  // missed live event. The provider plugin owns WHICH subtype ends a turn; the hook
-  // owns the action (clearing the session-info field).
-  if (plugin?.resultDividerEndsActiveTurn?.(meta.subtype)) {
-    agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
-  }
-  if (meta.subtype && catchUpPhase === 'live') {
-    onTurnEnd?.(agentId, meta.numToolUses)
-    // Turn boundary: reclaim any command stream orphaned by a mid-stream delete that
-    // never received its own stream-end (its buffer was spared to keep in-flight
-    // segments; by the turn's end a still-buffered orphan is genuinely stuck). No-op
-    // when nothing was orphaned.
-    chatStore.sweepOrphanedBufferedSpans(agentId)
-  }
-  if (meta.contextUsage) {
-    agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage })
-  }
-  else if (meta.contextWindow !== undefined) {
-    const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
-    if (existingUsage) {
-      agentSessionStore.updateInfo(agentId, {
-        contextUsage: { ...existingUsage, contextWindow: meta.contextWindow },
-      })
-    }
-  }
-  if (meta.totalCostUsd !== undefined) {
-    agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd })
-  }
-}
-
-/**
- * Reclaim a span's buffered command stream once its persisted row reports the span
- * COMPLETED: a finished commandExecution/fileChange, or a reasoning block that now
- * carries summary/content. The persisted row supersedes the in-flight stream, so its
- * buffered segments are no longer needed. No-op for a non-span row, a non-AGENT
- * source, or a still-in-progress span (its stream stays live).
- */
-export function clearCompletedSpanStream(
-  agentId: string,
-  msg: AgentChatMessage,
-  parsed: ParsedMessageContent,
-  chatStore: AgentMessageStores['chatStore'],
-): void {
-  // The neutral gate is just "an AGENT-source span row"; the provider plugin owns whether the row's
-  // item shape marks the span COMPLETED (Codex: a commandExecution/fileChange with completed status,
-  // or a reasoning item that now carries summary/content). Delegating the span-type vocabulary to the
-  // hook -- rather than duplicating Codex's commandExecution/fileChange/reasoning names here -- means a
-  // future provider that gains command streams needs only its own commandSpanSuperseded, not an edit
-  // to a shared allowlist that would silently skip it. commandSpanSuperseded already returns true only
-  // for those item shapes, so the removed allowlist was redundant with the hook's own check.
-  if (msg.spanId && msg.source === MessageSource.AGENT) {
-    if (providerFor(msg.agentProvider)?.commandSpanSuperseded?.(parsed))
-      chatStore.clearCommandStream(agentId, msg.spanId)
-  }
-}
-
-/**
- * Method-specific lifecycle handling for a persisted message. Gated on AGENT source rather than
- * category because some lifecycle items (e.g. Codex `thread/started`) classify as `hidden` -- a
- * category-only gate would silently skip them. Clears a stale Codex turn id on thread/started and
- * dismisses the plan streaming UI on a plan item (the general streaming-clear already dropped the
- * text buffer). Usage/cost extraction is NOT here -- it runs once for every message in
- * applyNotificationMetadata (extractContextUsage), the single home for session usage metadata.
- */
-export function applyAgentLifecycle(
-  agentId: string,
-  msg: AgentChatMessage,
-  parsed: ParsedMessageContent,
-  agentSessionStore: AgentMessageStores['agentSessionStore'],
-): void {
-  if (msg.source !== MessageSource.AGENT)
-    return
-  // The provider plugin owns the lifecycle frames (Codex clears its live turn id on thread/started
-  // and the plan streaming indicator on a plan item); the service just applies the returned patch.
-  const lifecyclePatch = providerFor(msg.agentProvider)?.lifecycleSessionInfo?.(parsed)
-  if (lifecyclePatch)
-    agentSessionStore.updateInfo(agentId, lifecyclePatch)
-}
-
-/**
- * Process one persisted `agentMessage` frame as a sequence of named steps: the ephemeral
- * session-info short-circuit, notification metadata, the windowed append + thinking-token
- * / streaming-text clears + background trim, the completed-span stream reclaim, the
- * method-specific lifecycle, and the turn-end result divider. Extracted from the
- * switch arm so the pipeline matches the sibling extractions (handleAgentSessionInfo /
- * applyNotificationMetadata / handleResultDivider) instead of one arm dwarfing the rest.
- * The caller marks the agent live BEFORE this (that step is shared with the other arms).
- */
-export function handleAgentMessage(
-  agentId: string,
-  msg: AgentChatMessage,
-  stores: AgentMessageStores,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-  catchUpPhase: 'catchingUp' | 'live',
-): void {
-  const { agentSessionStore, chatStore, tabStore } = stores
-
-  // Single decompress-and-parse pass shared across the metadata, span-cleanup,
-  // assistant-usage, and result-divider branches below. parseMessageContent never throws
-  // — failures yield EMPTY_PARSED (topLevel null), which causes each branch to no-op cleanly.
-  const parsed = parseMessageContent(msg)
-
-  // Ephemeral agent_session_info: translated + applied, then short-circuit (it is
-  // never persisted, so none of the message processing below applies).
-  if (handleAgentSessionInfo(agentId, parsed, agentSessionStore))
-    return
-
-  // Notification metadata (context_cleared / rate_limit / token-usage / compaction
-  // / settings_changed / plan), independent of the persisted-message handling.
-  applyNotificationMetadata(agentId, msg, parsed, stores)
-
-  const messageInWindow = chatStore.addMessage(agentId, msg)
-  // Main-agent output means the current thinking phase produced something,
-  // so drop the live thinking-token estimate — otherwise the counter lingers
-  // beside the indicator (frozen on its last value) until turn end, and the
-  // next thinking phase would briefly flash the stale total before its own
-  // deltas arrive. No-op when no estimate is set.
-  //
-  // INTENTIONAL per-phase reset: this also fires on an intermediate persisted
-  // reasoning block (Claude `assistant_thinking`) during interleaved thinking
-  // (think -> tool -> think), so the counter restarts from each new phase's
-  // first delta rather than accumulating across a whole turn. That per-phase
-  // semantics is the desired behavior — do not "fix" it to only clear at true
-  // turn boundaries. See shouldClearThinkingTokensForMessage for the
-  // source/subagent/Claude gating rationale.
-  if (shouldClearThinkingTokensForMessage(msg, providerFor(msg.agentProvider)))
-    agentSessionStore.clearThinkingTokens(agentId)
-  if (
-    !tabStore.isTabActiveAnywhere(TabType.AGENT, agentId)
-    && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
-  ) {
-    chatStore.trimOldestEnd(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
-  }
-  // Classify once and reuse across the per-message gates below.
-  const category = classifyAgentMessage(msg)
-
-  // Any persisted assistant text, tool use/result, thinking block,
-  // or turn-end divider ends the in-flight streaming text. The
-  // streamed deltas have either been promoted to a persisted text
-  // block (Codex agentMessage, Pi message_end, ACP text) or the
-  // agent has transitioned to a tool/span message that implicitly
-  // closes the prior text block — without clearing here,
-  // subsequent text deltas concatenate onto the previous block
-  // into one wall of text. Notification-thread rows and meta
-  // categories never close the streaming buffer.
-  if (shouldClearStreamingText(msg, parsed, category))
-    chatStore.streamingText.clear(agentId)
-
-  // A completed span's persisted row supersedes its in-flight command stream;
-  // reclaim the buffered segments (no-op while the span is still in progress).
-  if (messageInWindow)
-    clearCompletedSpanStream(agentId, msg, parsed, chatStore)
-
-  // Method-specific lifecycle handling (self-gated on AGENT source so a lifecycle item that
-  // classifies as `hidden` isn't skipped). Usage/cost already folded in applyNotificationMetadata.
-  applyAgentLifecycle(agentId, msg, parsed, agentSessionStore)
-
-  // Play turn-end sound when a result divider (with subtype) arrives, and
-  // rehydrate contextWindow / total_cost_usd. Each provider plugin classifies its
-  // terminal envelope (Claude type:"result", Codex turn/completed, ACP stopReason,
-  // Pi agent_end) as `result_divider`, so this gate is provider-agnostic.
-  if (category.kind === 'result_divider')
-    handleResultDivider(agentId, msg, parsed, stores, onTurnEnd, catchUpPhase)
-}
-
-/**
- * For each axis the agent is ACTIVELY changing (pendingAxes), keep the tab's
- * OPTIMISTIC optionValue rather than absorbing the server's (in-flight-stale) one;
- * every other axis takes the server value. A pending axis ABSENT from `prevValues`
- * is an in-flight CLEAR (useAgentOperations deletes a cleared key before marking the
- * axis pending), so it stays absent rather than re-absorbing the server value.
- * Returns `serverValues` unchanged (same reference) when nothing is pending, so the
- * caller's downstream ref-reuse check can short-circuit. Pure.
- */
-export function applyPendingAxisSuppression(
-  serverValues: Record<string, string>,
-  prevValues: Record<string, string> | undefined,
-  pendingAxes: ReadonlySet<string>,
-): Record<string, string> {
-  if (pendingAxes.size === 0 || !prevValues)
-    return serverValues
-  const merged: Record<string, string> = { ...serverValues }
-  for (const axis of pendingAxes) {
-    const optimistic = prevValues[axis]
-    if (optimistic !== undefined)
-      merged[axis] = optimistic
-    else
-      delete merged[axis]
-  }
-  return merged
-}
-
-/**
- * Reconcile a status push's option-group catalog into the per-axis tab fields,
- * preserving reference stability and the user's in-flight optimistic edits:
- *  - derive the catalog + current values from the reported groups (empty groups =
- *    "unchanged", so an empty push returns {} and leaves the existing fields intact);
- *  - reuse each unchanged group's previous reference (mergeStableOptionGroupRefs) so a
- *    re-broadcast of the full catalog doesn't churn the settings popover's rows;
- *  - keep the optimistic value for each pending axis (applyPendingAxisSuppression);
- *  - reuse the prior optionValues reference when the merged result is unchanged, so a
- *    re-broadcast that changed no current value doesn't trip every reactive reader.
- *
- * Pure: the label-cache priming side effect (updateSettingsLabelCache) stays at the
- * call site -- it is the data-ingestion boundary, not part of deriving the tab fields.
- */
-export function resolveSettingsTabFields(
-  prev: AgentTab | undefined,
-  optionGroups: AvailableOptionGroup[],
-  pendingAxes: ReadonlySet<string>,
-): Partial<AgentTab> {
-  if (optionGroups.length === 0)
-    return {}
-  const fields = deriveOptionGroupTabFields(optionGroups)
-  // The worker re-broadcasts the full catalog on every status push, re-decoded into
-  // fresh proto objects; reuse each unchanged group's prior reference (per group, so a
-  // single changed group like effort doesn't churn the untouched model list either).
-  if (fields.optionGroups && prev?.optionGroups)
-    fields.optionGroups = mergeStableOptionGroupRefs(fields.optionGroups, prev.optionGroups)
-  // The catalog (optionGroups) is never optimistic and always applies; the per-axis
-  // current values keep the user's in-flight optimistic edits (see the helper).
-  if (fields.optionValues)
-    fields.optionValues = applyPendingAxisSuppression(fields.optionValues, prev?.optionValues, pendingAxes)
-  // Reuse the prior optionValues reference when the (possibly per-axis-merged) content
-  // is unchanged so a no-op re-broadcast doesn't wake every reader of optionValues.
-  if (fields.optionValues && prev?.optionValues && shallowEqual(fields.optionValues, prev.optionValues))
-    fields.optionValues = prev.optionValues
-  return fields
-}
-
-/**
- * Assemble the single consolidated tab update for an agent statusChange: status +
- * session id (only when status is SET, so a git-only push can't overwrite valid state
- * with proto3's UNSPECIFIED default and make the agent unwatchable), the startupError /
- * startupMessage transitions, the already-reconciled per-axis settings fields, and the
- * git fields. Pure; the caller applies it in ONE tabStore.updateTab so the store walks
- * state.tabs once (vs. the historical split that walked it twice per push).
- */
-export function buildAgentStatusTabUpdate(
-  sc: AgentStatusChange,
-  hasStatus: boolean,
-  settingsFields: Partial<AgentTab>,
-): Partial<AgentTab> {
-  return {
-    ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
-    // Carry startupError alongside status transitions so the in-tab error view can
-    // render the server-formatted message; only on the failed/cleared transitions, so
-    // an unrelated status (e.g. INACTIVE from turn end) leaves it alone.
-    ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
-    ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
-    // Carry startupMessage while STARTING so the startup panel shows the current phase;
-    // clear it on any terminal transition; ignore status-less events (catch-up
-    // sentinels, git-only updates) so an unrelated event doesn't wipe a live label.
-    ...(sc.status === AgentStatus.STARTING
-      ? { startupMessage: sc.startupMessage }
-      : hasStatus ? { startupMessage: '' } : {}),
-    // The reconciled catalog (never optimistic) + per-axis-suppressed current values.
-    ...settingsFields,
-    ...(sc.gitStatus
-      ? {
-          agentGitStatus: sc.gitStatus,
-          ...toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree),
-        }
-      : {}),
-  }
-}
-
-/**
- * Drain the per-agent pending-outbound queue on a STARTING -> ACTIVE / STARTUP_FAILED
- * transition. Messages composed while the subprocess was still starting were queued
- * (chatStore.pendingOutbound); on ACTIVE they are sent in order (a send failure surfaces
- * a per-message "Failed to deliver"), on STARTUP_FAILED every queued message surfaces an
- * "Agent failed to start" error. A no-op unless the PRIOR status was STARTING and the
- * queue is non-empty. `prev` is the pre-update tab (its status + worker id).
- */
-export function drainPendingOutboundOnStart(
-  sc: AgentStatusChange,
-  prev: AgentTab | undefined,
-  chatStore: ReturnType<typeof createChatStore>,
-): void {
-  if (prev?.agentStatus !== AgentStatus.STARTING)
-    return
-  // Pure status -> action dispatch; the store owns the queue drain, the per-message
-  // pending-label/error side-state, and the fire-and-forget send loop (with the
-  // transport injected here so the store stays I/O-free).
-  if (sc.status === AgentStatus.ACTIVE) {
-    const wid = prev.workerId ?? ''
-    chatStore.resendPendingOutbound(sc.agentId, m =>
-      sendAgentMessage(wid, { agentId: sc.agentId, content: m.content, attachments: m.attachments }))
-  }
-  else if (sc.status === AgentStatus.STARTUP_FAILED) {
-    chatStore.failPendingOutbound(sc.agentId, 'Agent failed to start')
-  }
-}
-
-/**
- * INACTIVE cleanup: the agent subprocess stopped. Clear stale control requests (so the
- * user can send a regular message that auto-starts the agent instead of being stuck on
- * an unanswerable prompt) and the per-turn thinking estimate. While LIVE, the turn is
- * definitively over -- reclaim any command-stream buffer a mid-stream trim spared as
- * orphaned (an agent that exits mid-turn emits INACTIVE but no result divider, so the
- * divider's turn-end sweep never fires for it, leaking the buffer) and signal turn-end.
- * Both 'live'-gated like the result-divider sweep; the catch-up phase is reclaimed by
- * the catchUpComplete sweep instead.
- */
-export function handleAgentInactive(
-  agentId: string,
-  sc: AgentStatusChange,
-  catchUpPhase: 'catchingUp' | 'live',
-  // The shared message-stores bag plus the controlStore only this handler needs --
-  // reuse AgentMessageStores rather than re-spelling its three members inline.
-  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
-  onTurnEnd: ((agentId: string) => void) | undefined,
-): void {
-  stores.controlStore.clearAgent(agentId)
-  stores.agentSessionStore.clearThinkingTokens(agentId)
-  if (catchUpPhase === 'live')
-    stores.chatStore.sweepOrphanedBufferedSpans(agentId)
-  if (catchUpPhase === 'live' && sc.agentSessionId && stores.tabStore.getAgentTab(agentId))
-    onTurnEnd?.(agentId)
-}
-
-/**
- * The `streamChunk` arm of handleAgentEvent: route a streaming-text delta to its
- * command-stream buffer (when it carries a spanId) or the agent's free-form streaming
- * text. Extracted as a module-level handler -- with the sibling handlers below -- so the
- * dispatcher reads as a routing table and each arm is independently unit-testable (the
- * dispatcher closure itself is driven only by gRPC streams). The caller marks the agent
- * live BEFORE this (mirrors the other live arms).
- */
-export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chatStore: ReturnType<typeof createChatStore>): void {
-  const text = TEXT_DECODER.decode(value.delta)
-  if (value.spanId) {
-    // The provider plugin maps its delta method to a segment kind (Codex `item/...` methods);
-    // unknown methods default to plain output. Dispatch on the chunk's OWN authoritative provider
-    // (the backend stamps AgentStreamChunk.agentProvider on every chunk) -- never a tab lookup,
-    // which can still be undefined while a tab is bare from the reconciler, silently degrading
-    // every Codex delta to `output`.
-    const segmentKind = pluginFor(value.agentProvider)?.commandStreamSegmentKind?.(value.method) ?? 'output'
-    chatStore.appendCommandStream(agentId, value.spanId, segmentKind, text)
-  }
-  else {
-    chatStore.streamingText.set(agentId, chatStore.streamingText.get(agentId) + text)
-  }
-}
-
-/**
- * The `streamEnd` arm: close the streaming buffer (command stream or free-form text) and
- * badge the tab when the agent isn't the one on screen.
- */
-export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore' | 'tabStore'>): void {
-  const { chatStore, tabStore } = stores
-  if (value.spanId)
-    chatStore.clearCommandStream(agentId, value.spanId)
-  else
-    chatStore.streamingText.clear(agentId)
-  if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: agentId }))
-    tabStore.setNotification(TabType.AGENT, agentId, true)
-}
-
-/**
- * The `controlRequest` arm: register a pending control prompt (permission / plan), and --
- * only on a LIVE frame -- badge a backgrounded tab and end the turn (the agent paused to
- * wait on the user, which may produce no agent message and no INACTIVE). During catch-up a
- * replayed request for an already-INACTIVE agent is skipped so the user isn't stuck on an
- * unanswerable prompt, and the live-only side effects are gated so a page-reload replay of
- * a still-pending row doesn't re-alert. The caller marks the agent live BEFORE this.
- */
-export function handleControlRequest(
-  agentId: string,
-  cr: AgentControlRequest,
-  catchUpPhase: 'catchingUp' | 'live',
-  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-): void {
-  const { tabStore, controlStore, agentSessionStore } = stores
-  // During catch-up, the INACTIVE statusChange may have already been processed before
-  // this replayed controlRequest arrives. Skip adding the request so the user isn't
-  // stuck on an unanswerable prompt.
-  const agentEntry = tabStore.getAgentTab(cr.agentId)
-  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)
-    return
-  let payload: Record<string, unknown>
-  try {
-    const parsed = JSON.parse(TEXT_DECODER.decode(cr.payload)) as unknown
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      log.warn('Ignoring non-object control request payload', { agentId: cr.agentId, requestId: cr.requestId })
-      return
-    }
-    payload = parsed as Record<string, unknown>
-  }
-  catch (err) {
-    log.warn('Ignoring malformed control request payload', { agentId: cr.agentId, requestId: cr.requestId, err })
-    return
-  }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, claimToken: cr.claimToken })
-  if (catchUpPhase === 'live') {
-    // Light up the tab badge so a user looking at a sibling tab knows the background
-    // agent is now waiting on them.
-    if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: cr.agentId }))
-      tabStore.setNotification(TabType.AGENT, cr.agentId, true)
-    // The agent paused mid-turn to wait on the user; it is no longer thinking, and this
-    // pause may produce no agent message and no INACTIVE, so drop the per-turn estimate
-    // here too -- otherwise the counter lingers frozen until the next turn.
-    agentSessionStore.clearThinkingTokens(agentId)
-    onTurnEnd?.(agentId)
-  }
-}
-
-/**
- * The `statusChange` arm: apply a worker status snapshot to the agent tab. Skips a
- * payload-less catch-up sentinel; otherwise drains the pending-outbound queue on a
- * STARTING->ACTIVE/STARTUP_FAILED transition, reconciles the reported option-group
- * catalog into the tab (with per-axis optimistic suppression), consolidates every field
- * into ONE updateTab, stops the aggregate settings spinner when nothing's pending, and
- * runs the INACTIVE turn-end cleanup. The worker-online flag is authoritative only on a
- * full status snapshot. Orchestration over the already-extracted pure helpers
- * (drainPendingOutboundOnStart / resolveSettingsTabFields / buildAgentStatusTabUpdate /
- * handleAgentInactive); `setWorkerOnline` is the hook's signal setter.
- */
-export function handleAgentStatusChange(
-  agentId: string,
-  sc: AgentStatusChange,
-  catchUpPhase: 'catchingUp' | 'live',
-  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
-  settingsLoading: WorkspaceConnectionParams['settingsLoading'],
-  setWorkerOnline: (online: boolean) => void,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-): void {
-  const { chatStore, tabStore } = stores
-  const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-  // `workerOnline` is only authoritative on full status snapshots. Status-less partial
-  // updates may carry proto3's default `false` from older backends or sparse producers.
-  if (hasStatus)
-    setWorkerOnline(sc.workerOnline)
-
-  // Skip events that carry no status, git, or settings payload -- they only surface as
-  // catch-up sentinels (the forward-fill they used to drive now runs from the continuous
-  // reconcileLaggingTails effect) and would otherwise allocate a full updates object and
-  // iterate every reactive reader for a no-op.
-  const hasPayload = hasStatus || sc.gitStatus !== undefined || sc.optionGroups.length > 0
-  if (!hasPayload)
-    return
-
-  // Read the prior status before updateTab overwrites it so a STARTING ->
-  // ACTIVE / STARTUP_FAILED transition can drain the per-agent pending-message queue.
-  const prev = tabStore.getAgentTab(sc.agentId)
-  drainPendingOutboundOnStart(sc, prev, chatStore)
-
-  // Whether THIS agent has any settings change in flight -- gates only the aggregate
-  // spinner stop below; the optimistic-value suppression is per-AXIS (pendingAxes).
-  const pendingSettings = settingsLoading.isPending(sc.agentId)
-  // Prime the global settings-label cache from the reported groups at this data-ingestion
-  // boundary so notification renderers can resolve human names when an inline label is
-  // missing (resolveSettingsTabFields itself is pure).
-  if (sc.optionGroups.length > 0)
-    updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
-  const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
-
-  // Consolidate every per-status field into one updateTab so the store walks state.tabs once.
-  tabStore.updateTab(TabType.AGENT, sc.agentId, buildAgentStatusTabUpdate(sc, hasStatus, settingsFields))
-  if (!pendingSettings)
-    settingsLoading.stop()
-  if (sc.status === AgentStatus.INACTIVE)
-    handleAgentInactive(agentId, sc, catchUpPhase, stores, onTurnEnd)
+  return { terminals, agents }
 }
 
 /**
@@ -911,10 +123,11 @@ export function reconcileLaggingTails(deps: {
 
 export interface WorkspaceConnectionParams {
   chatStore: ReturnType<typeof createChatStore>
-  tabStore: ReturnType<typeof createTabStore>
+  view: TabView
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
-  registry: WorkspaceStoreRegistryType
   settingsLoading: ReturnType<typeof createLoadingSignal>
   getActiveWorkspaceId: () => string | null
   /** Returns the worker ID for the active workspace. */
@@ -924,7 +137,7 @@ export interface WorkspaceConnectionParams {
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { chatStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
+  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
   // Single unified event stream abort controller.
@@ -932,11 +145,27 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Serialized key of the current subscription set to detect changes.
   let currentTargetsKey = ''
 
-  // Set of agent/terminal IDs that belong to non-active workspaces (in registry
-  // snapshots). Events for these receive lightweight handling (status/git updates
-  // to the snapshot) rather than full chat processing.
-  const nonActiveAgentIds = new Set<string>()
-  const nonActiveTerminalIds = new Set<string>()
+  // Agent/terminal ids belonging to a workspace other than the active one.
+  // Events for these get lightweight handling — status and git fields only —
+  // rather than full chat processing.
+  //
+  // Still needed by `buildWatchTargetsKey`: the same id moving between active
+  // and non-active handling must restart the stream, so the role is part of the
+  // subscription key. They are derived in the watch effect from the view; the
+  // parallel per-workspace record they used to mirror no longer exists.
+
+  /**
+   * Is this tab in the workspace the user is looking at?
+   *
+   * The event handlers branch on this to decide whether to do full chat /
+   * control processing or just patch status metadata. It is a live read off the
+   * joined view — the tab carries its own workspace — where before it was a
+   * lookup against sets rebuilt from registry snapshots.
+   */
+  function isInActiveWorkspace(type: TabType, tabId: string): boolean {
+    const tab = params.view.getById(type, tabId)
+    return !!tab && tab.workspaceId === params.getActiveWorkspaceId()
+  }
 
   // Handle an agent event from the unified stream.
   const handleAgentEvent = (
@@ -951,49 +180,26 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
 
-    // Non-active workspace agent — only handle status/git changes,
-    // skip full chat processing to avoid routing events to the wrong stores.
+    // Agent in a workspace the user isn't looking at: take status and git, skip
+    // everything else.
     //
+    // This drop is DELIBERATE and survives the move to flat state -- it is a
+    // memory bound, not an artefact of the old active/inactive store split.
     // Live controlRequest / controlCancel / agentMessage / streamChunk events
-    // for these agents are intentionally dropped here: the user can't see them
-    // (no active tab renders this agent), and the WatchEvents catch-up replay
-    // run by useWorkspaceConnection.watchEvents on workspace switch reads
-    // pending control_requests from the DB, so any still-pending prompt is
-    // re-delivered through the full handler at that point. The DB row is the
-    // source of truth; live broadcasts are an optimization for the active
-    // workspace.
-    if (nonActiveAgentIds.has(agentId)) {
-      if (inner.case === 'statusChange') {
-        const sc = inner.value
-        if (sc.status === AgentStatus.UNSPECIFIED && !sc.gitStatus)
-          return
-        // Find the snapshot that owns this agent by looking for a tab
-        // with this id and AGENT type — the per-agent metadata now
-        // travels on the tab record, so the lookup is unified.
-        const owningWsId = params.registry.findContaining(
-          s => s.tabs.some(t => t.type === TabType.AGENT && t.id === agentId),
-        )?.workspaceId
-        if (owningWsId) {
-          params.registry.update(owningWsId, (snap) => {
-            let tabs = snap.tabs
-            if (sc.status !== AgentStatus.UNSPECIFIED) {
-              const i = snap.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
-              const existing = i >= 0 ? snap.tabs[i] : undefined
-              if (existing && isAgentTab(existing) && existing.agentStatus !== sc.status) {
-                tabs = snap.tabs.slice()
-                tabs[i] = { ...existing, agentStatus: sc.status }
-              }
-            }
-            if (sc.gitStatus) {
-              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree)
-              tabs = spliceTabGitFields(tabs, t => t.type === TabType.AGENT && t.id === agentId, next)
-            }
-            if (tabs === snap.tabs)
-              return snap
-            return { ...snap, tabs }
-          })
-        }
-      }
+    // for these agents are dropped because the user cannot see them, and the
+    // WatchEvents catch-up replay on workspace switch re-reads pending
+    // control_requests from the DB, so any still-pending prompt is re-delivered
+    // through the full handler at that point. The DB row is the source of
+    // truth; live broadcasts are an optimisation for what's on screen.
+    if (!isInActiveWorkspace(TabType.AGENT, agentId)) {
+      // Status goes through the SAME transition the foreground path uses. One
+      // patch, keyed by tab id: which workspace owns the agent no longer has to
+      // be discovered -- metadata is flat, and the sidebar reads the same row
+      // whatever workspace the user is looking at. Re-stating a subset here is
+      // how the pending-message drain went missing; see
+      // `applyBackgroundAgentStatusChange`.
+      if (inner.case === 'statusChange')
+        applyBackgroundAgentStatusChange(inner.value, params, params.settingsLoading)
       return
     }
 
@@ -1003,9 +209,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       if (catchUpPhase !== 'live')
         return
       setWorkerOnline(true)
-      const current = tabStore.getAgentTab(agentId)
+      const current = view.getAgentTab(agentId)
       if (current?.agentStatus === AgentStatus.INACTIVE) {
-        tabStore.updateTab(TabType.AGENT, agentId, { agentStatus: AgentStatus.ACTIVE })
+        metadata.patch(agentId, { agentStatus: AgentStatus.ACTIVE })
       }
     }
 
@@ -1015,7 +221,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         handleAgentMessage(
           agentId,
           inner.value,
-          { agentSessionStore, chatStore, tabStore },
+          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId },
           params.onTurnEnd,
           catchUpPhase,
         )
@@ -1026,14 +232,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       case 'streamEnd':
         markLiveAgentActive()
-        handleStreamEnd(agentId, inner.value, { chatStore, tabStore })
+        handleStreamEnd(agentId, inner.value, { chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId })
         break
       case 'statusChange':
         handleAgentStatusChange(
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, tabStore, controlStore },
+          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
           settingsLoading,
           setWorkerOnline,
           params.onTurnEnd,
@@ -1045,7 +251,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, tabStore, controlStore },
+          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
           params.onTurnEnd,
         )
         break
@@ -1140,7 +346,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Re-seed the scroll-rail marks so any user sends / deletes that happened while
         // disconnected are reflected (live add/remove already heals the connected case). Tied
         // to this subscription's signal so a resubscribe/teardown cancels it (see loadMessageMarks).
-        void chatStore.loadMessageMarks(tabStore.getAgentTab(agentId)?.workerId ?? '', agentId, eventStreamAbort?.signal)
+        void chatStore.loadMessageMarks(view.getAgentTab(agentId)?.workerId ?? '', agentId, eventStreamAbort?.signal)
         // Reclaim any command stream orphaned DURING catch-up: a mid-stream
         // delete (or beyond-window reseq) recorded an orphan, but its turn-end
         // divider replayed while the phase was still 'catchingUp', so the
@@ -1156,35 +362,30 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const handleTerminalEvent = (termEvent: TerminalEvent) => {
     const terminalId = termEvent.terminalId
 
-    // Non-active workspace terminal — skip data events (no terminal instance
-    // exists), but handle closed + statusChange to keep the snapshot's
-    // status / gitBranch / gitOriginUrl fresh for the sidebar badge.
-    if (nonActiveTerminalIds.has(terminalId)) {
+    // Terminal in a workspace other than the active one — skip data events (no
+    // xterm instance exists to write them to), but handle closed + statusChange
+    // so the sidebar badge's status / gitBranch / gitOriginUrl stay fresh.
+    // Same rule as agents: a terminal the user isn't looking at gets status and
+    // git only. `data` is skipped because no xterm instance exists to write it
+    // to -- the screen is re-fetched on switch-in.
+    //
+    // Both non-`data` arms route through the SAME transitions the active arm
+    // uses. Re-stating a subset here is what let the status half go missing:
+    // the sidebar renders every workspace, so a status it cannot see is a
+    // spinner that never stops.
+    if (!isInActiveWorkspace(TabType.TERMINAL, terminalId)) {
       if (termEvent.event.case === 'closed') {
-        const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
-        const owningWsId = params.registry.findContaining(
-          s => s.tabs.some(t => tabKey(t) === key && isTerminalTab(t) && t.status !== TerminalStatus.EXITED),
-        )?.workspaceId
-        if (owningWsId) {
-          params.registry.update(owningWsId, snap => ({
-            ...snap,
-            tabs: snap.tabs.map(t => tabKey(t) === key && isTerminalTab(t) ? { ...t, status: TerminalStatus.EXITED } : t),
-          }))
-        }
+        // A tab the user switches INTO must not still be showing a dead
+        // startup spinner.
+        markTerminalExited(params.metadata, terminalId)
       }
       else if (termEvent.event.case === 'statusChange') {
-        const sc = termEvent.event.value
-        if (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel) {
-          const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
-          const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
-          if (owningWsId) {
-            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
-            params.registry.update(owningWsId, (snap) => {
-              const tabs = spliceTabGitFields(snap.tabs, t => tabKey(t) === key, next)
-              return tabs === snap.tabs ? snap : { ...snap, tabs }
-            })
-          }
-        }
+        applyTerminalStatusChange(
+          params.metadata,
+          view.getTerminalTab(terminalId),
+          terminalId,
+          termEvent.event.value,
+        )
       }
       return
     }
@@ -1193,11 +394,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'data': {
         const instance = getTerminalInstance(terminalId)
         if (instance) {
-          const tab = tabStore.getTerminalTab(terminalId)
+          const tab = view.getTerminalTab(terminalId)
           const checkContent = tab && !tab.contentReady
           const onParsed = () => {
             if (checkContent && bufferHasVisibleContent(instance.terminal))
-              tabStore.markTerminalContentReady(terminalId)
+              metadata.patch(terminalId, { contentReady: true })
           }
           const { data, isSnapshot, endOffset } = termEvent.event.value
           const newOffset = applyTerminalData(
@@ -1205,15 +406,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             data,
             isSnapshot,
             Number(endOffset),
-            tab?.lastOffset ?? 0,
+            // Straight from the store: this is written per PTY read, and the
+            // join no longer carries it (see `TerminalMeta.lastOffset`).
+            metadata.get(terminalId)?.lastOffset ?? 0,
             onParsed,
           )
-          tabStore.setTerminalLastOffset(terminalId, newOffset)
+          metadata.patch(terminalId, { lastOffset: newOffset })
         }
         break
       }
       case 'closed':
-        tabStore.markTerminalExited(terminalId)
+        markTerminalExited(metadata, terminalId)
         break
       case 'statusChange': {
         const sc = termEvent.event.value
@@ -1222,50 +425,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // STARTUP_FAILED. READY and STARTUP_FAILED both arrive on
         // normal subscribe via WatchEvents's catch-up, so the race of a
         // late subscriber missing the one-shot broadcast is closed.
-        const existingTab = tabStore.getTerminalTab(terminalId)
-        // Git branch / origin / toplevel are carried on every post-phase-0
-        // STARTING broadcast. Update the tab whenever a non-empty value
-        // arrives so a reconnect or a late worktree-creation refreshes the
-        // badge.
-        if (existingTab && (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel)) {
-          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
-          if (gitTabFieldsDiffer(existingTab, next))
-            tabStore.updateTab(TabType.TERMINAL, terminalId, next)
-        }
-        switch (sc.status) {
-          case TerminalStatus.STARTING:
-            if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {
-              tabStore.updateTab(TabType.TERMINAL, terminalId, {
-                status: TerminalStatus.STARTING,
-                startupMessage: sc.startupMessage || undefined,
-              })
-            }
-            else if (existingTab?.status === TerminalStatus.STARTING && sc.startupMessage && sc.startupMessage !== existingTab.startupMessage) {
-              // Same-status STARTING event with an updated phase label —
-              // refresh the overlay text without re-triggering the
-              // status-change observers.
-              tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: sc.startupMessage })
-            }
-            break
-          case TerminalStatus.READY:
-            // Preserve DISCONNECTED / EXITED — a previously-alive terminal
-            // whose worker reconnected should not be dragged back to READY.
-            if (existingTab?.status === TerminalStatus.STARTING || existingTab?.status === undefined) {
-              tabStore.updateTab(TabType.TERMINAL, terminalId, {
-                status: TerminalStatus.READY,
-                startupError: undefined,
-                startupMessage: undefined,
-              })
-            }
-            break
-          case TerminalStatus.STARTUP_FAILED:
-            tabStore.updateTab(TabType.TERMINAL, terminalId, {
-              status: TerminalStatus.STARTUP_FAILED,
-              startupError: sc.startupError || undefined,
-              startupMessage: undefined,
-            })
-            break
-        }
+        applyTerminalStatusChange(metadata, view.getTerminalTab(terminalId), terminalId, sc)
         break
       }
     }
@@ -1280,6 +440,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const watchEvents = async (
     agentEntries: WatchAgentEntry[],
     terminalIds: string[],
+    // The partition this run was STARTED with, passed rather than read from
+    // hook scope. The body awaits, so reading shared mutable state after an
+    // await would sample a partition a later effect run may have rewritten.
+    // Today that cannot bite -- a membership change rewrites the subscription
+    // key, which aborts this run in the same synchronous pass -- but passing it
+    // makes the hazard unrepresentable instead of merely absent.
+    nonActiveAgentIds: ReadonlySet<string>,
     signal: AbortSignal,
   ) => {
     // Load initial messages for active workspace agents only. Non-active
@@ -1290,7 +457,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         .filter(entry => !nonActiveAgentIds.has(entry.agentId))
         .map(async (entry) => {
           try {
-            const wid = tabStore.getAgentTab(entry.agentId)?.workerId ?? ''
+            const wid = view.getAgentTab(entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
             // Seed the scroll-rail marks alongside history (not awaited: a failure
             // must not block or fail the history load -- the rail just stays hidden). Tied to
@@ -1352,7 +519,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // cursor hasn't advanced yet).
         const terminals = terminalIds.map(id => ({
           terminalId: id,
-          afterOffset: BigInt(untrack(() => tabStore.getTerminalTab(id)?.lastOffset ?? 0)),
+          afterOffset: BigInt(untrack(() => metadata.get(id)?.lastOffset ?? 0)),
         }))
 
         // Open the E2EE channel stream to the Worker.
@@ -1440,8 +607,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Watch all agents and terminals on the current worker via a single
   // unified WatchEvents stream. When the entity set changes (new agent
   // or terminal created), the effect triggers a stream restart.
-  // Also includes agents/terminals from non-active workspace snapshots
-  // in the registry, so that status updates are received for all workspaces.
+  // Covers agents/terminals in EVERY workspace, not just the active one, so
+  // status updates keep flowing for tabs the user is not currently looking at.
   createEffect(() => {
     const workerId = params.getWorkerId()
     const wsId = params.getActiveWorkspaceId()
@@ -1449,45 +616,34 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // Collect all agent IDs on this worker.
     const agentEntries: WatchAgentEntry[] = []
     const terminalIds: string[] = []
-    nonActiveAgentIds.clear()
-    nonActiveTerminalIds.clear()
+    // Per-RUN locals, not hook-scoped state. They are a snapshot of one pass
+    // over the view, and the only consumer that outlives the pass is the async
+    // `watchEvents` body -- which now receives the snapshot as an argument.
+    const nonActiveAgentIds = new Set<string>()
+    const nonActiveTerminalIds = new Set<string>()
 
     if (wsId && workerId) {
-      // Active workspace agents/terminals: both kinds now live in
-      // tabStore. AGENT tabs carry their metadata directly on the tab.
-      for (const tab of tabStore.state.tabs) {
+      // One pass over every tab on this worker, in ANY workspace. There used
+      // to be two: the active workspace from `tabStore`, then every other
+      // workspace from its registry snapshot, with the second pass recording
+      // which ids were "non-active" so the handlers could branch. The view
+      // spans all workspaces, and each tab carries the workspace it belongs
+      // to, so the partition is a read rather than bookkeeping.
+      for (const tab of params.view.all()) {
         if (tab.workerId !== workerId)
           continue
+        const inActive = tab.workspaceId === wsId
         if (tab.type === TabType.AGENT) {
           // Seed entry: the per-subscribe build (see agents.map above) recomputes
           // replay/cursor from the live resume cursor, so the placeholder is fresh.
           agentEntries.push(agentWatchEntry(tab.id, BigInt(0)))
+          if (!inActive)
+            nonActiveAgentIds.add(tab.id)
         }
         else if (tab.type === TabType.TERMINAL) {
           terminalIds.push(tab.id)
-        }
-      }
-
-      // Non-active workspace agents/terminals from registry snapshots.
-      const activeAgentIds = new Set(agentEntries.map(e => e.agentId))
-      const activeTermIds = new Set(terminalIds)
-
-      for (const snap of params.registry.all()) {
-        if (snap.workspaceId === wsId)
-          continue
-        if (!snap.tabsLoaded)
-          continue
-        for (const tab of snap.tabs) {
-          if (tab.workerId !== workerId)
-            continue
-          if (tab.type === TabType.AGENT && !activeAgentIds.has(tab.id)) {
-            agentEntries.push(agentWatchEntry(tab.id, BigInt(0)))
-            nonActiveAgentIds.add(tab.id)
-          }
-          else if (tab.type === TabType.TERMINAL && !activeTermIds.has(tab.id)) {
-            terminalIds.push(tab.id)
+          if (!inActive)
             nonActiveTerminalIds.add(tab.id)
-          }
         }
       }
     }
@@ -1523,7 +679,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
     const abort = new AbortController()
     eventStreamAbort = abort
-    watchEvents(agentEntries, terminalIds, abort.signal)
+    watchEvents(agentEntries, terminalIds, nonActiveAgentIds, abort.signal)
   })
 
   // When the worker goes offline, mark running terminals as disconnected,
@@ -1534,50 +690,56 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (workerOnline())
       return
     const workerId = params.getWorkerId()
-    const isAffected = (t: Tab) =>
-      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === TerminalStatus.READY
-    batch(() => {
-      tabStore.markTerminalsDisconnected(workerId)
-      for (const snap of params.registry.all()) {
-        if (!snap.tabs.some(isAffected))
-          continue
-        params.registry.update(snap.workspaceId, s => ({
-          ...s,
-          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: TerminalStatus.DISCONNECTED } : t),
-        }))
-      }
+    // `untrack`, and the reads resolved BEFORE the writes. This body reads the
+    // join (which reads `tabMetadata`) and then writes `tabMetadata`, so
+    // without `untrack` the effect subscribes to what it just mutated and runs
+    // the whole sweep a second time. Resolving the matches up front matters
+    // separately: `view.getTerminalTab` inside `patchMatching`'s predicate is a
+    // memo read, and reading it mid-`produce` forces the join to recompute
+    // after every write the same `produce` has already made -- O(N) full
+    // re-joins for N disconnected terminals. `syncGitStatusToTabs` and
+    // `workspaceSwitcher` guard the identical shape the same way.
+    untrack(() => {
+      const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(params.view.all(), workerId)
+      batch(() => {
+        // One call reaches every workspace. This used to be the active store's
+        // sweep plus a hand-rolled fan-out over each registry snapshot.
+        if (affectedTerminals.size > 0) {
+          params.metadata.patchMatching(
+            (_meta, tabId) => affectedTerminals.has(tabId),
+            { terminalStatus: TerminalStatus.DISCONNECTED },
+          )
+        }
+        for (const tab of agents) {
+          chatStore.streamingText.clear(tab.id)
+          for (const spanId of Object.keys(chatStore.getAgentCommandStreams(tab.id)))
+            chatStore.clearCommandStream(tab.id, spanId)
+          if (tab.agentStatus === AgentStatus.ACTIVE)
+            metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
+        }
+      })
     })
-    for (const tab of tabStore.state.tabs) {
-      if (tab.type !== TabType.AGENT)
-        continue
-      chatStore.streamingText.clear(tab.id)
-      for (const spanId of Object.keys(chatStore.getAgentCommandStreams(tab.id)))
-        chatStore.clearCommandStream(tab.id, spanId)
-      if (tab.agentStatus === AgentStatus.ACTIVE) {
-        tabStore.updateTab(TabType.AGENT, tab.id, { agentStatus: AgentStatus.INACTIVE })
-      }
-    }
   })
 
   // Lazy message loading for agent tabs not on the current worker
   createEffect(() => {
-    const activeKey = tabStore.state.activeTabKey
+    const activeKey = selection.activeKeyForWorkspace(params.getActiveWorkspaceId() ?? '')
     if (!activeKey)
       return
-    const parts = activeKey.split(':')
-    if (parts.length !== 2)
+    // `parseTabKey`, not a hand-rolled split: it is the documented inverse of
+    // `tabKey` (already imported here), matches on the FIRST colon rather than
+    // rejecting any key containing a second, and carries the `Number.isInteger`
+    // guard this site lacked.
+    const parsed = parseTabKey(activeKey)
+    if (!parsed || parsed.type !== TabType.AGENT)
       return
-    const tabType = Number(parts[0]) as TabType
-    if (tabType !== TabType.AGENT)
-      return
-    const tabId = parts[1]
+    const tabId = parsed.id
     if (chatStore.isInitialLoadComplete(tabId))
       return
-    // Only load messages for agents in the active workspace's tab store.
-    // Non-active workspace agents exist only in registry snapshots and
-    // don't have a workerId locally — attempting to load with an empty
-    // workerId would cause an "invalid_argument" error.
-    const agent = tabStore.getAgentTab(tabId)
+    // A tab whose `worker_id` register has not resolved yet cannot be loaded:
+    // the RPC needs a worker to address, and an empty one comes back as
+    // "invalid_argument". It will be retried when the register lands.
+    const agent = view.getAgentTab(tabId)
     if (!agent || !agent.workerId)
       return
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
@@ -1600,7 +762,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // is already draining the agent) and its loop exits the moment the window catches up
   // or the reader scrolls away, so a re-run on its own per-page writes does no work.
   createEffect(() => reconcileLaggingTails({
-    agentTabs: () => tabStore.state.tabs
+    agentTabs: () => params.view.all()
       .filter(t => t.type === TabType.AGENT)
       .map(t => ({ id: t.id, workerId: t.workerId ?? '' })),
     hasNewerMessages: id => chatStore.hasNewerMessages(id),

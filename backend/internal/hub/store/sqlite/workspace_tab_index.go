@@ -241,11 +241,3 @@ func renderedTabRowFromDB(r gendb.WorkspaceTabRendered) store.WorkspaceTabRow {
 		Position:    r.Position,
 	}
 }
-
-func renderedTabsFromDB(rows []gendb.WorkspaceTabRendered) []store.WorkspaceTabRow {
-	out := make([]store.WorkspaceTabRow, len(rows))
-	for i, r := range rows {
-		out[i] = renderedTabRowFromDB(r)
-	}
-	return out
-}

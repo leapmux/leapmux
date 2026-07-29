@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -197,17 +196,4 @@ func TestSendAgentMessage_TextOnlyNoAttachmentsFieldInJSON(t *testing.T) {
 	// No "attachments" key should be present.
 	_, hasAttachments := stored["attachments"]
 	assert.False(t, hasAttachments, "text-only message should not have an attachments field")
-}
-
-// decodeResponse decodes a proto response payload.
-func decodeResponse[T any, PT interface {
-	*T
-	proto.Message
-}](t *testing.T, w *testResponseWriter) *T {
-	t.Helper()
-	require.NotEmpty(t, w.responses)
-	resp := w.responses[len(w.responses)-1]
-	out := PT(new(T))
-	require.NoError(t, proto.Unmarshal(resp.GetPayload(), out))
-	return (*T)(out)
 }

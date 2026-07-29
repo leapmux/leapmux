@@ -668,14 +668,6 @@ func createTerminalForPath(t *testing.T, svc *Service, terminalID, workingDir st
 	}))
 }
 
-func waitForPathToDisappear(t *testing.T, path string) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(path)
-		return os.IsNotExist(err)
-	}, 5*time.Second, 100*time.Millisecond)
-}
-
 func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)

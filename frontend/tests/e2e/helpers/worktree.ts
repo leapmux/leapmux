@@ -23,8 +23,6 @@ import { expect } from '../fixtures'
 import { authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { expectAnyVisible, isMaybeVisible } from './ui'
 
-export const WORKSPACE_URL_RE = /\/workspace\//
-
 /**
  * Create a git repo inside the server's data directory so the worker can access it.
  */

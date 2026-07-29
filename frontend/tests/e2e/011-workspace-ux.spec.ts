@@ -1,9 +1,7 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
-
-const WORKSPACE_URL_RE = /\/workspace\//
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on app home', async ({ page, leapmuxServer }) => {
@@ -11,15 +9,17 @@ test.describe('Workspace UX Enhancements', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Auto Activate Test')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
-      // Navigate to the app home (no workspace ID)
+      // Load the app home cold
       await page.goto('/')
       await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
-      // Should auto-redirect to the first workspace
-      await expect(page).toHaveURL(WORKSPACE_URL_RE)
+      // Should auto-activate a workspace rather than sit on an empty shell.
+      // There is no URL to check any more -- the sidebar row is where the
+      // active selection is observable.
+      await expect(page.locator(`[data-testid="workspace-item-${workspaceId}"]`))
+        .toHaveAttribute('data-active', 'true')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -48,8 +48,7 @@ test.describe('Workspace UX Enhancements', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Empty State Test')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Close any auto-created tabs (agents) via the close button
       const tabs = page.locator('[data-testid="tab"]')
@@ -78,8 +77,7 @@ test.describe('Workspace UX Enhancements', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Agent Dialog Test')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Close all tabs to reach the empty state
       const tabs = page.locator('[data-testid="tab"]')
@@ -116,8 +114,7 @@ test.describe('Workspace UX Enhancements', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Terminal Dialog Test')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId)
 
       // Close all tabs to reach the empty state
       const tabs = page.locator('[data-testid="tab"]')
@@ -155,8 +152,7 @@ test.describe('Workspace UX Enhancements', () => {
     const workspaceId2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Next WS')
     try {
       await loginViaToken(page, adminToken)
-      await page.goto(`/workspace/${workspaceId1}`)
-      await waitForWorkspaceReady(page)
+      await openWorkspace(page, workspaceId1)
 
       // Ensure both workspaces are visible in the sidebar before deleting
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).toBeVisible()
@@ -176,8 +172,10 @@ test.describe('Workspace UX Enhancements', () => {
 
       // The deleted workspace should be gone from sidebar
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
-      // Should navigate to the next workspace
-      await expect(page).toHaveURL(WORKSPACE_URL_RE)
+      // Should switch to the surviving workspace rather than leave the shell
+      // pointed at the one that was just deleted.
+      await expect(page.locator(`[data-testid="workspace-item-${workspaceId2}"]`))
+        .toHaveAttribute('data-active', 'true')
       // Verify the 'Next WS' workspace is visible in the sidebar
       await expect(page.getByText('Next WS')).toBeVisible()
     }

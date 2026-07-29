@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 // The tunnel feature requires desktop capabilities, which aren't available in
 // normal browser E2E runs. These tests inject a mock desktop bridge before page
@@ -200,8 +200,7 @@ test.describe('Tunnel UI', () => {
   test.beforeEach(async ({ page, workspace, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await addTunnelMockInitScript(page)
-    await page.goto(workspace.workspaceUrl)
-    await waitForWorkspaceReady(page)
+    await openWorkspace(page, workspace.workspaceId)
   })
 
   test('add tunnel menu item appears when tunnel API is available', async ({ page, workspace }) => {

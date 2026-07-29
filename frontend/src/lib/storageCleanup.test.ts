@@ -39,6 +39,11 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('leapmux:worker-info:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('leapmux:local-messages:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('leapmux:files-show-hidden:abc')).toBe(7 * DAY_MS)
+      // The odd one out in this table, and deliberately so: it is a per-user
+      // preference rather than a cache, and it is the only record of which
+      // workspace to reopen now that the URL carries no workspace id. A day-
+      // scale TTL here would silently drop a returning user on workspace #1.
+      expect(getTtlForKey('leapmux:activeWorkspace:u1')).toBe(YEAR_MS)
     })
 
     it('returns 1-year TTL for every registered exact localStorage key', () => {
@@ -146,7 +151,6 @@ describe('storageCleanup', () => {
         ['leapmux:activeTab:ws-1', '1:agent-abc'],
         ['leapmux:tileActiveTabs:ws-1', { tile: '1:agent-abc' }],
         ['leapmux:focusedTile:ws-1', 'tile-1'],
-        ['leapmux:activeWorkspace', 'ws-1'],
         ['leapmux:cli-path-checked', true],
         ['leapmux:sidebar:ws-1', { leftSize: 240 }],
         ['leapmux:expandedWorkspaces', ['ws-1', 'ws-2']],
@@ -162,6 +166,33 @@ describe('storageCleanup', () => {
 
       for (const [key] of samples)
         expect(sessionStorage.getItem(key), key).not.toBeNull()
+    })
+
+    // The localStorage half of the same trap. It matters most for
+    // `leapmux:activeWorkspace:${userId}`: it is the ONLY record of which
+    // workspace to reopen — the URL no longer carries one — so an unregistered
+    // write would survive the session that made it and then vanish on the next
+    // load, silently sending every returning user to workspace #1.
+    it('preserves every registered localStorage key under runCleanup', () => {
+      const samples: Array<[string, unknown]> = [
+        ['leapmux:activeWorkspace:user-1', 'ws-1'],
+        ['leapmux:editor-draft:ws-1', 'half a message'],
+        ['leapmux:editor-min-height:ws-1', 120],
+        ['leapmux:agent-session:agent-1', { id: 's-1' }],
+        ['leapmux:ask-state:agent-1:req-1', { selections: {} }],
+        ['leapmux:worker-info:worker-1', { name: 'w' }],
+        ['leapmux:local-messages:ws-1', []],
+        ['leapmux:files-show-hidden:ws-1', true],
+        ['leapmux:chat-row-heights:ws-1', {}],
+        ...[...EXACT_KEY_TTLS.keys()].map(key => [key, 'sample'] as [string, unknown]),
+      ]
+      for (const [key, value] of samples)
+        localStorageSet(key, value)
+
+      runCleanup()
+
+      for (const [key] of samples)
+        expect(localStorage.getItem(key), key).not.toBeNull()
     })
 
     // Singleton sessionStorage keys live in SESSION_EXACT_KEY_TTLS and

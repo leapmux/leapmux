@@ -28,15 +28,14 @@ test.describe('Stale close-tile semantics', () => {
   test('close-tile from one client tombstones the tile in another (remove-wins)', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'remove-wins')
-    const workspaceUrl = `/workspace/${wsId}`
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
     const pageA = await ctxA.newPage()
     const pageB = await ctxB.newPage()
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, workspaceUrl),
-        gotoWorkspace(pageB, adminToken, workspaceUrl),
+        gotoWorkspace(pageA, adminToken, wsId),
+        gotoWorkspace(pageB, adminToken, wsId),
       ])
 
       // Split into two tiles in A. Both contexts converge on 2 tiles.
@@ -70,15 +69,14 @@ test.describe('Stale close-tile semantics', () => {
   test('close-tile after a fast remote split is permanent (remove-wins guards against stale-resurrect)', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'fast-split-close')
-    const workspaceUrl = `/workspace/${wsId}`
     const ctxA = await browser.newContext({ baseURL: hubUrl })
     const ctxB = await browser.newContext({ baseURL: hubUrl })
     const pageA = await ctxA.newPage()
     const pageB = await ctxB.newPage()
     try {
       await Promise.all([
-        gotoWorkspace(pageA, adminToken, workspaceUrl),
-        gotoWorkspace(pageB, adminToken, workspaceUrl),
+        gotoWorkspace(pageA, adminToken, wsId),
+        gotoWorkspace(pageB, adminToken, wsId),
       ])
 
       // A splits, then immediately B closes the right side. Without

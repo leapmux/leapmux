@@ -399,10 +399,16 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		// so BatchGetGitStatus can dedupe across terminals that share a repo.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
+		// Ids we DO hold a record for but must not serve on this channel yet.
+		// Reported as NOT_ACCESSIBLE, rather than as a bare omission the client
+		// would have to treat as permanent: it names a condition the client can
+		// repair (PrepareWorkspaceAccess) instead of one it can only wait out.
+		hidden := map[string]bool{}
 		var terminals []*leapmuxv1.TerminalInfo
 		var gitDirs []string
 		for _, e := range entries {
 			if !accessibleWsIDs[e.Meta.WorkspaceID] {
+				hidden[e.ID] = true
 				continue
 			}
 			seen[e.ID] = true
@@ -427,41 +433,52 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
+		// A DB read failure has to fail the WHOLE call. Falling through to
+		// the verdict pass would leave `seen` holding only the ids the
+		// in-memory manager happens to hold, so every other requested id
+		// gets stamped ABSENT -- which the client reads as "no such record,
+		// stop asking" (retryableFrom drops ABSENT ids) and retires the tab
+		// from hydration for the life of the page. Surfacing the error
+		// instead rejects the client's promise and keeps its backoff
+		// running, matching ListAgents on the same failure.
 		dbTerminals, err := svc.Queries.ListTerminalsByIDs(ctx, tabIDs)
 		if err != nil {
-			slog.Error("failed to list terminals from DB", "error", err)
-		} else {
-			for _, ts := range dbTerminals {
-				if seen[ts.ID] {
-					continue
-				}
-				if !accessibleWsIDs[ts.WorkspaceID] {
-					continue
-				}
-				status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
-				// DB-persisted screen is just the bytes; the backend has no
-				// live ring for this terminal (PTY exited or worker
-				// restarted), so the "end offset" equals the screen
-				// length. The client's after_offset will be the same
-				// value, and WatchEvents will return nothing for a dead
-				// terminal — correct, since there are no new bytes.
-				ti := &leapmuxv1.TerminalInfo{
-					TerminalId:      ts.ID,
-					Cols:            uint32(ts.Cols),
-					Rows:            uint32(ts.Rows),
-					Screen:          ts.Screen,
-					ScreenEndOffset: int64(len(ts.Screen)),
-					Exited:          !svc.Terminals.HasTerminal(ts.ID),
-					WorkingDir:      ts.WorkingDir,
-					ShellStartDir:   ts.ShellStartDir,
-					Title:           ts.Title,
-					Status:          status,
-					StartupError:    startupError,
-					StartupMessage:  startupMessage,
-				}
-				terminals = append(terminals, ti)
-				gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
+			slog.Error("failed to list terminals from DB", "tab_ids", tabIDs, "error", err)
+			sendInternalError(sender, "failed to list terminals")
+			return
+		}
+		for _, ts := range dbTerminals {
+			if seen[ts.ID] {
+				continue
 			}
+			if !accessibleWsIDs[ts.WorkspaceID] {
+				hidden[ts.ID] = true
+				continue
+			}
+			seen[ts.ID] = true
+			status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
+			// DB-persisted screen is just the bytes; the backend has no
+			// live ring for this terminal (PTY exited or worker
+			// restarted), so the "end offset" equals the screen
+			// length. The client's after_offset will be the same
+			// value, and WatchEvents will return nothing for a dead
+			// terminal — correct, since there are no new bytes.
+			ti := &leapmuxv1.TerminalInfo{
+				TerminalId:      ts.ID,
+				Cols:            uint32(ts.Cols),
+				Rows:            uint32(ts.Rows),
+				Screen:          ts.Screen,
+				ScreenEndOffset: int64(len(ts.Screen)),
+				Exited:          !svc.Terminals.HasTerminal(ts.ID),
+				WorkingDir:      ts.WorkingDir,
+				ShellStartDir:   ts.ShellStartDir,
+				Title:           ts.Title,
+				Status:          status,
+				StartupError:    startupError,
+				StartupMessage:  startupMessage,
+			}
+			terminals = append(terminals, ti)
+			gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
 		}
 
 		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
@@ -476,6 +493,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 		sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{
 			Terminals: terminals,
+			Verdicts:  tabHydrationVerdicts(tabIDs, seen, hidden),
 		})
 	})
 

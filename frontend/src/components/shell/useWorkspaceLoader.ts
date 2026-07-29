@@ -50,9 +50,10 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
     catch (err) {
       if (seq !== workspaceSeq)
         return
-      // The recorded error is what keeps the shell from claiming the workspace
-      // in the URL "doesn't exist" (see `isWorkspaceNotFound`); the toast is
-      // what tells the user their sidebar is stale rather than empty.
+      // The recorded error is what keeps the shell from concluding the active
+      // workspace is gone and switching away from it (see
+      // `resolveActiveWorkspace`); the toast is what tells the user their
+      // sidebar is stale rather than empty.
       workspaceStore.setError(formatErrorMessage(err, 'Failed to load workspaces'))
       showWarnToast('Failed to load workspaces', err)
     }
@@ -60,7 +61,7 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
       if (seq === workspaceSeq) {
         workspaceStore.setLoading(false)
         // Marked on BOTH outcomes: `loaded` means "an attempt finished", which
-        // is what lets isWorkspaceNotFound tell "you own nothing" apart from
+        // is what lets resolveActiveWorkspace tell "you own nothing" apart from
         // "we have not asked yet". The error path is separately recorded above.
         workspaceStore.markLoaded()
       }
